@@ -20,6 +20,22 @@
 #      on a persistent 504 and writes the error body into the output file, which the checksum or
 #      the unpack after it then reads. A curl that reads the status itself (`-w '%{http_code}'`
 #      and a test of what it printed) answers for `--fail` and passes.
+#
+#      Two more options decide when that last attempt starts, and a curl carrying either is held
+#      to the floor's 120 s by the ladder this check computes rather than by its `--retry` count
+#      alone. The rule is curl's own, read in its documentation at curl 8.14.1
+#      (docs/cmdline-opts/retry.md, retry-delay.md and retry-max-time.md of the curl-8_14_1 tag):
+#      curl "first waits one second and then for all forthcoming retries it doubles the waiting
+#      time until it reaches 10 minutes", `--retry-delay <n>` replaces that doubling with a fixed
+#      wait of n seconds before every retry (and `--retry-delay 0` asks for the default back-off
+#      again), and `--retry-max-time <n>` stops the ladder: a retry is made only while the timer
+#      reset at the first attempt "has not reached this given limit", so the last attempt starts
+#      no more than one wait past n (and `--retry-max-time 0` sets no limit at all). The ladder
+#      this check computes is the sum of those waits with the attempts themselves taking no time,
+#      which is the longest one the options allow; a curl whose longest ladder is under 120 s is
+#      refused with the figure. `--retry 7 --retry-delay 1` is 7 s and `--retry 7
+#      --retry-max-time 5` is 7 s, and both pass every other test of this floor. No site in the
+#      tree writes either option today.
 #   3. inside a Dockerfile, one canonical inline `retry()` definition, the same text in every
 #      network `RUN` of the three files. A Dockerfile carries the loop inline because it can hold
 #      no new file above a layer whose order its own comments set on purpose, and a COPY of a
@@ -173,6 +189,27 @@
 #      the retry exists to give. GitHub's granularity is the minute, so a whole minute is the
 #      smallest margin that can be written.
 #
+#      A call inside a loop is counted once for each pass of that loop, because the step waits
+#      for every pass: dequeued.yaml's timeline read is one `retry_fetch` call of 300 s written
+#      inside a seven-pass poll, so the step waits 2100 s for it and not 300 s. The pass count
+#      is read where the loop writes it, and only in the two shapes this check is sure of: a
+#      `for x in 1 2 3 4 5 6 7`, whose list is literal words, and a `for x in $(seq 1 7)`. The
+#      loop's own waits between the passes are added where they are written as a `sleep <n>` of
+#      that loop's body — the poll's six 10 s waits above — and a loop whose wait is computed
+#      rather than written adds none, so the figure there is the attempts alone and the passes
+#      between them cost nothing in it.
+#
+#      A loop whose pass count is not written — a `while read` over a list the run makes, a
+#      `while :` over the pages of a route — is read from DECLARED_LOOPS below, where each entry
+#      says how many passes the budgets that reach that loop are written for and why that is the
+#      number to write. An entry matching no such loop fails this check, as a stale exception
+#      does, so a declaration cannot outlive its loop. A step whose budget reaches a loop with
+#      neither a count nor an entry is refused in place of being judged, and the refusal names
+#      that loop: this check undercounts no budget, because a budget written for one pass of a
+#      loop that makes four is a step the runner cuts in the middle of the retry the budget
+#      exists to allow. A loop no step's budget reaches is nobody's arithmetic and is left
+#      alone; rule 2 is what reads a loop wherever it sits.
+#
 #   9. In a step whose shell leaves `pipefail` off, a fetch that is not the last command of its
 #      pipeline is refused. A workflow `run:` that names no shell runs under GitHub's own
 #      default, `/usr/bin/bash -e {0}`: errexit on, pipefail off, and a pipeline's status is
@@ -196,6 +233,16 @@
 #      pipefail`, and so is a Dockerfile RUN, which names no step's shell and whose pipelines
 #      are rule 3's business. Measured in run 42386541065's job logs: 63 steps at
 #      `/usr/bin/bash -e {0}`.
+#
+#      The scripts are outside it for a reason that is a limit as much as a scoping, and the
+#      limit is written here rather than left for a reader to find: this rule asks its question
+#      of a step's shell, and a script sets its own flags, so a piped fetch inside a *.sh under
+#      .github/scripts/ is a hole this rule has no step to read. The hole is unreachable today,
+#      and that is a measurement rather than a habit: all 70 scripts under .github/scripts/ set
+#      `pipefail`, so `grep -L pipefail .github/scripts/*.sh` prints nothing. A script that
+#      stops setting it would carry the fault this rule refuses in a step, and nothing here
+#      would say so. What closes the hole is reading each script's own `set` line, and the day a
+#      script leaves `pipefail` off is the day to write that reading.
 #
 #      That reading is the rule rather than a grep over the workflows, and the difference is not
 #      academic: a rule refusing every workflow `run:` would be one line and would refuse
@@ -284,11 +331,12 @@
 #     exactly the rows the copy after it then writes. The copy itself, and the digest read that
 #     confirms it, do retry.
 #
-# One more scoping the tree states twice, at ci.yaml's Playwright step and at e2e.yaml's package
-# step: an `apt-get install` with no `-d` that follows an `apt-get install -d` in the same `run:`
-# unpacks an archive already on disk and takes no network, so the download before it is the half
-# that retries. An `apt-get` carrying a simulate flag (`-s`, `--simulate`, `--dry-run`,
-# `--just-print`, `--no-act`, `--recon`) reads the lists on disk and fetches nothing either.
+# One more scoping the tree states twice, at .github/scripts/playwright-install.sh and at
+# e2e.yaml's package step: an `apt-get install` with no `-d` that follows an `apt-get install -d`
+# in the same `run:` unpacks an archive already on disk and takes no network, so the download
+# before it is the half that retries. An `apt-get` carrying a simulate flag (`-s`, `--simulate`,
+# `--dry-run`, `--just-print`, `--no-act`, `--recon`) reads the lists on disk and fetches nothing
+# either.
 #
 # `--list` prints the sites this check holds to the floor, one per line, as four tab-separated
 # columns: the file, the line, the verb, and the step's name where the site is a step (`-` where
@@ -395,6 +443,15 @@ CANONICAL = (
 )
 RETRY_FLOOR = 7
 ATTEMPT_FLOOR = 5
+# R1's floor on the ladder itself: the last attempt starts at least this many seconds after the
+# first. The count alone does not say it, because `--retry-delay` and `--retry-max-time` each
+# rewrite the waits between curl's own attempts (curl_ladder below).
+LADDER_FLOOR = 120
+# The wait curl takes before its first retry, and the ceiling its doubling reaches, read in
+# curl's documentation at curl 8.14.1 (docs/cmdline-opts/retry.md): "it first waits one second
+# and then for all forthcoming retries it doubles the waiting time until it reaches 10 minutes".
+CURL_FIRST_WAIT = 1
+CURL_WAIT_CEILING = 600
 # Rule 8's arithmetic, the worst case of one retried call. The helper sleeps 10, 20, 40 and 80
 # seconds between its five attempts; curl, making `RETRY_FLOOR + 1` attempts itself, waits
 # 1, 2, 4, 8, 16, 32 and 64 seconds between its own.
@@ -415,6 +472,9 @@ PROGRAM = re.compile(r"^(\$\{?GITHUB_WORKSPACE\}?/)?(\.\.?/)*")
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
 EXPRESSION = re.compile(r"\$\{\{.*?\}\}")
 FUNCTION_WORD = re.compile(r"^[A-Za-z_][\w:.-]*\(\)$")
+# A word of a `for` list that is itself and nothing else: no expansion, no glob, no quoting. A
+# list of these is a pass count rule 8 can read off the loop (passes_of below).
+LITERAL_WORD = re.compile(r"[A-Za-z0-9_@%+:,./=-]+")
 # Transparent in command position, taking no argument of their own.
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run"}
@@ -483,7 +543,7 @@ def problem(path: str, line: int, message: str) -> None:
 def without_heredocs(text: str) -> tuple[str, list[tuple[int, str]]]:
     """The text with every heredoc body blanked, and those bodies as (line, text) pairs. A body is
     data to the shell, not commands, so the shell rules never read one; the Python a `python3
-    <<'PY'` runs is read by rule 5 instead, off the bodies this returns."""
+    <<'PY'` runs is read by rule 6 instead, off the bodies this returns."""
     out: list[str] = []
     bodies: list[tuple[int, str]] = []
     lines = text.split("\n")
@@ -687,21 +747,65 @@ class Scanner:
         return self.commands
 
 
-def structure(commands: list[Command]) -> dict[str, int]:
-    """Marks each command with the loop it sits in, and returns the line of the loop in each
-    function that holds one — the loops a call of that function reaches."""
+class Loops:
+    """What rule 8 reads of the loops of one shell body: the line of the loop in each function
+    that holds one — the loops a call of that function reaches — and, for each loop by its own
+    line, the passes it makes and the seconds it waits between two of them. A pass count is
+    None where the loop does not write one."""
+
+    def __init__(self) -> None:
+        self.function_loop: dict[str, int] = {}
+        self.passes: dict[int, int | None] = {}
+        self.sleep: dict[int, int] = {}
+
+
+def passes_of(text: str, command: Command) -> int | None:
+    """The passes a loop makes, where the loop writes a count this check is sure of: a `for x in
+    1 2 3 4 5 6 7`, whose list is literal words, and a `for x in $(seq 1 7)`, whose list is a
+    count of them. Everything else — a `while`, an `until`, a `for` over a variable or over the
+    lines a command printed — writes no count, and reads as None rather than as one pass."""
+    match = re.match(r"for\s+[A-Za-z_]\w*\s+in\s+([^\n;]*)", text[command.offset:])
+    if not match:
+        return None
+    listed = match.group(1).strip()
+    if seq := re.fullmatch(r"\$\(\s*seq\s+([\d\s]+)\)", listed):
+        # `seq <last>` counts from 1, and `seq <first> <last>` from <first>. A step argument, or
+        # a bound that is not a number, is a shape this check does not read.
+        numbers = [int(number) for number in seq.group(1).split()]
+        if len(numbers) == 1:
+            return numbers[0]
+        if len(numbers) == 2:
+            return numbers[1] - numbers[0] + 1 if numbers[1] >= numbers[0] else 0
+        return None
+    words = listed.split()
+    if words and all(LITERAL_WORD.fullmatch(word) for word in words):
+        return len(words)
+    return None
+
+
+def structure(commands: list[Command], text: str) -> Loops:
+    """Marks each command with the loop it sits in, and returns what rule 8 reads of those
+    loops: the loop each function holds, each loop's passes, and each loop's own wait between
+    two passes."""
     loops: list[int] = []
     function: str | None = None
     function_depth = 0
-    function_loop: dict[str, int] = {}
+    read = Loops()
     for command in commands:
         first = command.words[0]
         if first == "done" and loops:
             loops.pop()
         command.loop = loops[-1] if loops else None
+        if (command.loop is not None and first == "sleep" and len(command.words) == 2
+                and re.fullmatch(r"\d+", command.words[1])):
+            # The loop's own wait between two passes, where it is written as a number. A
+            # `sleep "$(( 10 << (i - 1) ))"` is computed rather than written and adds nothing,
+            # and where a loop writes more than one the longest is what a pass can wait.
+            seconds = int(command.words[1])
+            read.sleep[command.loop] = max(read.sleep.get(command.loop, 0), seconds)
         if function is not None:
-            if command.loop is not None and function not in function_loop:
-                function_loop[function] = command.loop
+            if command.loop is not None and function not in read.function_loop:
+                read.function_loop[function] = command.loop
             function_depth += command.words.count("{") - command.words.count("}")
             if function_depth <= 0:
                 function = None
@@ -710,7 +814,8 @@ def structure(commands: list[Command]) -> dict[str, int]:
             function_depth = command.words.count("{") - command.words.count("}")
         if first in LOOP_WORDS:
             loops.append(command.line)
-    return function_loop
+            read.passes[command.line] = passes_of(text, command)
+    return read
 
 
 def reduce_words(words: list[str]) -> tuple[list[str], str | None, bool, int | None]:
@@ -921,6 +1026,54 @@ def curl_bound(words: list[str]) -> int | None:
     return None
 
 
+def curl_waits(words: list[str]) -> tuple[int | None, int | None, bool]:
+    """What this curl writes for `--retry-delay` and `--retry-max-time`, in seconds, and whether
+    every value it writes for them is a number this check can read. A value that is not — a
+    variable, an expression — leaves the ladder unreadable rather than default, since the one
+    thing this check must not do with these two options is assume."""
+    delay: int | None = None
+    max_time: int | None = None
+    readable = True
+    for index, word in enumerate(words):
+        value = None
+        if "=" in word and word.startswith("--"):
+            word, _, value = word.partition("=")
+        if word not in ("--retry-delay", "--retry-max-time"):
+            continue
+        if value is None and index + 1 < len(words):
+            value = words[index + 1]
+        if not value or not re.fullmatch(r"\d+", value):
+            readable = False
+            continue
+        if word == "--retry-delay":
+            delay = int(value)
+        else:
+            max_time = int(value)
+    return delay, max_time, readable
+
+
+def curl_ladder(retries: int, delay: int | None, max_time: int | None) -> int:
+    """The seconds between the first of curl's own attempts and the last, as curl makes them —
+    R1's floor is that this is at least LADDER_FLOOR. The rule is curl's own, at curl 8.14.1:
+    the wait before the first retry is one second and doubles for each of the rest up to ten
+    minutes; `--retry-delay <n>` replaces that with a fixed n, and `--retry-delay 0` asks for
+    the default back-off again; `--retry-max-time <n>` lets a retry start only while the timer
+    reset at the first attempt has not reached n, and `--retry-max-time 0` sets no limit. The
+    attempts themselves are taken as instant, which makes this the longest ladder the options
+    allow: the real one is shorter, because every second an attempt spends is a second of that
+    timer."""
+    if delay:
+        waits = [delay] * retries
+    else:
+        waits = [min(CURL_FIRST_WAIT << index, CURL_WAIT_CEILING) for index in range(retries)]
+    elapsed = 0
+    for wait in waits:
+        if max_time and elapsed >= max_time:
+            break
+        elapsed += wait
+    return elapsed
+
+
 def apt_error_mode(words: list[str]) -> bool:
     """Whether this `apt-get update` fails when an index read fails, rather than warning and
     exiting 0: `-o APT::Update::Error-Mode=any`, in any spelling apt takes for an option. Option
@@ -945,7 +1098,10 @@ class Site:
     shell that leaves pipefail off, so the pipeline's status is its last command's and this
     fetch's failure is not read. `silent` marks rule 7's shape instead: a `mise x`, `mise
     exec`, `mise up` or `mise upgrade` with a retry around it, which is no fetch to hold to the
-    floor but a retry to refuse."""
+    floor but a retry to refuse. `passes` is rule 8's: how many times the loop around this call
+    runs it — one where no loop does, the loop's own count where the loop writes one, and None
+    where it writes none, which is the one case this check refuses rather than counts.
+    `loop_wait` is what that loop sleeps between two passes, 0 where it writes no `sleep`."""
 
     def __init__(self, path: str, line: int, verb: str, step: str, words: list[str],
                  retry: str | None, bounded: bool, loop: int | None, bound: int | None = None,
@@ -961,14 +1117,16 @@ class Site:
         self.bound = bound
         self.silent = silent
         self.piped = piped
+        self.passes: int | None = 1
+        self.loop_wait = 0
 
 
-def arithmetic_of(site: Site) -> int:
-    """Rule 8's arithmetic for one call: the wall time it takes to exhaust its attempts. Five at
-    the helper's own bound with its sleeps of 10, 20, 40 and 80 s between them, or eight at
-    curl's `--max-time` with curl's waits doubling from one second, where curl makes the
-    attempts itself. A call whose bound is not written as a number adds nothing: there is no
-    arithmetic to do, and rule 4 is what refuses an unbounded attempt."""
+def one_call(site: Site) -> int:
+    """The wall time one call of this site takes to exhaust its attempts. Five at the helper's
+    own bound with its sleeps of 10, 20, 40 and 80 s between them, or eight at curl's
+    `--max-time` with curl's waits doubling from one second, where curl makes the attempts
+    itself. A call whose bound is not written as a number adds nothing: there is no arithmetic
+    to do, and rule 4 is what refuses an unbounded attempt."""
     if site.bound is None or site.silent:
         return 0
     if site.retry == "retry_fetch":
@@ -976,6 +1134,26 @@ def arithmetic_of(site: Site) -> int:
     if site.verb == "curl" and site.retry is None:
         return (RETRY_FLOOR + 1) * site.bound + CURL_WAIT
     return 0
+
+
+def arithmetic_of(site: Site) -> int | None:
+    """Rule 8's arithmetic for one site: one call of it for each pass of the loop around it,
+    with that loop's own wait between two passes. None where the loop makes a count this check
+    cannot read and no DECLARED_LOOPS entry writes one, which is a site refused below rather
+    than a budget undercounted here."""
+    one = one_call(site)
+    if not one:
+        return 0
+    if site.passes is None:
+        return None
+    return site.passes * one + (site.passes - 1) * site.loop_wait
+
+
+def added(total: int | None, more: int | None) -> int | None:
+    """Two arithmetics summed, where either may be the unreadable one: a step holding a site
+    this check cannot count has no figure at all, and a figure short by one loop would be worse
+    than none."""
+    return None if total is None or more is None else total + more
 
 
 def scripts_called(text: str) -> set[str]:
@@ -998,13 +1176,13 @@ def scripts_called(text: str) -> set[str]:
     return found
 
 
-def commands_of(body: str,
-                first_line: int) -> tuple[list[Command], dict[str, int], list[tuple[int, int]]]:
-    """The simple commands of a shell body, the loop each local function holds, and the probe
+def commands_of(body: str, first_line: int) -> tuple[list[Command], Loops,
+                                                     list[tuple[int, int]]]:
+    """The simple commands of a shell body, what rule 8 reads of its loops, and the probe
     spans."""
     text, _ = without_heredocs(EXPRESSION.sub("EXPR", body))
     commands = Scanner(first_line).scan(text)
-    return commands, structure(commands), probe_spans(text)
+    return commands, structure(commands, text), probe_spans(text)
 
 
 def sites_of(path: str, body: str, first_line: int, step: str,
@@ -1013,23 +1191,49 @@ def sites_of(path: str, body: str, first_line: int, step: str,
     pipefail`: where it does, a pipeline carries the failure of every command in it and rule 9
     has nothing to refuse. That is the default, because a *.sh and a Dockerfile RUN are read
     with no step's `shell:` to ask about and each sets its own flags."""
-    commands, function_loop, probes = commands_of(body, first_line)
+    commands, loops, probes = commands_of(body, first_line)
     found: list[Site] = []
     for command in commands:
         if any(start <= command.offset < end for start, end in probes):
             continue
-        found += sites_of_command(path, command, function_loop, step)
+        found += sites_of_command(path, command, loops, step)
     if pipefail:
         for site in found:
             site.piped = False
-    return unpacks_dropped(found)
+    found = unpacks_dropped(found)
+    for site in found:
+        if site.loop is None:
+            continue
+        site.passes = loops.passes.get(site.loop)
+        site.loop_wait = loops.sleep.get(site.loop, 0)
+        if site.passes is None and site.path not in DOCKERFILES and one_call(site):
+            # The loop writes no count, and this call has a figure a budget would carry. A
+            # DECLARED_LOOPS entry is the other place that count can be written; a site with
+            # neither leaves whatever step runs it without a figure, which uncounted_of below
+            # hands to that step's budget. A Dockerfile is outside this reading, as it is
+            # outside rule 8: no step's budget holds its RUN lines.
+            declared = next((entry for entry in DECLARED_LOOPS if entry.covers(site)), None)
+            if declared:
+                declared.used += 1
+                site.passes = declared.passes
+    return found
+
+
+def uncounted_of(found: list[Site]) -> list[Site]:
+    """The sites of one body this check can put no figure on: a retried call in a loop that
+    writes no pass count and that no DECLARED_LOOPS entry declares. A step whose budget reaches
+    one of these is refused in the loop's place, and a loop no budget reaches costs nobody
+    anything and is left alone — rule 2 is what reads a loop wherever it sits."""
+    return [site for site in found
+            if site.passes is None and one_call(site) and site.path not in DOCKERFILES]
 
 
 def unpacks_dropped(found: list[Site]) -> list[Site]:
     """The sites with the apt unpack phases taken out. An `apt-get install` with no `-d` that
     follows an `apt-get install -d` in the same body installs an archive already on disk and
-    takes no network: the download before it is the half that retries, which is what ci.yaml's
-    Playwright step and e2e.yaml's package step each say where they do it."""
+    takes no network: the download before it is the half that retries, which is what
+    .github/scripts/playwright-install.sh and e2e.yaml's package step each say where they do
+    it."""
     downloaded = False
     kept = []
     for site in found:
@@ -1042,7 +1246,7 @@ def unpacks_dropped(found: list[Site]) -> list[Site]:
     return kept
 
 
-def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
+def sites_of_command(path: str, command: Command, loops: Loops,
                      step: str, retry: str | None = None, bounded: bool = False,
                      depth: int = 0, bound: int | None = None) -> list[Site]:
     words, wrapped, wrapped_bound, wrapped_seconds = reduce_words(command.words)
@@ -1074,10 +1278,10 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
             # A `bash -c '…' | tar` pipes the interpreter, so a fetch inside it loses its own
             # status the same way a fetch written in the pipeline would.
             sub.piped = sub.piped or command.piped
-            found += sites_of_command(path, sub, function_loop, step, retry, bounded, depth + 1,
+            found += sites_of_command(path, sub, loops, step, retry, bounded, depth + 1,
                                       bound)
         return found
-    if name in function_loop:
+    if name in loops.function_loop:
         # A loop that runs what it is handed: the verb among the call's words is that loop's fetch.
         held = verb_in(words[1:])
         if not held:
@@ -1085,7 +1289,7 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
         verb, rest = held
         _, _, inner_bound, inner_seconds = reduce_words(rest)
         return [Site(path, command.line, verb, step, rest, retry, bounded or inner_bound,
-                     function_loop[name], bound if bound is not None else inner_seconds,
+                     loops.function_loop[name], bound if bound is not None else inner_seconds,
                      piped=command.piped)]
     silent = silent_verb_of(words)
     if silent:
@@ -1159,6 +1363,78 @@ EXEMPTIONS = [
 ]
 
 
+# ------------------------------------------------- the loops whose passes are declared, not read
+
+
+class DeclaredLoop:
+    """One loop whose pass count rule 8 cannot read off the loop itself — a `while read` over a
+    list the run makes, a `while :` over the pages of a route — with the passes the budgets
+    that reach it are written for and why that is the number. A site covered here is counted
+    `passes` times; a site in such a loop with no entry is refused, because a budget written
+    for one pass of a loop that makes four is a step the runner cuts in the middle of the retry
+    the budget exists to allow. An entry matching no such loop fails this check, as a stale
+    exception does: a declaration cannot outlive its loop."""
+
+    def __init__(self, path: str, step: str | None, verb: str, passes: int, why: str) -> None:
+        self.path = path
+        self.step = step
+        self.verb = verb
+        self.passes = passes
+        self.why = why
+        self.used = 0
+
+    def covers(self, site: Site) -> bool:
+        return (
+            site.path == self.path
+            and (self.step is None or self.step == site.step)
+            and site.verb == self.verb
+        )
+
+
+# What every entry of one pass says, each in its own words below: the loop runs the call once
+# for each thing the run found to do, the budget is written for the one the common run finds,
+# and a run where every pass exhausts its five attempts is not the transient fault a retry
+# exists to survive but an outage of the host, which ci.yaml's Budgets note leaves to the job's
+# own ceiling rather than to the step's.
+DECLARED_LOOPS = [
+    DeclaredLoop(".github/workflows/ci.yaml",
+                 "Force-cancel the runs of the groups the queue removed", "gh api", 1,
+                 "one force-cancel per group the queue removed. That step's own comment derives "
+                 "its budget from one ladder beside about 3 s a call over the at most 21 calls "
+                 "the 20 groups the queue builds at once can need"),
+    DeclaredLoop(".github/workflows/dequeued.yaml",
+                 "Cancel the removed group's ci.yaml run", "gh api", 1,
+                 "one force-cancel per ci.yaml merge-group run still going at the removed "
+                 "group's head, and the queue starts one run for a group: a re-run is another "
+                 "attempt of that run and not a second one"),
+    DeclaredLoop(".github/workflows/main-bypass-check.yaml",
+                 "Start ci.yaml when this push's head was never tested", "gh workflow run", 1,
+                 "one dispatch. .github/scripts/main-bypass-check.sh's header says it prints "
+                 "one line on standard output, `dispatch <sha>`, naming the head when it "
+                 "reached main untested, so the loop over its acts runs this call once"),
+    # A script site is read with no job and no step, so these entries name no step: the call at
+    # the `for path in scripts:` loop below passes step="-".
+    DeclaredLoop(".github/scripts/check-pr-text.sh", None, "gh api", 1,
+                 "one page of the route. The loop reads pages until a short one, and a pull "
+                 "request carrying more than 100 reviews or more than 100 comments reads "
+                 "another page at the per_page=100 the call asks for"),
+    DeclaredLoop(".github/scripts/ci-ok-reconcile.sh", None, "gh api", 3,
+                 "one PATCH per other ci-ok on the head that needs one, and three is what the "
+                 "ci-ok step's budget is written for. A merge-group run posts one ci-ok per job "
+                 "whose own result decides the group (ci-ok-report.sh), so a run that fails in "
+                 "three jobs leaves three posts on the head; the two posted ci-oks that script's "
+                 "header measures on open heads are one per head. This one is written high on "
+                 "purpose: the script's refusals only warn, and a step the runner cuts fails the "
+                 "ci-ok job, which turns a passing required check red"),
+    DeclaredLoop(".github/scripts/mirror-ci-images.sh", None, "crane copy", 1,
+                 "one copy per row of .github/ci-images.yaml the package does not hold. The "
+                 "ci-images step's budget is written for the rows a run copies, at the under "
+                 "75 s a row that file's own comment derives"),
+    DeclaredLoop(".github/scripts/mirror-ci-images.sh", None, "crane digest", 1,
+                 "the digest read that confirms the copy above it, once per row copied"),
+]
+
+
 def credentialed_jobs(path: str, document: Mapping) -> set[str]:
     """The jobs of a release workflow that hold a credential, by check-release-credentials.sh's
     own definition: a write scope of WRITE_SCOPES, or the deploy key."""
@@ -1216,10 +1492,12 @@ class Budget:
     allows: where the budget is written, what the step is called, the minutes it gives, the
     arithmetic of the calls the step's own `run:` holds, the local composite action a `uses:`
     step runs, whose calls are the step's too, and the scripts the step's `run:` invokes, whose
-    calls are the step's too for the same reason."""
+    calls are the step's too for the same reason. A cost of None is a step holding a site this
+    check cannot count, and `uncounted` is the sites that made it so, which the refusal names
+    in place of a comparison."""
 
-    def __init__(self, path: str, line: int, step: str, minutes: int, cost: int,
-                 uses: str | None, scripts: set[str]) -> None:
+    def __init__(self, path: str, line: int, step: str, minutes: int, cost: int | None,
+                 uses: str | None, scripts: set[str], uncounted: list[Site]) -> None:
         self.path = path
         self.line = line
         self.step = step
@@ -1227,20 +1505,26 @@ class Budget:
         self.cost = cost
         self.uses = uses
         self.scripts = scripts
+        self.uncounted = uncounted
 
 
 budgets: list[Budget] = []
 # The arithmetic of each composite action's own `run:` steps, and the local actions and the
 # scripts each one calls in turn: a `uses:` step of one carries the whole of it.
-action_cost: dict[str, int] = {}
+action_cost: dict[str, int | None] = {}
 action_uses: dict[str, list[str]] = {}
 action_scripts: dict[str, set[str]] = {}
+# The sites of each composite action, and of each script, that rule 8 can put no figure on: a
+# step reaching one of them is told about that loop instead of being judged against a sum that
+# is missing it.
+action_uncounted: dict[str, list[Site]] = {}
 action_by_directory = {str(Path(path).parent): path for path in actions}
 action_files = set(actions)
 # The arithmetic of each script's own calls, and the scripts it calls in turn: whoever runs one
 # of them waits for the whole of it.
-script_cost: dict[str, int] = {}
+script_cost: dict[str, int | None] = {}
 script_calls: dict[str, set[str]] = {}
+script_uncounted: dict[str, list[Site]] = {}
 script_files = set(scripts)
 
 
@@ -1306,13 +1590,16 @@ for path in workflows + actions:
         continue
     credentialed = credentialed_jobs(path, document)
     for job, name, step, shell in steps_of(path, document):
-        cost = 0
+        cost: int | None = 0
         called: set[str] = set()
+        blocked: list[Site] = []
         if isinstance(step.get("run"), str):
             called = scripts_called(step["run"])
-            for site in sites_of(path, step["run"], step.lines.get("run", 0), name,
-                                 sets_pipefail(shell)):
-                cost += arithmetic_of(site)
+            found = sites_of(path, step["run"], step.lines.get("run", 0), name,
+                             sets_pipefail(shell))
+            blocked = uncounted_of(found)
+            for site in found:
+                cost = added(cost, arithmetic_of(site))
                 if job in credentialed:
                     exempted.append(site)
                     continue
@@ -1326,14 +1613,15 @@ for path in workflows + actions:
             credentialed_roots.update(called)
         uses = local_action(step.get("uses"))
         if path in action_files:
-            action_cost[path] = action_cost.get(path, 0) + cost
+            action_cost[path] = added(action_cost.get(path, 0), cost)
             action_scripts.setdefault(path, set()).update(called)
+            action_uncounted.setdefault(path, []).extend(blocked)
             if uses:
                 action_uses.setdefault(path, []).append(uses)
         minutes = step.get("timeout-minutes")
         if isinstance(minutes, int) and not isinstance(minutes, bool):
             budgets.append(Budget(path, step.lines.get("timeout-minutes", 0), name, minutes,
-                                  cost, uses, called))
+                                  cost, uses, called, blocked))
 
 # Exception (d) for a script: a *.sh under .github/scripts/ that a credentialed publish job runs
 # can carry no retry either, because the retry is `. .github/scripts/ci-retry.sh` and that source
@@ -1354,8 +1642,10 @@ while credentialed_roots:
 for path in scripts:
     text = Path(path).read_text()
     script_calls[path] = scripts_called(text)
-    for site in sites_of(path, text, 1, "-"):
-        script_cost[path] = script_cost.get(path, 0) + arithmetic_of(site)
+    found = sites_of(path, text, 1, "-")
+    script_uncounted[path] = uncounted_of(found)
+    for site in found:
+        script_cost[path] = added(script_cost.get(path, 0), arithmetic_of(site))
         if path in credentialed_scripts:
             exempted.append(site)
             continue
@@ -1496,6 +1786,34 @@ for site in sites:
                     f"{where} fetches without the floor: it lacks " + ", ".join(missing) +
                     ". Pass curl's own options, or wrap the call in `retry_fetch` from "
                     f"{HELPER}.")
+        else:
+            delay, max_time, readable = curl_waits(site.words)
+            ladder = curl_ladder(retries, delay, max_time)
+            if not readable:
+                problem(site.path, site.line,
+                        f"{where} writes `--retry-delay` or `--retry-max-time` with a value "
+                        "this check cannot read, so it cannot say when the last of curl's "
+                        "attempts starts. Both options rewrite the waits between them — a "
+                        "fixed wait, and a limit that stops the ladder — and R1's floor is "
+                        f"that the last attempt starts at least {LADDER_FLOOR} s after the "
+                        "first. Write the seconds as a number, or drop the option and take "
+                        "curl's own doubling waits.")
+            elif ladder < LADDER_FLOOR:
+                wrote = []
+                if delay is not None:
+                    wrote.append(f"`--retry-delay {delay}`, which replaces curl's doubling "
+                                 "waits with a fixed one")
+                if max_time is not None:
+                    wrote.append(f"`--retry-max-time {max_time}`, which stops the ladder once "
+                                 "the timer reset at the first attempt reaches it")
+                problem(site.path, site.line,
+                        f"{where} carries curl's own attempts and its last one starts "
+                        f"{ladder} s after the first, inside R1's floor of {LADDER_FLOOR} s: "
+                        "it writes " + " and ".join(wrote) + ". A retry whose ladder is over "
+                        "in seconds does not outlast the fault it exists to survive — the "
+                        "measured incidents were hosts refusing for about a minute. Drop the "
+                        f"option and take curl's own waits, which reach 127 s at `--retry "
+                        f"{RETRY_FLOOR}`, or write one that reaches {LADDER_FLOOR} s.")
         continue
     if site.verb == "apt-get update" and not apt_error_mode(site.words):
         problem(site.path, site.line,
@@ -1568,24 +1886,28 @@ for site in sites:
             "loop and call `retry_fetch \"<what>\" <bound in seconds> -- <command...>`.")
 
 # Rule 8: a retried step's own budget strictly exceeds the attempts it allows, so the last
-# attempt's own error reaches the log before the runner's kill does.
+# attempt's own error reaches the log before the runner's kill does. A call inside a loop is
+# counted once for each pass, and a step reaching a loop whose passes this check can neither
+# read nor find declared is told about that loop in place of a comparison: a sum short by one
+# of its loops would send the step's author to the wrong line.
 
 
-def script_arithmetic(path: str, seen: set[str]) -> int:
+def script_arithmetic(path: str, seen: set[str]) -> int | None:
     """The arithmetic a call of this script carries: its own calls and those of every script it
     calls in turn. `seen` is what the step has counted already, so a script two of its calls
     reach is counted once, and a cycle — which the shell would run until something failed, but
-    which must not hang this check — stops."""
+    which must not hang this check — stops. None where one of those calls is a site this check
+    cannot count."""
     if path in seen:
         return 0
     seen.add(path)
     total = script_cost.get(path, 0)
     for target in sorted(script_calls.get(path, ())):
-        total += script_arithmetic(target, seen)
+        total = added(total, script_arithmetic(target, seen))
     return total
 
 
-def action_arithmetic(path: str, seen: set[str]) -> int:
+def action_arithmetic(path: str, seen: set[str]) -> int | None:
     """The arithmetic a `uses:` of this composite action carries: its own calls, the scripts its
     steps run, and every local action it calls in turn, which carries its own the same way.
     `seen` stops a cycle, which GitHub would refuse to run but which must not hang this check."""
@@ -1594,9 +1916,9 @@ def action_arithmetic(path: str, seen: set[str]) -> int:
     seen.add(path)
     total = action_cost.get(path, 0)
     for target in sorted(action_scripts.get(path, ())):
-        total += script_arithmetic(target, seen)
+        total = added(total, script_arithmetic(target, seen))
     for target in action_uses.get(path, ()):
-        total += action_arithmetic(target, seen)
+        total = added(total, action_arithmetic(target, seen))
     return total
 
 
@@ -1607,10 +1929,31 @@ for budget in budgets:
     seen: set[str] = set()
     cost = budget.cost
     for target in sorted(budget.scripts):
-        cost += script_arithmetic(target, seen)
+        cost = added(cost, script_arithmetic(target, seen))
     if budget.uses:
-        cost += action_arithmetic(budget.uses, seen)
-    if not cost or 60 * budget.minutes > cost:
+        cost = added(cost, action_arithmetic(budget.uses, seen))
+    blocking = list(budget.uncounted)
+    for target in sorted(seen):
+        blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
+    if blocking:
+        named = "; ".join(
+            f"`{site.verb}` at {site.path}:{site.line}, inside the loop at line {site.loop}"
+            for site in blocking
+        )
+        problem(budget.path, budget.line,
+                f"step '{budget.step}' carries `timeout-minutes: {budget.minutes}` and this "
+                "check can put no figure on it: it runs a retried call inside a loop whose "
+                f"passes it cannot read — {named}. One call there takes "
+                f"{one_call(blocking[0])} s to exhaust its attempts and the step waits for "
+                "that once per pass, so a budget written for one pass is a step the runner "
+                "cuts in the middle of the retry it exists to allow. Write the count where "
+                "this check reads it — a `for x in 1 2 3 4 5 6 7`, or a `for x in "
+                "$(seq 1 7)` — or, where the passes are as many as the run finds work, "
+                "declare them in DECLARED_LOOPS in .github/scripts/check-download-retry.sh: "
+                "an entry there says how many passes the budgets reaching that loop are "
+                "written for and why that is the number.")
+        continue
+    if cost is None or not cost or 60 * budget.minutes > cost:
         continue
     followed = sorted(target for target in seen if target in script_files)
     through = (f" That arithmetic is the step's own and that of {', '.join(followed)}, which it "
@@ -1640,6 +1983,18 @@ for entry in EXEMPTIONS:
             + " matches no fetch in the tree. An exception outliving its site is an exception "
             "nobody reads again: drop it, or point it at where that site moved. It was written "
             f"for {entry.why}.")
+
+for entry in DECLARED_LOOPS:
+    if entry.used:
+        continue
+    problem(SELF, 1,
+            f"the declared loop for {entry.path}"
+            + (f" step '{entry.step}'" if entry.step else "")
+            + f" `{entry.verb}` matches no retried call in a loop whose passes this check "
+            "cannot read. A declaration outliving its loop is a figure nobody checks again: "
+            "drop it, or point it at where that loop moved. It said the budgets reaching it "
+            f"are written for {entry.passes} pass{'' if entry.passes == 1 else 'es'}, because "
+            f"{entry.why}.")
 
 if LIST_MODE and not problems:
     # A reader of this list pipes it (`| head`, `| cut`), so a closed pipe ends this the way any

@@ -95,13 +95,14 @@ case $CONCLUSION in
 esac
 
 # The read goes through retry_fetch at 30 s an attempt, the bound this repository's CI gives one
-# page of a REST route (ci.yaml's Retries note), and gh writes into a file inside `sh -c` so
-# that every attempt starts that file over (ci-ok-report.sh says why where it does the same).
-# shellcheck disable=SC2016 # $1 to $3 are sh -c's own arguments, expanded by that shell
-if ! retry_fetch "this head's ci-ok check runs" 30 -- sh -c 'gh api --paginate "$1" --jq "$2" > "$3"' \
-  gh-api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
-  '.check_runs[] | "\(.id) \(.status) \(.conclusion) \(.external_id // "" | if . == "" then "-" else . end)"' \
-  "$work/runs"; then
+# page of a REST route (ci.yaml's Retries note). The redirection is this shell's own and is
+# applied once: the helper buffers each attempt's output and prints the successful attempt's
+# alone, so no refused attempt's body reaches this file (ci-retry.sh's header says what gh
+# writes there).
+if ! retry_fetch "this head's ci-ok check runs" 30 -- gh api --paginate \
+  "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+  --jq '.check_runs[] | "\(.id) \(.status) \(.conclusion) \(.external_id // "" | if . == "" then "-" else . end)"' \
+  > "$work/runs"; then
   echo "::warning::GitHub refused this head's ci-ok check runs five times, so any ci-ok beside this job's own stands as it was; this job's own conclusion ($CONCLUSION) is this attempt's verdict"
   exit 0
 fi

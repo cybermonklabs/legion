@@ -56,14 +56,15 @@ on:
 jobs:
   cancel-dequeued:
     runs-on: ubuntu-24.04
-    # A GraphQL read, one run list and one cancel: the limit is short so that a wedged API call
-    # cannot hold a runner, and it is above the minute the timeline read can wait. 300 s, the
-    # 5 minutes that gives, plus this job's slowest retried step alone, as ci.yaml's Budgets
-    # note derives one: that step holds the timeline read's 5 x 30 + 150 = 300 s, the run
-    # list's 300 s and the force-cancel's 300 s, 900 s together, a whole number of minutes, so
-    # that step's own budget takes one more and this job takes it too. 300 + 960 = 1260 s ->
-    # 21 min.
-    timeout-minutes: 21
+    # A GraphQL poll, one run list and one cancel. 300 s, the 5 minutes that gives, plus this
+    # job's slowest retried step alone, as ci.yaml's Budgets note derives one: that step holds
+    # the timeline read, which sits inside a seven-pass poll and so costs
+    # 7 x (5 x 30 + 150) + 6 x 10 = 2160 s, the run list's 300 s and the force-cancel's 300 s,
+    # 2760 s together, a whole number of minutes, so that step's own budget takes one more and
+    # this job takes it too. 300 + 2820 = 3120 s -> 52 min. That ceiling is reached only
+    # against a host that accepts the connection and then sends nothing through every attempt
+    # of every pass; what this job costs when nothing stalls is one read and one cancel.
+    timeout-minutes: 52
     # `gh run list` and the force-cancel need `actions: write`, and nothing here needs another
     # scope: the checkout below reads a public repository's git data, which GitHub serves to any
     # valid token, and so is the GraphQL read of its pull request — the same ground on which
@@ -83,10 +84,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
-        # being cut part way by the job: the timeline read's 5 x 30 + 150 = 300 s, the run
-        # list's 300 s and the force-cancel's 300 s, 900 s, a whole number of minutes, so the
-        # budget is the next one strictly above it -> 16 min.
-        timeout-minutes: 16
+        # being cut part way by the job. The timeline read is written inside the seven-pass
+        # poll below, so the step waits for seven of its ladders and the six 10 s sleeps
+        # between the passes: 7 x (5 x 30 + 150) + 6 x 10 = 2160 s, where every read stalls
+        # for the whole of every attempt, and 7 x 150 + 6 x 10 = 1110 s where GitHub refuses
+        # each one at once. Then the run list's 5 x 30 + 150 = 300 s and the force-cancel's
+        # 300 s, which counts once because the queue starts one ci.yaml run for a group and
+        # the loop below is over the runs to cancel
+        # (.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that count).
+        # 2160 + 300 + 300 = 2760 s, a whole number of minutes, so the budget is the next one
+        # strictly above it -> 47 min.
+        timeout-minutes: 47
         run: |
           . .github/scripts/ci-retry.sh
           query='query($owner: String!, $name: String!, $number: Int!) {

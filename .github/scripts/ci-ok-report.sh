@@ -157,21 +157,19 @@ trap 'rm -rf "$work"' EXIT
 # second ladder the ci-ok scripts kept beside it, were each a copy of that helper, which is
 # what dispatch://INFRA-1545's R2 refuses: one file holds the attempts for all of CI.
 #
-# gh writes into a file rather than into a variable, and the redirection sits inside the command
-# the helper runs so that every attempt starts that file over: gh copies an error answer's body
-# to standard output as it copies a good one's, and a refused attempt's leftovers ahead of the
-# retry's answer would leave the read holding both. `sh -c` given one command execs it, so the
-# attempt's bound still reaches gh itself.
+# gh writes into a file rather than into a variable, and the redirection is this shell's own,
+# applied once: the helper buffers each attempt's output and prints the successful attempt's
+# alone, so a refused attempt's body — which gh copies to standard output as it copies a good
+# one's — reaches neither this file nor the log.
 #
 # 30 s per attempt: this is a JSON read of one REST route, which measured about 3 s over 378
 # observations in the 20 most recent successful ci.yaml push runs on main, so the bound is ten
 # times what the call takes. This read is the dominant adder in the report step's budget, and
 # that is why the bound is the call's own size rather than a round number above it
 # (dispatch://INFRA-1545).
-# shellcheck disable=SC2016 # $1 to $3 are sh -c's own arguments, expanded by that shell
-if retry_fetch "the run's job list" 30 -- sh -c 'gh api --paginate "$1" --jq "$2" > "$3"' \
-  gh-api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-  '.jobs[] | {name, status, conclusion}' "$work/jobs"; then
+if retry_fetch "the run's job list" 30 -- gh api --paginate \
+  "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+  --jq '.jobs[] | {name, status, conclusion}' > "$work/jobs"; then
   needs=$(jq -n --argjson jobs "$(jq -s . "$work/jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")
 else

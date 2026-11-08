@@ -12,8 +12,10 @@
 # it, so a leaked failure would kill this script at its first failed attempt and no summary would
 # be printed at all.
 #
-# It costs about 190 s, almost all of it in one case: the five attempts against a command that
-# hangs for ever are what the 120 s floor is measured from, and measuring it is the point.
+# It costs about 360 s, almost all of it in two cases that each pay the helper's 150 s of
+# sleeps: the five attempts against a command that hangs for ever, which the 120 s floor is
+# measured from, and the five against a command that writes an error body and fails, which is
+# how the cases below see that none of those bytes reach the caller.
 #
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
@@ -141,6 +143,79 @@ check "standard output carried the command's output alone" "$(is "$captured" 'th
 check "and the failed attempt was reported on standard error" \
   "$(contains "$noisy_err" '^the noisy tool: attempt 1 of 5 failed (exit 7); 4 attempts left$')"
 check "and printed no error annotation, since it succeeded" "$(is "$(contains "$flaky_out" '::error::')" false)"
+
+# The payload a failed attempt writes in the three cases below, and its size in bytes, measured
+# here rather than written out: gh copies an error answer's body to standard output as it copies
+# a good one's, and this is the shape a refused `gh api` call prints there (gh 2.98.0, a 422).
+# LEAKED-MARKER is what a leak looks like in a value the caller captured.
+leak_payload='{"message":"LEAKED-MARKER","status":"422"}'
+leak_bytes=$(printf '%s\n' "$leak_payload" | wc -c | tr -d ' ')
+echo "measured: a failed attempt writes $leak_bytes bytes in the cases below"
+
+echo "case: a failed attempt that wrote to standard output has those bytes withheld"
+cat > "$work/leaky" <<LEAKY
+#!/usr/bin/env bash
+# Writes an error body and fails, as a refused \`gh api\` call does, until the second attempt.
+date +%s >> "$work/leaky.starts"
+if [ "\$(wc -l < "$work/leaky.starts")" -lt 2 ]; then
+  echo '$leak_payload'
+  exit 1
+fi
+echo "the good answer"
+LEAKY
+chmod +x "$work/leaky"
+: > "$work/leaky.starts"
+leaked=$(retry_fetch "the leaky tool" 5 -- "$work/leaky" 2> "$work/leaky.err")
+leaky_err=$(cat "$work/leaky.err")
+indent "$leaky_err"
+check "the captured value is the successful attempt's output alone" "$(is "$leaked" 'the good answer')"
+check "the failed attempt's bytes are not in front of it" \
+  "$(is "$(contains "$leaked" 'LEAKED-MARKER')" false)"
+check "and they reached standard error no more than standard output" \
+  "$(is "$(contains "$leaky_err" 'LEAKED-MARKER')" false)"
+check "standard error says how many bytes were withheld" \
+  "$(contains "$leaky_err" "^the leaky tool: attempt 1 of 5 wrote $leak_bytes bytes to standard output; none of it is printed\$")"
+
+echo "case: every attempt writes and fails, so nothing of any attempt reaches standard output"
+cat > "$work/refusing" <<REFUSING
+#!/usr/bin/env bash
+date +%s >> "$work/refusing.starts"
+echo '$leak_payload'
+exit 1
+REFUSING
+chmod +x "$work/refusing"
+: > "$work/refusing.starts"
+set +e
+refusing_out=$(retry_fetch "the refusing tool" 5 -- "$work/refusing" 2> "$work/refusing.err")
+refusing_status=$?
+set -e
+mapfile -t refusing_starts < "$work/refusing.starts"
+refusing_err=$(cat "$work/refusing.err")
+indent "$refusing_err"
+check "exactly five attempts ran" "$(is "${#refusing_starts[@]}" 5)"
+check "standard output is empty" "$(is "$refusing_out" '')"
+check "and standard error carries none of the attempts' bytes" \
+  "$(is "$(contains "$refusing_err" 'LEAKED-MARKER')" false)"
+check "each of the five said what it withheld" \
+  "$(is "$(grep -c "wrote $leak_bytes bytes to standard output; none of it is printed" <<<"$refusing_err" || true)" 5)"
+check "it returns the last attempt's status" "$(is "$refusing_status" 1)"
+check "and its last line is still the exhaustion annotation" \
+  "$(is "$(tail -n 1 <<<"$refusing_err")" '::error::the refusing tool failed to download after 5 attempts (last exit 1)')"
+
+echo "case: a first attempt that succeeds has its output copied byte for byte"
+# The buffer must add nothing and drop nothing, a trailing newline the command did not write
+# least of all: a caller writing the value into a file compares it with a checksum.
+cat > "$work/exact" <<'EXACT'
+#!/usr/bin/env bash
+printf 'no trailing newline'
+EXACT
+chmod +x "$work/exact"
+printf 'no trailing newline' > "$work/exact.want"
+retry_fetch "the exact tool" 5 -- "$work/exact" > "$work/exact.got" 2> "$work/exact.err"
+echo "  measured: $(wc -c < "$work/exact.want" | tr -d ' ') bytes written, $(wc -c < "$work/exact.got" | tr -d ' ') bytes captured"
+check "the capture is byte for byte what the command wrote, with no newline added" \
+  "$(cmp -s "$work/exact.want" "$work/exact.got" && echo true || echo false)"
+check "and the helper printed nothing beside it" "$(is "$(cat "$work/exact.err")" '')"
 
 echo "case: a command that hangs for ever makes five bounded attempts, the fifth past the 120 s floor"
 cat > "$work/hangs" <<HANGS

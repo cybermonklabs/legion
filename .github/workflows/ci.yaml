@@ -2287,10 +2287,11 @@ jobs:
     # left that list when this workflow stopped saving an entry).
     # dispatch://INFRA-1545 added two steps to the end of the list
     # whose cost is not in that 13 s, because each waits out a time bound rather than computing:
-    # the retry helper's test, 192 s measured, which spends 160 s proving the 120 s floor by
-    # waiting it out, and the fault proxy's test, 10 s measured. That is 4773 s, and the 4800 s
-    # of the 80 minutes this job carried before this branch is above both it and the job's
-    # 1924 s measured maximum, so 4800 s is the unretried term of the budget below.
+    # the retry helper's test, 362 s measured, which spends 310 s of that waiting out the two
+    # things it proves — the 120 s floor, and five failed attempts whose output the helper
+    # withholds — and the fault proxy's test, 10 s measured. That is 4943 s, above both the
+    # 4800 s of the 80 minutes this job carried before this branch and the job's 1924 s measured
+    # maximum, so 4943 s is the unretried term of the budget below.
     #
     # The retried step this job's budget adds is its slowest alone (the header's Budgets note):
     # the tmux step's two calls, 625 + 775 = 1400 s. The Go workspace's `go mod download` led
@@ -2298,8 +2299,8 @@ jobs:
     # so the tmux step is this job's slowest retried step now. install-jj's two calls come to
     # 1057 s, the workspace install to 1050 s, each of install-changie's and install-uv's curls
     # to 607 s, install-omp's `mise install` to 450 s and the ci-ok report to 600 s, and none of
-    # those is larger. So 4800 + 1400 = 6200 s -> 104 min.
-    timeout-minutes: 104
+    # those is larger. So 4943 + 1400 = 6343 s -> 106 min.
+    timeout-minutes: 106
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -2501,8 +2502,10 @@ jobs:
       # The retry every download in CI is routed through, and the proxy that injects the
       # download fault it answers. The retry test measures the floor the rule sets rather
       # than reading it off the source — five attempts against a host that sends nothing, the
-      # fifth starting at least 120 s after the first — so it costs about 190 s of this job's
-      # budget, almost all of it in that one case.
+      # fifth starting at least 120 s after the first — and five more against a command that
+      # writes an error body and fails, which is how it sees that none of those bytes reach
+      # the caller. It costs about 360 s of this job's budget, almost all of it in those two
+      # cases.
       - name: Test the download retry helper
         run: .github/scripts/ci-retry.test.sh
 
@@ -5235,12 +5238,12 @@ jobs:
           https_proxy: ${{ steps.recover-gh-proxy.outputs.proxy }}
         run: |
           . .github/scripts/ci-retry.sh
-          # gh writes into a file inside the command the helper runs, so every attempt starts
-          # that file over, as ci-ok-report.sh's own read does.
-          # shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
-          retry_fetch "the run's artifact list" 30 -- sh -c 'gh api "$1" > "$2"' gh-api \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=1" \
-            "$RUNNER_TEMP/artifacts.json"
+          # The redirection is this shell's own and is applied once: the helper buffers each
+          # attempt's output and prints the successful attempt's alone, so no refused attempt's
+          # body reaches the file.
+          retry_fetch "the run's artifact list" 30 -- \
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=1" \
+            > "$RUNNER_TEMP/artifacts.json"
       - name: What the gh api read did under the recovering fault
         run: >-
           .github/scripts/download-retry-proof.sh report recover-gh
@@ -5426,10 +5429,9 @@ jobs:
           https_proxy: ${{ steps.stall-gh-proxy.outputs.proxy }}
         run: |
           . .github/scripts/ci-retry.sh
-          # shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
-          retry_fetch "the run's artifact list" 30 -- sh -c 'gh api "$1" > "$2"' gh-api \
-            "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=1" \
-            "$RUNNER_TEMP/artifacts.json"
+          retry_fetch "the run's artifact list" 30 -- \
+            gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=1" \
+            > "$RUNNER_TEMP/artifacts.json"
       - name: What the gh api read did under the stalling fault
         run: >-
           .github/scripts/download-retry-proof.sh report stall-gh
@@ -5962,10 +5964,10 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     # Budget (the header's Budgets note): 600 s, the 10 minutes this job carried, plus its
-    # slowest retried step alone — the reconcile's check-run read and its PATCH,
-    # 2 x (5 x 30 + 150) = 600 s, a whole number of minutes, so that step's own budget takes one
-    # more and this job takes it too. 600 + 660 = 1260 s -> 21 min.
-    timeout-minutes: 21
+    # slowest retried step alone — the reconcile's check-run read and the three PATCHes its
+    # budget is written for, 300 + 3 x 300 = 1200 s, a whole number of minutes, so that step's
+    # own budget takes one more and this job takes it too. 600 + 1260 = 1860 s -> 31 min.
+    timeout-minutes: 31
     permissions:
       checks: write
     steps:
@@ -6034,10 +6036,21 @@ jobs:
       # after the verdict above failed.
       - name: Set every other ci-ok on this head to this job's conclusion
         if: always()
-        # Its own retry arithmetic: ci-ok-reconcile.sh's check-run read and its PATCH,
-        # 2 x (5 x 30 + 150) = 600 s, a whole number of minutes, so the budget is the next one
-        # strictly above it -> 11 min.
-        timeout-minutes: 11
+        # Its own retry arithmetic: ci-ok-reconcile.sh's check-run read, 5 x 30 + 150 = 300 s,
+        # and its PATCH, which the loop there runs once for every other ci-ok on the head that
+        # needs setting. The budget is written for three of them, 3 x 300 = 900 s, because a
+        # merge-group run posts one ci-ok per job whose own result decides the group, so a run
+        # that fails in three jobs leaves three posts on this head
+        # (.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that count and why
+        # it is three). 300 + 900 = 1200 s, a whole number of minutes, so the budget is the
+        # next one strictly above it -> 21 min.
+        #
+        # This budget matters more than most. ci-ok-reconcile.sh's own header says a refused
+        # PATCH only warns, because failing this step would turn a passing verdict red; a step
+        # the runner cuts does exactly that, since a cut step fails this job and ci-ok is the
+        # check main's ruleset requires. So the figure is written for the head this step can
+        # meet rather than for the one it usually meets.
+        timeout-minutes: 21
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

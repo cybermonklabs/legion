@@ -49,14 +49,12 @@ payload="$temp/pull-request-event.json"
 # The read retries: .github/scripts/ci-retry.sh makes five bounded attempts, the last starting
 # 150 s after the first, so a refusal costs this lane a wait rather than the required pr-title
 # check (dispatch://INFRA-1545, R1). 30 s per attempt, the bound this repository's CI gives one
-# page of a REST route: ten times the about 3 s such a read takes. The write is inside `sh -c`,
-# so each attempt starts the file over and the bound still reaches gh itself
-# (.github/scripts/ci-ok-report.sh says why where it does the same).
+# page of a REST route: ten times the about 3 s such a read takes. The redirection is this
+# shell's own and is applied once: the helper buffers each attempt's output and prints the
+# successful attempt's alone, so no refused attempt's body reaches the file.
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=.github/scripts/ci-retry.sh
 . "$script_dir/ci-retry.sh"
-# shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
-retry_fetch "the queued pull request" 30 -- sh -c 'gh api "$1" > "$2"' gh-api \
-  "repos/$repository/pulls/$number" "$pull"
+retry_fetch "the queued pull request" 30 -- gh api "repos/$repository/pulls/$number" > "$pull"
 jq --argjson number "$number" '{pull_request: ., number: $number}' "$pull" > "$payload"
 echo "$payload"

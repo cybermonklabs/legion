@@ -87,16 +87,16 @@ jq -n --arg name "$CHECK_NAME" --arg sha "$HEAD_SHA" --arg conclusion "$CONCLUSI
 # The post retries: .github/scripts/ci-retry.sh makes five bounded attempts, the last starting
 # 150 s after the first, and an exhausted post fails the step. The loop that stood here, and the
 # second ladder the ci-ok scripts kept beside it, were each a copy of that helper, which is what
-# dispatch://INFRA-1545's R2 refuses. gh writes the posted check's URL into a file through
-# `sh -c`, so that each attempt starts that file over, for the reason ci-ok-report.sh gives
-# where it does the same.
+# dispatch://INFRA-1545's R2 refuses. The redirection that takes the posted check's URL is this
+# shell's own and is applied once: the helper buffers each attempt's output and prints the
+# successful attempt's alone, so a refused attempt's body — which gh copies to standard output
+# as it copies a good one's — reaches neither this file nor the log.
 #
 # 30 s per attempt: the bound that file derives there for a JSON call on one REST route, about
 # 3 s of work, which this post is no larger than.
-# shellcheck disable=SC2016 # $1 to $4 are sh -c's own arguments, expanded by that shell
 if retry_fetch "the $CHECK_NAME check run" 30 -- \
-  sh -c 'gh api --method POST "$1" --input "$2" --jq "$3" > "$4"' gh-api \
-  "repos/$GITHUB_REPOSITORY/check-runs" "$body" '.html_url' "$work/posted"; then
+  gh api --method POST "repos/$GITHUB_REPOSITORY/check-runs" --input "$body" --jq '.html_url' \
+  > "$work/posted"; then
   echo "posted $CHECK_NAME ($CONCLUSION) on $HEAD_SHA: $(<"$work/posted")"
   exit 0
 fi

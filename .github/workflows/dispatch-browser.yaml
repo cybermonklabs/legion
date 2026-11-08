@@ -1177,15 +1177,13 @@ jobs:
           pages="$RUNNER_TEMP/jobs-pages.json"
           # The read retries through the one helper (the Retries note in ci.yaml's header),
           # bounded at 30 s an attempt, the bound every `gh api` read of this repository's CI
-          # carries. gh writes the pages into the file inside the command the helper runs, as
-          # .github/scripts/ci-ok-report.sh's own read does, so each attempt starts that file
-          # over; a redirection written outside the call is applied once, by this shell, and
-          # what a killed attempt left would still be in front of the next attempt's array.
+          # carries. The redirection is this shell's own and is applied once: the helper buffers
+          # each attempt's output and prints the successful attempt's alone, so nothing a killed
+          # or refused attempt wrote sits in front of the array this file holds.
           . .github/scripts/ci-retry.sh
-          # shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
-          retry_fetch "this run's jobs" 30 -- sh -c 'gh api --paginate --slurp "$1" > "$2"' gh-api \
+          retry_fetch "this run's jobs" 30 -- gh api --paginate --slurp \
             "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs?filter=all&per_page=100" \
-            "$pages" || {
+            > "$pages" || {
             echo "::error::this run's jobs could not be read, so the legs this lane owed are unknown"
             exit 1
           }

@@ -44,10 +44,29 @@
 # executed by `timeout` directly, so it must be a program with its arguments — not a shell
 # function, a pipeline, or a redirection.
 #
-# Every line this function writes goes to standard error, and the command's own output is left
-# untouched on standard output, so a caller may capture it:
+# Every line this function writes goes to standard error. The command's own standard output is
+# buffered: each attempt writes into a temporary file of its own, and only a successful attempt's
+# file is copied to standard output, byte for byte. A failed attempt's bytes reach neither
+# stream, and one line on standard error says how many were withheld. So a caller may capture the
+# value:
 #
 #     names=$(retry_fetch "the run's artifact list" 30 -- gh api "$route" --jq '.[].name')
+#
+# The buffer is what makes that capture safe, and gh is the measurement behind it: gh copies an
+# error answer's body to standard output as it copies a good one's, `--jq` included. Measured
+# with gh 2.98.0, a 422 prints {"message":"No commit found for SHA: …","status":"422"} there and
+# exits 1, and a GraphQL error prints {"data":…,"errors":[…]} the same way. Without the buffer, a
+# retry that recovered would hand its caller the refused attempt's bytes in front of the good
+# answer, and a caller parsing that value would read two documents or the wrong one.
+#
+# The two sites that capture therefore need no wrapper of their own: dequeued.yaml's read of a
+# pull request's timeline, whose value decides whether the poll goes round again, and
+# main-bypass-check.yaml's read of the head's ci-ok check runs, which `jq --argjson` then parses.
+# A caller that redirects the call into a file needs none either: the redirection is the caller's
+# own, it is applied once, and nothing of a failed attempt reaches it.
+#
+# The command's own standard error is left alone. It goes straight to the caller's, failed
+# attempt or not, because that is where a reader finds out what the host said.
 #
 # The runner reads a step's standard error for workflow commands as it reads its standard output,
 # so the `::error::` line below still becomes the step's annotation.
@@ -55,7 +74,7 @@
 # On exhaustion it prints one `::error::` line, which GitHub turns into the step's annotation, and
 # returns the last attempt's exit status.
 retry_fetch() {
-  local what bound attempts attempt status left noun refusal
+  local what bound attempts attempt status left noun refusal buffer withheld unit
 
   if [ "$#" -lt 3 ]; then
     echo "::error::retry_fetch takes <what> <per-attempt bound in seconds> -- <command...>, and got $# argument(s)" >&2
@@ -88,13 +107,37 @@ retry_fetch() {
   attempts=5
   attempt=1
   while :; do
+    # Each attempt's standard output goes into a file of its own, and only a successful attempt's
+    # file is copied out. The note above says why: an attempt that fails can still have written a
+    # body, and a caller that captures this call would otherwise hold it in front of the answer
+    # the retry fetched.
+    #
+    # No `trap … EXIT` removes these files. This function is sourced, so such a trap would be the
+    # caller's own: it would fire at the end of the caller's shell and replace whatever trap the
+    # caller had already set, which is how a second `trap … EXIT` once discarded the removal of
+    # ci-ok-report.sh's work directory. Each file is removed by name instead, on every path out
+    # of this loop. An interrupt between the `mktemp` and the `rm` leaves one buffer in
+    # ${TMPDIR:-/tmp}, which on a runner is the job's own temporary directory and goes with the
+    # job.
+    buffer=$(mktemp "${TMPDIR:-/tmp}/ci-retry.XXXXXX") || buffer=
+    if [ -z "$buffer" ]; then
+      echo "::error::retry_fetch: no temporary file for $what's output could be made in ${TMPDIR:-/tmp}" >&2
+      return 2
+    fi
     # `|| status=$?` rather than `if ! timeout ...`: under a caller's errexit a bare failing
     # command would end the step here, before this function could retry anything.
     status=0
-    timeout "$bound" "$@" || status=$?
+    timeout "$bound" "$@" > "$buffer" || status=$?
     if [ "$status" -eq 0 ]; then
+      cat "$buffer"
+      rm -f "$buffer"
       return 0
     fi
+    # Counted, never guessed, and counted before the file goes. BusyBox's `wc` pads the number
+    # with spaces where GNU's does not, so the padding comes off; `|| withheld=0` keeps a `wc`
+    # that somehow failed from ending a caller that has errexit on.
+    withheld=$(wc -c < "$buffer" | tr -d ' ') || withheld=0
+    rm -f "$buffer"
     left=$((attempts - attempt))
     if [ "$left" -eq 1 ]; then noun=attempt; else noun=attempts; fi
     # 124 is the status GNU coreutils' `timeout` returns when it kills the command, and it is the
@@ -106,6 +149,13 @@ retry_fetch() {
       echo "$what: attempt $attempt of $attempts reached its ${bound}s bound (exit 124); $left $noun left" >&2
     else
       echo "$what: attempt $attempt of $attempts failed (exit $status); $left $noun left" >&2
+    fi
+    # Only where the attempt wrote something. A host that refuses the connection sends no body,
+    # which is most of what this helper meets, and a line of zeros beside each of five attempts
+    # would say nothing.
+    if [ "$withheld" -gt 0 ]; then
+      if [ "$withheld" -eq 1 ]; then unit=byte; else unit=bytes; fi
+      echo "$what: attempt $attempt of $attempts wrote $withheld $unit to standard output; none of it is printed" >&2
     fi
     if [ "$attempt" -ge "$attempts" ]; then
       echo "::error::$what failed to download after $attempts attempts (last exit $status)" >&2

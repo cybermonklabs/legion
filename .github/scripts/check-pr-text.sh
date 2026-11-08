@@ -65,18 +65,16 @@ head=$(jq -er '.head.sha' "$pull")
 live="$work/live.json"
 # Every read of the API below retries: .github/scripts/ci-retry.sh makes five bounded attempts,
 # the last starting 150 s after the first, so a refusal costs this lane a wait rather than the
-# required pr-title check (dispatch://INFRA-1545, R1). Each read writes its file from inside
-# `sh -c`, so that every attempt starts that file over and the attempt's bound still reaches gh
-# itself, for the reason .github/scripts/ci-ok-report.sh gives where it does the same.
+# required pr-title check (dispatch://INFRA-1545, R1). Each read's redirection is this shell's
+# own and is applied once: the helper buffers every attempt's output and prints the successful
+# attempt's alone, so no refused attempt's body reaches the file.
 #
 # 30 s per attempt, for each of the three: the bound that file derives there for one page of a
 # REST route — a JSON read of about 3 s, so ten times what the call takes — which none of these
 # three reads is larger than.
 # shellcheck source=.github/scripts/ci-retry.sh
 . "$script_dir/ci-retry.sh"
-# shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
-retry_fetch "the pull request" 30 -- sh -c 'gh api "$1" > "$2"' gh-api \
-  "repos/$repository/pulls/$number" "$live"
+retry_fetch "the pull request" 30 -- gh api "repos/$repository/pulls/$number" > "$live"
 if ! jq -e '(.title | type == "string") and (.head.ref | type == "string")' "$live" > /dev/null 2>&1; then
   echo "::error::the pull request route answered no title and head branch for #$number" >&2
   exit 1
@@ -94,9 +92,8 @@ fi
 # that parameter, and asks for the largest page GitHub serves; `--paginate` then reads every page
 # it creates, printing one JSON object per page, each repeating total_commits.
 compare_json="$work/compare.json"
-# shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
-retry_fetch "the pull request's commits" 30 -- sh -c 'gh api "$1" --paginate > "$2"' gh-api \
-  "repos/$repository/compare/$base...$head?per_page=100" "$compare_json"
+retry_fetch "the pull request's commits" 30 -- \
+  gh api "repos/$repository/compare/$base...$head?per_page=100" --paginate > "$compare_json"
 total_commits=$(jq -s '.[0].total_commits // empty' "$compare_json")
 if ! [[ $total_commits =~ ^[0-9]+$ ]]; then
   echo "::error::the compare route's answer for $base...$head names no whole-number" \
@@ -129,9 +126,8 @@ read_list() {
   local kind=$1 route=$2 page=1 id trust author body
   mkdir "$text/$kind"
   while :; do
-    # shellcheck disable=SC2016 # $1 and $2 are sh -c's own arguments, expanded by that shell
-    retry_fetch "page $page of the $route route" 30 -- sh -c 'gh api "$1" > "$2"' gh-api \
-      "repos/$repository/$route?per_page=100&page=$page" "$work/answer"
+    retry_fetch "page $page of the $route route" 30 -- \
+      gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
     if ! jq -e 'type == "array"' "$work/answer" > /dev/null 2>&1; then
       echo "::error::page $page of the $route route is not a list, so its ${kind}s cannot be" \
         "checked" >&2
