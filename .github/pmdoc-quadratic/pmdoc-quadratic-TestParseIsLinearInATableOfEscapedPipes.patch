@@ -1,0 +1,26 @@
+--- a/table.go
++++ b/table.go
+@@ -44,6 +44,14 @@
+ 		case node.Kind() == extensionast.KindTableCell:
+ 			_ = ast.Walk(node, func(node ast.Node, entering bool) (ast.WalkStatus, error) {
+ 				if entering && node.Kind() == ast.KindCodeSpan {
++					// DEFECT, for dispatch://INFRA-1075's CI control only, never committed: every
++					// code span reads the whole document again, one byte in every 4, which is
++					// the shape of the check-each-code-span-against-every-escaped-pipe the
++					// transformer did before unescapeTablePipes, at a constant cheap enough that
++					// the test fails on its ratio rather than on its deadline.
++					for i := 0; i < len(source); i += 4 {
++						quadraticDefectSink += int(source[i])
++					}
+ 					unescapeCodeSpanPipes(node, source)
+ 					return ast.WalkSkipChildren, nil
+ 				}
+@@ -806,3 +814,8 @@
+ 		cell.Lines().Set(cell.Lines().Len()-1, last)
+ 	}
+ }
++
++// quadraticDefectSink is where the deliberate defect in unescapeTablePipes puts what it reads, so
++// the compiler cannot drop the read. DEFECT, for dispatch://INFRA-1075's CI control only, never
++// committed.
++var quadraticDefectSink int

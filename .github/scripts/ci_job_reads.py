@@ -801,17 +801,20 @@ RACE_IMPOSSIBLE_SCRIPT = json_stream_script(
 # come out with the steps themselves.
 COMPILE_ALL_STEP = "TEMPORARY: compile every test binary of the module"
 COMPILE_ALL_SCRIPT = "go list ./... | xargs go test -count=1 -run '^$' -p 8 > /dev/null"
-PROFILE_STEP = "TEMPORARY: CPU profile of each package over the bar"
-PROFILE_PACKAGES = ["./internal/dispatch/pmdoc", "./cmd/broker", "./cmd/dispatch-seed",
-                    "./internal/dispatch/outbox", "./internal/pgmigrate", "./cmd/dispatch",
-                    "./internal/dispatch/embedqueue"]
-PROFILE_SCRIPT = f"""\
-mkdir -p "$RUNNER_TEMP/prof"
-for pkg in {" ".join(PROFILE_PACKAGES)}; do
-  name=$(basename "$pkg")
-  echo "===== CPU profile of $pkg (top 20)"
-  go test -count=1 -timeout 20m -cpuprofile "$RUNNER_TEMP/prof/$name.cpu" -o "$RUNNER_TEMP/prof/$name.test" "$pkg" || true
-  go tool pprof -top -nodecount=20 "$RUNNER_TEMP/prof/$name.test" "$RUNNER_TEMP/prof/$name.cpu" || true
+SWEEP_STEP = "TEMPORARY: the unit list at -p 12 and -p 16"
+SWEEP_SCRIPT = """\
+list=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$')
+for p in 12 16; do
+  echo "===== the unit list at -p $p"
+  : > "$RUNNER_TEMP/conns-$p"
+  ( while :; do psql "$DISPATCH_TEST_DATABASE_URL" -Atc "select count(*) from pg_stat_activity" >> "$RUNNER_TEMP/conns-$p" 2>/dev/null; sleep 5; done ) &
+  watch=$!
+  start=$(date +%s)
+  /usr/bin/time -v -o "$RUNNER_TEMP/time-$p" go test -count=1 -p "$p" -parallel 12 -timeout 25m $list > /dev/null 2>&1 || true
+  echo "elapsed $(( $(date +%s) - start ))s at -p $p"
+  kill "$watch" 2>/dev/null || true
+  grep -a "Maximum resident set size" "$RUNNER_TEMP/time-$p" || true
+  echo "most connections seen at -p $p: $(sort -rn "$RUNNER_TEMP/conns-$p" | head -1)"
 done"""
 
 
@@ -1181,12 +1184,12 @@ GATES = [
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
         ]),
-        # TEMPORARY, the INFRA-1075 profiling run: the profile step, one `go test -cpuprofile`
-        # per package over the 60 s bar inside a shell loop, each followed by `go tool pprof`,
-        # which is no simple form at all. One Run per package it names.
-        pinned_step("envoy-go", PROFILE_STEP, ENVOY, PROFILE_SCRIPT, [
-            (ENVOY, [package], f"go test -cpuprofile {package}", {})
-            for package in PROFILE_PACKAGES
+        # TEMPORARY, the INFRA-1075 profiling run: the sweep step, which runs the unit step's own
+        # package list again at -p 12 and at -p 16 inside a shell loop, under /usr/bin/time and
+        # beside a psql watcher, which is no simple form at all. It reads what the unit step
+        # reads, so it declares the same superset.
+        pinned_step("envoy-go", SWEEP_STEP, ENVOY, SWEEP_SCRIPT, [
+            (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
         ]),
         pinned_step("envoy-go", ROUTES_STEP, ENVOY, ROUTES_SCRIPT, [
             (ENVOY, [f"./{ROUTES_PACKAGE}/"], f"go test ./{ROUTES_PACKAGE}/", {}),

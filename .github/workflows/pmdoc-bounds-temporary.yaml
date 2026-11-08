@@ -1,0 +1,126 @@
+# TEMPORARY, the INFRA-1075 proof of pmdoc's CPU-budget test sizes. This workflow runs by hand
+# only (workflow_dispatch), is selected by no filter and gates no merge, and it comes out of the
+# pull request with the rest of that measurement once its runs are quoted in the body.
+#
+# Why it exists: dispatch://INFRA-985's architect agreed that INFRA-1075 may shrink the inputs of
+# pmdoc's CPU-budget tests on three conditions - fifty runs of each test under load with its
+# bounds unchanged, a deliberately super-linear version of each measured code path still failing
+# it at the new sizes, and each smaller input still costing well above the timer's resolution.
+# A Legion issue pod cannot judge any of them: under gVisor the rusage clock steps 10 ms, so
+# cputest.Measure's window is filled by the allocator's page fault-in rather than by the input,
+# and shrinking one shape sixteenfold moved its time by 12 per cent. CI's runner has a
+# fine-grained clock and four cores, so this is where the three conditions are read.
+name: pmdoc bounds (TEMPORARY, INFRA-1075)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Condition 1: fifty runs of each changed test under load, bounds unchanged. Five shards of ten
+  # runs, because one job cannot hold fifty: the three tests take about a minute a run on a
+  # four-core runner, and a shard's ten runs plus its load leave room inside the hour.
+  runs:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      # The load the condition asks for: busy loops at twice the runner's cores, started before
+      # the tests and killed by exact pid after them, so a test that measures CPU measures it
+      # against a machine that is genuinely contended.
+      - name: Ten runs of each changed test under load
+        run: |
+          nproc
+          pids=""
+          for i in $(seq 1 $(( $(nproc) * 2 ))); do
+            sha1sum /dev/zero &
+            pids="$pids $!"
+          done
+          s=0
+          go test -count=10 -v -timeout 60m \
+            -run '^(TestParseIsLinearInATableOfEscapedPipes|TestBareURLShapesParseAndRenderLinearly|TestUnclosedRawHTMLShapesParseAndRenderLinearly)$' \
+            ./internal/dispatch/pmdoc/ || s=$?
+          for pid in $pids; do kill "$pid" 2>/dev/null || true; done
+          wait 2>/dev/null || true
+          exit $s
+        working-directory: packages/envoy
+  # Conditions 2 and 3, in one job: each quadratic control applied in turn, run, and required to
+  # FAIL at the new sizes, then taken back out; and the healthy run of the same tests with -v, in
+  # which each test prints its own per-input CPU and its ratio against its bound, which is where
+  # condition 3's milliseconds are read.
+  controls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            !~/go/pkg/mod/cache/download/**/*.zip
+          key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-test-{0}-', runner.os) }}
+      - name: The healthy run, which prints each input's CPU
+        run: |
+          go test -count=1 -v -timeout 60m \
+            -run '^(TestParseIsLinearInATableOfEscapedPipes|TestBareURLShapesParseAndRenderLinearly|TestUnclosedRawHTMLShapesParseAndRenderLinearly)$' \
+            ./internal/dispatch/pmdoc/
+        working-directory: packages/envoy
+      # Each patch declares a sink of its own, so two of them together do not compile: one at a
+      # time, applied, run, reversed. A control that PASSES is the failure here - it would mean
+      # the test no longer catches a super-linear path at its new size - so each run is required
+      # to be red and the step fails naming the control that did not catch its defect.
+      - name: Each quadratic control still fails its test
+        run: |
+          failures=0
+          for patch in .github/pmdoc-quadratic/*.patch; do
+            name=$(basename "$patch" .patch)
+            case "$name" in
+              *DelimiterAndOpenerHeavyText) run='^TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText$/^a_$' ;;
+              *EscapedPipes) run='^TestParseIsLinearInATableOfEscapedPipes$' ;;
+              *BareURLShapes*) run='^TestBareURLShapesParseAndRenderLinearly$' ;;
+              *UnclosedRawHTML*) run='^TestUnclosedRawHTMLShapesParseAndRenderLinearly$' ;;
+              *) echo "::error::no -run expression for $name"; exit 1 ;;
+            esac
+            echo "===== control $name, which must fail $run"
+            git apply --directory packages/envoy/internal/dispatch/pmdoc "$patch"
+            s=0
+            (cd packages/envoy && go test -count=1 -v -timeout 30m -run "$run" ./internal/dispatch/pmdoc/) || s=$?
+            git apply -R --directory packages/envoy/internal/dispatch/pmdoc "$patch"
+            if [ "$s" -eq 0 ]; then
+              echo "::error::$name passed: the test no longer catches a super-linear path at its new size"
+              failures=1
+            else
+              echo "$name failed its test, as a control must"
+            fi
+          done
+          exit $failures

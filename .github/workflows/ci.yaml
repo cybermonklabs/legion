@@ -3299,23 +3299,32 @@ jobs:
           fi
           exit $s
         working-directory: packages/envoy
-      # TEMPORARY, the INFRA-1075 profiling run: each package of the unit step above that the
-      # step's own `go test -json` stream put over 60 s, run alone under -cpuprofile and then
-      # read back with `go tool pprof -top -nodecount=20`, so the log says where each one's time
-      # goes. -o keeps the test binary pprof needs for symbols out of the working tree, and both
-      # land under $RUNNER_TEMP/prof. A package that fails here fails nothing: the loop is `||
-      # true`, since this step measures rather than tests, and the unit step above has already
-      # run every one of these packages for real. They read DISPATCH_TEST_DATABASE_URL, which
-      # this job sets at job level (env: above), so the step needs no env: of its own. It comes
-      # out with the rest of this profiling run's steps (dispatch://INFRA-1075).
-      - name: "TEMPORARY: CPU profile of each package over the bar"
+      # TEMPORARY, the INFRA-1075 profiling run: the unit step's own package list run again at
+      # -p 12 and at -p 16, timed, so the three values can be read against each other (the step
+      # above is -p 8). Five of the seven packages over the 60 s bar spend between 2.65 and 21
+      # per cent of their wall time on this process's CPU, so a slot a waiting package holds is
+      # a slot a computing one could use, and -p is what decides how many package binaries run
+      # at once. Each run is watched: /usr/bin/time -v reports the peak resident set of the go
+      # test driver and the children it waits for, and a loop beside it reads the service's
+      # connection count every five seconds and keeps the highest, which is what says whether
+      # max_connections (500) is near. A red run here fails nothing - the step measures, and the
+      # step above has already tested these packages - so the go test line is `|| true` and the
+      # exit status is the watcher's. It comes out with the rest of this profiling run's steps
+      # (dispatch://INFRA-1075).
+      - name: "TEMPORARY: the unit list at -p 12 and -p 16"
         run: |
-          mkdir -p "$RUNNER_TEMP/prof"
-          for pkg in ./internal/dispatch/pmdoc ./cmd/broker ./cmd/dispatch-seed ./internal/dispatch/outbox ./internal/pgmigrate ./cmd/dispatch ./internal/dispatch/embedqueue; do
-            name=$(basename "$pkg")
-            echo "===== CPU profile of $pkg (top 20)"
-            go test -count=1 -timeout 20m -cpuprofile "$RUNNER_TEMP/prof/$name.cpu" -o "$RUNNER_TEMP/prof/$name.test" "$pkg" || true
-            go tool pprof -top -nodecount=20 "$RUNNER_TEMP/prof/$name.test" "$RUNNER_TEMP/prof/$name.cpu" || true
+          list=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$')
+          for p in 12 16; do
+            echo "===== the unit list at -p $p"
+            : > "$RUNNER_TEMP/conns-$p"
+            ( while :; do psql "$DISPATCH_TEST_DATABASE_URL" -Atc "select count(*) from pg_stat_activity" >> "$RUNNER_TEMP/conns-$p" 2>/dev/null; sleep 5; done ) &
+            watch=$!
+            start=$(date +%s)
+            /usr/bin/time -v -o "$RUNNER_TEMP/time-$p" go test -count=1 -p "$p" -parallel 12 -timeout 25m $list > /dev/null 2>&1 || true
+            echo "elapsed $(( $(date +%s) - start ))s at -p $p"
+            kill "$watch" 2>/dev/null || true
+            grep -a "Maximum resident set size" "$RUNNER_TEMP/time-$p" || true
+            echo "most connections seen at -p $p: $(sort -rn "$RUNNER_TEMP/conns-$p" | head -1)"
           done
         working-directory: packages/envoy
       # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
