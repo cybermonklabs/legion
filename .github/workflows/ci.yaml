@@ -3011,11 +3011,7 @@ jobs:
     # measured 1 minute, natslive's default 10 and the bus matrix's own 5 are 55, and the
     # integration step's 5 is less. 55, then, is the bound, and this job is held to it rather
     # than to the 60 it carried when the unit step ran the whole module in two 20-minute runs.
-    # TEMPORARY, the INFRA-1075 profiling run: 180 rather than the 55 the block above computes,
-    # because the compile step below builds the whole module before the test steps and the
-    # profile step below runs seven of this job's packages a second time. The block above is
-    # left as it is: its 55 is the bound this job returns to when these steps come out.
-    timeout-minutes: 180
+    timeout-minutes: 55
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -3115,10 +3111,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # No bun: no step of this job runs it. The two steps that installed it were a few seconds
-      # each on a good day and 126 s on the morning GitHub's release downloads answered 504
-      # (run 42466199008), for a job whose every step is go, docker, jq or a shell script
+      # bun, because a test runs it: internal/dispatch/pmdoc's update tests drive the proof
+      # editor's own TypeScript through `bun run` and refuse to pass without it
+      # (update_test.go:312-323, `bun is required in CI`). No step of this job runs bun, which is
+      # why dropping these two steps looked free and cost run 42473681063 its unit step
       # (dispatch://INFRA-1075).
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -3191,15 +3190,6 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
-      # TEMPORARY, the INFRA-1075 profiling run: compile and link the test binary of every
-      # package of the module and run no test of it (-run '^$'), so this step's own time is the
-      # module's whole compile and link cost, and the two test steps after it run against a warm
-      # build cache, which makes their own times test-run time rather than build plus run. It
-      # comes out with the rest of this profiling run's steps (dispatch://INFRA-1075).
-      - name: "TEMPORARY: compile every test binary of the module"
-        run: |
-          go list ./... | xargs go test -count=1 -run '^$' -p 8 > /dev/null
-        working-directory: packages/envoy
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
       # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
@@ -3225,22 +3215,9 @@ jobs:
       # build, with nothing running beside it (run 42307926510, dispatch://INFRA-1075). Each
       # package measures its own process's heap or allocations, so running them at the same time
       # changes no number any of them asserts on.
-      # TEMPORARY, the INFRA-1075 profiling run: this step writes its `go test -json` stream to
-      # $RUNNER_TEMP/go-test-json/race-impossible.json and replays the package lines to the log,
-      # exactly as the unit step below does, so the upload step's artifact carries this step's
-      # own per-test times and .github/scripts/go-test-times.py ranks them with the rest. The
-      # step goes back to its plain one-line `go test` when this run's steps come out.
       - name: Test what the race build cannot run at all or at full size
         run: |
-          mkdir -p "$RUNNER_TEMP/go-test-json"
-          s=0
-          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" || s=$?
-          if [ "$s" -eq 0 ]; then
-            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race-impossible.json"
-          else
-            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/race-impossible.json"
-          fi
-          exit $s
+          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs
         working-directory: packages/envoy
       # The unit step below, the natslive step and the integration step each write their `go test
       # -json` stream to a file under $RUNNER_TEMP/go-test-json, which the upload step below
@@ -3314,34 +3291,6 @@ jobs:
             jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
           fi
           exit $s
-        working-directory: packages/envoy
-      # TEMPORARY, the INFRA-1075 profiling run: the unit step's own package list run again at
-      # -p 12 and at -p 16, timed, so the three values can be read against each other (the step
-      # above is -p 8). Five of the seven packages over the 60 s bar spend between 2.65 and 21
-      # per cent of their wall time on this process's CPU, so a slot a waiting package holds is
-      # a slot a computing one could use, and -p is what decides how many package binaries run
-      # at once. Each run is watched: /usr/bin/time -v reports the peak resident set of the go
-      # test driver and the children it waits for, and a loop beside it reads the service's
-      # connection count every five seconds and keeps the highest, which is what says whether
-      # max_connections (500) is near. A red run here fails nothing - the step measures, and the
-      # step above has already tested these packages - so the go test line is `|| true` and the
-      # exit status is the watcher's. It comes out with the rest of this profiling run's steps
-      # (dispatch://INFRA-1075).
-      - name: "TEMPORARY: the unit list at -p 12 and -p 16"
-        run: |
-          list=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$')
-          for p in 12 16; do
-            echo "===== the unit list at -p $p"
-            : > "$RUNNER_TEMP/conns-$p"
-            ( while :; do psql "$DISPATCH_TEST_DATABASE_URL" -Atc "select count(*) from pg_stat_activity" >> "$RUNNER_TEMP/conns-$p" 2>/dev/null; sleep 5; done ) &
-            watch=$!
-            start=$(date +%s)
-            /usr/bin/time -v -o "$RUNNER_TEMP/time-$p" go test -count=1 -p "$p" -parallel 12 -timeout 25m $list > /dev/null 2>&1 || true
-            echo "elapsed $(( $(date +%s) - start ))s at -p $p"
-            kill "$watch" 2>/dev/null || true
-            grep -a "Maximum resident set size" "$RUNNER_TEMP/time-$p" || true
-            echo "most connections seen at -p $p: $(sort -rn "$RUNNER_TEMP/conns-$p" | head -1)"
-          done
         working-directory: packages/envoy
       # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
       # here and nowhere else, so the only transactions its horizon waits on are its own tests'.

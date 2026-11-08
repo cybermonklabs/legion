@@ -794,37 +794,7 @@ def race_impossible_script(packages) -> str:
 # `//go:build !race` or behind raceEnabled changes this text and ci.yaml stops matching it.
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
-# TEMPORARY, the INFRA-1075 profiling run: the step writes its `go test -json` stream to
-# $RUNNER_TEMP/go-test-json/race-impossible.json and replays it to the log, as the unit step
-# does, so the run's artifact carries this step's per-test times too. It goes back to
-# `race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)` alone when the profiling steps come out.
-RACE_IMPOSSIBLE_SCRIPT = json_stream_script(
-    race_impossible_script(RACE_IMPOSSIBLE_PACKAGES).replace("go test ", "go test -json ", 1),
-    "race-impossible.json")
-
-# TEMPORARY, the INFRA-1075 profiling run: the two steps that run adds to envoy-go, pinned whole
-# like the job's other steps whose go commands are not in the simple form. The first compiles and
-# links every test binary of the module and runs no test (-run '^$'), so its own step time is the
-# module's whole compile and link cost and the test steps after it run warm; the second runs each
-# package over the 60 s bar on its own under -cpuprofile and prints the profile's top 20. Both
-# come out with the steps themselves.
-COMPILE_ALL_STEP = "TEMPORARY: compile every test binary of the module"
-COMPILE_ALL_SCRIPT = "go list ./... | xargs go test -count=1 -run '^$' -p 8 > /dev/null"
-SWEEP_STEP = "TEMPORARY: the unit list at -p 12 and -p 16"
-SWEEP_SCRIPT = """\
-list=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$')
-for p in 12 16; do
-  echo "===== the unit list at -p $p"
-  : > "$RUNNER_TEMP/conns-$p"
-  ( while :; do psql "$DISPATCH_TEST_DATABASE_URL" -Atc "select count(*) from pg_stat_activity" >> "$RUNNER_TEMP/conns-$p" 2>/dev/null; sleep 5; done ) &
-  watch=$!
-  start=$(date +%s)
-  /usr/bin/time -v -o "$RUNNER_TEMP/time-$p" go test -count=1 -p "$p" -parallel 12 -timeout 25m $list > /dev/null 2>&1 || true
-  echo "elapsed $(( $(date +%s) - start ))s at -p $p"
-  kill "$watch" 2>/dev/null || true
-  grep -a "Maximum resident set size" "$RUNNER_TEMP/time-$p" || true
-  echo "most connections seen at -p $p: $(sort -rn "$RUNNER_TEMP/conns-$p" | head -1)"
-done"""
+RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
@@ -1170,15 +1140,6 @@ GATES = [
         # -json` stream to a file and replays it to the log, so none of those is in the simple
         # form: -json is not a flag the check reduces and a redirect is not in that form either
         # (dispatch://INFRA-1075).
-        # TEMPORARY, the INFRA-1075 profiling run: the race-impossible step writes one too while
-        # these steps ride, so the paragraph above holds again when they come out.
-        #
-        # TEMPORARY, the INFRA-1075 profiling run: the compile step, which runs `go list ./...`
-        # into one `go test -run '^$'` over the whole module, so a pipe and a redirect put it out
-        # of the simple form as well. ./... is what it compiles, test binaries and all.
-        pinned_step("envoy-go", COMPILE_ALL_STEP, ENVOY, COMPILE_ALL_SCRIPT, [
-            (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
-        ]),
         #
         # One go test over every package of the plain run the race lane cannot make
         # (RACE_IMPOSSIBLE_*), selecting their tests with one -run.
@@ -1191,13 +1152,6 @@ GATES = [
         # name "./... but those", so the entry declares the superset ./..., which over-declares
         # and so keeps this gate's wide patterns justified.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
-            (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
-        ]),
-        # TEMPORARY, the INFRA-1075 profiling run: the sweep step, which runs the unit step's own
-        # package list again at -p 12 and at -p 16 inside a shell loop, under /usr/bin/time and
-        # beside a psql watcher, which is no simple form at all. It reads what the unit step
-        # reads, so it declares the same superset.
-        pinned_step("envoy-go", SWEEP_STEP, ENVOY, SWEEP_SCRIPT, [
             (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
         ]),
         pinned_step("envoy-go", ROUTES_STEP, ENVOY, ROUTES_SCRIPT, [
@@ -1218,7 +1172,7 @@ GATES = [
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
-    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go") + CI_SELF),
 
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
