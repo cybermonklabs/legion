@@ -51,13 +51,14 @@
 # The read goes through gh-read.sh's ladder, which the inline read had none of, and each attempt
 # is bounded by `timeout 30`, which the ladder does not bound: a host that accepts the
 # connection and then sends nothing would otherwise hang the step for as long as the job has.
-# A read refused after the ladder names the endpoint, what the last attempt the ladder made -
-# the attempt that decided the failure, and no earlier one - answered, how many attempts that
-# was and the run attempt, and says in those words that it is a failed read and not a failed
-# row - the merge job's readings name legs, and a reader who meets one of these lines must not
-# take it for one. What that attempt answered is one of three: the HTTP status it printed, no
-# answer within the 30 s bound where `timeout` ended it and it exited 124, or no status at all
-# where it was refused for another reason without printing one.
+# A read refused after the ladder names the endpoint, which attempt decided the failure - the
+# last one the ladder made - and what that attempt did, what each earlier attempt did where it
+# did something else, how many attempts that was and the run attempt, and says in those words
+# that it is a failed read and not a failed row - the merge job's readings name legs, and a
+# reader who meets one of these lines must not take it for one. What an attempt did is one of
+# three, read from that attempt's own exit status and its own stderr and from no other
+# attempt's: it stopped at the 30 s bound, where `timeout` ended it and it exited 124; it
+# answered the HTTP status gh printed; or it was refused with gh printing no status at all.
 #
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the merge job's `run:` body
@@ -96,6 +97,29 @@ need() {
   done
 }
 
+# describe_attempt <attempt directory> <attempt>: what one attempt of the ladder did, in the
+# words the refusal line uses, read from that attempt's own exit status and its own stderr and
+# from no other attempt's. Exit status 124 is `timeout` having ended that attempt at the 30 s
+# bound; otherwise the last `HTTP <n>` gh printed on that attempt's stderr is what that attempt
+# was answered; otherwise gh was refused without printing a status - a resolution failure, a
+# connection refused - and the words say that rather than naming a status that was never
+# answered. Both reads drop their own stderr because an attempt the wrapper could not start at
+# all leaves neither file, and the words for that attempt are the third of the three.
+describe_attempt() {
+  local dir=$1 attempt=$2 attempt_status http
+  attempt_status=$(cat "$dir/status.$attempt" 2>/dev/null || true)
+  if [ "$attempt_status" = 124 ]; then
+    echo "stopped at its 30 s bound"
+    return
+  fi
+  http=$(grep -o 'HTTP [0-9][0-9][0-9]' "$dir/stderr.$attempt" 2>/dev/null | tail -n 1 || true)
+  if [ -n "$http" ]; then
+    echo "answered $http"
+  else
+    echo "was refused and gh printed no HTTP status"
+  fi
+}
+
 [ "$#" -ge 1 ] || usage "$@"
 mode=$1
 
@@ -117,9 +141,10 @@ case "$mode" in
     # gives gh that attempt's own stderr file, writes that attempt's exit status beside it and
     # then puts the stderr file back on stderr, so the job log still holds every attempt's
     # words in order, as the inline read's did, and each attempt is still bounded by
-    # `timeout 30`, which the ladder itself does not bound. The status is kept because an
-    # attempt `timeout` ended exits 124 and prints nothing of its own, and the refusal line
-    # below has no other way to tell that case from a refusal gh printed no status for.
+    # `timeout 30`, which the ladder itself does not bound. The status is kept because the
+    # bound firing leaves no word of its own in gh's stderr - the attempt exits 124 - and the
+    # refusal line below has no other way to tell that case from a refusal gh printed no
+    # status for.
     work=$(mktemp -d)
     trap 'rm -rf "$pages" "$work"' EXIT
     printf '0' > "$work/attempts"
@@ -138,40 +163,57 @@ case "$mode" in
     attempts=$(cat "$work/attempts")
 
     if [ "$read_status" -ne 0 ]; then
-      # The last attempt's own file and no other, so the status named is the one printed by the
-      # attempt that decided the failure. Until 2026-11-08 one file held every attempt's stderr
-      # and the last match in it won, which is an earlier attempt's status the moment two
-      # attempts are refused for different reasons: an attempt answering
-      # `gh: Server Error (HTTP 502)` followed by two answering `error connecting to
-      # api.github.com`, which carries no status, produced a line naming HTTP 502 - a status
-      # that decided nothing and that sends a reader to GitHub's API health. No match in that
-      # one file is a refusal gh printed no status for - a resolution failure, a connection
-      # refused - and the line says that rather than naming a status that was never answered.
-      # grep's own stderr is dropped because an attempt the wrapper could not start at all
-      # leaves no file, and the answer for that case is the same words.
+      # Every attempt is described from its own two files, and the line attributes each
+      # description to the attempt it was read from. Two rounds of this lane's own fault are
+      # why. Until 2026-11-08 one file held every attempt's stderr and the last match in it
+      # won, which is an earlier attempt's status the moment two attempts are refused for
+      # different reasons: an attempt answering `gh: Server Error (HTTP 502)` followed by two
+      # answering `error connecting to api.github.com`, which carries no status, produced a
+      # line naming HTTP 502 - a status that decided nothing and that sends a reader to
+      # GitHub's API health. The repair of that, read on 2026-11-08, then said "no answer
+      # within the 30 s bound on each attempt" from the deciding attempt's exit status alone,
+      # which is the same fault with a bound in place of a status: two attempts refused with
+      # a 502 and a third ended by the bound were all reported as having hit the bound.
       #
-      # The deciding attempt's own exit status is read beside its stderr, and read first,
-      # because 124 is the one refusal with words of its own: `timeout` ended that attempt at
-      # the 30 s bound, having been answered by nothing, where a line saying gh printed no
-      # HTTP status is the line a resolution failure gets and names neither the bound nor
-      # that it fired - and a host that accepts the connection and then sends nothing is what
-      # the bound was put here for. A timed-out attempt prints no status of its own, so no
-      # status is lost by answering 124 before the stderr file's.
-      http=$(grep -o 'HTTP [0-9][0-9][0-9]' "$work/stderr.$attempts" 2>/dev/null |
-        tail -n 1 || true)
-      last_status=$(cat "$work/status.$attempts" 2>/dev/null || true)
-      if [ "$last_status" = 124 ]; then
-        answered="the last attempt got no answer within the 30 s bound on each attempt"
-      elif [ -n "$http" ]; then
-        answered="the last attempt answered $http"
-      else
-        answered="gh printed no HTTP status"
-      fi
+      # So the line names the attempt that decided the failure - the last one the ladder made
+      # - and what that attempt did, and names an earlier attempt only where that attempt did
+      # something else, each with its own number. Where every attempt ended the same way the
+      # earlier ones are left unsaid: the deciding attempt's words already cover them, and a
+      # list of three identical clauses tells a reader nothing the count does not.
+      #
+      # Within one attempt the exit status is read before the stderr, because 124 is the one
+      # refusal with words of its own: `timeout` ended that attempt at the 30 s bound, where a
+      # line saying gh printed no HTTP status is the line a resolution failure gets and names
+      # neither the bound nor that it fired - and a host that accepts the connection and then
+      # sends nothing is what the bound was put here for. The cost of that order is that an
+      # attempt which printed a status and then hung is described as the bound and its status
+      # is not reported. With the command this script runs that is not a shape the lane has
+      # seen: `gh api --paginate` stops at the first page it is refused on, so a page that
+      # printed a status ends the call rather than being followed by a page that can hang,
+      # and the refusals measured 2026-11-08 on run 42468236584 - HTTP 502 on pages 2 and 3
+      # of the three-page `filter=all` read - were answered by GitHub rather than left
+      # hanging. Not seen is not impossible, and nothing here rules it out: a status followed
+      # by a stall within one attempt would be reported as the bound and that status would be
+      # lost. The order stays this way because a 124 reported as a refusal gh printed no
+      # status for names neither the bound nor that it fired.
+      deciding=$(describe_attempt "$work" "$attempts")
+      earlier=""
+      for ((n = 1; n < attempts; n++)); do
+        what=$(describe_attempt "$work" "$n")
+        if [ "$what" != "$deciding" ]; then
+          if [ -z "$earlier" ]; then
+            earlier="where attempt $n $what"
+          else
+            earlier="$earlier and attempt $n $what"
+          fi
+        fi
+      done
+      [ -z "$earlier" ] || earlier=", $earlier"
       echo "::error::this run's jobs could not be read, so the legs this lane owed are" \
-        "unknown: GET $route was refused and $answered; the ladder made $attempts" \
-        "attempts, all on run attempt $GITHUB_RUN_ATTEMPT. This is a failed read of the jobs" \
-        "API and not a failed browser row: no row of the suite failed here, and re-running" \
-        "this job reads the list again."
+        "unknown: of GET $route, attempt $attempts, which decided the failure," \
+        "$deciding$earlier; the ladder made $attempts attempts, all on run attempt" \
+        "$GITHUB_RUN_ATTEMPT. This is a failed read of the jobs API and not a failed browser" \
+        "row: no row of the suite failed here, and re-running this job reads the list again."
       exit 1
     fi
 

@@ -12,8 +12,8 @@
 # drive took that long with bash's own SECONDS, and the control sets it to 10 and reads that the
 # drive took no time at all, which a script that slept whatever it was given would fail.
 #
-# NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` one
-# case opts into, and the script.
+# NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `timeout` that
+# three cases opt into call by call and that otherwise execs the real one, and the script.
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.test.sh
 # CI runs it in ci.yaml's test job.
@@ -59,27 +59,37 @@ GH
 chmod +x "$work/bin/gh"
 
 # The real `timeout`, resolved before the stand-in below can shadow it: the stand-in execs it
-# for every case that did not ask for a stand-in bound.
-real_timeout=$(type -P timeout)
+# for every call no case asked it to stand in for. A host without `timeout` on PATH is refused
+# here by name, because `type -P` answering nothing under `set -euo pipefail` ends this file at
+# this line with no output at all - which tells such a host less than the failing cases naming
+# `timeout: command not found` that it got before the stand-in existed.
+real_timeout=$(type -P timeout) ||
+  { echo "dispatch-browser-run-reads.test.sh needs timeout (GNU coreutils) on PATH" >&2
+    exit 1; }
 
-# The stand-in `timeout`, beside the stand-in `gh` and opt-in per case. It is opt-in because
-# the bound it stands in for is the script's own: a stand-in that answered every case would
-# take `timeout 30` out of every drive in this file, and the suite would then pass for a
-# script that had dropped the bound altogether. A case asks for it by writing
-# `$work/stub-timeout`, which `fixture` removes again, and every other case runs the real
-# timeout this execs.
+# The stand-in `timeout`, beside the stand-in `gh` and opted into per call. It records the
+# whole argument list of every call it is given, one file per call, whether or not it stands in
+# for that call, so `timeout_calls` and `timeout_args` read the bound and the command that was
+# wrapped in every drive in this file.
 #
-# Asked for, it records the whole argument list of every call, one file per call, so a case can
-# read the bound and the command that was wrapped, and exits 124 at once without waiting, which
-# is what the real timeout exits when its bound fires.
+# Standing in is what is opt-in, and the reason is not the recording: a stand-in every case
+# used would still catch a dropped bound through `timeout_calls`. It is that a call it stands
+# in for exits 124 at once without running gh, which is what the real timeout exits when its
+# bound fires, and every other case in this file needs gh's answer - the page it writes, the
+# stderr of the calls it refuses, the arguments it records.
+#
+# A case asks for call `<n>` to be the bound firing by writing `$work/stub-timeout.<n>`,
+# counting from 0 as the stand-in gh's call log does, so attempt n of the ladder is call n - 1.
+# `fixture` removes those files again, and a call no file was written for runs the real
+# timeout this execs, so that attempt's gh is bounded as the script asked.
 cat > "$work/bin/timeout" <<TIMEOUT
 #!/usr/bin/env bash
 set -euo pipefail
-if [ ! -f "$work/stub-timeout" ]; then
-  exec $real_timeout "\$@"
-fi
 calls=\$(find "$work/timeout-calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/timeout-calls/call.\$calls"
+if [ ! -f "$work/stub-timeout.\$calls" ]; then
+  exec $real_timeout "\$@"
+fi
 exit 124
 TIMEOUT
 chmod +x "$work/bin/timeout"
@@ -115,10 +125,10 @@ happy_page() {
 # also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
 # and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
 # an earlier case wrote goes with it, so one case's faults never answer another's call, and so
-# does the stand-in `timeout`'s opt-in file and its own call log.
+# do the stand-in `timeout`'s per-call `stub-timeout.<n>` files and its own call log.
 fixture() {
   rm -rf "$work/calls" "$work/out.json" "$work/timeout-calls"
-  rm -f "$work"/stderr.* "$work/stub-timeout"
+  rm -f "$work"/stderr.* "$work"/stub-timeout.*
   mkdir -p "$work/calls" "$work/timeout-calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
@@ -251,15 +261,21 @@ check "the later attempts' too" \
   "$(is "$(grep -c '^error connecting to api.github.com$' <<<"$out" || true)" 2)"
 
 echo "case: an attempt the 30 s bound ended is reported as a timeout and not as a bare refusal"
-# The one case that reads the script's own `timeout 30`, through the stand-in timeout it opts
-# into here. Nothing else in this file holds the bound: deep review took `timeout 30` out of a
-# scratch copy of the script on 2026-11-08 and this suite still read `76 passed, 0 failed`.
-# The stand-in answers 124 at once, so this case costs none of the 90 s a hanging gh under the
-# real bound would, and it bites either way the bound could go - dropped, and the stand-in is
-# never called at all; changed, and the 30 it recorded is not a 30. The gh here would answer,
-# so the bound is the only thing that can fail this drive.
+# The first of the three cases that read the script's own `timeout 30`, through the stand-in
+# timeout they opt into per call. Nothing else in this file holds the bound: deep review took
+# `timeout 30` out of a scratch copy of the script on 2026-11-08 and this suite still read
+# `76 passed, 0 failed`. The stand-in answers 124 at once, so this case costs none of the 90 s
+# a hanging gh under the real bound would, and it bites either way the bound could go -
+# dropped, and the stand-in is never called at all; changed, and the 30 it recorded is not a
+# 30. The gh here would answer, so the bound is the only thing that can fail this drive.
+#
+# All three calls are asked for, so every attempt ends at the bound and the line has one thing
+# to say about all three. That is why this case alone holds nothing about which attempt the
+# line read: with every attempt the same, a script reading `status.1`, or reading a 124 on any
+# attempt as the deciding one, answers the same words. The two cases after this one are where
+# the attempts differ.
 fixture 0
-touch "$work/stub-timeout"
+touch "$work/stub-timeout.0" "$work/stub-timeout.1" "$work/stub-timeout.2"
 drive jobs "$work/out.json"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
@@ -272,9 +288,55 @@ check "so no gh call is made outside the bound" "$(is "$(calls)" 0)"
 check "and the drive waits for none of it" "$(at_most "$seconds" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the bound that ended the attempt that decided the failure" \
-  "$(contains "$(error_line)" 'no answer within the 30 s bound on each attempt')"
+  "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
 check "and not the words a refusal with no status of its own gets" \
   "$(is "$(contains "$(error_line)" 'gh printed no HTTP status')" false)"
+check "and says nothing of the earlier attempts, which ended the same way" \
+  "$(is "$(contains "$(error_line)" 'where attempt')" false)"
+
+echo "case: the bound ended the first two attempts and the third answered a status"
+# What the line reports is what the attempt that decided the failure did, and that attempt is
+# the last one the ladder made. Here the first two calls are bounded and gh answers the third
+# with HTTP 502, so a script that read the deciding attempt's words from `status.1`, or that
+# took a 124 on any attempt as the one that decided, would call this read a timeout it was
+# not. Both mutations were made of a scratch copy of the script on 2026-11-08 and the suite
+# without this case and the one after it read `90 passed, 0 failed` for each of them.
+fixture 3 "HTTP 502"
+touch "$work/stub-timeout.0" "$work/stub-timeout.1"
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
+check "and gh runs only on the attempt the bound did not end" "$(is "$(calls)" 1)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming the status the deciding attempt was answered" \
+  "$(contains "$(error_line)" 'attempt 3, which decided the failure, answered HTTP 502')"
+check "and not saying that attempt stopped at the bound" \
+  "$(is "$(contains "$(error_line)" 'decided the failure, stopped at its 30 s bound')" false)"
+check "while the two that did stop at it are named, each with its own attempt number" \
+  "$(contains "$(error_line)" \
+    'where attempt 1 stopped at its 30 s bound and attempt 2 stopped at its 30 s bound')"
+
+echo "case: the first two attempts answered a status and the bound ended the third"
+# The reverse, and the shape the 2026-11-08 incident had: the jobs API answering 502 while a
+# later attempt is left hanging until the bound ends it. The attempt the bound ended is the
+# one that decided the failure, so the line must not hand it the status the earlier two were
+# answered, and must still say what those two did, since they did something else.
+fixture 3 "HTTP 502"
+touch "$work/stub-timeout.2"
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "bounds each of the ladder's three attempts" "$(is "$(timeout_calls)" 3)"
+check "and gh runs on the two the bound did not end" "$(is "$(calls)" 2)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "naming the bound for the attempt that decided the failure" \
+  "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
+check "and not handing that attempt the status only the earlier two were answered" \
+  "$(is "$(contains "$(error_line)" 'decided the failure, answered HTTP 502')" false)"
+check "while those two are named with it, each with its own attempt number" \
+  "$(contains "$(error_line)" \
+    'where attempt 1 answered HTTP 502 and attempt 2 answered HTTP 502')"
 
 echo "case: refused once, answered on the second attempt"
 fixture 1
