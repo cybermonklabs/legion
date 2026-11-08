@@ -14,6 +14,7 @@ import (
 	"syscall"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -315,9 +316,74 @@ func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string)
 	return importedSession{Outcome: outcome, Summary: ompsessions.Summarize(content)}, nil
 }
 
-// readSessionFile reads one regular session file. When root names a mounted
-// legacy sessions directory, os.Root resolves source beneath its descriptor so
-// a path or symlink cannot escape between validation and the read.
+// openSessionFileBeneath opens the session file at relative beneath the sessions directory root,
+// one component at a time, and returns the leaf's open file for the caller to close. Each
+// component is opened from the descriptor of the one before it with O_RDONLY|O_NOFOLLOW rather
+// than with O_PATH, which is Linux's alone while legion is released for darwin/amd64 and
+// darwin/arm64: O_RDONLY|O_NOFOLLOW refuses a directory symlink under both kernels, measured under
+// gVisor 4.19.0 on 2026-11-08, where a rooted-directory walk follows one out of its root. A
+// component's kind comes from fstat of the handle just opened rather than from a second reading of
+// the name, so a rename between the check and the open cannot change what was opened. The root's
+// own open is the walk's only open by a path and follows a link on purpose, because a mounted tree
+// volume may itself be reached through one.
+func openSessionFileBeneath(root, relative string) (*os.File, error) {
+	if !filepath.IsLocal(relative) {
+		return nil, fmt.Errorf("%s is not under the sessions directory %s", filepath.Join(root, relative), root)
+	}
+	if relative == "." {
+		return nil, fmt.Errorf("%s is the sessions directory itself, not a session file", root)
+	}
+	parent, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("the sessions directory %s cannot be opened: %w", root, err)
+	}
+	// relative is filepath.Rel's output and IsLocal has refused an absolute, empty, ..-bearing or
+	// non-local path, so splitting on the separator yields the components themselves.
+	components := strings.Split(relative, "/")
+	walked := root
+	for _, name := range components[:len(components)-1] {
+		walked = filepath.Join(walked, name)
+		directory, err := unix.Openat(parent, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		unix.Close(parent)
+		if err != nil {
+			switch {
+			case errors.Is(err, unix.ELOOP):
+				return nil, fmt.Errorf("%s is a symbolic link", walked)
+			case errors.Is(err, unix.ENOENT):
+				return nil, fmt.Errorf("%s is not on the tree volume", walked)
+			}
+			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
+		}
+		var st unix.Stat_t
+		if err := unix.Fstat(directory, &st); err != nil {
+			unix.Close(directory)
+			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
+		}
+		if st.Mode&unix.S_IFMT != unix.S_IFDIR {
+			unix.Close(directory)
+			return nil, fmt.Errorf("%s is not a directory", walked)
+		}
+		parent = directory
+	}
+	leaf := components[len(components)-1]
+	path := filepath.Join(walked, leaf)
+	file, err := unix.Openat(parent, leaf, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	unix.Close(parent)
+	if err != nil {
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("%s is a symbolic link", path)
+		}
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	// The name carried on the handle is what a later Stat or read error prints, so it is the leaf's
+	// own path on the tree volume.
+	return os.NewFile(uintptr(file), path), nil
+}
+
+// readSessionFile reads one regular session file. When root names a mounted legacy sessions
+// directory, openSessionFileBeneath walks source beneath root one descriptor at a time, rather
+// than through Go's rooted-directory API, which under a gVisor kernel follows a directory symlink
+// out of its root, so a path or symlink cannot escape between validation and the read.
 func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 	var (
 		opened *os.File
@@ -329,16 +395,12 @@ func readSessionFile(source, root string) ([]byte, os.FileInfo, error) {
 			return nil, nil, errors.New("refuses a symbolic link")
 		}
 	} else {
-		volume, err := os.OpenRoot(root)
+		var relative string
+		relative, err = filepath.Rel(root, source)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("%s is not under the sessions directory %s", source, root)
 		}
-		defer volume.Close()
-		relative, err := filepath.Rel(root, source)
-		if err != nil {
-			return nil, nil, err
-		}
-		opened, err = volume.Open(relative)
+		opened, err = openSessionFileBeneath(root, relative)
 	}
 	if err != nil {
 		return nil, nil, err
