@@ -249,7 +249,7 @@ IMAGE_FROM = {
         "(packages/daemon/internal/testnats/nats.go, packages/envoy/internal/testnats/nats.go, "
         "packages/envoy/internal/testpg/testpg.go, packages/envoy/internal/tests3/seaweedfs.go), "
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
-        "arguments of packages/envoy/infra/host/heldportwrapper/Dockerfile; every one of those files is in the reach "
+        "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
     ),
     (".github/workflows/ci.yaml", "image"): (

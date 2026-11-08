@@ -1464,10 +1464,10 @@ jobs:
             # steps' reads.
             envoy_smoke:
               - '.github/workflows/ci.yaml'
-              # The image: the Dockerfile, its context's .dockerignore, the bun-deps stage's
-              # frozen install (every workspace manifest) and the Bun pin that stage holds its
-              # own Bun to, the packages it builds the SPA and the Go binaries from, and the
-              # notices scripts.
+              # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
+              # install (every workspace manifest) and the Bun pin that stage holds its own Bun
+              # to, the packages it builds the SPA and the Go binaries from, and the notices
+              # scripts.
               - 'packages/envoy/docker/Dockerfile'
               - '.dockerignore'
               - '.bun-version'
@@ -4336,39 +4336,20 @@ jobs:
         with:
           go-version-file: packages/envoy/go.mod
           cache: false
-      # Every image the build or the test starts is pulled first, for the reason
-      # .github/actions/pull-test-images gives: testcontainers does not retry a pull, and a
-      # reset fails every test sharing that container.
-      # The images read here are the held-port image's, not the smoke image's. The smoke image's
-      # build runs on the container builder set up below, which has a store of its own and pulls
-      # its own bases, so pulling those into the daemon would fetch the Bun and Debian images for
-      # nobody and the Go image twice, on a job whose disk is watched (dispatch://INFRA-1085).
-      # The held-port build is the one that still runs on Docker's own driver.
-      # Two kinds of FROM name no image to pull and the awk passes each over: one that names an
-      # earlier stage of the same file, the rule .github/scripts/check-ci-images.sh applies when
-      # it reads these same FROMs, matched both as written and after the substitution; and one
-      # still holding a `${NAME}` after it, which is an ARG whoever runs the build passes
-      # (`FROM ${BASE}`, the smoke image this job loaded a step earlier).
-      - name: Read the held-port image's base images
+      # Every image the build or the test starts (testnats.Image and the smoke image's base
+      # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
+      # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands
+      # nothing today; it stays because a FROM written as an ARG would otherwise be pulled as
+      # the literal `${NAME}`.
+      - name: Read the smoke image's base images
         id: base-images
         run: |
           {
             echo "images<<IMAGES"
             awk '
               $1 == "ARG" { eq = index($2, "="); if (eq > 0) args[substr($2, 1, eq - 1)] = substr($2, eq + 1) }
-              $1 == "FROM" {
-                words = 0
-                for (i = 2; i <= NF; i++) if ($i !~ /^--/) rest[++words] = $i
-                if (words == 0) next
-                image = rest[1]
-                if (words > 2 && toupper(rest[2]) == "AS") stages[tolower(rest[3])] = 1
-                if (tolower(image) in stages) next
-                for (name in args) gsub("[$][{]" name "[}]", args[name], image)
-                if (tolower(image) in stages) next
-                if (image ~ /[$][{]/) next
-                print image
-              }
-            ' infra/host/heldportwrapper/Dockerfile
+              $1 == "FROM" { image = $2; for (name in args) gsub("[$][{]" name "[}]", args[name], image); print image }
+            ' docker/Dockerfile
             echo "IMAGES"
           } >> "$GITHUB_OUTPUT"
         working-directory: packages/envoy
@@ -4377,21 +4358,6 @@ jobs:
         with:
           consts: packages/envoy/internal/testnats/nats.go Image
           images: ${{ steps.base-images.outputs.images }}
-      # The builder the listener build below runs on. Its docker-container driver is what can
-      # read a type=gha cache at all: Docker's own driver keeps no BuildKit cache a run can
-      # export or import.
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-        with:
-          # provenance-add-gha (true by default on this driver) stages $GITHUB_EVENT_PATH's full
-          # JSON, this job's pull_request payload among it, into any provenance predicate a build
-          # on this builder computes. The build below asks for no attestation, and the env block
-          # of its step keeps the action's own copy of the predicate out of the job log; false
-          # here is what keeps the event payload out of a predicate in the first place. image= is
-          # the driver's own default BuildKit image: ghcr.io/cybermonklabs/legion/ci, the copy of
-          # moby/buildkit:buildx-stable-1 (.github/ci-images.yaml).
-          driver-opts: |
-            provenance-add-gha=false
-            image=ghcr.io/cybermonklabs/legion/ci@sha256:cec9f139f45e93c5c69c60f8b07cfad9f43f4ef6b6a6cd917527fea5ff2e3dea
       # The image build is a step of its own: what TestSmoke asserts is the container's
       # behaviour, so a slow build must fail nothing. Inside the test it spent 256.60–289.47 s
       # of `go test -timeout 5m` across ten Release Envoy Listener runs while the five
@@ -4401,21 +4367,17 @@ jobs:
       # or renaming this step turns the lane red instead of restoring that budget silently.
       # `load: true` is Docker's documented test-before-push shape, and the only build form
       # .github/scripts/check-image-trigger-paths.sh can read. No LEGION_COMMIT: this job
-      # publishes no image to match. This build runs on the container builder set up above,
-      # which has a store of its own and pulls the Dockerfile's base images itself, as the
-      # release lane's build of this same Dockerfile does; the pull step above stays for the
-      # held-port build below, which keeps Docker's own driver, and for the images the tests
-      # start.
+      # publishes no image to match. The pull step above put the base images in the daemon's
+      # store, which the default `docker` driver reads.
       - name: Build the listener image the smoke test runs against
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
           # This build never pushes, and its Metadata log is confirmed empty of both an
-          # attestation and this job's pull_request payload today. It runs on the
-          # docker-container builder set up above, which is the driver that captures the CI event
-          # into a provenance predicate, so the builder's provenance-add-gha=false is what keeps
-          # the payload out of one and these two variables are what keep the action's own copy of
-          # the predicate out of the job log and out of a build summary page.
-          # worker-image.yaml's identical block is the confirmed-necessary case.
+          # attestation and this job's pull_request payload today (no docker/setup-buildx-action
+          # here means no docker-container builder, so buildx never captures the CI event into the
+          # provenance predicate in the first place). Hardened anyway, so a future change that adds
+          # one (for cache, say) can't reopen either leak; worker-image.yaml's identical block is
+          # the confirmed-necessary case.
           BUILDX_METADATA_PROVENANCE: disabled
           DOCKER_BUILD_SUMMARY: "false"
         with:
@@ -4424,23 +4386,13 @@ jobs:
           load: true
           provenance: false
           tags: ${{ env.ENVOY_SMOKE_IMAGE }}
-          # The Dockerfile's two dependency stages, bun-deps and go-deps, as
-          # .github/workflows/ci-caches.yaml's envoy-listener-deps job built and wrote them on a
-          # push to the default branch. The scope strings must match that job's exactly, and
-          # nothing fails when they drift: a scope no run has written is a miss, and this build
-          # installs and downloads again, as it always did. Only a run on the default branch
-          # writes an entry a later run on another branch can read, which is why this job reads
-          # and writes no cache of its own.
-          cache-from: |
-            type=gha,scope=envoy-listener-bun-deps
-            type=gha,scope=envoy-listener-go-deps
       # The image envoy-infra's live tests run (pulumitest.HeldPortImage): the smoke image above with
       # packages/envoy/infra/host/heldportwrapper as its envoy-listener, which takes the listening
       # socket the test holds for the container's port over an abstract unix socket and executes the
       # real listener on it, so the port stays held from the test's bind until the listener serves.
-      # Its Dockerfile builds the wrapper from the tree, on the Go image the pull step above put
-      # in the daemon's store, so this build reads only files the envoy_smoke filter names. The
-      # smoke test keeps running the smoke image itself.
+      # Its Dockerfile builds the wrapper from the tree, on the Go image the smoke image's build
+      # pulled, so this build reads only files the envoy_smoke filter names. The smoke test keeps
+      # running the smoke image itself.
       - name: Build the held-port listener image the envoy-infra live tests run
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
@@ -4450,11 +4402,6 @@ jobs:
         with:
           context: .
           file: packages/envoy/infra/host/heldportwrapper/Dockerfile
-          # Docker's own driver, not the container builder set up above: this build's
-          # `FROM ${BASE}` names the tag the step above loaded into the daemon's image store,
-          # which that driver is the one to read. A docker-container builder would resolve the
-          # name against a registry and fail.
-          builder: default
           build-args: BASE=${{ env.ENVOY_SMOKE_IMAGE }}
           load: true
           provenance: false

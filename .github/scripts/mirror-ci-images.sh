@@ -45,7 +45,7 @@
 # this kind can hold a Bun row to its label. The builds that run those bytes hold them to the
 # pin instead, and both copy .bun-version into the stage: the plugin stage of
 # packages/daemon/docker/worker.Dockerfile, whose build script refuses any Bun but the one that
-# file pins, and the bun-deps stage of packages/envoy/docker/Dockerfile, which refuses a
+# file pins, and the web stage of packages/envoy/docker/Dockerfile, which refuses a
 # `bun --version` that is not that file's content.
 #
 # It prints one line for each row the package already holds, two for each row it copies (the

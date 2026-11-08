@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     # Every file packages/envoy/docker/Dockerfile builds from: the Go module and the Dockerfile
-    # (packages/envoy/**), the bun-deps stage's frozen install (the root manifest, lockfile, patches and
+    # (packages/envoy/**), the web stage's frozen install (the root manifest, lockfile, patches and
     # every root workspace's package.json), the Bun pin that stage holds its own Bun to, the
     # sources it builds the SPA and the Go contracts from, the context's .dockerignore, and this
     # workflow. A commit touching only one of them would otherwise publish no image, so no pin

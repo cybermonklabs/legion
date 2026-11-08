@@ -10,9 +10,8 @@ ARG BASE
 
 FROM ${BASE} AS base
 
-# Go version must match packages/envoy/infra/go.mod. This build runs on Docker's own driver, so
-# ci.yaml's envoy-smoke job reads this file's FROM lines and pulls this image into the daemon
-# before the build (its "Read the held-port image's base images" step).
+# Go version must match packages/envoy/infra/go.mod. The smoke image builds on the same image, so
+# the envoy-smoke job has pulled it already.
 # ghcr.io/cybermonklabs/legion/ci, the copy of golang:1.27.3-alpine (.github/ci-images.yaml)
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:d200d2dd76b03a99b52651fd1325aff7dcd35422c35c01bac56571b0507f3deb AS wrapper
 
