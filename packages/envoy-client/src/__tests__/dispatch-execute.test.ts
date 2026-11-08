@@ -5,6 +5,9 @@ import {
   type Artifact,
   type BlockPath,
   dispatchToolSpecs,
+  type GraphEdge,
+  type GraphEdgeKind,
+  type GraphReferences,
   type IssueComponents,
   overCapMessage,
   PROJECT_KEY_RULE,
@@ -11093,21 +11096,19 @@ describe("executeDispatchTool", () => {
       suggestion: null,
       created_at: "2026-09-09T00:00:00Z",
     });
-    type ThreadEdge = {
-      kind: string;
-      direction: "in" | "out";
-      node: { kind: string; id: string; ref: string };
-      created_at: string;
-      source_seq: null;
-    };
-    const edge = (kind: string, direction: "in" | "out", id: string, at: string): ThreadEdge => ({
+    const edge = (
+      kind: GraphEdgeKind,
+      direction: "in" | "out",
+      id: string,
+      at: string
+    ): GraphEdge => ({
       kind,
       direction,
       node: { kind: "comment", id, ref: ref(id) },
       created_at: at,
       source_seq: null,
     });
-    const graph = (edges: ThreadEdge[]) => ({
+    const graph = (edges: GraphEdge[]): GraphReferences => ({
       node: { kind: "comment", id: "node" },
       edges,
     });
@@ -11144,7 +11145,7 @@ describe("executeDispatchTool", () => {
             ])
           );
         }
-        return response(graph([]));
+        return response(emptyGraph("comment"));
       }
       throw new Error(`unexpected request: ${target.pathname}`);
     };

@@ -52,6 +52,14 @@ export type Exemption = {
   reason: string;
 };
 
+/** An exemption that has outlived what it excuses, with the sentence that says which way. */
+export type StaleExemption = {
+  exemption: Exemption;
+  /** Why this entry excuses nothing: it names a row the suite no longer holds, or a row that
+   *  drives a browser now. */
+  why: string;
+};
+
 /** The rows that drive no browser and are allowed to stay.
  *
  * An entry is for a row whose claim no other layer can hold yet, and it is a debt, not a pattern:
@@ -82,8 +90,8 @@ const rowCallees = new Set([
   "test.slow",
 ]);
 
-/** The fixtures that are a browser. Playwright's `request` is not one of them: it is an HTTP
- *  client, and `search.e2e.ts:422` takes `{ request }` and drives no browser at all. */
+/** The fixtures that are a browser. Playwright's `request` is not one of them: it is
+ *  Playwright's HTTP client, which opens no page. */
 const browserFixtures = new Set(["browser", "context", "page"]);
 
 /** `test` or `test.skip` for a callee written that way, and nothing for any other expression. */
@@ -155,7 +163,11 @@ function rowOfCall(
  *  25 candidates, of which 21 are multi-line `test.skip(` calls inside a row body and no rows at
  *  all. */
 export function rowsOfSource(file: string, source: string): SuiteRow[] {
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
+  // `setParentNodes` is false: nothing here reads a node's `.parent`. The walk is
+  // `ts.forEachChild`, and both position reads pass the source file (`call.getStart(sourceFile)`,
+  // `title.getText(sourceFile)`), so attaching a parent to every node of 149 files would roughly
+  // double this parse for no reader.
+  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false);
   const rows: SuiteRow[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
@@ -172,14 +184,17 @@ export function rowsOfSource(file: string, source: string): SuiteRow[] {
  *  because Playwright's is: `testDir: "."` with `testMatch: /.*\.e2e\.ts/`
  *  (`e2e/playwright.config.ts`) takes every matching file below the `e2e` directory, so a spec in
  *  a subdirectory is in the suite as surely as one beside the config. None is today.
- *  `node_modules` is skipped, as Playwright's own default ignores it. */
+ *  `node_modules` is skipped, as Playwright's own default ignores it, and `test-results` with it:
+ *  that is the `outputDir` the config sets (`outputDir: "test-results"`,
+ *  e2e/playwright.config.ts:421), resolved beside the config, so after a browser run it is a tree
+ *  of traces, videos and screenshots holding no spec. */
 export function specFiles(directory: string): string[] {
   const files: string[] = [];
   const walk = (relative: string): void => {
     for (const entry of readdirSync(join(directory, relative), { withFileTypes: true })) {
       const path = relative === "" ? entry.name : `${relative}/${entry.name}`;
       if (entry.isDirectory()) {
-        if (entry.name !== "node_modules") walk(path);
+        if (entry.name !== "node_modules" && entry.name !== "test-results") walk(path);
       } else if (entry.isFile() && entry.name.endsWith(".e2e.ts")) {
         files.push(path);
       }
@@ -190,7 +205,7 @@ export function specFiles(directory: string): string[] {
 }
 
 /** Whether the row opens a browser: it takes `page`, `browser` or `context`. */
-export function drivesBrowser(row: SuiteRow): boolean {
+function drivesBrowser(row: SuiteRow): boolean {
   return row.fixtures.some((fixture) => browserFixtures.has(fixture));
 }
 
@@ -214,7 +229,7 @@ export function unexplainedRows(
 export function staleExemptions(
   rows: readonly SuiteRow[],
   exemptions: readonly Exemption[]
-): { exemption: Exemption; why: string }[] {
+): StaleExemption[] {
   const byKey = new Map<string, SuiteRow[]>();
   for (const row of rows) {
     const key = rowKey(row.file, row.title);
@@ -222,7 +237,7 @@ export function staleExemptions(
     if (found === undefined) byKey.set(key, [row]);
     else found.push(row);
   }
-  const stale: { exemption: Exemption; why: string }[] = [];
+  const stale: StaleExemption[] = [];
   for (const exemption of exemptions) {
     const matched = byKey.get(rowKey(exemption.file, exemption.title));
     if (matched === undefined) {

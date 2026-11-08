@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -72,16 +73,17 @@ func TestAWindowedItemKeepsItsWholeTextRowUntilItsWindowIsCurrent(t *testing.T) 
 	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "ROLL", "Two builds at once", "Body text.")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": body}, "alice")
-	owner := "comment/" + comment.ID
+	windowKind := refs.ItemComment.WindowKind()
+	owner := refs.ItemComment.WindowOwnerKey(comment.ID)
 
 	// The window first, and stale before the whole-text row exists. The retirement arm deletes a
 	// whole-text row whenever its owner holds one current window, and does not ask whether that
 	// row is embedded, so a run that enqueued the row first would be racing its own queue
 	// against the arm. With no window current, the arm cannot take the row, so what follows is
 	// decided by the queue alone.
-	embedWindowsAs(t, database, embedder, "comment_block", owner, angledVector(0.9, 2))
+	embedWindowsAs(t, database, embedder, windowKind, owner, angledVector(0.9, 2))
 	processAllPending(t, database, embedder)
-	if current := currentWindowsOf(t, database, "comment_block", owner); current != 1 {
+	if current := currentWindowsOf(t, database, windowKind, owner); current != 1 {
 		t.Fatalf("current windows of %s = %d, want the comment's one embedded window", owner, current)
 	}
 
@@ -91,11 +93,11 @@ func TestAWindowedItemKeepsItsWholeTextRowUntilItsWindowIsCurrent(t *testing.T) 
 	// the newer build still finds the comment through it.
 	if _, err := database.Pool.Exec(ctx, `
 		update embeddings set embedded_hash = null, dead = true
-		where kind = 'comment_block' and split_part(id, '#', 1) = $1
-	`, owner); err != nil {
+		where kind = $1 and split_part(id, '#', 1) = $2
+	`, windowKind, owner); err != nil {
 		t.Fatalf("make the comment's window stale: %v", err)
 	}
-	if current := currentWindowsOf(t, database, "comment_block", owner); current != 0 {
+	if current := currentWindowsOf(t, database, windowKind, owner); current != 0 {
 		t.Fatalf("current windows of %s = %d after the window was made stale, want none", owner, current)
 	}
 
@@ -142,11 +144,11 @@ func TestAWindowedItemKeepsItsWholeTextRowUntilItsWindowIsCurrent(t *testing.T) 
 	// Once the window is current again, the first pass after that takes the whole-text row.
 	if _, err := database.Pool.Exec(ctx, `
 		update embeddings set dead = false, embedded_hash = content_hash
-		where kind = 'comment_block' and split_part(id, '#', 1) = $1
-	`, owner); err != nil {
+		where kind = $1 and split_part(id, '#', 1) = $2
+	`, windowKind, owner); err != nil {
 		t.Fatalf("make the comment's window current again: %v", err)
 	}
-	if current := currentWindowsOf(t, database, "comment_block", owner); current != 1 {
+	if current := currentWindowsOf(t, database, windowKind, owner); current != 1 {
 		t.Fatalf("current windows of %s = %d once the window was embedded at its text, want one", owner, current)
 	}
 	if tick := reconcileBlockIndexPass(t, deps); tick.Retired != 1 {
