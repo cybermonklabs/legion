@@ -8,6 +8,7 @@ import {
   type WebSocketRoute,
 } from "@playwright/test";
 import { createDecoder, readVarUint } from "lib0/decoding";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
@@ -106,6 +107,14 @@ export async function selectEditorText(page: Page, quote: string): Promise<void>
   await actionBar(page).waitFor({ state: "visible" });
 }
 
+/** Selects `quote` as `selectEditorText` does, without waiting for the selection bar: for a row
+ *  whose assertion is the bar itself. It reads all of the editor's text, a read-only one's (a
+ *  closed issue's document, where no caret can enter) included. `selectTextIn` is the same for a
+ *  quote inside one element of an editable document. */
+export function selectEditorQuote(page: Page, quote: string): Promise<void> {
+  return setEditorRange(page, { anyText: true, extent: "whole", quote });
+}
+
 /** Puts the caret directly before or after the first occurrence of `quote` among the text a caret
  * can enter, the way a click there does: a quote that also stands in `contenteditable="false"`
  * chrome, such as a block's banner, or that a collaborator's cursor label splits, is found where
@@ -128,11 +137,14 @@ export function selectTextIn(page: Page, scope: Locator, quote: string): Promise
 
 /** Over, before or after the first occurrence of `quote`, or the end of the last text a caret can
  * enter: a collaborator's cursor label and an atom's text sit in `contenteditable="false"`. */
-type EditorRange = { extent: "whole" | "before" | "after"; quote: string } | { extent: "end" };
+type EditorRange =
+  | { anyText?: boolean; extent: "whole" | "before" | "after"; quote: string }
+  | { extent: "end" };
 
 /** Sets the page's selection and dispatches the selectionchange ProseMirror's DOMObserver reads, so
  * the editor takes the selection before this returns. Every target is found only in the text a
- * caret can enter, inside `scope` when one is given, else the whole editor. Without that read,
+ * caret can enter (any text, for `anyText`), inside `scope` when one is given, else the whole
+ * editor. Without that read,
  * ProseMirror's focus handler (prosemirror-view `handlers.focus`) writes the editor's own selection
  * back to the page 20 ms after focus and undoes a caret placed in between. */
 async function setEditorRange(page: Page, target: EditorRange, scope?: Locator): Promise<void> {
@@ -152,11 +164,11 @@ async function setEditorRange(page: Page, target: EditorRange, scope?: Locator):
     } else {
       // Reads the text nodes as one text, so a quote another mark's span splits is found as
       // readily as one a single node holds, and maps the quote's two ends back to their nodes.
-      const { extent, quote } = target;
+      const { anyText, extent, quote } = target;
       const runs: { node: Node; start: number; end: number }[] = [];
       let text = "";
       for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-        if (node.parentElement?.isContentEditable !== true) continue;
+        if (anyText !== true && node.parentElement?.isContentEditable !== true) continue;
         const start = text.length;
         text += node.textContent ?? "";
         runs.push({ end: text.length, node, start });
@@ -347,6 +359,27 @@ export function countDocumentSockets(page: Page, documentId?: string): () => num
     }
   });
   return () => count;
+}
+
+/** Every fact this poll waits on lands in milliseconds: Playwright's default 100/250/500/1000
+ *  ladder would first see it a quarter-second late. */
+const PROBE = { intervals: [50, 50, 100, 200, 500] };
+
+/** Spends the document socket's reconnect draw - a uniform [0, RECONNECT_SPREAD_MS) set at the
+ *  previous open (`web/src/features/doc/connection.ts`) - on the page's own clock, until the page
+ *  holds `count` document sockets, as `countDocumentSockets` counts them. What armed the draw may
+ *  not have reached the page when the first jump lands, so the jump repeats. */
+export async function reconnectedSockets(
+  page: Page,
+  sockets: () => number,
+  count: number
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      await page.clock.fastForward(RECONNECT_SPREAD_MS);
+      return sockets();
+    }, PROBE)
+    .toBe(count);
 }
 
 /** Document sockets the tab still holds open: one per live document, never one per visit. */

@@ -37,6 +37,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.update_left_round,
 	d.delivery_id, d.task, d.phase, d.generation, d.assignment, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.out_of_memory,
+	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
@@ -345,17 +346,20 @@ func putDelivery(ctx context.Context, db execer, token claim.Token, d supervise.
 	}
 	_, err := db.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, assignment, check_look, check_opened_at, queued_at, delivered_at, marked_by,
-		confirmed_at, interrupted, out_of_memory, kept_decisions)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, coalesce($15::jsonb, '{}'::jsonb))
+		confirmed_at, interrupted, out_of_memory, send_failures, last_send_failure_at, last_send_error, kept_decisions)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, coalesce($18::jsonb, '{}'::jsonb))
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		assignment = excluded.assignment, check_look = excluded.check_look,
 		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
 		delivered_at = excluded.delivered_at, marked_by = excluded.marked_by, confirmed_at = excluded.confirmed_at,
-		interrupted = excluded.interrupted, out_of_memory = excluded.out_of_memory, kept_decisions = excluded.kept_decisions`,
+		interrupted = excluded.interrupted, out_of_memory = excluded.out_of_memory,
+		send_failures = excluded.send_failures, last_send_failure_at = excluded.last_send_failure_at,
+		last_send_error = excluded.last_send_error, kept_decisions = excluded.kept_decisions`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Assignment,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
-		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory, keptDecisions(d.Kept),
+		instant(d.ConfirmedAt), d.Interrupted, d.OutOfMemory,
+		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, keptDecisions(d.Kept),
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -387,6 +391,18 @@ func (s *Store) PutClaimAndDelivery(ctx context.Context, c supervise.Claim, d su
 // that has forgotten the run its worker is still working. What the delivery held is left KEPT in
 // that same transaction: a retired task tells nothing, so each row waits for the next start or
 // catch-up of its own issue's tree to name it.
+//
+// A delete that removes no row is refused two ways, because pending_task_deliveries is keyed on
+// the claim: the row holds no delivery at all, or it holds one under another id. The first is
+// the retirement this call already committed and whose answer the caller lost, and it carries
+// supervise.ErrNoSuchDelivery so that the caller can read it as its own write made good rather
+// than as a fresh failure. The second is a different claim altogether — a write that rotated the
+// delivery's id committed after its answer was cut off, so the row holds the new delivery while
+// the caller is retiring the old one — and it carries supervise.ErrOtherDelivery, naming both
+// ids, which is not ErrNoSuchDelivery and must never be read as one: that would drop the
+// delivery memory holds and leave the stored one behind, pending and unretired. Which it is can
+// only be read from the row, so it is read here, in the same transaction as the delete that
+// found nothing.
 func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryID string) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error {
 		if err := putClaim(ctx, tx, c); err != nil {
@@ -400,7 +416,19 @@ func (s *Store) RetireDelivery(ctx context.Context, c supervise.Claim, deliveryI
 			return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, err)
 		}
 		if tag.RowsAffected() == 0 {
-			return fmt.Errorf("retire delivery %s on %s: the claim holds no such delivery", deliveryID, c.Token)
+			var stored string
+			switch err := tx.QueryRow(ctx,
+				"select delivery_id from pending_task_deliveries where claim_token = $1",
+				string(c.Token),
+			).Scan(&stored); {
+			case errors.Is(err, pgx.ErrNoRows):
+				return fmt.Errorf("retire delivery %s on %s: %w", deliveryID, c.Token, supervise.ErrNoSuchDelivery)
+			case err != nil:
+				return fmt.Errorf("read the pending delivery of %s: %w", c.Token, err)
+			default:
+				return fmt.Errorf("retire delivery %s on %s: the row holds delivery %s: %w",
+					deliveryID, c.Token, stored, supervise.ErrOtherDelivery)
+			}
 		}
 		return releaseKeptDecisions(ctx, tx, c.Token, deliveryID)
 	})
@@ -426,6 +454,9 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		queuedAt, delivered         *time.Time
 		confirmed                   *time.Time
 		interrupted, outOfMemory    *bool
+		sendFailures                *int64
+		lastSendFailure             *time.Time
+		lastSendError               *string
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
 		kept                        []byte
@@ -440,7 +471,8 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.UpdateHead, &updateTold, &c.UpdateAnsweredByTurnEnd, &c.UpdateReaskedForPushCheck,
 		&c.UpdateLeftRound,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryAssignment, &deliveryCheckLook, &deliveryCheckOpened,
-		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &outOfMemory, &kept)
+		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &outOfMemory,
+		&sendFailures, &lastSendFailure, &lastSendError, &kept)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -483,7 +515,13 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			ConfirmedAt: orZero(confirmed),
 			Interrupted: orFalse(interrupted),
 			OutOfMemory: orFalse(outOfMemory),
-			Kept:        keptDecisions(kept),
+			// The three the send failures are diagnosed from: a count, the moment of the last
+			// failure — null until a send has failed, which the delivery holds as the zero
+			// time — and that failure's error.
+			SendFailures:      int(orZeroInt(sendFailures)),
+			LastSendFailureAt: orZero(lastSendFailure),
+			LastSendError:     *lastSendError,
+			Kept:              keptDecisions(kept),
 		}
 	}
 	return c, nil
