@@ -34,7 +34,9 @@ import (
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo starts fresh. An issue leaving disarms
-// its open pull request (disarmOpen), as a root's linger disarms every member's.
+// its open pull request (disarmOpen), as a root's linger disarms every member's. Those are the
+// issue's Legion claims; its Dispatch claim is the board's, and Dispatch releases one at a close
+// alone, so every departure short of a close queues the row that releases it (record.ClaimRelease).
 //
 // A member's leave may be the last one a merged issue above it waited for: an issue whose pull
 // request merged stands in awaiting_merge while any issue beneath it is in the workflow
@@ -65,7 +67,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 			return err
 		}
 		if status != "done" {
-			return nil
+			// Dispatch releases an issue's claim on a close alone, so a park leaves the claim of
+			// the session the daemon stopped standing on the board; this row is what clears it.
+			// It carries nothing of the holder: the row reads the issue's claim and its record
+			// when it runs.
+			return e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{})
 		}
 		return e.openCheckIfMerged(ctx, tx, issue, false)
 	}
@@ -92,6 +98,14 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	}
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
 		return err
+	}
+	if status != "done" {
+		// The park of a child leaves its claim on the board for the same reason a root's does:
+		// only a close releases one in Dispatch. The guard is its own rather than a later test's,
+		// so no row is queued at a close.
+		if err := e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{}); err != nil {
+			return err
+		}
 	}
 	members, err := e.treeMembers(ctx, tx, issue)
 	if err != nil {
