@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -219,6 +221,56 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 		return false, fmt.Errorf("read the stored pull request heads of %s at %s: %w", repoFull, sha, err)
 	}
 	return found, nil
+}
+
+// BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged into,
+// and whether there is one: the branch an `after_merge` result of that issue is measured
+// against (api/results_currency.go). An issue whose pull request merged into an integration
+// branch has reached that branch and no other, so a result of it is current at a commit that
+// branch's history carries, where the repository's default branch answers nothing about the
+// work until the integration branch itself lands. The newest merge answers: the rows are
+// ordered by event_at descending with the rows carrying none last, since a row with no event
+// time is one whose envelope reported none and says less than any row that did, and by the
+// pull request's own number descending where two merges share a time, so one issue merged
+// twice stands at the branch its latest merge reached rather than at whichever row the
+// planner returned first.
+//
+// The read is keyed by the issue and not by the result's commit because Legion merges with
+// squash: the commit that lands on the base branch is the one the squash makes, which is no
+// pull request's head and so no row's head_sha, and HeadAttributedTo — which asks whether a
+// commit is such a head — can never answer for it. Keying by the issue costs nothing in
+// honesty, since a row is attributed to an issue only where the pull request's head is a
+// branch of the repository that issue resolves to (headAttribution), so the branch this
+// answers is one the issue's own work merged into.
+//
+// An empty base_ref answers "none found" rather than the empty string. The column is declared
+// not null with the empty string as its default, and a `pull_request` envelope published
+// before Dispatch carried the field writes exactly that, so such a row names no base branch at
+// all; handing it on would have the caller build a GitHub compare read against an empty branch
+// name, where "none found" leaves it on its own fallback, the repository's default branch.
+//
+// No index is added for this lookup: pull_request_heads_issue_head is partial on
+// `issue_key is not null` and keyed `(issue_key, head_sha)`, so a read by the issue alone uses
+// its leading column, and the rows one issue's key holds are the handful of pull requests
+// attributed to that issue.
+func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, bool, error) {
+	var branch string
+	err := pool.QueryRow(ctx, `
+		select base_ref from pull_request_heads
+		where issue_key = $1 and state = 'merged'
+		order by event_at desc nulls last, number desc
+		limit 1
+	`, issueKey).Scan(&branch)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
+	}
+	if branch == "" {
+		return "", false, nil
+	}
+	return branch, true, nil
 }
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the
