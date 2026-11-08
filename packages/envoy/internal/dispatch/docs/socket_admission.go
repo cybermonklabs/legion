@@ -224,14 +224,21 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// What the admission reads is what the budget weighs: the stored state it decodes is the
 	// state the room is about to load, so its length is the weight of the room this admission
-	// adds. That read is a whole-document decode, so it takes a slot of the pod's load
-	// concurrency for the read alone and gives it back before the weighing: fifty admissions do
-	// not decode fifty documents at once, and no admission holds a slot while it waits on the
-	// budget, which would couple it to every other holder. A socket to a room this process
-	// already holds reads no stored state and takes no slot.
+	// adds. That read is a whole-document decode, so it takes of the pod's load concurrency for
+	// the read alone and gives it back before the weighing: no admission holds any of the pool
+	// while it waits on the budget, which would couple it to every other holder. A socket to a
+	// room this process already holds reads no stored state and takes nothing.
+	//
+	// It takes a whole slot, where every other taker takes what its own copy costs (copyWeight):
+	// the admission has not read the state it is about to decode, and nothing here could learn
+	// its size without reading the store a second time to measure what it is about to read. The
+	// whole slot is also what keeps the cold loads of a reconnect storm one at a time at the
+	// calibration, where the pool is one slot, so the room budget sees each room's weight before
+	// the next load begins (MemoryBounds.LoadSlots). The decode the read makes inside it covers
+	// this grant and takes nothing more (loadDecodedHistory).
 	readSlot := newLoadSlot()
 	if s.srv.GetDoc(room) == nil {
-		if err := readSlot.take(r.Context()); err != nil {
+		if err := readSlot.take(r.Context(), loadSlotBytes); err != nil {
 			slog.Warn("dispatch: a document socket's admission gave up waiting for a load slot; answered 503",
 				"room", room, "error", err)
 			http.Error(w, ErrServiceUnavailable.Error(), http.StatusServiceUnavailable)

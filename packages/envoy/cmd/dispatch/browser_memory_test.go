@@ -127,23 +127,27 @@ const (
 	bytesOfAScanMarkForTest    = 76
 
 	// unslottedApplyBytesForTest mirrors unslottedApplyBytes, the update's own bytes at or under
-	// which an apply of a browser's update takes no slot of the pod's load concurrency
+	// which an apply of a browser's update takes nothing of the pod's load concurrency
 	// (internal/dispatch/docs/copy_heap.go). A frame above it is held across its whole apply by
-	// one slot, which is what makes a reconnect storm's whole-state handoffs decode k at a time;
-	// a keystroke, far under it, never waits. It is also the bound on an unslotted apply's scan
+	// a grant of what that apply costs, which is what makes a reconnect storm's whole-state
+	// handoffs decode as many at a time as the pool holds; a keystroke, far under it, never
+	// waits. It is also the bound on an unslotted apply's scan
 	// marks (scanCeilingForTest).
 	unslottedApplyBytesForTest = 2 << 20
 	// loadSlotBytesForTest mirrors loadSlotBytes and loadSlotsForTest docs.MemoryBounds.LoadSlots
-	// at the calibration: 600 MB a slot - one whole-document decode, one live write's fork or one
-	// heavy apply - and one slot at the 3,865,470,566-byte Go limit a 4 GiB pod gives the server,
-	// which TestTheBootLineNamesTheBoundsItsGoMemoryLimitGives holds the boot line to and which
-	// the server names in each line it logs for a slot it gives back (loadSlotLine).
+	// at the calibration: 600 MB a slot - the most any one copy takes of the pod's load
+	// concurrency, and what a taker that can name no state takes whole - and one slot at the
+	// 3,865,470,566-byte Go limit a 4 GiB pod gives the server, which
+	// TestTheBootLineNamesTheBoundsItsGoMemoryLimitGives holds the boot line to. The pool those
+	// slots make is held in bytes, and each line the server logs for a grant it gives back names
+	// the bytes held and the pool they came out of (loadSlotLine).
 	//
 	// One slot at the calibration is not only a memory bound. It is what keeps A3's "the refusals
 	// begin within one room of the budget's own arithmetic" true now that an admission reserves
-	// nothing for the document it is about to load: with one cold load at a time the budget sees
-	// each room's weight before the next load begins, so fifty admissions at once serialise into
-	// one after another rather than fifty of them reading the same headroom at the same moment.
+	// nothing for the document it is about to load: a socket's admission takes a whole slot for
+	// its read, so with one cold load at a time the budget sees each room's weight before the
+	// next load begins, and fifty admissions at once serialise into one after another rather
+	// than fifty of them reading the same headroom at the same moment.
 	loadSlotBytesForTest = 600_000_000
 	loadSlotsForTest     = 1
 
@@ -2420,8 +2424,9 @@ const (
 	// worstCaseLoadSlotBytesForTest is what the pod's load concurrency may hold at once:
 	// loadSlotsForTest slots of loadSlotBytesForTest each, the sum the heaviest-apply drive adds
 	// to the room budget and the cold reads' cache to weigh its worst case against the Go limit.
-	// One slot covers one whole-document decode, one live write's fork or one apply of an update
-	// over unslottedApplyBytesForTest, whichever takes it.
+	// It is one pool of that many bytes, out of which each whole-document decode, live write's
+	// fork and apply of an update over unslottedApplyBytesForTest takes what its own copy costs,
+	// and no one of them takes more than a slot.
 	worstCaseLoadSlotBytesForTest = loadSlotsForTest * loadSlotBytesForTest
 )
 
@@ -2574,11 +2579,12 @@ func TestABurstOfStructDenseDocumentsStaysUnderThePodsMemory(t *testing.T) {
 // The worst case the room budget and the pod's load concurrency leave the pod, run at once under
 // the Go limit a 4 GiB pod gives the server: the budget full, the cold reads' cache full, honest
 // handoffs of the heaviest state a room may hold applying - each far over
-// unslottedApplyBytesForTest, so each takes a slot of the pod's load concurrency and holds it
-// across its whole apply - and beside them struct-dense documents loading and folding, each
-// decode taking a slot of its own. The calibration has one slot (loadSlotsForTest), so the three
-// kinds of heavy work queue for it one at a time, and this is the sum the bounds allow: 2 GiB of
-// rooms, 256 MiB of cache and one 600 MB slot, 3,015,919,104 bytes, inside the
+// unslottedApplyBytesForTest, so each takes what its apply costs out of the pod's load
+// concurrency and holds it across its whole apply - and beside them struct-dense documents
+// loading and folding, each decode taking what its own copy costs. The calibration's whole pool
+// is one slot (loadSlotsForTest), so the three kinds of heavy work queue for room in it, and
+// this is the sum the bounds allow: 2 GiB of rooms, 256 MiB of cache and one 600 MB slot,
+// 3,015,919,104 bytes, inside the
 // 3,865,470,566-byte Go limit. The memory a pod's kernel would charge the server stays under the
 // pod's 4 GiB through every step, and what the Go limit bounds stays within that limit and its
 // margin (requireUnderThePod), and every honest handoff, load and fold completes.
@@ -2688,7 +2694,7 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	worst := int64(roomBudgetBytesForTest) + documentReadBudgetForTest + worstCaseLoadSlotBytesForTest
 	t.Logf("the budget: two rooms at the state cap are charged %d bytes each, the room a person types in %d and up to %d more for its %d keystrokes, and %d rooms at the decode cap %d each, which leaves %d, room for one agent-rewritten document (%d) beside the typing and not two",
 		heaviest.weight, typed.weight, typedGrowth, typingKeystrokes, fill, longEdited.weight, free, agent.weight)
-	t.Logf("the slots: a handoff of the %d bytes a room at the state cap holds is far over the %d-byte figure at which an apply takes a slot, and so is a fold of the agent's %d bytes or the long-edited document's %d, so each of them holds one of the pod's %d slots for its whole run",
+	t.Logf("the slots: a handoff of the %d bytes a room at the state cap holds is far over the %d-byte figure at which an apply takes of the pod's load concurrency, and so is a fold of the agent's %d bytes or the long-edited document's %d, so each of them holds its own bytes of the pod's %d-slot pool for its whole run",
 		heaviest.stateBytes, unslottedApplyBytesForTest, agent.stateBytes, longEdited.stateBytes, loadSlotsForTest)
 	t.Logf("the worst case: the %d-byte budget, the %d-byte cache (%d documents of %d bytes each) and the %d bytes the pod's %d load slots may hold come to %d bytes, against the %d-byte Go limit and the pod's %d; the documents took %s to build",
 		roomBudgetBytesForTest, documentReadBudgetForTest, len(cached), cacheWeight, int64(worstCaseLoadSlotBytesForTest), loadSlotsForTest, worst,
@@ -2903,12 +2909,12 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 	t.Logf("the heaviest applies beside the folds, in %s: %d holders of the pod's %d load slots waited for one, the longest for %s, and the longest hold was %s",
 		took.Round(time.Second), len(holds), loadSlotsForTest, longestWait.Round(time.Millisecond), longestHold.Round(time.Millisecond))
 	// The handoffs and the folds are each an apply over unslottedApplyBytesForTest or a
-	// whole-document decode, so each takes a slot, and the calibration has one: the heavy work
-	// queues. What the drive reads of that queue is the line itself, and the line is written
-	// only for a holder that waited loadSlotLogged - a tenth of a second - or more
-	// (docs' logLoadSlot), so its count is a floor on the takers and not their number: a taker
-	// that found the slot free leaves none, and so does one that waited a moment. So the
-	// assertion is on what a line means rather than on how many there are. One holder waiting
+	// whole-document decode, so each takes what its copy costs, and the calibration's whole pool
+	// is one slot: the heavy work queues. What the drive reads of that queue is the line itself,
+	// and the line is written only for a holder that waited loadSlotLogged - a tenth of a second
+	// - or more (docs' logLoadSlot), so its count is a floor on the takers and not their number:
+	// a taker that found room in the pool leaves none, and so does one that waited a moment. So
+	// the assertion is on what a line means rather than on how many there are. One holder waiting
 	// while another holds is the worst case happening: the heaviest apply and the heaviest
 	// decode asked for the pod's load concurrency at the same moment and took it in turn.
 	// Measured on 2026-11-06: four lines, one holder waiting 1 m 9.831 s while another held the
@@ -3092,8 +3098,8 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	copies := memory.projectDocumentCopies(t, sourceID, writes)
 	t.Logf("%d documents of a mebibyte of prose, %d bytes of stored state each: the budget holds %d of them resident and every one of them is made resident here, which fills it to the brim; the fill charges %d of the %d-byte budget beside the typed room's %d and its typing's %d, and %d documents are written cold; they took %s to build",
 		writes, len(state), full, int64(full)*source.weight, roomBudgetBytesForTest, typed.weight, typedGrowth, writes-full, time.Since(building).Round(time.Second))
-	t.Logf("the slots and the pool: a fork of a document of %d bytes of state holds one of the pod's %d load slots for its whole life, so %d of these forks stand at once; at most %d of the %d writes hold a connection at any moment, which is the API's write limit, and the %d waiting at it hold none of the %d the shared pool has - the %d the limit leaves are what the room workers' appends and the drive's own reader take",
-		len(state), loadSlotsForTest, loadSlotsForTest, apiWriteLimitForTest, writes, writes-apiWriteLimitForTest,
+	t.Logf("the slots and the pool: a fork of a document of %d bytes of state holds what one copy of it costs out of the pod's %d-byte load pool for its whole life, so more than one of these forks stands at once; at most %d of the %d writes hold a connection at any moment, which is the API's write limit, and the %d waiting at it hold none of the %d the shared pool has - the %d the limit leaves are what the room workers' appends and the drive's own reader take",
+		len(state), int64(worstCaseLoadSlotBytesForTest), apiWriteLimitForTest, writes, writes-apiWriteLimitForTest,
 		sharedPoolSizeForTest, sharedPoolSizeForTest-apiWriteLimitForTest)
 	t.Logf("the drive's %d documents owe the server no block index, so the only reads of them are the drive's own", memory.oweNoBlockIndex(t))
 
@@ -3386,16 +3392,43 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 	// publishedWithoutARoom), and the settlement each such write leaves owed opens one in its
 	// turn and gives it back, which the budget closes as soon as that settlement is done with it
 	// since the browsers of the fill hold it full (closeIfOpenedOverBudget, sweepRooms).
+	//
+	// How many of the burst's writes apply is the pod's to decide and not this drive's: at the
+	// calibration the pod's whole pool is one slot, each fork holds what its own copy costs for
+	// seconds, and every caller's request is answered 503 once it has spent the server's wait
+	// bound queued behind them (docs.WriteWaitBound), so the burst's applied count is what fits
+	// in that bound - four here, and thirteen when the writes waited for the client's own minute
+	// instead, both measured while every fork took a whole slot whatever it weighed
+	// (dispatch://INFRA-179). The settlement's opening is therefore proven beside the burst
+	// rather than inside it, by one cold write of its own below, which applies because nothing
+	// contends with it; what the burst itself holds is that the forks queued and that every
+	// write was answered.
 	holds := loadSlotHolds(t, window)
 	logLoadSlots(t, "the burst of concurrent live writes", holds)
-	opened := len(serverOpenedCloseLine.FindAllString(window, -1))
 	t.Logf("the room budget closed %d rooms the server's own work opened over it and swept %d unused rooms during the burst",
-		opened, len(budgetCloseLine.FindAllString(window, -1)))
+		len(serverOpenedCloseLine.FindAllString(window, -1)), len(budgetCloseLine.FindAllString(window, -1)))
 	if len(holds) == 0 {
-		t.Errorf("the server logged no holder of a load slot that waited for one, want the forks of the writes that queued behind the pod's %d", loadSlotsForTest)
+		t.Errorf("the server logged no holder of a load grant that waited for one, want the forks of the writes that queued behind the pod's %d-byte pool", int64(worstCaseLoadSlotBytesForTest))
 	}
+
+	// One cold write over the same fill, on its own: it is answered 200, its publish opens no
+	// room, and the settlement it leaves owed takes the budget's one opening in its turn and is
+	// closed out of it again, which is the mechanism the burst above cannot time.
+	alone := memory.projectDocumentCopies(t, sourceID, 1)[0]
+	aloneMark := len(server.output.String())
+	aloneCtx, cancelAlone := context.WithTimeout(context.Background(), liveWriteDeadline)
+	answeredAlone, aloneErr := server.editWithin(aloneCtx, alone, find, with)
+	cancelAlone()
+	if aloneErr != nil || answeredAlone.status != http.StatusOK {
+		t.Fatalf("the one cold write over the fill was answered %d (%v), want 200: nothing contends with it, so the wait bound cannot refuse it",
+			answeredAlone.status, aloneErr)
+	}
+	memory.waitForSettled(t, alone)
+	aloneWindow := server.output.String()[aloneMark:]
+	opened := len(serverOpenedCloseLine.FindAllString(aloneWindow, -1))
+	t.Logf("the one cold write over the fill: applied, and the budget closed %d rooms the server's own work opened over it", opened)
 	if opened == 0 {
-		t.Errorf("the room budget closed no room the server's own work opened over it, want the rooms the cold writes' settlements each took the budget's one opening for: either no write applied cold or those rooms were never charged to the budget")
+		t.Errorf("the room budget closed no room the server's own work opened over it after a cold write settled over a full fill, want the one its settlement took the budget's opening for: either the settlement loaded no room or that room was never charged to the budget")
 	}
 	for _, measured := range []struct {
 		step string
@@ -4964,22 +4997,22 @@ func budgetRefusalsByRoom(t *testing.T, server *memoryServer) map[string]budgetR
 	return refusals
 }
 
-// loadSlotLine is the line the server logs as it gives back a slot of the pod's load concurrency
-// that waited a tenth of a second or more for it (logLoadSlot,
-// internal/dispatch/docs/copy_heap.go): how many slots the pod has, how long this holder waited
-// and how long it held one, the line's time being when it gave it back. A slot no holder waited
-// for leaves no line, so what a drive reads from these is the queue the slots made and nothing
-// else.
-var loadSlotLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch: a load slot was given back" bound=load slots=(\d+) waited=(\S+) held=(\S+)`)
+// loadSlotLine is the line the server logs as it gives back a grant of the pod's load
+// concurrency that waited a tenth of a second or more for it (logLoadSlot,
+// internal/dispatch/docs/copy_heap.go): the bytes of the pool it held, the bytes the whole pool
+// has, how long this holder waited and how long it held them, the line's time being when it
+// gave them back. A grant no holder waited for leaves no line, so what a drive reads from these
+// is the queue the pool made and nothing else.
+var loadSlotLine = regexp.MustCompile(`time=(\S+) level=INFO msg="dispatch: a load slot was given back" bound=load bytes=(\d+) pool=(\d+) waited=(\S+) held=(\S+)`)
 
-// loadSlotHold is one slot the server logged (loadSlotLine), held from from to to.
+// loadSlotHold is one grant the server logged (loadSlotLine), held from from to to.
 type loadSlotHold struct {
-	slots        int64
+	bytes, pool  int64
 	waited, held time.Duration
 	from, to     time.Time
 }
 
-// loadSlotHolds is every slot logged in output, in the order the server gave them back.
+// loadSlotHolds is every grant logged in output, in the order the server gave them back.
 func loadSlotHolds(t *testing.T, output string) []loadSlotHold {
 	t.Helper()
 	var holds []loadSlotHold
@@ -4989,11 +5022,13 @@ func loadSlotHolds(t *testing.T, output string) []loadSlotHold {
 		if hold.to, err = time.Parse(time.RFC3339Nano, match[1]); err != nil {
 			t.Fatalf("parse %q: %v", match[0], err)
 		}
-		if hold.slots, err = strconv.ParseInt(match[2], 10, 64); err != nil {
-			t.Fatalf("parse %q: %v", match[0], err)
+		for index, field := range []*int64{&hold.bytes, &hold.pool} {
+			if *field, err = strconv.ParseInt(match[index+2], 10, 64); err != nil {
+				t.Fatalf("parse %q: %v", match[0], err)
+			}
 		}
 		for index, field := range []*time.Duration{&hold.waited, &hold.held} {
-			if *field, err = time.ParseDuration(match[index+3]); err != nil {
+			if *field, err = time.ParseDuration(match[index+4]); err != nil {
 				t.Fatalf("parse %q: %v", match[0], err)
 			}
 		}
@@ -5003,18 +5038,22 @@ func loadSlotHolds(t *testing.T, output string) []loadSlotHold {
 	return holds
 }
 
-// logLoadSlots logs how many holders of the pod's load concurrency waited for a slot under what,
-// the longest any waited and the longest any held one, and fails the drive where a line names a
-// pod of other than the slots this package mirrors.
+// logLoadSlots logs how many holders of the pod's load concurrency waited for room in it under
+// what, the longest any waited, the longest any held what it took and the most any one of them
+// held, and fails the drive where a line names a pool of other than the bytes this package
+// mirrors.
 func logLoadSlots(t *testing.T, what string, holds []loadSlotHold) {
 	t.Helper()
 	var waited, held time.Duration
+	var heaviest int64
 	for _, hold := range holds {
-		if hold.slots != loadSlotsForTest {
-			t.Errorf("the server logged a slot of a pod of %d slots, want the %d this package mirrors", hold.slots, loadSlotsForTest)
+		if hold.pool != int64(worstCaseLoadSlotBytesForTest) {
+			t.Errorf("the server logged a grant of a pool of %d bytes, want the %d this package mirrors",
+				hold.pool, int64(worstCaseLoadSlotBytesForTest))
 		}
 		waited, held = max(waited, hold.waited), max(held, hold.held)
+		heaviest = max(heaviest, hold.bytes)
 	}
-	t.Logf("%s: %d holders of the pod's %d load slots waited for one; the longest wait %s, the longest hold %s",
-		what, len(holds), loadSlotsForTest, waited.Round(time.Millisecond), held.Round(time.Millisecond))
+	t.Logf("%s: %d holders of the pod's %d-byte load pool waited for room in it; the longest wait %s, the longest hold %s, the heaviest grant %d bytes",
+		what, len(holds), int64(worstCaseLoadSlotBytesForTest), waited.Round(time.Millisecond), held.Round(time.Millisecond), heaviest)
 }

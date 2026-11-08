@@ -2,7 +2,8 @@ package docs
 
 // This file holds the one price the room budget charges a loaded room at - the heap one copy of a
 // document is measured to hold for each byte of its encoded state - and the arithmetic that turns
-// a room's tracked state bytes into the weight the budget carries (roomWeight).
+// a room's tracked state bytes into the weight the budget carries (roomWeight) and into what one
+// copy of it takes of the pod's load concurrency (copyWeight).
 
 // bytesOfHeapAStateByte is the heap one copy of a document holds for each byte of its encoded
 // state. Measured 2026-11-05 over eleven shapes
@@ -41,4 +42,19 @@ const roomCopies = 2
 // it does hold.
 func roomWeight(stateBytes int64) int64 {
 	return stateBytes * bytesOfHeapAStateByte * roomCopies
+}
+
+// copyWeight is what one whole-document copy built from stateBytes bytes of state takes of the
+// pod's load concurrency (loadSlots): that state at bytesOfHeapAStateByte in the one copy, 14
+// bytes a state byte, against the 28 roomWeight charges a room for the two it keeps. A mebibyte
+// of prose, whose state is 3,035,240 bytes, takes 42,493,360 bytes, where its room is charged
+// 84,986,720.
+//
+// It is clamped to at least one byte, so every taker holds something of the pool and the pool is
+// what bounds them rather than their number, and to at most loadSlotBytes, one slot: that is the
+// figure the slot was sized from, the heaviest whole-document decode measured and more
+// (loadSlotBytes), and a copy capped at it can always be admitted on its own, however heavy the
+// document, since the pool is never smaller than one slot (newLoadSlots).
+func copyWeight(stateBytes int64) int64 {
+	return min(max(stateBytes*bytesOfHeapAStateByte, 1), loadSlotBytes)
 }

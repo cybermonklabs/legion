@@ -54,16 +54,16 @@ func storedWriteOf(t *testing.T, service *Service, artifactID string) storedWrit
 	return counted
 }
 
-// heldLoadSlots gives the process a load concurrency of one slot and holds it, so the next live
-// write waits for its fork's slot (liveWrite.coverFork), and answers the release that frees it.
-// It is the shape TestAnAPIWriteWhoseRequestEndsWhileItWaitsForASlotIsRefusedAndChangesNothing
-// holds the slots in.
+// heldLoadSlots gives the process a load concurrency of one slot and holds the whole of its
+// pool - a holder of loadSlotBytes fills one slot's worth - so the next live write waits for its
+// fork's bytes (liveWrite.coverFork), and answers the release that frees them. It is the shape
+// TestAnAPIWriteWhoseRequestEndsWhileItWaitsForASlotIsRefusedAndChangesNothing holds the pool in.
 func heldLoadSlots(t *testing.T) (slots *loadSlots, free func()) {
 	t.Helper()
 	slots = useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	return slots, sync.OnceFunc(holder.release)
 }

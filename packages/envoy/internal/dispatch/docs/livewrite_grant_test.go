@@ -67,14 +67,17 @@ func requireHeading(t *testing.T, service *Service, artifactID string, held bool
 	}
 }
 
-// Writes to four rooms at once, against a load concurrency of two slots, never hold more slots
-// together than it has, and every one of them lands: the third waits for one of the two to drop
-// its fork. Each slot is held a tenth of a second past its take, so the writes overlap. The
-// rooms are resident, so every fork is the replica cloned (Service.forkPoint), which is the
-// usual fork and which took no slot at all before this change; and each is on an issue of its
-// own, since a write takes its document's owner row and writes to one issue queue on it
-// (lockArtifactOwner) rather than on the concurrency.
-func TestConcurrentLiveWritesNeverHoldMoreSlotsThanThePodHas(t *testing.T) {
+// Writes to four rooms at once, against a pool left with room for two of their forks, never hold
+// more of it than it has, and every one of them lands: the third waits for one of the two to
+// drop its fork. Each grant is held a tenth of a second past its take, so the writes overlap.
+// The rooms are resident, so every fork is the replica cloned (Service.forkPoint), which is the
+// usual fork and which took no slot at all before the bound was cut over to bytes; and each is
+// on an issue of its own, since a write takes its document's owner row and writes to one issue
+// queue on it (lockArtifactOwner) rather than on the concurrency.
+//
+// What bounds the writes here is the bytes the test leaves free and not the slots: a fork of one
+// of these 16 KiB rooms costs what a copy of it costs (copyOfRoom), far less than a slot.
+func TestConcurrentLiveWritesNeverHoldMoreOfThePoolThanItHas(t *testing.T) {
 	const together = 2
 	service, _ := newTestService(t)
 	service.settle = time.Hour
@@ -88,7 +91,11 @@ func TestConcurrentLiveWritesNeverHoldMoreSlotsThanThePodHas(t *testing.T) {
 			t.Fatalf("load room %s: %v", room, err)
 		}
 	}
-	slots := useLoadSlots(t, newLoadSlots(together))
+	// Every room is tracked at the state storeHistory wrote and its load decoded, with nothing
+	// drained since, so each write's fork takes exactly what a copy of that state costs
+	// (warmFork, copyOfRoom).
+	each := copyWeight(int64(len(state)))
+	slots, test := loadSlotsWithRoomFor(t, together, together*each)
 	var most atomic.Int64
 	var taken slotsHeld
 	slots.taken = func(held int64) {
@@ -111,18 +118,21 @@ func TestConcurrentLiveWritesNeverHoldMoreSlotsThanThePodHas(t *testing.T) {
 			t.Fatal("the writes did not all finish in 60 s")
 		}
 	}
-	if got := most.Load(); got > slots.size || got < together {
-		t.Fatalf("the writes held %d slots at most, want the %d the concurrency has and never more", got, together)
+	if got := most.Load(); got > slots.poolBytes() {
+		t.Fatalf("the writes held %d bytes at most, past the %d the pool has", got, slots.poolBytes())
+	}
+	if got := most.Load() - test; got < together*each {
+		t.Fatalf("the writes held %d bytes of the pool at most beside the test's %d, want at least the %d two forks take: they wrote one at a time", got, test, together*each)
 	}
 	if got := taken.all(); len(got) != len(rooms) {
-		t.Fatalf("the %d writes took %v slots, want one each: a fork that takes none is a whole document the concurrency does not hold",
+		t.Fatalf("the %d writes took %v grants, want one each: a fork that takes nothing is a whole document the concurrency does not hold",
 			len(rooms), got)
 	}
 	for _, room := range rooms {
 		requireHeading(t, service, room, false)
 	}
-	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("the writes still hold %d slots once they have landed", held)
+	if held := slots.held.Load(); held != test {
+		t.Fatalf("the writes hold %d bytes once they have landed, want the %d the test holds and none of their own", held, test)
 	}
 }
 
@@ -141,8 +151,8 @@ func TestAColdWriteWhoseForkDecodesWhileTheSlotsAreFullTakesOneSlot(t *testing.T
 	}
 	slots := useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	var waits atomic.Int64
 	waiting := make(chan struct{})
@@ -169,14 +179,14 @@ func TestAColdWriteWhoseForkDecodesWhileTheSlotsAreFullTakesOneSlot(t *testing.T
 			t.Fatalf("the write failed: %v", err)
 		}
 	case <-time.After(60 * time.Second):
-		t.Fatal("the write did not finish in 60 s once the slot was free: its decode waits for a second slot inside its own")
+		t.Fatal("the write did not finish in 60 s once the pool was free: its decode waits for a second grant inside its own")
 	}
 	if got := waits.Load(); got != 1 {
-		t.Fatalf("%d holds waited for a slot, want only the write's own cover: a decode inside the write must cover the slot the write carries", got)
+		t.Fatalf("%d holds waited for the pool, want only the write's own cover: a decode inside the write must cover the grant the write carries", got)
 	}
 	requireHeading(t, service, artifactID, false)
 	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("the write still holds %d slots once it has landed", held)
+		t.Fatalf("the write still holds %d bytes once it has landed", held)
 	}
 }
 
@@ -194,8 +204,8 @@ func TestAnAPIWriteWhoseRequestEndsWhileItWaitsForASlotIsRefusedAndChangesNothin
 	}
 	slots := useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
@@ -220,8 +230,8 @@ func TestAnAPIWriteWhoseRequestEndsWhileItWaitsForASlotIsRefusedAndChangesNothin
 	if !errors.Is(err, ErrServiceUnavailable) {
 		t.Fatalf("the write answered %v, want ErrServiceUnavailable, which the API answers 503", err)
 	}
-	if held := slots.held.Load(); held != 1 {
-		t.Fatalf("%d slots are held, want the one the test holds and none of the refused write's", held)
+	if held := slots.held.Load(); held != loadSlotBytes {
+		t.Fatalf("%d bytes are held, want the slot the test holds and nothing of the refused write's", held)
 	}
 	requireHeading(t, service, artifactID, true)
 	holder.release()
@@ -244,8 +254,8 @@ func TestAServerWriteWaitsForASlotWithoutADeadlineAndThenLands(t *testing.T) {
 	}
 	slots := useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
@@ -278,7 +288,7 @@ func TestAServerWriteWaitsForASlotWithoutADeadlineAndThenLands(t *testing.T) {
 	}
 	requireHeading(t, service, artifactID, false)
 	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("the write still holds %d slots once it has landed", held)
+		t.Fatalf("the write still holds %d bytes once it has landed", held)
 	}
 }
 
@@ -290,13 +300,14 @@ const streamHeading = "Heading Grant"
 // A stream of API live writes that keeps the pod's load concurrency busy starves neither a
 // browser's room load nor a write of the server's own: both wait their turn and both run. Three
 // goroutines write to resident rooms of their own, each starting its next write as soon as its
-// last one returned, against a concurrency of two slots, so one of them is always waiting;
-// while that runs, a room no process holds is loaded (the path a browser's join takes, which
-// covers a grant of its own with no deadline, loadDecodedHistory) and one write of the server's
-// own, whose context carries no deadline and no cancel, is made on a fourth room.
+// last one returned, against a pool left with room for two of their forks, so one of them is
+// always waiting; while that runs, a room no process holds is loaded (the path a browser's join
+// takes, which covers a grant of its own with no deadline, loadDecodedHistory) and one write of
+// the server's own, whose context carries no deadline and no cancel, is made on a fourth room.
 //
 // Neither can starve, because the concurrency's waiters are served in the order they came. A
-// caller that finds a slot free takes it at once only while nothing is queued - golang.org/x/sync
+// caller that finds the pool with room for its bytes takes them at once only while nothing is
+// queued - golang.org/x/sync
 // v0.24.0, semaphore/semaphore.go:57-65, whose fast path is guarded by `s.waiters.Len() == 0` -
 // and a release notifies the waiters from the front of the list, stopping at the first whose
 // weight does not fit rather than passing over it (notifyWaiters, semaphore.go:145-165, whose
@@ -335,7 +346,11 @@ func TestAStreamOfAPILiveWritesStarvesNeitherARoomLoadNorAServerWrite(t *testing
 	if err := loadRoomOf(service, serverRoom); err != nil {
 		t.Fatalf("load the server write's room: %v", err)
 	}
-	slots := useLoadSlots(t, newLoadSlots(2))
+	// A fork of one of these rooms costs what a copy of its state costs (copyOfRoom), and the
+	// load's room, whose whole stored history is the one row storeHistory wrote, costs the same
+	// (loadDecodedHistory). The pool is left room for two of them, so a third taker waits.
+	each := copyWeight(int64(len(state)))
+	slots, test := loadSlotsWithRoomFor(t, 2, 2*each)
 	var waits atomic.Int64
 	slots.waiting = func() { waits.Add(1) }
 
@@ -432,8 +447,8 @@ func TestAStreamOfAPILiveWritesStarvesNeitherARoomLoadNorAServerWrite(t *testing
 		t.Fatalf("a write of the stream failed: %v", err)
 	default:
 	}
-	t.Logf("one uncontended write took %s; behind %d API writes over %d goroutines against a concurrency of %d slots, the room load took %s and the server write %s, and %d holds waited for a slot",
-		one, written.Load(), writers, slots.size, loadTook, serverTook, waits.Load())
+	t.Logf("one uncontended write took %s; behind %d API writes over %d goroutines against a pool left with room for %d bytes of forks, the room load took %s and the server write %s, and %d holds waited for a grant",
+		one, written.Load(), writers, 2*each, loadTook, serverTook, waits.Load())
 	if loadTook > within || serverTook > within {
 		t.Fatalf("the room load took %s and the server write %s, past the %s a write of %s allows", loadTook, serverTook, within, one)
 	}
@@ -441,7 +456,7 @@ func TestAStreamOfAPILiveWritesStarvesNeitherARoomLoadNorAServerWrite(t *testing
 		t.Fatal("the room the load was asked for is not resident")
 	}
 	requireHeading(t, service, serverRoom, false)
-	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("%d slots are still held once the stream has stopped", held)
+	if held := slots.held.Load(); held != test {
+		t.Fatalf("%d bytes are still held once the stream has stopped, want the %d the test holds", held, test)
 	}
 }

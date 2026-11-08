@@ -30,33 +30,39 @@ type MemoryBounds struct {
 	// (documentReadBudget). It does not scale: it is a cache of whole renderings, each at most
 	// pmdoc.MaxDocumentBytes, and 256 MiB of them is what a request path's reads reuse.
 	DocumentReadCache int64
-	// LoadSlots is how many whole-document copies the pod builds at once (loadSlots): one slot
-	// covers one whole-document decode, one live write's fork or one apply of an update over
-	// unslottedApplyBytes, and a taker that finds every slot held waits for one before it takes
-	// a database connection, its request's own deadline answering 503 (errWriteBusy). It is what
-	// the limit leaves above the room budget and the cold reads' cache, three quarters of it,
-	// divided by loadSlotBytes: 1 at the calibration and 16 at the 32Gi production limit
-	// (30,923,764,531, whose 13,475,459,890 above the two leaves 10,106,594,917 to the slots).
-	// The quarter left out is the collector's and the request path's.
+	// LoadSlots is how many slots of loadSlotBytes the pod's whole-document copy heap holds
+	// (loadSlots). What that heap bounds is the bytes: each whole-document decode, live write's
+	// fork and apply of an update over unslottedApplyBytes takes out of one pool of
+	// LoadSlots × loadSlotBytes what its own copy costs (copyWeight), and a taker that finds too
+	// little of the pool free waits for the rest before it takes a database connection, its
+	// request's own deadline answering 503 (errWriteBusy). It is what the limit leaves above the
+	// room budget and the cold reads' cache, three quarters of it, divided by loadSlotBytes: 1
+	// at the calibration and 16 at the 32Gi production limit (30,923,764,531, whose
+	// 13,475,459,890 above the two leaves 10,106,594,917 to the slots). The quarter left out is
+	// the collector's and the request path's.
 	//
 	// One slot at the calibration is not only a memory bound: it is what keeps A3's "the
 	// refusals begin within one room of the budget's own arithmetic" true now that an admission
-	// reserves nothing for the document it is about to load. With one cold load at a time the
-	// budget sees each room's weight before the next load begins, so fifty admissions at once
-	// serialise into one after another, each weighed against the rooms the ones before it left
-	// charged, rather than fifty of them reading the same headroom at the same moment.
+	// reserves nothing for the document it is about to load. A socket's admission takes a whole
+	// slot for its read, since it has not read the state it is about to decode and will not read
+	// the store twice to learn its size (socket_admission.go), so at the calibration one cold
+	// load runs at a time: the budget sees each room's weight before the next load begins, and
+	// fifty admissions at once serialise into one after another, each weighed against the rooms
+	// the ones before it left charged, rather than fifty of them reading the same headroom at
+	// the same moment.
 	LoadSlots int
 	// PeerWriteQueue is ygo's Server.PeerWriteQueueBytes, the bytes of frames one browser's
 	// socket may hold queued (peerWriteQueueBytes). It does not scale: see that constant.
 	PeerWriteQueue int64
 }
 
-// loadSlotBytes is the heap one slot of the pod's load concurrency allows its holder: 600 MB, one
-// whole-document decode, one fork or one heavy apply. The heaviest whole-document decode measured
-// holds 320,762,656 bytes above what it leaves behind, the heaviest honest apply the decode
-// budget allows is about 470 MB, and a fork is lighter than a decode, so a slot of this size
-// covers whichever of the three takes it
-// (dispatch://INFRA-179/artifact/infra179-simplify-measured-md).
+// loadSlotBytes is the heap one slot of the pod's load concurrency stands for, 600 MB, and the
+// most any one taker may take of the pool it is a slot of (copyWeight): one whole-document
+// decode, one fork or one heavy apply, whatever the document weighs. The heaviest whole-document
+// decode measured holds 320,762,656 bytes above what it leaves behind, the heaviest honest apply
+// the decode budget allows is about 470 MB, and a fork is lighter than a decode, so a slot of
+// this size covers whichever of the three takes it, and a taker that can name no state takes one
+// whole (dispatch://INFRA-179/artifact/infra179-simplify-measured-md).
 const loadSlotBytes = 600_000_000
 
 // BoundsForLimit is the bounds a Go memory limit of limit gives the document service. It is pure,

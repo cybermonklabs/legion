@@ -45,12 +45,13 @@ const smallestReplacementAdds = 3
 //
 // The struct total costs neither an encode nor a decode (crdt.Doc.StructCount). The scan test
 // encodes doc's state and decodes it afresh, a whole-document decode like any other, so the
-// check holds a slot of the pod's load concurrency (holdLoad) from before that encode until it
+// check holds bytes of the pod's load concurrency (holdLoad) from before that encode until it
 // answers: its own where ctx carries none, as the check of a live room makes it
-// (RebuildDocument), and the caller's where ctx carries one (rebuildSource). A wait ctx ends is
-// its error, and no answer.
-func nearACap(ctx context.Context, doc *crdt.Doc) (why string, near bool, err error) {
-	release, err := holdLoad(ctx)
+// (RebuildDocument, which weighs it at a whole copy of that room, copyOfRoom), and the caller's
+// where ctx carries one, which covers it already (rebuildSource). A wait ctx ends is its error,
+// and no answer.
+func nearACap(ctx context.Context, doc *crdt.Doc, bytes int64) (why string, near bool, err error) {
+	release, err := holdLoad(ctx, bytes)
 	if err != nil {
 		return "", false, err
 	}
@@ -163,7 +164,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		// The check decodes the room's whole state, so it waits for its grant of the copy-heap
 		// bound within this request (nearACap): a wait this request ends leaves the rebuild to
 		// the caller's retry, as a close the server could not make does below.
-		_, near, err := nearACap(ctx, live)
+		_, near, err := nearACap(ctx, live, s.copyOfRoom(live))
 		if err != nil {
 			return RebuildReport{}, VersionResult{}, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 		}
@@ -372,7 +373,7 @@ func (s *Service) rebuildSource(ctx context.Context, artifactID string) (*crdt.D
 	if history == nil {
 		history = newCappedDocumentCopy(s.maxPendingItems)
 	}
-	why, near, err := nearACap(ctx, history)
+	why, near, err := nearACap(ctx, history, copyWeight(int64(len(read.loaded.Update))))
 	if err != nil {
 		return nil, 0, "", nil, fmt.Errorf("%w: weigh document %s before its rebuild: %v", ErrServiceUnavailable, artifactID, err)
 	}

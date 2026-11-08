@@ -225,10 +225,10 @@ func requireRoomNotFailed(t *testing.T, service *Service, artifactID string) {
 }
 
 // writeCopies counts the copies a server write makes of a room's document to count itself
-// against the decode cap (structsAfter). The copy is a whole second document, so it takes a slot
-// of the pod's load concurrency before it decodes (holdServerLoad), and that slot is the one
-// trace such a copy leaves: the step before it, the document's own ceiling (structCeiling), reads
-// the store and takes nothing.
+// against the decode cap (structsAfter). The copy is a whole second document, so it takes a
+// grant of the pod's load concurrency before it decodes (holdServerLoad), and that grant is the
+// one trace such a copy leaves: the step before it, the document's own ceiling (structCeiling),
+// reads the store and takes nothing.
 type writeCopies struct{ copies atomic.Int64 }
 
 // recordWriteCopies gives the process a load concurrency of its own for the rest of t and counts
@@ -996,7 +996,7 @@ func BenchmarkDecodeCapConfirmation(b *testing.B) {
 					return nil
 				}},
 				{"copy-and-count", func() error {
-					if got := structsAfter(context.Background(), live, serverWrite{apply: typeOne}); got <= structs {
+					if got := structsAfter(context.Background(), live, serverWrite{apply: typeOne}, copyWeight(int64(state))); got <= structs {
 						return fmt.Errorf("the write was counted to %d structs, want more than the document's %d", got, structs)
 					}
 					return nil

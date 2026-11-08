@@ -74,7 +74,8 @@ func stateThrough(ctx context.Context, room string, version persistence.Version,
 // the fold's read-back check decoded when the state reads back, and otherwise - a log of one
 // update, which the fold returns as stored, or a log that does not fold, which is served merged -
 // the state decoded into a document with the store's pending queue, maxPending, as a room decodes
-// it, under the load slot ctx carries or one of its own (holdLoad). A state
+// it, under the load grant ctx carries or one of its own, weighed on the state it decodes
+// (holdLoad, copyWeight). A state
 // that does not decode is ErrDocumentUnloadable; a log holding no update is no document.
 func documentThrough(ctx context.Context, room string, version persistence.Version, updates updateSource, maxPending int) (*crdt.Doc, error) {
 	state, readBack, misread, err := fold(ctx, updates, maxPending)
@@ -93,7 +94,7 @@ func documentThrough(ctx context.Context, room string, version persistence.Versi
 	if len(state) == 0 {
 		return nil, nil
 	}
-	release, err := holdLoad(ctx)
+	release, err := holdLoad(ctx, copyWeight(int64(len(state))))
 	if err != nil {
 		return nil, err
 	}
@@ -152,13 +153,14 @@ const bufferedFolds = store.RoomsPoolSize
 // wait for, the load slot below, has no holder that takes a fold slot - so every holder gives
 // its fold slot back.
 //
-// A log of more than one update is read and folded under one slot of the pod's load concurrency
-// (loadSlots), the slot ctx carries - a room load's, whose fold is its first decode - or one of
-// this read's own, given back as it returns; use takes that ctx, so the fold's own decodes run
-// inside the same slot (fold, documentThrough). A log of one update takes none of its own: it is
-// returned as stored, and whoever decodes it takes the slot (documentThrough). The buffered
-// fold's slot is taken before the load slot, never the other way about, which is what keeps that
-// one wait out of a cycle (podLoadSlots).
+// A log of more than one update is read and folded under one grant of the pod's load concurrency
+// (loadSlots), the grant ctx carries - a room load's, whose fold is its first decode - or one of
+// this read's own, taken on the rows' own bytes, which is what the state they fold into is built
+// from, and given back as it returns; use takes that ctx, so the fold's own decodes run inside
+// the same grant (fold, documentThrough). A log of one update takes nothing of its own: it is
+// returned as stored, and whoever decodes it takes the grant (documentThrough). The buffered
+// fold's slot is taken before the load grant, never the other way about, which is what keeps
+// that one wait out of a cycle (podLoadSlots).
 func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, version persistence.Version, rows int, bytes int64, what string, use func(context.Context, updateSource) error) error {
 	ctx, slot, release := withLoadSlot(ctx)
 	defer release()
@@ -172,7 +174,7 @@ func (p *PgVersioned) foldRead(ctx context.Context, tx pgx.Tx, room string, vers
 		if rows <= 1 {
 			return nil
 		}
-		return slot.take(ctx)
+		return slot.take(ctx, copyWeight(bytes))
 	}
 	if bytes > p.foldBuffer() {
 		if err := cover(); err != nil {
@@ -288,9 +290,9 @@ func memoryUpdates(ctx context.Context, updates [][]byte) updateSource {
 // as stored, with no document. The fold holds one document at once: its own, until it has encoded
 // the state, then the read-back's.
 //
-// Whoever read the updates took the load slot ctx carries (foldRead), and the read-back's decode
-// runs inside it. A fold under a context carrying no slot takes one of its own, given back as it
-// returns (holdLoad).
+// Whoever read the updates took the load grant ctx carries (foldRead), and the read-back's decode
+// runs inside it. A fold under a context carrying no grant takes one of its own, weighed on the
+// state it is about to read back, and given back as it returns (holdLoad).
 func fold(ctx context.Context, updates updateSource, maxPending int) (state []byte, readBack *crdt.Doc, misread error, err error) {
 	var doc *crdt.Doc
 	apply := func(update []byte) error {
@@ -345,7 +347,7 @@ func fold(ctx context.Context, updates updateSource, maxPending int) (state []by
 		}
 	}
 	doc = nil
-	release, err := holdLoad(ctx)
+	release, err := holdLoad(ctx, copyWeight(int64(len(state))))
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -420,8 +422,8 @@ type LoadedDocument struct {
 // foldBufferBytes and while it streams them inside it otherwise (foldRead), and noted once it has
 // read more than one row. Its document is the one Load's state decodes into (documentThrough), so
 // a read of it shows what a room load would. A history that does not decode is
-// ErrDocumentUnloadable. Its fold and decode share one slot of the pod's load concurrency, given
-// back as it returns the document to its caller.
+// ErrDocumentUnloadable. Its fold and decode share one grant of the pod's load concurrency,
+// weighed on the rows they fold, given back as it returns the document to its caller.
 func (p *PgVersioned) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
 	ctx, _, done := withLoadSlot(ctx)
 	defer done()

@@ -158,7 +158,7 @@ type servicePersistenceAdapter struct {
 // alike: its scans are the room's scan total at its load (roomScans), and its copy the room's
 // replica (keepReplica). So the stored state is decoded twice on a room's load, that copy and the
 // load hook's own decode of the same bytes; those decodes, and a fold before them, run under the
-// load's one slot of the pod's load concurrency (loadedState.slot).
+// load's one grant of the pod's load concurrency (loadedState.slot).
 //
 // The record also carries the history's size and what a socket's admission made of that history
 // when the load takes that socket's preload: the tree it read from it and the rendering it made of
@@ -204,11 +204,12 @@ func (a *servicePersistenceAdapter) LoadDoc(room string) (_ []byte, err error) {
 	}()
 	if loaded, rendered, ok := a.service.takePreload(room); ok {
 		// The admission that read this state decoded it for its own schema check and kept no
-		// copy (loadTree), so the room's copy is decoded here, under the slot this load holds
-		// for it. A state ygo refuses the bytes of never reaches a preload - the admission's
-		// own decode refused it first - and is left to the room's decode either way, as the
-		// read's own path leaves it (loadDecoded).
-		_ = slot.take(context.Background())
+		// copy (loadTree), so the room's copy is decoded here, under the grant this load holds
+		// for it, weighed on the state the admission read (copyWeight). A state ygo refuses the
+		// bytes of never reaches a preload - the admission's own decode refused it first - and
+		// is left to the room's decode either way, as the read's own path leaves it
+		// (loadDecoded).
+		_ = slot.take(context.Background(), copyWeight(int64(len(loaded.Update))))
 		decoded, _ := decodeStoredCopy(loaded.Update, a.service.maxPendingItems)
 		load.read(loaded.Version, loaded.Update, decoded, slot, rendered)
 		return nil, nil
@@ -587,8 +588,8 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	}()
 	// The state is decoded into the room's own document here rather than through ygo (LoadDoc),
 	// before anything reads or observes the document (bootstrapLoadedState). It is the last thing
-	// the load's slot covers, so the slot is given back as soon as it returns: the reads below
-	// wait on the rooms pool, and must hold no slot while they do (podLoadSlots).
+	// the load's grant covers, so it is given back as soon as it returns: the reads below wait
+	// on the rooms pool, and must hold nothing of it while they do (podLoadSlots).
 	decodeErr := s.bootstrapLoadedState(room, doc, taken.state)
 	taken.slot.release()
 	if decodeErr != nil {
@@ -739,12 +740,12 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 	// record gave it up as it was taken (takePreload, takeLoadedState) - so the replica owns it,
 	// and the room's first transaction decodes nothing more (renderedReplica.observe). A room ygo
 	// loaded without reading the store through this service's persistence is decoded again here,
-	// from its own document's state, under a slot of its own (holdServerLoad), given back once
-	// the copy is the replica's.
+	// from its own document's state, under a grant of its own weighed on that state
+	// (holdServerLoad, copyWeight), given back once the copy is the replica's.
 	stateBytes := int64(len(taken.state))
 	if record == nil {
 		encoded := crdt.EncodeStateAsUpdateV1(doc, nil)
-		release := holdServerLoad(ctx)
+		release := holdServerLoad(ctx, copyWeight(int64(len(encoded))))
 		loaded, _ = decodeStoredCopy(encoded, s.maxPendingItems)
 		release()
 		stateBytes = int64(len(encoded))

@@ -62,9 +62,9 @@ type Ledger struct {
 	// flushes are the room updates this transaction stored ahead of its own appends, one flush
 	// per document (flushThrough), which its commit marks stored.
 	flushes []*RoomFlush
-	// forks is this transaction's slot of the pod's load concurrency, shared by every live write
-	// it opens and taken on the first (forkSlot, liveWrite.coverFork): one slot for all its
-	// forks, so a transaction writing two documents never waits for a slot a fork of its own
+	// forks is this transaction's grant of the pod's load concurrency, shared by every live
+	// write it opens and taken on the first (forkSlot, liveWrite.coverFork): one grant for all
+	// its forks, so a transaction writing two documents never waits for bytes a fork of its own
 	// holds.
 	forks *forkSlot
 }
@@ -724,12 +724,12 @@ func (l *Ledger) publish() {
 	}
 }
 
-// forkSlot is this transaction's slot of the pod's load concurrency, made on its first live
+// forkSlot is this transaction's grant of the pod's load concurrency, made on its first live
 // write (forks). A caller already holding one hands it over in ctx, and the transaction's forks
-// take that one rather than a second: a document socket's admission holds a slot from before
-// the budget weighs it until its room has loaded (ServeHTTP), and reads the document inside it,
-// so a fork made under that read would wait for a slot its own holder will not give back until
-// the read returns - at the calibration's one slot, for ever.
+// take that one rather than a second: a document socket's admission holds a whole slot from
+// before the budget weighs it until its room has loaded (ServeHTTP), and reads the document
+// inside it, so a fork made under that read would wait for bytes its own holder will not give
+// back until the read returns - at the calibration, whose pool is that one slot, for ever.
 func (l *Ledger) forkSlot(ctx context.Context) *forkSlot {
 	if l.forks == nil {
 		held, carried := ctx.Value(loadSlotKey{}).(*loadSlot)

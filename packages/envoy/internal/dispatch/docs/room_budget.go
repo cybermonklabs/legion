@@ -31,8 +31,9 @@ import (
 //
 // Nothing is reserved before a room loads. What keeps fifty admissions at once from each reading
 // the same headroom is the pod's load concurrency, one slot at the calibration
-// (MemoryBounds.LoadSlots): each cold load holds a slot while it decodes, so the budget sees
-// each room's charge before the next load begins.
+// (MemoryBounds.LoadSlots): a socket's admission holds that whole slot while it reads and
+// decodes the state the room is about to load (socket_admission.go), so the budget sees each
+// room's charge before the next admission's load begins.
 const roomBudgetBytes = 2 << 30
 
 // admissionFlushAllowance is what an admission that finds the budget short waits for its sweep

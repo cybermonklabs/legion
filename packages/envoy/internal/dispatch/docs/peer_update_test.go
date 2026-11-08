@@ -1537,12 +1537,12 @@ func TestAPeerUpdateIsAppliedWhileAnotherBrowsersApplyIsStillRunning(t *testing.
 	runtime.KeepAlive(replica)
 }
 
-// An apply of an update over unslottedApplyBytes takes a slot of the pod's load concurrency and
-// holds it across the apply, so a reconnect storm's whole-state handoffs decode as many at a time
-// as the pod has slots rather than all at once; a keystroke, far under that size, takes none and
-// never waits for one. With the pod's one slot held, the heavy update waits before its apply and
-// the keystroke beside it applies at once; once the slot is given back the heavy update applies
-// too, and gives its slot back.
+// An apply of an update over unslottedApplyBytes takes what its apply costs out of the pod's
+// load concurrency and holds it across the apply, so a reconnect storm's whole-state handoffs
+// decode as many at a time as the pool holds rather than all at once; a keystroke, far under
+// that size, takes nothing and never waits. With the pod's whole pool held, the heavy update
+// waits before its apply and the keystroke beside it applies at once; once the pool is free the
+// heavy update applies too, and gives its bytes back.
 func TestAHeavyApplyTakesASlotOfTheLoadConcurrencyAndAKeystrokeTakesNone(t *testing.T) {
 	const values, each = 1_000, 4_000
 	service, room, replica := peerUpdateRoom(t, "# Title\n\nOne paragraph of ordinary prose.\n", 0)
@@ -1560,8 +1560,8 @@ func TestAHeavyApplyTakesASlotOfTheLoadConcurrencyAndAKeystrokeTakesNone(t *test
 	}
 	slots := useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
@@ -1613,7 +1613,7 @@ func TestAHeavyApplyTakesASlotOfTheLoadConcurrencyAndAKeystrokeTakesNone(t *test
 		t.Fatal("the heavy update did not apply in 30 s once a slot was free")
 	}
 	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("%d slots are held once the heavy apply has returned, want none", held)
+		t.Fatalf("%d bytes are held once the heavy apply has returned, want none", held)
 	}
 	runtime.KeepAlive(replica)
 }

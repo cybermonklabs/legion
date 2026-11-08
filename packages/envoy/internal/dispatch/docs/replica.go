@@ -594,11 +594,12 @@ func (r *renderedReplica) standsAt(mark forkReadMark) bool {
 // (startAt). A base that does not apply leaves no replica (recover). A rendering other than the
 // one the room last published is published as the room's measurement (publishSize).
 //
-// The decode runs under a slot of the pod's load concurrency where one is free at once, and
-// beside the slots' holders where none is (holdFreeLoad), given back once the copy is the
-// replica's. It may not wait: it runs under mu, which a live write holding a slot waits for to
-// clone the replica (warmFork), so a wait here would hold that write and this replica against
-// each other. No observer holds a slot as it runs (podLoadSlots).
+// The decode runs under a grant of the pod's load concurrency where the pool has room for one
+// at once, weighed on the base it decodes (copyWeight), and beside the pool's holders where it
+// has not (holdFreeLoad), given back once the copy is the replica's. It may not wait: it runs
+// under mu, which a live write holding a grant waits for to clone the replica (warmFork), so a
+// wait here would hold that write and this replica against each other. No observer holds a
+// grant as it runs (podLoadSlots).
 //
 // The first run of a replica its load handed no copy takes the load's rendering (loaded) as
 // base's rather than render base, when the rendering is still there: a weak pointer that no
@@ -629,7 +630,7 @@ func (r *renderedReplica) standsAt(mark forkReadMark) bool {
 // (crdt.UpdateLog.Reset), which the load never rendered; recover clears loaded too, so even a
 // recover before the first run leaves nothing to take. The caller holds mu.
 func (r *renderedReplica) start(room string, base []byte) {
-	release := holdFreeLoad()
+	release := holdFreeLoad(copyWeight(int64(len(base))))
 	doc := newDocumentCopy()
 	err := crdt.ApplyUpdateV1(doc, base, nil)
 	release()

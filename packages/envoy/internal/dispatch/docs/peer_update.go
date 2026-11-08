@@ -381,9 +381,10 @@ func (a *roomApplies) applying(origin any, budget crdt.ApplyBudget, apply func()
 // refused DocumentTooTangledCloseReason, or DocumentNeedsRebuildCloseReason on a used-up room
 // total.
 //
-// An update over unslottedApplyBytes takes a slot of the pod's load concurrency before it applies
-// (loadSlots), so a reconnect storm's whole-state handoffs decode as many at a time as the pod
-// has slots rather than all at once; typing never waits on it.
+// An update over unslottedApplyBytes takes what its apply costs out of the pod's load
+// concurrency before it applies (loadSlots, copyWeight), so a reconnect storm's whole-state
+// handoffs decode as many at a time as the pool holds rather than all at once; typing never
+// waits on it.
 //
 // A room with no measurement at all is a document that left the Proof schema while it was live,
 // which the socket path refuses to open in the first place (refuseOutsideSchema), or one no load
@@ -413,13 +414,15 @@ func (s *Service) weighPeerUpdate(info websocket.PeerUpdateInfo, apply func() er
 	rendering, measured := weighing.size()
 	allowance := peerApplyAllowance(int64(len(info.Update)), rendering, weighing.roomStateBytes(),
 		info.Doc.StructCount(), measured, s.underPressure(info.Room))
-	// A heavy update takes its slot before the apply and gives it back once the apply has
-	// returned, so the whole decode runs inside one slot; a keystroke takes none. The wait has
-	// no deadline, since the peer's read loop carries none and every holder gives its slot back
+	// A heavy update takes its bytes before the apply and gives them back once the apply has
+	// returned, so the whole decode runs inside one grant; a keystroke takes none. What it takes
+	// is what its own apply adds, the update's bytes at copyWeight, rather than a whole slot, so
+	// a reconnect storm's handoffs decode as many at a time as the pool holds. The wait has no
+	// deadline, since the peer's read loop carries none and every holder gives its bytes back
 	// (loadSlots), so it cannot fail.
 	if len(info.Update) > unslottedApplyBytes {
 		slot := newLoadSlot()
-		_ = slot.take(context.Background())
+		_ = slot.take(context.Background(), copyWeight(int64(len(info.Update))))
 		defer slot.release()
 	}
 	// The scan allowance is reserved last, so no refusal above leaves one in flight, and settled

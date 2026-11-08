@@ -101,9 +101,9 @@ func copyTransient(cost loadCost) int64 {
 	return int64(cost.peak) - max(cost.held, 0)
 }
 
-// Every full-state decode holds no more heap above what it leaves behind than the slot it takes
-// of the pod's load concurrency allows it (loadSlotBytes, 600 MB): one whole-document decode, one
-// fork or one heavy apply to a slot, whatever the document weighs. For each shape, at
+// Every full-state decode holds no more heap above what it leaves behind than one slot of the
+// pod's load concurrency allows it (loadSlotBytes, 600 MB), which is the most any taker of the
+// pool takes however heavy its document (copyWeight). For each shape, at
 // GOMAXPROCS=1 (measureLoad), it measures the room's load as the server's own work makes it
 // (Server.Apply on a room no one holds, and the room's first transaction) and as a socket's
 // admission and load make it; a write's fork from the store (coldFork) and from a resident room
@@ -115,9 +115,9 @@ func copyTransient(cost loadCost) int64 {
 // stored history, since a closed room compacts what its own transactions stored into a state
 // re-encoded from its decode.
 //
-// The slot is one figure for every shape, where the bound it replaced was weighed per byte of
-// the state: what this holds is that the heaviest decode of the heaviest stored document still
-// fits one slot, which is what lets the pod run MemoryBounds.LoadSlots of them at once.
+// A taker is weighed per byte of the state its copy is built from and capped at one slot
+// (copyWeight): what this holds is that the heaviest decode of the heaviest stored document
+// still fits that cap, so the cap never admits a copy the pool has not the room for.
 //
 // The fast row is a mebibyte of prose. Set DISPATCH_MEASURE_COPY_HEAP=1 for the heavy rows - the
 // document an agent rewrote whole until the decode cap refused a write (agentRewrittenState, kept
@@ -257,11 +257,11 @@ func measureCopyPaths(t *testing.T, state []byte) {
 			return replica
 		}},
 		{"the copy a server write's decode-cap count takes", func() { fresh(); live = resident() }, liveState, func() any {
-			return structsAfter(ctx, live, serverWrite{apply: func(*crdt.Doc) {}})
+			return structsAfter(ctx, live, serverWrite{apply: func(*crdt.Doc) {}}, service.copyOfRoom(live))
 		}},
 		{"a rebuild's decode and re-scan of the history", func() {}, stored, func() any {
 			history := decodedHistory(t, state)
-			if _, _, err := nearACap(ctx, history); err != nil {
+			if _, _, err := nearACap(ctx, history, copyWeight(int64(len(state)))); err != nil {
 				t.Fatal(err)
 			}
 			return history
@@ -311,6 +311,28 @@ func useLoadSlots(t *testing.T, slots *loadSlots) *loadSlots {
 	return slots
 }
 
+// loadSlotsWithRoomFor makes the process a load concurrency of slots slots and holds all of its
+// pool but free bytes of it for the rest of t, so that what a test's own takers queue behind is
+// the bytes it leaves them rather than the slots. The pool is sized in slots of loadSlotBytes
+// (newLoadSlots) and a taker takes only what its own copy costs (copyWeight), so a test whose
+// documents are far lighter than a slot says how much room it leaves their copies instead of
+// how many slots there are. It answers the pool and the bytes it holds, which every reading of
+// loadSlots.held stands above.
+func loadSlotsWithRoomFor(t *testing.T, slots int, free int64) (*loadSlots, int64) {
+	t.Helper()
+	pool := useLoadSlots(t, newLoadSlots(slots))
+	held := pool.poolBytes() - free
+	if held <= 0 {
+		t.Fatalf("a pool of %d slots has no %d bytes to hold back", slots, free)
+	}
+	holder := newLoadSlot()
+	if !holder.tryTake(held) {
+		t.Fatalf("the empty pool refused %d of its %d bytes", held, pool.poolBytes())
+	}
+	t.Cleanup(holder.release)
+	return pool, held
+}
+
 // proseState is the state of a fresh document of at least bytes of prose (proseAtLeast).
 func proseState(t *testing.T, bytes int) []byte {
 	t.Helper()
@@ -335,7 +357,7 @@ func loadRoomOf(service *Service, artifactID string) error {
 	return err
 }
 
-// slotsHeld records how many slots were held as each one was taken (loadSlots.taken).
+// slotsHeld records how many bytes of the pool were held as each grant was taken (loadSlots.taken).
 type slotsHeld struct {
 	mu   sync.Mutex
 	held []int64
@@ -353,10 +375,10 @@ func (g *slotsHeld) all() []int64 {
 	return slices.Clone(g.held)
 }
 
-// A room's load folds a history of several updates on the slot it took for the fold, and decodes
-// and hands ygo the state on that same slot: with every other slot taken the moment the load
+// A room's load folds a history of several updates on the grant it took for the fold, and decodes
+// and hands ygo the state on that same grant: with the rest of the pool taken the moment the load
 // holds its own, before its fold decodes anything, the load finishes - no part of it takes a
-// second slot (withLoadSlot) - and gives its slot back.
+// second grant (withLoadSlot) - and gives its grant back.
 func TestALoadWhoseFoldRunsWhileTheSlotsAreFullFoldsOnTheLoadsOwnSlot(t *testing.T) {
 	ctx := context.Background()
 	service, artifactID := newTestService(t)
@@ -369,13 +391,15 @@ func TestALoadWhoseFoldRunsWhileTheSlotsAreFullFoldsOnTheLoadsOwnSlot(t *testing
 	}
 	slots := useLoadSlots(t, newLoadSlots(2))
 	var taken slotsHeld
+	var rest atomic.Int64
 	var filled bool
 	slots.taken = func(held int64) {
 		taken.record(held)
 		if !filled {
 			filled = true
-			if !slots.semaphore().TryAcquire(slots.size - held) {
-				t.Errorf("the concurrency had no %d slots left beside the load's %d held", slots.size-held, held)
+			rest.Store(slots.poolBytes() - held)
+			if !slots.semaphore().TryAcquire(rest.Load()) {
+				t.Errorf("the pool had no %d bytes left beside the load's %d held", rest.Load(), held)
 			}
 		}
 	}
@@ -387,32 +411,32 @@ func TestALoadWhoseFoldRunsWhileTheSlotsAreFullFoldsOnTheLoadsOwnSlot(t *testing
 			t.Fatalf("the load failed: %v", err)
 		}
 	case <-time.After(30 * time.Second):
-		slots.semaphore().Release(slots.size - 1)
-		t.Fatal("the load did not finish in 30 s while every other slot was held: it waits for a second slot inside its own")
+		slots.semaphore().Release(rest.Load())
+		t.Fatal("the load did not finish in 30 s while the rest of the pool was held: it waits for a second grant inside its own")
 	}
-	defer slots.semaphore().Release(slots.size - 1)
-	if got := taken.all(); len(got) != 1 || got[0] != 1 {
-		t.Fatalf("the load took slots leaving %v held, want one slot of its own for its fold and its decode together", got)
+	defer slots.semaphore().Release(rest.Load())
+	if got := taken.all(); len(got) != 1 {
+		t.Fatalf("the load took grants leaving %v held, want one grant of its own for its fold and its decode together", got)
 	}
 	if roomDocument(t, service, artifactID) == nil {
 		t.Fatal("the room did not load")
 	}
 	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("the load still holds %d slots once loaded", held)
+		t.Fatalf("the load still holds %d bytes once loaded", held)
 	}
 }
 
-// A load whose slots are every one held waits for one rather than decoding beside their holders,
-// and is never refused, since a stored document must always load: it waits without a deadline
-// (holdServerLoad), takes the slot the holder gives back, and gives it back itself once the room
-// is loaded.
+// A load that finds the pool full waits for room rather than decoding beside its holders, and is
+// never refused, since a stored document must always load: it waits without a deadline
+// (holdServerLoad), takes the bytes the holder gives back, and gives them back itself once the
+// room is loaded.
 func TestALoadWaitsForASlotWhileEveryOneIsHeldAndThenTakesIt(t *testing.T) {
 	service, artifactID := newTestService(t)
 	storeHistory(t, service, artifactID, proseState(t, 16<<10))
 	slots := useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
@@ -446,14 +470,16 @@ func TestALoadWaitsForASlotWhileEveryOneIsHeldAndThenTakesIt(t *testing.T) {
 		t.Fatal("the load took no slot")
 	}
 	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("the load still holds %d slots once loaded", held)
+		t.Fatalf("the load still holds %d bytes once loaded", held)
 	}
 }
 
-// Loads of six documents at once, against a concurrency of two slots, never hold more slots
-// together than it has, and every one of them loads: the third waits for one of the two to give
-// its slot back. Each slot is held a tenth of a second past its decode, so the loads overlap.
-func TestConcurrentLoadsNeverHoldMoreSlotsThanThePodHas(t *testing.T) {
+// Loads of six documents at once, against a pool left with room for two of their copies, never
+// hold more of it than it has, and every one of them loads: the third waits for one of the two
+// to give its bytes back. Each grant is held a tenth of a second past its decode, so the loads
+// overlap. What bounds them here is the bytes the test leaves free and not the slots: each of
+// these documents is 16 KiB, whose copy costs far less than a slot (copyWeight).
+func TestConcurrentLoadsNeverHoldMoreOfThePoolThanItHas(t *testing.T) {
 	const together = 2
 	service, first := newTestService(t)
 	state := proseState(t, 16<<10)
@@ -461,7 +487,10 @@ func TestConcurrentLoadsNeverHoldMoreSlotsThanThePodHas(t *testing.T) {
 	for _, room := range rooms {
 		storeHistory(t, service, room, state)
 	}
-	slots := useLoadSlots(t, newLoadSlots(together))
+	// Each room's whole stored history is the one row storeHistory wrote, so each load takes
+	// exactly what that state's copy costs (loadDecodedHistory).
+	each := copyWeight(int64(len(state)))
+	slots, test := loadSlotsWithRoomFor(t, 2, together*each)
 	var most atomic.Int64
 	slots.taken = func(held int64) {
 		for seen := most.Load(); held > seen && !most.CompareAndSwap(seen, held); seen = most.Load() {
@@ -482,16 +511,19 @@ func TestConcurrentLoadsNeverHoldMoreSlotsThanThePodHas(t *testing.T) {
 			t.Fatal("the loads did not all finish in 60 s")
 		}
 	}
-	if got := most.Load(); got > slots.size || got < together {
-		t.Fatalf("the loads held %d slots at most, want the %d the concurrency has and never more", got, together)
+	if got := most.Load(); got > slots.poolBytes() {
+		t.Fatalf("the loads held %d bytes at most, past the %d the pool has", got, slots.poolBytes())
+	}
+	if got := most.Load() - test; got < together*each {
+		t.Fatalf("the loads held %d bytes of the pool at most beside the test's %d, want at least the %d two copies take: they loaded one at a time", got, test, together*each)
 	}
 	for _, room := range rooms {
 		if roomDocument(t, service, room) == nil {
 			t.Fatalf("room %s did not load", room)
 		}
 	}
-	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("the loads still hold %d slots once loaded", held)
+	if held := slots.held.Load(); held != test {
+		t.Fatalf("the loads hold %d bytes once loaded, want the %d the test holds and none of their own", held, test)
 	}
 }
 
@@ -508,8 +540,8 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 	}
 	slots := useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
@@ -543,8 +575,8 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 	if err := service.roomFailure(artifactID); err != nil {
 		t.Fatalf("the ended request failed the room: %v", err)
 	}
-	if held := slots.held.Load(); held != 1 {
-		t.Fatalf("%d slots are held, want the one the test holds and none of the ended admission's", held)
+	if held := slots.held.Load(); held != loadSlotBytes {
+		t.Fatalf("%d bytes are held, want the slot the test holds and nothing of the ended admission's", held)
 	}
 	holder.release()
 	tree, loaded, err := service.loadTree(ctx, artifactID)
@@ -553,19 +585,19 @@ func TestAnAdmissionWhoseRequestEndsWhileItWaitsForASlotAnswersItsErrorAndHoldsN
 	}
 	service.offerPreload(artifactID, loaded, admissionRendering{tree: tree})()
 	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("%d slots are still held once both admissions have answered", held)
+		t.Fatalf("%d bytes are still held once both admissions have answered", held)
 	}
 }
 
 // A rebuild's check of a resident room decodes the room's whole state before the rebuild decides
-// anything (nearACap), so that decode takes a slot of the pod's load concurrency like every other
-// full-state decode: with the one slot held, the rebuild waits rather than decoding beside the
-// holder; once that slot is given back it runs and answers that the document is live and far from
-// both caps (ErrDocumentLive), holding no slot after it.
+// anything (nearACap), so that decode takes bytes of the pod's load concurrency like every other
+// full-state decode: with the pool full, the rebuild waits rather than decoding beside the
+// holder; once those bytes are given back it runs and answers that the document is live and far
+// from both caps (ErrDocumentLive), holding nothing of the pool after it.
 func TestARebuildOfAResidentDocumentTakesASlotBeforeItWeighsIt(t *testing.T) {
 	ctx := context.Background()
 	service, artifactID := newTestService(t)
-	// No settlement of the room takes a slot of its own while the rebuild waits.
+	// No settlement of the room takes a grant of its own while the rebuild waits.
 	service.settle = time.Hour
 	storeHistory(t, service, artifactID, proseState(t, 16<<10))
 	if err := loadRoomOf(service, artifactID); err != nil {
@@ -573,8 +605,8 @@ func TestARebuildOfAResidentDocumentTakesASlotBeforeItWeighsIt(t *testing.T) {
 	}
 	slots := useLoadSlots(t, newLoadSlots(1))
 	holder := newLoadSlot()
-	if !holder.tryTake() {
-		t.Fatal("the empty concurrency refused its only slot")
+	if !holder.tryTake(loadSlotBytes) {
+		t.Fatal("the empty pool refused a whole slot")
 	}
 	waiting := make(chan struct{})
 	var waitOnce sync.Once
@@ -618,7 +650,7 @@ func TestARebuildOfAResidentDocumentTakesASlotBeforeItWeighsIt(t *testing.T) {
 		t.Fatal("the rebuild's check took no slot")
 	}
 	if held := slots.held.Load(); held != 0 {
-		t.Fatalf("the refused rebuild still holds %d slots", held)
+		t.Fatalf("the refused rebuild still holds %d bytes", held)
 	}
 }
 
