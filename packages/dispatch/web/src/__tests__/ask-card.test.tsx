@@ -1,6 +1,8 @@
 import { afterAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, a form's own submit, the same-task pair of presses, a press on a control the send holds disabled, and a key that must not press the button it reaches
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -20,6 +22,7 @@ import { Inbox } from "../features/inbox/Inbox";
 import { commentDeliveryFields } from "./comment-fixture";
 import { realClock, tick } from "./fake-clock";
 import { keyedAttempt } from "./keyed-attempt";
+import { userOnFakeClock } from "./user";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
   edges: [],
@@ -154,7 +157,7 @@ test("AskCard links a non-primary block ask to its owning artifact", async () =>
   );
   try {
     const link = await view.findByRole("link", { name: "Open in document" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/design-notes#b-decision-1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/design-notes#b-decision-1");
   } finally {
     view.unmount();
   }
@@ -190,7 +193,7 @@ test("AskCard shows a quote anchor's document and quote", async () => {
   try {
     const card = view.getByTestId(`ask-${input.id}`);
     const link = await within(card).findByRole("link", { name: "Design notes" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/design-notes#b-section-1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/design-notes#b-section-1");
     expect(within(card).getByText("The chosen passage.", { exact: true })).toBeTruthy();
   } finally {
     view.unmount();
@@ -251,7 +254,7 @@ test("AskCard routes an unlinked quote anchor to its project document", async ()
   );
   try {
     const link = await view.findByRole("link", { name: "Design notes" });
-    expect(link.getAttribute("href")).toBe("/projects/CORE/documents/design-notes#b-section-1");
+    expect(link).toHaveAttribute("href", "/projects/CORE/documents/design-notes#b-section-1");
   } finally {
     view.unmount();
   }
@@ -284,7 +287,7 @@ test("AskCard omits a fragment for a legacy quote anchor without a block ID", as
   );
   try {
     const link = await view.findByRole("link", { name: "Design notes" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/spec");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/spec");
   } finally {
     view.unmount();
   }
@@ -323,7 +326,7 @@ test("AskCard keeps an anchored document link after an answer", async () => {
   try {
     const card = view.getByTestId(`ask-${input.id}`);
     const link = await within(card).findByRole("link", { name: "Design notes" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/spec");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/spec");
   } finally {
     view.unmount();
   }
@@ -335,7 +338,7 @@ test("AskCard exposes medium urgency to screen readers without an inline label",
 
   try {
     expect(view.getByRole("article", { name: "Urgency: Medium" })).toBeTruthy();
-    expect(view.queryByText("Medium", { exact: true })).toBeNull();
+    expect(view.queryByText("Medium", { exact: true })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -367,6 +370,7 @@ test("an untitled session asker's tooltip carries its full id", () => {
 });
 
 test("AskCard copies its tmux target and confirms success", async () => {
+  const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
   const writeText = spyOn({ writeText: async () => undefined }, "writeText");
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -377,8 +381,8 @@ test("AskCard copies its tmux target and confirms success", async () => {
 
   try {
     // The session's own handles fold behind the author chip; open it first.
-    fireEvent.click(view.getByRole("button", { expanded: false, name: /session/ }));
-    fireEvent.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
+    await user.click(view.getByRole("button", { expanded: false, name: /session/ }));
+    await user.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("dev:4.7"));
     expect(await view.findByText("Copied", { exact: true })).toBeTruthy();
   } finally {
@@ -388,6 +392,7 @@ test("AskCard copies its tmux target and confirms success", async () => {
 });
 
 test("AskCard confirms tmux target copy through the legacy clipboard fallback", async () => {
+  const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
   const originalExecCommand = document.execCommand;
   const execCommand = spyOn({ execCommand: (_command: string) => true }, "execCommand");
@@ -401,8 +406,8 @@ test("AskCard confirms tmux target copy through the legacy clipboard fallback", 
 
   try {
     // The session's own handles fold behind the author chip; open it first.
-    fireEvent.click(view.getByRole("button", { expanded: false, name: /session/ }));
-    fireEvent.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
+    await user.click(view.getByRole("button", { expanded: false, name: /session/ }));
+    await user.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
     expect(await view.findByText("Copied", { exact: true })).toBeTruthy();
   } finally {
     Object.defineProperty(document, "execCommand", {
@@ -415,6 +420,7 @@ test("AskCard confirms tmux target copy through the legacy clipboard fallback", 
 });
 
 test("AskCard shows an inline failure when neither clipboard path can copy", async () => {
+  const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
   const originalExecCommand = document.execCommand;
   const execCommand = spyOn({ execCommand: (_command: string) => false }, "execCommand");
@@ -428,8 +434,8 @@ test("AskCard shows an inline failure when neither clipboard path can copy", asy
 
   try {
     // The session's own handles fold behind the author chip; open it first.
-    fireEvent.click(view.getByRole("button", { expanded: false, name: /session/ }));
-    fireEvent.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
+    await user.click(view.getByRole("button", { expanded: false, name: /session/ }));
+    await user.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
     expect(await view.findByText("Copy failed - select the text", { exact: true })).toBeTruthy();
     expect(view.getByText("dev:4.7", { exact: true })).toBeTruthy();
   } finally {
@@ -443,6 +449,7 @@ test("AskCard shows an inline failure when neither clipboard path can copy", asy
 });
 
 test("AskCard copies its dispatch:// reference under its issue, else under the owning document", async () => {
+  const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
   const writeText = spyOn({ writeText: async () => undefined }, "writeText");
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -461,11 +468,11 @@ test("AskCard copies its dispatch:// reference under its issue, else under the o
   );
 
   try {
-    fireEvent.click(
+    await user.click(
       view.getByRole("button", { name: "Copy reference dispatch://CORE-1/ask/ask-1" })
     );
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("dispatch://CORE-1/ask/ask-1"));
-    fireEvent.click(
+    await user.click(
       view.getByRole("button", {
         name: "Copy reference dispatch://CORE/artifact/design-notes/ask/ask-1",
       })
@@ -483,6 +490,7 @@ test("AskCard copies its dispatch:// reference under its issue, else under the o
 // the margin both show it) - each mounted AskCard's own answer field must stay independently
 // labeled, not collide on an ask.id-derived id shared by every instance.
 test("AskCard shows every previous version of an edited question, oldest first", async () => {
+  const user = userEvent.setup();
   const editedAt = new Date().toISOString();
   const input = ask({
     edited_at: editedAt,
@@ -531,14 +539,14 @@ test("AskCard shows every previous version of an edited question, oldest first",
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    await waitFor(() => expect(card.textContent).toContain("Edited just now"));
+    await waitFor(() => expect(card).toHaveTextContent("Edited just now"));
     const summary = await view.findByText("Show 2 previous versions");
     const disclosure = summary.closest("details");
     if (!(disclosure instanceof HTMLDetailsElement)) {
       throw new Error("previous question disclosure is missing");
     }
     expect(disclosure.open).toBe(false);
-    fireEvent.click(summary);
+    await user.click(summary);
     expect(disclosure.open).toBe(true);
     expect(await within(disclosure).findByText("Should we use email?")).toBeTruthy();
     expect(within(disclosure).getByText("Should we use polling?")).toBeTruthy();
@@ -587,6 +595,7 @@ test("AskCard renders Markdown in the question, including bold text and a list",
 });
 
 test("AskCard keeps the backlink control its count earned after an answer", async () => {
+  const user = userEvent.setup();
   const input = ask({ referenced_by_count: 2 });
   // The answer response is the one ask shape carrying no backlink count: it comes straight
   // back from the write, which never reads the graph. Answering moves no count either way.
@@ -601,22 +610,24 @@ test("AskCard keeps the backlink control its count earned after an answer", asyn
 
   try {
     expect(view.getByRole("button", { name: "Referenced by (2)" })).toBeTruthy();
-    fireEvent.change(view.getByLabelText("Your answer"), { target: { value: "Ship it." } });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Ship it.");
+    await user.click(view.getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(view.getByText("Ship it.")).toBeTruthy());
     expect(view.getByRole("button", { name: "Referenced by (2)" })).toBeTruthy();
 
     // Opened, the panel carries no heading of its own: the control above it already reads
     // "Referenced by (2)", and a card that says it twice is a stutter.
-    fireEvent.click(view.getByRole("button", { name: "Referenced by (2)" }));
+    await user.click(view.getByRole("button", { name: "Referenced by (2)" }));
     const panel = await view.findByRole("region", { name: "Referenced by" });
-    expect(within(panel).queryByRole("heading")).toBeNull();
+    expect(within(panel).queryByRole("heading")).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
 });
 
 test("AskCard submits the selected single option with the revision the human reviewed", async () => {
+  const user = userEvent.setup();
   const submitted: Array<{
     id: string;
     input: { selected: string[]; text?: string; expected_edited_at: string | null };
@@ -635,16 +646,17 @@ test("AskCard submits the selected single option with the revision the human rev
 
   try {
     const answer = view.getByLabelText("Your answer");
-    expect(answer.getAttribute("placeholder")).toBe(
+    expect(answer).toHaveAttribute(
+      "placeholder",
       "Answer in your own words, or ask a question back"
     );
     const submit = view.getByRole("button", { name: "Answer" });
     expect(submit.hasAttribute("disabled")).toBe(true);
 
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    expect(answer.getAttribute("placeholder")).toBe("Add a note (optional)");
-    expect(submit.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(submit);
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    expect(answer).toHaveAttribute("placeholder", "Add a note (optional)");
+    expect(submit).not.toHaveAttribute("disabled");
+    await user.click(submit);
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -665,6 +677,7 @@ function png(name: string): File {
 // the upload lands, and Answer waits for it, since an answer sent before would go without it.
 test("AskCard writes a picture pasted into its answer as an inline picture, and waits for it", async () => {
   jest.useFakeTimers();
+  const user = userOnFakeClock();
   const submitted: AnswerAskInput[] = [];
   const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
@@ -685,12 +698,15 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
 
   try {
     const answer = view.getByLabelText("Your answer") as HTMLTextAreaElement;
-    fireEvent.change(answer, { target: { value: "This one" } });
+    await user.click(answer);
+    await user.paste("This one");
+    // user-event's paste carries text, never the file this row uploads.
     fireEvent.paste(answer, { clipboardData: { files: [png("shot.png")] } });
     await view.findByText("Uploading file…");
     expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
     // Ctrl+Enter is Answer's other way in, and the form's submit does not itself wait for uploads.
-    fireEvent.keyDown(answer, { ctrlKey: true, key: "Enter" });
+    await user.click(answer);
+    await user.keyboard("{Control>}{Enter}{/Control}");
     await tick(20);
     expect(submitted).toEqual([]);
     expect(uploadArtifact.mock.calls[0]?.[0]).toEqual({ issue: "CORE-1" });
@@ -699,7 +715,7 @@ test("AskCard writes a picture pasted into its answer as an inline picture, and 
     await waitFor(() =>
       expect(answer.value).toBe("This one ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)")
     );
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
     await waitFor(() =>
       expect(submitted).toEqual([
         {
@@ -733,6 +749,7 @@ test("AskCard uploads a picture dropped into a document ask's reply to the docum
 
   try {
     const reply = (await view.findByLabelText("Reply")) as HTMLTextAreaElement;
+    // user-event's drop carries no files, and the upload is what this row is about.
     fireEvent.drop(reply, { dataTransfer: { files: [png("shot.png")] } });
     await waitFor(() =>
       expect(reply.value).toBe("![shot.png](dispatch://CORE/artifact/shot-png@v2)")
@@ -745,6 +762,7 @@ test("AskCard uploads a picture dropped into a document ask's reply to the docum
 });
 
 test("AskCard submits every checked multiple option", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
   const { view } = renderCard(
@@ -759,9 +777,9 @@ test("AskCard submits every checked multiple option", async () => {
   );
 
   try {
-    fireEvent.click(await view.findByRole("checkbox", { name: "Docs" }));
-    fireEvent.click(view.getByRole("checkbox", { name: "Tests" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("checkbox", { name: "Docs" }));
+    await user.click(view.getByRole("checkbox", { name: "Tests" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() =>
       expect(submitted).toEqual([{ selected: ["Docs", "Tests"], expected_edited_at: null }])
@@ -772,6 +790,7 @@ test("AskCard submits every checked multiple option", async () => {
 });
 
 test("AskCard submits free-text without inventing a selected option", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask();
   const { view } = renderCard(
@@ -786,10 +805,9 @@ test("AskCard submits free-text without inventing a selected option", async () =
   );
 
   try {
-    fireEvent.change(view.getByLabelText("Your answer"), {
-      target: { value: "Take the third path" },
-    });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Take the third path");
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -802,6 +820,7 @@ test("AskCard submits free-text without inventing a selected option", async () =
 });
 
 test("AskCard submits on Ctrl+Enter but not on plain Enter", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask();
   const { view } = renderCard(
@@ -817,10 +836,11 @@ test("AskCard submits on Ctrl+Enter but not on plain Enter", async () => {
 
   try {
     const field = view.getByLabelText("Your answer");
-    fireEvent.change(field, { target: { value: "Take the third path" } });
-    fireEvent.keyDown(field, { key: "Enter" });
+    await user.click(field);
+    await user.paste("Take the third path");
+    await user.keyboard("{Enter}");
     expect(submitted).toEqual([]);
-    fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
+    await user.keyboard("{Control>}{Enter}{/Control}");
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -833,6 +853,7 @@ test("AskCard submits on Ctrl+Enter but not on plain Enter", async () => {
 });
 
 test("AskCard submits a selected Other option with free text", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
@@ -849,11 +870,12 @@ test("AskCard submits a selected Other option with free text", async () => {
   try {
     const submit = view.getByRole("button", { name: "Answer" });
     const other = await view.findByRole("radio", { name: "Other" });
-    fireEvent.click(other);
+    await user.click(other);
     expect(submit.hasAttribute("disabled")).toBe(true);
-    fireEvent.change(view.getByLabelText("Your answer"), { target: { value: "Try a hybrid" } });
-    expect(submit.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(submit);
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Try a hybrid");
+    expect(submit).not.toHaveAttribute("disabled");
+    await user.click(submit);
 
     await waitFor(() =>
       expect(submitted).toEqual([{ selected: [], text: "Try a hybrid", expected_edited_at: null }])
@@ -864,6 +886,7 @@ test("AskCard submits a selected Other option with free text", async () => {
 });
 
 test("AskCard offers to ask back for a question-shaped answer without closing the ask", async () => {
+  const user = userEvent.setup();
   const answerCalls: AnswerAskInput[] = [];
   const replyCalls: Array<{ issueKey: string; input: CreateCommentInput }> = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
@@ -883,17 +906,17 @@ test("AskCard offers to ask back for a question-shaped answer without closing th
   );
 
   try {
-    fireEvent.change(view.getByLabelText("Your answer"), {
-      target: { value: "How does this fit our release plan?" },
-    });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("How does this fit our release plan?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     const choice = await view.findByRole("group", { name: "Question-shaped answer" });
     const clarification = within(choice).getByRole("button", { name: "Ask back instead" });
     expect(answerCalls).toEqual([]);
-    expect(document.activeElement).toBe(clarification);
-    fireEvent.keyDown(clarification, { key: "Enter" });
-    fireEvent.click(clarification);
+    expect(clarification).toHaveFocus();
+    // Enter on the focused button is the press: user-event's keyboard activates it, so the
+    // separate click this row used to make would ask back a second time.
+    await user.keyboard("{Enter}");
 
     await waitFor(() =>
       expect(replyCalls).toEqual([
@@ -911,6 +934,7 @@ test("AskCard offers to ask back for a question-shaped answer without closing th
 });
 
 test("AskCard lets a human explicitly answer with a question-shaped response", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
@@ -925,9 +949,10 @@ test("AskCard lets a human explicitly answer with a question-shaped response", a
   );
 
   try {
-    fireEvent.change(view.getByLabelText("Your answer"), { target: { value: "Why wait?" } });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
-    fireEvent.click(await view.findByRole("button", { name: "Answer with it anyway" }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Why wait?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("button", { name: "Answer with it anyway" }));
 
     await waitFor(() =>
       expect(submitted).toEqual([{ selected: [], text: "Why wait?", expected_edited_at: null }])
@@ -938,17 +963,21 @@ test("AskCard lets a human explicitly answer with a question-shaped response", a
 });
 
 test("AskCard dismisses the question-shaped guard when the response becomes an answer", async () => {
+  const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(<AskCard ask={input} getAskThread={emptyThread(input)} />);
 
   try {
     const field = view.getByLabelText("Your answer");
-    fireEvent.change(field, { target: { value: "Why wait?" } });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(field);
+    await user.paste("Why wait?");
+    await user.click(view.getByRole("button", { name: "Answer" }));
     await view.findByRole("button", { name: "Ask back instead" });
 
-    fireEvent.change(field, { target: { value: "Ship it." } });
-    expect(view.queryByRole("button", { name: "Ask back instead" })).toBeNull();
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Ship it.");
+    expect(view.queryByRole("button", { name: "Ask back instead" })).not.toBeInTheDocument();
     expect(view.getByRole("button", { name: "Answer" })).toBeTruthy();
   } finally {
     view.unmount();
@@ -968,8 +997,9 @@ test("an approval-kind ask labels itself Approval requested and has one reason f
     expect(within(card).getByText("Approval requested")).toBeTruthy();
     await view.findByRole("radio", { name: "Approve" });
     expect(within(card).getByRole("radio", { name: "Request changes" })).toBeTruthy();
-    expect(within(card).queryByRole("radio", { name: "Other" })).toBeNull();
-    expect(view.getByLabelText("Reason").getAttribute("placeholder")).toBe(
+    expect(within(card).queryByRole("radio", { name: "Other" })).not.toBeInTheDocument();
+    expect(view.getByLabelText("Reason")).toHaveAttribute(
+      "placeholder",
       "Answer in your own words, or ask a question back"
     );
   } finally {
@@ -978,6 +1008,7 @@ test("an approval-kind ask labels itself Approval requested and has one reason f
 });
 
 test("an approval-kind ask submits Approve with an optional note", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({
     kind: "approval",
@@ -995,11 +1026,12 @@ test("an approval-kind ask submits Approve with an optional note", async () => {
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Approve" }));
+    await user.click(await view.findByRole("radio", { name: "Approve" }));
     const reason = view.getByLabelText("Reason");
-    expect(reason.getAttribute("placeholder")).toBe("Note (optional)");
-    fireEvent.change(reason, { target: { value: "Ready to ship." } });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    expect(reason).toHaveAttribute("placeholder", "Note (optional)");
+    await user.click(reason);
+    await user.paste("Ready to ship.");
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -1038,6 +1070,7 @@ for (const refusal of [
   },
 ]) {
   test(`an answer refused with ${refusal.code} says so and offers no Retry`, async () => {
+    const user = userEvent.setup();
     let calls = 0;
     const input = ask({ options: [{ label: "Ship" }] });
     const { view } = renderCard(
@@ -1052,12 +1085,12 @@ for (const refusal of [
     );
 
     try {
-      fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-      fireEvent.click(view.getByRole("button", { name: "Answer" }));
+      await user.click(await view.findByRole("radio", { name: "Ship" }));
+      await user.click(view.getByRole("button", { name: "Answer" }));
 
       const alert = await view.findByRole("alert");
-      expect(alert.textContent).toContain(refusal.message);
-      expect(within(alert).queryByRole("button", { name: "Retry" })).toBeNull();
+      expect(alert).toHaveTextContent(refusal.message);
+      expect(within(alert).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
       expect(calls).toBe(1);
     } finally {
       view.unmount();
@@ -1066,6 +1099,7 @@ for (const refusal of [
 }
 
 test("an answer that failed for another reason offers a Retry that sends it again", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }] });
   const { view } = renderCard(
@@ -1083,12 +1117,12 @@ test("an answer that failed for another reason offers a Retry that sends it agai
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     const alert = await view.findByRole("alert");
-    expect(alert.textContent).toContain("Could not save your answer.");
-    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(alert).toHaveTextContent("Could not save your answer.");
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(submitted).toHaveLength(2));
     expect(submitted[1]).toEqual(submitted[0]);
   } finally {
@@ -1097,6 +1131,7 @@ test("an answer that failed for another reason offers a Retry that sends it agai
 });
 
 test("an approval-kind ask names the reason Request changes needs, focuses its field, and says why Answer is dead", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({
     kind: "approval",
@@ -1114,20 +1149,21 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
   );
 
   try {
-    expect(view.queryByText("Add a reason to send Request changes")).toBeNull();
-    fireEvent.click(await view.findByRole("radio", { name: "Request changes" }));
+    expect(view.queryByText("Add a reason to send Request changes")).not.toBeInTheDocument();
+    await user.click(await view.findByRole("radio", { name: "Request changes" }));
     const reasonField = view.getByLabelText("Reason (required)");
-    expect(document.activeElement).toBe(reasonField);
+    expect(reasonField).toHaveFocus();
     const submit = view.getByRole("button", { name: "Answer" });
     expect(submit.hasAttribute("disabled")).toBe(true);
-    expect(submit.getAttribute("title")).toBe("Add a reason to send Request changes");
+    expect(submit).toHaveAttribute("title", "Add a reason to send Request changes");
     expect(view.getByText("Add a reason to send Request changes")).toBeTruthy();
 
-    fireEvent.change(reasonField, { target: { value: "Needs another pass" } });
-    expect(submit.hasAttribute("disabled")).toBe(false);
-    expect(submit.hasAttribute("title")).toBe(false);
-    expect(view.queryByText("Add a reason to send Request changes")).toBeNull();
-    fireEvent.click(submit);
+    await user.click(reasonField);
+    await user.paste("Needs another pass");
+    expect(submit).not.toHaveAttribute("disabled");
+    expect(submit).not.toHaveAttribute("title");
+    expect(view.queryByText("Add a reason to send Request changes")).not.toBeInTheDocument();
+    await user.click(submit);
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -1140,6 +1176,7 @@ test("an approval-kind ask names the reason Request changes needs, focuses its f
 });
 
 test("a Done / Can't question is an ordinary question: Other stays, Can't needs no reason", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({
     options: [{ label: "Done" }, { label: "Can't" }],
@@ -1158,14 +1195,14 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    expect(within(card).queryByText("Action", { exact: true })).toBeNull();
-    fireEvent.click(await within(card).findByRole("radio", { name: "Can't" }));
+    expect(within(card).queryByText("Action", { exact: true })).not.toBeInTheDocument();
+    await user.click(await within(card).findByRole("radio", { name: "Can't" }));
     expect(within(card).getByRole("radio", { name: "Other" })).toBeTruthy();
-    expect(within(card).queryByLabelText("Reason (required)")).toBeNull();
+    expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
     const answer = within(card).getByRole("button", { name: "Answer" });
-    expect(answer.hasAttribute("disabled")).toBe(false);
-    expect(answer.hasAttribute("title")).toBe(false);
-    fireEvent.click(answer);
+    expect(answer).not.toHaveAttribute("disabled");
+    expect(answer).not.toHaveAttribute("title");
+    await user.click(answer);
     await waitFor(() =>
       expect(submitted).toEqual([{ selected: ["Can't"], expected_edited_at: null }])
     );
@@ -1175,6 +1212,7 @@ test("a Done / Can't question is an ordinary question: Other stays, Can't needs 
 });
 
 test("the compact card opens and focuses the reason field when Request changes is picked, again when the disclosure reopens", async () => {
+  const user = userEvent.setup();
   const input = ask({
     kind: "approval",
     options: [{ label: "Approve" }, { label: "Request changes" }],
@@ -1185,38 +1223,38 @@ test("the compact card opens and focuses the reason field when Request changes i
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    fireEvent.click(await within(card).findByRole("radio", { name: "Approve" }));
-    expect(within(card).queryByLabelText(/Reason|Your answer/)).toBeNull();
-    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
-      false
-    );
+    await user.click(await within(card).findByRole("radio", { name: "Approve" }));
+    expect(within(card).queryByLabelText(/Reason|Your answer/)).not.toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
 
-    fireEvent.click(within(card).getByRole("radio", { name: "Request changes" }));
+    await user.click(within(card).getByRole("radio", { name: "Request changes" }));
     const reason = within(card).getByLabelText("Reason (required)");
-    expect(document.activeElement).toBe(reason);
+    expect(reason).toHaveFocus();
     const answer = within(card).getByRole("button", { name: "Answer" });
     expect(answer.hasAttribute("disabled")).toBe(true);
     expect(within(card).getByText("Add a reason to send Request changes")).toBeTruthy();
-    fireEvent.change(reason, { target: { value: "Needs another pass." } });
-    expect(answer.hasAttribute("disabled")).toBe(false);
+    await user.click(reason);
+    await user.paste("Needs another pass.");
+    expect(answer).not.toHaveAttribute("disabled");
 
     // Closing the disclosure unmounts the field; Request changes is still the picked radio, so
     // reopening the disclosure is what brings the field back, and it must take focus again.
-    fireEvent.click(
+    await user.click(
       within(card).getByRole("button", { name: "Add a note or answer in your own words" })
     );
-    expect(within(card).queryByLabelText("Reason (required)")).toBeNull();
-    fireEvent.click(
+    expect(within(card).queryByLabelText("Reason (required)")).not.toBeInTheDocument();
+    await user.click(
       within(card).getByRole("button", { name: "Add a note or answer in your own words" })
     );
     const reopened = within(card).getByLabelText("Reason (required)");
-    expect(document.activeElement).toBe(reopened);
+    expect(reopened).toHaveFocus();
   } finally {
     view.unmount();
   }
 });
 
 test("AskCard submits selected options alongside a typed note", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
   const { view } = renderCard(
@@ -1231,11 +1269,10 @@ test("AskCard submits selected options alongside a typed note", async () => {
   );
 
   try {
-    fireEvent.click(await view.findByRole("checkbox", { name: "Docs" }));
-    fireEvent.change(view.getByLabelText("Your answer"), {
-      target: { value: "Also update the wiki" },
-    });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("checkbox", { name: "Docs" }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Also update the wiki");
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -1248,6 +1285,7 @@ test("AskCard submits selected options alongside a typed note", async () => {
 });
 
 test("AskCard requires text when Other is selected with real multiple options", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ multiple: true, options: [{ label: "Docs" }, { label: "Tests" }] });
   const { view } = renderCard(
@@ -1262,15 +1300,14 @@ test("AskCard requires text when Other is selected with real multiple options", 
   );
 
   try {
-    fireEvent.click(await view.findByRole("checkbox", { name: "Docs" }));
-    fireEvent.click(view.getByRole("checkbox", { name: "Other" }));
+    await user.click(await view.findByRole("checkbox", { name: "Docs" }));
+    await user.click(view.getByRole("checkbox", { name: "Other" }));
     const answer = view.getByRole("button", { name: "Answer" });
     expect(answer.hasAttribute("disabled")).toBe(true);
-    fireEvent.change(view.getByLabelText("Your answer"), {
-      target: { value: "Also update the guide." },
-    });
-    expect(answer.hasAttribute("disabled")).toBe(false);
-    fireEvent.click(answer);
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Also update the guide.");
+    expect(answer).not.toHaveAttribute("disabled");
+    await user.click(answer);
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -1287,6 +1324,7 @@ test("AskCard requires text when Other is selected with real multiple options", 
 });
 
 test("AskCard submits a selected single option with added context", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
@@ -1301,9 +1339,10 @@ test("AskCard submits a selected single option with added context", async () => 
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    fireEvent.change(view.getByLabelText("Your answer"), { target: { value: "After review." } });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("After review.");
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() =>
       expect(submitted).toEqual([
@@ -1316,6 +1355,7 @@ test("AskCard submits a selected single option with added context", async () => 
 });
 
 test("AskCard restores its inbox entry if an optimistic answer fails", async () => {
+  const user = userEvent.setup();
   let rejectAnswer: (reason?: unknown) => void = () => {};
   const pendingAnswer = new Promise<Ask>((_resolve, reject) => {
     rejectAnswer = reject;
@@ -1343,8 +1383,8 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
   queryClient.setQueryData<InboxRow[]>(["inbox"], [inboxInput]);
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(queryClient.getQueryData<InboxRow[]>(["inbox"])).toEqual([]));
     rejectAnswer(new Error("offline"));
@@ -1357,6 +1397,7 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
 });
 
 test("AskCard reloads a changed question, requires the human to reconfirm, and answers the new wording", async () => {
+  const user = userEvent.setup();
   const submitted: AnswerAskInput[] = [];
   const input = ask({ options: [{ label: "Ship" }] });
   const current = ask({
@@ -1390,17 +1431,19 @@ test("AskCard reloads a changed question, requires the human to reconfirm, and a
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await view.findByText(/This question changed while you were answering/);
     expect(view.getByText("Should we hold this release?")).toBeTruthy();
-    expect(view.getByRole("radio", { name: "Hold" }).hasAttribute("checked")).toBe(false);
+    expect(view.getByRole("radio", { name: "Hold" })).not.toHaveAttribute("checked");
     expect(view.getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(true);
-    expect(within(view.getByRole("alert")).queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(
+      within(view.getByRole("alert")).queryByRole("button", { name: "Retry" })
+    ).not.toBeInTheDocument();
 
-    fireEvent.click(view.getByRole("radio", { name: "Hold" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(view.getByRole("radio", { name: "Hold" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(submitted).toHaveLength(2));
     expect(submitted[1]).toMatchObject({
       selected: ["Hold"],
@@ -1429,13 +1472,14 @@ test("an answered ask lists every option, marks the selection, and shows when it
     const card = view.getByTestId("ask-ask-1");
     expect(card.textContent).toMatch(/Asked .* · Answered by alice/);
     expect(card.querySelectorAll("time")).toHaveLength(2);
-    expect(card.textContent).toContain("session:session-…");
+    expect(card).toHaveTextContent("session:session-…");
   } finally {
     view.unmount();
   }
 });
 
 test("AskCard shows submitted free text in its answered card", async () => {
+  const user = userEvent.setup();
   const input = ask({
     options: [
       { description: "Ship immediately", label: "Ship" },
@@ -1451,9 +1495,10 @@ test("AskCard shows submitted free text in its answered card", async () => {
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: /^Ship/ }));
-    fireEvent.change(view.getByLabelText("Your answer"), { target: { value: "Proceed." } });
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: /^Ship/ }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Proceed.");
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(view.getByText(/Answered by/)).toBeTruthy());
     const card = view.getByTestId("ask-ask-1");
@@ -1461,7 +1506,7 @@ test("AskCard shows submitted free text in its answered card", async () => {
     expect(card.querySelectorAll("time")).toHaveLength(2);
     expect(within(card).getAllByRole("listitem")[0]?.dataset.selected).toBe("true");
     expect(view.getByText("Proceed.")).toBeTruthy();
-    expect(view.queryByRole("button", { name: "Answer" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -1486,6 +1531,7 @@ test("an answered ask records a chosen Other answer under an Other label, not as
 });
 
 test("AskCard retries a failed answer without losing its form", async () => {
+  const user = userEvent.setup();
   let attempts = 0;
   const input = ask({ options: [{ label: "Ship" }] });
   const { view } = renderCard(
@@ -1503,10 +1549,10 @@ test("AskCard retries a failed answer without losing its form", async () => {
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
     await view.findByRole("alert");
-    fireEvent.click(view.getByRole("button", { name: "Retry" }));
+    await user.click(view.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => expect(view.getByText(/Answered by/)).toBeTruthy());
     expect(attempts).toBe(2);
@@ -1516,6 +1562,7 @@ test("AskCard retries a failed answer without losing its form", async () => {
 });
 
 test("AskCard ignores a same-task duplicate answer submit", async () => {
+  const user = userEvent.setup();
   let attempts = 0;
   const input = ask({ options: [{ label: "Ship" }] });
   const { view } = renderCard(
@@ -1530,8 +1577,10 @@ test("AskCard ignores a same-task duplicate answer submit", async () => {
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
     const submit = view.getByRole("button", { name: "Answer" });
+    // Both presses land in one task, before the render that disables Answer under them: that is
+    // the duplicate this row ignores, and user-event renders between its own interactions.
     fireEvent.click(submit);
     fireEvent.click(submit);
 
@@ -1564,18 +1613,19 @@ test("AskCard renders replies under the question without an open-ask thread comp
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    await waitFor(() => expect(card.textContent).toContain("Any update?"));
+    await waitFor(() => expect(card).toHaveTextContent("Any update?"));
     expect(
       within(view.getByTestId("thread-ask-1")).getByText("alice", { exact: false })
     ).toBeTruthy();
-    expect(view.queryByLabelText("Reply")).toBeNull();
-    expect(view.queryByText("Replying does not answer the question.")).toBeNull();
+    expect(view.queryByLabelText("Reply")).not.toBeInTheDocument();
+    expect(view.queryByText("Replying does not answer the question.")).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
 });
 
 test("AskCard keeps the thread and reply composer visible after the ask is answered", async () => {
+  const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }] });
   const { view } = renderCard(
     <AskCard
@@ -1586,8 +1636,8 @@ test("AskCard keeps the thread and reply composer visible after the ask is answe
   );
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
 
     await waitFor(() => expect(view.getByText(/Answered by/)).toBeTruthy());
     // Answering is a distinct event, not the end of the conversation: the
@@ -1614,11 +1664,13 @@ test("the thread composer only appears after an ask is answered", async () => {
     const openScope = within(openView.container);
     const answeredScope = within(answeredView.container);
     expect(await openScope.findByLabelText("Your answer")).toBeTruthy();
-    expect(openScope.queryByLabelText("Reply")).toBeNull();
+    expect(openScope.queryByLabelText("Reply")).not.toBeInTheDocument();
 
     expect(await answeredScope.findByLabelText("Reply")).toBeTruthy();
     expect(answeredScope.getByRole("button", { name: "Reply" })).toBeTruthy();
-    expect(answeredScope.queryByText("Replying does not answer the question.")).toBeNull();
+    expect(
+      answeredScope.queryByText("Replying does not answer the question.")
+    ).not.toBeInTheDocument();
   } finally {
     openView.unmount();
     answeredView.unmount();
@@ -1626,6 +1678,7 @@ test("the thread composer only appears after an ask is answered", async () => {
 });
 
 test("AskCard asks back from its answer field and clears the text without clearing the selection", async () => {
+  const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const posted: Array<{ issueKey: string; body: string; askId?: string }> = [];
   const { view } = renderCard(
@@ -1641,10 +1694,11 @@ test("AskCard asks back from its answer field and clears the text without cleari
 
   try {
     const ship = await view.findByRole("radio", { name: "Ship" });
-    fireEvent.click(ship);
+    await user.click(ship);
     const field = view.getByLabelText("Your answer");
-    fireEvent.change(field, { target: { value: "Any update on this?" } });
-    fireEvent.click(view.getByRole("button", { name: "Ask back" }));
+    await user.click(field);
+    await user.paste("Any update on this?");
+    await user.click(view.getByRole("button", { name: "Ask back" }));
 
     await waitFor(() =>
       expect(posted).toEqual([{ issueKey: "CORE-1", body: "Any update on this?", askId: "ask-1" }])
@@ -1657,6 +1711,7 @@ test("AskCard asks back from its answer field and clears the text without cleari
 });
 
 test("AskCard surfaces a retryable error when asking back fails", async () => {
+  const user = userEvent.setup();
   let attempts = 0;
   const input = ask();
   const { view } = renderCard(
@@ -1674,13 +1729,12 @@ test("AskCard surfaces a retryable error when asking back fails", async () => {
   );
 
   try {
-    fireEvent.change(view.getByLabelText("Your answer"), {
-      target: { value: "Retry me" },
-    });
-    fireEvent.click(view.getByRole("button", { name: "Ask back" }));
+    await user.click(view.getByLabelText("Your answer"));
+    await user.paste("Retry me");
+    await user.click(view.getByRole("button", { name: "Ask back" }));
     const alert = await view.findByRole("alert");
-    expect(alert.textContent).toContain("Could not send your clarification.");
-    fireEvent.click(view.getByRole("button", { name: "Retry" }));
+    expect(alert).toHaveTextContent("Could not send your clarification.");
+    await user.click(view.getByRole("button", { name: "Retry" }));
 
     await waitFor(() => expect(attempts).toBe(2));
   } finally {
@@ -1714,13 +1768,14 @@ test("a resolved ask keeps its question and options and carries a resolution bad
       throw new Error("resolved Ask fixture is missing its resolution");
     }
     await waitFor(() => expect(view.getAllByText(resolution.reason)).toHaveLength(1));
-    expect(view.queryByRole("button", { name: "Reply" })).toBeNull();
+    expect(view.queryByRole("button", { name: "Reply" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
 });
 
 test("AskCard shows the newest two replies, expands the earlier ones, and puts a fresh reply last", async () => {
+  const user = userEvent.setup();
   const input = answered(ask(), ["Ship"]);
   let replies = [
     reply({ body: "Oldest reply", created_at: "2026-09-09T00:01:00Z", id: "comment-1" }),
@@ -1763,13 +1818,13 @@ test("AskCard shows the newest two replies, expands the earlier ones, and puts a
     await waitFor(() =>
       expect(shownReplyBodies(threadElement)).toEqual(["Newer reply", "Newest reply"])
     );
-    expect(view.queryByText("Middle reply")).toBeNull();
+    expect(view.queryByText("Middle reply")).not.toBeInTheDocument();
 
     const showMore = view.getByRole("button", { name: "Show 3 earlier replies" });
-    expect(showMore.getAttribute("aria-expanded")).toBe("false");
+    expect(showMore).toHaveAttribute("aria-expanded", "false");
     expect(showMore.getAttribute("aria-controls")).not.toBeNull();
     showMore.focus();
-    fireEvent.click(showMore);
+    await user.click(showMore);
     await waitFor(() =>
       expect(shownReplyBodies(threadElement)).toEqual([
         "Oldest reply",
@@ -1780,17 +1835,19 @@ test("AskCard shows the newest two replies, expands the earlier ones, and puts a
       ])
     );
     const showFewer = view.getByRole("button", { name: "Show fewer replies" });
-    expect(document.activeElement).toBe(showFewer);
-    expect(showFewer.getAttribute("aria-expanded")).toBe("true");
+    expect(showFewer).toHaveFocus();
+    expect(showFewer).toHaveAttribute("aria-expanded", "true");
     expect(controlledBy(showFewer)?.textContent).toContain("Middle reply");
-    fireEvent.click(showFewer);
+    await user.click(showFewer);
     await waitFor(() =>
       expect(shownReplyBodies(threadElement)).toEqual(["Newer reply", "Newest reply"])
     );
 
-    fireEvent.click(view.getByRole("button", { name: "Write a reply" }));
+    await user.click(view.getByRole("button", { name: "Write a reply" }));
     const replyField = view.getByLabelText("Reply");
-    fireEvent.change(replyField, { target: { value: "Fresh reply" } });
+    await user.click(replyField);
+    await user.paste("Fresh reply");
+    // The form's own submit, which user-event has no form for.
     fireEvent.submit(replyField.closest("form") as HTMLFormElement);
     await waitFor(() =>
       expect(shownReplyBodies(threadElement)).toEqual(["Newest reply", "Fresh reply"])
@@ -1801,6 +1858,7 @@ test("AskCard shows the newest two replies, expands the earlier ones, and puts a
 });
 
 test("a compact answered ask's Write a reply reveals its composer as the next keyboard stop", async () => {
+  const user = userEvent.setup();
   const input = answered(ask(), ["Ship"]);
   const { view } = renderCard(
     <AskCard
@@ -1826,13 +1884,13 @@ test("a compact answered ask's Write a reply reveals its composer as the next ke
     const replyToggle = view.getByRole("button", { name: "Write a reply" });
     // Enter or Space on a native button activates it as a click; focus stays on the button.
     replyToggle.focus();
-    fireEvent.click(replyToggle);
-    expect(replyToggle.getAttribute("aria-expanded")).toBe("true");
-    expect(document.activeElement).toBe(replyToggle);
+    await user.click(replyToggle);
+    expect(replyToggle).toHaveAttribute("aria-expanded", "true");
+    expect(replyToggle).toHaveFocus();
 
     const field = view.getByLabelText("Reply");
     nextTabStop(replyToggle)?.focus();
-    expect(document.activeElement).toBe(field);
+    expect(field).toHaveFocus();
     expect(controlledBy(replyToggle)?.contains(field)).toBe(true);
     // The toggle and the form's submit button have distinct names.
     expect(view.getAllByRole("button", { name: "Reply" })).toHaveLength(1);
@@ -1842,6 +1900,7 @@ test("a compact answered ask's Write a reply reveals its composer as the next ke
 });
 
 test("a reply arriving while the earlier replies are shown lands last and keeps them shown", async () => {
+  const user = userEvent.setup();
   const input = answered(ask(), ["Ship"]);
   let replies = [
     reply({ body: "Oldest reply", created_at: "2026-09-09T00:01:00Z", id: "comment-1" }),
@@ -1869,7 +1928,7 @@ test("a reply arriving while the earlier replies are shown lands last and keeps 
 
   try {
     const threadElement = await view.findByTestId("thread-ask-1");
-    fireEvent.click(await view.findByRole("button", { name: "Show 1 earlier reply" }));
+    await user.click(await view.findByRole("button", { name: "Show 1 earlier reply" }));
     await waitFor(() =>
       expect(shownReplyBodies(threadElement)).toEqual([
         "Oldest reply",
@@ -1896,13 +1955,14 @@ test("a reply arriving while the earlier replies are shown lands last and keeps 
       ])
     );
     const showFewer = view.getByRole("button", { name: "Show fewer replies" });
-    expect(showFewer.getAttribute("aria-expanded")).toBe("true");
+    expect(showFewer).toHaveAttribute("aria-expanded", "true");
   } finally {
     view.unmount();
   }
 });
 
 test("a link to a folded reply opens the fold and still lets the reader collapse it", async () => {
+  const user = userEvent.setup();
   const input = answered(ask(), ["Ship"]);
   const replies = [
     reply({ body: "Oldest reply", created_at: "2026-09-09T00:01:00Z", id: "comment-1" }),
@@ -1941,14 +2001,14 @@ test("a link to a folded reply opens the fold and still lets the reader collapse
     );
 
     // The reader stays on that URL, so the link must not pin the fold open.
-    fireEvent.click(view.getByRole("button", { name: "Show fewer replies" }));
+    await user.click(view.getByRole("button", { name: "Show fewer replies" }));
     await waitFor(() =>
       expect(shownReplyBodies(threadElement)).toEqual(["Middle reply", "Newest reply"])
     );
     const showMore = view.getByRole("button", { name: "Show 1 earlier reply" });
-    expect(showMore.getAttribute("aria-expanded")).toBe("false");
+    expect(showMore).toHaveAttribute("aria-expanded", "false");
 
-    fireEvent.click(showMore);
+    await user.click(showMore);
     await waitFor(() =>
       expect(view.getByRole("button", { name: "Show fewer replies" })).toBeTruthy()
     );
@@ -1958,6 +2018,7 @@ test("a link to a folded reply opens the fold and still lets the reader collapse
 });
 
 test("AskCard with no replies offers Write a reply only after an answer, and retries a failed thread fetch", async () => {
+  const user = userEvent.setup();
   const openInput = ask();
   const { view: open } = renderCard(
     <AskCard ask={openInput} getAskThread={emptyThread(openInput)} thread="collapsed" />
@@ -2002,15 +2063,17 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
     await answeredCard.findByRole("button", { name: "Write a reply" });
     // The open ask's only composer is the card's own Answer / Ask back row.
     await openCard.findByRole("button", { name: "Ask back" });
-    expect(openCard.queryByRole("button", { name: "Write a reply" })).toBeNull();
+    expect(openCard.queryByRole("button", { name: "Write a reply" })).not.toBeInTheDocument();
     const retry = await failedCard.findByRole("button", { name: "Replies unavailable — retry" });
-    expect(retry.getAttribute("title")).toBe("boom");
+    expect(retry).toHaveAttribute("title", "boom");
 
-    fireEvent.click(retry);
+    await user.click(retry);
     await waitFor(() =>
-      expect(failedCard.queryByRole("button", { name: "Replies unavailable — retry" })).toBeNull()
+      expect(
+        failedCard.queryByRole("button", { name: "Replies unavailable — retry" })
+      ).not.toBeInTheDocument()
     );
-    expect(failedCard.queryByRole("button", { name: "Write a reply" })).toBeNull();
+    expect(failedCard.queryByRole("button", { name: "Write a reply" })).not.toBeInTheDocument();
   } finally {
     open.unmount();
     answered.unmount();
@@ -2019,6 +2082,7 @@ test("AskCard with no replies offers Write a reply only after an answer, and ret
 });
 
 test("a reply composer remounted while its send is out shows the draft disabled and posts once", async () => {
+  const user = userEvent.setup();
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
   const bodies: string[] = [];
@@ -2035,8 +2099,9 @@ test("a reply composer remounted while its send is out shows the draft disabled 
     </QueryClientProvider>
   );
   const first = render(composer());
-  fireEvent.change(first.getByRole("textbox", { name: "Reply" }), { target: { value: "hello" } });
-  fireEvent.click(first.getByRole("button", { name: "Reply" }));
+  await user.click(first.getByRole("textbox", { name: "Reply" }));
+  await user.paste("hello");
+  await user.click(first.getByRole("button", { name: "Reply" }));
   await waitFor(() => expect(bodies).toEqual(["hello"]));
   first.unmount();
 
@@ -2048,6 +2113,8 @@ test("a reply composer remounted while its send is out shows the draft disabled 
     expect(field.disabled).toBe(true);
     const send = second.getByRole("button", { name: /^Repl/ }) as HTMLButtonElement;
     expect(send.disabled).toBe(true);
+    // The send holds this one disabled, and user-event refuses a disabled control; the point of
+    // this line is that the press the browser still delivers posts nothing a second time.
     fireEvent.click(send);
 
     await act(async () => sent.resolve(reply({ body: "hello" })));
@@ -2060,6 +2127,7 @@ test("a reply composer remounted while its send is out shows the draft disabled 
 });
 
 test("two reply composers for one ask share its draft and its send", async () => {
+  const user = userEvent.setup();
   const input = answered(ask(), []);
   const sent = Promise.withResolvers<Comment>();
   const bodies: string[] = [];
@@ -2078,10 +2146,11 @@ test("two reply composers for one ask share its draft and its send", async () =>
     const [margin, block] = view.getAllByRole("textbox", {
       name: "Reply",
     }) as HTMLTextAreaElement[];
-    fireEvent.change(margin, { target: { value: "One draft" } });
+    await user.click(margin);
+    await user.paste("One draft");
     expect(block.value).toBe("One draft");
 
-    fireEvent.click(view.getAllByRole("button", { name: "Reply" })[1]);
+    await user.click(view.getAllByRole("button", { name: "Reply" })[1] as HTMLElement);
     await waitFor(() => expect(bodies).toEqual(["One draft"]));
     expect(margin.disabled).toBe(true);
     expect(block.disabled).toBe(true);
@@ -2098,6 +2167,7 @@ test("two reply composers for one ask share its draft and its send", async () =>
 // The reply under an ask takes a picture as the answer does: it uploads to the ask's issue, Reply
 // waits for it, and its text joins the ask's shared draft as it stands when the upload lands.
 test("a picture pasted into a reply composer joins its draft and holds the send until it lands", async () => {
+  const user = userEvent.setup();
   const { promise: landed, resolve: land } = Promise.withResolvers<void>();
   const uploadArtifact = spyOn(api, "uploadArtifact").mockImplementation(async () => {
     await landed;
@@ -2114,13 +2184,18 @@ test("a picture pasted into a reply composer joins its draft and holds the send 
   );
   try {
     const field = view.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
-    fireEvent.change(field, { target: { value: "Looks right" } });
+    await user.click(field);
+    await user.paste("Looks right");
+    // user-event's paste carries text, never the file this row uploads.
     fireEvent.paste(field, { clipboardData: { files: [png("shot.png")] } });
     await view.findByText("Uploading file…");
     expect((view.getByRole("button", { name: "Reply" }) as HTMLButtonElement).disabled).toBe(true);
     expect(uploadArtifact.mock.calls[0]?.[0]).toEqual({ issue: "CORE-1" });
-    // Typed while the upload is out: the picture lands after it, not over it.
-    fireEvent.change(field, { target: { value: "Looks right to me" } });
+    // Typed while the upload is out: the picture lands after it, not over it. The draft is
+    // replaced in one edit, since a clear would be an edit of its own for the upload to land on.
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Looks right to me");
 
     land();
     await waitFor(() =>
@@ -2128,7 +2203,7 @@ test("a picture pasted into a reply composer joins its draft and holds the send 
         "Looks right to me ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)"
       )
     );
-    fireEvent.click(view.getByRole("button", { name: "Reply" }));
+    await user.click(view.getByRole("button", { name: "Reply" }));
     await waitFor(() =>
       expect(bodies).toEqual([
         "Looks right to me ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
@@ -2169,6 +2244,8 @@ test("a document ask links its project and document page", async () => {
     kind: "user",
     login: "alice",
   });
+  // The card the Inbox opens reads its document's subscribers, which this document has none of.
+  const getArtifactSubscribers = spyOn(api, "getArtifactSubscribers").mockResolvedValue([]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // A document has no assignee, so the Inbox lists its question under the Unassigned filter
   // rather than in the reader's own default list.
@@ -2182,17 +2259,20 @@ test("a document ask links its project and document page", async () => {
 
   try {
     await screen.findByText("CORE · Design notes");
-    expect(screen.getByRole("link", { name: "CORE · Design notes" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "CORE · Design notes" })).toHaveAttribute(
+      "href",
       "/projects/CORE/documents/design-notes?ask=ask-1"
     );
   } finally {
     view.unmount();
     getInbox.mockRestore();
     whoAmI.mockRestore();
+    getArtifactSubscribers.mockRestore();
   }
 });
 
 test("answering a document ask invalidates the document and projects, not an issue", async () => {
+  const user = userEvent.setup();
   const input = ask({
     artifact_id: "artifact-1",
     document: { name: "Design notes", project: "CORE", slug: "design-notes" },
@@ -2209,8 +2289,8 @@ test("answering a document ask invalidates the document and projects, not an iss
   const invalidate = spyOn(queryClient, "invalidateQueries");
 
   try {
-    fireEvent.click(await view.findByRole("radio", { name: "Ship" }));
-    fireEvent.click(view.getByRole("button", { name: "Answer" }));
+    await user.click(await view.findByRole("radio", { name: "Ship" }));
+    await user.click(view.getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(view.getByText(/Answered by/)).toBeTruthy());
     const invalidated = invalidate.mock.calls.map((call) => call[0]?.queryKey);
     expect(invalidated).toContainEqual(["artifact", "artifact-1"]);
@@ -2224,6 +2304,7 @@ test("answering a document ask invalidates the document and projects, not an iss
 });
 
 test("asking back from a document ask posts an artifact comment and keeps the selection", async () => {
+  const user = userEvent.setup();
   const input = ask({
     artifact_id: "artifact-1",
     document: { name: "Design notes", project: "CORE", slug: "design-notes" },
@@ -2237,10 +2318,11 @@ test("asking back from a document ask posts an artifact comment and keeps the se
 
   try {
     const ship = await view.findByRole("radio", { name: "Ship" });
-    fireEvent.click(ship);
+    await user.click(ship);
     const field = view.getByLabelText("Your answer");
-    fireEvent.change(field, { target: { value: "Does this include the rollback?" } });
-    fireEvent.click(view.getByRole("button", { name: "Ask back" }));
+    await user.click(field);
+    await user.paste("Does this include the rollback?");
+    await user.click(view.getByRole("button", { name: "Ask back" }));
 
     await waitFor(() =>
       expect(createArtifactComment).toHaveBeenCalledWith(
@@ -2261,6 +2343,7 @@ test("asking back from a document ask posts an artifact comment and keeps the se
 });
 
 test("AskCard compact variant keeps its note disclosure available after selecting an option", async () => {
+  const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
     <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
@@ -2269,12 +2352,12 @@ test("AskCard compact variant keeps its note disclosure available after selectin
   try {
     const card = view.getByTestId("ask-ask-1");
     const ship = await within(card).findByRole("radio", { name: "Ship" });
-    fireEvent.click(ship);
+    await user.click(ship);
     expect((ship as HTMLInputElement).checked).toBe(true);
     expect((within(card).getByRole("radio", { name: "Hold" }) as HTMLInputElement).checked).toBe(
       false
     );
-    fireEvent.click(
+    await user.click(
       within(card).getByRole("button", { name: "Add a note or answer in your own words" })
     );
     expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
@@ -2284,6 +2367,7 @@ test("AskCard compact variant keeps its note disclosure available after selectin
 });
 
 test("the compact card's note disclosure leaves the reader in the field it reveals, and a close moves nowhere", async () => {
+  const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const { view } = renderCard(
     <AskCard ask={input} getAskThread={emptyThread(input)} variant="compact" />
@@ -2294,31 +2378,30 @@ test("the compact card's note disclosure leaves the reader in the field it revea
     const disclosure = await within(card).findByRole("button", {
       name: "Add a note or answer in your own words",
     });
-    // Whoever opens it - the reader's click here, the Inbox's Enter, which presses this same
-    // control - is moved into the box behind it. Under `fireEvent` the render the press
-    // schedules is flushed inside the press, so this row cannot prove the browser case the
-    // disclosure's own focus exists for; the e2e row `Enter opens the selected decision block's
-    // note field and puts the focus in it` is that proof.
-    fireEvent.click(disclosure);
+    // Whoever opens it - the reader's press here, the Inbox's Enter, which presses this same
+    // control - is moved into the box behind it.
+    await user.click(disclosure);
     const answer = within(card).getByLabelText("Your answer");
-    expect(document.activeElement).toBe(answer);
+    expect(answer).toHaveFocus();
 
     // Picking an option that needs no words neither opens the disclosure nor takes the reader
     // off the option they just picked.
-    fireEvent.click(disclosure);
-    expect(within(card).queryByLabelText("Your answer")).toBeNull();
-    expect(document.activeElement).toBe(document.body);
+    await user.click(disclosure);
+    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    // The close moves nobody: the reader is left on the control they pressed, which a press
+    // focuses.
+    expect(disclosure).toHaveFocus();
     const ship = within(card).getByRole("radio", { name: "Ship" });
-    ship.focus();
-    fireEvent.click(ship);
-    expect(within(card).queryByLabelText("Your answer")).toBeNull();
-    expect(document.activeElement).toBe(ship);
+    await user.click(ship);
+    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
+    expect(ship).toHaveFocus();
   } finally {
     view.unmount();
   }
 });
 
 test("AskCard compact variant renders long options as the same wrapping choice rows as the full card", async () => {
+  const user = userEvent.setup();
   const label =
     "one table per model: a row per published result, a column per selected scorer, cells the score with its confidence interval";
   const description =
@@ -2346,16 +2429,14 @@ test("AskCard compact variant renders long options as the same wrapping choice r
     expect(
       options.querySelectorAll('[class*="whitespace-nowrap"], [class*="rounded-full"]')
     ).toHaveLength(0);
-    expect(within(card).queryByRole("button", { name: "Answer" })).toBeNull();
+    expect(within(card).queryByRole("button", { name: "Answer" })).not.toBeInTheDocument();
 
-    fireEvent.click(first);
+    await user.click(first);
     expect((first as HTMLInputElement).checked).toBe(true);
-    expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
-      false
-    );
-    expect(within(card).queryByLabelText("Your answer")).toBeNull();
+    expect(within(card).getByRole("button", { name: "Answer" })).not.toHaveAttribute("disabled");
+    expect(within(card).queryByLabelText("Your answer")).not.toBeInTheDocument();
 
-    fireEvent.click(within(options).getByRole("radio", { name: "Other" }));
+    await user.click(within(options).getByRole("radio", { name: "Other" }));
     expect(await within(card).findByLabelText("Your answer")).toBeTruthy();
     expect(within(card).getByRole("button", { name: "Answer" }).hasAttribute("disabled")).toBe(
       true
@@ -2366,6 +2447,7 @@ test("AskCard compact variant renders long options as the same wrapping choice r
 });
 
 test("AskCard compact variant keeps an open note visible when a real option is picked after typing", async () => {
+  const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   const sent: AnswerAskInput[] = [];
   const { view } = renderCard(
@@ -2382,15 +2464,16 @@ test("AskCard compact variant keeps an open note visible when a real option is p
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    fireEvent.click(await within(card).findByRole("radio", { name: "Other" }));
+    await user.click(await within(card).findByRole("radio", { name: "Other" }));
     const field = await within(card).findByLabelText("Your answer");
-    fireEvent.change(field, { target: { value: "Ship, but only after the freeze." } });
+    await user.click(field);
+    await user.paste("Ship, but only after the freeze.");
 
-    fireEvent.click(within(card).getByRole("radio", { name: "Ship" }));
+    await user.click(within(card).getByRole("radio", { name: "Ship" }));
     // The note is still on screen - nothing typed is sent without being visible.
     const note = within(card).getByLabelText("Your answer");
     expect((note as HTMLTextAreaElement).value).toBe("Ship, but only after the freeze.");
-    fireEvent.click(within(card).getByRole("button", { name: "Answer" }));
+    await user.click(within(card).getByRole("button", { name: "Answer" }));
     await waitFor(() => expect(sent).toHaveLength(1));
     expect(sent[0]).toMatchObject({
       selected: ["Ship"],
@@ -2402,6 +2485,7 @@ test("AskCard compact variant keeps an open note visible when a real option is p
 });
 
 test("AskCard compact variant hands focus to the row when Answer disables under it", async () => {
+  const user = userEvent.setup();
   const input = ask({ options: [{ label: "Ship" }, { label: "Hold" }] });
   let release: (value: Ask) => void = () => {};
   const { view } = renderCard(
@@ -2421,13 +2505,13 @@ test("AskCard compact variant hands focus to the row when Answer disables under 
 
   try {
     const card = view.getByTestId("ask-ask-1");
-    fireEvent.click(await within(card).findByRole("radio", { name: "Ship" }));
+    await user.click(await within(card).findByRole("radio", { name: "Ship" }));
     const answer = within(card).getByRole("button", { name: "Answer" });
     answer.focus();
-    expect(document.activeElement).toBe(answer);
-    fireEvent.click(answer);
+    expect(answer).toHaveFocus();
+    await user.click(answer);
     await waitFor(() => expect(answer.hasAttribute("disabled")).toBe(true));
-    expect(document.activeElement).toBe(view.getByTestId("row"));
+    expect(view.getByTestId("row")).toHaveFocus();
     release(answered(input, ["Ship"]));
     await view.findByRole("img", { name: "Selected" });
   } finally {

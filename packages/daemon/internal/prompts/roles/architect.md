@@ -83,9 +83,14 @@ same session instead of starting fresh. You start no worker.
 The reviewer's approval moves this child to `accepting`, where no worker runs and the acceptance
 is yours (`skill://legion-architect`, section 6): read the tester's handoff,
 `dispatch results --issue <issue>` at the approved head and the reviewer's approval of the head
-by SHA (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
+by SHA
+(the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
-`skill://legion-architect`, section 4), then accept with `sign_off`, which moves the child to retro, or
+`skill://legion-architect`, section 4).
+Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
+requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
+each `unmet` finding there.
+Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
 issue's own head: a result one of its children recorded against one of its checks proves nothing
@@ -93,9 +98,10 @@ for it, and a child that carries part of its requirement proves that part with a
 child's own Verification document whose `serves` names the requirement.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
-name that gap in your acceptance comment and decide there, accepting the issue or sending it back
-with the checks you write yourself, which closes no design gate while dispatch://INFRA-175 has
-not shipped.
+name that gap in your acceptance comment and decide there how each delivered item is proven at
+this head; none may stay unmet, since a requirement is in the approved spec or it is not one:
+write the request into the spec and have a person approve that version. Checks you write close
+the `criteria` step where it is gated.
 Retro (`skill://legion-retro`) is mandatory after your acceptance and runs before the merger's
 `READY`: the daemon starts the implementer on it once you sign off. Every started role keeps its
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still

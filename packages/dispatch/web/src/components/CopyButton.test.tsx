@@ -1,7 +1,9 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 
 import { realClock } from "../__tests__/fake-clock";
+import { userOnFakeClock } from "../__tests__/user";
 import { CopyButton } from "./CopyButton";
 
 function withClipboard(
@@ -19,16 +21,19 @@ test("CopyButton writes its value, confirms briefly, and returns to idle", async
   // The confirmation clears itself on the product's own 1.5 s timer (`CopyButton.tsx`), which the
   // wait below crosses on the fake clock rather than in real time.
   jest.useFakeTimers();
+  const user = userOnFakeClock();
   const writeText = spyOn({ writeText: async () => undefined }, "writeText");
   await withClipboard({ writeText }, async () => {
     const view = render(<CopyButton value="LEGION-2" what="issue key" />);
     try {
       const button = view.getByRole("button", { name: "Copy issue key LEGION-2" });
-      expect(button.getAttribute("title")).toBe("Copy issue key LEGION-2");
-      fireEvent.click(button);
+      expect(button).toHaveAttribute("title", "Copy issue key LEGION-2");
+      await user.click(button);
       await waitFor(() => expect(writeText).toHaveBeenCalledWith("LEGION-2"));
       expect(await view.findByText("Copied", { exact: true })).toBeTruthy();
-      await waitFor(() => expect(view.queryByText("Copied", { exact: true })).toBeNull());
+      await waitFor(() =>
+        expect(view.queryByText("Copied", { exact: true })).not.toBeInTheDocument()
+      );
     } finally {
       realClock();
       view.unmount();
@@ -37,6 +42,7 @@ test("CopyButton writes its value, confirms briefly, and returns to idle", async
 });
 
 test("CopyButton reports a failure when neither clipboard path can copy", async () => {
+  const user = userEvent.setup();
   const originalExecCommand = document.execCommand;
   Object.defineProperty(document, "execCommand", {
     configurable: true,
@@ -50,7 +56,7 @@ test("CopyButton reports a failure when neither clipboard path can copy", async 
         </CopyButton>
       );
       try {
-        fireEvent.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
+        await user.click(view.getByRole("button", { name: "Copy tmux target dev:4.7" }));
         expect(
           await view.findByText("Copy failed - select the text", { exact: true })
         ).toBeTruthy();
@@ -66,10 +72,12 @@ test("CopyButton reports a failure when neither clipboard path can copy", async 
         </CopyButton>
       );
       try {
-        fireEvent.click(labelled.getByRole("button", { name: "Copy session ID planner-session" }));
+        await user.click(labelled.getByRole("button", { name: "Copy session ID planner-session" }));
         const shownValue = await labelled.findByText("planner-session", { selector: "code" });
         expect(shownValue.parentElement?.textContent).toBe("Copy failed - planner-session");
-        expect(labelled.queryByText("Copy failed - select the text", { exact: true })).toBeNull();
+        expect(
+          labelled.queryByText("Copy failed - select the text", { exact: true })
+        ).not.toBeInTheDocument();
       } finally {
         labelled.unmount();
       }

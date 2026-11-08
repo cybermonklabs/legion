@@ -26,6 +26,8 @@
 // another process. An App configured with any other credential source is refused, since every
 // stage proof's file names a token command.
 
+import { writeSync } from "node:fs";
+
 /** The two App roles `github_apps` names (internal/appauth, Implement and Review). */
 export type AppRole = "implement" | "review";
 export type AppLogins = Partial<Record<AppRole, string>>;
@@ -93,6 +95,14 @@ const outputLimit = 1 << 20;
 /** How long one token command may run here: a review App's first grant waits on a person, and
  * `agent-secrets` waits 30 minutes for a decision by default. */
 const commandLimitMs = 35 * 60 * 1000;
+/** How long the command's output may go on after the command itself has exited, before the run
+ * gives up on a descendant that is holding the pipes open. What it bounds is the time since the
+ * exit that this process does not spend blocked writing that output on: the relay writes
+ * synchronously, so a caller that is behind holds one write for as long as it stays behind, and
+ * one 300,008-byte line relayed into a pipe whose reader slept eight seconds blocked for those
+ * eight seconds. Every time the bound is made of — the exit, the blocked time, and each re-arm
+ * of its timer — is read from performance.now(), the clock no step of the wall clock moves. */
+const drainLimitMs = 5000;
 /** The GitHub token forms, which a command's stderr may carry and no log or error may. */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
 /** A GitHub account login: what a release may name an installation by (internal/appauth,
@@ -102,6 +112,52 @@ const loginPattern = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
 /** `text` with every GitHub token in it replaced. */
 export function redactTokens(text: string): string {
   return text.replace(tokenPattern, "[redacted]");
+}
+
+/** Writes every byte of `text` to the descriptor `fd` before it returns, so the kernel holds
+ * them and this process holds none. Every exit in this file is explicit, and an explicit exit
+ * discards whatever of this process's output is still buffered, so nothing here goes through
+ * `process.stdout` or `process.stderr`: a stream write's callback is not a flush while another
+ * write is queued ahead of it. A 1,000,111-byte `process.stderr.write` issued behind a relayed
+ * megabyte called its callback 1 to 10 ms later and reported `writableLength === 0` while the
+ * caller had received 212,992, 425,984 or 638,976 bytes of it, whole multiples of the
+ * 212,992-byte socket send buffer that `Bun.spawn`'s `stderr: "pipe"` gives the child, and the
+ * `process.exit` that followed discarded the rest.
+ *
+ * `EAGAIN` is waited out rather than reported. A blocking descriptor never raises it: 1 MiB
+ * against a reader that slept three seconds blocked for 2,985 ms and raised it zero times. But
+ * the first read of `process.stderr` sets `O_NONBLOCK` on the open pipe, the flag belongs to the
+ * pipe rather than to the process, and bun leaves it set when it exits, so every later writer on
+ * that pipe inherits it
+ * (docs/solutions/testing/bun-console-log-drops-what-a-full-non-blocking-pipe-cannot-take-and-exits-0.md),
+ * and a stage proof runs many bun commands in one shell group. Sleeping a millisecond and
+ * retrying the same offset delivered all 2,000,148 bytes of one such group's stderr, where
+ * letting the `EAGAIN` out delivered 66,381 and a stack trace in place of the diagnosis.
+ *
+ * Every other failure ends the write, `EPIPE` among them, as does a write that takes none of a
+ * non-empty buffer: there is nowhere to put the rest and no second channel to complain on, and
+ * the exit code the caller reads is the part of the contract that still holds. So nothing here
+ * throws, since a throw out of the relay prints its stack with nothing yet awaiting it and then
+ * reaches the `catch` by way of the `Promise.all` that later takes it, which exits 1 where the
+ * caller was promised the logins and exit 0. Nothing bounds the wait either, and nothing can,
+ * since a deadline inside this loop would never fire against a write that blocks: a reader that
+ * stalls holds this write for as long as it stalls, and the evidence the helper exists to print
+ * reaches it whole. Which of this file's bounds such a reader can still reach is in the comment
+ * above `await child.exited`. */
+function writeAll(fd: number, text: string): void {
+  const bytes = Buffer.from(text, "utf8");
+  for (let written = 0; written < bytes.length; ) {
+    let count: number;
+    try {
+      count = writeSync(fd, bytes, written);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EAGAIN") return;
+      Bun.sleepSync(1);
+      continue;
+    }
+    if (count === 0) return;
+    written += count;
+  }
 }
 
 async function runTokenCommand(field: string, command: string): Promise<string> {
@@ -125,6 +181,11 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
       `${field} could not run: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+  /** Signals that the run has stopped waiting on the command's output, because the drain bound
+   * below passed or `end` killed the group. `end` resolves it too, so that the kill
+   * commandLimitMs makes ends the wait as well: the group kill cannot reach a descendant that
+   * left the group, and the streams it holds would otherwise outlive it. */
+  const drainWait = Promise.withResolvers<false>();
   let ended = "";
   const end = (why: string) => {
     if (ended !== "") return;
@@ -134,6 +195,7 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
     } catch {
       child.kill("SIGKILL");
     }
+    drainWait.resolve(false);
   };
   const deadline = setTimeout(
     () => end(`did not finish within ${commandLimitMs / 60000} minutes`),
@@ -143,9 +205,14 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
   let stderr = "";
   let stderrBytes = 0;
   let pendingLine = "";
+  /** How long this process has spent blocked in its own relay writes, which the drain bound
+   * below does not count against the command. */
+  let blockedMs = 0;
   const relayLine = (line: string) => {
     const clean = redactTokens(line);
-    process.stderr.write(clean);
+    const before = performance.now();
+    writeAll(2, clean);
+    blockedMs += performance.now() - before;
     stderr += clean;
   };
   const relay = (async () => {
@@ -179,12 +246,38 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
       chunks.push(chunk);
     }
   })();
-  // The command's own process may exit while a descendant that left its process group still holds
-  // the pipes open, which the group kill cannot reach: the streams get five seconds to end after
-  // the exit, then the run fails rather than wait on them.
+  // The command's own process may exit while a descendant that left its process group still
+  // holds the pipes open, which the group kill cannot reach: the run holds the streams to
+  // drainLimitMs, measured as that constant defines it, and fails rather than wait on them past
+  // it. Only the blocks after the exit are given back, because the bound runs from the exit as
+  // the continuation below reads it: a block that ended before that read is no part of the
+  // bound, and one that is still running at the exit delays that read itself by the rest of it.
+  // Giving back a block from before the exit as well would hand the descendant another stall to
+  // hold the pipes in: a 300,002-byte line written before the exit, against a reader that slept
+  // eight seconds, was failed at 21 seconds where the bound it is held to is 13. What the bound
+  // does not count is the output itself, the escaped descendant's among it, so a descendant that
+  // prints while it holds the pipes open is failed at the bound like a silent one. The one wait
+  // this leaves unbounded is a caller that stays behind for good, which commandLimitMs cannot
+  // end: its timer cannot run while a write holds the thread (writeAll's own comment), and a
+  // 3-second limit against a reader that slept 15 seconds fired at 15, once the reader woke. It
+  // ends a caller that is slow but still reading, between its writes; a caller that stops
+  // reading holds the write, and the run, until the job's own timeout.
   const status = await child.exited;
-  const drainWait = Promise.withResolvers<boolean>();
-  const drainTimer = setTimeout(() => drainWait.resolve(false), 5000);
+  const exitedAt = performance.now();
+  /** What blockedMs held at the exit, which the bound below subtracts so that only the blocks
+   * after the exit count against it. This continuation runs between writes, never inside one,
+   * so the snapshot is exact. */
+  const blockedAtExit = blockedMs;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  const armDrain = (ms: number) => {
+    drainTimer = setTimeout(() => {
+      // blockedMs grows while the timer waits, so a firing that is early re-arms for the rest.
+      const left = exitedAt + drainLimitMs + (blockedMs - blockedAtExit) - performance.now();
+      if (left <= 0) drainWait.resolve(false);
+      else armDrain(left);
+    }, ms);
+  };
+  armDrain(drainLimitMs);
   const drained = await Promise.race([
     Promise.all([relay, collect]).then(() => true),
     drainWait.promise,
@@ -360,24 +453,6 @@ function parseRoles(value: string): AppRole[] | undefined {
   return roles.filter(known);
 }
 
-/** How long a write below may wait to reach the pipe: the bound the drain of a token command's
- * streams carries (the five seconds in runTokenCommand), for the same reason. A caller that has
- * stopped reading, or an escaped descendant holding the pipe, can leave the write's callback to
- * come late or never, and a lost tail beats a proof that never returns. */
-const writeLimitMs = 5000;
-
-/** Writes `text` to `stream` and resolves when the write has reached the pipe, or sooner when it
- * fails or the bound passes. Every exit below is explicit, and an explicit exit discards whatever
- * of this process's output is still buffered: a token command's relayed stderr can leave a
- * megabyte of it in front of the line that matters, so each exit waits for its own write first. */
-async function writeFully(stream: NodeJS.WriteStream, text: string): Promise<void> {
-  const written = Promise.withResolvers<void>();
-  const bound = setTimeout(() => written.resolve(), writeLimitMs);
-  stream.write(text, () => written.resolve());
-  await written.promise;
-  clearTimeout(bound);
-}
-
 if (import.meta.main) {
   const args = process.argv.slice(2);
   let roles: AppRole[] | undefined = [...appRoles];
@@ -387,8 +462,8 @@ if (import.meta.main) {
   }
   const [configPath, api = "https://api.github.com"] = args;
   if (roles === undefined || configPath === undefined || configPath === "") {
-    await writeFully(
-      process.stderr,
+    writeAll(
+      2,
       "usage: bun scripts/e2e/lib/app-logins.ts [--roles <role>[,<role>]] <legion.yaml> [<GitHub API URL>]\n"
     );
     process.exit(2);
@@ -396,14 +471,11 @@ if (import.meta.main) {
   // Exit explicitly: a stream reader a token command's escaped descendant still feeds would keep
   // the event loop, and so the run, alive past the drain bound.
   try {
-    await writeFully(
-      process.stdout,
-      `${JSON.stringify(await appLogins(configPath, api, roles))}\n`
-    );
+    writeAll(1, `${JSON.stringify(await appLogins(configPath, api, roles))}\n`);
     process.exit(0);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await writeFully(process.stderr, `app-logins: ${message}\n`);
+    writeAll(2, `app-logins: ${message}\n`);
     process.exit(1);
   }
 }

@@ -1,5 +1,8 @@
-import { afterAll, afterEach, jest } from "bun:test";
-import { GlobalRegistrator } from "@happy-dom/global-registrator";
+// The DOM this file's imports read is registered by `register-dom.ts`, the preload before this
+// one: Bun's preload list is the one order that holds, and an import written first inside a file
+// is not (`register-dom.ts` and package.json's `test:web` script say why).
+import { afterAll, afterEach, expect, jest } from "bun:test";
+import { configure } from "@testing-library/react";
 // happy-dom has no IndexedDB; the store of a document's unsent edits (`pending-edits.ts`) runs on
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
@@ -14,10 +17,16 @@ import { resetReplyDrafts } from "../features/inbox/reply-drafts";
 import { resetPinState } from "../features/issue/pin-write";
 import { resetWriteStorage } from "../features/writes/write-storage";
 import { type Writes, watchWriteStores } from "../features/writes/write-store";
-import { guardWritesToNetwork, writesThatReachedNetwork } from "./network-guard";
+import { reportableJestDomMatchers } from "./jest-dom-matchers";
+import { forgetTestAnswers, requestsThatReachedNetwork } from "./network";
 import { resetRouteAnswers } from "./send-answers";
 
-GlobalRegistrator.register();
+// The DOM assertions (`toBeInTheDocument`, `toHaveAttribute`, `toHaveFocus`, …): one matcher that
+// says what it asks for and prints the element it read when it fails, in place of a hand-written
+// read of an attribute compared with `toBe`. `jest-dom.d.ts` declares them for `bun:test`, and
+// `jest-dom-matchers.ts` gives them the matcher context they build that message with, which
+// `expect.extend` does not hand them in a form they can read.
+expect.extend(reportableJestDomMatchers());
 
 // Testing Library reads a global `jest` to tell whether fake timers are installed:
 // `jestFakeTimersAreEnabled` (@testing-library/dom@10.4.1, dist/@testing-library/dom.esm.js:171)
@@ -31,14 +40,16 @@ GlobalRegistrator.register();
 // asserting the global rather than by timing a wait, and says so.
 (globalThis as unknown as { jest: typeof jest }).jest = jest;
 
+// Two budgets, because a 2-core pod with its cores busy is slower than either default and a suite
+// that waits on the machine reports as a defect of the change under test.
+//
 // Bun's default per-test deadline is 5000 ms. The lane test of
 // `e2e/__tests__/harness-lanes.test.ts` ("the Playwright config refuses a --workers that is not
 // the lane count") fails at it on a 2-core pod, where it reads 4.45 s idle and 6.55 s loaded.
 // The suite's slowest test, `row-configurations.test.ts`'s "no row runs twice in one
 // configuration", reads 13.83 s loaded. 30 s is the round number above twice that reading, and it
 // is kept as small as that rule allows, because every hung test costs the whole budget on CI as
-// well as in a pod. dispatch://INFRA-1405 sets this same budget for its own loaded rows; the
-// overlap is intended.
+// well as in a pod.
 // This line is not dependable on its own, measured here and by this issue's tester: a run of
 // this directory started by hand can lose the deadline, and the loss takes the whole run. A
 // 6 s probe test in `web/src/__tests__` ends "this test timed out after 5000ms" three times
@@ -46,31 +57,40 @@ GlobalRegistrator.register();
 // passes with one, so no file count explains it; the same probe passes alone, under
 // `--parallel`, and under `--timeout 30000`. What file of a run keeps the deadline and what
 // file loses it did not reproduce the same way twice, so this comment claims no boundary. So
-// `package.json`'s `test` script carries `--timeout 30000` as well, which reached every file
-// in every run mode measured and cuts no larger deadline a file sets for itself (MarkdownBody
-// 54 pass, harness-lanes 8 pass). A run of one file still gets the deadline from this line.
-// The two numbers are one budget and move together.
+// `package.json` carries `--timeout 30000` on both command lines that run tests: the `test:web`
+// script for `web/src`, and the `e2e/__tests__` run beside it, which loads no preload at all,
+// so there the flag is the only deadline those files get. It reached every file in every run
+// mode measured and cuts no larger deadline a file sets for itself (MarkdownBody 54 pass,
+// harness-lanes 8 pass). A run of one file still gets the deadline from this line. The two
+// numbers are one budget and move together.
 jest.setTimeout(30_000);
 
-// Testing Library reads the document as it loads, so it must load after
-// `GlobalRegistrator.register()` above and a static import would be hoisted past that call.
-// `configure` comes from `@testing-library/react`, which forwards it to the
-// `@testing-library/dom` copy every `waitFor` reads (`@testing-library/react@16.3.3`
-// dist/config.js) and which is the only one of the two this manifest resolves.
-// Testing Library's default `asyncUtilTimeout` is 1000 ms. 10 s is above every per-call budget
-// this tree keeps but one, and a third of the per-test deadline, so a wait that runs out reports
-// as the wait that failed and names what it waited for, rather than as a bare test timeout. The
-// slowest test of a loaded run that drives no subprocess reads 5.80 s whole. Under
-// `jest.useFakeTimers()` the budget is 10 s of the clock the test moves, not of real time, since
-// a wait advances that clock itself. dispatch://INFRA-1405 sets this same budget too, and
-// measured there that the 1000 ms default failed 13 of 30 loaded runs, a different row each
-// time, which is why the budget is the suite's and not a deadline per row; the overlap is
-// intended.
-// This budget needs no such help: measured with the deadline held off by `--timeout 30000`, a
-// `waitFor` that never passes ran about 10 s rather than the 1 s default in every shape tried,
-// the serial directory run among them, so `configure` from a preload reaches every file where
-// `jest.setTimeout` does not.
-const { configure } = await import("@testing-library/react");
+// Testing Library's default `asyncUtilTimeout` is 1000 ms, which a loaded run of this suite
+// passes while a page is still rendering: it failed `settings.test.tsx`'s own heading wait and
+// `mermaid-diagrams.test.tsx`'s draw in 13 of 30 loaded runs, each time a different row, which
+// is why the budget is the suite's and not a deadline per row. 10 s is above every per-call
+// budget this tree keeps but one, and a third of the per-test deadline, so a wait that runs out
+// reports as the wait that failed and names what it waited for, rather than as a bare test
+// timeout. The slowest test of a loaded run that drives no subprocess reads 5.80 s whole.
+//
+// Under `jest.useFakeTimers()` the same budget is 10 s of *fake* time, not of the machine's:
+// Testing Library advances the held clock by its polling interval until the wait succeeds or the
+// deadline passes, so a wait that does not succeed now moves that clock ten times as far as it
+// did. No row of this suite changes verdict for it: the 21 files that install a clock and wait
+// were green before this budget and are green after it, and a wait that used to succeed cannot
+// start failing because it is given longer. What the longer advance can do is let a wait succeed
+// that used to give up - a product timer it now reaches - so what the suite gives up with it is
+// the old second as a bound: a held-clock `waitFor` no longer catches a slowdown that stays
+// under 10 s of fake time, and a failing one reports ten times slower.
+//
+// This budget needs no flag of its own: measured with the deadline held off by
+// `--timeout 30000`, a `waitFor` that never passes ran about 10 s rather than the 1 s default in
+// every shape tried, the serial directory run among them, so `configure` from a preload reaches
+// every file where `jest.setTimeout` does not.
+//
+// dispatch://INFRA-1405 and dispatch://INFRA-1505 (cybermonklabs/legion#2884 and #2894) set
+// these same two budgets at these same two numbers in this same file. This is the one copy, kept
+// by the second of them to merge, and it carries both trees' measurements.
 configure({ asyncUtilTimeout: 10_000 });
 
 // Unit tests have no Dispatch server to answer GET /api/v1/schema/blocks, so the session cache
@@ -80,17 +100,18 @@ configure({ asyncUtilTimeout: 10_000 });
 // first render in its file.
 void blockSchemaCache.load(async () => serverBlockSchema as unknown as BlockSchema);
 
-// A route a test answers (`answerRoute`) is that test's: the next test answers its own.
+// A route a test answers - `answerRoute` above this seam, `answerRequests` at it - is that test's:
+// the next test answers its own.
 afterEach(resetRouteAnswers);
+afterEach(forgetTestAnswers);
 
-// A unit test's write that reaches the network fails its test (`network-guard.ts`: `fetch` and
-// the uploads' `XMLHttpRequest` both), and one a write loop makes after the file's last test -
-// a retry no test is left to fail - fails the file.
-guardWritesToNetwork();
+// A request answered by nothing fails its test (`network.ts`), and one a page swallowed in a
+// `catch`, or a write loop made after the file's last test - a retry no test is left to fail -
+// fails the file.
 const reportReachedNetwork = () => {
-  const reached = writesThatReachedNetwork();
+  const reached = requestsThatReachedNetwork();
   if (reached.length === 0) return;
-  throw new Error(`writes reached the network, answered by nothing: ${reached.join(", ")}`);
+  throw new Error(`requests reached the network, answered by nothing: ${reached.join(", ")}`);
 };
 afterEach(reportReachedNetwork);
 afterAll(reportReachedNetwork);
@@ -149,9 +170,9 @@ afterEach(resetOutstandingAnswers);
 // store outlives its test and would go on retrying into the tests and files after it
 // (`watchWriteStores`). Without this, one process running every file leaves writes retrying into
 // later files - sends to an agent session (`POST /api/v1/agents/<session>/messages`) and asks'
-// answers (`POST /api/v1/asks/<id>/answer`), in numbers that vary from run to run - each reaching
-// the network guard in whichever test is running then, and every such run fails. So is the issue
-// state the last pin answered let go, which the next pin would otherwise write over.
+// answers (`POST /api/v1/asks/<id>/answer`), in numbers that vary from run to run - and each is
+// a request no handler answers (`network.ts`), which fails whichever test is running then. So is
+// the issue state the last pin answered let go, which the next pin would otherwise write over.
 const madeStores = new Set<Writes>();
 watchWriteStores((store) => madeStores.add(store));
 afterEach(() => {

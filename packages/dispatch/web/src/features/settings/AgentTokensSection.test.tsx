@@ -1,8 +1,12 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import type { AgentToken, DispatchScope } from "../../api/types";
 import { AgentTokensSection } from "./AgentTokensSection";
@@ -18,6 +22,7 @@ const token: AgentToken = {
 };
 
 test("Settings exposes a new personal token once, copies it, and revokes an existing token", async () => {
+  const user = userEvent.setup();
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([token]);
   const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
     ...token,
@@ -43,8 +48,9 @@ test("Settings exposes a new personal token once, copies it, and revokes an exis
     expect(await screen.findByRole("cell", { name: "dsp_AbCdEf12…" })).toBeDefined();
     expect(screen.getByText("Never used")).toBeDefined();
 
-    fireEvent.change(screen.getByLabelText("Token label"), { target: { value: "reviewer" } });
-    fireEvent.click(screen.getByRole("button", { name: "New token" }));
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
 
     const plaintext = "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG";
     const origin = window.location.origin;
@@ -65,13 +71,13 @@ test("Settings exposes a new personal token once, copies it, and revokes an exis
     const envSnippet = snippets.find((snippet) => snippet.textContent?.includes("DISPATCH_URL="));
     expect(envSnippet?.textContent).toBe(`DISPATCH_URL=${origin}\nDISPATCH_TOKEN=${plaintext}`);
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy token" }));
+    await user.click(screen.getByRole("button", { name: "Copy token" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(plaintext));
 
-    fireEvent.click(screen.getByRole("button", { name: "Revoke architect" }));
+    await user.click(screen.getByRole("button", { name: "Revoke architect" }));
     await waitFor(() => expect(revokeAgentToken).toHaveBeenCalledWith(token.id, keyedAttempt));
     await waitFor(() => expect(screen.getByText("Revoked")).toBeDefined());
-    expect(screen.queryByRole("button", { name: "Revoke architect" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Revoke architect" })).not.toBeInTheDocument();
   } finally {
     cleanup();
     queryClient.clear();
@@ -84,6 +90,7 @@ test("Settings exposes a new personal token once, copies it, and revokes an exis
 });
 
 test("Settings copies a new token through the legacy clipboard fallback", async () => {
+  const user = userEvent.setup();
   const plaintext = "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG";
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
@@ -105,11 +112,12 @@ test("Settings copies a new token through the legacy clipboard fallback", async 
         <AgentTokensSection />
       </QueryClientProvider>
     );
-    fireEvent.change(screen.getByLabelText("Token label"), { target: { value: "reviewer" } });
-    fireEvent.click(screen.getByRole("button", { name: "New token" }));
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
     await screen.findByText(plaintext);
 
-    fireEvent.click(screen.getByRole("button", { name: "Copy token" }));
+    await user.click(screen.getByRole("button", { name: "Copy token" }));
     expect(await screen.findByText("Copied", { exact: true })).toBeDefined();
   } finally {
     cleanup();
@@ -134,6 +142,7 @@ function box(label: string, subject: string): HTMLInputElement {
 // replaces it rather than adding to it; no token holds Approve without Act as you, so each box
 // carries the other where the server would refuse the pair.
 test("a token's row shows the scopes it holds, and each change sends the whole set", async () => {
+  const user = userEvent.setup();
   const personOnly: AgentToken = { ...token, scopes: ["person"] };
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([personOnly]);
   const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes").mockImplementation(
@@ -152,7 +161,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
     expect(box("Act as you", "architect").checked).toBe(true);
     expect(box("Approve and control credentials", "architect").checked).toBe(false);
 
-    fireEvent.click(box("Approve and control credentials", "architect"));
+    await user.click(box("Approve and control credentials", "architect"));
     await waitFor(() =>
       expect(setAgentTokenScopes).toHaveBeenCalledWith(
         personOnly.id,
@@ -165,7 +174,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
     );
     expect(box("Act as you", "architect").checked).toBe(true);
 
-    fireEvent.click(box("Act as you", "architect"));
+    await user.click(box("Act as you", "architect"));
     await waitFor(() =>
       expect(setAgentTokenScopes).toHaveBeenLastCalledWith(personOnly.id, [], keyedAttempt)
     );
@@ -182,6 +191,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
 // A new token holds both scopes unless the reader clears one, and the mint sends the set the
 // boxes hold.
 test("the mint form starts with both scopes and sends the set the reader chose", async () => {
+  const user = userEvent.setup();
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([]);
   const createAgentToken = spyOn(api, "createAgentToken").mockResolvedValue({
     ...token,
@@ -202,12 +212,13 @@ test("the mint form starts with both scopes and sends the set the reader chose",
     expect(box("Act as you", "new token").checked).toBe(true);
     expect(box("Approve and control credentials", "new token").checked).toBe(true);
 
-    fireEvent.click(box("Approve and control credentials", "new token"));
+    await user.click(box("Approve and control credentials", "new token"));
     expect(box("Approve and control credentials", "new token").checked).toBe(false);
     expect(box("Act as you", "new token").checked).toBe(true);
 
-    fireEvent.change(screen.getByLabelText("Token label"), { target: { value: "reviewer" } });
-    fireEvent.click(screen.getByRole("button", { name: "New token" }));
+    await user.click(screen.getByLabelText("Token label"));
+    await user.paste("reviewer");
+    await user.click(screen.getByRole("button", { name: "New token" }));
     await waitFor(() =>
       expect(createAgentToken).toHaveBeenCalledWith(
         { name: "reviewer", scopes: ["person"] },
@@ -231,8 +242,13 @@ function madeAt(id: string, name: string, offsetMs: number): AgentToken {
 /** The Settings token section, its mint answered `409 KEY_COMMITTED` and its list then read as
  *  `listed`; the list read before the press holds those of `listed` made before it, which the page
  *  tells apart from the lost mint's by id. `confirmAnswers` answers each `window.confirm` in
- *  turn. */
-async function mintLostWith(listed: AgentToken[], confirmAnswers: boolean[] = []) {
+ *  turn. `user` is the caller's: a row holding the clock still passes `userOnFakeClock()`, since
+ *  user-event's own waits move the clock the row installed. */
+async function mintLostWith(
+  listed: AgentToken[],
+  confirmAnswers: boolean[] = [],
+  user: UserEvent = userEvent.setup()
+) {
   const now = Date.now();
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
@@ -257,8 +273,9 @@ async function mintLostWith(listed: AgentToken[], confirmAnswers: boolean[] = []
   // The tokens made before the press share the fixture's prefix.
   await screen.findAllByRole("cell", { name: "dsp_AbCdEf12…" });
   const label = screen.getByLabelText<HTMLInputElement>("Token label");
-  fireEvent.change(label, { target: { value: "reviewer" } });
-  fireEvent.click(screen.getByRole("button", { name: "New token" }));
+  await user.click(label);
+  await user.paste("reviewer");
+  await user.click(screen.getByRole("button", { name: "New token" }));
   await screen.findByTestId("landed-without-answer");
   return {
     asked,
@@ -273,6 +290,7 @@ async function mintLostWith(listed: AgentToken[], confirmAnswers: boolean[] = []
       revokeAgentToken.mockRestore();
     },
     revokeAgentToken,
+    user,
   };
 }
 
@@ -290,26 +308,27 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
   jest.useFakeTimers();
   const older = madeAt("older", "reviewer", -86_400_000);
   const lost = madeAt("lost", "reviewer", 60_000);
-  const page = await mintLostWith([lost, older, token], [false, true]);
+  const page = await mintLostWith([lost, older, token], [false, true], userOnFakeClock());
 
   try {
     expect(screen.getByTestId("landed-without-answer").textContent).toBe(
       "Token “reviewer” was made, but Dispatch lost its answer, so it may take a moment to appear. Its value is shown only once and was lost with the answer, so revoke it and mint another."
     );
     expect(page.label.value).toBe("");
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // The form submitted with no control pressed: user-event has no form for submit.
     fireEvent.submit(page.label.closest("form") as HTMLFormElement);
     await tick(20);
     expect(page.createAgentToken).toHaveBeenCalledTimes(1);
 
     const replace = await screen.findByRole("button", { name: "Revoke it and mint another" });
     // Cancelled: nothing revoked.
-    fireEvent.click(replace);
+    await page.user.click(replace);
     expect(page.asked).toEqual([confirmFor(lost)]);
     await tick(20);
     expect(page.revokeAgentToken).not.toHaveBeenCalled();
 
-    fireEvent.click(replace);
+    await page.user.click(replace);
     await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(lost.id, keyedAttempt));
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
     // The replacement holds what the lost token held.
@@ -318,7 +337,7 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
       scopes: ["person", "approve"],
     });
     expect(await screen.findByText("dsp_replacement")).toBeDefined();
-    expect(screen.queryByTestId("landed-without-answer")).toBeNull();
+    expect(screen.queryByTestId("landed-without-answer")).not.toBeInTheDocument();
     expect(page.revokeAgentToken).toHaveBeenCalledTimes(1);
   } finally {
     realClock();
@@ -339,8 +358,12 @@ test("a lost mint with no token made since the press says so and revokes nothing
         "No live token “reviewer” made since you pressed New token is listed, so none was revoked."
       )
     ).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Revoke it and mint another" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Revoke the one created/ })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Revoke it and mint another" })
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Revoke the one created/ })
+    ).not.toBeInTheDocument();
     expect(page.asked).toEqual([]);
     expect(page.revokeAgentToken).not.toHaveBeenCalled();
   } finally {
@@ -367,9 +390,11 @@ test("a lost mint with several tokens made since the press lists them and revoke
       `Revoke the one created ${new Date(second.created_at).toLocaleString()}`,
       `Revoke the one created ${new Date(first.created_at).toLocaleString()}`,
     ]);
-    expect(screen.queryByRole("button", { name: "Revoke it and mint another" })).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Revoke it and mint another" })
+    ).not.toBeInTheDocument();
 
-    fireEvent.click(picks[1] as HTMLElement);
+    await page.user.click(picks[1] as HTMLElement);
     expect(page.asked).toEqual([confirmFor(first)]);
     await waitFor(() => expect(page.revokeAgentToken).toHaveBeenCalledWith(first.id, keyedAttempt));
     await waitFor(() => expect(page.createAgentToken).toHaveBeenCalledTimes(2));
