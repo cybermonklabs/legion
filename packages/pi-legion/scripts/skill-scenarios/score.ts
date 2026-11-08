@@ -1105,52 +1105,89 @@ function braced(text: string, from: number): string | undefined {
 }
 /** The string `source` holds when it begins with one, read as Python and JavaScript both write
  * one: `'…'`, `"…"`, `` `…` `` and Python's triple quotes, with `\n`, `\t`, `\"`, `\'`, `\\` and
- * `\`` as they are written. A template literal that interpolates (`${`) is not a string this
- * reads: its text is not in the call. */
-function stringLiteral(source: string): string | undefined {
+ * `` \` `` as they are written. A template literal's `${…}` is read through `resolve`, which
+ * answers a name the same code assigned: an agent that writes the head into a `const` and then
+ * interpolates it has written the message as plainly as one that typed the sha, and a scorer
+ * that stopped at the first `${` would read that publish as unreadable. An interpolation
+ * `resolve` cannot answer leaves the whole string unread, since the text that reached the topic
+ * is then not in the call. */
+function stringLiteral(
+  source: string,
+  resolve: (name: string) => string | undefined = () => undefined
+): string | undefined {
   const text = source.trimStart();
   const triple = ['"""', "'''"].find((q) => text.startsWith(q));
   const quote = triple ?? ['"', "'", "`"].find((q) => text.startsWith(q));
   if (quote === undefined) return undefined;
   let out = "";
   for (let i = quote.length; i < text.length; i += 1) {
-    if (text.startsWith(quote, i)) {
-      return quote === "`" && out.includes("${") ? undefined : out;
-    }
+    if (text.startsWith(quote, i)) return out;
     if (text[i] === "\\") {
-      const escape = text[i + 1] ?? "";
-      out += { n: "\n", t: "\t", r: "\r" }[escape] ?? escape;
+      const escaped = text[i + 1] ?? "";
+      out += { n: "\n", t: "\t", r: "\r" }[escaped] ?? escaped;
       i += 1;
+      continue;
+    }
+    if (quote === "`" && text.startsWith("${", i)) {
+      const close = text.indexOf("}", i);
+      if (close < 0) return undefined;
+      const inside = text.slice(i + 2, close).trim();
+      const value = /^[A-Za-z_$][\w$]*$/.test(inside) ? resolve(inside) : undefined;
+      if (value === undefined) return undefined;
+      out += value;
+      i = close;
       continue;
     }
     out += text[i];
   }
   return undefined;
 }
-/** The value of `key` in the object literal `object`, read as a string: its own literal, or the
- * string the name it holds was assigned in `code` — a literal, or the contents of a file the
- * same code opens, which a run writes under its own directory and this reads from there alone.
- * undefined when the value is none of those, which leaves the publish unreadable rather than
- * empty: an empty message would read as a message that named nothing. */
-function fieldIn(object: string, key: string, code: string, runDir: string): string | undefined {
-  const at = object.search(new RegExp(`['"]?${key}['"]?\\s*:`));
-  if (at < 0) return undefined;
-  const value = object.slice(object.indexOf(":", at) + 1);
-  const literal = stringLiteral(value);
+/** The string an expression of `code` evaluates to, as far as reading the code can tell: its own
+ * literal, the value of a name the same code assigned, or the contents of a file the code opens,
+ * which a run writes under its own directory and this reads from there alone. `seen` stops a
+ * name that resolves through itself. undefined when it is none of those, which leaves the
+ * publish unreadable rather than empty: an empty message would read as a message that named
+ * nothing. */
+function valueOf(
+  expression: string,
+  code: string,
+  runDir: string,
+  seen: Set<string> = new Set()
+): string | undefined {
+  // The name is added to `seen` by the lookup below, not here: adding it before the call would
+  // make that lookup's own guard refuse the name it was asked for.
+  const resolve = (name: string) =>
+    seen.has(name) ? undefined : valueOf(name, code, runDir, seen);
+  const literal = stringLiteral(expression, resolve);
   if (literal !== undefined) return literal;
-  const name = /^\s*([A-Za-z_$][\w$]*)\s*[,}]/.exec(value)?.[1];
-  if (name === undefined) return undefined;
-  const assigned = new RegExp(`(?:^|\\n)\\s*(?:const |let |var )?${name}\\s*=\\s*([^\\n]*)`).exec(
-    code
-  )?.[1];
-  if (assigned === undefined) return undefined;
-  const assignedLiteral = stringLiteral(code.slice(code.indexOf(assigned)));
-  if (assignedLiteral !== undefined) return assignedLiteral;
-  const file = /open\(\s*(['"])(.*?)\1\s*\)/.exec(assigned)?.[2];
-  if (file === undefined) return undefined;
-  const resolved = path.resolve(runDir, file);
-  return resolved.startsWith(`${path.resolve(runDir)}/`) && existsSync(resolved)
-    ? readFileSync(resolved, "utf8")
+  const file = /open\(\s*(['"])(.*?)\1\s*\)\s*\.\s*read\(\)/.exec(expression)?.[2];
+  if (file !== undefined) {
+    const resolved = path.resolve(runDir, file);
+    return resolved.startsWith(`${path.resolve(runDir)}/`) && existsSync(resolved)
+      ? readFileSync(resolved, "utf8")
+      : undefined;
+  }
+  const name = /^\s*([A-Za-z_$][\w$]*)\s*(?:[,}]|$)/.exec(expression)?.[1];
+  if (name === undefined || seen.has(name)) return undefined;
+  const at = new RegExp(`(?:^|\\n)\\s*(?:const |let |var )?${name}\\s*=\\s*`).exec(code);
+  if (at === null) return undefined;
+  return valueOf(code.slice(at.index + at[0].length), code, runDir, new Set([...seen, name]));
+}
+/** The value of `key` in the object literal `object`, read through `valueOf`: `undefined` when
+ * the object has no such key — `envoy_publish` takes both `topic` and `message`, so a call that
+ * names one of them something else published nothing and the tool refused it — and `null` when
+ * the key is there and its value is beyond reading. A shorthand property (`{ topic, message }`)
+ * is the name itself, which `valueOf` resolves in the code around the call. */
+function fieldIn(
+  object: string,
+  key: string,
+  code: string,
+  runDir: string
+): string | null | undefined {
+  const at = object.search(new RegExp(`['"]?${key}['"]?\\s*:`));
+  if (at >= 0) return valueOf(object.slice(object.indexOf(":", at) + 1), code, runDir) ?? null;
+  return new RegExp(`[{,]\\s*${key}\\s*[,}]`).test(object)
+    ? (valueOf(key, code, runDir) ?? null)
     : undefined;
 }
 /** What a tool call published on Envoy — each topic it sent to with the message it carried, and
@@ -1198,7 +1235,11 @@ function publishesIn(
     const object = open < 0 ? undefined : braced(code, open);
     const topic = object === undefined ? undefined : fieldIn(object, "topic", code, runDir);
     const message = object === undefined ? undefined : fieldIn(object, "message", code, runDir);
-    if (topic === undefined || message === undefined) unreadable += 1;
+    // A call missing either field is no publish: the tool takes both and refuses what it is
+    // given otherwise, as a reviewer of 2026-11-08T16:44Z found when it wrote `body:` and then
+    // sent the same message again with `message:`.
+    if (topic === undefined || message === undefined) continue;
+    if (topic === null || message === null) unreadable += 1;
     else sent.push({ topic, message });
   }
   return { sent, unreadable };

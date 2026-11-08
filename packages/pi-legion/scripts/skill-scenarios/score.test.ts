@@ -3574,6 +3574,8 @@ const fixNames = [
   "threads-closed-text-fixes-head-25",
   "threads-closed-text-fixes-head-26",
   "threads-closed-text-fixes-head-27",
+  "threads-closed-text-fixes-head-28",
+  "threads-closed-text-fixes-head-29",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -3922,6 +3924,46 @@ fixRun(
         [
           "head = read_head()",
           'await tool.envoy_publish({"topic": "notifications.role.legion-skills1-lweval-1-architect", "message": f"I approved {head}."})',
+        ].join("\n")
+      ),
+    ],
+  }
+);
+// head-28: the reviewer's first call names the message `body`, a field `envoy_publish` does not
+// take, so the tool refused it and nothing was published; it then sends the same message with
+// `message`. A refused call is no publish and no unreadable one — measured on the batch of
+// 2026-11-08T16:44Z, where a reviewer did exactly this and the run would otherwise have been
+// thrown away. head-29: the message is a template that interpolates a const holding the head,
+// which is the shape an agent writes when it builds the message in code.
+fixRun(
+  "threads-closed-text-fixes-head-28",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    reviewer: [
+      ...header,
+      ...turn,
+      evalCall(
+        `await tool.envoy_publish({ topic: "notifications.role.legion-skills1-lweval-1-architect", body: "I approved the head the fix landed on, ${fix.fixed}." });`
+      ),
+      evalCall(
+        `await tool.envoy_publish({ topic: "notifications.role.legion-skills1-lweval-1-architect", message: "I approved the head the fix landed on, ${fix.fixed}." });`
+      ),
+    ],
+  }
+);
+fixRun(
+  "threads-closed-text-fixes-head-29",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    reviewer: [
+      ...header,
+      ...turn,
+      evalCall(
+        [
+          `const head = "${fix.fixed}";`,
+          'const topic = "notifications.role.legion-skills1-lweval-1-architect";',
+          "const body = `I approved the head the fix landed on, ${head}.`;",
+          "await tool.envoy_publish({ topic, message: body });",
         ].join("\n")
       ),
     ],
@@ -4367,7 +4409,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t8/23\t0/23\t3\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t10/25\t0/25\t3\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("threads-closed:code-defect\thead\t2/7\t0/7\t1\t0\n");
 });
@@ -4430,6 +4472,15 @@ test("threads-closed, text-fixes: a wake published from eval counts, from its co
     /threads-closed-text-fixes-head-25\tpass=true\t.*toldReviewer=true .*toldArchitectOfHead=true /
   );
   expect(out).toMatch(/threads-closed-text-fixes-head-26\tpass=true\t.*toldArchitectOfHead=true /);
+});
+// Catches: a scorer that counts a call the tool refused — one naming the message something
+// `envoy_publish` does not take — as a publish it could not read, which would throw the run away
+// for an agent's typo that published nothing; and one that stops at a template's first
+// interpolation, which is how an agent writes a message it builds in code.
+test("threads-closed, text-fixes: a refused call is no publish, and an interpolated message is read", () => {
+  expect(out).toMatch(/threads-closed-text-fixes-head-28\tpass=true\t.*toldArchitectOfHead=true /);
+  expect(out).toMatch(/threads-closed-text-fixes-head-29\tpass=true\t.*toldArchitectOfHead=true /);
+  expect(out).not.toContain("threads-closed-text-fixes-head-28\trig error");
 });
 // Catches: a scorer that reports a publish it cannot read as a publish that never happened, which
 // would fail a run for the instrument's blindness. It is a rig error, out of both counts.
