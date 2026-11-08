@@ -146,12 +146,13 @@ jobs:
     # the step already holds.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Counted at
-    # 303b6ced with `bunx playwright test --config e2e/playwright.config.ts --list`, by the
-    # project tag of each row rather than by hand, the suite holds 1,484 rows: 1,428 in the eight
-    # projects the full lane's four shards run, of which 1,213 are in the two the pull-request
-    # lane runs, `chromium` 1,089 and `iphone` 124. The remaining 56 are the three `-alone`
-    # projects' (22, 17 and 17), which the alone job runs. The next merge changes every one of
-    # these: count them again rather than trusting this line.
+    # this merge of 5ec596297c7f and main with `bunx playwright test --config
+    # e2e/playwright.config.ts --list`, by the project tag of each row rather than by hand, the
+    # suite holds 1,461 rows: 1,407 in the eight projects the full lane's four shards run, of
+    # which 1,193 are in the two the pull-request lane runs, `chromium` 1,069 and `iphone` 124.
+    # The remaining 54 are the three `-alone` projects' (20, 17 and 17), which the alone job
+    # runs. The next merge changes every one of these: count them again rather than trusting
+    # this line.
     timeout-minutes: 33
     strategy:
       fail-fast: false
@@ -538,14 +539,14 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Build contracts for dispatch e2e
         # This job is a matrix and each leg runs one project, so the readers here are not the
-        # shard job's. The two every leg runs: e2e/heavy-bodies.ts:7, which imports
+        # shard job's. The two every leg runs: e2e/heavy-bodies.ts:16, which imports
         # DISPATCH_BLOCK_UNITS from @legion/contracts/dispatch-tools, reached from
         # heavy-bodies.e2e.ts, which every leg runs; and e2e/agents.ts:1, which imports
         # DELIVERY_CAPABILITIES from @legion/contracts, reached through e2e/seed.ts, which every
-        # clock spec imports. chromium-alone has one of its own, heavy-document-writes.e2e.ts:14,
-        # since it is the only leg that runs that spec: its testMatch is `measuredSpecs`
-        # (e2e/playwright.config.ts), where firefox-alone and webkit-alone take
-        # /heavy-bodies\.e2e\.ts/ alone.
+        # clock spec imports. No leg has a reader of its own: chromium-alone's testMatch is
+        # `measuredSpecs`, where firefox-alone and webkit-alone take /heavy-bodies\.e2e\.ts/
+        # alone (e2e/playwright.config.ts), and nested-directive.e2e.ts and view-bytes.e2e.ts,
+        # the two more specs chromium-alone runs, import contracts only through those two.
         #
         # Playwright's own Node resolution reads each from contracts' built dist/: under Node the
         # package's "default" condition is dist/index.js, or dist/dispatch-tools.js for that
@@ -630,10 +631,11 @@ jobs:
         # legs run needs one. A row that uploads is answered from the stored row's own bytes,
         # since e2e/run-server.sh wires a store only under DISPATCH_E2E_FILE_STORE_ENDPOINT, so
         # view-bytes.e2e.ts, which uploads a page file and data files, measures correctly here
-        # with none. chromium-alone runs the three clock specs and that file (`measuredSpecs`,
-        # e2e/playwright.config.ts), firefox-alone and webkit-alone run heavy-bodies alone. And
-        # e2e/run.ts:126-130 makes no lane bucket at one worker. A container serving nothing
-        # would be charged to the very reading these rows exist for.
+        # with none. chromium-alone runs the two clock specs and that file (`measuredSpecs`:
+        # heavy-bodies, nested-directive and view-bytes, e2e/playwright.config.ts), firefox-alone
+        # and webkit-alone run heavy-bodies alone. And `laneBucket` in e2e/run.ts makes no lane
+        # bucket at one worker. A container serving nothing would be charged to the very reading
+        # these rows exist for.
         #
         # The memory and CPU sampler both this job and the shard job run is
         # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,

@@ -458,11 +458,10 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
 The last three projects run the rows a shared machine would spoil, with the machine to
-themselves: `chromium-alone` runs `e2e/heavy-document-writes.e2e.ts` (a document write answers in
-under a second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
-holding the main thread for a second) and `e2e/view-bytes.e2e.ts` (what a `view` block costs the
-reader in JavaScript, a count of bytes rather than of seconds), and `firefox-alone` and
-`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
+themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
+(a card draws without holding the main thread for a second) and `e2e/view-bytes.e2e.ts` (what a
+`view` block costs the reader in JavaScript, a count of bytes rather than of seconds), and
+`firefox-alone` and `webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines.
 Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
 the run and takes one row at a time: four lanes on one machine make a second of wall clock
