@@ -1148,7 +1148,7 @@ function stringLiteral(
  * name that resolves through itself. undefined when it is none of those, which leaves the
  * publish unreadable rather than empty: an empty message would read as a message that named
  * nothing. */
-function valueOf(
+function readString(
   expression: string,
   code: string,
   runDir: string,
@@ -1157,7 +1157,7 @@ function valueOf(
   // The name is added to `seen` by the lookup below, not here: adding it before the call would
   // make that lookup's own guard refuse the name it was asked for.
   const resolve = (name: string) =>
-    seen.has(name) ? undefined : valueOf(name, code, runDir, seen);
+    seen.has(name) ? undefined : readString(name, code, runDir, seen);
   const literal = stringLiteral(expression, resolve);
   if (literal !== undefined) return literal;
   const file = /open\(\s*(['"])(.*?)\1\s*\)\s*\.\s*read\(\)/.exec(expression)?.[2];
@@ -1171,13 +1171,13 @@ function valueOf(
   if (name === undefined || seen.has(name)) return undefined;
   const at = new RegExp(`(?:^|\\n)\\s*(?:const |let |var )?${name}\\s*=\\s*`).exec(code);
   if (at === null) return undefined;
-  return valueOf(code.slice(at.index + at[0].length), code, runDir, new Set([...seen, name]));
+  return readString(code.slice(at.index + at[0].length), code, runDir, new Set([...seen, name]));
 }
-/** The value of `key` in the object literal `object`, read through `valueOf`: `undefined` when
+/** The value of `key` in the object literal `object`, read through `readString`: `undefined` when
  * the object has no such key — `envoy_publish` takes both `topic` and `message`, so a call that
  * names one of them something else published nothing and the tool refused it — and `null` when
  * the key is there and its value is beyond reading. A shorthand property (`{ topic, message }`)
- * is the name itself, which `valueOf` resolves in the code around the call. */
+ * is the name itself, which `readString` resolves in the code around the call. */
 function fieldIn(
   object: string,
   key: string,
@@ -1185,9 +1185,9 @@ function fieldIn(
   runDir: string
 ): string | null | undefined {
   const at = object.search(new RegExp(`['"]?${key}['"]?\\s*:`));
-  if (at >= 0) return valueOf(object.slice(object.indexOf(":", at) + 1), code, runDir) ?? null;
+  if (at >= 0) return readString(object.slice(object.indexOf(":", at) + 1), code, runDir) ?? null;
   return new RegExp(`[{,]\\s*${key}\\s*[,}]`).test(object)
-    ? (valueOf(key, code, runDir) ?? null)
+    ? (readString(key, code, runDir) ?? null)
     : undefined;
 }
 /** What a tool call published on Envoy — each topic it sent to with the message it carried, and

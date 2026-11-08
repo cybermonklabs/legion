@@ -3962,7 +3962,7 @@ fixRun(
         [
           `const head = "${fix.fixed}";`,
           'const topic = "notifications.role.legion-skills1-lweval-1-architect";',
-          "const body = `I approved the head the fix landed on, ${head}.`;",
+          `const body = \`I approved the head the fix landed on, \${head}.\`;`,
           "await tool.envoy_publish({ topic, message: body });",
         ].join("\n")
       ),
