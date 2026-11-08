@@ -2,16 +2,14 @@
 #
 # check-citations.sh resolves the citations of the two documents of INFRA-1546 that
 # the grammar below reads, and prints how many resolved. It does not read every
-# citation those documents carry, and the gaps are these four. A dotted identifier
-# with no path beside it, in either order, is read by no rule here. A span mixing a
-# code citation with another kind is read only in the part that matches. A figure of
-# one digit is not read at all, which includes the counts the comparison at the heart
-# of the answer rests on, two side effects against one: those were checked by hand,
-# by the tester and again by the reviewer, rather than by any rule here. And a scope
-# never crosses a table cell, so a figure in a table is not attributed to the
-# experiment the neighbouring cell names. What the count covers is the grammar below
-# and nothing wider, and whether a claim is missing its citation altogether is the
-# reviewer's reading, as the issue's Verification document says in its own words.
+# citation those documents carry. What it does not read stands under "What this gate
+# does not read" below, which is this header's statement of the coverage table the
+# script holds once: --coverage prints that table, the directory's README states it in
+# the same words, and the self-test refuses a run where either prose has dropped a line
+# of it, so an account of these gaps written from memory fails in this directory rather
+# than in review. What the count covers is the grammar below and nothing wider, and
+# whether a claim is missing its citation altogether is the reviewer's reading, as the
+# issue's Verification document says in its own words.
 # The two documents:
 #
 #   the answer   dispatch://INFRA-1546/artifact/temporal-evaluation-md
@@ -19,6 +17,7 @@
 #
 #   bash docs/research/temporal-evaluation-2026-11/check-citations.sh
 #   bash docs/research/temporal-evaluation-2026-11/check-citations.sh --self-test
+#   bash docs/research/temporal-evaluation-2026-11/check-citations.sh --coverage
 #
 # It reads both of them live from Dispatch, so it checks what a reader reads rather
 # than a copy. It prints one line per citation, naming in its third column the document
@@ -111,14 +110,12 @@
 #                Experiment paragraph lists, so the 19 and the 20 of "experiments 19
 #                and 20" are that scope's experiment numbers and a figure of neither.
 #                In a scope naming an experiment, every numeric token is a figure
-#                except: the experiment numbers themselves; a token in a code span; a
-#                token immediately after a code span, after an optional comma, which is
-#                how both documents write a Legion line count (`internal/workflow`,
-#                8,158); a token in a dispatch:// reference or a web address; a token
-#                inside a YYYY-MM-DD date; and a single digit. A trailing comma, full
-#                stop or semicolon is the sentence's, not the number's. Where a scope
-#                names more than one experiment, any of their transcripts holding the
-#                text resolves the figure.
+#                except what "What this gate does not read" below lists, which was
+#                walked out of the branches of sanitize and figures and which
+#                --coverage prints. A trailing comma, full stop or semicolon is the
+#                sentence's, not the number's. Where a scope names more than one
+#                experiment, any of their transcripts holding the text resolves the
+#                figure.
 #   Dispatch     A bare dispatch:// reference, resolved by `dispatch read --ref`.
 #   Web          An https:// address immediately followed by ` (read YYYY-MM-DD)`. A
 #                404 or a 410 fails. Any other answer prints unreachable and does not
@@ -129,13 +126,75 @@
 #                exit fails, 6 among them, which is the host not resolving: a name that
 #                resolves nowhere is a citation of nothing, not a site briefly down.
 #
+# What this gate does not read, line for line as the coverage table below holds it:
+# --coverage prints these lines, the directory's README states them in the same words,
+# and the self-test fails naming any line either prose home has dropped. The first list
+# is the citation kinds no rule here reads at all; the second is every exclusion that
+# keeps a numeric token of a scope naming an experiment from being read as a figure,
+# walked branch by branch out of sanitize and figures rather than remembered.
+#
+# The citation kinds no rule of this gate reads:
+#
+#   A dotted identifier with no path beside it, in either order, is read by no rule
+#   here, because the documents write Temporal's `workflow.Sleep` and their own file
+#   names in the same shape and nothing in such a span says whether a file was meant.
+#
+#   A span mixing a code citation with another kind is read only in the part that
+#   matches.
+#
+#   A stored-state citation in any other words than the `x` column of `y` and the `y`
+#   table is read by no rule, so the `lease_token` column of the `outbox` table resolves
+#   as the table alone and a table or column name holding anything but letters, digits
+#   and the underscore is read by neither shape.
+#
+#   A dispatch:// reference is read only as far as its first character outside letters,
+#   digits, the dot, the underscore, the slash, @, # and -, so what is checked is the
+#   part before that character.
+#
+#   An http:// address is read by no rule, the web rule reading https:// alone, though
+#   the figure rule keeps the numbers of both out of the scopes it reads.
+#
+#   A citation broken across a line end is read by no rule, every rule here reading one
+#   line at a time.
+#
+#   A scope never crosses a table cell, so a figure in a table cell is not attributed to
+#   the experiment the neighbouring cell names.
+#
+# In a scope naming an experiment, what keeps a numeric token from being read as a
+# figure:
+#
+#   The experiment numbers of the scope itself are no figures of it, the 19 and the 20
+#   of experiments 19 and 20 among them.
+#
+#   A numeric token inside a code span is no figure.
+#
+#   A numeric token immediately after a code span, after an optional comma, is no
+#   figure, which is how both documents write a Legion line count, so the 1,294 lines of
+#   the phase table and its engine and the 2,751 of the outbox's three files that the
+#   answer's size argument rests on are read by no rule here and were checked by hand,
+#   by the tester and again by the reviewer.
+#
+#   A numeric token inside a dispatch:// reference or a web address is no figure,
+#   http:// as well as https://.
+#
+#   A numeric token inside a YYYY-MM-DD date is no figure.
+#
+#   A numeric token of a single digit is no figure, which includes the counts the
+#   comparison at the heart of the answer rests on, two side effects against one: those
+#   were checked by hand, by the tester and again by the reviewer, rather than by any
+#   rule here.
+#
+#   Every numeric token after an unterminated code span is no figure, because a backtick
+#   with no closing backtick after it blanks the rest of that line.
+#
 # It exits non-zero on: a file that does not hold the identifier it is cited with; an
 # identifier cited in the code form that the file holds only as a string; a table no
 # migration creates; a dispatch:// reference that does not read; an experiment named
 # with no transcript committed beside this script, its number above the highest
-# transcript committed there or in a gap below it alike; a number a document
-# attributes to an experiment that the experiment's committed transcript does not
-# measure below its header; a citation whose path leaves the repository; a web address
+# transcript committed there or in a gap below it alike; a number of two characters or
+# more that a scope naming an experiment attributes to it, outside every exclusion the
+# coverage table lists, that the experiment's committed transcript does not measure
+# below its header; a citation whose path leaves the repository; a web address
 # with no read date beside it; an address answering 404 or 410, or one curl ends on an
 # exit other than a timeout and a connection nothing accepted; and a document with no
 # citation at all, because an empty set of citations is no evidence.
@@ -145,7 +204,8 @@
 #
 # --self-test runs the resolver over a fixture of deliberately broken citations held in
 # this script and over a set of well-formed ones, so a tester can show the check
-# refuses what it claims to refuse without editing a live document.
+# refuses what the fixtures hold without editing a live document, and reads the coverage
+# table against this header and the README, so neither prose can drift from it.
 
 set -o errexit -o nounset -o pipefail
 
@@ -165,6 +225,11 @@ readonly web_timeout=20
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 readonly script_dir
+# This script and the directory's README: the two prose homes of the coverage table,
+# which the self-test reads the table against.
+script_path="$script_dir/${BASH_SOURCE[0]##*/}"
+readonly script_path
+readonly coverage_readme="$script_dir/README.md"
 repo_root=$(cd -- "$script_dir/../../.." && pwd -P)
 readonly repo_root
 
@@ -753,6 +818,113 @@ summary() {
 		"$count_resolved" "$count_unreachable" "$count_failed"
 }
 
+# --- what this gate does not read ---------------------------------------------------
+
+# The gate's own account of its gaps, held here once and printed by --coverage. The
+# header of this script and the directory's README state these lines in the same words,
+# and the self-test fails naming any line either prose home has dropped, so an account
+# of the gaps written from memory fails in this directory rather than in review.
+#
+# Each entry is the canonical phrase both prose homes must hold, a tab, and the line
+# --coverage prints, which holds that phrase.
+
+# The citation kinds no rule of this gate reads at all, read out of the patterns
+# resolve_document greps for above.
+readonly -a coverage_kinds=(
+	$'a dotted identifier with no path beside it\tA dotted identifier with no path beside it, in either order, is read by no rule here, because the documents write Temporal\'s `workflow.Sleep` and their own file names in the same shape and nothing in such a span says whether a file was meant.'
+	$'a span mixing a code citation with another kind\tA span mixing a code citation with another kind is read only in the part that matches.'
+	$'a stored-state citation in any other words\tA stored-state citation in any other words than the `x` column of `y` and the `y` table is read by no rule, so the `lease_token` column of the `outbox` table resolves as the table alone and a table or column name holding anything but letters, digits and the underscore is read by neither shape.'
+	$'a dispatch:// reference is read only as far as its first character outside\tA dispatch:// reference is read only as far as its first character outside letters, digits, the dot, the underscore, the slash, @, # and -, so what is checked is the part before that character.'
+	$'an http:// address is read by no rule\tAn http:// address is read by no rule, the web rule reading https:// alone, though the figure rule keeps the numbers of both out of the scopes it reads.'
+	$'a citation broken across a line end\tA citation broken across a line end is read by no rule, every rule here reading one line at a time.'
+	$'a figure in a table cell\tA scope never crosses a table cell, so a figure in a table cell is not attributed to the experiment the neighbouring cell names.'
+)
+
+# Every exclusion that keeps a numeric token of a scope naming an experiment from being
+# read as a figure, walked branch by branch out of the two functions that hold them:
+# the address branch, the code-span branch with the token after it and the date branch
+# of sanitize, and the own-number branch and the length branch of figures.
+readonly -a coverage_figures=(
+	$'the experiment numbers of the scope itself\tThe experiment numbers of the scope itself are no figures of it, the 19 and the 20 of experiments 19 and 20 among them.'
+	$'a numeric token inside a code span\tA numeric token inside a code span is no figure.'
+	$'a numeric token immediately after a code span\tA numeric token immediately after a code span, after an optional comma, is no figure, which is how both documents write a Legion line count, so the 1,294 lines of the phase table and its engine and the 2,751 of the outbox\'s three files that the answer\'s size argument rests on are read by no rule here and were checked by hand, by the tester and again by the reviewer.'
+	$'a numeric token inside a dispatch:// reference or a web address\tA numeric token inside a dispatch:// reference or a web address is no figure, http:// as well as https://.'
+	$'a numeric token inside a YYYY-MM-DD date\tA numeric token inside a YYYY-MM-DD date is no figure.'
+	$'a numeric token of a single digit\tA numeric token of a single digit is no figure, which includes the counts the comparison at the heart of the answer rests on, two side effects against one: those were checked by hand, by the tester and again by the reviewer, rather than by any rule here.'
+	$'every numeric token after an unterminated code span\tEvery numeric token after an unterminated code span is no figure, because a backtick with no closing backtick after it blanks the rest of that line.'
+)
+
+# The coverage table, one line per thing this gate does not read.
+coverage_report() {
+	local entry
+	printf 'coverage: what this gate does not read. Its header and the directory'"'"'s README state these lines in the same words, and --self-test refuses a run where either has dropped one.\n'
+	printf '\nThe citation kinds no rule of this gate reads:\n\n'
+	for entry in "${coverage_kinds[@]}"; do
+		printf '  %s\n' "${entry#*$'\t'}"
+	done
+	printf '\nIn a scope naming an experiment, what keeps a numeric token from being read as a figure:\n\n'
+	for entry in "${coverage_figures[@]}"; do
+		printf '  %s\n' "${entry#*$'\t'}"
+	done
+}
+
+# This script's header as one lowercased line, its comment markers and line breaks
+# taken out, so a phrase is found whether the header wrapped it or not. The header is
+# the comment block at the top of this file and nothing below it, so the coverage table
+# cannot stand in for the prose it is checked against.
+header_prose() {
+	awk '!/^#/ { exit } { sub(/^#[ \t]?/, ""); gsub(/[ \t]+/, " "); printf "%s ", tolower($0) }' \
+		"$script_path"
+}
+
+# The directory's README the same way.
+readme_prose() {
+	awk '{ gsub(/[ \t]+/, " "); printf "%s ", tolower($0) }' "$coverage_readme"
+}
+
+# Every line the coverage table prints standing in both prose homes. Prints to standard
+# error the phrase of each line that does not, and where it is missing.
+coverage_stated_in_prose() {
+	local printed header readme entry phrase line missing=0
+	if [[ ! -f "$coverage_readme" ]]; then
+		printf 'self-test: %s is not there, so the coverage table has one prose home and not two\n' \
+			"$coverage_readme" >&2
+		return 1
+	fi
+	printed=$(coverage_report)
+	header=$(header_prose)
+	readme=$(readme_prose)
+	for entry in "${coverage_kinds[@]}" "${coverage_figures[@]}"; do
+		# Every comparison below is in lower case, the prose capitalising a phrase
+		# that opens a sentence and the table writing it as it reads in the line.
+		phrase=${entry%%$'\t'*}
+		phrase=${phrase,,}
+		line=${entry#*$'\t'}
+		if [[ "$printed" != *"$line"* ]]; then
+			printf 'self-test: --coverage does not print the coverage line "%s"\n' "$line" >&2
+			missing=$((missing + 1))
+			continue
+		fi
+		if [[ "${line,,}" != *"$phrase"* ]]; then
+			printf 'self-test: the coverage line "%s" does not hold the phrase "%s" it is checked by\n' \
+				"$line" "$phrase" >&2
+			missing=$((missing + 1))
+			continue
+		fi
+		if [[ "$header" != *"$phrase"* ]]; then
+			printf 'self-test: the coverage line "%s" stands nowhere in this script'"'"'s header\n' \
+				"$phrase" >&2
+			missing=$((missing + 1))
+		fi
+		if [[ "$readme" != *"$phrase"* ]]; then
+			printf 'self-test: the coverage line "%s" stands nowhere in %s\n' \
+				"$phrase" "${coverage_readme##*/}" >&2
+			missing=$((missing + 1))
+		fi
+	done
+	((missing == 0))
+}
+
 # --- the negative control -----------------------------------------------------------
 
 # Every refusal this script claims, one citation each. None of these may resolve.
@@ -927,12 +1099,22 @@ self_test() {
 		printf 'self-test: experiment 21 and the figure its transcript measures resolved, the figure it never measured was refused, the six experiments of two plurals were each named, each resolved and each kept out of the figures of its scope, and experiment 25, which stands above every transcript committed here, was refused together with the 999999 that sentence attributes to it\n'
 	fi
 
+	printf '\nself-test, the coverage table against the prose that states it: every line --coverage prints must stand in this script'"'"'s header and in the directory'"'"'s README, so neither account of what this gate does not read can be rewritten from memory and lose a line\n\n'
+	coverage_report
+	printf '\n'
+	if coverage_stated_in_prose; then
+		printf 'self-test: all %d lines of the coverage table above stand in this script'"'"'s header and in %s, which proves the two prose accounts of what this gate does not read are the table'"'"'s own list and not a remembered one: drop a line from either and this check names it and the prose home it is missing from\n' \
+			"$((${#coverage_kinds[@]} + ${#coverage_figures[@]}))" "${coverage_readme##*/}"
+	else
+		failures=$((failures + 1))
+	fi
+
 	printf '\n'
 	if ((failures > 0)); then
-		printf 'self-test: %d of 5 checks did not hold\n' "$failures" >&2
+		printf 'self-test: %d of 6 checks did not hold\n' "$failures" >&2
 		return 1
 	fi
-	printf 'self-test: the resolver refuses every broken form and resolves every well-formed one\n'
+	printf 'self-test: every broken citation these fixtures hold was refused and every well-formed one resolved, which is what the fixtures prove and no more; --coverage lists the citation kinds and the figures no rule here reads at all\n'
 	return 0
 }
 
@@ -969,8 +1151,9 @@ main() {
 	case "${1:-}" in
 	'') check_documents ;;
 	--self-test) self_test ;;
+	--coverage) coverage_report ;;
 	*)
-		printf 'usage: check-citations.sh [--self-test]\n' >&2
+		printf 'usage: check-citations.sh [--self-test|--coverage]\n' >&2
 		exit 2
 		;;
 	esac

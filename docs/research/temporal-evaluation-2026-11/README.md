@@ -119,19 +119,55 @@ bash docs/research/temporal-evaluation-2026-11/check-citations.sh
 It reads the answer and the plan live from Dispatch and resolves the citations of both that its grammar reads: a Legion file and identifier in either order, a quoted literal, a table or a column with its table, a numbered experiment and the figures attributed to it, a `dispatch://` reference, and a web address with the date it was read.
 A figure resolves only against the measured lines of its experiment's transcript, below the header's dashed rule, as a number of its own, so a figure that stands only in a header, or only inside a longer number, fails.
 An experiment this directory holds no transcript for is refused, its number standing above the highest transcript here or in a gap below it alike, and its figures are refused with it, so the count can never read as a pass for a figure nothing looked at.
-It does not read every citation those documents carry, and the gaps are these four.
-A dotted identifier with no path beside it is read by no rule.
+It does not read every citation those documents carry.
+What it does not read is the list below, which the script holds once as one table, its own header states in the same words, and its self-test fails naming any line either prose home has dropped.
+
+The citation kinds no rule of this gate reads:
+
+A dotted identifier with no path beside it, in either order, is read by no rule here, because the documents write Temporal's `workflow.Sleep` and their own file names in the same shape and nothing in such a span says whether a file was meant.
+
 A span mixing a code citation with another kind is read only in the part that matches.
-A figure of one digit is not read at all, which includes the counts the comparison at the heart of the answer rests on, two side effects against one: those were checked by hand, by the tester and again by the reviewer, rather than by any rule here.
-And a scope never crosses a table cell, so a figure in a table is not attributed to the experiment the neighbouring cell names.
+
+A stored-state citation in any other words than the `x` column of `y` and the `y` table is read by no rule, so the `lease_token` column of the `outbox` table resolves as the table alone and a table or column name holding anything but letters, digits and the underscore is read by neither shape.
+
+A dispatch:// reference is read only as far as its first character outside letters, digits, the dot, the underscore, the slash, @, # and -, so what is checked is the part before that character.
+
+An http:// address is read by no rule, the web rule reading https:// alone, though the figure rule keeps the numbers of both out of the scopes it reads.
+
+A citation broken across a line end is read by no rule, every rule here reading one line at a time.
+
+A scope never crosses a table cell, so a figure in a table cell is not attributed to the experiment the neighbouring cell names.
+
+In a scope naming an experiment, what keeps a numeric token from being read as a figure:
+
+The experiment numbers of the scope itself are no figures of it, the 19 and the 20 of experiments 19 and 20 among them.
+
+A numeric token inside a code span is no figure.
+
+A numeric token immediately after a code span, after an optional comma, is no figure, which is how both documents write a Legion line count, so the 1,294 lines of the phase table and its engine and the 2,751 of the outbox's three files that the answer's size argument rests on are read by no rule here and were checked by hand, by the tester and again by the reviewer.
+
+A numeric token inside a dispatch:// reference or a web address is no figure, http:// as well as https://.
+
+A numeric token inside a YYYY-MM-DD date is no figure.
+
+A numeric token of a single digit is no figure, which includes the counts the comparison at the heart of the answer rests on, two side effects against one: those were checked by hand, by the tester and again by the reviewer, rather than by any rule here.
+
+Every numeric token after an unterminated code span is no figure, because a backtick with no closing backtick after it blanks the rest of that line.
+
 What the count covers is that grammar and nothing wider, and whether a claim is missing its citation altogether is the reviewer's reading, as the issue's Verification document says in its own words.
 It ends with `citations: N resolved, M unreachable, 0 failed`.
+
+```sh
+bash docs/research/temporal-evaluation-2026-11/check-citations.sh --coverage
+```
+
+prints that list from the table the script holds, one line per thing the gate does not read.
 
 ```sh
 bash docs/research/temporal-evaluation-2026-11/check-citations.sh --self-test
 ```
 
-runs the resolver over broken citations held in the script, so a reader can see it refuse what it claims to refuse without editing the live document.
+runs the resolver over broken citations held in the script, so a reader can see it refuse what those fixtures hold without editing the live document, and reads the coverage table against this file and the script's header, so neither can drift from it.
 
 ## What is here
 
