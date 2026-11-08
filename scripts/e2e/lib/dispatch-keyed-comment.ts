@@ -20,7 +20,7 @@ import { parseArgs } from "node:util";
 import {
   IDEMPOTENCY_KEY_HEADER,
   IDEMPOTENCY_REPLAYED_HEADER,
-} from "../../../packages/contracts/src/dispatch-api";
+} from "../../../packages/contracts/src/dispatch-constants";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-keyed-comment.ts --url <dispatch> --bearer-file <file> --issue <KEY> [--session <id>] [--cli]";

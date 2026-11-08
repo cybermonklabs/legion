@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-api";
+import { LIVE_SOCKET_MAX_AGE_CLOSE } from "../../../packages/contracts/src/dispatch-constants";
 
 const USAGE =
   "usage: bun scripts/e2e/lib/dispatch-live-events.ts --url <dispatch> [--bearer-file <file> | --cookie-file <file> | --user <email>] [--since <id> | --from-whoami [--subscribe-after <s>]] [--until <substring>] [--timeout <s>]";

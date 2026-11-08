@@ -34,6 +34,7 @@ import type { Artifact, IssueCoverage, IssueDetails } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
+
 mock.module("../artifacts/ArtifactRoutePanel", async () => {
   return await import("../artifacts/ArtifactRoutePanel.tsx?suspense-test");
 });
