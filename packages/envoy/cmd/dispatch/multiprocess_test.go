@@ -280,9 +280,14 @@ func (p *dispatchProcess) createProject(t *testing.T, key, name string) {
 
 // createIssueIn creates an issue in project with title and spec, and returns its key and its spec
 // document's id.
+//
+// It forces the create past the near-copy gate. These cases want several issues of one project
+// holding the same spec, which is what the gate refuses (dispatch://INFRA-1160/spec#b-r2), and
+// what they are about is the document rooms rather than the filing: a filer who means a near copy
+// passes force in the same way.
 func (p *dispatchProcess) createIssueIn(t *testing.T, project, title, spec string) (key, artifactID string) {
 	t.Helper()
-	body := fmt.Sprintf(`{"project":%q,"title":%q,"spec":%q}`, project, title, spec)
+	body := fmt.Sprintf(`{"project":%q,"title":%q,"spec":%q,"force":true}`, project, title, spec)
 	created := p.call(t, http.MethodPost, "/api/v1/issues", body, http.StatusCreated)
 	var issue struct {
 		Key               string `json:"key"`
@@ -2550,14 +2555,18 @@ func requirePublishedAfterReceipt(t *testing.T, pair *dispatchPair, holder *test
 // request, made at boot - until release is closed, which is how a row makes one process hold that
 // sweep's lease long enough for the other to find it held. It counts those listings too: the
 // listing is the call the webhook-redelivery lease exists to make once however many processes
-// sweep, so a row about that lease reads the count rather than the log alone.
+// sweep, so a row about that lease reads the count rather than the log alone. It counts the pull
+// requests the processes fetch for the same reason: one envelope handed to one intake is one
+// fetch, and the count is the only thing that tells one bound subscriber from two
+// (TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt).
 type githubFake struct {
 	server  *httptest.Server
 	release chan struct{}
 	once    sync.Once
 
-	mu     sync.Mutex
-	listed int
+	mu      sync.Mutex
+	listed  int
+	fetched int
 }
 
 // startGitHubFake serves on loopback until the test ends.
@@ -2568,6 +2577,9 @@ func startGitHubFake(t *testing.T) *githubFake {
 		if strings.Contains(r.URL.Path, "/hook/deliveries") {
 			fake.countDeliveryListing()
 			fake.holdFirstDeliveryListing(r.Context())
+		}
+		if pullRequestPath.MatchString(r.URL.Path) {
+			fake.countPullRequestFetch()
 		}
 		status, body := githubFakeAnswer(r)
 		w.Header().Set("Content-Type", "application/json")
@@ -2645,6 +2657,26 @@ func (f *githubFake) deliveryListings() int {
 	return f.listed
 }
 
+// pullRequestPath is GitHub's path for one pull request, /repos/<owner>/<repo>/pulls/<number>,
+// and nothing under it: a pull request's commits and its files are calls of their own, made for
+// their own reasons, and a row counting how many processes fetched one pull request counts that
+// one path.
+var pullRequestPath = regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls/[0-9]+$`)
+
+// countPullRequestFetch records one pull-request fetch, whichever process made it.
+func (f *githubFake) countPullRequestFetch() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetched++
+}
+
+// pullRequestFetches is how many pull requests the processes have fetched between them.
+func (f *githubFake) pullRequestFetches() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fetched
+}
+
 // githubHoldCap bounds the hold whatever the test does, well inside githubapp.RequestTimeout (20
 // s), so a row that fails before it releases leaves no request timing out.
 const githubHoldCap = 10 * time.Second
@@ -2664,6 +2696,12 @@ func (f *githubFake) URL() string { return f.server.URL }
 // jittered over its first five minutes, so without a knob it lands inside this row's window
 // only now and then; DISPATCH_TEST_RECONCILE_AT_START runs it as each process starts, so every
 // run of this row meets it, and neither process may log a delivery error for it.
+//
+// Nothing about a durable is read until both processes have settled on it
+// (waitForDeliveryOutcomes), because which of them holds it is one state of the two and not two
+// facts read in turn. Each assertion then says what it read - which process bound the durable,
+// why the other stood by, what either logged as an error - and every failure prints both
+// processes' whole output (pair.buffers), so the state that failed is in the job that failed.
 func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
 	pair := newPair(t)
 	seedDeliverySettings(t, pair.database)
@@ -2681,22 +2719,34 @@ func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
 
 	holders := map[string]*dispatchProcess{}
 	for _, durable := range deliveryDurables {
-		holder := waitForDurableHolder(t, pair, durable, 60*time.Second)
-		holders[durable] = holder
-		standby := pair.other(holder)
-		standby.waitForLog(t, 30*time.Second,
-			`msg="dispatch delivery: NATS consumer held by another process; standing by"`, "name="+durable)
-		if errorLines := standby.logLines("level=ERROR", "dispatch delivery:"); len(errorLines) > 0 {
-			t.Errorf("the process standing by for %s logged a delivery error; standing by is not a failure:\n%s",
-				durable, strings.Join(errorLines, "\n"))
+		outcomes := waitForDeliveryOutcomes(t, pair, durable, 60*time.Second)
+
+		bound := outcomes.boundBy()
+		if len(bound) != 1 {
+			t.Errorf("%s bound %s, which admits one subscriber, so exactly one of the two binds it; A logged:\n%s\nB logged:\n%s\n%s",
+				processNames(pair, bound), durable, outcomes.a.describe(), outcomes.b.describe(), pair.buffers())
+		} else {
+			holder := bound[0]
+			holders[durable] = holder
+			standby := pair.other(holder)
+			if len(outcomes.of(standby).standby) == 0 {
+				t.Errorf("%s logged none of the three standing-by lines for %s, which %s bound, so it never said why it was not the process holding it; it logged:\n%s\n%s",
+					pair.name(standby), durable, pair.name(holder), outcomes.of(standby).describe(), pair.buffers())
+			}
 		}
-		if bound := standby.logLines(`msg="dispatch delivery: NATS consumer bound"`, "name="+durable); len(bound) > 0 {
-			t.Errorf("both processes bound %s, which admits one subscriber:\n%s", durable, strings.Join(bound, "\n"))
+
+		for _, process := range []*dispatchProcess{pair.a, pair.b} {
+			if errorLines := outcomes.of(process).errors; len(errorLines) > 0 {
+				t.Errorf("%s logged a delivery error for %s; binding the durable and standing by for it are both ordinary:\n%s\n%s",
+					pair.name(process), durable, strings.Join(errorLines, "\n"), pair.buffers())
+			}
 		}
+
 		if info, err := js.ConsumerInfo(bus.Stream, durable); err != nil {
 			t.Fatalf("read %s: %v", durable, err)
 		} else if !info.PushBound {
-			t.Errorf("NATS reports nothing bound to %s, though %s logged that it bound it", durable, pair.name(holder))
+			t.Errorf("NATS reports nothing bound to %s, and %s logged a bind of it:\n%s",
+				durable, processNames(pair, bound), pair.buffers())
 		}
 	}
 
@@ -2711,6 +2761,13 @@ func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
 		}
 	}
 
+	// Every assertion above reports and goes on, so the hand-over is reached even where none of
+	// them could name the process holding delivery-events. There is then none to kill, and the
+	// row stops on what those assertions said rather than killing one of the two at random.
+	if holders["delivery-events"] == nil {
+		t.Fatalf("no process holds delivery-events, so the hand-over has none to kill")
+	}
+
 	// The holder dies the way a task replaced mid-deploy or killed for memory does, with no
 	// chance to unsubscribe, and the process that was standing by takes the durable over.
 	dying := holders["delivery-events"]
@@ -2721,29 +2778,441 @@ func TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy(t *testing.T) {
 		if holders[durable] != dying {
 			continue
 		}
+		// 10 s is what the survivor gets to take a dead holder's durable over: the one
+		// durableBindInterval poll it finds the durable free on, plus the server releasing the
+		// dead holder's interest in it. Nothing here is jittered, so this is a hang guard too.
 		survivor.waitForLog(t, 10*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
 	}
 	t.Logf("the standby bound the dead holder's durables %v after it died", time.Since(handedOver))
 }
 
-// waitForDurableHolder waits for exactly one of the pair to log that it bound durable, and
-// answers which.
-func waitForDurableHolder(t *testing.T, pair *dispatchPair, durable string, within time.Duration) *dispatchProcess {
-	t.Helper()
-	bound := `msg="dispatch delivery: NATS consumer bound"`
-	deadline := time.Now().Add(within)
-	for {
-		switch {
-		case pair.a.logged(bound, "name="+durable):
-			return pair.a
-		case pair.b.logged(bound, "name="+durable):
-			return pair.b
-		case time.Now().After(deadline):
-			t.Fatalf("neither process bound %s within %v:\nA:\n%s\nB:\n%s",
-				durable, within, pair.a.Output.String(), pair.b.Output.String())
+// A process whose NATS connection drops while it holds delivery-events comes back standing by.
+// The other process takes the durable over while the link is down, and the returned process says
+// it gave the durable up (deliveryConnectionChangedMessage) and goes back to its bind poll, which
+// takes the durable again only while it is free. nats.go re-sends a subscription inside its own
+// reconnect, and the client binds its registration again on a replacement connection, so before
+// INFRA-1551 the returned process came back as a second bound subscriber, with no bind of its own
+// in any log to say so.
+//
+// In process that give-up is proven already. What two real processes show, and one cannot, is the
+// fan-out: one pull request merged after the link is restored is fetched exactly once from the
+// GitHub the two share. A second bound subscriber is handed that same envelope and fetches that
+// same pull request, which no log line reports.
+//
+// The fake answers the fetch GitHub's 404, which is all this row needs: it counts the fetch, not
+// its answer. The intake logs the failed fetch at WARN ("process event") and acknowledges the
+// message, so the 404 is redelivered to nobody and neither process logs a delivery error for the
+// durable - which this row requires, as the row above does.
+//
+// The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START)
+// and takes the lease for that whole ReconcileInterval with it, so the next pass is five minutes
+// away and none lands in the window the fetches are counted in: the pull-request head this row's
+// envelope writes is re-read by that pass, outside the row, rather than by one inside it.
+func TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt(t *testing.T) {
+	// The durable this row is about: the feed of every GitHub notification, one subscriber at a
+	// time (deliveryDurables).
+	const durable = "delivery-events"
+	// The merged pull request the row publishes. Its author has to be one the settings name: a
+	// merge by an author outside the population costs no GitHub call at all
+	// (Intake.handlePullRequestEnvelope), and the call is what this row counts.
+	const (
+		owner  = "acme"
+		repo   = "widgets"
+		number = "7"
+		author = "octocat"
+	)
+
+	pair := newPair(t)
+	seedDeliverySettings(t, pair.database)
+	addPopulationAuthor(t, pair.database, author)
+	fake := startGitHubFake(t)
+	fake.Release()
+	env := githubAppEnv(t, fake.URL())
+	env["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
+	pair.start(t, env)
+
+	conn := testnats.Connect(t, pair.nats)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream context: %v", err)
+	}
+
+	// Which of the two holds the durable is one state of the pair, read once both have settled on
+	// it, as the row above reads it.
+	outcomes := waitForDeliveryOutcomes(t, pair, durable, 60*time.Second)
+	bound := outcomes.boundBy()
+	if len(bound) != 1 {
+		t.Fatalf("%s bound %s, which admits one subscriber, so exactly one of the two binds it; this row cuts the process holding it off NATS and has none to cut. A logged:\n%s\nB logged:\n%s\n%s",
+			processNames(pair, bound), durable, outcomes.a.describe(), outcomes.b.describe(), pair.buffers())
+	}
+	returned, keeper := bound[0], pair.other(bound[0])
+	t.Logf("%s bound %s and %s is standing by for it", pair.name(returned), durable, pair.name(keeper))
+
+	// The link drops under the holder, as an outage drops it: its intake gives the subscription up
+	// at the disconnect and returns to its bind poll.
+	proxy := pair.proxy(returned)
+	proxy.Cut()
+	cutAt := time.Now()
+
+	// 20 s is a hang guard: the hand-over costs the one durableBindInterval poll the standby finds
+	// the durable free on, plus the server releasing the cut process's interest in it, and nothing
+	// in it is jittered. It is the bound the row above gives a dead holder's hand-over, with room
+	// for the disconnect the cut process has to notice first.
+	keeper.waitForLog(t, 20*time.Second, `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
+	t.Logf("%s bound %s %v after the cut", pair.name(keeper), durable, time.Since(cutAt).Round(time.Millisecond))
+
+	proxy.Restore()
+	waitUntil(t, 30*time.Second, "the cut process's NATS connection coming back", func() bool {
+		report, err := returned.readHealthReport()
+		return err == nil && report.NATS != nil && *report.NATS
+	})
+
+	// What the returned process did next is read from its own output in the order it wrote it: the
+	// line where it gave the durable up, and the lines after it.
+	after, gaveUp := deliveryLinesAfterGiveUp(returned, durable, deliveryStandbyAfterGiveUpWithin)
+	switch {
+	case !gaveUp:
+		t.Errorf("%s held %s when its NATS connection was cut and never logged %q, so nothing says it gave the durable up; it logged:\n%s\n%s",
+			pair.name(returned), durable, deliveryConnectionChangedMessage, deliveryOutcomeFor(returned, durable).describe(), pair.buffers())
+	case !slices.ContainsFunc(after, isDeliveryStandby):
+		logged := strings.Join(after, "\n")
+		if logged == "" {
+			logged = "(no delivery line naming the durable after it gave the durable up)"
+		}
+		t.Errorf("%s gave %s up and logged none of the standing-by lines for it within %v, so nothing says it is polling for the durable rather than delivering it; after the give-up it logged:\n%s\n%s",
+			pair.name(returned), durable, deliveryStandbyAfterGiveUpWithin, logged, pair.buffers())
+	}
+
+	if handedBack := keeper.logLines(`msg="`+deliveryConnectionChangedMessage+`"`, "name="+durable); len(handedBack) > 0 {
+		t.Errorf("%s kept %s through the other process's outage and logged that it gave the durable up; only the process whose connection changed does:\n%s\n%s",
+			pair.name(keeper), durable, strings.Join(handedBack, "\n"), pair.buffers())
+	}
+	if binds := deliveryOutcomeFor(keeper, durable).bound; len(binds) != 1 {
+		t.Errorf("%s logged %d binds of %s, which it took over once and has held since; it logged:\n%s\n%s",
+			pair.name(keeper), len(binds), durable, deliveryOutcomeFor(keeper, durable).describe(), pair.buffers())
+	}
+
+	// One envelope, published on the pair's own NATS once the link is back: a pull request merged
+	// by a population author, in the shape Envoy's publisher gives a GitHub resource event
+	// (cmd/dispatch/shutdown_test.go). The pair's NATS server is this test's own, so the stream
+	// holds no envelope of another run under this event id.
+	payload, err := json.Marshal(map[string]string{
+		"kind": "pr", "action": "closed", "merged": "true",
+		"repo": owner + "/" + repo, "number": number, "author": author,
+	})
+	if err != nil {
+		t.Fatalf("encode the merged pull request's payload: %v", err)
+	}
+	subject := contracts.GithubResourceSubject(owner, repo, "pr", number)
+	eventID := "nats-cut-pr-" + number
+	envelope, err := json.Marshal(contracts.Envelope{
+		EventID: eventID, Source: "github", SourceEventID: eventID, TraceID: eventID,
+		Topic: subject, Payload: string(payload), IssuedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatalf("encode the merged pull request's envelope: %v", err)
+	}
+	publishedAt := time.Now()
+	if _, err := js.Publish(subject, envelope); err != nil {
+		t.Fatalf("publish the merged pull request on %s: %v", subject, err)
+	}
+
+	deadline := publishedAt.Add(deliveryEnvelopeFetchWithin)
+	for fake.pullRequestFetches() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the pull request of the one envelope published on %s after the restore was never fetched within %v, so no process delivered it:\n%s",
+				subject, deliveryEnvelopeFetchWithin, pair.buffers())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+	t.Logf("the merged pull request was fetched %v after it was published", time.Since(publishedAt).Round(time.Millisecond))
+	// The count is watched after it reaches one rather than read the moment it does: two bound
+	// subscribers are handed one envelope at the same moment, so the second fetch is milliseconds
+	// behind the first and a read taken at once would miss what this row exists to catch.
+	time.Sleep(deliverySecondFetchWindow)
+	if fetches := fake.pullRequestFetches(); fetches != 1 {
+		t.Errorf("the one pull request published after the restore was fetched %d times from the GitHub the two processes share, and a process standing by for %s fetches nothing:\n%s",
+			fetches, durable, pair.buffers())
+	}
+
+	if info, err := js.ConsumerInfo(bus.Stream, durable); err != nil {
+		t.Fatalf("read %s: %v", durable, err)
+	} else if !info.PushBound {
+		t.Errorf("NATS reports nothing bound to %s at the end of the row, so the envelope above reached no subscription and one fetch says nothing; %s logged its bind of it:\n%s",
+			durable, pair.name(keeper), pair.buffers())
+	}
+
+	for _, process := range []*dispatchProcess{pair.a, pair.b} {
+		if errorLines := deliveryOutcomeFor(process, durable).errors; len(errorLines) > 0 {
+			t.Errorf("%s logged a delivery error for %s; giving the durable up at a connection event and standing by for it are both ordinary, and so is the fake's 404 for the pull request, which the intake logs at WARN and acknowledges:\n%s\n%s",
+				pair.name(process), durable, strings.Join(errorLines, "\n"), pair.buffers())
+		}
+	}
+	pair.requireRunning(t)
+}
+
+// deliveryEnvelopeFetchWithin is how long the envelope published after the restore gets to reach
+// the process holding the durable and have its pull request fetched: one push delivery and one
+// GitHub call on loopback, milliseconds of work, so this is a hang guard.
+const deliveryEnvelopeFetchWithin = 30 * time.Second
+
+// deliverySecondFetchWindow is how long the fetch count is watched after it has reached one. A
+// second bound subscriber is handed the envelope at the same moment as the first, so its fetch is
+// milliseconds behind; a second of stillness is the margin, not the expectation.
+const deliverySecondFetchWindow = time.Second
+
+// deliveryStandbyAfterGiveUpWithin is how long a process that gave a durable up gets to say it is
+// standing by for it. Its bind poll is every durableBindInterval (2 s), but a standing-by line
+// that repeats the reason this intake last gave is held back for standbyLogEvery (30 s,
+// internal/dispatch/delivery/intake.go), and the reason it meets now - the durable is held by
+// another process - can be the reason it gave before it bound the durable itself. So 30 s plus a
+// poll is the bound, and this is the hang guard around it.
+const deliveryStandbyAfterGiveUpWithin = 40 * time.Second
+
+// addPopulationAuthor adds author to the delivery settings' population, leaving every other
+// setting as it is: the row is read back and written whole, which is the write the Delivery page's
+// own save makes (delivery.PutSettings). seedDeliverySettings names no population author, and a
+// merge by an author outside the population costs no GitHub call
+// (Intake.handlePullRequestEnvelope), so a row that counts the fetch of a merged pull request puts
+// its author in the population before the processes start.
+func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
+	t.Helper()
+	settings, err := delivery.GetSettings(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings to add %s to the population: %v", author, err)
+	}
+	settings.PopulationAuthors = append(settings.PopulationAuthors, author)
+	if _, err := delivery.PutSettings(context.Background(), database.Pool, settings,
+		model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
+		t.Fatalf("add %s to the delivery population: %v", author, err)
+	}
+}
+
+// deliveryOutcome is what one process has logged for one delivery durable: its bind of it, the
+// standing-by lines saying why it is not the process holding it, and its delivery errors on it,
+// with lines holding every delivery line naming the durable in the order it wrote them.
+type deliveryOutcome struct {
+	bound   []string
+	standby []string
+	errors  []string
+	lines   []string
+}
+
+// settled reports whether the process has answered for the durable: it bound it, it read what
+// the durable is and stood by on that (deliveryLeaseHeldMessage is the standing-by line that is
+// not such a read), or it failed on it. A process with no settings yet has answered nothing -
+// Intake.Run idles while its settings cache is empty and logs no delivery line for the durable
+// at all - and so has one whose only line is the warning that a bind was given up.
+func (o deliveryOutcome) settled() bool {
+	if len(o.bound) > 0 || len(o.errors) > 0 {
+		return true
+	}
+	for _, line := range o.standby {
+		if !strings.Contains(line, `msg="`+deliveryLeaseHeldMessage+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
+// describe is the process's delivery lines for the durable as a failure message prints them, or
+// the sentence that stands in for none of them.
+func (o deliveryOutcome) describe() string {
+	if len(o.lines) == 0 {
+		return "(no delivery line naming this durable)"
+	}
+	return strings.Join(o.lines, "\n")
+}
+
+// deliveryStandbyMessages are the three lines a process writes when a delivery durable is not
+// its to bind on this poll: the server reports the durable bound to a subscriber, the durable
+// does not exist yet, or this poll could not take the durable's consumer lease and so subscribed
+// nothing (internal/dispatch/delivery/intake.go). All three are INFO and all three are ordinary.
+var deliveryStandbyMessages = []string{
+	"dispatch delivery: NATS consumer held by another process; standing by",
+	"dispatch delivery: NATS consumer not created yet; standing by",
+	deliveryLeaseHeldMessage,
+}
+
+// deliveryLeaseHeldMessage is the third of those lines, and the only one that settles nothing.
+// The other two report what the server said the durable is; this one says only that this poll
+// could not take the durable's consumer lease and so subscribed nothing, and the process polls
+// again a durableBindInterval later to say which of the other two it met, or to bind the
+// durable. Measured under a probe build whose two processes both bind the durable: the second
+// of them logged this line 79 ms before the first logged its bind and about two seconds before
+// its own, so a row that took this line for an outcome read the pair while the second bind was
+// still coming and called that state good.
+const deliveryLeaseHeldMessage = "dispatch delivery: NATS consumer lease held by another process; standing by"
+
+// deliveryConnectionChangedMessage is the line an intake writes when a connection event takes its
+// subscription away from it: it gave its durable up and is back in its bind poll, so the process
+// that took that durable over while it was away keeps it (INFRA-1551). It is the delivery
+// package's own intakeConnectionChangedMessage (internal/dispatch/delivery/intake.go), copied here
+// as the standing-by lines above are: cmd/dispatch is another package, and these rows read the
+// line out of a real process's log rather than importing a constant it cannot see.
+//
+// It is deliberately none of deliveryStandbyMessages: a durable given up is not an outcome for it,
+// and a process that has said only this has answered nothing yet (deliveryOutcome.settled).
+const deliveryConnectionChangedMessage = "dispatch delivery: NATS connection changed; durable given up; standing by"
+
+// isDeliveryStandby reports whether the line carries one of deliveryStandbyMessages as its
+// message, matched whole so a line that merely quotes one of them is not one.
+func isDeliveryStandby(line string) bool {
+	for _, message := range deliveryStandbyMessages {
+		if strings.Contains(line, `msg="`+message+`"`) {
+			return true
+		}
+	}
+	return false
+}
+
+// deliveryLinesAfterGiveUp waits up to within for the process to log one of the standing-by lines
+// for the durable after the line where it gave that durable up
+// (deliveryConnectionChangedMessage), and answers the delivery lines naming the durable that
+// follow the last such give-up, with whether it logged one at all. One process's own output is in
+// the order it wrote it, so position in it is time: the lines after the give-up are what the
+// process did next.
+func deliveryLinesAfterGiveUp(process *dispatchProcess, durable string, within time.Duration) (after []string, gaveUp bool) {
+	deadline := time.Now().Add(within)
+	for {
+		after, gaveUp = nil, false
+		for _, line := range process.logLines("dispatch delivery:", "name="+durable) {
+			if strings.Contains(line, `msg="`+deliveryConnectionChangedMessage+`"`) {
+				after, gaveUp = nil, true
+				continue
+			}
+			if gaveUp {
+				after = append(after, line)
+			}
+		}
+		if slices.ContainsFunc(after, isDeliveryStandby) || time.Now().After(deadline) {
+			return after, gaveUp
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// deliveryOutcomeFor reads what the process has logged for the durable so far, sorting every
+// delivery line naming it into the bind, the standing-by reasons and the errors.
+func deliveryOutcomeFor(process *dispatchProcess, durable string) deliveryOutcome {
+	var outcome deliveryOutcome
+	for _, line := range process.logLines("dispatch delivery:", "name="+durable) {
+		outcome.lines = append(outcome.lines, line)
+		switch {
+		case strings.Contains(line, "level=ERROR"):
+			outcome.errors = append(outcome.errors, line)
+		case strings.Contains(line, `msg="dispatch delivery: NATS consumer bound"`):
+			outcome.bound = append(outcome.bound, line)
+		case isDeliveryStandby(line):
+			outcome.standby = append(outcome.standby, line)
+		}
+	}
+	return outcome
+}
+
+// deliveryOutcomes is what each process of a pair has settled on for one delivery durable.
+type deliveryOutcomes struct {
+	pair *dispatchPair
+	a, b deliveryOutcome
+}
+
+// of is one process's outcome.
+func (o deliveryOutcomes) of(process *dispatchProcess) deliveryOutcome {
+	if process == o.pair.b {
+		return o.b
+	}
+	return o.a
+}
+
+// boundBy is the processes that logged a bind of the durable, A before B. Exactly one of them is
+// what the row asserts, and none or both is what it reports.
+func (o deliveryOutcomes) boundBy() []*dispatchProcess {
+	var bound []*dispatchProcess
+	if len(o.a.bound) > 0 {
+		bound = append(bound, o.pair.a)
+	}
+	if len(o.b.bound) > 0 {
+		bound = append(bound, o.pair.b)
+	}
+	return bound
+}
+
+// waitForDeliveryOutcomes waits for both processes to settle on durable and answers what each
+// logged for it. Both of them, not whichever answers first: which process bound the durable and
+// why the other stood by are one state, and reading it before both have answered reports the
+// order of the reads rather than what happened.
+//
+// within is a hang guard and not a wait on a jittered event. Both processes poll their durables
+// every two seconds (durableBindInterval, internal/dispatch/delivery/intake.go) from the moment
+// each has read the delivery settings, so each settles one or two polls after that - the second
+// of them on its second poll, where its first could not take the durable's consumer lease
+// (deliveryLeaseHeldMessage). 60 s is what this row has always given the first bind it waited
+// for.
+func waitForDeliveryOutcomes(t *testing.T, pair *dispatchPair, durable string, within time.Duration) deliveryOutcomes {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		// Whether each has exited is read before its output, since Exited closes only once the
+		// output is whole: an outcome read after that flag is that process's last word on the
+		// durable, and one read before it may yet be added to.
+		aGone, bGone := hasExited(pair.a), hasExited(pair.b)
+		outcomes := deliveryOutcomes{pair: pair, a: deliveryOutcomeFor(pair.a, durable), b: deliveryOutcomeFor(pair.b, durable)}
+		if outcomes.a.settled() && outcomes.b.settled() {
+			return outcomes
+		}
+		expired := time.Now().After(deadline)
+		if !outcomes.a.settled() && (expired || aGone) {
+			failUnsettledDurable(t, pair, pair.a, durable, outcomes.a, within, aGone)
+		}
+		if !outcomes.b.settled() && (expired || bGone) {
+			failUnsettledDurable(t, pair, pair.b, durable, outcomes.b, within, bGone)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// failUnsettledDurable fails the row for the process that never answered for a durable, naming
+// which of the two it is and what it logged for that durable - no line at all, where its intake
+// is still idling on a settings cache that holds nothing, and the lease line alone where it has
+// yet to read what the durable is.
+func failUnsettledDurable(t *testing.T, pair *dispatchPair, process *dispatchProcess, durable string, outcome deliveryOutcome, within time.Duration, exited bool) {
+	t.Helper()
+	ended := fmt.Sprintf("within %v", within)
+	if exited {
+		ended = "before it exited"
+	}
+	t.Fatalf("%s reached no outcome for %s %s: it logged no bind of it, neither of the two standing-by lines that say what the durable is, and no delivery error for it. A process polls its durables every two seconds once it has read the delivery settings, and logs nothing for them before that, so %s logged:\n%s\n%s",
+		pair.name(process), durable, ended, pair.name(process), outcome.describe(), pair.buffers())
+}
+
+// hasExited reports whether the process has exited, without waiting for it.
+func hasExited(process *dispatchProcess) bool {
+	select {
+	case <-process.Exited:
+		return true
+	default:
+		return false
+	}
+}
+
+// processNames is what a failure calls a set of the pair's processes.
+func processNames(pair *dispatchPair, processes []*dispatchProcess) string {
+	if len(processes) == 0 {
+		return "neither process"
+	}
+	names := make([]string, len(processes))
+	for i, process := range processes {
+		names[i] = pair.name(process)
+	}
+	return strings.Join(names, " and ")
+}
+
+// buffers is both processes' whole output, labelled, which every failure of the delivery-durable
+// row prints: which process bound a durable and why the other did not is in the two logs read
+// together, and a message carrying one of them (waitForLog) leaves the job that failed without
+// the half saying what the other process was doing.
+func (p *dispatchPair) buffers() string {
+	return fmt.Sprintf("A:\n%s\nB:\n%s", p.a.Output.String(), p.b.Output.String())
 }
 
 // ───── documents ───────────────────────────────────────────────────────────
@@ -2783,6 +3252,98 @@ func storedHead(t *testing.T, pair *dispatchPair, artifactID string) int64 {
 		t.Fatalf("read the stored head of %s: %v", artifactID, err)
 	}
 	return head
+}
+
+// Rendering is not an acknowledgement of a browser update's durable append. A tab the rig takes
+// as synced has had its own update stored (openMarkedEditor), so a row that opens a tab here and
+// then writes on the other process is not racing that tab's own append; this row is what says
+// the rig keeps that promise. A transaction of the test's own holds doc_updates, so no append of
+// the document can commit: the editor's setup waits, and the append it waits for is the one
+// queued on the table lock. Once the lock goes, the setup finishes and the marker leaves the
+// document it opened as it was.
+func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
+	pair := startPair(t, nil)
+	project := uniqueProjectKey(t, "SYNC")
+	pair.a.createProject(t, project, "Documents")
+	_, artifactID := pair.a.createIssueIn(t, project, "Held browser append", "before")
+	gate, err := pair.database.Pool.Begin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(context.Background())
+	if _, err := gate.Exec(context.Background(), `lock table doc_updates in share mode`); err != nil {
+		t.Fatal(err)
+	}
+	opened := make(chan *docstest.Peer, 1)
+	go func() { opened <- pair.openMarkedEditor(t, pair.a, dispatchTestLogin, artifactID, "before\n") }()
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		select {
+		case <-opened:
+			t.Fatal("editor setup returned while its append was held")
+		default:
+		}
+		waiting, err := storetest.CountLockWaits(context.Background(), pair.database, "%insert into doc_updates%")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if waiting > 0 {
+			select {
+			case <-opened:
+				t.Fatal("editor setup returned before its held append committed")
+			case <-time.After(100 * time.Millisecond):
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("editor setup never sent an append")
+		}
+	}
+	if err := gate.Commit(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case editor := <-opened:
+		if got := markdown(editor); got != "before\n" {
+			t.Fatalf("sync marker changed the document to %q", got)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("editor setup did not finish after its append was released")
+	}
+}
+
+// openMarkedEditor is openSyncedEditor and, after it, a metadata marker the tab sends once it
+// holds the document: it returns only once that very update is stored, so every sync frame ahead
+// of it on the socket has been taken by the room and stored too. A row that opens a tab this way
+// knows the tab's own writing is durable, so only a later write somewhere else can leave the
+// tab's room behind the durable head. The marker changes no text, so what the tab renders is
+// what it opened.
+func (p *dispatchPair) openMarkedEditor(t *testing.T, process *dispatchProcess, login, artifactID, want string) *docstest.Peer {
+	t.Helper()
+	editor := p.openSyncedEditor(t, process, login, artifactID, want)
+	markers := editor.Doc.GetMap("test-sync")
+	marker := strconv.FormatUint(uint64(editor.Doc.ClientID()), 10)
+	update, err := editor.Send(func(txn *crdt.Transaction) { markers.Set(txn, marker, true) })
+	if err != nil {
+		t.Fatalf("send %s's sync marker: %v", login, err)
+	}
+	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		var stored bool
+		if err := p.database.Pool.QueryRow(context.Background(),
+			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, artifactID, update).Scan(&stored); err != nil {
+			t.Fatalf("read %s's stored sync marker: %v", login, err)
+		}
+		if stored {
+			return editor
+		}
+		select {
+		case <-editor.Ended:
+			t.Fatalf("%s's tab closed before its sync marker was stored:\n%s", login, process.Output.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s's sync marker was never stored:\n%s", login, process.Output.String())
+		}
+	}
 }
 
 // ───── the leased maintenance loops ────────────────────────────────────────
@@ -2842,6 +3403,58 @@ func requireLeasedOnce(t *testing.T, pair *dispatchPair, lease string) {
 	if ranB == 1 && skippedA == 0 {
 		t.Errorf("B ran the %s pass and A never reported finding the lease held", lease)
 	}
+}
+
+// requireLeasedOncePerPeriod is what a leased loop's window must show for a row whose own pass
+// can take longer than its period: at least one pass across the two processes, and no period in
+// which both of them passed. That is exactly what the lease guarantees. requireLeasedOnce's
+// "once overall" is a stronger claim than the lease makes, and a row whose run time passes its
+// period breaks it honestly: the block index's period is 30 s (docs.BlockIndexReconcileInterval)
+// and the webhook redelivery's two minutes, so a pass that overruns leaves the next honest pass
+// in the next period and the count becomes two. Waiting out more boundaries cannot mend that,
+// since each boundary it waits for is another period a pass may serve (INFRA-985).
+func requireLeasedOncePerPeriod(t *testing.T, pair *dispatchPair, lease string) {
+	t.Helper()
+	passes := map[string][]string{}
+	for name, process := range map[string]*dispatchProcess{"A": pair.a, "B": pair.b} {
+		for _, line := range process.logLines(leaseRan, "lease="+lease) {
+			period := leasePeriodOf(t, line)
+			passes[period] = append(passes[period], name)
+		}
+	}
+	skippedA, skippedB := countLease(pair.a, leaseSkipped, lease), countLease(pair.b, leaseSkipped, lease)
+	t.Logf("%s: passes by period %v, A skipped %d, B skipped %d", lease, passes, skippedA, skippedB)
+	if len(passes) == 0 {
+		t.Errorf("the %s pass never ran across the two processes", lease)
+	}
+	for period, ran := range passes {
+		if len(ran) > 1 {
+			t.Errorf("the %s pass ran %d times in the period starting %s, by %v; the lease allows one pass a period",
+				lease, len(ran), period, ran)
+		}
+	}
+	// No skip is required. The other process skips only where its own tick falls inside the
+	// window the first one is passing in; a tick that lands in the next period finds that period
+	// unserved and passes, which is the lease working rather than failing. The skips are logged
+	// above for a reader of a failure.
+}
+
+// leasePeriodOf is the period= field of one `leased pass ran` line, which names the period that
+// pass served (duty.Exclusive).
+func leasePeriodOf(t *testing.T, line string) string {
+	t.Helper()
+	for _, match := range logAttribute.FindAllStringSubmatch(line, -1) {
+		if match[1] != "period" {
+			continue
+		}
+		value := match[2]
+		if unquoted, err := strconv.Unquote(value); err == nil {
+			value = unquoted
+		}
+		return value
+	}
+	t.Fatalf("a leased pass line carries no period=: %s", line)
+	return ""
 }
 
 // lockTables holds every table named in mode (`exclusive`, or `access exclusive`) in a transaction
@@ -2924,11 +3537,11 @@ const (
 //
 // Five of the twelve leases are observable here inside a window a test can wait out, and they
 // keep different rules once the hold lets go. webhook-redelivery, block-index and
-// search-term-stats are timer loops whose first pass is immediate: each window is served once
-// across the two processes, by whichever took the lease. document-compaction's first tick is at
-// start too, and it is not held inside its pass: its period is the aligned hour, so the process
-// whose tick comes second skips because the lease is held or because the hour is served, and
-// either way the pass runs once - provided both first ticks fall in one hour, which
+// search-term-stats are timer loops whose first pass is immediate, and what this row holds them
+// to is per period: at least one pass across the two processes, and no period served twice.
+// document-compaction's first tick is at start too, and it is not held inside its pass: its
+// period is the aligned hour, and the same per-period claim holds for it - at least one pass, and
+// no hour served twice - provided both first ticks fall in one hour, which
 // waitOutABucketBoundary sees to. reference-excerpts is a woken loop
 // (docs.RunReferenceExcerptReconciliation) that runs a pass at start and again on the
 // pglisten.Hub wake after its first LISTEN: the process that found the lease held retries (every
@@ -2999,14 +3612,27 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 		t.Fatalf("release the tables the block-index pass is waiting on: %v", err)
 	}
 	waitForLease(t, pair, leaseRan, "block-index", 60*time.Second)
-	requireLeasedOnce(t, pair, "block-index")
+	requireLeasedOncePerPeriod(t, pair, "block-index")
 
 	// The webhook redelivery sweep's first pass is held in its first GitHub call instead: it
-	// lists the App webhook's failed deliveries before it writes anything.
-	waitForLease(t, pair, leaseSkipped, "webhook-redelivery", 60*time.Second)
+	// lists the App webhook's failed deliveries before it writes anything. What the release below
+	// needs is that pass to be inside that call, and the proof of that is the fake's own count:
+	// the fake counts the listing and only then holds it, so a counted listing means a pass is in
+	// the call or about to block in it. The pass's own log line is not that proof - main.go writes
+	// it at boot, before the sweeper goroutine starts, so it is there before any GitHub call is
+	// made. The other process's skip is no proof either, since a tick that lands in the next
+	// period passes rather than skipping, and waiting for a skip here failed for exactly that
+	// reason - two honest passes, each in its own two-minute period, and no skip at all
+	// (INFRA-985).
+	for deadline := time.Now().Add(60 * time.Second); fake.deliveryListings() == 0; time.Sleep(100 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("no webhook delivery listing reached the fake within %v, so no redelivery pass is inside its GitHub call:\nA:\n%s\nB:\n%s",
+				60*time.Second, pair.a.Output.String(), pair.b.Output.String())
+		}
+	}
 	fake.Release()
 	waitForLease(t, pair, leaseRan, "webhook-redelivery", 60*time.Second)
-	requireLeasedOnce(t, pair, "webhook-redelivery")
+	requireLeasedOncePerPeriod(t, pair, "webhook-redelivery")
 
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the table the passes are waiting on: %v", err)
@@ -3018,8 +3644,8 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	// Both processes' first compaction-sweep ticks came at their starts, long before the passes
 	// above were let go.
 	waitForLease(t, pair, leaseRan, "document-compaction", 60*time.Second)
-	requireLeasedOnce(t, pair, "document-compaction")
-	requireLeasedOnce(t, pair, "search-term-stats")
+	requireLeasedOncePerPeriod(t, pair, "document-compaction")
+	requireLeasedOncePerPeriod(t, pair, "search-term-stats")
 	for _, unobserved := range []struct{ lease, why string }{
 		{"issue-ask-repair", "its first leased pass is one IssueAskRepairInterval (10 min) after each process started"},
 		{"suggestion-outcomes", "only the keyed writes' maintenance sweep holds it, which no longer touches write_suggestions; api.TestTheMaintenanceLoopSweepsOncePerPeriodAcrossTwoRunners holds its lease"},

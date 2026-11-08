@@ -1,4 +1,4 @@
-import { hashKey, type MutationKey } from "@tanstack/react-query";
+import { hashKey, type MutationKey, useQuery } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -22,7 +22,14 @@ import {
   isAnchorMissing,
   isCapExceeded,
 } from "../../api/client";
-import type { Agent, AskOption, AskUrgency } from "../../api/types";
+import { issueCollaboratorsQuery } from "../../api/queries";
+import type {
+  Agent,
+  AskOption,
+  AskUrgency,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegionAgent,
+} from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -114,12 +121,14 @@ interface Draft {
 
 interface MentionOption {
   readonly capabilities: readonly string[];
-  /** Where and when: the session's directory and when it was last seen. */
+  /** Where and when: the session's directory and when it was last seen; for a role no live agent
+   *  holds, the role and that it is not running. */
   readonly detail: string;
   /** The name of the session the option is, or of the one holding its role, as `useAgentText`
    *  gives it: the filter matches it, and a role option's detail tooltip names it. */
   readonly holder: string;
-  /** The session the option is, or, for a role, the session holding it: `AgentName` draws it. */
+  /** The session the option is, or, for a role, the session holding it (the newest one for a
+   *  role nobody holds): `AgentName` draws it. */
   readonly sessionId: string;
   /** That session's title as the agent list gave it: its name when the registry cache has none. */
   readonly sessionTitle: string;
@@ -208,6 +217,46 @@ export function mentionOptions(
         title: text.sessionText(agent.session_id, agent.title),
       })),
   ];
+}
+
+/**
+ * The picker's "Not running" options: one per Legion role token the issue's collaborators record
+ * (`IssueCollaborators.agents[].legion`) that no live agent holds - the live agents' `roles`, the
+ * rule the live role options follow - addressed `role:<token>` and drawn by the role's newest
+ * session, the one entry per token the server leaves unreplaced (`legion.replaced_by` null), so a
+ * replaced session is never an option of its own. A session the live list itself names is left
+ * out whatever its roles say: a live session that claims no role would otherwise be offered here
+ * and draw its own `Running` mark, so one row would read running and not running at once.
+ *
+ * The options keep the server's order, which the collaborators contract states: the registry's
+ * agents by role in workflow order, then newest first.
+ */
+export function stoppedRoleOptions(
+  live: readonly Agent[],
+  collaborators: readonly IssueCollaboratorAgent[],
+  text: Pick<AgentText, "sessionText">
+): MentionOption[] {
+  const held = new Set(live.flatMap((agent) => agent.roles));
+  const running = new Set(live.map((agent) => agent.session_id));
+  const offered = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
+    agent.legion !== null &&
+    agent.legion.replaced_by === null &&
+    !held.has(agent.legion.role_token) &&
+    !running.has(agent.session_id);
+  return collaborators.filter(offered).map((agent) => {
+    // The title the server gives is the registry's, else the session's newest stamped one; the
+    // name is still `useAgentText`'s, as a live option's holder is.
+    const storedTitle = agent.title ?? "";
+    return {
+      capabilities: [],
+      detail: `${agent.legion.role} · not running`,
+      holder: text.sessionText(agent.session_id, storedTitle),
+      sessionId: agent.session_id,
+      sessionTitle: storedTitle,
+      target: `role:${agent.legion.role_token}`,
+      title: agent.legion.role_token,
+    };
+  });
 }
 
 /** Reconcile accepted mentions against the actual textarea edit range. */
@@ -432,10 +481,11 @@ interface MentionComposerProps {
    *  mounted out of sight - the margin's, under its collapsed sheet, its rail or the Pinned tab -
    *  passes it once the composer is on screen, since a field out of sight takes no focus. */
   readonly autoFocus?: boolean;
-  /** The owner takes no more sends: its issue is closed. The composer stays mounted, so a send
-   *  still out and its refusal keep their draft: it shows itself only while it holds one of them,
-   *  with Send refused and Discard in place of Retry, and otherwise renders nothing, its draft
-   *  kept for a reopen. */
+  /** The owner's issue is closed. A closed issue takes comments and message replies, so a comment
+   *  composer shows and sends as ever; its Suggest and Ask kinds are hidden, since a closed issue
+   *  refuses both. A suggestion or ask composer stays mounted, so a send of its own still out and
+   *  its refusal keep their draft: it shows itself only while it holds one of them, with Send
+   *  refused and Discard in place of Retry, and otherwise renders nothing. */
   readonly closed?: boolean;
   readonly docked?: boolean;
   /** The host offers no new message here - a decided suggestion's thread offers no reply - so the
@@ -468,6 +518,12 @@ interface MentionComposerProps {
   readonly owner: ComposerOwner;
   readonly replyTo?: ReplyTarget | null;
   readonly saveEdit?: SaveCommentEdit;
+  /** The reply target is this box's own standing address rather than a Reply the reader
+   *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
+   *  is remounted whenever the column follows the selection onto another row. Taking a target
+   *  normally takes the focus, so the reader can write at once; a standing box takes neither,
+   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+  readonly standing?: boolean;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
@@ -496,6 +552,7 @@ export function MentionComposer({
   owner,
   replyTo = null,
   saveEdit,
+  standing = false,
 }: MentionComposerProps): ReactNode {
   // This composer's send, held by its target rather than by this mount (`useComposerSend`): a
   // composer that mounts where a send is out, or was refused, shows that send and its draft.
@@ -573,8 +630,8 @@ export function MentionComposer({
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   // Why the last kind pick was refused, kept with the mark it answered: the composer stays mounted
   // when a newer compose replaces the anchor, and a refusal about the old mark says nothing about
-  // the new one.
-  const [kindRefusal, setKindRefusal] = useState<{ markId: string; text: string }>();
+  // the new one. A quote anchor (a closed issue's document) has no mark.
+  const [kindRefusal, setKindRefusal] = useState<{ markId: string | undefined; text: string }>();
   const autocompleteOpen = autocomplete !== undefined;
   const live = useAgents(
     suppliedAgents === undefined && owner.kind !== "session",
@@ -586,19 +643,41 @@ export function MentionComposer({
   const agentsCurrent = suppliedAgents !== undefined || live.current;
   const text = useAgentText();
   const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
-  const filteredOptions = useMemo(() => {
-    if (autocomplete === undefined) return [];
+  // The issue's collaborators feed the "Not running" options, read once the picker opens on an
+  // issue owner alone: a project document's margin composer carries that document rather than an
+  // issue, while an issue document's margin composer is an issue owner and does read them, and a
+  // closed picker and a direct message read nothing. The query is the Collaborators tab's, so the
+  // two readers share one entry - a tab read within the shell's 30 s `staleTime` opens the picker
+  // with no request of its own - and the event feed refreshes that key by a rule of its own
+  // (`changesCollaborators` in event-refresh.ts), which refetches it under a picker that stays
+  // open.
+  const collaboratorsIssue = owner.kind === "issue" ? owner.issueKey : undefined;
+  const collaborators = useQuery({
+    ...issueCollaboratorsQuery(collaboratorsIssue),
+    enabled: collaboratorsIssue !== undefined && autocompleteOpen,
+  });
+  // A live list whose state is unknown (not read yet, or its read failed) holds every role as far
+  // as the picker can tell, which is what `agentsCurrent` false says of it, so no role is offered
+  // as not running.
+  const stoppedOptions = useMemo(
+    () => (agentsCurrent ? stoppedRoleOptions(agents, collaborators.data?.agents ?? [], text) : []),
+    [agents, agentsCurrent, collaborators.data, text]
+  );
+  const [filteredOptions, filteredStoppedOptions] = useMemo<
+    [MentionOption[], MentionOption[]]
+  >(() => {
+    if (autocomplete === undefined) return [[], []];
     const query = autocomplete.query.toLocaleLowerCase();
     // A role option matches its holder's name too, which its detail line shows.
-    return options.filter(
-      (option) =>
-        query === "" ||
-        option.target.toLocaleLowerCase().includes(query) ||
-        option.title.toLocaleLowerCase().includes(query) ||
-        option.holder.toLocaleLowerCase().includes(query) ||
-        option.detail.toLocaleLowerCase().includes(query)
-    );
-  }, [autocomplete, options]);
+    const matches = (option: MentionOption) =>
+      query === "" ||
+      option.target.toLocaleLowerCase().includes(query) ||
+      option.title.toLocaleLowerCase().includes(query) ||
+      option.holder.toLocaleLowerCase().includes(query) ||
+      option.detail.toLocaleLowerCase().includes(query);
+    return [options.filter(matches), stoppedOptions.filter(matches)];
+  }, [autocomplete, options, stoppedOptions]);
+  const notRunningId = useId();
   const compact = inline || edit !== undefined;
   /** The whole draft, gone - the body, its accepted mentions, a suggestion's replacement and an
    *  ask's options - on a successful send and on Discard alike, in every host, leaving what a fresh
@@ -692,8 +771,13 @@ export function MentionComposer({
     }
     if (previousReply.current === replyTo.id) return;
     previousReply.current = replyTo.id;
+    // A standing box never takes the focus for its own target: nobody asked for it, and the
+    // Inbox column mounts one for every row the reader steps onto.
+    const takeFocus = () => {
+      if (!standing) textarea.current?.focus();
+    };
     if (tookHeldDraft) {
-      textarea.current?.focus();
+      takeFocus();
       return;
     }
     const initial = replyTo.mentions ?? [];
@@ -717,8 +801,8 @@ export function MentionComposer({
         return { end, start, target: mention.target, text };
       }),
     });
-    textarea.current?.focus();
-  }, [replaceDraft, replyTo]);
+    takeFocus();
+  }, [replaceDraft, replyTo, standing]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
@@ -729,9 +813,12 @@ export function MentionComposer({
     if (!inline && sentEdit === undefined) onClose();
   };
   const { refusal, sending } = outgoing;
-  // Closed or finishing, with no send out and no refusal to show: nothing of this composer is on
-  // screen.
-  const dormant = (closed || finishing) && !sending && refusal === undefined;
+  // The kind a closed issue refuses: a suggestion or an ask. Its composer only finishes a send of
+  // its own.
+  const refusedKind = closed && kind !== "comment";
+  // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
+  // composer is on screen.
+  const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
   /** Ends the reply; an inline reply's draft and refusal end with it (`onCancelReply`). */
   const cancelReply = () => {
     if (inline) {
@@ -868,6 +955,49 @@ export function MentionComposer({
       textarea.current?.setSelectionRange(query.start + text.length, query.start + text.length);
     });
   };
+  /** One suggestion: a button that inserts the mention. Each suggestion is one option inside a
+   *  listbox, which owns only options, so the agent in it is drawn by `AgentName` without a link
+   *  (exclusion E2): a session option's name, and a role option's holder - for a role no live
+   *  agent holds, its newest session. */
+  const mentionOptionButton = (option: MentionOption) => {
+    const isRole = option.target.startsWith("role:");
+    const agent = (
+      <AgentName kind="static" sessionId={option.sessionId} storedTitle={option.sessionTitle} />
+    );
+    return (
+      // Below `xl` every button is `inline-flex` with centred items (styles.css's touch rule,
+      // unlayered, so it beats `block`): the title and detail stack explicitly and each stretches
+      // to the row's width.
+      // A session option's full id is its tooltip and accessible description: its name can be the
+      // short form `session:<8>…`, which two sessions may share.
+      <button
+        aria-label={option.title}
+        className={`flex min-h-11 w-full flex-col rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg}`}
+        key={option.target}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => addMention(option)}
+        role="option"
+        title={isRole ? undefined : option.sessionId}
+        type="button"
+      >
+        <span className={`self-stretch font-medium ${textPrimaryOnSurface}`}>
+          {isRole ? option.title : agent}
+        </span>
+        <TruncatedText
+          className={`self-stretch text-xs ${textMutedOnSurface}`}
+          title={isRole ? `${option.holder} · ${option.detail}` : option.detail}
+        >
+          {isRole ? (
+            <>
+              {agent} · {option.detail}
+            </>
+          ) : (
+            option.detail
+          )}
+        </TruncatedText>
+      </button>
+    );
+  };
   const onBodyChange = (value: string, selectionStart: number | null) => {
     const before = previousBody.current;
     const pending = pendingTextEdit.current;
@@ -985,7 +1115,7 @@ export function MentionComposer({
     return option === undefined ? [] : [option];
   });
   // What a message with no command goes in: Send, or the mode every addressed session takes
-  // when one of them refuses Send - an Aside to a Claude Code session.
+  // when one of them refuses Send - an Aside to a session that advertises Aside alone.
   const plainMode = plainDelivery(targetOptions.map((option) => option.capabilities));
   // The mode a send this composer holds - out, or refused - went in, where pressing Send or Retry
   // now would send that very request again: the live view picks a mode outright, and the message
@@ -1018,9 +1148,9 @@ export function MentionComposer({
     heldPicked === undefined
       ? deliveryPlan(body, inheritedDelivery)
       : { body, delivery: heldPicked };
-  // A closed owner takes no send: the composer is only still here for a send of its own that is
-  // out, or its refusal, and Send says why it cannot go.
-  const submitReason = closed
+  // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
+  // its own that is out, or its refusal, and Send says why it cannot go.
+  const submitReason = refusedKind
     ? "This issue is closed. Reopen it to send."
     : draftRefusal(kind, body, replacement, outbound);
   const footId = useId();
@@ -1075,8 +1205,8 @@ export function MentionComposer({
       ? []
       : targetOptions.filter((option) => !option.capabilities.includes(outboundMode));
   const unsupported = unsupportedOptions.length > 0;
-  // Sessions that advertise no mode at all take no message in any mode: a Claude Code session
-  // whose Envoy channel Claude Code did not load says so by advertising none.
+  // Sessions that advertise no mode at all take no message in any mode: a session whose plugin
+  // cannot reach its conversation says so by advertising none.
   const deaf =
     unsupported && unsupportedOptions.every((option) => option.capabilities.length === 0);
   // The plain mode, named whenever it is not Send, so the reader knows what their words become.
@@ -1148,7 +1278,7 @@ export function MentionComposer({
           {anchor.quote}
         </blockquote>
       )}
-      {onKindChange !== undefined && edit === undefined && owner.kind !== "session" ? (
+      {onKindChange !== undefined && edit === undefined && owner.kind !== "session" && !closed ? (
         <>
           <fieldset className="flex gap-1">
             <legend className="sr-only">Kind</legend>
@@ -1277,54 +1407,27 @@ export function MentionComposer({
           className={`max-h-52 overflow-y-auto rounded-lg border p-1 ${surfaceRecessedBg}`}
           role="listbox"
         >
-          {filteredOptions.map((option) => {
-            const isRole = option.target.startsWith("role:");
-            // Each suggestion is one option that inserts the mention; a listbox owns only
-            // options, so the agent in it is drawn by `AgentName` without a link (exclusion E2):
-            // a session option's name, and a role option's holder.
-            const agent = (
-              <AgentName
-                kind="static"
-                sessionId={option.sessionId}
-                storedTitle={option.sessionTitle}
-              />
-            );
-            return (
-              // Below `xl` every button is `inline-flex` with centred items (styles.css's touch
-              // rule, unlayered, so it beats `block`): the title and detail stack explicitly and
-              // each stretches to the row's width.
-              // A session option's full id is its tooltip and accessible description: its name
-              // can be the short form `session:<8>…`, which two sessions may share.
-              <button
-                aria-label={option.title}
-                className={`flex min-h-11 w-full flex-col rounded-lg px-3 py-2 text-left text-sm ${surfaceMutedHoverBg}`}
-                key={option.target}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => addMention(option)}
-                role="option"
-                title={isRole ? undefined : option.sessionId}
-                type="button"
+          {filteredOptions.map(mentionOptionButton)}
+          {/* The issue's Legion roles no live agent holds, after the live options: a mention of
+              one is addressed to its role as any role option is. */}
+          {filteredStoppedOptions.length === 0 ? null : (
+            // biome-ignore lint/a11y/useSemanticElements: a listbox owns only options and groups of options; a fieldset is neither.
+            <div aria-labelledby={notRunningId} role="group">
+              <div
+                className={`px-3 pt-2 pb-1 text-xs font-semibold ${textMutedOnSurface}`}
+                id={notRunningId}
+                role="presentation"
               >
-                <span className={`self-stretch font-medium ${textPrimaryOnSurface}`}>
-                  {isRole ? option.title : agent}
-                </span>
-                <TruncatedText
-                  className={`self-stretch text-xs ${textMutedOnSurface}`}
-                  title={isRole ? `${option.holder} · ${option.detail}` : option.detail}
-                >
-                  {isRole ? (
-                    <>
-                      {agent} · {option.detail}
-                    </>
-                  ) : (
-                    option.detail
-                  )}
-                </TruncatedText>
-              </button>
-            );
-          })}
+                Not running
+              </div>
+              {filteredStoppedOptions.map(mentionOptionButton)}
+            </div>
+          )}
+          {/* Only when the picker offers nothing at all: a "Not running" group with options in
+              it is a match, so saying no agent matches underneath it would contradict the list
+              the reader is looking at. */}
           {agentsCurrent ? (
-            filteredOptions.length === 0 ? (
+            filteredOptions.length === 0 && filteredStoppedOptions.length === 0 ? (
               <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>No live agents match.</p>
             ) : null
           ) : live.refilling ? (
@@ -1354,8 +1457,8 @@ export function MentionComposer({
         <p className={`text-sm ${dangerText}`}>
           {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
           {unsupportedOptions.length > 1 ? "advertise" : "advertises"} no delivery mode, so sending
-          it records a failed attempt. A Claude Code session takes messages only when it was started
-          with its Envoy channel.
+          it records a failed attempt. A session advertises none while its plugin cannot reach its
+          conversation.
         </p>
       ) : unsupported ? (
         <p className={`text-sm ${dangerText}`}>
@@ -1500,9 +1603,10 @@ export function MentionComposer({
             onRetry={canSubmit ? send : undefined}
             retrying={sending}
           />
-          {/* A closed owner takes no Retry, so the refusal's own way out is to drop the draft it
-              handed back, once the reader has it; a send the reader stopped offers both ways. */}
-          {closed || refusal instanceof SendStoppedError ? (
+          {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
+              drop the draft it handed back, once the reader has it; a send the reader stopped
+              offers both ways. */}
+          {refusedKind || refusal instanceof SendStoppedError ? (
             <button
               className={`text-sm font-medium underline ${dangerText}`}
               onClick={discard}
@@ -1528,7 +1632,7 @@ export function MentionComposer({
       </p>
     </fieldset>
   );
-  // A closed owner's composer, or a finishing one, stays mounted, keeping its draft, and shows
+  // A composer closed to its kind, or a finishing one, stays mounted, keeping its draft, and shows
   // itself only for a send of its own that is out or that send's refusal; otherwise it renders
   // nothing, its frame with it.
   if (dormant) return null;

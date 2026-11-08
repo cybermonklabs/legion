@@ -796,9 +796,9 @@ gives the next exact proof operation; it arrives in your session as a message to
 only find by reading the issue (its events, a search) was sent to another session, even on your
 issue, and any other notice is not an instruction: neither is yours to act on. One task waits for
 no message: a production check's (its first line `Production check of <key>: …`, handed to the
-tester once the merge closed its issue), since a closed issue takes no Dispatch write, so none
-can reach it. Act on that task as it is written: this proof has no production and no deploy role,
-so the look leaves `Production: pending deploy of <merge commit>` on the pull request's body (on the
+tester once the merge closed its issue), since the proof sends none to it. Act on that task as
+it is written: this proof has no production and no deploy role, so the look leaves
+`Production: pending deploy of <merge commit>` on the pull request's body (on the
 last look, writes on the pull request that the check did not run because production did not carry
 the merge within the bound) and reports verdict pending with the legion tool's handoff_complete,
 committing nothing. A pending report on a look that is not the last also carries wake_at, an
@@ -1140,8 +1140,7 @@ primary_issue() {
   until_true 300 "the close to leave the tester live at its first look, the five other claims of $root_issue suspended" first_look_handed
   first_look_claims=$(issue_claim_states "$root_issue" | paste -sd ',' -)
   # The first look. The task the daemon handed the tester is the whole instruction: the proof
-  # sends it nothing, since the issue is closed and a closed issue takes no Dispatch write (409
-  # ISSUE_CLOSED), and the fixture's instructions say a check task waits for no message. The smoke
+  # sends it nothing, and the fixture's instructions say a check task waits for no message. The smoke
   # repository is neither the deploy repository nor a Legion production, so the look's verdict is
   # pending: the check stays open with its first look reported, and the daemon suspends the
   # tester's claim, session kept, until the wake that report named. Its report is the observation,
@@ -1386,7 +1385,9 @@ restart_scenarios() {
   until_true 240 "the implementer pane to read the pull request" session_contains "$restart_issue" implementer "CRED-PR=https://github.com/$repo/pull/$pr_number"
   # The directory the agent printed is the one its OMP process was launched with: its repository's
   # owner's directory of the bundle named for its claim, which holds the two gh files the daemon
-  # writes for the pane alone, and nothing else beside it.
+  # writes for the pane and, since INFRA-513 narrowed every token, a directory per other repository
+  # the project serves under that owner, each holding those two files alone; nothing else is in
+  # either.
   cred_pane_pid=$(claim_pane_pid "$restart_issue" implementer) || fail "the implementer pane on $restart_issue has no process locator"
   cred_omp=$(omp_descendant "$cred_pane_pid") || fail "the implementer pane on $restart_issue has no OMP process"
   cred_root=$(pane_value "$cred_omp" LEGION_GH_OWNERS_DIR)
@@ -1399,7 +1400,19 @@ restart_scenarios() {
     [ "$(stat -c %a "$dir")" = 700 ] || fail "$dir is mode $(stat -c %a "$dir"), want 700"
   done
   [ "$(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "$owner " ] || fail "$cred_root holds $(find "$cred_root" -mindepth 1 -maxdepth 1 -printf '%f\n' | tr '\n' ' '), want $owner's directory alone"
-  [ "$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')" = "config.yml hosts.yml " ] || fail "$cred_dir holds $(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | tr '\n' ' '), want config.yml and hosts.yml alone"
+  cred_owned=$(find "$cred_dir" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  for want in config.yml hosts.yml; do
+    grep -qxF -- "$want" <<<"$cred_owned" || fail "$cred_dir lacks $want; it holds: $(tr '\n' ' ' <<<"$cred_owned")"
+  done
+  while read -r cred_entry; do
+    case $cred_entry in
+      "" | config.yml | hosts.yml) continue ;;
+      . | .. | *[!a-z0-9._-]*) fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone" ;;
+    esac
+    [ -d "$cred_dir/$cred_entry" ] || fail "$cred_dir holds $cred_entry, want config.yml, hosts.yml and repository directories alone"
+    cred_held=$(find "$cred_dir/$cred_entry" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ')
+    [ "$cred_held" = "config.yml hosts.yml " ] || fail "$cred_dir/$cred_entry holds $cred_held, want config.yml and hosts.yml alone"
+  done <<<"$cred_owned"
   [ "$(stat -c %a "$cred_dir/hosts.yml")" = 600 ] || fail "$cred_dir/hosts.yml is mode $(stat -c %a "$cred_dir/hosts.yml"), want 600"
   jq -R -s -e '[split("\n")[] | fromjson? | select(.msg == "tmux runtime: github credential written" and .role == "implementer")] | length > 0' <"$evidence/logs/daemon.log" >/dev/null ||
     fail "the daemon log has no 'github credential written' line for an implementer pane"

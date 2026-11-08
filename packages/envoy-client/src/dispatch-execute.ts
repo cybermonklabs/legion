@@ -43,6 +43,7 @@ import type {
   IssueRouteReach,
   IssueRouteStatus,
   MessageRead,
+  MyReplyRow,
   OpenAsk,
   OpenAsksResponse,
   Project,
@@ -202,6 +203,11 @@ export interface DispatchToolResult {
   /** What the caller should hear beside the result rather than in it: the dispatch CLI writes
    *  each line to stderr. The text already says what the reader needs. */
   readonly warnings?: readonly string[];
+  /** The call was answered and did nothing: Dispatch refused the write and the text says so.
+   *  A tool reads the text, so this rides beside it; the dispatch CLI exits 1 on it, which is
+   *  what `skill://dispatch` promises a refusal is, so a script that reads the status is not
+   *  told a create happened. */
+  readonly refused?: boolean;
 }
 
 interface ResolvedArtifact {
@@ -2640,7 +2646,19 @@ function eventHead(event: Event): string | undefined {
       );
     case "artifact.human_edited":
       return textHead(humanEditHead(event.payload));
-    case "issue.created":
+    case "issue.created": {
+      // What a create went past with --force, which the controller's weekly audit counts off
+      // this line: the event is the only record of an override, and `dispatch read` is the only
+      // surface that shows it. The audit counts the two apart, so they read apart: `forced` with
+      // issues is an override of the refusal, `forced` with none is a create whose near-copy
+      // check never answered, and no `forced` is a create the refusal would not have stopped.
+      const forced = event.payload.forced;
+      const head = `status ${event.payload.status}`;
+      if (forced === undefined) return head;
+      return forced.past.length === 0
+        ? `${head} · forced, the near-copy check did not answer`
+        : `${head} · forced past ${forced.past.join(", ")}`;
+    }
     case "issue.updated":
     case "issue.closed":
       return `status ${event.payload.status}`;
@@ -2666,10 +2684,20 @@ function eventRef(event: Event): string | undefined {
   return kind === undefined ? undefined : `dispatch://${event.issue_key}/${kind}/${id}`;
 }
 
+/** The writer an event log line names: `actorText`, and a session's own title beside its id when
+ *  the actor carries one. The controller's weekly audit counts a week's creates by their filer,
+ *  and the filer is that title (`Legion implementer · INFRA-1160` counts as `Legion
+ *  implementer`): a session id names one process, so without the title the count is one row per
+ *  session (`skill://legion-controller/references/weekly-audit.md`). */
+function eventActorText(actor: Event["actor"]): string {
+  const title = actor.kind === "session" ? actor.origin?.session_title : undefined;
+  return title === undefined || title === "" ? actorText(actor) : `${actorText(actor)} (${title})`;
+}
+
 function eventLine(event: Event): string {
   const head = eventHead(event);
   const ref = eventRef(event);
-  return `- #${event.seq} ${event.type}${ref === undefined ? "" : ` ${ref}`} · ${actorText(event.actor)} · ${event.created_at}${head === undefined || head === "" ? "" : ` · ${head}`}`;
+  return `- #${event.seq} ${event.type}${ref === undefined ? "" : ` ${ref}`} · ${eventActorText(event.actor)} · ${event.created_at}${head === undefined || head === "" ? "" : ` · ${head}`}`;
 }
 
 function childrenSummary(issue: IssueDetails): string {
@@ -2888,6 +2916,39 @@ function inboxAskLine(row: InboxRow): string {
   return `- ${label} · ${priority} · ${row.kind} · ${textHead(row.question, INBOX_QUESTION_HEAD)} · ${ref}`;
 }
 
+/** What an unread thread's line is named by: the issue key of a thread on an issue, the slug of
+ *  one on a project document, and the session's name for an Agent row, which sits on neither.
+ *  A Reply row with no owner at all is named by its thread id, the one name every row carries. */
+function inboxThreadLabel(row: MyReplyRow): string {
+  if (row.kind === "agent") return row.session.name;
+  return row.issue?.key ?? row.document?.slug ?? row.thread_id;
+}
+
+/** How long ago the newest reply in a thread was written, in one short field: the largest whole
+ *  unit that fits, since a list line wants an age rather than a timestamp. Anything under a
+ *  minute reads `<1m`. */
+function inboxReplyAge(at: string, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - Date.parse(at)) / 60_000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
+
+/** One unread thread: who owns it, what kind of thread it is, the head of its subject, who wrote
+ *  the newest reply and how long ago, and where to read it. */
+function inboxThreadLine(row: MyReplyRow, now: number): string {
+  return [
+    `- ${inboxThreadLabel(row)}`,
+    row.kind,
+    textHead(row.subject, INBOX_QUESTION_HEAD),
+    actorText(row.reply.author),
+    inboxReplyAge(row.reply.created_at, now),
+    row.ref,
+  ].join(" · ");
+}
+
 /** One pending credential request: what it asks for, when, the sessions it names and the page
  *  where it is decided. A row that names no session leaves that field out rather than printing
  *  two dashes, and a machine login, which is decided with `dispatch` rather than on a broker
@@ -2905,6 +2966,14 @@ function credentialRequestLine(request: CredentialPendingRow): string {
   ].join(" · ");
 }
 
+/** Why one of the Inbox's two side reads failed, as its warning line names it: the code and
+ *  message Dispatch refused with, or whatever else went wrong. */
+function inboxReadRefusal(error: unknown): string {
+  return error instanceof DispatchServiceError
+    ? `${error.code} ${error.message}`
+    : messageFor(error);
+}
+
 /**
  * What the person's Inbox page shows, as the `dispatch inbox` command prints it: each heading
  * with its count, then the rows under it, in the order the page bands them. The rows within a
@@ -2917,9 +2986,14 @@ function credentialRequestLine(request: CredentialPendingRow): string {
  * keeps only the asks on issues assigned to the caller, as the page's default view does; counting
  * the rows it prints is therefore the page's rule, and it is the one count that cannot disagree
  * with the lines under it.
+ *
+ * `Unread threads` is the page's thread list (`GET /api/v1/me/replies?kind=reply,agent`): the
+ * threads the person is reading that somebody else has written in since, and the messages they
+ * sent an agent session that it answered, newest reply first.
  */
 function formatInboxSummary(
   rows: readonly InboxRow[],
+  threads: readonly MyReplyRow[],
   requests: readonly CredentialPendingRow[],
   now: number
 ): string {
@@ -2937,6 +3011,9 @@ function formatInboxSummary(
     "",
     `Later ${sections.later.length}`,
     ...sections.later.map(inboxAskLine),
+    "",
+    `Unread threads ${threads.length}`,
+    ...threads.map((row) => inboxThreadLine(row, now)),
     "",
     `Credential requests ${requests.length}`,
     ...requests.map(credentialRequestLine),
@@ -3616,6 +3693,33 @@ function dispatchAnswered(error: unknown, status: number): error is DispatchServ
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
 }
 
+/** What a side read settles into: the answer it gave, or the failure it ended in. */
+type SettledSideRead<T> = { answer: T } | { error: unknown };
+
+/** A read of the Inbox the command can do without, settled into its answer or its failure: the
+ *  two reads it cannot do without throw first, and a rejection caught only after that would be
+ *  an unhandled one. */
+function settleSideRead<T>(read: Promise<T>): Promise<SettledSideRead<T>> {
+  return read.then(
+    (answer) => ({ answer }),
+    (error: unknown) => ({ error })
+  );
+}
+
+/** The answer of one such read, or nothing and a warning naming the band the caller loses: the
+ *  asks are the greater part of the Inbox, so one failed read does not cost the caller the rest
+ *  of it. A refusal for want of a scope is the exception: the credential itself is wrong, and
+ *  reporting that as a missing section would hide it. */
+function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string[]): T | undefined {
+  if (!("error" in settled)) return settled.answer;
+  const error = settled.error;
+  if (dispatchAnswered(error, 403) && error.code === "OAUTH_SCOPE_REQUIRED") {
+    throw refusalWithCode(error);
+  }
+  warnings.push(`dispatch: warning: ${what} could not be read: ${inboxReadRefusal(error)}`);
+  return undefined;
+}
+
 /**
  * Whether a write that failed with `error` may have taken effect anyway. Only an answer sent
  * before the write could apply proves it did not: Dispatch's own refusal (a 4xx), or a gateway's
@@ -3866,13 +3970,10 @@ export async function executeDispatchTool(
   }
   if (input.tool === "dispatch_inbox") {
     const client = dispatchClient();
-    // All three reads at once: they depend on nothing of each other, and the credential list is
-    // the slow one, since Dispatch relays it to the secrets broker. Its rejection is caught at
-    // the start so that a refusal of the other two, which throws first, leaves no unhandled one.
-    const pending = client.credentialPending().then(
-      (answer) => ({ answer }),
-      (error: unknown) => ({ error })
-    );
+    // All four reads at once: they depend on nothing of each other, and the credential list is
+    // the slow one, since Dispatch relays it to the secrets broker.
+    const pending = settleSideRead(client.credentialPending());
+    const unread = settleSideRead(client.myReplies());
     let identity: WhoamiResponse;
     let rows: InboxRow[];
     try {
@@ -3884,32 +3985,19 @@ export async function executeDispatchTool(
       throw refusalWithCode(error);
     }
     const viewer = whoamiPerson(identity);
-    const settled = await pending;
-    let requests: readonly CredentialPendingRow[] = [];
     const warnings: string[] = [];
-    if ("error" in settled) {
-      const error = settled.error;
-      // The asks are the greater part of the Inbox, so one failed read of the broker's list does
-      // not cost the caller the rest of it. A refusal for want of a scope is the exception: the
-      // credential itself is wrong, and reporting that as a missing section would hide it.
-      if (dispatchAnswered(error, 403) && error.code === "OAUTH_SCOPE_REQUIRED") {
-        throw refusalWithCode(error);
-      }
-      const refusal =
-        error instanceof DispatchServiceError
-          ? `${error.code} ${error.message}`
-          : messageFor(error);
-      warnings.push(`dispatch: warning: credential requests could not be read: ${refusal}`);
-    } else {
-      // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
-      // no credential requests, so it lists and counts none.
-      requests = settled.answer?.pending ?? [];
-    }
+    // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
+    // no credential requests, so it lists and counts none.
+    const requests: readonly CredentialPendingRow[] =
+      sideRead(await pending, "credential requests", warnings)?.pending ?? [];
+    const threads: readonly MyReplyRow[] =
+      sideRead(await unread, "unread threads", warnings)?.rows ?? [];
     return {
-      text: formatInboxSummary(rows, requests, Date.now()),
+      text: formatInboxSummary(rows, threads, requests, Date.now()),
       details: {
         viewer,
         asks: rows.length,
+        unread_threads: threads.length,
         credential_requests: requests.length,
       },
       ...(warnings.length === 0 ? {} : { warnings }),
@@ -4059,14 +4147,16 @@ export async function executeDispatchTool(
         const candidates = duplicateCandidates(error);
         return {
           text: [
-            `Not created: "${title}" looks like a duplicate.`,
+            `Not created: "${title}" is a near copy of an open issue.`,
             ...candidates.map((candidate) => {
               const href = new URL(candidate.href, linkBase).toString();
               return `${candidate.key} [${candidate.status}] ${candidate.title} → ${href}`;
             }),
-            "Reference the existing issue, or run dispatch issue again with --force after reading it.",
+            "Read each issue above. If one is the same work, fold this into it by the duplicate rule of skill://dispatch-first.",
+            "If none is, run dispatch issue again with --force, and write in the new issue's spec why it is not each issue named here.",
           ].join("\n"),
           details: { duplicates: candidates },
+          refused: true,
         };
       }
     }
@@ -4093,8 +4183,17 @@ export async function executeDispatchTool(
       } catch (error) {
         throw refusalWithCode(error);
       }
-      // The schema admits reason only beside status done. A closed issue refuses messages,
-      // comments, and artifacts, so the reason is posted first and the close waits on it.
+      // The schema admits reason only beside status done. The reason is posted first, so the
+      // close carries its note and an issue that cannot take the note stays open. Dispatch takes
+      // messages on a closed issue (though not asks or artifacts) and answers a second close with
+      // ISSUE_CLOSED, so an issue already closed gets that refusal here, before its reason could
+      // land as a stray message.
+      if (status === "done" && typeof before.closed_at === "string") {
+        throw refusalWithCode(
+          new DispatchServiceError("ISSUE_CLOSED", 409, "issue is closed"),
+          `${issueKey} closed at ${before.closed_at}, so the reason was not posted and the close was not sent`
+        );
+      }
       let closingNote: { readonly id: string; readonly ref: string } | undefined;
       if (reason !== undefined) {
         try {
@@ -4317,12 +4416,12 @@ export async function executeDispatchTool(
       const project = stringArg(args, "project");
       const title = optionalString(args, "title");
       const text = optionalString(args, "text");
-      const excludeIssue = optionalString(args, "exclude_issue");
+      const excludeIssues = optionalStringArray(args, "exclude_issues");
       const keywordsOnly = optionalBoolean(args, "keywords_only");
       const suggestions = await client.related(project, {
         ...(title === undefined ? {} : { title }),
         ...(text === undefined ? {} : { text }),
-        ...(excludeIssue === undefined ? {} : { exclude_issue: excludeIssue }),
+        ...(excludeIssues === undefined ? {} : { exclude_issues: excludeIssues }),
         ...(keywordsOnly === undefined ? {} : { keywords_only: keywordsOnly }),
       });
       return {

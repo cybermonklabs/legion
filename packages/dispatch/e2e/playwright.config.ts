@@ -24,9 +24,16 @@ import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone`, `@webkit` and
 // `@firefox`, written at the end of the test's title. Which tests take `@phone` is in
-// `packages/dispatch/AGENTS.md`, "Phone acceptance"; each engine tag names a row that exercises
-// one engine behaviour the comment above those projects lists, and a comment above the row names
-// which; a row that only repeats an assertion Chromium already made carries no tag. An untagged
+// `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine tag names a row for one of two
+// reasons, and a comment above the row says which. Either the row exercises one engine behaviour
+// the comment above those projects lists - the usual reason - or every measured failure of that
+// row was in that engine, so the row is kept where its cause lives: a row green only on an engine
+// its defect was never seen on proves nothing about that defect. Two rows carry a tag for the
+// second reason today, each named in `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask
+// answer whose answer is lost (two timeouts in 213 CI runs, both in WebKit) and
+// `keyboard-agents-picker.e2e.ts`'s row back after the reader left mid-send (six failures on six
+// branches, every one in WebKit). A row that only repeats an assertion Chromium already made, and
+// whose failures are not an engine's, carries no tag. An untagged
 // test drops out with no failure. The pattern is anchored so a tag matches only as a whole
 // whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
 // `@webkit-iphone` or `@firefox-alone`.
@@ -168,25 +175,90 @@ if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).
 const expectTimeout = 15_000;
 
+// The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
+// when this suite ran one row at a time; it now runs four lanes on a four-core runner. Read from
+// the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
+// 2026-11-05T20:32:13Z (78 merge_group, 119 pull_request, 4 push), at base b7866f96d7fe.
+//
+// The population is the one this number governs, and the filter is the point of it: the results
+// that passed, in that window, on rows of the spec files this tree has that ran under the
+// inherited budget rather than one of their own. The filter is per row, not per file, because
+// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sit inside a single row: a file is
+// not out of the population, a row is, and the other rows of `keyed-writes`, `live-socket`,
+// `phone`, `refetch-budget`, `claim-refilling`, `composer-body-cap`, `machine-login` and
+// `threads-order` are governed by this budget whatever their one slow neighbour asks for. Only
+// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they hold.
+//
+// Derive it from the measurement rather than from the sources: a report carries, per row, the
+// timeout that row ran under, so a result taken at its project's own timeout is one this budget
+// governed, and the filter cannot age. A source-level filter cannot be written as one line - a
+// call inside a row's body is the row's and a call at module scope is the file's, which is an AST
+// question, and `--list` reads module scope only, so it misses all 29.
+//
+//   jq -r '(.config.projects|map({key:.name,value:.timeout})|from_entries) as $c
+//     | [..|objects|select(has("specs"))|.specs[]][] | . as $s | $s.tests[]
+//     | select(.timeout == $c[.projectName]) | .results[] | select(.status=="passed")
+//     | [($s.file|sub(".*/";"")), .projectName, .duration] | @tsv' <report.json…>
+//
+// then keep the rows of files `ls e2e/*.e2e.ts` lists, which drops the window's results of files
+// this tree does not have - 1,560 of them in 12 files, other branches' rows. Compare `passed`
+// results alone: a skipped row reports the static timeout, never the one its body would have set.
+//
+// Over that population: 320,101 results, median 2,543 ms, 95th percentile 6,773 ms, 99th
+// 9,886 ms, 99.9th about 15,097 ms (15,056 by floor, 15,101 by nearest rank), maximum 29,856 ms,
+// in deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored thread" on
+// WebKit. Over the whole of what this tree has, rows with their own timeout included, the
+// maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
+// agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
+//
+// What the window bounds, and what it does not. The population is passing results, and every
+// governed row of the window ran under Playwright's 30 s default, so a row that wanted longer was
+// killed rather than measured: 27 governed results timed out at that cap and are not in the
+// population at all - 19 in pictures.e2e.ts on chromium, 5 in deep-links.e2e.ts on firefox and
+// one on WebKit, which is the very row that set the figure below, and 2 in keyed-writes.e2e.ts on
+// WebKit, each ending between 30,000 and 30,006 ms. So 29,856 ms is the slowest result that
+// survived the cap, not the distribution's maximum, and the tail above 30 s is unknown.
+//
+// The budget does not rest on that figure being a maximum. It is sized to let a healthy row
+// finish, and the distribution of rows that did finish says what healthy costs: 60 s is 2.01
+// times the slowest survivor, 4.0 times the 99.9th percentile and 24 times the median, no
+// governed result of the window reaches it, and nothing in the window shows a row finishing its
+// work and needing more. A censored tail changes what the maximum means, not what the budget has
+// to cover; a row that hangs still fails inside a minute.
+// It lengthens no row's work; a row that needs it has already lost whatever it was waiting for.
+// Raise it only from a measurement of the same shape, over the same population.
+const testTimeout = 60_000;
+
 // Two-process mode's one project: the multiprocess specs, in Chromium, the sign-in spec alone under
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
+//
+// `retries: 0`, against the one retry the run takes on CI, and for a reason of its own: the
+// `-alone` projects below also set it, but their argument is about the wall clock and does not
+// reach here. This project's argument is that nothing publishes its flaky rows. The job that
+// runs it (.github/workflows/dispatch-browser.yaml's multiprocess job) writes no blob report,
+// and the merge job that reports the run's flake rate reads the shard and alone legs' blobs
+// alone, so a row that failed and passed on a retry here would appear in no rate and no list.
+// Its test-results upload is `if: failure()`, so a retried row would leave no trace either. With
+// no retry the job stays what it has always been: a failed row fails it, the upload runs, and
+// the trace of that one attempt is kept (`trace: 'retain-on-first-failure'` below). A blob leg
+// for this job would end the argument, and there is none.
 const multiprocessProjects = [
   {
     name: "chromium",
     testMatch: harnessSignIn === "oidc" ? signInSpecs : multiprocessSpecs,
     testIgnore: harnessSignIn === "oidc" ? undefined : signInSpecs,
     use: { ...devices["Desktop Chrome"] },
+    retries: 0,
   },
 ];
 
-// The specs whose rows are read from the wall clock: that a document write answers in under a
-// second (`heavy-document-writes.e2e.ts`), and that a card's draw holds the main thread for less
-// than one (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
+// The specs whose rows are read from the wall clock: that a card's draw holds the main thread
+// for less than one second (`heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`, both through
 // `main-thread-hold.ts`). Four lanes on one machine leave such a claim unmeasurable - the wall
-// time of a write holds what the other three lanes took as surely as the work the server did -
+// time of a draw holds what the other three lanes took as surely as the work the page did -
 // so these files run in the `-alone` projects at the end of this list, after every other project
 // and one row at a time, and in no project above them (sjawhar/legion#2612).
-const clockSpecs = /(heavy-bodies|heavy-document-writes|nested-directive)\.e2e\.ts/;
+const clockSpecs = /(heavy-bodies|nested-directive)\.e2e\.ts/;
 
 // Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
 // project added here is one more the clock rows wait for.
@@ -210,11 +282,16 @@ const parallelProjects = [
   // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
   // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
   // and all five of `keyboard-session-pickers`.
+  // A send held open across two in-app navigations, with the row's draft, its picker and its
+  // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
+  // left mid-send, which carries `@webkit` alone because each of its six measured failures was
+  // in WebKit.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
-  // margin hold's frame and scroll order: six `deep-links` rows - the held chunk's, the press
+  // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
-  // animation frames held, the per-frame scroll of a past version's landing, and the placement
-  // the margin's own scroll must not move.
+  // animation frames held, the per-frame scroll of a past version's landing, the placement the
+  // margin's own scroll must not move, and the composer opened from the document after a comment
+  // link, whose selection bar the landing's frames can carry off screen.
   // IndexedDB-backed recovery of an edit the server has not taken: three `offline-edits` rows -
   // the edit restored across a reload, the acknowledged one cleared, and two tabs holding two
   // connections to one store.
@@ -226,7 +303,12 @@ const parallelProjects = [
   // The one-socket invariant: `live-socket`'s row that a tab holds one live socket for every live
   // view, since WebKit is the engine iOS Safari opens every subscription in.
   // The keyed write path's request failure, its abort, a tab's storage across a reload and the
-  // ask before a tab unloads: five `keyed-writes` rows and two `keyed-send` rows.
+  // ask before a tab unloads: nine `keyed-writes` rows and two `keyed-send` rows, one of which
+  // asks whether the engine's IndexedDB gives a kept upload its `File` back, which WebKit's does
+  // not. One of those nine, the ask answer whose answer is lost, carries `@webkit` alone: both of
+  // its measured failures were in WebKit.
+  // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
+  // socket the engine reconnects and the paint after it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
@@ -264,10 +346,11 @@ const parallelProjects = [
   // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
   // and all five of `keyboard-session-pickers`.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
-  // margin hold's frame and scroll order: six `deep-links` rows - the held chunk's, the press
+  // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
-  // animation frames held, the per-frame scroll of a past version's landing, and the placement
-  // the margin's own scroll must not move.
+  // animation frames held, the per-frame scroll of a past version's landing, the placement the
+  // margin's own scroll must not move, and the composer opened from the document after a comment
+  // link, whose selection bar the landing's frames can carry off screen.
   // IndexedDB-backed recovery of an edit the server has not taken: three `offline-edits` rows -
   // the edit restored across a reload, the acknowledged one cleared, and two tabs holding two
   // connections to one store.
@@ -278,8 +361,13 @@ const parallelProjects = [
   // `heavy-bodies`, which runs in `firefox-alone` below, since its rows are read from the clock.
   // The one-socket invariant: `live-socket`'s row that a tab holds one live socket for every live
   // view, which must hold in every engine people read in.
+  // The socket rotation the engine makes a page spend, and the reads the page makes around it:
+  // `live-socket`'s rotation row, which this engine failed with an extra read of the issue, and
+  // a row is kept in the project that failed it so that failure cannot come back unseen.
   // The keyed write path's request failure, its abort, a tab's storage across a reload and the
-  // ask before a tab unloads: five `keyed-writes` rows and two `keyed-send` rows.
+  // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, whose upload
+  // row carries the kept-file question with it.
+  // The reload line a read-only admission names: `doc-reload-line`'s one row.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
@@ -348,13 +436,19 @@ const parallelProjects = [
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
- * `heavy-document-writes.e2e.ts`, which drives no browser, and `nested-directive.e2e.ts` ran in
- * `chromium` alone and run in `chromium-alone` alone.
+ * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone.
  *
  * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
  * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
  * asserts, because what puts it here is that its claim is a wall-clock time, and
  * `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged projects ignore it.
+ *
+ * Each also sets `retries: 0`, which Playwright takes per project as it takes `workers`,
+ * against the one retry the run takes on CI. The reason is these rows' own, and holds whatever
+ * the reporting around them does: a row whose claim is a wall-clock time has nothing to gain
+ * from a second attempt, because a threshold that a regression misses half the time would fail
+ * the first attempt, pass the retry, be reported `flaky`, and leave the run green where it
+ * should be red. The multiprocess project above sets the same value on a different argument.
  */
 const aloneProjects = [
   {
@@ -363,6 +457,7 @@ const aloneProjects = [
     testMatch: clockSpecs,
     use: { ...devices["Desktop Chrome"] },
     workers: 1,
+    retries: 0,
   },
   {
     name: "firefox-alone",
@@ -370,6 +465,7 @@ const aloneProjects = [
     testMatch: /heavy-bodies\.e2e\.ts/,
     use: { ...devices["Desktop Firefox"] },
     workers: 1,
+    retries: 0,
   },
   {
     name: "webkit-alone",
@@ -381,6 +477,7 @@ const aloneProjects = [
     testMatch: /heavy-bodies\.e2e\.ts/,
     use: { ...devices["Desktop Safari"] },
     workers: 1,
+    retries: 0,
   },
 ] satisfies Project[];
 
@@ -396,17 +493,33 @@ export default defineConfig({
   // `test.describe.configure({ mode: "serial" })` and the reason.
   fullyParallel: true,
   workers: lanes,
+  // One retry on CI, none locally. A row that fails once and passes on the retry is reported
+  // `flaky` rather than failed, which is what the merged report of the dispatch-browser lane
+  // publishes its flake rate from. Locally a retry would hide a failure the developer is looking
+  // at, and `bun run e2e` is read as pass or fail. This is the sharded projects' value: the
+  // three `-alone` projects and the multiprocess one each set `retries: 0`, each for a reason
+  // its own comment gives.
+  retries: process.env.CI ? 1 : 0,
   // With E2E_MEASURE_FILE set, the timing fixture's reporter writes one row per test beside the
   // list reporter's own output (e2e/measure-reporter.ts); without it the run is untouched.
   reporter: measuring
     ? [["list"], [fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))]]
     : "list",
+  timeout: testTimeout,
   expect: { timeout: expectTimeout },
   use: {
     ...devices["Desktop Chrome"],
     baseURL: baseUrl,
     headless: true,
-    trace: "retain-on-failure",
+    // One value for both runs. `retain-on-first-failure` records the first attempt and keeps it
+    // when that attempt failed (`mode === "retain-on-first-failure" && this._testInfo.retry
+    // === 0`, node_modules/.bun/playwright@1.64.1/node_modules/playwright/lib/worker/
+    // workerProcessEntry.js:554), so a flaky row carries the trace of the attempt that failed,
+    // which is the one that explains it. `on-first-retry` records on the retry alone (:550,
+    // `retry === 1`), and a row is flaky exactly when its retry passed, so that mode would keep
+    // a trace of a green run and leave the failure none. Locally, with `retries: 0`, the first
+    // attempt is the only attempt, so this is the `retain-on-failure` the suite had before.
+    trace: "retain-on-first-failure",
   },
   // Runs before any row, against the servers the checks above require: it refuses a target that
   // does not read this run's fake Envoy, and in two-process mode a pair whose processes do not

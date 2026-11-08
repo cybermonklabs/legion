@@ -46,8 +46,11 @@ type messageBody struct {
 	InReplyTo      *string `json:"in_reply_to"`
 	Supersedes     *string `json:"supersedes"`
 	Urgency        *string `json:"urgency"`
-	ExpectsReply   *string `json:"expects_reply"`
-	ExpiresAt      *int64  `json:"expires_at"`
+	// ExpectsReply arrives as the JSON literal false, "optional" or "required" (and, until no
+	// deployment pins a plugin build old enough to write it, the old string "none"), so it is
+	// read raw and parsed by contracts.ParseExpectsReply rather than decoded as one Go type.
+	ExpectsReply json.RawMessage `json:"expects_reply"`
+	ExpiresAt    *int64          `json:"expires_at"`
 }
 
 // sendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
@@ -59,7 +62,12 @@ type messageBody struct {
 // as.
 type sendResponse struct {
 	contracts.Envelope
-	Recipient string `json:"recipient"`
+	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
+	// (expectsReplyAnswer). It shadows the embedded envelope's own field: of two fields sharing
+	// one JSON name encoding/json writes the shallower, so these bytes are what the answer
+	// carries and every sendResponse built below fills them.
+	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
+	Recipient    string          `json:"recipient"`
 	// RecipientState is the state the recipient's record puts it in at the moment the send was
 	// accepted: live, or unresponsive for a session that has stopped answering and whose messages
 	// this listener still stores. A sender that must know whether its message will be read soon
@@ -127,10 +135,14 @@ func lastSeenOf(sessions *session.SessionRegistry, sessionID string, entry sessi
 // answers exactly as it did.
 type publishResponse struct {
 	contracts.Envelope
-	Holder       string        `json:"holder,omitempty"`
-	HolderState  session.State `json:"holder_state,omitempty"`
-	Unresponsive []string      `json:"unresponsive,omitempty"`
-	Kept         bool          `json:"kept,omitempty"`
+	// ExpectsReply is this answer's expects_reply, written in the dialect the request spoke
+	// (expectsReplyAnswer), shadowing the embedded envelope's own field exactly as
+	// sendResponse.ExpectsReply does.
+	ExpectsReply json.RawMessage `json:"expects_reply,omitempty"`
+	Holder       string          `json:"holder,omitempty"`
+	HolderState  session.State   `json:"holder_state,omitempty"`
+	Unresponsive []string        `json:"unresponsive,omitempty"`
+	Kept         bool            `json:"kept,omitempty"`
 	// KeptReason is the state the resolution found, in the same wire words the 404's own reason
 	// carries (roleHolderError.Reason). This build keeps only for a role no claim holds
 	// (roleKeepable), so unclaimed is the one reason it sends; a lapsed claim is refused 404.
@@ -429,7 +441,11 @@ func writeStoreError(ctx context.Context, w http.ResponseWriter, err error, stat
 	writeBusUnavailable(w, err)
 }
 
-func validateMessageBody(body messageBody) (string, string) {
+// validateMessageBody refuses a body no envelope may be built from, naming the refusal and the
+// field it is about, and returns the body's parsed expects_reply so messageEnvelope takes the
+// value this parse already read instead of parsing the same bytes again. A refused body returns
+// the unset value, which no caller reads.
+func validateMessageBody(body messageBody) (string, string, contracts.ExpectsReply) {
 	for _, field := range []struct {
 		name  string
 		value *string
@@ -438,20 +454,19 @@ func validateMessageBody(body messageBody) (string, string) {
 		{"supersedes", body.Supersedes},
 	} {
 		if field.value != nil && strings.TrimSpace(*field.value) == "" {
-			return field.name + " must not be empty", field.name
+			return field.name + " must not be empty", field.name, contracts.ExpectsReplyUnset
 		}
 	}
 	if body.Urgency != nil {
 		if *body.Urgency == "" || (*body.Urgency != "low" && *body.Urgency != "med" && *body.Urgency != "high" && *body.Urgency != "blocking") {
-			return "urgency must be one of low, med, high, blocking", "urgency"
+			return "urgency must be one of low, med, high, blocking", "urgency", contracts.ExpectsReplyUnset
 		}
 	}
-	if body.ExpectsReply != nil {
-		if *body.ExpectsReply == "" || (*body.ExpectsReply != "none" && *body.ExpectsReply != "optional" && *body.ExpectsReply != "required") {
-			return "expects_reply must be one of none, optional, required", "expects_reply"
-		}
+	expectsReply, err := contracts.ParseExpectsReply(body.ExpectsReply)
+	if err != nil {
+		return "expects_reply must be one of " + contracts.ExpectsReplyVocabulary, "expects_reply", contracts.ExpectsReplyUnset
 	}
-	return "", ""
+	return "", "", expectsReply
 }
 
 func optionalString(value *string) string {
@@ -461,7 +476,7 @@ func optionalString(value *string) string {
 	return *value
 }
 
-func messageEnvelope(body messageBody, topic, dedupeKey string) contracts.Envelope {
+func messageEnvelope(body messageBody, topic, dedupeKey string, expectsReply contracts.ExpectsReply) contracts.Envelope {
 	summary := contracts.OneLineSummary(body.Message)
 	payload := ""
 	if body.Payload != nil {
@@ -488,8 +503,30 @@ func messageEnvelope(body messageBody, topic, dedupeKey string) contracts.Envelo
 		InReplyTo:      optionalString(body.InReplyTo),
 		Supersedes:     optionalString(body.Supersedes),
 		Urgency:        optionalString(body.Urgency),
-		ExpectsReply:   optionalString(body.ExpectsReply),
+		ExpectsReply:   expectsReply,
 	}
+}
+
+// expectsReplyAnswer is the expects_reply an answer to one request writes: the request's own
+// bytes, so each sender reads back the dialect it spoke - the literal false, "optional",
+// "required", or the old string "none" - and nil for a request that said nothing about a reply
+// or wrote null, whose answer omits the field as it always has. The route refuses anything else
+// (validateMessageBody) before an answer is built, and the envelope those same bytes were parsed
+// into carries the one new vocabulary whichever spelling they used.
+//
+// Answering the request's own spelling is what keeps the ingress leniency's promise whole. A
+// plugin build old enough to write "none" holds an EnvelopeSchema whose expects_reply is the
+// three-word enum (packages/contracts/src/envelope.ts), and it parses this very answer
+// (packages/envoy-client/src/transport.ts): a literal false there fails that parse, so its send
+// is reported unconfirmed and re-sent, and its publish throws. The echo is the answer's alone -
+// every envelope this listener puts on the bus carries the one new vocabulary - and it goes with
+// the leniency itself, on the same count ParseExpectsReply's comment names: once no deployment
+// pins a plugin build old enough to write "none".
+func expectsReplyAnswer(requested json.RawMessage) json.RawMessage {
+	if len(requested) == 0 || string(requested) == "null" {
+		return nil
+	}
+	return requested
 }
 
 // senderStamp is the sender a send or a publish carries: the session, the machine and directory it
@@ -666,7 +703,8 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "message is required", "message")
 			return
 		}
-		if message, field := validateMessageBody(body); message != "" {
+		message, field, bodyExpectsReply := validateMessageBody(body)
+		if message != "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
 		}
@@ -674,7 +712,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		if body.IdempotencyKey != "" {
 			dedupeKey = "agent." + targetSession + "." + body.IdempotencyKey
 		}
-		item := messageEnvelope(body, contracts.AgentSubject(targetSession), dedupeKey)
+		item := messageEnvelope(body, contracts.AgentSubject(targetSession), dedupeKey, bodyExpectsReply)
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
@@ -717,6 +755,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		}
 		record.accept(w, sendResponse{
 			Envelope:       item,
+			ExpectsReply:   expectsReplyAnswer(body.ExpectsReply),
 			Recipient:      targetSession,
 			RecipientState: state,
 			LastSeen:       target.UpdatedAt,
@@ -916,7 +955,8 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, "cannot publish to "+bus.KeptTopicPrefix+" topics; that lane is the listener's own, holding the copies it keeps for a role's next holder and the cursors of its drains")
 			return
 		}
-		if message, field := validateMessageBody(request.messageBody); message != "" {
+		message, field, bodyExpectsReply := validateMessageBody(request.messageBody)
+		if message != "" {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, message, field)
 			return
 		}
@@ -939,12 +979,15 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		case request.IdempotencyKey != "":
 			dedupeKey = "publish." + request.IdempotencyKey
 		}
-		item := messageEnvelope(request.messageBody, request.Topic, dedupeKey)
+		item := messageEnvelope(request.messageBody, request.Topic, dedupeKey, bodyExpectsReply)
 		record.item = &item
 		if err := item.Validate(); err != nil {
 			record.refuse(w, http.StatusBadRequest, outcomeInvalidRequest, err.Error())
 			return
 		}
+		// The answer's own expects_reply, read from the request before any path answers: the three
+		// of them below each write it, and none of them changes the envelope that goes on the bus.
+		expectsReply := expectsReplyAnswer(request.ExpectsReply)
 		if role, ok := strings.CutPrefix(request.Topic, contracts.RoleTopicPrefix); ok {
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
@@ -952,13 +995,13 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
 			return
 		}
 		if bus.UsesCoreTransport(request.Topic) {
 			ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(publishDeliveryWindow))
 			defer cancel()
-			sendToTopic(ctx, w, record, d, item, arrived)
+			sendToTopic(ctx, w, record, d, item, expectsReply, arrived)
 			return
 		}
 		// The sender stamp's read and the publish take this one deadline, derived from the
@@ -971,7 +1014,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			record.refuseBusUnavailable(w, err)
 			return
 		}
-		record.accept(w, publishResponse{Envelope: item})
+		record.accept(w, publishResponse{Envelope: item, ExpectsReply: expectsReply})
 	}
 }
 
@@ -989,7 +1032,11 @@ type sessionInfo struct {
 	State     session.State `json:"state"`
 	MachineID string        `json:"machine_id"`
 	Host      string        `json:"host"`
-	Dir       string        `json:"dir"`
+	// TmuxPlace is where the session's process sits in tmux, as its last registration reported
+	// it. Absent, rather than null, for a session in no pane: a cluster whose sessions run
+	// outside tmux adds no bytes to any row of this list.
+	TmuxPlace *session.TmuxPlace `json:"tmux_place,omitempty"`
+	Dir       string             `json:"dir"`
 	// Port is 0 for every entry this listener writes: it refuses a registration that names a
 	// serving port (subscribeHandler) and delivers to no port. An entry an earlier listener
 	// stored with a port is answered with that port until it lapses (the session bucket's TTL).
@@ -1062,6 +1109,7 @@ func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 		State:          entry.State,
 		MachineID:      entry.MachineID,
 		Host:           entry.HostOrMachine(),
+		TmuxPlace:      entry.TmuxPlace,
 		Dir:            entry.Dir,
 		Port:           entry.Port,
 		Title:          entry.Title,
@@ -1374,13 +1422,29 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 			}
 			writeJSON(w, http.StatusOK, interestRowFor(sessions, item))
 		case http.MethodDelete:
+			// The administrator's removal: it frees every role claim the session holds,
+			// whoever holds it (store.RoleReleaseAuthority.Force), and it is the only
+			// caller that forces one. An operator clearing a session's interests states no
+			// process, and a release naming none frees no claim that names one, so without
+			// the force this route could no longer free the roles of a client that has
+			// gone away, which is what it is for.
+			//
+			// The limit this leaves open, decided and left as it stands: a second process
+			// that resumed the session's id reaches this route and frees the live holder's
+			// claim, because sessionNotBound refuses only a token acting as another
+			// session, and such a process acts as this very one. POST
+			// /v1/interests/unsubscribe, the route every client hands a role back through,
+			// is scoped to the process that asks and cannot; closing this one needs a
+			// credential naming the process rather than the session.
 			if refusal := sessionNotBound(r, logger, sessionID); refusal != "" {
 				writeJSONError(w, http.StatusForbidden, refusal, "session_id")
 				return
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 			defer cancel()
-			if err := registry.Remove(ctx, sessionID, nil); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
+			// A deregistration answers no topic list, and this route's 204 carries no body
+			// to write one in, so the store's first answer is dropped here.
+			if _, err := registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{Force: true}); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
 				writeStoreError(ctx, w, err, http.StatusInternalServerError)
 				return
 			}
@@ -1412,6 +1476,37 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // turns a read of a role and the claim that
 // follows into one decision, which neither last-claim-wins nor a soft claim can do.
 //
+// A soft claim that carries no if_claim_revision is conditional all the same, on a revision the
+// route supplies rather than the caller: the revision of the claim record it made its decision
+// on. The route decides on one read of that record and store.Registry.SetRoleWithPrevious writes
+// against a second read of its own, so without the precondition two processes of one session id
+// claiming one unheld role at the same moment are both granted it. A record replaced in between
+// is no answer to such a caller, which asked nothing about revisions, so the route reads the
+// claim again, decides the whole thing again on what it then finds, and tries once; a second
+// mismatch is the same 409 a stated revision gets. A claim that states its own if_claim_revision
+// is never retried - that revision is the caller's own precondition - and a hard claim that
+// states none is written with no precondition at all, last-claim-wins.
+//
+// A soft claim names the process making it (client_instance_id), and the claim it writes records
+// that process as the role's holder. Where the role is already held under the claimant's own
+// session id that is the whole decision, made on the standing claim and never on the session
+// record (roleOwnSessionVerdict): the claim is granted at once where it names this very process,
+// and otherwise only where nobody has answered for it inside the live window the registry runs
+// with (store.Registry.ClaimRenewedWithin, over the window this listener's session registry
+// judges a record's age by, session.SessionRegistry.Windows). A second process that resumed a
+// live session's id is refused the 409 naming the holder, and reads the lookup to see which
+// process holds the role; a request that states no instance, and a claim record that names none,
+// both reach the renewal test rather than a case of their own, since an absent instance matches
+// nothing. That renewal test is read only while the role claim view can answer
+// (store.Registry.RoleViewErr): nothing but a registration renews a claim, a registration renews
+// through that view, and so a view that cannot answer leaves every claim's renewal ageing with
+// nothing able to move it - a refill longer than the live window would hand a live holder's role
+// to the second process. While it cannot answer, that one arm is the bus-unavailable 503 with
+// Retry-After: 1 naming the view (writeBusUnavailable), and nothing is claimed; a claim from the
+// process the standing claim names rests on no renewal and is granted through it, since it is
+// that holder re-claiming its own role after a listener restart. A hard claim reads no holder and
+// lands last-claim-wins as it always has.
+//
 // A claim that landed also hands the role's kept lane to its new holder: whatever the listener
 // kept while the role had none is forwarded to the claimant (runKeptRoleDrain, which reads the
 // lane first and resolves the role's holder itself, so a claim of a role with nothing kept for
@@ -1419,10 +1514,13 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // claim that superseded this one when one has). That runs in a goroutine under a context of its
 // own, so this answer's status and body are exactly what they were and wait for none of it.
 //
-// logger is registerV1Routes's own. One decision of this route is logged with it: a soft claim that
-// takes a role from the predecessor it names because the claimant's entry or the predecessor's
-// carries no client instance id, which is the one takeover the route cannot tell from a different
-// client instance's, and so names both session ids.
+// logger is registerV1Routes's own. Two decisions of this route are logged with it. A soft claim
+// that takes a role from the predecessor it names because the claimant's entry or the
+// predecessor's carries no client instance id, which is the one takeover the route cannot tell
+// from a different client instance's, and so names both session ids. And a soft claim refused
+// the role held under its own session id, logged once with the role, that session id, the
+// holder's client instance and the claimant's, so an operator sees a second process being held
+// off rather than a bare 409.
 func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1461,9 +1559,21 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// other revision in the bucket, a record where this names none, or none
 			// where this names one is 409, and so is a claim that lost the race to a
 			// claim landing between this claimant's read and its write; no claim record
-			// is written. Omitted (null), the claim is weighed by the
-			// soft and last-claim-wins rules alone, exactly as before this field.
+			// is written. Omitted (null), the claim is weighed by the soft and
+			// last-claim-wins rules alone, and a soft claim is then written against
+			// the revision of the record the route decided on, which it reads again
+			// and decides again once where that record moved in between.
 			IfClaimRevision *uint64 `json:"if_claim_revision"`
+			// The client instance of the process making this claim: the id its plugin
+			// minted at its own start, the same one its registration carries
+			// (subscribeHandler's client_instance_id). The claim records it as the
+			// process that holds the role, and it is what tells a second process that
+			// resumed this session id from the one that holds the claim: a claim under
+			// a session id another process holds the role under is granted only where
+			// this names that very process, and otherwise only once nobody has renewed
+			// that claim inside the live window. A client that states none is weighed
+			// by the renewal alone, since an absent instance matches no claim.
+			ClientInstanceID string `json:"client_instance_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid json")
@@ -1471,6 +1581,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)
 		body.Role = strings.TrimSpace(body.Role)
+		body.ClientInstanceID = strings.TrimSpace(body.ClientInstanceID)
 		if body.SessionID == "" {
 			writeJSONError(w, http.StatusBadRequest, "session_id is required", "session_id")
 			return
@@ -1501,98 +1612,220 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// Get answers from the cache alone, and the cache follows the session bucket through a
 		// watcher and so trails it. A trailing cache would decide this claim twice over: it would
 		// read an empty client instance id from an entry this process has not caught up with,
-		// demoting every claim to the "no instance id" case below, and PutWithin would write that
-		// stale entry back over a newer one. So the claimant's own entry is read from the bucket
-		// itself, and when that read answers, its entry is the one refreshed here and the one the
-		// claimant's instance id is taken from. A read that does not answer keeps the cache's
-		// entry and goes on, so this claim is never worse off than it was without the bucket read.
+		// demoting a claim weighed against a predecessor to the "no instance id" case below, and
+		// PutWithin would write that stale entry back over a newer one. So the claimant's own
+		// entry is read from the bucket itself, and when that read answers, its entry is the one
+		// refreshed here and the one the predecessor rule falls back to. A read that does not
+		// answer keeps the cache's entry and goes on, so this claim is never worse off than it
+		// was without the bucket read.
 		if fresh, freshErr := bucketSessionEntry(ctx, d.sessions, body.SessionID, roleHolderReadTimeout); freshErr == nil {
 			entry = fresh
 		}
-		claimantInstanceID := entry.ClientInstanceID
+		// The process this claim is made by is the one the request states, and the claim records
+		// it: a session id names no process, since a second process can resume a live session's
+		// id, and the session record then names whichever of them registered the id last. That
+		// record is the thing this route stops trusting, so it is read for one decision alone -
+		// the predecessor rule's fallback below - and registeredInstanceID is read before the
+		// refresh overwrites nothing of it.
+		claimantInstanceID := body.ClientInstanceID
+		registeredInstanceID := entry.ClientInstanceID
 		entry.MachineID = machineID
 		entry.SelfSubscribed = true
-		// The claim renews the claimant's registration, so it writes the serving port out of
-		// the entry: this listener delivers nothing to a port, and a renewed entry still
-		// carrying one an earlier registration stored is a session that Resolve passes over as
-		// self-subscribed while Dispatch's outbox counts the stream's ack as its delivery
-		// (internal/dispatch/outbox), so its messages are reported delivered when nobody
-		// delivered them.
+		// The claim renews the claimant's registration by writing back the entry it read, and
+		// it never writes the instance the request states into that entry: one registration per
+		// session id is a non-goal, and a process that wants a registration of its own
+		// registers (POST /v1/sessions/subscribe).
+		//
+		// The refresh writes the serving port out of the entry: this listener delivers nothing
+		// to a port, and a renewed entry still carrying one an earlier registration stored is a
+		// session that Resolve passes over as self-subscribed while Dispatch's outbox counts
+		// the stream's ack as its delivery (internal/dispatch/outbox), so its messages are
+		// reported delivered when nobody delivered them.
 		entry.Port = 0
 		if err := d.sessions.PutWithin(ctx, body.SessionID, entry); err != nil {
 			writeStoreError(ctx, w, fmt.Errorf("refresh role claimant registration: %w", err), http.StatusServiceUnavailable)
 			return
 		}
 		previous := ""
-		var supersedable []string
 		if body.Soft {
-			// The registry sees only interest rows; a holder's state is the session bucket's
-			// call (roleSupersessionVerdict, through liveSessionEntry and bucketSessionEntry).
-			// A holder that is not live - stalled past the live window, or with no record at
-			// all - may be superseded by a soft claim, and the claimant's own declared
-			// predecessor may be superseded while it is still live as well, but then only from
-			// the client instance it belongs to; any other live holder is protected. The live
-			// window, and not the bucket's maximum age, is the test, because a soft claim is
-			// how a relaunched Legion role takes its own role back: its predecessor keeps that
-			// claim while it is merely unresponsive, and nothing but the successor saying "this
-			// is me again" may move it before the gone horizon. The verdict answers the cases
-			// this switch words - the role is taken from its holder, it stays with it, or a
-			// read did not answer and nothing is taken from anyone.
-			claim, err := d.registry.RoleClaim(ctx, body.Role)
+			previous = strings.TrimSpace(body.PreviousSessionID)
+		}
+		// liveWindow is the window this listener's session registry judges a record's age by,
+		// read from that registry itself (session.SessionRegistry.Windows) so that the claim a
+		// claimant's own session id holds is weighed over exactly the window its registration
+		// keeps it live for. The claim's renewal is weighed against it on the registry's own
+		// clock (store.Registry.ClaimRenewedWithin), which is the clock the role claim reaper
+		// weighs the same claim on, so the route and the sweep can never disagree.
+		liveWindow, _ := d.sessions.Windows()
+		// decideSoftClaim weighs a soft claim against the role's standing claim, which it reads
+		// itself, and answers what that claim may do to the holder it found (roleSupersession),
+		// the holders the claim may supersede, and the claim record the verdict was made on -
+		// its revision is the precondition the write then carries, and the process it names is
+		// what the route's refusal logs. It writes no answer and logs nothing: the handler
+		// below does both, once, for the decision whose answer it writes. A hard claim never
+		// asks: it reads no holder and claims last-claim-wins.
+		//
+		// The error is non-nil for the claim read that did not answer, which carries no
+		// verdict, and with roleHolderUnread, which is a read of the holder's session record or
+		// of the role claim view that did not answer; the two are answered differently and the
+		// verdict is what tells them apart.
+		//
+		// The registry sees only interest rows; a holder that is another session is the session
+		// bucket's call (roleSupersessionVerdict, through liveSessionEntry and
+		// bucketSessionEntry). A holder that is not live - stalled past the live window, or
+		// with no record at all - may be superseded by a soft claim, and the claimant's own
+		// declared predecessor may be superseded while it is still live as well, but then only
+		// from the client instance it belongs to; any other live holder is protected. The live
+		// window, and not the bucket's maximum age, is the test, because a soft claim is how a
+		// relaunched Legion role takes its own role back: its predecessor keeps that claim while
+		// it is merely unresponsive, and nothing but the successor saying "this is me again" may
+		// move it before the gone horizon. A holder that is the claimant's own session id is the
+		// standing claim's call instead (roleOwnSessionVerdict, which reads no session record,
+		// since a session id names no process).
+		decideSoftClaim := func() (supersedable []string, claim store.RoleClaim, verdict roleSupersession, err error) {
+			claim, err = d.registry.RoleClaim(ctx, body.Role)
 			if err != nil {
-				writeStoreError(ctx, w, fmt.Errorf("read role holder: %w", err), http.StatusServiceUnavailable)
-				return
+				return nil, store.RoleClaim{}, roleUnclaimed, fmt.Errorf("read role holder: %w", err)
 			}
 			holder := claim.HolderSessionID
-			previous = strings.TrimSpace(body.PreviousSessionID)
-			if holder != "" && holder != body.SessionID {
-				verdict, readErr := roleSupersessionVerdict(ctx, d.sessions, holder, previous, claimantInstanceID)
-				switch verdict {
-				case roleHolderUnread:
+			switch {
+			case holder == "":
+				// An unheld role is the claimant's: there is nobody to supersede.
+				return nil, claim, roleUnclaimed, nil
+			case holder == body.SessionID:
+				verdict, err = roleOwnSessionVerdict(d.registry, claim, claimantInstanceID, liveWindow)
+			default:
+				// The predecessor rule reads the claimant's own registration where the
+				// request states no instance. Without that fallback a client that sends none
+				// but has one stored would move from "the predecessor keeps the role" to
+				// "the role is taken, logged as unidentified", which is not what this route
+				// decides. It is the one fallback: the rule above, and a release, read an
+				// absent instance as naming no process, and nothing stands in for it.
+				claimantInstance := claimantInstanceID
+				if claimantInstance == "" {
+					claimantInstance = registeredInstanceID
+				}
+				verdict, err = roleSupersessionVerdict(ctx, d.sessions, holder, previous, claimantInstance)
+			}
+			if verdict == roleTakenFromHolder || verdict == roleTakenFromUnidentifiedPredecessor {
+				supersedable = append(supersedable, holder)
+			}
+			return supersedable, claim, verdict, err
+		}
+		// The decision above is made on one read of the role's claim, and
+		// store.Registry.SetRoleWithPrevious reads the claim again and writes against that second
+		// read. The record decided on and the record written against need not be the same one: a
+		// claim can land between the two reads. Without a precondition that is how two processes
+		// of one session id claiming one unheld role at the same moment both come away believing
+		// they hold it - each reads the role as unheld, each decides the role is its own, and the
+		// loser of the write's compare-and-swap reads the winning claim as its own session's and
+		// answers 200. So a soft claim that states no if_claim_revision of its own is written
+		// against the revision of the claim record this route decided on
+		// (store.RoleClaim.Revision, which a role with no record at all reports as 0, so the
+		// precondition is "there is still no record"), and the write happens only while that
+		// record still stands.
+		//
+		// A claim refused because that record moved under it is not an answer its caller asked
+		// for: the caller said nothing about revisions. So the route reads the claim again, makes
+		// the whole decision again on what the second read finds - the same-session-id verdict
+		// and the predecessor verdict alike, never a verdict kept from the first read - and
+		// tries once more. That is one attempt and at most one retry: a second mismatch is
+		// answered exactly as one is today, the 409 naming the role, the holder and the revision
+		// the bucket holds. A body that states its own if_claim_revision is never retried,
+		// because that revision is the caller's own precondition and deciding again would answer
+		// a question it did not ask, and a hard claim that states none is written with no
+		// precondition at all, last-claim-wins.
+		//
+		// The claimant's registration is refreshed above, once, whichever attempt then claims.
+		// The two decisions this route logs - the refusal of a second process of one session id,
+		// the takeover of a predecessor neither side identifies - are written by the attempt
+		// whose answer this route writes, so a decision a retry threw away logs nothing: no
+		// operator reads that a claim was held off when it was granted a moment later, or that a
+		// role was taken by an attempt that took nothing.
+		for attempt := 0; ; attempt++ {
+			var supersedable []string
+			var claim store.RoleClaim
+			verdict := roleUnclaimed
+			ifClaimRevision := body.IfClaimRevision
+			if body.Soft {
+				var decideErr error
+				supersedable, claim, verdict, decideErr = decideSoftClaim()
+				switch {
+				case verdict == roleHolderUnread:
 					// A read that did not answer takes nothing from a holder.
-					writeBusUnavailable(w, readErr)
+					writeBusUnavailable(w, decideErr)
 					return
-				case roleTakenFromUnidentifiedPredecessor:
-					logger.Info("listener role taken from a live predecessor because one side carries no client instance id",
-						slog.String("role", body.Role),
-						slog.String("session_id", body.SessionID),
-						slog.String("previous_session_id", holder))
-					supersedable = append(supersedable, holder)
-				case roleTakenFromHolder:
-					supersedable = append(supersedable, holder)
-				case roleStaysWithHolder:
-					// A live holder keeps the role, a predecessor still live inside another
-					// client instance among them, and store.Registry.SetRoleWithPrevious
-					// answers the 409 that names it.
+				case decideErr != nil:
+					writeStoreError(ctx, w, decideErr, http.StatusServiceUnavailable)
+					return
+				}
+				if ifClaimRevision == nil {
+					decidedRevision := claim.Revision
+					ifClaimRevision = &decidedRevision
 				}
 			}
-		}
-		item, err := d.registry.SetRoleWithPrevious(ctx, body.SessionID, machineID, body.Role, previous, body.Soft, body.IfClaimRevision, supersedable...)
-		var stale *store.ErrRoleClaimRevisionMismatch
-		if errors.As(err, &stale) {
-			writeJSON(w, http.StatusConflict, map[string]any{
-				"error":          err.Error(),
-				"role":           stale.Role,
-				"holder":         stale.Holder,
-				"claim_revision": stale.Actual,
+			item, err := d.registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{
+				SessionID:         body.SessionID,
+				MachineID:         machineID,
+				ClientInstanceID:  claimantInstanceID,
+				Role:              body.Role,
+				PreviousSessionID: previous,
+				Soft:              body.Soft,
+				IfClaimRevision:   ifClaimRevision,
+				Supersedable:      supersedable,
 			})
+			var stale *store.ErrRoleClaimRevisionMismatch
+			mismatch := errors.As(err, &stale)
+			if mismatch && attempt == 0 && body.Soft && body.IfClaimRevision == nil {
+				// The record this decision rested on was replaced between the read and the
+				// write. Decide again on the record that stands now, and with the decision
+				// goes whatever it was about to log.
+				continue
+			}
+			// This attempt's answer is the route's, so this decision is the one logged.
+			switch verdict {
+			case roleTakenFromUnidentifiedPredecessor:
+				logger.Info("listener role taken from a live predecessor because one side carries no client instance id",
+					slog.String("role", body.Role),
+					slog.String("session_id", body.SessionID),
+					slog.String("previous_session_id", claim.HolderSessionID))
+			case roleHeldByAnotherProcess:
+				// A second process of one session id, held off while the first still answers
+				// for its claim: store.Registry.SetRoleWithPrevious answers the 409 that names
+				// the holder, and the refused client reads the lookup to see which process
+				// holds it (GET /v1/roles/<role>).
+				logger.Info("listener role claim refused: the role is held under this session id by another process",
+					slog.String("role", body.Role),
+					slog.String("session_id", body.SessionID),
+					slog.String("holder_client_instance_id", claim.ClientInstanceID),
+					slog.String("client_instance_id", claimantInstanceID))
+			}
+			if mismatch {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error":          err.Error(),
+					"role":           stale.Role,
+					"holder":         stale.Holder,
+					"claim_revision": stale.Actual,
+				})
+				return
+			}
+			var held *store.ErrRoleHeld
+			if errors.As(err, &held) {
+				writeJSON(w, http.StatusConflict, map[string]string{
+					"error":  err.Error(),
+					"role":   held.Role,
+					"holder": held.Holder,
+				})
+				return
+			}
+			if err != nil {
+				writeStoreError(ctx, w, err, http.StatusInternalServerError)
+				return
+			}
+			go runKeptRoleDrain(*d.delivery, body.Role)
+			writeJSON(w, http.StatusOK, item)
 			return
 		}
-		var held *store.ErrRoleHeld
-		if errors.As(err, &held) {
-			writeJSON(w, http.StatusConflict, map[string]string{
-				"error":  err.Error(),
-				"role":   held.Role,
-				"holder": held.Holder,
-			})
-			return
-		}
-		if err != nil {
-			writeStoreError(ctx, w, err, http.StatusInternalServerError)
-			return
-		}
-		go runKeptRoleDrain(*d.delivery, body.Role)
-		writeJSON(w, http.StatusOK, item)
 	}
 }
 
@@ -1616,6 +1849,25 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 // of a lapsed holder's claim, which stands until the role reaper takes it, or 0 for a role no
 // record claims. A scheduler reads it and hands it back as POST /v1/roles/set's
 // if_claim_revision, so its claim is refused if the role moved in between.
+//
+// Both answers carry client_instance_id too, the process the claim names as its holder
+// (store.RoleClaim.ClientInstanceID): on the 200 beside the live holder, and on the 404 beside a
+// lapsed holder. It is how a client sees that a role is held under its own session id by another
+// process, which is what POST /v1/roles/set refuses it for; that 409 is not widened, and a
+// refused claimant reads this lookup. A claim that names no process - one an earlier build
+// wrote, or one whose claimant stated none - leaves the field out on both answers, as the 404
+// has always left it out (roleHolderError.ClientInstanceID, omitempty): a client reads an absent
+// field as "no other process holds this role" and an empty one as "another process does", so a
+// 200 that wrote "" would send the holder of such a claim a soft claim it does not need and a
+// 409 naming itself, until its next registration adopted the claim for its process.
+//
+// Both answers carry handed_back where the claim carries the hand-back mark
+// (store.RoleClaim.HandedBack): the holder gave this role back through a release that could not
+// free the claim, so no registration renews it any more and the role claim reaper frees the role
+// once that renewal has lapsed, a live window and up to one reap interval later. The key is left
+// out where the claim carries no mark, as
+// client_instance_id is left out where it names no process, so a client reads an absent field as
+// "this claim is still its holder's" rather than having to tell false from missing.
 func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -1646,7 +1898,7 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 		// is named exactly as the 404 of a lapsed holder names it (roleHolderError.HolderState)
 		// and as the holder's state is named on a publish answer: a caller reads one field on
 		// every role answer rather than inferring the state from the status code.
-		writeJSON(w, http.StatusOK, map[string]interface{}{
+		answer := map[string]interface{}{
 			"role":           role,
 			"holder":         result.Holder,
 			"holder_state":   result.HolderState,
@@ -1657,7 +1909,14 @@ func roleGetHandler(d *listenerDeps) http.HandlerFunc {
 			"capabilities":   append([]string{}, result.Entry.Capabilities...),
 			"last_seen":      result.Entry.UpdatedAt,
 			"claim_revision": result.ClaimRevision,
-		})
+		}
+		if result.HolderClientInstanceID != "" {
+			answer["client_instance_id"] = result.HolderClientInstanceID
+		}
+		if result.HolderHandedBack {
+			answer["handed_back"] = true
+		}
+		writeJSON(w, http.StatusOK, answer)
 	}
 }
 
@@ -1781,10 +2040,18 @@ func unwiredRepositoryWarning(ctx context.Context, d *listenerDeps, topic string
 }
 
 // subscribeHandler answers POST /v1/interests/subscribe. Its store work - the interest record's
-// read and write (store.Registry.UpsertWithin), the session entry's write and the unwired-repository
-// checks - runs within sendRequestBudget of the request's own context, so a bus that does not answer
-// is the bus-unavailable 503 with Retry-After: 1 inside the caller's attempt (writeStoreError); a
-// refused key is still its 413 or 400.
+// read and write (store.Registry.UpsertWithin), the session entry's write, the renewal of the
+// role claims this registration's own process holds (store.Registry.RenewRoleClaims) and the
+// unwired-repository checks - runs within sendRequestBudget of the request's own context, so a
+// bus that does not answer is the bus-unavailable 503 with Retry-After: 1 inside the caller's
+// attempt (writeStoreError); a refused key is still its 413 or 400.
+//
+// The renewal is the one thing here that cannot fail the registration. It runs last, once the
+// records this route owns are written, and whatever it could not do is logged and passed over: a
+// claim view that cannot answer yet (store.ErrRoleViewNotReady, which every listener leaves
+// behind it for a while after a restart), a bucket call that did not answer, a renewal that lost
+// its compare-and-swap. A heartbeat refused for any of those would take down the very sessions
+// whose claims it keeps alive.
 func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -1876,6 +2143,33 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 				d.consumers.relay.registered(body.SessionID, epochChanged, delivery.heard)
 			}
 		}
+		// The registration is this process's heartbeat, so it is where the claims it holds
+		// say they are still held: every claim naming this session and this client instance
+		// is stamped renewed, and a claim that names no process at all is adopted by the
+		// first registration of the session holding it. A registration stating no process
+		// renews the claims of this session that name none and adopts nothing, so a claim
+		// standing at a deploy ages out for nobody. The write is the registration's last, so
+		// a renewal never costs the records above it.
+		//
+		// What it renews is decided on the claims alone, and on no topic list: a claim a
+		// hand-back could not free carries that hand-back as a mark of its own
+		// (store.RoleClaim.HandedBack, written by POST /v1/interests/unsubscribe), and no
+		// registration renews a marked claim, which the role claim reaper then frees at its
+		// first pass past the live window. So this registration's topics - the record it just
+		// wrote, or the absence of a list on the request - say nothing about which roles it
+		// renews.
+		if err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID)); err != nil {
+			switch {
+			case errors.Is(err, store.ErrRoleViewNotReady):
+				logger.Info("listener subscribe renewed no role claim: the role claim view cannot answer yet",
+					slog.String("session_id", body.SessionID),
+					slog.String("error", err.Error()))
+			default:
+				logger.Warn("listener subscribe left a role claim unrenewed",
+					slog.String("session_id", body.SessionID),
+					slog.String("error", err.Error()))
+			}
+		}
 		warningCtx, cancelWarnings := context.WithTimeout(ctx, unwiredRepositoryWarningTimeout)
 		defer cancelWarnings()
 		warnedRepositories := make(map[string]struct{})
@@ -1902,7 +2196,9 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 }
 
 // registerV1Routes builds the /v1 routes over the listener's dependencies, which main hands over
-// only once every store is open, so no handler can see a store that is not.
+// only once every store is open, so no handler can see a store that is not. The Legion agent
+// registry is the one that may be unavailable, and its routes answer that themselves
+// (legionAgentRegistry).
 func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logger *logging.Logger) {
 	v1.HandleFunc("/v1/interests/subscribe", subscribeHandler(d, machineID, logger))
 	v1.HandleFunc("/v1/interests/unsubscribe", func(w http.ResponseWriter, r *http.Request) {
@@ -1913,12 +2209,21 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		var body struct {
 			SessionID string   `json:"session_id"`
 			Topics    []string `json:"topics"`
+			// ClientInstanceID is the process handing these interests back, which is
+			// what decides the role claims this release frees: the claims naming that
+			// same process and no others (store.RoleReleaseAuthority). It is trimmed
+			// like session_id, and a request that leaves it out states no process: it
+			// frees a claim that names none outright, marks a claim it cannot free as
+			// handed back and keeps that claim's lane topic in the record, and removes
+			// the session's other topics.
+			ClientInstanceID string `json:"client_instance_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		body.SessionID = strings.TrimSpace(body.SessionID)
+		body.ClientInstanceID = strings.TrimSpace(body.ClientInstanceID)
 		if body.SessionID == "" {
 			writeJSONError(w, http.StatusBadRequest, "session_id is required", "session_id")
 			return
@@ -1932,13 +2237,25 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// write does, and store work that did not answer is the bus-unavailable 503.
 		ctx, cancel := context.WithTimeout(r.Context(), sendRequestBudget)
 		defer cancel()
-		if err := d.registry.Remove(ctx, body.SessionID, body.Topics); err != nil {
+		// The role claims released are the ones this process holds, never the whole session's:
+		// a session id names no process, and a second process that resumed this one's id hands
+		// back a role it does not hold. This route never forces a release; DELETE
+		// /v1/interests/<session_id> is the one that does.
+		removed, err := d.registry.Remove(ctx, body.SessionID, body.Topics, store.RoleReleaseAuthority{ClientInstanceID: body.ClientInstanceID})
+		if err != nil {
 			writeStoreError(ctx, w, err, http.StatusInternalServerError)
 			return
 		}
 		// A consumer-delivery session's consumer stops filtering on the topics just removed.
 		d.consumers.refollow(r.Context(), d, body.SessionID)
-		removed := body.Topics
+		// removed is what the store took out of the record, not the topics the request named.
+		// The two differ over a role lane topic the record kept: a release that may not free
+		// the claim leaves the lane topic standing (store.Registry.Remove), the interest half
+		// of a claim that still stands, and echoing the request would tell the client a topic
+		// was removed while the record still holds it. A deregistration, which names no topic
+		// and deletes the whole record, and a release whose every named topic was kept both
+		// answer the empty list, and the store's nil is written as that empty list rather than
+		// as null.
 		if removed == nil {
 			removed = []string{}
 		}
@@ -1947,6 +2264,9 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	v1.HandleFunc("/v1/roles/set", roleSetHandler(d, machineID, logger))
 	v1.HandleFunc("/v1/roles/", roleGetHandler(d))
 	v1.HandleFunc("/v1/registry/", sessionEntryHandler(d))
+	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d))
+	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d))
+	v1.HandleFunc("/v1/legion/agents/roles/", legionAgentRoleHandler(d))
 
 	v1.Handle("/v1/interests/", adminInterestsHandler(d.registry, d.sessions, func(ctx context.Context, sessionID string) {
 		d.consumers.refollow(ctx, d, sessionID)

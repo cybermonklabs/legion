@@ -16,6 +16,11 @@ type Client interface {
 	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, key string) (Issue, error)
 	SetStatus(ctx context.Context, key, status string) (Issue, error)
+	// ReleaseClaim clears the issue's Dispatch claim through DELETE
+	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
+	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
+	// the holder changed twice while the request ran, so nothing was applied.
+	ReleaseClaim(ctx context.Context, key string) error
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
@@ -25,6 +30,9 @@ type Client interface {
 	Approval(ctx context.Context, artifactID string) (Approval, error)
 	Handoff(ctx context.Context, id string) (Handoff, error)
 	ListRepoProjects(ctx context.Context) ([]RepoProject, error)
+	// PutGatedSteps publishes the design-gate steps the deployment gates onto project's Dispatch
+	// project row, in the order it gates them; an empty list is a deployment that gates none.
+	PutGatedSteps(ctx context.Context, project string, steps []string) error
 	// WebhookAppInstalled is whether Dispatch's GitHub App, the one GitHub sends a repository's
 	// webhook events through, is installed on repo (owner/name).
 	WebhookAppInstalled(ctx context.Context, repo string) (bool, error)
@@ -167,6 +175,11 @@ var SettlementActor = Actor{Kind: "system", ID: "document-settlement"}
 // zero when Dispatch gave none: At when the document has no review, Seq also for a review Dispatch
 // recorded before it kept the sequence, and from a Dispatch that predates it. By is who gave the
 // review State shows (an approval or a changes request), zero when Dispatch names nobody.
+//
+// Primary, Role and Slug are what the document is on its issue, which is how a design-gate step
+// finds the document it binds to (api's gateRegister): Primary is the issue's primary document,
+// Role the part it plays beside it (ArtifactRoleVerification, ArtifactRoleDecisions, or "" for
+// none) and Slug the name Dispatch filed it under.
 type Approval struct {
 	IssueKey      string
 	State         string
@@ -178,7 +191,22 @@ type Approval struct {
 	At            time.Time
 	Seq           int64
 	By            Actor
+	Primary       bool
+	Role          string
+	Slug          string
 }
+
+// ArtifactRoleVerification and ArtifactRoleDecisions are two of the parts Dispatch records a
+// document playing on its issue (model.Artifact.Role), and DecisionsSlug and VerificationSlug the
+// names it files those two documents under, which a reference to either names
+// (workflow's stepRef). No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together.
+const (
+	ArtifactRoleVerification = "verification"
+	ArtifactRoleDecisions    = "decisions"
+	DecisionsSlug            = "decisions-md"
+	VerificationSlug         = "verification-md"
+)
 
 // ApprovedLatest is the version Dispatch shows approved when that approval is of its latest
 // version, and 0 otherwise.
@@ -251,11 +279,36 @@ func Missing(err error) bool {
 	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound
 }
 
+// Claimed is whether err is Dispatch's refusal that the issue's claim is held by someone this
+// caller may not release (409 IssueClaimed).
+func Claimed(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == IssueClaimed
+}
+
+// Contended is whether err is Dispatch's answer that the claim changed twice while the request
+// ran, so nothing was applied and nobody's liveness was checked (409 ClaimContended).
+func Contended(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == ClaimContended
+}
+
 // ParentContended is the code Dispatch answers an issue PATCH with when a concurrent reparent
 // moved the issue's parent at every attempt to lock it, applying nothing
 // (packages/envoy/internal/dispatch/api/issue_parent.go:99, parentContended). No mechanism shares
 // a value between this module and Dispatch's, so the two spellings change together.
 const ParentContended = "PARENT_CONTENDED"
+
+// IssueClaimed and ClaimContended are Dispatch's own spellings of the two 409s a claim release
+// meets, neither of them final: ISSUE_CLAIMED is the holder still holding the claim
+// (packages/envoy/internal/dispatch/api/issue_claim.go, writeClaimError), and CLAIM_CONTENDED is
+// a holder that changed twice while the request ran, so Dispatch applied nothing
+// (answerContendedClaim). No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together.
+const (
+	IssueClaimed   = "ISSUE_CLAIMED"
+	ClaimContended = "CLAIM_CONTENDED"
+)
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal

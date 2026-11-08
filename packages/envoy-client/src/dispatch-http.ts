@@ -53,6 +53,7 @@ import type {
   MessageRead,
   MessageReplyInput,
   MessageReplyResult,
+  MyRepliesResponse,
   OpenAsksResponse,
   Project,
   RecordCheckResultInput,
@@ -1065,6 +1066,16 @@ export class DispatchClient {
     return this.#json("GET", ["api", "v1", "inbox"], undefined, { assignee });
   }
 
+  /** `GET /api/v1/me/replies?kind=reply,agent`: every unread thread the caller's Inbox lists —
+   *  a thread they wrote in that somebody else has written in since, and a one-off message they
+   *  sent an agent session that it answered — newest reply first, in the server's own order,
+   *  which no reader re-sorts. No `limit` is asked for, so the answer holds every row. The route
+   *  reads the caller's own `person` scope and refuses a credential without it with 403
+   *  OAUTH_SCOPE_REQUIRED, as the Inbox does. */
+  async myReplies(): Promise<MyRepliesResponse> {
+    return this.#json("GET", ["api", "v1", "me", "replies"], undefined, { kind: "reply,agent" });
+  }
+
   /** `GET /api/v1/credential-requests?approver=me`: the credential requests the caller may
    *  decide, relayed from the secrets broker, or null from a Dispatch that has no broker
    *  configured, which is an ordinary deployment rather than a failure. `me` is the only approver
@@ -1339,15 +1350,23 @@ export class DispatchClient {
   /**
    * `POST /api/v1/{messages|comments}/{id}/reply` as the session a targeted delivery reached: its
    * reply to that delivery attempt, or why it could not honour it (`postDeliveryReply`, whose
-   * body names the session as `actor` and the `attempt`).
+   * body names the session as `actor` and the `attempt`). `followUp` is `messageReply`'s own
+   * option: the attempt is settled by the first reply Dispatch takes, so a second answer to it -
+   * the output a waiting reply promised - is posted only when it asks (`?follow_up=true`).
    */
   async deliveryReply(
     resource: "message" | "comment",
     id: string,
-    input: Readonly<Record<string, unknown>>
+    input: Readonly<Record<string, unknown>>,
+    options: { readonly followUp?: boolean } = {}
   ): Promise<void> {
     const collection = resource === "message" ? "messages" : "comments";
-    await this.#json("POST", ["api", "v1", collection, id, "reply"], input);
+    await this.#json(
+      "POST",
+      ["api", "v1", collection, id, "reply"],
+      input,
+      options.followUp === true ? { follow_up: "true" } : undefined
+    );
   }
 
   async getMessage(issue: string, id: string): Promise<MessageRead> {

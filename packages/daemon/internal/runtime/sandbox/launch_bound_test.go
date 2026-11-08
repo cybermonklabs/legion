@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -20,8 +21,14 @@ import (
 // One launch try is bounded inside the runtime call at LaunchBound, counted from the moment it
 // holds its pod's launch turn, Spawn's and Resume's alike (both are relaunch): a try whose launcher
 // never answers ends at the bound, not at the boot timeout its launcher wait would have run to,
-// with an error naming the bound, and the caller's own context is untouched, so the supervisor
-// reads the failure as the runtime's and charges it.
+// with an error naming the bound and the stage it stood in, and the caller's own context is
+// untouched, so the supervisor reads the failure as the runtime's and charges it.
+// The bound is armed only once that launcher wait is the one stage left to outlast: the pod this
+// try keeps is already made, Running and bound (awaitingItsRoleLauncher), so no earlier wait of a
+// replacing try — the wait for the previous pod, for the new pod — can be the one the bound ends
+// in. The row reads the stage the error names and the deadline it carries; how long the try took
+// is no statement of the runtime's and is read nowhere here, a bound counted from the launch turn
+// being no promise about the wall clock of a loaded machine.
 func TestALaunchTryEndsAtItsBoundNamingIt(t *testing.T) {
 	for name, launch := range map[string]func(g *rig, spec runtime.SpawnSpec) error{
 		"Spawn": func(g *rig, spec runtime.SpawnSpec) error {
@@ -37,22 +44,58 @@ func TestALaunchTryEndsAtItsBoundNamingIt(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			g := newRig(t, nil)
 			g.autoStart.Store(false)
+			spec := workerSpec(t)
+			awaitingItsRoleLauncher(t, g, spec)
 			g.r.launchBound = 500 * time.Millisecond
-			began := time.Now()
-			err := launch(g, workerSpec(t))
-			took := time.Since(began)
+
+			err := launch(g, spec)
+
 			want := "wait for its role launcher: context deadline exceeded (the launch try's bound of 500ms ran out)"
 			if err == nil || !strings.Contains(err.Error(), want) || !errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("%s = %v, want %q", name, err, want)
-			}
-			if took < g.r.launchBound || took >= g.opts.BootTimeout {
-				t.Fatalf("the try ended after %s, want about its bound %s and before the boot timeout %s", took, g.r.launchBound, g.opts.BootTimeout)
 			}
 			if g.ctx.Err() != nil {
 				t.Fatalf("the caller's context ended with the try: %v", g.ctx.Err())
 			}
 		})
 	}
+}
+
+// awaitingItsRoleLauncher leaves spec's issue Sandbox Running with the pod a launch made and that
+// pod's role launchers bound to it, no launcher answering: the state a launch into it keeps its
+// pod in, so the try that follows runs no wait but awaitRoleLauncher's. A first launch, on a
+// context of its own, is cut short once the stores hold what awaitNewPod's predicate reads — the
+// Sandbox Running and a pod it owns — and the bind that follows has landed, which is what the next
+// launch's launcherBound reads of a pod it may keep. The rig starts no pod (autoStart), so the
+// launcher of that pod never says hello, here or in the try the caller measures.
+func awaitingItsRoleLauncher(t *testing.T, g *rig, spec runtime.SpawnSpec) {
+	t.Helper()
+	l, err := g.r.prepare(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reaching, cutShort := context.WithCancel(g.ctx)
+	defer cutShort()
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		_, _ = g.r.Spawn(reaching, spec)
+	}()
+	name := SandboxName(spec.Claim)
+	testwait.Eventually(t, "the Sandbox Running with its new pod, its role launchers bound to it", func() bool {
+		stored, err := g.r.storedSandbox(name)
+		if err != nil || stored == nil || stored.mode() != modeRunning {
+			return false
+		}
+		pod := g.r.storedPod(name)
+		if !ownedBy(pod, stored.UID) {
+			return false
+		}
+		bound, err := g.r.launcherBound(g.ctx, stored, pod, &l)
+		return err == nil && bound
+	})
+	cutShort()
+	<-ended
 }
 
 // Through the supervisor, a try that runs out of its bound is a launch failure like a refusal: the
@@ -153,9 +196,9 @@ func TestLaunchBoundSumsTheTrysWaitsAndCalls(t *testing.T) {
 // countingTokens counts the provisioning-token mints of staticTokens.
 type countingTokens struct{ mints *atomic.Int32 }
 
-func (c countingTokens) Token(ctx context.Context, owner string) (string, error) {
+func (c countingTokens) Token(ctx context.Context, repo ghrepo.Repository) (string, error) {
 	c.mints.Add(1)
-	return staticTokens{}.Token(ctx, owner)
+	return staticTokens{}.Token(ctx, repo)
 }
 
 // countingStore counts the store reads a launch makes (ensureSandbox, provision) over the rig's
@@ -178,9 +221,9 @@ func TestAReplacingLaunchMakesNoMoreCallsThanTheBoundCounts(t *testing.T) {
 	var mints, renders, reads atomic.Int32
 	g := newRig(t, nil, withOptions(func(o *Options) {
 		o.Tokens = countingTokens{&mints}
-		o.GitHubCredential = func(ctx context.Context, role claim.Role, owner string) (ghconfig.Bundle, error) {
+		o.GitHubCredential = func(ctx context.Context, role claim.Role, repo ghrepo.Repository) (ghconfig.Bundle, error) {
 			renders.Add(1)
-			return staticCredential(ctx, role, owner)
+			return staticCredential(ctx, role, repo)
 		}
 		o.Store = countingStore{Store: o.Store, reads: &reads}
 	}))

@@ -24,10 +24,15 @@
  *  database and starts no Postgres, as it always has; a run of more than one refuses, before
  *  anything starts, every variable a caller can only mean for one lane.
  *
+ *  A command that runs Playwright's test runner is refused here, before anything starts, when
+ *  Playwright has not downloaded a browser the run's projects launch: it names `bun run
+ *  e2e:install` and how large that download is, where Playwright's own message arrives at the
+ *  first browser launch, with every lane's harness and Postgres already up.
+ *
  *  A Ctrl-C reaches the command itself, which shares this process group, and the harness stops
  *  once the command has; a SIGTERM sent to this process alone is passed on to the command. A
  *  signal while the harness starts stops what has started. */
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { constants, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -45,6 +50,7 @@ import {
   pgBinVariable,
   pgImageVariable,
 } from "./harness-postgres";
+import { harnessProcessCount } from "./harness-processes";
 import { type Harness, startHarness } from "./harness-start";
 import { Interrupted } from "./local-instance-support";
 
@@ -120,9 +126,80 @@ function fail(error: unknown): never {
   process.exit(1);
 }
 
+/** The browser engines a Playwright run of e2e/playwright.config.ts launches. */
+const playwrightEngines = ["chromium", "firefox", "webkit"] as const;
+type PlaywrightEngine = (typeof playwrightEngines)[number];
+
+/** The one project of e2e/playwright.config.ts whose name does not hold its engine's: `iphone`
+ *  is an iPhone's viewport in Chromium. Every other project is named for its engine
+ *  (`chromium-plain-http`, `firefox-alone`, `webkit-iphone`), and a name this cannot read takes
+ *  every engine of the mode, so a project added there is never skipped here. */
+const namedProjectEngines: Readonly<Record<string, PlaywrightEngine>> = { iphone: "chromium" };
+
+/** Whether `argv` runs Playwright's test runner, the only command this starts that launches a
+ *  browser: `playwright test`, with or without the runner that resolves it (`bunx`, `npx`). A
+ *  listing (`--list`) runs no spec, so it launches none either. */
+function runsPlaywrightTests(argv: readonly string[]): boolean {
+  const runner = argv.findIndex((word) => /(^|\/)playwright(\.js)?$/.test(word));
+  if (runner === -1 || argv[runner + 1] !== "test") return false;
+  return !argv.slice(runner + 2).includes("--list");
+}
+
+/** The projects `--project` names on the command line, in either spelling Playwright takes. */
+function projectsOnCommandLine(argv: readonly string[]): readonly string[] {
+  const projects: string[] = [];
+  for (const [index, word] of argv.entries()) {
+    if (word === "--project") {
+      const named = argv[index + 1];
+      if (named !== undefined) projects.push(named);
+    } else if (word.startsWith("--project=")) projects.push(word.slice("--project=".length));
+  }
+  return projects;
+}
+
+/** The engines the projects this run would run launch: two-process mode has the one Chromium
+ *  project, and every other run has Chromium, Firefox and WebKit projects. A `--project` narrows
+ *  the run to the projects it names, so it narrows this; a name no project engine is read from
+ *  leaves the mode's whole set, which refuses too much rather than too little. */
+function neededEngines(argv: readonly string[]): readonly PlaywrightEngine[] {
+  const mode: readonly PlaywrightEngine[] =
+    harnessProcessCount === 2 ? ["chromium"] : playwrightEngines;
+  const named = new Set<PlaywrightEngine>();
+  for (const project of projectsOnCommandLine(argv)) {
+    const engine =
+      namedProjectEngines[project] ?? mode.find((candidate) => project.includes(candidate));
+    if (engine === undefined) return mode;
+    named.add(engine);
+  }
+  return named.size === 0 ? mode : [...named];
+}
+
+/** Refuses a Playwright run whose browsers Playwright has not downloaded, before a directory is
+ *  made or a server starts. Playwright's own refusal comes when a worker launches the browser,
+ *  with every lane's harness and Postgres already up and minutes of the run gone, and it names
+ *  `playwright install`, which is not this package's command. */
+async function refuseMissingBrowsers(): Promise<void> {
+  if (!runsPlaywrightTests(command)) return;
+  const engines = neededEngines(command);
+  // Imported here rather than at the top of this module: @playwright/test takes 0.66 s to load,
+  // and this script also runs commands that are no Playwright run at all (`bun e2e/run.ts --
+  // psql …`, and the six refusals e2e/__tests__/harness-lanes.test.ts spawns), which would each
+  // pay it for a check they skip.
+  const playwright = await import("@playwright/test");
+  const missing = engines
+    .map((engine) => ({ engine, path: playwright[engine].executablePath() }))
+    .filter((browser) => !existsSync(browser.path));
+  if (missing.length === 0) return;
+  const named = missing.map(({ engine, path }) => `${engine} (no ${path})`).join(", ");
+  throw new Error(
+    `Playwright has not downloaded ${named}. Run \`bun run e2e:install\` in packages/dispatch, ` +
+      "a download of about 550 MB, then run this again. No harness and no Postgres were started."
+  );
+}
+
 /** The lane's bucket in the file store the caller started, made here with one request. A bucket
  *  is mutable state every lane would otherwise share; a run of one lane keeps the caller's own,
- *  the bucket it made itself (`.github/workflows/ci.yaml`). */
+ *  the bucket it made itself (`.github/workflows/dispatch-browser.yaml`'s shard job). */
 async function laneBucket(index: number, count: number): Promise<string | undefined> {
   const endpoint = (process.env.DISPATCH_E2E_FILE_STORE_ENDPOINT ?? "").trim().replace(/\/$/, "");
   const bucket = (process.env.DISPATCH_E2E_FILE_STORE_BUCKET ?? "").trim();
@@ -150,6 +227,26 @@ function laneEnvironment(count: number): Record<string, string> {
   return { ...exported, ...lanes[0]?.env };
 }
 
+// `@legion/contracts` as Playwright's own runner reads it. The specs and `e2e/agents.ts` import
+// that package, and Playwright loads them under Node, which takes the package's `default` export
+// condition - `dist/`, which is gitignored - where a `bun` run takes its source. So a workspace
+// that has never built it dies at the first spec with `Cannot find module
+// @legion/contracts/dist/index.js`, naming no cause. Building it here costs a fraction of a
+// second and makes every run self-sufficient, CI's as much as a workstation's: no workflow builds
+// contracts for the suite, so this is where that build happens.
+async function buildContracts(): Promise<void> {
+  const built = Bun.spawn(["bun", "run", "build"], {
+    cwd: join(import.meta.dir, "..", "..", "contracts"),
+    stdio: ["ignore", "ignore", "inherit"],
+  });
+  if ((await built.exited) !== 0) {
+    throw new Error(
+      "e2e/run.ts: `bun run build` in packages/contracts failed, and Playwright's Node runner " +
+        "reads that build; the error above is the build's own."
+    );
+  }
+}
+
 /** No two lanes share a port. Each lane's listeners bind port 0 and its Postgres takes a port the
  *  OS named, so this is the check that no port was handed out twice, which would put two workers
  *  on one server. */
@@ -175,10 +272,14 @@ function refuseSharedPorts(): void {
 
 let status: number;
 try {
+  // Before the lane count is read, so a run whose browsers are missing says so whatever else is
+  // wrong with it.
+  await refuseMissingBrowsers();
   const count = workerCount();
   // Before a directory is made or a server starts, and before this adds its own values of the
   // variables it names, so a caller's value can never reach one lane's servers.
   if (count > 1) refuseLaneConflicts(count);
+  await buildContracts();
   const given = (process.env.DATABASE_URL ?? "").trim();
   runDir = mkdtempSync(join(tmpdir(), "dispatch-e2e-run-"));
   // A run of one lane against the database the caller named starts no Postgres, which is what

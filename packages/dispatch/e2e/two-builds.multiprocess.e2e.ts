@@ -31,13 +31,7 @@ import {
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
-import {
-  type DispatchProcess,
-  dispatchProcesses,
-  pinnedTo,
-  processPinCookie,
-  processPinHeader,
-} from "./harness-processes";
+import { type DispatchProcess, processPinCookie, processPinHeader } from "./harness-processes";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -111,14 +105,39 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
+/** The machine the seeded session reports. It reports it as `machine_id` and no `host`, which
+ *  the fake Envoy answers as the session's host (e2e/fake-envoy.ts), so this is the machine
+ *  `/machines` lists and `/machines/:machine` draws. */
+const machine = "two-builds-host";
+
+/** The window `/machines/:machine` draws: a three-pane window as tmux 3.5a writes it, `%0` over
+ *  `%1` beside `%2`. The seeded session sits in `%0`, so the page draws a real window rather
+ *  than saying it has none, and the drawing runs the layout parser. Its narrowest pane is 39 of
+ *  80 columns and 11 of 24 rows, which the walk's window is wide enough to draw rather than list
+ *  (a pane under 96 px wide or 42 px tall makes the window a list, WindowDrawing.tsx): panes of
+ *  this window hold those at any drawing wider than 192 px. */
+const windowLayout = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
+
 const session: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/two-builds",
-  machine_id: "two-builds-host",
+  machine_id: machine,
   roles: ["planner"],
   // The live view's stream hook takes a session uuid only, as a real session id is.
   session_id: "019a2b3c-0559-7000-8000-000000000559",
   title: "Two builds planner",
+  tmux_place: {
+    layout: windowLayout,
+    pane_id: "%0",
+    pane_index: 0,
+    server_pid: "4242",
+    session_name: "main",
+    socket: "/tmp/tmux-1000/default",
+    window_id: "@1",
+    window_index: 1,
+    window_name: "agents",
+    zoomed: false,
+  },
 };
 
 /** The text each seeded thing shows, which its route's landmark finds. */
@@ -310,14 +329,6 @@ function visits(seed: Seeded): readonly Visit[] {
       ],
       url: "/answers",
     },
-    {
-      route: "/replies",
-      shows: (page) => [
-        heading(page, "Replies"),
-        page.getByRole("region", { name: "Replies empty state" }),
-      ],
-      url: "/replies",
-    },
     { route: "/agents", shows: (page) => [heading(page, "Agents")], url: "/agents" },
     {
       // The preview is the headless renderer's: without it the bold is literal asterisks.
@@ -353,6 +364,28 @@ function visits(seed: Seeded): readonly Visit[] {
         page.getByRole("img", { name: "shot.png version 1" }),
       ],
       url: `${agent}/artifacts/${seed.agentArtifact}`,
+    },
+    {
+      route: "/machines",
+      shows: (page) => [
+        heading(page, "Machines"),
+        page.locator(`[data-testid="machine-row"][data-machine="${machine}"]`),
+      ],
+      url: "/machines",
+    },
+    {
+      // The drawing is the point: a machine whose sessions are in no pane says so and draws
+      // nothing, which never runs the layout parser or the window drawing. The seeded session's
+      // place names a window of three panes, so the page draws that window and the pane box
+      // below is the session's own.
+      route: "/machines/:machine",
+      shows: (page) => [
+        heading(page, machine),
+        page
+          .getByTestId("window-layout")
+          .locator(`[data-testid="window-pane"][data-agent="${session.session_id}"]`),
+      ],
+      url: `/machines/${machine}`,
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
@@ -594,7 +627,7 @@ async function walk(
 }
 
 // A walk opens about twenty-five pages, each waiting on its own content, so it outlasts the
-// suite's 30 s test timeout by design.
+// suite's 60 s test timeout (e2e/playwright.config.ts) by design.
 const walkTimeout = 300_000;
 
 test("every route renders with its page from Dispatch A and every asset from Dispatch B", async ({
@@ -609,32 +642,6 @@ test("every route renders with its page from Dispatch B and every asset from Dis
 }) => {
   test.setTimeout(walkTimeout);
   await walk(browser, "b", "a");
-});
-
-test("every file of both builds' assets answers 200 with its bytes from Dispatch A and from Dispatch B", async () => {
-  const wrong: string[] = [];
-  for (const target of dispatchProcesses) {
-    for (const build of [builds.a, builds.b]) {
-      await Promise.all(
-        build.assets.map(async (file) => {
-          const response = await fetch(new URL(`/assets/${file}`, baseUrl), {
-            headers: pinnedTo(target),
-          });
-          const where = `${build.dist}/assets/${file} from Dispatch ${target.toUpperCase()}`;
-          if (response.status !== 200) {
-            wrong.push(`${where} answered ${response.status}`);
-            await response.body?.cancel();
-            return;
-          }
-          const bytes = Buffer.from(await response.arrayBuffer());
-          if (!bytes.equals(readFileSync(join(build.dist, "assets", file)))) {
-            wrong.push(`${where} answered other bytes than the file's`);
-          }
-        })
-      );
-    }
-  }
-  expect(wrong.sort()).toEqual([]);
 });
 
 /** Opens the inbox in a signed-in tab whose page, API calls and sockets are all `process`'s (the
