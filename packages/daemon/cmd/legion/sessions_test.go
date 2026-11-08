@@ -100,7 +100,8 @@ func TestSessionsImportCopiesEachClaimsSessionOnceAndReportsPerClaim(t *testing.
 	for _, want := range []string{
 		"legion-legion-legion-1-architect copied " + architect + " (31 bytes, sha256 ",
 		"legion-legion-legion-1-planner recorded no session: nothing to copy\n",
-		"legion-legion-legion-1-reviewer failed " + lost + ": read the session file: ",
+		"legion-legion-legion-1-reviewer failed " + lost + ": read the session file: " +
+			filepath.Join(r.volume, "sessions", "--legion-workspaces-sjawhar-legion-legion-1--", "2026-10-08T14-00-00-000Z_0003.jsonl") + ": no such file or directory\n",
 		"legion-legion-legion-1-tester copied " + tester + " (50 bytes, sha256 ",
 		"legion-legion-legion-1-reviewer missing " + lost + ": the session table holds no such session (tree LEGION-1)\n",
 		"legion-legion-legion-2-architect missing " + other + ": the session table holds no such session (tree LEGION-2)\n",
@@ -108,6 +109,24 @@ func TestSessionsImportCopiesEachClaimsSessionOnceAndReportsPerClaim(t *testing.
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("first import printed\n%s\nwant a line containing %q", out, want)
+		}
+	}
+	// The reviewer's directory on the volume holds the other two claims' files, so only its leaf
+	// is missing and the line carries the leaf's own refusal. None of the phrases the walk prints
+	// for a component it refused belongs on it: that is the rule a reader checks here, and it
+	// holds of that line alone, not of the whole output.
+	reviewer := ""
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "legion-legion-legion-1-reviewer failed ") {
+			reviewer = line
+		}
+	}
+	if reviewer == "" {
+		t.Fatalf("first import printed\n%s\nwant a line for the reviewer's unreadable file", out)
+	}
+	for _, unwanted := range []string{"is a symbolic link", "is not on the tree volume", "is not a directory"} {
+		if strings.Contains(reviewer, unwanted) {
+			t.Errorf("the reviewer's line %q carries %q, a component's refusal rather than the leaf's", reviewer, unwanted)
 		}
 	}
 	if strings.Contains(out, "legion-legion-legion-2-architect copied") || strings.Contains(out, "legion-legion-legion-2-architect failed") {
@@ -201,10 +220,12 @@ func TestSessionsImportFindsAClosedClaimsSessionByID(t *testing.T) {
 
 func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
 	const (
-		token   = "legion-legion-legion-1-architect"
-		session = "01a18950-3b61-70b7-82d4-c80464927f8e"
+		token     = "legion-legion-legion-1-architect"
+		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
+		directory = "--legion-workspaces-sjawhar-legion-legion-1--"
 	)
-	recorded := agentSessions + "/--legion-workspaces-sjawhar-legion-legion-1--/2026-10-29T20-18-19-105Z_" + session + ".jsonl"
+	name := "2026-10-29T20-18-19-105Z_" + session + ".jsonl"
+	recorded := agentSessions + "/" + directory + "/" + name
 	outside := filepath.Join(t.TempDir(), "outside.jsonl")
 	if err := os.WriteFile(outside, []byte("outside session\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -218,7 +239,7 @@ func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newSessionsImportRig(t, []map[string]string{tc.claim})
-			onVolume := filepath.Join(r.volume, "sessions", strings.TrimPrefix(recorded, agentSessions+"/"))
+			onVolume := filepath.Join(r.volume, "sessions", directory, name)
 			if err := os.MkdirAll(filepath.Dir(onVolume), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -228,8 +249,11 @@ func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
 
 			code, out, _ := r.run("--tree", "LEGION-1")
 
-			if code != 1 || !strings.Contains(out, token+" failed ") || !strings.Contains(out, "read the session file") {
-				t.Fatalf("import = %d, stdout %q; want the symlink refusal", code, out)
+			// The whole line, because a loose assertion on "read the session file" held for the
+			// "path escapes from parent" wording this walk replaced as well as for its own.
+			want := token + " failed " + recorded + ": read the session file: " + onVolume + " is a symbolic link\n"
+			if code != 1 || !strings.Contains(out, want) {
+				t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
 			}
 			if _, found := r.held(recorded); found {
 				t.Fatal("the table contains the symlink target")
@@ -240,14 +264,21 @@ func TestSessionsImportRefusesSymlinkedSessionFiles(t *testing.T) {
 
 func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
 	const (
-		token   = "legion-legion-legion-1-architect"
-		session = "01a18950-3b61-70b7-82d4-c80464927f8e"
+		token     = "legion-legion-legion-1-architect"
+		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
+		directory = "--legion-workspaces-sjawhar-legion-legion-1--"
 	)
 	name := "2026-10-29T20-18-19-105Z_" + session + ".jsonl"
-	recorded := agentSessions + "/--legion-workspaces-sjawhar-legion-legion-1--/" + name
-	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, name), []byte("outside session\n"), 0o600); err != nil {
-		t.Fatal(err)
+	recorded := agentSessions + "/" + directory + "/" + name
+	// hold puts the session file the link would hand over into the directory it points at.
+	hold := func(t *testing.T, target string) {
+		t.Helper()
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, name), []byte("outside session\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, tc := range []struct {
 		name  string
@@ -257,25 +288,124 @@ func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
 		{"closed claim fallback", map[string]string{"token": token, "tree": "LEGION-1", "session": session, "sessionFile": ""}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := newSessionsImportRig(t, []map[string]string{tc.claim})
-			link := filepath.Join(r.volume, "sessions", "--legion-workspaces-sjawhar-legion-legion-1--")
-			if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(outside, link); err != nil {
-				t.Fatal(err)
-			}
+			// A link out of the volume and one that climbs out of it are the same refusal: the
+			// walk reads the component's kind, never where it leads. Each target is made inside
+			// the subtest, as the relative one sits on the rig's own volume.
+			for _, target := range []struct {
+				name string
+				make func(t *testing.T, r *sessionsImportRig) string
+			}{
+				{"absolute target", func(t *testing.T, r *sessionsImportRig) string {
+					outside := t.TempDir()
+					hold(t, outside)
+					return outside
+				}},
+				{"relative target", func(t *testing.T, r *sessionsImportRig) string {
+					hold(t, filepath.Join(r.volume, "outside"))
+					return filepath.Join("..", "outside")
+				}},
+			} {
+				t.Run(target.name, func(t *testing.T) {
+					r := newSessionsImportRig(t, []map[string]string{tc.claim})
+					link := filepath.Join(r.volume, "sessions", directory)
+					if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(target.make(t, r), link); err != nil {
+						t.Fatal(err)
+					}
 
-			code, out, _ := r.run("--tree", "LEGION-1")
+					code, out, _ := r.run("--tree", "LEGION-1")
 
-			if code != 1 || !strings.Contains(out, token+" failed ") || !strings.Contains(out, "read the session file") {
-				t.Fatalf("import = %d, stdout %q; want the symlink-directory refusal", code, out)
-			}
-			if _, found := r.held(recorded); found {
-				t.Fatal("the table contains the symlink-directory target")
+					want := token + " failed " + recorded + ": read the session file: " + link + " is a symbolic link\n"
+					if code != 1 || !strings.Contains(out, want) {
+						t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
+					}
+					if _, found := r.held(recorded); found {
+						t.Fatal("the table contains the symlink-directory target")
+					}
+				})
 			}
 		})
 	}
+}
+
+// Each of these is a path the walk refuses before or during its descent, rather than at the leaf,
+// and every refusal names the component on the tree volume it stopped at, never the path the claim
+// recorded.
+func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
+	const (
+		token     = "legion-legion-legion-1-architect"
+		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
+		directory = "--legion-workspaces-sjawhar-legion-legion-1--"
+	)
+	name := "2026-10-29T20-18-19-105Z_" + session + ".jsonl"
+	claim := func(recorded string) []map[string]string {
+		return []map[string]string{{"token": token, "tree": "LEGION-1", "sessionFile": recorded}}
+	}
+	refuses := func(t *testing.T, r *sessionsImportRig, want string, extra ...string) {
+		t.Helper()
+		code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
+		if code != 1 || !strings.Contains(out, want) {
+			t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
+		}
+	}
+
+	t.Run("an intermediate directory the volume does not hold", func(t *testing.T) {
+		recorded := agentSessions + "/gone/" + name
+		r := newSessionsImportRig(t, claim(recorded))
+		if err := os.MkdirAll(filepath.Join(r.volume, "sessions"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		refuses(t, r, token+" failed "+recorded+": read the session file: "+
+			filepath.Join(r.volume, "sessions", "gone")+" is not on the tree volume\n")
+	})
+
+	t.Run("an intermediate component that is a regular file", func(t *testing.T) {
+		recorded := agentSessions + "/a-file/" + name
+		r := newSessionsImportRig(t, claim(recorded))
+		if err := os.MkdirAll(filepath.Join(r.volume, "sessions"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(r.volume, "sessions", "a-file"), []byte("not a directory\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		// Under this kernel the open of a regular file with the walk's flags succeeds, so this
+		// refusal can come only from the kind read off the handle just opened, which is why the
+		// walk fstats each component it opened rather than reading the name a second time.
+		refuses(t, r, token+" failed "+recorded+": read the session file: "+
+			filepath.Join(r.volume, "sessions", "a-file")+" is not a directory\n")
+	})
+
+	t.Run("a path naming the sessions directory itself", func(t *testing.T) {
+		recorded := agentSessions + "/."
+		r := newSessionsImportRig(t, claim(recorded))
+		// The volume holds no sessions directory at all: this refusal comes before the root's
+		// own open, and a missing root would be refused in other words.
+		refuses(t, r, token+" failed "+recorded+": read the session file: "+
+			filepath.Join(r.volume, "sessions")+" is the sessions directory itself, not a session file\n")
+	})
+
+	t.Run("a path above the sessions directory", func(t *testing.T) {
+		recorded := agentSessions + "/.."
+		r := newSessionsImportRig(t, claim(recorded))
+		// sandbox.SessionOnVolume passes this on, as filepath.Clean("..") is ".." and its guard
+		// tests for a "../" prefix alone, so the walk is what refuses it, as the relative path
+		// "..", again before the root is opened: this volume too holds no sessions directory.
+		refuses(t, r, token+" failed "+recorded+": read the session file: "+
+			r.volume+" is not under the sessions directory "+filepath.Join(r.volume, "sessions")+"\n")
+	})
+
+	t.Run("a sessions directory that cannot be opened", func(t *testing.T) {
+		recorded := agentSessions + "/" + directory + "/" + name
+		r := newSessionsImportRig(t, claim(recorded))
+		missing := filepath.Join(t.TempDir(), "no-such-volume")
+		// The rig appends a caller's arguments after its own --tree-volume and flag keeps the
+		// last value of a repeated flag, so this runs against a volume that does not exist.
+		refuses(t, r, token+" failed "+recorded+": read the session file: the sessions directory "+
+			filepath.Join(missing, "sessions")+" cannot be opened: no such file or directory\n",
+			"--tree-volume", missing)
+	})
 }
 
 // The claims list is the one `legion claims list --json` prints, read from stdin with `-`; anything
