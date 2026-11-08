@@ -1171,7 +1171,7 @@ jobs:
               - *biome
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
-              # packages/dispatch/web/vite.config.ts:94-103 aliases @legion/contracts, and tsc and
+              # packages/dispatch/web/vite.config.ts:117-126 aliases @legion/contracts, and tsc and
               # bun read it through the workspace's "bun" export condition.
               - 'packages/contracts/src/**'
               # web/src/features/delivery/lib/applyDelta.test.ts:2-4,
