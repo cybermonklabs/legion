@@ -4,11 +4,12 @@
  *  before every row, so two lanes cannot share one: the run starts a server per lane and hands it
  *  to that lane's Dispatch servers and psql as `DATABASE_URL`.
  *
- *  - `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image the caller names, which is CI's path:
- *    the job already pulls the pgvector image its `postgres` service runs, and a runner has
- *    Docker but no Postgres binaries.
- *  - `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is a developer's
- *    and an issue pod's path, where there is a Postgres installation and no Docker.
+ *  - `DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names, which is a
+ *    developer's path on a machine with Docker and no Postgres binaries.
+ *  - `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is CI's path and
+ *    an issue pod's: the `shard` and `alone` jobs of `.github/workflows/dispatch-browser.yaml`
+ *    run in a container that carries PostgreSQL 18 with `vector`, where there are Postgres
+ *    binaries and no Docker socket, and they name that installation's directory.
  *
  *  Both keep the lane's data under the run's own temporary directory, which `e2e/run.ts` removes
  *  when it ends, and both answer on 127.0.0.1: the server's dev sign-in refuses a `DATABASE_URL`

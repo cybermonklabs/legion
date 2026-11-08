@@ -29,6 +29,21 @@ set -euo pipefail
 # and with it unset both are port 0, which cmd/broker resolves from the address it bound
 # (packages/envoy/cmd/broker/main.go).
 #
+# DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and requestseed
+# that the caller built, which this run execs instead of building them from this checkout (the
+# build below; run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). Unset, this script
+# builds them, which is what a developer's machine and an issue pod do. Its one caller is CI:
+# the shard and alone jobs of .github/workflows/dispatch-browser.yaml run in a container with
+# no Go toolchain, and that file's binaries job builds the three for them.
+#
+# It serves one directory only, packages/envoy/out/dispatch-e2e-broker under this checkout:
+# e2e/real-broker.ts runs requestseed out of that path alone, resolved against its own module
+# and from no variable, so a caller that hands over any other directory gets the two binaries
+# this script execs from it and a row that seeds a request still fails on the fixed path. The
+# check below refuses a handed-over directory that holds no requestseed, but it reads nothing
+# about the fixed path, so it catches a directory missing the binary and not one in the wrong
+# place.
+#
 # DATABASE_URL is the Dispatch suite's own database, which e2e/seed.ts truncates; the broker never
 # touches it, and runs instead in a database of its own on the same server, <that database>_broker,
 # dropped and created afresh on every start so each harness begins with no enrollment, request or
@@ -44,14 +59,12 @@ e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 
 # The three binaries the broker's harness needs, read here rather than below because the path is
 # made absolute against the caller's directory and this script changes to packages/envoy before
-# it uses it: DISPATCH_E2E_BROKER_BIN_DIR names a directory holding broker, dev-oidc-issuer and
-# requestseed that the caller built, which this run uses instead of building them from this
-# checkout (run-server.sh's DISPATCH_E2E_SERVER_BIN is the precedent). This script execs exactly
-# one of the first two per invocation and never runs requestseed: e2e/real-broker.ts runs that
-# one itself, out of packages/envoy/out/dispatch-e2e-broker, the fixed path the build below
-# writes to and the one ci.yaml downloads the prebuilt binaries into, which is why the check
-# below asks a directory handed over here for it too. CI's dispatch job is handed them by the
-# job that builds them, since it runs in a container with no Go toolchain.
+# it uses it; the header above says what DISPATCH_E2E_BROKER_BIN_DIR holds and who sets it.
+# This script execs exactly one of broker and dev-oidc-issuer per invocation and never runs
+# requestseed: e2e/real-broker.ts runs that one itself, out of
+# packages/envoy/out/dispatch-e2e-broker, the fixed path the build below writes to and the one
+# the shard and alone jobs download the binaries into, which is why the check below asks a
+# directory handed over here for requestseed too.
 # Unset, the build below is this checkout's, as it always was: a developer's machine and an
 # issue pod set this no more than they set DISPATCH_E2E_SERVER_BIN. The build is skipped only
 # when the caller hands the directory over, never on a comparison of what is newer than what: a

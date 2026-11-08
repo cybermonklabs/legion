@@ -143,7 +143,7 @@ images:
   # The browser image this repository builds from the row above, and the one row of this file
   # with `built:` where every other has `upstream:`: .github/workflows/browser-image.yaml builds
   # and pushes it, and nothing copies it. Every CI job that can launch WebKit or Firefox runs in
-  # it, pinned at this digest by a `container:` of .github/workflows/ci.yaml.
+  # it, pinned at this digest by a `container:` of .github/workflows/dispatch-browser.yaml.
   - built: .github/docker/browser.Dockerfile
     tag: browser-5f5aca44
     digest: sha256:5f5aca44f3ada006603a0ff98681f879f0825fdffcb14004d33361df4b92df83

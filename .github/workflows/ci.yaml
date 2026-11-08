@@ -1702,7 +1702,10 @@ jobs:
             # the digest a row names is one the package already holds: the ci-images job, whose
             # filter does name that file, is what reads whether it does
             # (.github/scripts/check-ci-images.sh package), and the push that writes the row
-            # pins a `container:` in this file, which this filter names.
+            # needs no build of its own: the image that row names was built and pushed by the
+            # earlier push, the one that changed the Dockerfile under .github/docker, which
+            # this filter does name. The `container:` jobs that run the image are in
+            # .github/workflows/dispatch-browser.yaml, and this file declares no `container:`.
             # That check also fails the build when this list misses a file the image build reads;
             # it reads this filter only as a flat list, so it names no anchor.
             browser_image:
@@ -4101,8 +4104,8 @@ jobs:
   # The browser image's build: browser-image.yaml builds .github/docker/browser.Dockerfile and
   # pushes it when the package does not already hold an image built from it. Unlike worker-image
   # above, this job has no `pull_request` term: it runs on a merge group too, so the image a
-  # merged head's `container:` jobs pin is built from that head, and so the attest job of that
-  # workflow, which no pull request run reaches, has an event to run on.
+  # merged head's `container:` jobs pin — the shard and alone jobs of
+  # .github/workflows/dispatch-browser.yaml — is built from that head.
   browser-image:
     needs: changes
     if: needs.changes.outputs.browser_image == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -4110,8 +4113,9 @@ jobs:
     # GitHub refuses a run whose calling job grants less than the called workflow's jobs declare,
     # whatever their `if:`: its workflow-level block (the build's packages: write, and the
     # actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
-    # and attestations: write. A pull request run still skips `attest` (its `if:` requires
-    # `github.event_name != 'pull_request'`).
+    # and attestations: write. That `attest` job runs whenever the build pushed, whatever the
+    # event, a pull request's run included, because this branch's push order has a pull
+    # request's run push the image the rows then pin (browser-image.yaml's `attest` job says why).
     permissions:
       contents: read
       packages: write

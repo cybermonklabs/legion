@@ -115,18 +115,24 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
 - **jj (Jujutsu)** for version control, native **Dispatch** for issue tracking
 
-- **Container images** a CI job fetches are copies in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
-  Every workflow, Dockerfile and test names its copy by digest.
-  `.github/ci-images.yaml` holds one row per image (`upstream`, `tag`, `digest`), and `.github/scripts/mirror-ci-images.sh` copies the rows the package does not hold yet with `crane copy`, which keeps the digest.
-  That copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
-  For every `library/golang` row whose upstream names a tag, that script also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
+- **Container images** a CI job fetches all live in one package this repository publishes, `ghcr.io/cybermonklabs/legion/ci`.
+  Every workflow, Dockerfile and test names the image it runs by digest.
+  `.github/ci-images.yaml` holds one row per image, each row carrying `tag` and `digest` beside exactly one of two keys that say where its bytes came from:
+  `upstream:` is a copy of a third-party image, which `.github/scripts/mirror-ci-images.sh` makes for the rows the package does not hold yet with `crane copy`, which keeps the digest;
+  `built:` is an image this repository builds itself, from the Dockerfile of this tree that key names, which `.github/workflows/browser-image.yaml` builds and pushes and no script copies.
+  A copy names the row's upstream at the row's digest, and crane drops a tag written before that digest, so a floating upstream tag decides no byte of a copy.
+  For every `library/golang` row whose upstream names a tag, `mirror-ci-images.sh` also reads the image's own `GOLANG_VERSION` (`crane config`) and refuses a row whose upstream tag names another Go.
   No read of a floating upstream tag can do that work, because it cannot tell a row labelled wrongly now from one labelled rightly long ago.
   An `oven/bun` image declares its version nowhere, so the two builds that run those bytes refuse any Bun but the one `.bun-version` pins.
-  Each row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  An `upstream:` row's tag is the upstream repository's last path element, then the upstream tag when the row names one, then the first eight characters of the digest, so one tag names one digest.
+  A `built:` row's tag is its Dockerfile's name without the `.Dockerfile` suffix, then those same eight characters.
   `ci.yaml`'s `ci-images` job runs that copy and then the package half of the gate, in that order, and it is the one copy path:
   it runs on every event `ci.yaml` runs on — a pull request, a merge group and a dispatch — and a failed copy is re-run with `gh run rerun` where the run is a pull request's, since every job of a re-run attempt of a merge-group run skips.
-  Adding an image is one edit of that file.
-  Moving one to a new version is two commits:
+  Adding a copy is one edit of that file.
+  Adding or changing an image this repository builds is two pushes instead:
+  the push that adds or changes the Dockerfile is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
+  The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from other bytes than the Dockerfile this tree holds (its rule 10), so a Dockerfile edit whose row still names the digest built before it is red until that build has run and the row has moved.
+  Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
   `.github/scripts/check-ci-images.sh` is the gate, and it takes one mode:
