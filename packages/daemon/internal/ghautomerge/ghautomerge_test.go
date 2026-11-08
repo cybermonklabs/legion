@@ -1081,6 +1081,20 @@ const browserLog = `  ✘ 1463 [firefox] › e2e/deep-links.e2e.ts:442:1 › a d
   1193 passed (15.4m)
 `
 
+// stamped is log as GitHub's own job-log route carries it, which is what the daemon reads: every
+// line prefixed with the UTC timestamp GitHub writes before it and one space. Measured on job
+// 128479266994 of run 42397923554 of cybermonklabs/legion, the job browserLog is quoted from:
+// its summary block's count line reads "2026-11-07T18:04:24.8502586Z   1 failed" and its failing
+// row "2026-11-07T18:04:24.8503263Z     [chromium] › e2e/gated-step-approvals.e2e.ts:386:1 › …",
+// so no line of a real job log begins with the indentation a summary block prints (INFRA-1442).
+func stamped(log string) string {
+	lines := strings.Split(strings.TrimSuffix(log, "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = fmt.Sprintf("2026-11-07T18:04:%02d.8502586Z %s", i%60, line)
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // The runs a removal names say what failed in each of them: the daemon reads the end of each
 // failing job's log and names the tests it states failed with the first line stating one, so the
 // tree the merge queue ejected reads the cause instead of fetching and grepping a merge-group log
@@ -1117,6 +1131,9 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 		{name: "a browser runner's summary block", log: browserLog,
 			wants: []string{"its log names e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step for the primary document, and the longest awaiting label, fits every width @phone as failing",
 				`its first failure line "[chromium] › e2e/gated-step-approvals.e2e.ts:386:1 › a gate`},
+			absent: []string{"could not read", "deep-links", "1463", "37 skipped"}},
+		{name: "a browser runner's summary block as GitHub's job log carries it", log: stamped(browserLog),
+			wants:  []string{"its log names e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step for the primary document, and the longest awaiting label, fits every width @phone as failing"},
 			absent: []string{"could not read", "deep-links", "1463", "37 skipped"}},
 		{name: "a log stating no test name", log: "Process completed with exit code 1.\n",
 			wants:  []string{"integration (failure, " + failedRun + ")", "could not read its failing tests", "the end of its log states no test name"},
