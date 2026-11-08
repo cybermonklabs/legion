@@ -162,6 +162,11 @@
         "file": "./packages/envoy/AGENTS.md",
         "starts_with": "Each `accountAuth` row declares the power it needs",
         "why": "The broker's account route powers, not the answer loop."
+      },
+      {
+        "file": "./packages/pi-envoy/AGENTS.md",
+        "starts_with": "- Session state converges in one serialized pass (`reconcile",
+        "why": "pi-envoy's session reconcile (a role is never given up for good), not the answer loop."
       }
     ]
   }
