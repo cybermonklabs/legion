@@ -339,16 +339,30 @@ func postListener(t *testing.T, port int, path, body string) {
 	}
 }
 
+// listenerStartWait is the wait waitHealthy gives /healthz to report "healthy": what a listener's
+// ordinary start takes, one whose JetStream requests the server answers.
+const listenerStartWait = 30 * time.Second
+
 // waitHealthy waits up to 30 s for the listener to log that it listens on its own loopback port,
-// then up to 30 s more for /healthz there to report "healthy", and kills the listener and fails
-// the test when it never does. The socket the listener inherited is not readiness: the kernel
-// queues connections on it from before the process starts, so a request there waits rather than
-// fails until the process serves, and only its listening line says it does. Each request has a
-// timeout, so one that waits on a socket nothing serves cannot outlast the deadline. /healthz
+// then up to listenerStartWait for /healthz there to report "healthy", and kills the listener and
+// fails the test when it never does. The socket the listener inherited is not readiness: the
+// kernel queues connections on it from before the process starts, so a request there waits rather
+// than fails until the process serves, and only its listening line says it does. Each request has
+// a timeout, so one that waits on a socket nothing serves cannot outlast the deadline. /healthz
 // answers 200 with "starting" from the moment the listener serves, before NATS connects and
 // before the listener installs its SIGTERM handler, and a SIGTERM in that window kills the
 // process without an ordered shutdown.
 func (p *listenerProcess) waitHealthy(t *testing.T) {
+	t.Helper()
+	p.waitHealthyWithin(t, listenerStartWait)
+}
+
+// waitHealthyWithin is waitHealthy with the wait for "healthy" the caller's. A row passes its own
+// when its listener's start is known to take longer than listenerStartWait: a start that must wait
+// out a JetStream request the server leaves unanswered costs bus.unansweredSends sends of the
+// caller's MaxWait before it goes on (EnsureKeyValue's doc in internal/bus/kv.go counts what each
+// step costs), which a listener whose grant misses a bucket does on every open.
+func (p *listenerProcess) waitHealthyWithin(t *testing.T, wait time.Duration) {
 	t.Helper()
 	if addr, own := listeningAddr(t, p.Process), "127.0.0.1:"+strconv.Itoa(p.port); addr != own {
 		_ = p.Cmd.Process.Kill()
@@ -356,7 +370,7 @@ func (p *listenerProcess) waitHealthy(t *testing.T) {
 	}
 	client := &http.Client{Timeout: 5 * time.Second}
 	url := "http://127.0.0.1:" + strconv.Itoa(p.port) + "/healthz"
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		response, err := client.Get(url)
 		if err == nil {

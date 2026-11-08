@@ -390,6 +390,8 @@ The Legion plugin ships these in `agents/`:
 
 - `thermonuclear-code-quality`
 
+- the architect's `design-outsider`
+
 - the planner's `plan-gap-analyst` and `plan-reviewer`
 
 It ships this with Legion's other skills in its `dist/skills`:
@@ -704,7 +706,8 @@ A whole-run rerun of `release.yaml`, or a `workflow_dispatch` of it while main's
 the job holds only `contents: read` and no secret, so its rerun writes nothing), and `publish` releases that tag again, each step safe to repeat:
 the image is rebuilt, `worker_image_release` moves the `<legion version>` tag to the rebuild's digest, and the release body's "Worker image" names that digest.
 `release-envoy-listener.yaml` needs no re-run when its `release_publish` finds, at "Confirm the version", that another run took the tag first:
-it publishes nothing and, when its commit still needs a release and no later run on main still running holds it, starts a new run on main itself, which decides the version again and re-stamps the binaries.
+it publishes nothing and, when its commit still needs a release and no later run on main still running holds it, starts a new run on main itself by `workflow_dispatch`, which decides the version again and re-stamps the binaries.
+That dispatched run is a concurrency group of its own, so no newer push to main replaces it while it waits; of the pushes waiting in the workflow's own per-ref group only the newest builds, and it holds the replaced commit's change.
 
 The build has no prerequisites outside this repository.
 After the first push there is one human action:
@@ -2085,6 +2088,23 @@ A `legion` of this release against a daemon of an earlier one, which serves no s
 What a contract bump never refreshes is the pod's own `legion` binary:
 the launcher, the shim and `workspace-init` keep running the generation they were started with, so a release that changes the launcher's or the shim's own wire to the daemon is a pod replacement, which the update round makes ("Pinning a release that drops what a running pod still uses" above), never something the contract relaunch fixes in place.
 
+A release that changes what a producer writes **into an envelope** is rolled in one order, which the contract number above does not cover:
+that number holds a process to the daemon's API, while an envelope is written by one process and read by another, and the two are pinned separately.
+**Roll the listener Deployment, then the plugin pair, then the Dispatch Deployment**, and expect the loss the middle step leaves.
+Each of the other orders was traced on INFRA-1225, which replaced the string `none` with the literal `false`:
+
+- **Plugins before the listener breaks sends.**
+  The new skills tell an agent to write the new value, and the listener of the previous image decodes the field as a `*string`, so it answers `400` and the message is never sent.
+
+- **Dispatch before the listener loses frames.**
+  An old listener's durable consumer cannot decode what a new Dispatch outbox published, so it drops the message rather than relaying it.
+
+- **Plugins last costs a replay window, and nothing else.**
+  A `@sjawhar/pi-envoy` from before the change declares the field as the three words it knew, and its replay reads a stored frame against that strict schema, so a frame carrying the new value fails the parse and is logged and settled as "not an Envoy envelope".
+  A session on such a pair keeps every live delivery, because its card renderer reads the field leniently and drops a value it does not know, and loses from its 72-hour replay window **every message the new value marks** — on INFRA-1225 the Dispatch deliveries that carry it, an answered ask, an approved artifact and a plain comment mention, and every agent message sent as wanting no reply, including one an un-rolled sender sent itself, since a rolled listener writes each of those to the bus in the new spelling too.
+
+That last loss is the one this order accepts, so the window between the listener and the plugin pair is the window to keep short.
+
 ### Configuration
 
 ```yaml
@@ -2806,9 +2826,9 @@ The kubelet makes the directory on first use.
 Each role's Secret, `<sandbox>-<role>-boot`, holds that role's launcher token and its gh bundle:
 for every directory of the bundle, `github-hosts-<dir>`, gh's `hosts.yml` carrying a GitHub App installation token under user `x-access-token`, and `github-config-<dir>`, a `config.yml` of `version: "1"`, and `github-default`, the owner of the issue's repository.
 A directory names a GitHub owner of the project, or one repository of that owner as `<owner>/<repo>`, whose `/` the key writes as a `.`, since a Secret key holds no slash.
-The bundle holds one directory per owner, and, under the issue's own owner, one more for each other repository the project serves there, less every directory GitHub refuses the role's App a lease for: an owner whose every repository that App's installation does not reach is left out of that role's bundle, said once on the daemon's stderr, where the role's own repository refused fails its launch instead.
-The token in the issue owner's directory is the role's App's (the implement App's for the implementer and the merger, the review App's for every other role), and it reaches the issue's repository and no other;
-every other directory's is the same App's narrowed to reading contents, pull requests, Actions and metadata over the repositories that directory names.
+The bundle holds one directory per owner, one more per owner a configured rename moved a repository away from while the project serves the name it moved to, and `<owner>/<repo>` directories beside them, cut under the directory named for the issue's recorded owner and under the one named for the owner whose installation serves that repository, less every directory GitHub refuses the role's App a lease for: an owner whose every repository that App's installation does not reach is left out of that role's bundle, said once on the daemon's stderr, where the role's own repository refused fails its launch instead.
+The write token is the role's App's (the implement App's for the implementer and the merger, the review App's for every other role), it reaches the issue's repository and no other, and it stands in two directories, the one named for the issue's recorded owner, which `GH_CONFIG_DIR` names, and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
+every other directory's token is the same App's narrowed to reading contents, pull requests, Actions and metadata over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository its own name resolves to.
 Each mint asks for what the App's installation on that owner is granted of the set it names, so a permission the account has not approved — Actions most often — is left out of the request and said once on the daemon's stderr, rather than costing the role the whole bundle.
 
 The `roles` container mounts each role `<r>`'s own volumes under its directory of `/var/run/legion/roles`:
@@ -4509,6 +4529,7 @@ The death is seen twice over: at once, when the pod's worker stream closes and t
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon sends the Envoy listener `DELETE /v1/sessions/<the session the claim registered>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>`.
 That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://INFRA-392).
+The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
 The moment is a condition, not a label, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
 the listener deletes the registration only while it was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept — rather than taking a working session's registration away.
 The request is bounded at 5 seconds, so a stop the listener does not answer is abandoned rather than left in flight.
@@ -4608,7 +4629,7 @@ The boundary above protects the provisioning token alone.
 Since LEGION-631 each role holds its own App's tokens, read-only, in the gh bundle its `LEGION_GH_OWNERS_DIR` names, which only its own namespaces bind ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)):
 an implement role (the implementer, the merger) holds the implement App's tokens
 — for the issue's repository the App's own installation token, which writes, where the provisioning token is that same App over that same repository narrowed to reading, so the two are no longer one lease
-— and a review role (the architect, planner, tester, reviewer) the review App's, every directory but the issue's own owner's narrowed to reading.
+— and a review role (the architect, planner, tester, reviewer) the review App's, every directory but the two the write lease stands in narrowed to reading (the issue's recorded owner's and the serving owner's, one directory unless a rename moved the issue's repository).
 No review role holds the implement App's token, and no implement role the review App's (the review App cannot resolve a review thread on the implementer's pull request, so the reviewer names the bot threads it accepted to the implementer, which resolves them with its own `gh`; the daemon serves no thread route).
 That split keeps each role's tokens out of a sibling's own reads.
 It is not a boundary against code an agent of the same issue plants:
@@ -4905,7 +4926,7 @@ each issue's pod (every role of it alike) and the image probe's.
   one read of Dispatch's project listing, applied as the boot applies it, to the unrecorded issues on it, under a parent on it, or whose event it applied silently for it during the outage (a labelled root admitted, a child of a live tree recorded under it, parents first, a person's issue left as it is), tried again on a failed listing;
   the mapping is read again, 30 s doubling to 10 min, until GitHub answers, then the repository is served with no restart (a served repository whose read fails stays served on its last answer, with the name and default branch GitHub last gave it and no further read of GitHub, and is read again the same way);
   a project with no repository mapped does not boot, one whose every repository lacks an App boots serving none, admitting nothing until an App is installed, and one whose every repository's installation read fails boots serving none and logs so at ERROR (the boot's own reads of the Apps, their logins and their tokens, still refuse it when they fail).
-  Every role's gh bundle holds a directory for each served repository's owner, and one more, under the issue's own owner, for each other repository served there ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
+  Every role's gh bundle holds a directory for each served repository's owner, one for each owner a configured rename moved a repository away from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each other repository served by the issue's recorded owner and by the owner whose installation serves the issue's repository ([Anatomy of a Sandbox pod](#anatomy-of-a-sandbox-pod)).
   An issue is recorded on the repository Dispatch resolves for it, with that repository's default branch as GitHub names it, when the daemon first records it, and keeps both.
   A claim on an issue the workflow does not record, such as an operator's tree, works the project's default repository as it is at each launch, and its launch is refused while the project serves no default.
   **Upgrade order:** Dispatch first (it resolves each issue's repository), then map the project's repositories there with the old `projects.<KEY>.repo` as the project's default, then delete the key and start this daemon;
@@ -4937,7 +4958,16 @@ each issue's pod (every role of it alike) and the image probe's.
   a rule narrower than the agents' URL parser, so a value load accepts never turns Dispatch off in an agent.
   The controller's `slack_post` refuses a reply linking an address inside the cluster.
   Like every `pod.env` variable, it reaches an agent with the start command of its next generation, so set it in the same restart that installs this release, which relaunches the controller once.
-  To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session; `legion claims stop` starts it fresh.
+  To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
+  `legion claims stop` is not a second way to do that:
+  it ends the agent's process and retires its claim, and for a phase worker no pass the daemon makes on its own starts that claim again, not even the one that refills a slot whose worker holds no task.
+  The stop leaves the issue where it stood, in its phase, and if it held an admission slot it keeps that slot, with no worker in it;
+  an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
+  A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
+  What starts a stopped phase worker again is the workflow's own next start of its role:
+  a backward move into its phase, the promotion of a re-admitted root, or a production check's look after the issue's merge;
+  the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
+  Each of these brings the worker back in the session the claim kept.
 
 - **The Legion machine-user sign-in.**
   `legion model-token` is a model `apiKey` command that signs a pod in to Cognito with its projected service-account token and prints the access token;
@@ -5212,7 +5242,7 @@ each issue's pod (every role of it alike) and the image probe's.
 
 - **Model roles.**
   Legion's shipped agents dispatch by role alias:
-  `oracle` and the planner's `plan-gap-analyst` as `@oracle`;
+  `oracle`, the planner's `plan-gap-analyst` and the architect's `design-outsider` as `@oracle`;
   both review agents and the planner's `plan-reviewer` as `@review`; and `deep-worker`, which writes the implementer's code, as `@deep`.
   The boot gate refuses, by agent, any whose role the operator's settings (`modelRoles`, or `task.agentModelOverrides`) leave unconfigured, or whose model's key does not work, because Oh My Pi's task tool would quietly run it on the parent session's model.
   The bundled agents Legion's prompts also dispatch use Oh My Pi's built-in roles: `scout` is `@smol` and `reviewer` is `@slow`.
