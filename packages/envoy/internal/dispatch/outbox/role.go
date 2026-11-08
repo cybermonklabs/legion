@@ -152,8 +152,11 @@ func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution,
 //     takes the copy over and that order is given up (unpinnedRoleMentions.keyFor,
 //     mentionHolds.waitsForAnUnnamedMention, holdsTheForwardAsARow). A holder a mention of
 //     the comment delivered to is the exception: its forward carries that mention's own key,
-//     which its host claimed when the send landed, so it goes in this pass however many
-//     unnamed mentions are owed (mentionHolds.keyedByADeliveredMention, roleFallbackKey).
+//     which its host claimed when the send landed, so within unnamedForwardBound it goes in
+//     this pass however many unnamed mentions are owed; past the bound it is held as a row
+//     all the same, which the fallback pass settles with nothing sent, that holder's state
+//     reading delivered (mentionHolds.keyedByADeliveredMention, roleFallbackKey,
+//     holdsTheForwardAsARow, decideFallbackCopy).
 //
 // A destination that waits keeps its place in the event's list, marked waiting
 // (destination.waiting): it makes no send this read and holds its key against the owner's later
@@ -555,9 +558,10 @@ func holdsTheForwardAsARow(ctx context.Context, deps Deps, event *batchEvent, de
 // attempt it is owed on is within unnamedForwardBound, and is held as a row of the role's own
 // topic past that bound (unpinnedRoleMentions.keyFor, mentionHolds.waitsForAnUnnamedMention,
 // holdsTheForwardAsARow). Where the holder's own settled mention delivered the comment, that
-// key is this choice's first arm and the wait is not taken at all: the key is one the holder's
-// host claimed when the send landed, so the copy is dropped there whatever an unnamed mention
-// is later pinned to (mentionHolds.keyedByADeliveredMention, roleCopyWaitsForAMention).
+// key is this choice's first arm and the wait within the bound is not taken: the key is one the
+// holder's host claimed when the send landed, so the copy is dropped there whatever an unnamed
+// mention is later pinned to (mentionHolds.keyedByADeliveredMention, roleCopyWaitsForAMention).
+// Past the bound the row is still taken, and settled with nothing sent.
 //
 // It is the rule a session route's copy follows (destinations.addSession), applied to the
 // session the role resolved to rather than to the one a route names: a mention's send can land

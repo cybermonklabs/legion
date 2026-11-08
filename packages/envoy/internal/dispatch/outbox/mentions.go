@@ -224,7 +224,13 @@ func (d mentionDeliveries) anyLive() bool {
 // A batch's own forward of a role route waits on the same rule, asked of the states its role
 // destination carries rather than of this reading (destination.mentionStates,
 // roleCopyWaitsForAMention): the batch holds one reading of the mentions for every event of the
-// batch, and a destination carries the maps it is keyed from already.
+// batch, and a destination carries the maps it is keyed from already. The one difference is the
+// batch's exemption for a holder a mention of the comment delivered to
+// (mentionHolds.keyedByADeliveredMention), which this rule does not ask. A row keyed by such a
+// holder settles with nothing sent before this is asked, its state reading delivered; a row
+// keyed by another session and forwarded to such a holder, the role having moved to it, can
+// wait here for an unnamed mention though its copy would carry that delivered key - a wait that
+// costs no order, a row holding none.
 func (d mentionDeliveries) liveFor(sessionID string) bool {
 	holds := d.holds()
 	return holds.live(sessionID) || holds.waitsForAnUnnamedMention(sessionID)
