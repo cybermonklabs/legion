@@ -106,3 +106,4 @@ for `report.ts` (`scripts/dispatch/comment-delivery/`) and for people.
 
 A comment with no target has exactly one row, with `target` empty. Rows are ordered by
 `created_at`, then `comment_id`, then `target`.
+
