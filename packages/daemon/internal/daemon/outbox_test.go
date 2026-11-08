@@ -2985,20 +2985,22 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 			now.Format(time.RFC3339Nano), left)
 	}
 
-	type noticeRow struct {
+	// refusalNotice is one of the notices the refusals wrote, by row id, so that the two can be
+	// told apart from the rows left behind later.
+	type refusalNotice struct {
 		id     int64
 		notice record.Notice
 	}
-	noticeRows := func() []noticeRow {
+	refusalNotices := func() []refusalNotice {
 		t.Helper()
 		rows, err := pool.Query(ctx, "select id, payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
 		if err != nil {
 			t.Fatalf("read the notice rows: %v", err)
 		}
 		defer rows.Close()
-		var written []noticeRow
+		var written []refusalNotice
 		for rows.Next() {
-			var row noticeRow
+			var row refusalNotice
 			var payload []byte
 			if err := rows.Scan(&row.id, &payload); err != nil {
 				t.Fatalf("read the notice rows: %v", err)
@@ -3013,8 +3015,8 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 		}
 		return written
 	}
-	var messageNotice, statusNotice noticeRow
-	written := noticeRows()
+	var messageNotice, statusNotice refusalNotice
+	written := refusalNotices()
 	for _, row := range written {
 		switch {
 		case strings.Contains(row.notice.Reason, "READY #42 at head"):
@@ -3028,7 +3030,7 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 	}
 	for _, tc := range []struct {
 		name string
-		row  noticeRow
+		row  refusalNotice
 	}{
 		{"the refused message", messageNotice},
 		{"the refused status write", statusNotice},
@@ -3086,11 +3088,7 @@ func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *test
 		t.Fatalf("logged %q for rows %v, want it once for the refused message's notice %d and once for the status write's %d: %s",
 			undelivered, told, messageNotice.id, statusNotice.id, logs.String())
 	}
-	var remaining int
-	if err := pool.QueryRow(ctx, "select count(*) from outbox").Scan(&remaining); err != nil {
-		t.Fatalf("count the rows left: %v", err)
-	}
-	if remaining != 0 {
+	if remaining := outboxRows(t, pool); remaining != 0 {
 		t.Fatalf("%d rows left in the outbox, want the refusals and their notices all finished", remaining)
 	}
 }

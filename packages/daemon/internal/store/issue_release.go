@@ -368,7 +368,7 @@ func (s *Store) IssueRelease(ctx context.Context, project string, release IssueR
 		// A role started or resumed since the mark, or a start queued above the release's own
 		// rows, is the pod being used again: the teardown would take a pod with a live role in
 		// it, and the stop that would have caught it has already run. The release reads every
-		// queued start row where IssueSuspension now reads only a production check's look, and
+		// queued start row where IssueSuspension reads only a production check's look, and
 		// needs no narrowing of its own: the read above has already returned a cancel for an
 		// issue that is not pods.InWorkflowNotLingering, so this predicate runs only for an issue
 		// still in the workflow under a live tree, where the outbox's start fence declines
