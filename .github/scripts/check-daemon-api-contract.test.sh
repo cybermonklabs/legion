@@ -6,7 +6,9 @@
 # Each case builds a miniature repository under a temporary directory, symlinks the real script
 # into it, and puts a stub `gh` first on PATH, so the script under test is the file CI runs and
 # the test needs no network. The stub serves every GitHub read from files and counts its reads of
-# the open pull requests, which the check makes only when it is about to fail.
+# the open pull requests, which the check makes only when it is about to fail. A case whose check
+# reads what this tree was built on makes that checkout with git's own plumbing (built_on), since
+# the check reads HEAD's parent line out of a real commit object.
 #
 # The numbers here are the fixtures' own: no contract number of this repository is written into
 # this file, so a bump of the real declaration changes nothing in these cases.
@@ -82,6 +84,39 @@ SH
   echo "$root"
 }
 
+# built_on <root> <contract number>: makes the checkout what GitHub checks a pull request out as
+# — the merge ref it built when the event fired, a merge commit whose first parent is the commit
+# that ref was built on — and serves that parent's declaration, declaring <contract number>, from
+# the stub. Echoes the parent's commit id, which is what the check names in what it says.
+#
+# Built with git's plumbing, so a case needs no working tree of its own: every commit here carries
+# the empty tree, and what the check reads out of the checkout it reads off the disk. CI checks
+# out one commit, which hides a commit's parents from `git rev-parse HEAD^1`; the check reads
+# HEAD's own object, where the parent lines stand whatever the checkout's depth.
+built_on() {
+  local root=$1 tree parent head merge
+  local -a as=(-c user.name=contract-test -c user.email=contract-test@example.invalid)
+  git -C "$root" -c init.defaultBranch=main init -q
+  tree=$(git -C "$root" hash-object -w -t tree /dev/null)
+  parent=$(git -C "$root" "${as[@]}" commit-tree "$tree" -m 'the commit the merge ref was built on')
+  head=$(git -C "$root" "${as[@]}" commit-tree "$tree" -p "$parent" -m "the pull request's head")
+  merge=$(git -C "$root" "${as[@]}" commit-tree "$tree" -p "$parent" -p "$head" -m 'the merge ref')
+  git -C "$root" update-ref HEAD "$merge"
+  declaration "$2" > "$root/stub/refs/$parent"
+  echo "$parent"
+}
+
+# no_merge_ref <root>: a checkout that is no merge ref at all — HEAD a commit with no parent,
+# which is what a job that checks out a branch tip rather than the merge ref GitHub built has.
+no_merge_ref() {
+  local root=$1 tree
+  local -a as=(-c user.name=contract-test -c user.email=contract-test@example.invalid)
+  git -C "$root" -c init.defaultBranch=main init -q
+  tree=$(git -C "$root" hash-object -w -t tree /dev/null)
+  git -C "$root" update-ref HEAD \
+    "$(git -C "$root" "${as[@]}" commit-tree "$tree" -m 'a checkout that is no merge ref')"
+}
+
 # no_open_pull_requests <root>: the repository has none, so the free number is the base's plus one.
 no_open_pull_requests() {
   printf '{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}\n' \
@@ -129,6 +164,7 @@ all_four_files='packages/daemon/internal/api/version.go, packages/contracts/fixt
 
 echo "case: a tree equal to its base that touches the declaration"
 root=$(fixture equal)
+built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-1: a shape this change adds, on the number the base already carries" \
   > "$root/packages/daemon/internal/api/version.go"
@@ -148,6 +184,7 @@ check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a tree below its base that touches the declaration"
 root=$(fixture below)
+built_on "$root" 9 > /dev/null
 declaration 9 > "$root/stub/refs/main"
 declaration 8 > "$root/packages/daemon/internal/api/version.go"
 no_open_pull_requests "$root"
@@ -179,15 +216,34 @@ check "reads no open pull request" "$(is "$queries" 0)"
 echo "case: a tree that does not touch the declaration, whatever its base carries"
 for carried in 7 99; do
   root=$(fixture "untouched-$carried")
+  base=$(built_on "$root" "$carried")
   declaration "$carried" > "$root/stub/refs/main"
   declaration "$carried" > "$root/packages/daemon/internal/api/version.go"
   pull_request_event "$root" main
   run_check "$root" pull_request
   check "a base at $carried: exits 0" "$(is "$status" 0)"
   check "a base at $carried: says it declares none of its own" \
-    "$(contains "$out" "leaves packages/daemon/internal/api/version.go as the base has it (the tip of main, contract $carried)")"
+    "$(contains "$out" "leaves packages/daemon/internal/api/version.go as the commit GitHub built this pull request's merge ref on ($base) has it (contract $carried)")"
   check "a base at $carried: reads no open pull request" "$(is "$queries" 0)"
 done
+
+echo "case: a tree equal to the commit it was built on, the base branch's tip moved on since"
+root=$(fixture moved-on)
+# GitHub built this merge ref when the event fired, on a commit carrying 7, and a re-run reuses
+# that same ref: the tip of the base branch carrying 8 since says nothing about what this tree
+# was built on. The change leaves the declaration alone, so it declares no contract of its own.
+base=$(built_on "$root" 7)
+declaration 8 > "$root/stub/refs/main"
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+# The answer is there to be read, so a run that reads it is a run that was about to refuse.
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 0" "$(is "$status" 0)"
+check "says it declares none of its own, naming the commit it was built on" \
+  "$(contains "$out" "leaves packages/daemon/internal/api/version.go as the commit GitHub built this pull request's merge ref on ($base) has it (contract 7)")"
+check "takes no number for a file it leaves alone" "$(is "$(contains "$out" 'Take ')" false)"
+check "reads no open pull request" "$(is "$queries" 0)"
 
 echo "case: a base the check cannot read"
 root=$(fixture no-base)
@@ -231,6 +287,7 @@ check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: the free number passes over the number an open pull request holds"
 root=$(fixture held)
+built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-2: another shape on the number the base carries" \
   > "$root/packages/daemon/internal/api/version.go"
@@ -245,6 +302,7 @@ check "reads the open pull requests once" "$(is "$queries" 1)"
 
 echo "case: a file list GitHub cut short is read rather than guessed at"
 root=$(fixture cut-short)
+built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-3: a shape that needs a number" \
   > "$root/packages/daemon/internal/api/version.go"
@@ -267,6 +325,7 @@ check "reads the open pull requests once" "$(is "$queries" 1)"
 
 echo "case: a pull request's own declaration the check cannot read"
 root=$(fixture unreadable-head)
+built_on "$root" 7 > /dev/null
 declaration 7 > "$root/stub/refs/main"
 declaration 7 "LEGION-4: a shape that needs a number" \
   > "$root/packages/daemon/internal/api/version.go"
@@ -278,5 +337,39 @@ check "exits 1" "$(is "$status" 1)"
 check "names the read that failed" \
   "$(contains "$out" 'could not read packages/daemon/internal/api/version.go at refs/pull/13/head (#13, head 1111111111111111111111111111111111111111)')"
 check "names no free number it could not prove" "$(is "$(contains "$out" 'Take ')" false)"
+
+echo "case: the commit this checkout was built on, which the check cannot read"
+root=$(fixture no-built-on)
+base=$(built_on "$root" 7)
+# The declaration at that commit is what says whether this change touched the file, so a read of
+# it that fails refuses the change rather than guessing either way.
+rm "$root/stub/refs/$base"
+declaration 7 > "$root/stub/refs/main"
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "exits 1" "$(is "$status" 1)"
+check "names the read that failed" \
+  "$(contains "$out" "could not read packages/daemon/internal/api/version.go on the commit GitHub built this pull request's merge ref on ($base): gh api exited 1")"
+check "does not pass for want of a reading" \
+  "$(is "$(contains "$out" 'declares no daemon API contract of its own')" false)"
+check "reads no open pull request" "$(is "$queries" 0)"
+
+root=$(fixture no-parent)
+# A checkout that is no merge ref — a branch tip, or a tree with no history at all — carries no
+# commit this change was built on, so the check reads none and refuses rather than comparing
+# with a tip that has moved on.
+no_merge_ref "$root"
+declaration 7 > "$root/stub/refs/main"
+declaration 7 > "$root/packages/daemon/internal/api/version.go"
+no_open_pull_requests "$root"
+pull_request_event "$root" main
+run_check "$root" pull_request
+check "a checkout that is no merge ref exits 1" "$(is "$status" 1)"
+check "names what it could not read" \
+  "$(contains "$out" "could not read the commit GitHub built this pull request's merge ref on: HEAD names no parent")"
+check "reads no open pull request" "$(is "$queries" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 summary "check-daemon-api-contract.sh"

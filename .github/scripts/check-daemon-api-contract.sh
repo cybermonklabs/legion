@@ -18,11 +18,17 @@
 # group's tree carries both changes at that number, which is above the base's, and that tree is
 # the pair that ships.
 #
-# "Touches the file" is this checkout's copy differing from the base's. A pull request is checked
-# out as its head merged into the base tip, and a merge group as the base with the group's entries
-# on top, so a change that leaves the file alone holds the base's bytes exactly and one that
-# changed it does not. A base, or a tree, this check cannot read refuses the change and names the
-# read that failed: a check that passes when it cannot read proves nothing.
+# "Touches the file" is this checkout's copy differing from the copy the commit this checkout was
+# built on carries, which is not always the base: a merge group is the base with the group's
+# entries on top, so there the two are one commit, but a pull request is checked out as the merge
+# ref GitHub built when the event fired, and a re-run reuses that ref. Main moves on under it, so
+# a comparison with the tip of the base branch read a pull request that had left the file alone
+# as one that had touched it, and refused it for declaring the number its own base carries. What
+# the tree was built on is that merge ref's first parent, which a depth-1 checkout carries in
+# HEAD's parent line (built_on). The number is still compared with the base's, so a change that
+# does touch the file and declares a number the base has reached since is refused as before. A
+# base, a commit this checkout was built on, or a tree this check cannot read refuses the change
+# and names the read that failed: a check that passes when it cannot read proves nothing.
 #
 # What it does not check: whether a bump is owed. A change to a surface this contract names that
 # leaves version.go alone passes here — that file's own bump rule and the review say when a bump
@@ -31,8 +37,11 @@
 # the constant, and the plugins' tests hold their manifests to the fixture.
 #
 # Every GitHub read goes through `gh api`, and the base is read over the API rather than out of
-# git: the checkout in CI is one commit deep and fetches no origin/main. The open pull requests
-# are read only when the check is about to fail, so a passing run makes none of them: one
+# git: the checkout in CI is one commit deep and fetches no origin/main. The one git read is of
+# HEAD's own object, whose parent lines a shallow checkout keeps whatever `git rev-parse HEAD^1`
+# says of them, and it is made only where the declared number is not above the base's, so a
+# change that bumps the number reads git not at all. The open pull requests are read only when
+# the check is about to fail, so a passing run makes none of them: one
 # paginated GraphQL query for every open pull request with the paths it changes, drafts counted,
 # and then this file at refs/pull/<number>/head — a ref of this repository, so a fork's head too
 # — for each that changes it. A file list GitHub cut short says nothing about the paths it left
@@ -124,6 +133,42 @@ def read_at(repository: str, ref: str, what: str) -> str:
             f"repos/{repository}/contents/{DECLARATION}?ref={quote(ref, safe='')}",
         ],
         what,
+    )
+
+
+def built_on(what: str) -> str:
+    """The commit this checkout was built on: HEAD's first parent.
+
+    A pull request is checked out as the merge ref GitHub built when the event fired, whose first
+    parent is the commit of the base branch it was built on. That is the tree's own base: the tip
+    of the branch moves on under a ref a re-run reuses, and a change compared with the tip reads
+    as touching a file it never opened.
+
+    The checkout is one commit deep, which grafts HEAD's parents away: `git rev-parse HEAD^1` and
+    `git rev-list --parents HEAD` both answer as if the merge ref had no parent at all. The commit
+    object itself keeps them, and `git cat-file commit HEAD` prints it as it stands, header lines
+    first and the message after the blank line that ends them."""
+    try:
+        done = subprocess.run(
+            ["git", "cat-file", "commit", "HEAD"], capture_output=True, text=True, encoding="utf-8"
+        )
+    except OSError as error:
+        fatal(DECLARATION, f"could not read {what}: git could not be run ({one_line(error)})")
+    if done.returncode != 0:
+        fatal(
+            DECLARATION,
+            f"could not read {what}: git cat-file commit HEAD exited {done.returncode} "
+            f"({one_line(done.stderr) or one_line(done.stdout) or 'no output'})",
+        )
+    for line in done.stdout.split("\n"):
+        if not line:
+            break
+        if line.startswith("parent "):
+            return line.removeprefix("parent ").strip()
+    fatal(
+        DECLARATION,
+        f"could not read {what}: HEAD names no parent, so this checkout is not the merge ref "
+        f"GitHub builds a pull request's run on",
     )
 
 
@@ -290,12 +335,22 @@ if tree_number > base_number:
     )
     raise SystemExit(0)
 
+# What this tree was built on. For a merge group it is the base itself, the commit the queue
+# built the group on, which is already read; for a pull request it is the merge ref's first
+# parent, read here rather than above so a change that bumps the number costs neither read.
+if event_name == "merge_group":
+    built_is, built_text = base_is, base_text
+else:
+    parent = built_on("the commit GitHub built this pull request's merge ref on")
+    built_is = f"the commit GitHub built this pull request's merge ref on ({parent})"
+    built_text = read_at(repository, parent, f"{DECLARATION} on {built_is}")
+
 # Trailing newlines are normalised: the API's body and the file on disk differ only there when
 # nothing changed the file.
-if tree_text.rstrip("\n") == base_text.rstrip("\n"):
+if tree_text.rstrip("\n") == built_text.rstrip("\n"):
     print(
-        f"this change leaves {DECLARATION} as the base has it ({base_is}, contract "
-        f"{base_number}), so it declares no daemon API contract of its own"
+        f"this change leaves {DECLARATION} as {built_is} has it (contract {tree_number}), so it "
+        f"declares no daemon API contract of its own"
     )
     raise SystemExit(0)
 

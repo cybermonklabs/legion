@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"golang.org/x/sync/errgroup"
 
@@ -355,6 +357,11 @@ const jobLogReads = 8
 // or GitHub refused the read for want of the Actions grant, a deployment state and no defect. The
 // run link the line already carries is what is left to read in every one of those. No failure of
 // this read ever fails the removal it belongs to: each is told in the line and nowhere else.
+//
+// At most failingTestsNamed names are stated, with the rest counted after them ("and 12 more"),
+// so the line fits the block a Dispatch post holds it in whatever a mass failure states, and
+// each is quoted where it is not plain text (quoteName), since a name is a log's own bytes on
+// their way into an implementer's prompt and an issue's markdown.
 func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
 	unread := func(why string) string { return ": the daemon could not read its failing tests, " + why }
 	tail, err := logs.JobLog(ctx, id)
@@ -368,11 +375,19 @@ func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
 	case err != nil:
 		return unread(fmt.Sprintf("since the fetch of its log failed: %s", fetchFailure(err)))
 	}
-	names, first := failingTests(tail)
+	names, first, more := failingTests(tail)
 	if len(names) == 0 {
 		return unread("since the end of its log states no test name")
 	}
-	return fmt.Sprintf(": its log names %s as failing, its first failure line %q", strings.Join(names, ", "), first)
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = quoteName(name)
+	}
+	named := strings.Join(quoted, ", ")
+	if more > 0 {
+		named += fmt.Sprintf(" and %d more", more)
+	}
+	return fmt.Sprintf(": its log names %s as failing, its first failure line %q", named, first)
 }
 
 // fetchFailure is why a fetch of a job's log failed, with no URL in what it says: GitHub answers
@@ -390,14 +405,43 @@ func fetchFailure(err error) string {
 	return err.Error()
 }
 
-// goFailure is what Go's test binary prints before the name of every test that failed;
-// browserSeparator is what a browser runner puts between the parts of a failing row, and
-// browserProject what such a row opens the project with.
+// goFailure is what Go's test binary prints before the name of every test that failed, at the
+// start of the line — indented, for a subtest — with the name after it; browserSeparator is what
+// a browser runner puts between the parts of a failing row, and browserProject what such a row
+// opens the project with. The marker is matched where the line begins rather than anywhere in
+// it, so a line that merely says the marker — a step that greps for it, a runner quoting what it
+// looked for — states no failing test.
+var goFailure = regexp.MustCompile(`^[ \t]*--- FAIL: +(\S+)`)
+
 const (
-	goFailure        = "--- FAIL: "
 	browserSeparator = " › "
 	browserProject   = "["
 )
+
+// failingTestsNamed is how many names one job's line carries, the rest counted after them ("and
+// 12 more"), and failureLineUnits how much of the first failure line it quotes.
+//
+// Both are read off the bound the whole line has to fit under. Every line this package writes is
+// rendered into one block of a Dispatch post — the implementer's task and the architect's
+// checks-red notice a failed merge sends, the READY withdrawal's post, the re-submission's, and
+// merge-removed — and Dispatch refuses a block over DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units
+// (packages/contracts), naming it; the daemon then tells the architect its message was refused,
+// which is the failure this read exists to spare it. A mass failure states hundreds of names, so
+// a read that kept them all would write hundreds of kilobytes into that one block. Ten names of
+// the longest shape measured here (the browser row of 141 characters in
+// TestTheFailingRunsNameWhatEachJobsLogSaysFailed) and a first failure line cut to 200 hold one
+// job's line under 1,800 units, so the seventeen failing jobs a wide merge group carries fit
+// under the bound together, and some forty at the length Go's own test names run to.
+const (
+	failingTestsNamed = 10
+	failureLineUnits  = 200
+)
+
+// markdownPunctuation is the punctuation a name is quoted for carrying (quoteName): what
+// markdown reads as a code span, a link, an emphasis, a heading, a quote, a table cell or an
+// escape, and the quote mark itself. The underscore is deliberately not among them: it stands
+// for every space in a Go subtest's name, and inside a word it opens no emphasis.
+const markdownPunctuation = "`*[](){}<>|#~\\\""
 
 // browserCount is the line that opens a browser runner's summary block at the end of its log, the
 // count of the tests that failed ("  1 failed").
@@ -408,16 +452,43 @@ var browserCount = regexp.MustCompile(`^\s*\d+ failed\s*$`)
 // which stand before whatever the step printed, that line's own indentation included.
 var logStamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z `)
 
+// quoteName is a name as a run's line carries it: as it stands where it is plain text, and
+// Go-quoted where it is not. A name is text out of a job's log, and the line it goes into is
+// rendered into an implementer's prompt and an issue's markdown, so a name carrying markdown's
+// own punctuation (markdownPunctuation) or a character that is not printable at all is quoted,
+// which bounds it, shows where it ends, and escapes what it holds.
+func quoteName(name string) string {
+	unprintable := func(r rune) bool { return !unicode.IsPrint(r) }
+	if strings.ContainsAny(name, markdownPunctuation) || strings.ContainsFunc(name, unprintable) {
+		return strconv.Quote(name)
+	}
+	return name
+}
+
+// cutLine is line held to failureLineUnits runes, with "…" where it was cut. One line of a log
+// is as long as whatever printed it made it — a runner that states a whole diff or a stack on
+// the line it fails a test with would otherwise carry that into every message the removal is
+// told in.
+func cutLine(line string) string {
+	runes := []rune(line)
+	if len(runes) <= failureLineUnits {
+		return line
+	}
+	return string(runes[:failureLineUnits]) + "…"
+}
+
 // failingTests is what tail, the end of a failing job's log, states failed: each test it names as
-// failed, and the first line naming one, verbatim. Every line is read with GitHub's timestamp
-// prefix taken off it first (logStamp), since the job-log route the tail is read from writes one
-// before every line; a line that carries none is read as it stands, so a log off that route and
-// one off a runner's own output read the same. Two shapes are read, the two the measured cases
-// carry, both printed at the end of a log, which is the part this read holds:
+// failed up to failingTestsNamed, how many it named past that, and the first line naming one, cut
+// to failureLineUnits (cutLine). Every line is read with GitHub's timestamp prefix taken off it
+// first (logStamp), since the job-log route the tail is read from writes one before every line;
+// a line that carries none is read as it stands, so a log off that route and one off a runner's
+// own output read the same. Two shapes are read, the two the measured cases carry, both printed
+// at the end of a log, which is the part this read holds:
 //
 //   - Go's test binary, which prints "--- FAIL: <name> (<time>)" for each test that failed, its
-//     subtests among them. The name is the word after the marker, and the first failure line that
-//     whole line.
+//     subtests among them, the line indented one step per level. The name is the word after the
+//     marker, which the line has to open with (goFailure), and the first failure line that whole
+//     line.
 //   - a browser runner's summary block, a count of the failures ("  1 failed") followed by one
 //     indented row for each, "[project] › file:line:col › title", until a row of another count
 //     ends it ("  37 skipped"). The name is the row without the project it opens with, which the
@@ -427,7 +498,7 @@ var logStamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z
 // The "✘ <n> [project] › …" rows a browser runner prints as it goes are deliberately left out:
 // they stand in the middle of the stream, which a read of the end never reaches. A tail stating
 // neither shape names no test, which the caller reports as a log it could not read (jobFailures).
-func failingTests(tail string) ([]string, string) {
+func failingTests(tail string) ([]string, string, int) {
 	lines := strings.Split(tail, "\n")
 	for i, line := range lines {
 		if stamp := logStamp.FindStringIndex(line); stamp != nil {
@@ -436,22 +507,28 @@ func failingTests(tail string) ([]string, string) {
 	}
 	var names []string
 	first := ""
-	for _, line := range lines {
-		at := strings.Index(line, goFailure)
-		if at < 0 {
-			continue
+	more := 0
+	// Past the cap a name is counted and dropped rather than kept: a log stating thousands of
+	// failures costs this read the cap, not the log.
+	name := func(named string) {
+		if len(names) < failingTestsNamed {
+			names = append(names, named)
+			return
 		}
-		name, _, _ := strings.Cut(strings.TrimSpace(line[at+len(goFailure):]), " ")
-		if name == "" {
+		more++
+	}
+	for _, line := range lines {
+		failure := goFailure.FindStringSubmatch(line)
+		if failure == nil {
 			continue
 		}
 		if first == "" {
-			first = strings.TrimSpace(line)
+			first = cutLine(strings.TrimSpace(line))
 		}
-		names = append(names, name)
+		name(failure[1])
 	}
 	if len(names) > 0 {
-		return names, first
+		return names, first, more
 	}
 	block := -1
 	for i, line := range lines {
@@ -460,7 +537,7 @@ func failingTests(tail string) ([]string, string) {
 		}
 	}
 	if block < 0 {
-		return nil, ""
+		return nil, "", 0
 	}
 	for _, line := range lines[block+1:] {
 		row := strings.TrimSpace(line)
@@ -468,17 +545,17 @@ func failingTests(tail string) ([]string, string) {
 			break
 		}
 		if first == "" {
-			first = row
+			first = cutLine(row)
 		}
-		name := row
+		named := row
 		if test, found := strings.CutPrefix(row, browserProject); found {
 			if _, after, cut := strings.Cut(test, browserSeparator); cut {
-				name = after
+				named = after
 			}
 		}
-		names = append(names, name)
+		name(named)
 	}
-	return names, first
+	return names, first, more
 }
 
 // mergeGroupCommit is the commit the merge queue built for a pull request it took out, and how its

@@ -1096,6 +1096,37 @@ const browserLog = `  ✘ 1463 [firefox] › e2e/deep-links.e2e.ts:442:1 › a d
   1193 passed (15.4m)
 `
 
+// massFailureLog is the end of a Go log for a run whose every test failed: count failure lines,
+// one a test, which is the shape a mass failure prints and far more names than one run's line
+// carries.
+func massFailureLog(count int) string {
+	var log strings.Builder
+	for i := range count {
+		fmt.Fprintf(&log, "--- FAIL: TestTheRowFailed%02d (0.01s)\n", i)
+	}
+	log.WriteString("FAIL\nexit status 1\n")
+	return log.String()
+}
+
+// longFailureLog is the end of a Go log whose failure line runs far past what a run's line
+// carries: a table-driven subtest named for the whole sentence its case is, which Go prints with
+// that sentence's spaces as underscores.
+var longFailureLog = "--- FAIL: TestTheRowTellsTheArchitect/" +
+	strings.Repeat("a_case_named_for_the_whole_sentence_it_is_", 8) + "end (0.01s)\nFAIL\n"
+
+// markdownNameLog is a browser runner's summary block whose one row carries markdown's own
+// punctuation in its title: a spec file writes that title, and the line this read makes of it is
+// rendered into an implementer's prompt and an issue's markdown.
+const markdownNameLog = "  1 failed\n" +
+	"    [chromium] › e2e/prompt-blocks.e2e.ts:12:1 › a title with `code`, [a link](x) and **bold**\n" +
+	"  2 skipped\n"
+
+// mentionLog is a log that says Go's failure marker with no line opening with it: a step that
+// greps for the marker prints the pattern it looked for, and a pattern is no failing test.
+const mentionLog = "Run grep -c -- '--- FAIL: ' test.log\n" +
+	"0 lines match --- FAIL: TestNothingFailedHere\n" +
+	"Process completed with exit code 1.\n"
+
 // stamped is log as GitHub's own job-log route carries it, which is what the daemon reads: every
 // line prefixed with the UTC timestamp GitHub writes before it and one space. Measured on job
 // 128479266994 of run 42397923554 of cybermonklabs/legion, the job browserLog is quoted from:
@@ -1185,6 +1216,32 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 		{name: "a browser runner's summary block as GitHub's job log carries it", log: stamped(browserLog),
 			wants:  []string{"its log names e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step for the primary document, and the longest awaiting label, fits every width @phone as failing"},
 			absent: []string{"could not read", "deep-links", "1463", "37 skipped"}},
+		// A run whose every test failed states a name a line. The line carries the first ten and
+		// counts the rest, so the reason a removal is told in stays inside the one block Dispatch
+		// holds a comment, a message and an ask part to, which a log read whole would pass.
+		{name: "a log naming more failures than the line carries", log: massFailureLog(37),
+			wants: []string{"its log names TestTheRowFailed00, ",
+				"TestTheRowFailed09 and 27 more as failing",
+				`its first failure line "--- FAIL: TestTheRowFailed00 (0.01s)"`},
+			absent: []string{"could not read", "TestTheRowFailed10", "TestTheRowFailed36"}},
+		// The first failure line is one line of a log, as long as whatever printed it made it, so
+		// it is cut with a mark where it was cut.
+		{name: "a first failure line longer than the line carries", log: longFailureLog,
+			wants: []string{"its log names TestTheRowTellsTheArchitect/a_case_named_for_the_whole_sentence_it_is_",
+				`its first failure line "--- FAIL: TestTheRowTellsTheArchitect/a_case_named_for_the_whole_sentence_it_is_`,
+				"…\""},
+			absent: []string{"could not read", "(0.01s)"}},
+		// A name is text out of a log on its way into an implementer's prompt and an issue's
+		// markdown, so one carrying markdown's own punctuation is quoted rather than rendered.
+		{name: "a name carrying markdown and a backtick", log: markdownNameLog,
+			wants: []string{"its log names \"e2e/prompt-blocks.e2e.ts:12:1 › a title with `code`, " +
+				"[a link](x) and **bold**\" as failing"},
+			absent: []string{"could not read", "2 skipped"}},
+		// The marker states a failure where a line opens with it. A line that only says it — a
+		// step that greps for it prints the pattern it looked for — states no test name.
+		{name: "a line that says Go's marker without opening with it", log: mentionLog,
+			wants:  []string{"could not read its failing tests", "the end of its log states no test name"},
+			absent: []string{"as failing", "TestNothingFailedHere"}},
 		{name: "a log stating no test name", log: "Process completed with exit code 1.\n",
 			wants:  []string{"integration (failure, " + failedRun + ")", "could not read its failing tests", "the end of its log states no test name"},
 			absent: []string{"as failing"}},
