@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // eventWait is how long a test here waits FOR AN EVENT: a forward reaching its holder, a scan
@@ -1903,14 +1904,7 @@ func TestMain(m *testing.M) { os.Exit(testnats.MainWith(m, storetest.Main)) }
 
 func waitFor(t *testing.T, timeout time.Duration, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+	testwait.WithinPolling(t, timeout, testwait.Poll, what, condition)
 }
 
 func TestRunRoutesChangedDocumentAskAnswerToFollower(t *testing.T) {

@@ -197,6 +197,11 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	if err != nil {
 		return fmt.Errorf("migrations refused, none applied: %w", err)
 	}
+	for _, migration := range migrations {
+		if migration.NonTransactional {
+			return fmt.Errorf("migrations refused, none applied: migration %s is non-transactional; the broker runner applies its whole set in one transaction", migration.Name)
+		}
+	}
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err

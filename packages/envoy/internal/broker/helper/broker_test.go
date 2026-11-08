@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/oauthwire"
 	"github.com/sjawhar/envoy/internal/broker/proof"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // failAlways, set as a failure count (failFirst, revokeFailFirst), fails every such call a test
@@ -633,14 +634,9 @@ func (f *fakeBroker) issueCredential(t *testing.T, key *ecdsa.PrivateKey) *Machi
 // interval the fake names).
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if cond() {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+	if !testwait.Holds(5*time.Second, 5*time.Millisecond, cond) {
+		t.Fatal("condition never became true")
 	}
-	t.Fatal("condition never became true")
 }
 
 func TestLoginHoldsTheKeyAndEnrollSignsLauncherProofs(t *testing.T) {

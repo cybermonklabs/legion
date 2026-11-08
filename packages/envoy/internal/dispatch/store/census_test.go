@@ -628,10 +628,8 @@ func TestCensusExemptsAMigrationOfOnlyCatalogStatementsFromTheTableLimit(t *test
 // 20261102122400, the version production's schema_migrations records before this release, the
 // census of the whole shipped set runs with the limit at one byte: no table in the database is
 // under it, so a migration the census does not refuse on a table's size is one the limit never
-// applies to, at any size. That is the whole argument of the one byte. Their neighbours in the
-// same release show what the exemption is not: 20261102233625 alters embeddings and creates an
-// index on it, and 20261105084017 adds two columns and two constraints to artifact_reviews, and
-// no exemption of statement kinds reaches either, so each is refused on its table's size.
+// applies to, at any size. Their later neighbour 20261105084017 is catalog-only too: nullable
+// text columns, unvalidated CHECK constraints, functions and triggers read no existing row.
 func TestCensusExemptsTheShippedEmbeddingTriggerDropsAtAnyTableSize(t *testing.T) {
 	store := openEmptyTestStore(t)
 	migrateThrough(t, store, 20261102122400)
@@ -655,27 +653,58 @@ func TestCensusExemptsTheShippedEmbeddingTriggerDropsAtAnyTableSize(t *testing.T
 			t.Errorf("%s refused: %v", entry.Migration.Name, entry.Refusals)
 		}
 	}
-	// Refusals of the other pending migrations of the release are no business of this test: at a
-	// one-byte limit every migration that is not exempt is refused on some table.
-	for _, want := range []struct {
-		version int
-		table   string
-	}{
-		{20261102233625, "embeddings"},
-		{20261105084017, "artifact_reviews"},
-	} {
-		entry := pending[want.version]
-		if entry == nil {
-			t.Fatalf("%d is not pending; report:\n%s", want.version, reportText(report))
+	entry := pending[20261105084017]
+	if entry == nil || entry.TableSizeExemption != "create function and alter table and create trigger" || len(entry.Refusals) != 0 {
+		t.Fatalf("catalog-only review migration not exempt: %+v", entry)
+	}
+}
+
+// The one-byte limit is the existing size fixture: every nonempty table is over it, so admission
+// proves the rule is independent of size, including a production embeddings table over 1 GiB.
+func TestCensusAdmitsSplitWindowMigrationsAndRefusesTheOldIndexShape(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261102122400)
+	set := migrationsThrough(t, 20261102233630)
+	for _, oldShape := range []bool{false, true} {
+		candidate := make(fstest.MapFS, len(set))
+		for name, file := range set {
+			candidate[name] = file
 		}
-		if entry.TableSizeExemption != "" {
-			t.Errorf("%s: TableSizeExemption = %q, want none", entry.Migration.Name, entry.TableSizeExemption)
+		if oldShape {
+			name := "migrations/20261102233625_block_embedding_windows.up.sql"
+			candidate[name] = &fstest.MapFile{Data: append(append([]byte(nil), set[name].Data...), []byte("\ncreate index embeddings_window_owner on embeddings (kind, split_part(id, '#', 1)) where kind in ('document_block', 'comment_block', 'message_block', 'ask_part');")...)}
 		}
-		refused := slices.ContainsFunc(entry.Refusals, func(reason string) bool {
-			return strings.Contains(reason, want.table+" is ") && strings.Contains(reason, "above the 1 bytes a table a migration touches may be")
-		})
-		if !refused {
-			t.Errorf("%s: refusals = %v, want %s refused on its size", entry.Migration.Name, entry.Refusals, want.table)
+		report, err := census(context.Background(), store.Pool.Config().ConnString(), candidate, pgmigrate.CensusOptions{TableLimit: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if report.Refused() != oldShape {
+			t.Fatalf("old shape %v: unexpected verdict:\n%s", oldShape, reportText(report))
+		}
+		found := map[int]bool{20261102233625: false, 20261102233630: false}
+		for _, entry := range report.Pending {
+			if _, wanted := found[entry.Migration.Version]; wanted {
+				found[entry.Migration.Version] = true
+			}
+			switch entry.Migration.Version {
+			case 20261102233625:
+				if oldShape {
+					if len(entry.Refusals) != 1 || !strings.Contains(entry.Refusals[0], "embeddings is ") {
+						t.Fatalf("old index did not refuse embeddings on size: %+v", entry)
+					}
+				} else if entry.TableSizeExemption != "alter table and create function" {
+					t.Fatalf("catalog migration not exempt: %+v", entry)
+				}
+			case 20261102233630:
+				if !entry.ConcurrentIndex || len(entry.Refusals) != 0 {
+					t.Fatalf("concurrent migration not admitted: %+v", entry)
+				}
+			}
+		}
+		for version, present := range found {
+			if !present {
+				t.Fatalf("migration %d was not exercised by the census", version)
+			}
 		}
 	}
 }
@@ -753,11 +782,16 @@ func TestCensusDoesNotExemptACatalogMigrationAnEventTriggerRunsOn(t *testing.T) 
 func TestCensusStillRefusesAnIndexOrAColumnDefaultOnATableAboveTheLimit(t *testing.T) {
 	t.Parallel()
 	for name, migration := range map[string]string{
-		"an index":                    "create index things_kind on things (kind)",
-		"a column with a default":     "alter table things add column note text default 'x'",
-		"a default set on a column":   "alter table things alter column kind set default 'x'",
-		"a trigger beside an index":   "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
-		"a trigger only in a comment": "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
+		"an index":                         "create index things_kind on things (kind)",
+		"a column with a default":          "alter table things add column note text default 'x'",
+		"a not-null column with a default": "alter table things add column note text not null default 'x'",
+		"a volatile column default":        "alter table things add column token uuid default gen_random_uuid()",
+		"a validated check":                "alter table things add constraint c check (kind <> '')",
+		"an altered column type":           "alter table things alter column kind type varchar",
+		"constraint validation":            "alter table things validate constraint things_kind_check",
+		"a default set on a column":        "alter table things alter column kind set default 'x'",
+		"a trigger beside an index":        "create function owe() returns trigger language plpgsql as $$ begin return null; end $$; create trigger things_owed after insert on things for each row execute function owe(); create index things_kind on things (kind);",
+		"a trigger only in a comment":      "-- create trigger things_owed after insert on things for each row execute function owe();\ncreate index things_kind on things (kind)",
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, url := migratedToOne(t)

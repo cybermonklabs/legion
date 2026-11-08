@@ -3,6 +3,7 @@ package outbox
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync"
@@ -11,13 +12,16 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
@@ -749,25 +753,56 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	}
 }
 
-// A record that finds the publisher hold another's ends the holder as one that lost the hold, with
-// the hold's loss deadline still ahead. The holder stops that hold's renewal there and then: its
-// Lost is closed and it renews no more, the other's row is left alone, and a take of the hold
-// once it is free again has one renewal running, not two renewing the same row.
+// A record that finds the publisher hold another's ends the holder as one that lost the hold,
+// with the hold's loss deadline still ahead. The holder stops that hold's renewal there and then:
+// its Lost is closed, it sends no renewal across the first tick that follows, and the other's row
+// is left alone. This is also the one path that touches the hold not at all, so its deadline says
+// nothing about when the process stopped publishing: the line that ends the turn has to date the
+// stop at serve's return rather than at a deadline still minutes ahead. That makes it the one
+// path in this package's rows where the line's two bounds, stopped and stopped_by, are not both
+// that deadline but bracket the store that turned Publishing() false, so this is the row that
+// holds their order.
 //
 // Serial: it measures the process. It counts the renewal statements sent over a window of wall
 // time, which another test's load stretches (docs/testing.md).
 func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
+
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
 	tracer := &statementTracer{}
 	outbox := New(Deps{Store: tracedStore(t, database, tracer), Publisher: &recordingPublisher{}})
+
+	// The row takes the hold with duty.TryHold under options of its own rather than through
+	// outbox.tryHold, which uses publisherHoldOptions. What it tests is what publish does and
+	// logs when a recordBatch finds the hold another's before any renewal has noticed, and
+	// that property is not the publisher hold's production numbers; binding the row's slack to
+	// those numbers made every change of them a change of this row's flakiness. Halving Renew
+	// from 2 s to 1 s left the take, the seed, the append and a whole scan one second to run in
+	// before the guard below reports a correct product as a defect - on a runner that, by this
+	// change's own evidence, stalled for 3.1 s.
+	//
+	// These numbers leave seconds instead, inside what duty.TryHold accepts (0 <= Margin < TTL
+	// and 0 < Renew < TTL - Margin): the first renewal tick falls five seconds after the take, so
+	// the take, the seed, the append and a whole scan have those five seconds to run in before
+	// any renewal of this hold can reach the record path, and the deadline - the take plus
+	// TTL - Margin - stays five minutes ahead for the whole row. Five seconds is also short
+	// enough for the count below to wait that tick out and see whether the lost hold's renewal
+	// stopped. The hold is the outbox's own, under its token and instance, so the batch that
+	// records under it finds the row another's exactly as it would in production.
+	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token}
 	taken := time.Now()
-	hold, _ := outbox.tryHold(ctx)
+	hold, err := duty.TryHold(ctx, outbox.deps.Store.Pool, publisherHold, outbox.instance, recordPath)
+	if err != nil {
+		t.Fatalf("take the publisher hold under the row's own options: %v", err)
+	}
 	if hold == nil {
 		t.Fatal("the outbox did not take the publisher hold")
 	}
+	deadline := hold.Deadline()
 	other := uuid.New()
 	holdRow(t, database, other)
 	appendEvent(t, database, broker, model.Event{
@@ -775,11 +810,17 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 		Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: "recorded under another's hold"},
 	})
 
+	began := time.Now()
 	if end := outbox.publish(ctx, hold); end != holdLost {
 		t.Fatalf("publish ended %s, want %s", end, holdLost)
 	}
-	if elapsed := time.Since(taken); elapsed >= publisherHoldOptions.Renew {
-		t.Fatalf("publish took %s, past the first renewal: the test is about a record finding the hold another's before any renewal does", elapsed)
+	returned := time.Now()
+	// A publish slow enough to outrun the first renewal would reach holdLost by that renewal
+	// finding the row another's instead, where loseLocked pulls the deadline back to the moment
+	// it closed Lost and stopped is that deadline, so say which path ran rather than let the
+	// assertions below fail as if the product were wrong.
+	if elapsed := returned.Sub(taken); elapsed >= recordPath.Renew {
+		t.Fatalf("publish took %s, past the first renewal of the row's own hold: the row is about a record finding the hold another's before any renewal does", elapsed)
 	}
 	select {
 	case <-hold.Lost():
@@ -791,17 +832,194 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 		t.Fatalf("the hold's row names %s (%v), want the other process's %s left alone", holder, err, other)
 	}
 
+	stopped, ok := timeIn(t, recorder, "lost the publisher hold", "stopped")
+	if !ok {
+		t.Fatalf("no record of the log says %q; it says %q", "lost the publisher hold", loggedMessages(recorder))
+	}
+	// timeIn has already found that record, and it fails the row itself when a key it is asked
+	// for is missing, so there is nothing left for a second !ok to catch.
+	stoppedBy, _ := timeIn(t, recorder, "lost the publisher hold", "stopped_by")
+	// The four comparisons below hold the whole order a reader of the log depends on:
+	// began <= stopped <= stopped_by <= returned, with stopped_by still short of the deadline.
+	// began is read just ahead of publish and returned just after it, so the pair is held inside
+	// the turn itself, which is what separates serve's return from a deadline minutes further on;
+	// a stopped that is too early - a zero value, or one dated before this turn began - would
+	// pass every bound from the future and is caught by the first. The middle comparison is the
+	// reason this row reads stopped_by at all: this is the one path here where the two are not
+	// the same capped value, so the two clocks read in the wrong order, or the two attributes
+	// swapped, leave an upper bound earlier than the lower one and fail here; two reads that land
+	// on the same nanosecond pass, and leave bounds that are still honest to the clock.
+	//
+	// What no comparison here can catch is which side of o.hold.Store(nil) each clock was read
+	// on. Moving the second read above the store, and leaving it after the first, keeps the two
+	// in order and every bound below holding; the line is written after both reads and after the
+	// store, so nothing it carries says where the store fell between them. No row holds that
+	// placement: publish's doc comment records it, and the one reader that compares /healthz with
+	// stopped_by, the two-process row, sees only turns that end at the hold's deadline, where
+	// stopped_by is the deadline wherever the read sits.
+	if stopped.Before(began) {
+		t.Errorf("the line dates the stop at %s, before publish was called at %s",
+			stopped.Format(time.RFC3339Nano), began.Format(time.RFC3339Nano))
+	}
+	if stoppedBy.Before(stopped) {
+		t.Errorf("the line bounds the stop above by %s, before the %s it bounds it below by",
+			stoppedBy.Format(time.RFC3339Nano), stopped.Format(time.RFC3339Nano))
+	}
+	if returned.Before(stoppedBy) {
+		t.Errorf("the line bounds the stop above by %s, after the turn ended at %s",
+			stoppedBy.Format(time.RFC3339Nano), returned.Format(time.RFC3339Nano))
+	}
+	if !stoppedBy.Before(deadline) {
+		t.Errorf("the line bounds the stop above by %s, at or past the loss deadline of %s this path leaves minutes ahead",
+			stoppedBy.Format(time.RFC3339Nano), deadline.Format(time.RFC3339Nano))
+	}
+
+	// This count is the whole of the proof that the renewal of the hold just lost stopped when
+	// publish released it: nothing else in the row watches that renewal. Its window starts here,
+	// with publish returned and the stop asserted, and runs past that hold's first renewal tick
+	// at taken + Renew, which no earlier part of the row reaches: a renewal still running sends
+	// its one statement there - that is what a duty.Hold whose Release does not stop the renewal,
+	// and whose renew does not return when Lost closes, does - and nothing else in this process
+	// renews a hold, so a statement in the window could only be this one's. Half a Renew of slack
+	// past the tick, so a statement a loaded runner was slow to start still lands inside the
+	// window rather than after it.
+	renewalsBefore := len(tracer.matching("update duty_holds set expires_at"))
+	window := recordPath.Renew + recordPath.Renew/2
+	time.Sleep(time.Until(taken.Add(window)))
+	if got := len(tracer.matching("update duty_holds set expires_at")) - renewalsBefore; got != 0 {
+		t.Fatalf("%s after the hold was taken - past the first tick of its renewal at %s - %d renewals of the lost hold were sent, want none: publish left its renewal running", window, recordPath.Renew, got)
+	}
+}
+
+// heldRelease is a pgx tracer that holds the hold's release statement until the test lets it go,
+// so a row can read the log while the release is still running. Every other statement passes.
+// A row defers let: without it a t.Fatalf in the middle would leave the statement blocked, and
+// the pool's own close - a cleanup, which runs after every defer - would wait on it until the
+// package's timeout instead of the row failing.
+type heldRelease struct {
+	started   chan struct{}
+	goAhead   chan struct{}
+	onceStart sync.Once
+	onceGo    sync.Once
+}
+
+func newHeldRelease() *heldRelease {
+	return &heldRelease{started: make(chan struct{}), goAhead: make(chan struct{})}
+}
+
+// let lets the release run, whether or not it has reached the tracer yet.
+func (h *heldRelease) let() { h.onceGo.Do(func() { close(h.goAhead) }) }
+
+func (h *heldRelease) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "delete from duty_holds") {
+		h.onceStart.Do(func() { close(h.started) })
+		<-h.goAhead
+	}
+	return ctx
+}
+
+func (h *heldRelease) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// timeIn is the key attribute, read as the RFC3339Nano string the code logs, of the first record
+// the recorder kept whose message holds message, and false when no record says it yet, so a row
+// can both wait for the line and read a moment it carries. It reads the records the code wrote
+// rather than a rendering of them: slog's text handler truncates a record's own time to the
+// millisecond and quotes what it writes, so a row that cut its output on "stopped=" and trimmed
+// the quotes off asserted on a layer that is not the code under test.
+//
+// It takes the attribute's name because the lost and released lines carry two bounds on the
+// moment the process stopped publishing, stopped and stopped_by, and a row that reads only the
+// first leaves their order, their place inside the turn and their distance from the deadline
+// unheld.
+func timeIn(t *testing.T, recorder *logtest.Recorder, message, key string) (time.Time, bool) {
+	t.Helper()
+	for _, record := range recorder.Records() {
+		if !strings.Contains(record.Message, message) {
+			continue
+		}
+		value, found := "", false
+		record.Attrs(func(attribute slog.Attr) bool {
+			if attribute.Key != key {
+				return true
+			}
+			value, found = attribute.Value.String(), true
+			return false
+		})
+		if !found {
+			t.Fatalf("the record %q carries no %s attribute", record.Message, key)
+		}
+		moment, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			t.Fatalf("read the %s attribute %q of the record %q: %v", key, value, record.Message, err)
+		}
+		return moment, true
+	}
+	return time.Time{}, false
+}
+
+// loggedMessages are the messages of every record the recorder kept so far, for a row's failure
+// to say what was logged instead of what it waited for.
+func loggedMessages(recorder *logtest.Recorder) []string {
+	records := recorder.Records()
+	messages := make([]string, 0, len(records))
+	for _, record := range records {
+		messages = append(messages, record.Message)
+	}
+	return messages
+}
+
+// A holder whose row is taken from under it loses the hold at once: the deadline is pulled back
+// to that moment, and the line that ends the turn says so. The line is written before the
+// release, which is a database round trip the job this came from took a second over, so it is
+// already in the log while the release's own statement is still running, and its stopped
+// attribute names the moment the process stopped publishing rather than the moment it was
+// written.
+func TestTheLostLineIsWrittenBeforeTheReleaseAndDatesTheStop(t *testing.T) {
+	recorder := &logtest.Recorder{}
+	logtest.SetDefault(t, recorder)
+
+	ctx := context.Background()
+	database := storetest.Open(t)
+	held := newHeldRelease()
+	defer held.let()
+	outbox := New(Deps{Store: tracedStore(t, database, held), Publisher: &recordingPublisher{}})
+	hold, _ := outbox.tryHold(ctx)
+	if hold == nil {
+		t.Fatal("the outbox did not take the publisher hold")
+	}
+	ended := make(chan holdEnd, 1)
+	go func() { ended <- outbox.publish(ctx, hold) }()
+
+	// The row goes, so the next renewal affects no row and the hold is lost there and then.
 	if _, err := database.Pool.Exec(ctx, `delete from duty_holds where name = $1`, publisherHold); err != nil {
-		t.Fatalf("free the hold: %v", err)
+		t.Fatalf("take the hold's row away: %v", err)
 	}
-	renewals := len(tracer.matching("update duty_holds set expires_at"))
-	again, _ := outbox.tryHold(ctx)
-	if again == nil {
-		t.Fatal("the outbox did not take the free publisher hold again")
+	select {
+	case <-hold.Lost():
+	case <-time.After(2 * publisherHoldOptions.Renew):
+		t.Fatalf("the hold was not lost within %v of its row going", 2*publisherHoldOptions.Renew)
 	}
-	t.Cleanup(func() { _ = again.Release(context.Background()) })
-	time.Sleep(publisherHoldOptions.Renew + publisherHoldOptions.Renew/4)
-	if got := len(tracer.matching("update duty_holds set expires_at")) - renewals; got != 1 {
-		t.Fatalf("%s after the hold was taken again, %d renewals were sent, want the new hold's one", publisherHoldOptions.Renew+publisherHoldOptions.Renew/4, got)
+	lostAt := time.Now()
+
+	select {
+	case <-held.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the holder never ran the release")
+	}
+	if _, ok := timeIn(t, recorder, "lost the publisher hold", "stopped"); !ok {
+		t.Fatalf("the holder's release is running and it has not logged that it lost the hold yet; it logged %q", loggedMessages(recorder))
+	}
+	held.let()
+	if end := <-ended; end != holdLost {
+		t.Fatalf("publish ended %s, want %s", end, holdLost)
+	}
+
+	stopped, ok := timeIn(t, recorder, "lost the publisher hold", "stopped")
+	if !ok {
+		t.Fatalf("no record of the log says %q; it says %q", "lost the publisher hold", loggedMessages(recorder))
+	}
+	if stopped.After(lostAt) || lostAt.Sub(stopped) > time.Second {
+		t.Errorf("the line dates the stop at %s, and the hold reported itself lost at %s",
+			stopped.Format(time.RFC3339Nano), lostAt.Format(time.RFC3339Nano))
 	}
 }

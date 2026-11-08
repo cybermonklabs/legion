@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/pglisten"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
@@ -1434,12 +1435,8 @@ func (e *syncEmbedder) canaryCalls() int {
 func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
 	t.Helper()
 	within = max(within, eventWait)
-	deadline := time.Now().Add(within)
-	for !done() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %v", what, within)
-		}
-		time.Sleep(50 * time.Millisecond)
+	if !testwait.Holds(within, 50*time.Millisecond, done) {
+		t.Fatalf("%s: not within %v", what, within)
 	}
 }
 

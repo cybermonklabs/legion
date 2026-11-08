@@ -296,7 +296,7 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 		return
 	}
 	d.mu.Unlock()
-	negativelyAcknowledge(msg)
+	redeliverAfter(msg, 0)
 }
 
 // acknowledgeOrHold acknowledges msg, the message of a handler that has finished, and holds it
@@ -346,7 +346,7 @@ func (d *intakeDelivery) acknowledgeOrHold(msg *natsgo.Msg) {
 	}
 	d.mu.Unlock()
 	slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-	negativelyAcknowledge(msg)
+	redeliverAfter(msg, 0)
 }
 
 // intakeAckBody and intakeNakBody are the bodies NATS reads an acknowledgement and a negative

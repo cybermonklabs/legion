@@ -153,10 +153,18 @@ func (l Locking) RetryLockTimeouts(ctx context.Context, migration string, attemp
 // the migration, the lock it wanted and the sessions holding it, as the watch last saw them. Any
 // other error comes back prefixed with the migration's file name.
 func (l Locking) Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
+	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
+		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
+	}
 	if _, err := tx.Exec(ctx, "select set_config('lock_timeout', $1, true)", l.setting()); err != nil {
 		return fmt.Errorf("migration %s: set lock_timeout: %w", migration.Name, err)
 	}
-	conn := tx.Conn()
+	return l.execWatched(ctx, tx.Conn(), migration, signIn)
+}
+
+// execWatched executes on the connection's current transaction, explicit or implicit. Both
+// execution modes set their lock bound before starting the same diagnostic watch.
+func (l Locking) execWatched(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	// The watch's own copy of the configuration (pgx.Conn.Config), which signIn may give a fresh
 	// password before each dial.
 	config := conn.Config()
@@ -173,14 +181,21 @@ func (l Locking) Exec(ctx context.Context, tx pgx.Tx, migration Migration, signI
 		return dialed, nil
 	}
 	watch := startWatch(ctx, dial, conn.PgConn().PID(), l.watchInterval())
-	_, err := tx.Exec(ctx, migration.SQL)
+	var err error
+	if migration.NonTransactional {
+		// The extended protocol independently refuses a second statement, even if the server's
+		// parser ever differs from the loader's reading.
+		_, err = conn.Exec(ctx, migration.SQL, pgx.QueryExecModeExec)
+	} else {
+		_, err = conn.Exec(ctx, migration.SQL)
+	}
 	wait, watchErr := watch.stop()
 	if err == nil {
 		return nil
 	}
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == lockNotAvailable {
-		timedOut := &LockTimeoutError{Migration: migration.Name, Wait: wait, WatchErr: watchErr, Err: err}
+		timedOut := &LockTimeoutError{Migration: migration.Name, Wait: wait, WatchErr: watchErr, Err: err, NonTransactional: migration.NonTransactional}
 		if wait != nil {
 			timedOut.Diagnoses = diagnoseHolders(ctx, dial, wait.Holders)
 		}
@@ -314,10 +329,11 @@ func sessionList(sessions []Session) string {
 	return strings.Join(parts, "; ")
 }
 
-// LockTimeoutError is a migration that gave up waiting for a lock and applied nothing, since its
-// transaction rolled back.
+// LockTimeoutError is a migration that gave up waiting for a lock. A transactional migration
+// rolled back; a concurrent build may have left an INVALID index and needs the next check.
 type LockTimeoutError struct {
-	Migration string
+	Migration        string
+	NonTransactional bool
 	// Wait is the lock the watch last saw the migration waiting for, nil when it saw none.
 	Wait *LockWait
 	// WatchErr is the last error the watch's reads met, which is why Wait can be nil.
@@ -331,14 +347,18 @@ type LockTimeoutError struct {
 
 func (e *LockTimeoutError) Error() string {
 	var b strings.Builder
+	effect := " and applied nothing"
+	if e.NonTransactional {
+		effect = "; a concurrent build may have left an INVALID index; retry checks it before recording the version"
+	}
 	if e.Wait == nil {
-		fmt.Fprintf(&b, "migration %s gave up waiting for a lock when its lock_timeout ran out (%s unless the migration sets its own) and applied nothing; the lock watch did not see which lock", e.Migration, LockTimeout)
+		fmt.Fprintf(&b, "migration %s gave up waiting for a lock when its lock_timeout ran out (%s unless the migration sets its own)%s; the lock watch did not see which lock", e.Migration, LockTimeout, effect)
 		if e.WatchErr != nil {
 			fmt.Fprintf(&b, " (%v)", e.WatchErr)
 		}
 		fmt.Fprintf(&b, ". Find the transactions open longer than that: select pid, usename, application_name, state, xact_start, query from pg_stat_activity where xact_start < now() - interval '%d milliseconds' order by xact_start", LockTimeout.Milliseconds())
 	} else {
-		fmt.Fprintf(&b, "migration %s gave up waiting for %s on %s when its lock_timeout ran out (%s unless the migration sets its own) and applied nothing", e.Migration, e.Wait.Mode, e.Wait.Object, LockTimeout)
+		fmt.Fprintf(&b, "migration %s gave up waiting for %s on %s when its lock_timeout ran out (%s unless the migration sets its own)%s", e.Migration, e.Wait.Mode, e.Wait.Object, LockTimeout, effect)
 		if len(e.Wait.Holders) > 0 {
 			fmt.Fprintf(&b, "; it was queued behind %s", sessionList(e.Wait.Holders))
 		}

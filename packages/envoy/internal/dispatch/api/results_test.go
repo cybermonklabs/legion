@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // twoChecks is a Verification document with one pre-merge check and one after-merge check.
@@ -26,6 +27,19 @@ const twoChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\" negative_c
 	":::\n\n" +
 	":::check{#k2 when=\"after_merge\"}\n" +
 	"Production answers at the merged commit.\n" +
+	":::\n"
+
+// afterMergeAndDefaultChecks is a Verification document with one after-merge check and one
+// default-branch check, the pair that asks two questions about one commit: an issue whose work
+// merged into an integration branch has its after-merge check measured against that branch and
+// its default-branch check against the trunk. The after-merge check comes first, so a read
+// answers it first and an answer wrongly shared between the two would be the integration
+// branch's.
+const afterMergeAndDefaultChecks = ":::check{#k4 when=\"after_merge\"}\n" +
+	"The branch the work merged into answers at the merged commit.\n" +
+	":::\n\n" +
+	":::check{#k5 when=\"default_branch\"}\n" +
+	"The trunk answers at the merged commit.\n" +
 	":::\n"
 
 // siblingChecks is two pre-merge checks, so a rewording of one can be seen to leave the other's
@@ -48,6 +62,18 @@ const (
 	headCommit    = "1111111111111111111111111111111111111111"
 	newHeadCommit = "2222222222222222222222222222222222222222"
 	mergeCommit   = "3333333333333333333333333333333333333333"
+	// integrationCommit is on the integration branch an issue's pull request merged into and
+	// on no other branch: the commit an after-merge result of that issue reads current at and
+	// a default-branch result of it does not.
+	integrationCommit = "4444444444444444444444444444444444444444"
+	// strayCommit is on no branch at all: a commit built and never landed.
+	strayCommit = "5555555555555555555555555555555555555555"
+	// baseMergeCommit is the commit GitHub made when a pull request merged into its base
+	// branch, which Dispatch records as on that branch as it records the merge. A repository
+	// that merges by squash puts a squash of the work on the default branch and never this
+	// commit, so once the base branch is deleted that record is the whole of what can answer
+	// for it.
+	baseMergeCommit = "6666666666666666666666666666666666666666"
 	// nearHeadCommit shares its first twelve characters with headCommit and differs after
 	// them: the pair an abbreviated commit cannot tell apart.
 	nearHeadCommit = "111111111111aaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -100,9 +126,19 @@ func checkOf(t *testing.T, read issueResults, blockID string) model.CheckBlock {
 }
 
 // writeHead stores one pull request head row directly, as the intake's write of a
-// `pull_request` envelope would leave it. An empty issueKey is a pull request the attribution
+// `pull_request` envelope would leave it, on the base branch `main` that a call site saying
+// nothing about a base branch means. An empty issueKey is a pull request the attribution
 // named no issue for.
 func writeHead(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey string) {
+	t.Helper()
+	writeHeadOnBase(t, database, repo, number, sha, state, issueKey, "main")
+}
+
+// writeHeadOnBase stores one pull request head row whose base branch the caller names: the
+// row delivery.BaseBranchMergedFor answers an issue's merged branch from, where the row is
+// merged. The conflict clause writes every column either caller means to write, so a second
+// row for the same pull request leaves none of them as the first write left it.
+func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number int, sha, state, issueKey, baseRef string) {
 	t.Helper()
 	var attributed *string
 	if issueKey != "" {
@@ -110,10 +146,11 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at)
-		values ($1, $2, $3, 'legion/work', 'main', $4, $5, now(), now())
-		on conflict (repo, number) do update set head_sha = excluded.head_sha, state = excluded.state, issue_key = excluded.issue_key
-	`, repo, number, sha, state, attributed); err != nil {
-		t.Fatalf("store the head of %s#%d: %v", repo, number, err)
+		values ($1, $2, $3, 'legion/work', $4, $5, $6, now(), now())
+		on conflict (repo, number) do update set head_sha = excluded.head_sha, base_ref = excluded.base_ref,
+			state = excluded.state, issue_key = excluded.issue_key
+	`, repo, number, sha, baseRef, state, attributed); err != nil {
+		t.Fatalf("store the head of %s#%d on %s: %v", repo, number, baseRef, err)
 	}
 }
 
@@ -388,7 +425,73 @@ func resultsGitHub(t *testing.T, repos map[string]bool, compare func(base, head 
 // The route is served here rather than left to the mux's own 404, which this codebase reads as
 // "repository unreadable" and stores the result for: a test missing the route would prove
 // nothing.
+//
+// Every repository's default branch is `main`: resultsGitHubWithDefaultBranch is the same
+// fixture with that branch named.
 func resultsGitHubHolding(t *testing.T, repos, held map[string]bool, compare func(base, head string) string) (http.Handler, *store.Store) {
+	t.Helper()
+	return resultsGitHubWithDefaultBranch(t, repos, held, "main", compare)
+}
+
+// resultsGitHubWithDefaultBranch is resultsGitHubHolding with the branch `GET
+// /repos/{owner}/{repo}` answers as every repository's default named, so a test can tell the
+// branch Dispatch resolved from a branch a fixture hard-coded. It is a variant rather than a
+// widening of resultsGitHubHolding's signature, whose call sites are about commits and
+// readable repositories and mean `main` by the default branch.
+func resultsGitHubWithDefaultBranch(
+	t *testing.T,
+	repos, held map[string]bool,
+	defaultBranch string,
+	compare func(base, head string) string,
+) (http.Handler, *store.Store) {
+	t.Helper()
+	return resultsGitHubWithDeletedBranch(t, repos, held, defaultBranch, noDeletedBranch, compare)
+}
+
+// noDeletedBranch is what resultsGitHubWithDeletedBranch is passed where no branch of the
+// repository is deleted: no branch is called nothing, so every compare read is answered by
+// `compare` and the fixture is resultsGitHubWithDefaultBranch exactly.
+const noDeletedBranch = ""
+
+// resultsGitHubWithDeletedBranch is resultsGitHubWithDefaultBranch with one branch GitHub no
+// longer holds named: every compare read whose base is that branch answers `404 Not Found`,
+// body and all, as a compare against a branch deleted when its pull request merged does —
+// which a repository that deletes merged branches does on every merge.
+//
+// The deleted branch is named here rather than answered by `compare`, whose answer is
+// GitHub's compare `status`, because a 404 is a different shape of answer: it says nothing at
+// all about the commit, and the client reads it as a repository it cannot see
+// (delivery.Branches.CommitOnBranch, which holds the pair off for five minutes and answers
+// unknown meanwhile). It is a variant rather than a widening of the signature above for the
+// reason that one is a variant of resultsGitHubHolding: every call site of that one is about
+// a GitHub holding every branch it is asked about.
+func resultsGitHubWithDeletedBranch(
+	t *testing.T,
+	repos, held map[string]bool,
+	defaultBranch, deletedBranch string,
+	compare func(base, head string) string,
+) (http.Handler, *store.Store) {
+	t.Helper()
+	return resultsGitHubAnswering(t, repos, held, defaultBranch, func(base, head string) (int, string) {
+		if deletedBranch != noDeletedBranch && base == deletedBranch {
+			return http.StatusNotFound, ""
+		}
+		return http.StatusOK, compare(base, head)
+	})
+}
+
+// resultsGitHubAnswering is the fixture every one above is made of, and the one a test reaches
+// for when a compare read must fail with something other than the 404 a deleted branch
+// answers: `answer` is given each read's base and head and returns the HTTP status GitHub
+// sends and, where that status is 200, GitHub's own compare `status` field. It counts nothing
+// of its own, so a test that must count the compare reads counts them inside `answer`, which
+// sees the refused reads the compare callback above never does.
+func resultsGitHubAnswering(
+	t *testing.T,
+	repos, held map[string]bool,
+	defaultBranch string,
+	answer func(base, head string) (int, string),
+) (http.Handler, *store.Store) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -409,7 +512,7 @@ func resultsGitHubHolding(t *testing.T, repos, held map[string]bool, compare fun
 		fmt.Fprintf(w, `{"token":"ghs_fake_77","expires_at":%q}`, time.Now().Add(time.Hour).Format(time.RFC3339))
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
+		fmt.Fprintf(w, `{"full_name":%q,"default_branch":%q}`, r.PathValue("owner")+"/"+r.PathValue("repo"), defaultBranch)
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
 		sha := r.PathValue("sha")
@@ -422,13 +525,18 @@ func resultsGitHubHolding(t *testing.T, repos, held map[string]bool, compare fun
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
 		base, head, _ := strings.Cut(r.PathValue("basehead"), "...")
-		fmt.Fprintf(w, `{"status":%q}`, compare(base, head))
+		status, comparison := answer(base, head)
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
+			return
+		}
+		fmt.Fprintf(w, `{"status":%q}`, comparison)
 	})
-	upstream := httptest.NewServer(mux)
-	t.Cleanup(upstream.Close)
+	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _ := newTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream.URL,
+		githubAPIBase: upstream,
 	})
 	return handler, database
 }
@@ -579,9 +687,12 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 	}
 }
 
-// An after-merge result is current at a commit on the repository's default branch, older at a
-// commit of an unmerged branch, and unknown where Dispatch's App cannot read the repository.
-func TestAfterMergeResultCurrencyFollowsTheDefaultBranch(t *testing.T) {
+// An after-merge result of an issue Dispatch holds no pull request of at all is current at a
+// commit on the repository's default branch and older at a commit of an unmerged branch, and
+// both answers are stored, so a second read of the same results asks GitHub nothing. The
+// fallback itself, with the rows that choose a branch present and naming none for this issue,
+// is TestAfterMergeResultCurrencyFallsBackToTheTrunkWithoutAMergeOfTheIssue below.
+func TestAfterMergeResultCurrencyWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) {
 	t.Parallel()
 	calls := 0
 	handler, _ := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
@@ -619,6 +730,153 @@ func TestAfterMergeResultCurrencyFollowsTheDefaultBranch(t *testing.T) {
 	}
 }
 
+// An after-merge result is measured against the branch its issue's pull request merged into
+// and not the repository's default branch: an issue whose work merged into an integration
+// branch has reached that branch and no other, so a commit that branch carries is what proves
+// it, and a reviewer reading the Verification tab sees the pass it earned rather than an
+// `older` that waits on the integration branch itself landing.
+//
+// The same read's default-branch check is measured against the trunk at the very same commit,
+// which the integration branch carries and the trunk does not. Two questions about one commit
+// have two answers, and both the stored row and the memo one read holds are keyed by the
+// branch asked about: a key of the repository and the commit alone would hand the
+// default-branch check the integration branch's yes.
+func TestAfterMergeResultCurrencyFollowsTheBranchTheIssueMergedInto(t *testing.T) {
+	calls := 0
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
+		calls++
+		if base == "integration/x" && head == integrationCommit {
+			return "behind"
+		}
+		return "diverged"
+	})
+	issue := issueInRepository(t, handler, "RESM", "acme/widgets", "Merged into an integration branch")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", afterMergeAndDefaultChecks)
+	writeHeadOnBase(t, database, "acme/widgets", 41, headCommit, "merged", issue.Key, "integration/x")
+
+	onBase := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", integrationCommit, nil)))
+	offBase := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", strayCommit, nil)))
+	trunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k5", "pass", integrationCommit, nil)))
+
+	// All three in the one read: the default-branch check comes after the after-merge check in
+	// the document, so its question about integrationCommit is asked after that commit has
+	// already been answered yes for the integration branch.
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k4", onBase.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result at a commit on the branch the issue merged into = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k4", offBase.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("an after-merge result at a commit on neither branch = %q, want older", got)
+	}
+	if got := currencyOf(t, read, "k5", trunk.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("a default-branch result at a commit only the integration branch holds = %q, want older", got)
+	}
+	// Each of the three questions is stored under the branch it asked about — a yes for good,
+	// a no for five minutes — so a second read inside them spends no compare call at all.
+	before := calls
+	readResults(t, handler, issue.Key)
+	if calls != before {
+		t.Fatalf("a second read made %d compare calls, want none (every answer is stored)", calls-before)
+	}
+}
+
+// A default-branch check keeps its meaning whatever its issue's pull request merged into: it
+// is current at a commit the repository's default branch carries and older at one only the
+// integration branch holds. That is the whole of the difference between the two `when`s, and
+// it is why a check that must speak for the trunk is written `default_branch` rather than
+// `after_merge`.
+func TestDefaultBranchResultCurrencyStaysOnTheTrunkForAnIssueMergedElsewhere(t *testing.T) {
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
+		switch {
+		case base == "integration/x" && head == integrationCommit:
+			return "behind"
+		case base == "main" && head == mergeCommit:
+			return "behind"
+		}
+		return "diverged"
+	})
+	issue := issueInRepository(t, handler, "RESJ", "acme/widgets", "Trunk check of an integration-branch issue")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", afterMergeAndDefaultChecks)
+	writeHeadOnBase(t, database, "acme/widgets", 42, headCommit, "merged", issue.Key, "integration/x")
+
+	onIntegration := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k5", "pass", integrationCommit, nil)))
+	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k5", "pass", mergeCommit, nil)))
+
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k5", onIntegration.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("a default-branch result at a commit only the branch the issue merged into holds = %q, want older", got)
+	}
+	if got := currencyOf(t, read, "k5", onTrunk.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("a default-branch result at a commit the default branch holds = %q, want current", got)
+	}
+}
+
+// An issue Dispatch holds no merge of is measured against the repository's default branch, as
+// every after-merge result was before a branch was chosen at all. The row that chooses the
+// branch must be merged and must be the check's issue's own: this issue's pull request is
+// still open, and the merge into an integration branch belongs to a neighbour, so neither
+// names a branch for this issue. Its result reads current at a commit the default branch
+// carries and older at the neighbour's integration-branch commit, which that branch does hold.
+func TestAfterMergeResultCurrencyFallsBackToTheTrunkWithoutAMergeOfTheIssue(t *testing.T) {
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
+		switch {
+		case base == "main" && head == mergeCommit:
+			return "behind"
+		case base == "integration/x" && head == integrationCommit:
+			return "behind"
+		}
+		return "diverged"
+	})
+	neighbour := issueInRepository(t, handler, "RESP", "acme/widgets", "Merged into an integration branch")
+	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": "RESP", "title": "Still open", "spec": "A spec\n"}, "alice"))
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	writeHeadOnBase(t, database, "acme/widgets", 43, newHeadCommit, "merged", neighbour.Key, "integration/x")
+	writeHead(t, database, "acme/widgets", 44, headCommit, "open", issue.Key)
+
+	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
+	onNeighboursBranch := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", integrationCommit, nil)))
+
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", onTrunk.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result of an issue Dispatch holds no merge of, at a default-branch commit = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k2", onNeighboursBranch.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("an after-merge result of an issue Dispatch holds no merge of, at a commit only another issue's integration branch holds = %q, want older", got)
+	}
+}
+
+// A merged row carrying no base branch at all — the shape a `pull_request` envelope published
+// before Dispatch carried the field leaves behind — is no branch to measure against, and the
+// repository's default branch answers instead. The default branch here is `trunk`, so a result
+// measured against a hard-coded `main` would read older and this test would say so.
+func TestAfterMergeResultCurrencyFallsBackWhenTheMergedRowNamesNoBaseBranch(t *testing.T) {
+	handler, database := resultsGitHubWithDefaultBranch(t, map[string]bool{"acme/widgets": true}, nil, "trunk",
+		func(base, head string) string {
+			if base == "trunk" && head == mergeCommit {
+				return "behind"
+			}
+			return "diverged"
+		})
+	issue := issueInRepository(t, handler, "RESV", "acme/widgets", "Merged before the base branch was carried")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	// The empty base branch is named here, which is what the row is for: the column is
+	// `not null default ''`, so an envelope published before Dispatch carried the field
+	// leaves exactly this.
+	writeHeadOnBase(t, database, "acme/widgets", 45, headCommit, "merged", issue.Key, "")
+
+	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
+	offTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", onTrunk.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result of an issue whose merged row names no base branch, at a commit the default branch carries = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k2", offTrunk.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("an after-merge result of an issue whose merged row names no base branch, at a commit no branch carries = %q, want older", got)
+	}
+}
+
 // Where the App cannot read the check's issue's repository, the result's commit is shown with
 // neither mark.
 func TestAfterMergeResultCurrencyIsUnknownWhenTheAppCannotReadTheRepository(t *testing.T) {
@@ -643,6 +901,193 @@ func TestAfterMergeResultCurrencyIsUnknownWhenTheAppCannotReadTheRepository(t *t
 	none := decodeBody[recordedResult](t, recordResult(t, handler, loose.Key, resultBody("k2", "pass", mergeCommit, nil)))
 	if got := currencyOf(t, readResults(t, handler, loose.Key), "k2", none.Result.ID); got != model.CurrencyUnknown {
 		t.Fatalf("a result of an issue with no repository = %q, want unknown", got)
+	}
+}
+
+// The base branch or the default branch, whichever carries the commit. An issue whose pull
+// request merged into a branch other than the repository's default reads current at a commit
+// that branch carries — the work reached it, whether or not the branch has landed — and
+// current at a commit the default branch carries, since an integration branch that has landed
+// has carried the work onto the trunk, where the base branch itself may be gone. A commit
+// neither branch carries reads older.
+//
+// The same read's default-branch check is measured against the trunk alone, at the very commit
+// the after-merge check has just read current on the integration branch: an answer cached for
+// one branch is never read for another, which the stored row and the memo of one read are both
+// keyed by the branch to keep.
+func TestAfterMergeResultCurrencyReadsTheBaseBranchOrTheDefaultBranch(t *testing.T) {
+	calls := 0
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
+		calls++
+		switch {
+		case base == "integration/x" && head == integrationCommit:
+			return "behind"
+		case base == "main" && head == mergeCommit:
+			return "behind"
+		}
+		return "diverged"
+	})
+	issue := issueInRepository(t, handler, "RESB", "acme/widgets", "Merged into an integration branch that landed")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", afterMergeAndDefaultChecks)
+	writeHeadOnBase(t, database, "acme/widgets", 46, headCommit, "merged", issue.Key, "integration/x")
+
+	onBase := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", integrationCommit, nil)))
+	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", mergeCommit, nil)))
+	onNeither := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k4", "pass", strayCommit, nil)))
+	trunkCheck := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k5", "pass", integrationCommit, nil)))
+
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k4", onBase.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result at a commit on the branch the issue merged into = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k4", onTrunk.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result at a commit on the repository's default branch = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k4", onNeither.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("an after-merge result at a commit on neither branch = %q, want older", got)
+	}
+	if got := currencyOf(t, read, "k5", trunkCheck.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("a default-branch result at a commit only the integration branch holds = %q, want older", got)
+	}
+	// Every question is stored under the branch it asked about — a yes for good, a no for five
+	// minutes — so a second read inside them spends no compare call at all.
+	before := calls
+	readResults(t, handler, issue.Key)
+	if calls != before {
+		t.Fatalf("a second read made %d compare calls, want none (every answer is stored)", calls-before)
+	}
+}
+
+// What the widened rule costs an issue merged the ordinary way, into the repository's own
+// default branch: the one compare read per result commit it cost when an after-merge result
+// was measured against one branch. The base branch is read first and asks about `main`, and
+// the default-branch read that follows a no asks about that same branch under the name
+// delivery resolves, where it finds the branch_commits row the first read wrote and spends no
+// call (delivery.Branches.CommitOnBranch reads what is stored before it asks GitHub).
+func TestAfterMergeResultCurrencyOfAnIssueMergedIntoTheTrunkSpendsOneCompareReadACommit(t *testing.T) {
+	calls := 0
+	handler, database := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
+		calls++
+		if base == "main" && head == mergeCommit {
+			return "behind"
+		}
+		return "diverged"
+	})
+	issue := issueInRepository(t, handler, "RESO", "acme/widgets", "Merged into the trunk")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	writeHeadOnBase(t, database, "acme/widgets", 47, headCommit, "merged", issue.Key, "main")
+
+	landed := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+
+	before := calls
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", landed.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result of an issue merged into the trunk, at a commit the trunk carries = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k2", stray.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("an after-merge result of an issue merged into the trunk, at a commit no branch carries = %q, want older", got)
+	}
+	if spent := calls - before; spent != 2 {
+		t.Fatalf("one read of two result commits made %d compare calls, want one for each commit", spent)
+	}
+}
+
+// The branch deleted on the merge, as a repository that deletes merged branches leaves every
+// base branch once it lands. GitHub answers a compare read against it 404, which this codebase
+// reads as a repository it cannot see and so as no answer about the commit at all; the rule
+// takes that for "this commit is not on that branch" and lets the default branch decide.
+//
+// So a commit the default branch carries reads current, and a commit neither branch carries
+// reads older rather than unknown — the whole point of the rule, since a reviewer left with an
+// unmarked pass can only refuse the approval. The pull request's own merge commit reads
+// current although nothing can be read about the base branch any more and the default branch
+// holds only a squash of the work: Dispatch recorded that commit as on its base branch when it
+// recorded the merge, and a yes is kept for good (delivery.UpsertPullRequestHead).
+func TestAfterMergeResultCurrencyWithTheBaseBranchDeleted(t *testing.T) {
+	handler, database := resultsGitHubWithDeletedBranch(t, map[string]bool{"acme/widgets": true}, nil,
+		"main", "integration/x", func(base, head string) string {
+			if base == "main" && head == mergeCommit {
+				return "behind"
+			}
+			return "diverged"
+		})
+	issue := issueInRepository(t, handler, "RESD2", "acme/widgets", "Merged into a branch since deleted")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	// Recorded as production records a merge, through the writer that seeds the one fact the
+	// merge itself proves: the base branch held the merge commit.
+	attributed := issue.Key
+	if err := delivery.UpsertPullRequestHead(context.Background(), database.Pool, delivery.PullRequestHead{
+		Repo: "acme/widgets", Number: 48, HeadSHA: headCommit, HeadRef: "legion/work",
+		BaseRef: "integration/x", State: "merged", IssueKey: &attributed, AttributionSource: "title",
+		AttributionComplete: true, Title: "A change", URL: "https://github.com/acme/widgets/pull/48",
+		MergeCommitSHA: baseMergeCommit,
+	}); err != nil {
+		t.Fatalf("record the merge of the issue's pull request: %v", err)
+	}
+
+	// mergeCommit is the squash the trunk carries, baseMergeCommit the merge GitHub made on
+	// the branch it has since deleted, and strayCommit a commit neither ever carried.
+	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
+	merge := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", baseMergeCommit, nil)))
+	onNeither := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", onTrunk.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result at a default-branch commit, the base branch deleted = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k2", merge.Result.ID); got != model.CurrencyCurrent {
+		t.Fatalf("an after-merge result at the pull request's own merge commit, the base branch deleted = %q, want current", got)
+	}
+	if got := currencyOf(t, read, "k2", onNeither.Result.ID); got != model.CurrencyOlder {
+		t.Fatalf("an after-merge result at a commit neither branch carries, the base branch deleted = %q, want older and never unknown", got)
+	}
+}
+
+// A compare read GitHub failed to answer about the branch an issue merged into leaves the
+// result unknown, never older. The branch is still there and GitHub is the one at fault, so
+// "the default branch does not carry it" is the whole of what the read learned, and a reviewer
+// shown `older` over a 500 can only refuse an approval that nothing is wrong with. A base
+// branch GitHub no longer holds is the other case, and reads `older` where the default branch
+// says no: that is TestAfterMergeResultCurrencyWithTheBaseBranchDeleted above, and telling the
+// two apart is the whole of this rule (delivery.BranchAnswer).
+//
+// The next read asks GitHub again rather than being answered from a hold: a failure of a
+// second's standing must not hold the branch every result of the issue is measured against
+// for five minutes. The default branch's own "no" is stored for that span, as every no is, so
+// the second read spends the base branch's call and no other.
+func TestAfterMergeResultCurrencyIsUnknownWhenTheBaseBranchReadFails(t *testing.T) {
+	compares := 0
+	handler, database := resultsGitHubAnswering(t, map[string]bool{"acme/widgets": true}, nil, "main",
+		func(base, _ string) (int, string) {
+			compares++
+			if base == "integration/x" {
+				return http.StatusInternalServerError, ""
+			}
+			return http.StatusOK, "diverged"
+		})
+	issue := issueInRepository(t, handler, "RESG", "acme/widgets", "A base branch GitHub failed on")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	writeHeadOnBase(t, database, "acme/widgets", 49, headCommit, "merged", issue.Key, "integration/x")
+
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+
+	before := compares
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", stray.Result.ID); got != model.CurrencyUnknown {
+		t.Fatalf("an after-merge result whose base branch GitHub failed on = %q, want unknown and never older", got)
+	}
+	if spent := compares - before; spent != 2 {
+		t.Fatalf("the first read made %d compare calls, want one for the base branch and one for the trunk", spent)
+	}
+
+	before = compares
+	read = readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", stray.Result.ID); got != model.CurrencyUnknown {
+		t.Fatalf("the same result read again = %q, want unknown", got)
+	}
+	if spent := compares - before; spent != 1 {
+		t.Fatalf("the second read made %d compare calls, want the base branch's own: a failure holds nothing, and the trunk's no is stored", spent)
 	}
 }
 
@@ -1122,11 +1567,10 @@ func readThroughGitHub(t *testing.T, repos ...string) (http.Handler, *store.Stor
 	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `[]`)
 	})
-	upstream := httptest.NewServer(mux)
-	t.Cleanup(upstream.Close)
+	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream.URL,
+		githubAPIBase: upstream,
 	})
 	return handler, database, served, fake
 }

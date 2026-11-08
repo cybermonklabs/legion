@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // liveSocketRig is the API test server behind a real listener and run on a lifetime, so Register
@@ -589,12 +590,8 @@ func (c *heldConn) Write(p []byte) (int, error) {
 // subject is the span itself - a view that must end inside a replay timeout - names that span.
 func pollUntil(t *testing.T, within time.Duration, what string, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for !condition() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%s: not within %s", what, within)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(within, 10*time.Millisecond, condition) {
+		t.Fatalf("%s: not within %s", what, within)
 	}
 }
 

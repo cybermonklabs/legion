@@ -7,11 +7,11 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // appInstallationServer is Dispatch holding an App key, its GitHub answering the installation
@@ -23,11 +23,10 @@ func appInstallationServer(t *testing.T, github http.HandlerFunc) http.Handler {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	upstream := httptest.NewServer(github)
-	t.Cleanup(upstream.Close)
+	upstream := githubtest.Server(t, githubtest.Spec{Handle: github})
 	handler, _, _ := newTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream.URL,
+		githubAPIBase: upstream,
 	})
 	return handler
 }

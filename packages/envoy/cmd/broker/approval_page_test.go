@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
+	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -377,20 +378,20 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 		})
 	})
 
-	t.Run("A1: the page says what Approve gives and what Deny and the expiry do, and a request with no reason says so", func(t *testing.T) {
+	t.Run("A1: the page says what Approve gives and what Deny and the expiry do, and a request with no reason never reaches it", func(t *testing.T) {
 		pods := f.pods(t, base)
 		podD := pods.Enroll(launch, "pod-d", approvalPodAccount)
-		reply := pods.AskWithReason(podD, approvalSecretName, "")
+		reply := pods.Ask(podD, approvalSecretName)
 		if reply.State != "pending" || reply.RecordID == nil {
-			t.Fatalf("pod-d's request with no reason = %+v, want pending on a record", reply)
+			t.Fatalf("pod-d's request = %+v, want pending on a record", reply)
 		}
-		silent := *reply.RecordID
+		asked := *reply.RecordID
 		b := newBrowser(t)
-		b.SignIn(t, silent, brokertest.Person(ada))
-		block := brokertest.PageText(t, brokertest.RecordBlock(t, b.Page(t, silent).Body, silent))
-		t.Logf("ada's block for pod-d's request, which named no reason, reads: %s", block)
+		b.SignIn(t, asked, brokertest.Person(ada))
+		block := brokertest.PageText(t, brokertest.RecordBlock(t, b.Page(t, asked).Body, asked))
+		t.Logf("ada's block for pod-d's request reads: %s", block)
 		for _, want := range []string{
-			"Reason No reason given",
+			"Reason pod-d needs " + approvalSecretName,
 			"Lasts once approved for 15m0s",
 			"Approve gives this session the value of these secrets for 15m0s.",
 			"Deny refuses them, and so does leaving the request until it expires.",
@@ -398,6 +399,11 @@ func TestTheBinaryApprovesASecretOnItsOwnPage(t *testing.T) {
 			if !strings.Contains(block, want) {
 				t.Fatalf("the block does not say %q:\n%s", want, block)
 			}
+		}
+
+		silent := pods.AskWithReason(podD, approvalSecretName, "")
+		if silent.State != "denied" || silent.RecordID != nil || !strings.Contains(silent.Detail, policy.ReasonNoReason) {
+			t.Fatalf("pod-d's request with no reason = %+v, want it denied with no record, saying %q", silent, policy.ReasonNoReason)
 		}
 	})
 

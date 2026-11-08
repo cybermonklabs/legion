@@ -4,7 +4,6 @@
 package cmdtest
 
 import (
-	"bytes"
 	"fmt"
 	"net"
 	"os"
@@ -17,16 +16,15 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // Build builds the main package in the test's working directory, its own command's, into a binary
-// named name. The test process builds each distinct binary once, however many of its tests ask
-// for it, and that binary stays on disk until the process ends, so a later test runs the build an
-// earlier one paid for. ENVOY_TEST_GO_OVERLAY, when set, is passed to go build -overlay, so a
-// probe can build the binary from changed sources without editing the tree.
+// named name, as BuildCommand builds a Command naming only that binary.
 func Build(t testing.TB, name string) string {
 	t.Helper()
-	return build(t, name)
+	return BuildCommand(t, Command{Name: name})
 }
 
 // BuildStamped is Build with the binary stamped with commit as the image build stamps it:
@@ -35,7 +33,19 @@ func Build(t testing.TB, name string) string {
 // binary per commit.
 func BuildStamped(t testing.TB, name, commit string) string {
 	t.Helper()
-	return build(t, name, "-ldflags", "-X main.buildCommit="+commit)
+	return BuildCommand(t, Command{Name: name, Flags: []string{"-ldflags", "-X main.buildCommit=" + commit}})
+}
+
+// Command is a binary to build: Name is what the binary is called under the directory built for
+// it, Dir the directory go build runs in (the test's own when empty), Target what it builds ("."
+// when empty), Flags the flags before the target, and Env the whole environment of the go command
+// (the process's when nil).
+type Command struct {
+	Name   string
+	Dir    string
+	Target string
+	Flags  []string
+	Env    []string
 }
 
 // overlayEnv names the overlay go build is given, so that a probe builds a command from changed
@@ -45,14 +55,16 @@ const overlayEnv = "ENVOY_TEST_GO_OVERLAY"
 
 // buildKey is everything a binary's build depends on, so that calls agreeing on all of it share
 // one build and a call differing in any of it gets a build of its own: the directory go build
-// runs in, which is the main package it builds; the binary's name; the overlay; and the flags the
-// caller passes before the package.
+// runs in, the binary's name, the target it builds, and the overlay.
 type buildKey struct {
 	dir     string
 	name    string
+	target  string
 	overlay string
-	// flags holds the caller's flags joined by a byte no flag holds.
-	flags string
+	// args holds the caller's flags and environment joined by a byte neither holds, with the
+	// count of the flags standing between them, so that a value that moves from one of the two
+	// to the other is another key rather than the same one.
+	args string
 }
 
 var (
@@ -69,20 +81,38 @@ var (
 	builds = map[buildKey]func() (string, error){}
 )
 
-// build is Build with flags passed to go build before the package.
-func build(t testing.TB, name string, flags ...string) string {
+// BuildCommand builds c and returns the binary's path. The test process builds each distinct
+// binary once, however many of its tests ask for it, and that binary stays on disk until the
+// process ends, so a later test runs the build an earlier one paid for. ENVOY_TEST_GO_OVERLAY,
+// when set, is passed to go build -overlay, so a probe can build the binary from changed sources
+// without editing the tree.
+func BuildCommand(t testing.TB, c Command) string {
 	t.Helper()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("build %s: read the test's working directory: %v", name, err)
+	dir := c.Dir
+	if dir == "" {
+		var err error
+		if dir, err = os.Getwd(); err != nil {
+			t.Fatalf("build %s: read the test's working directory: %v", c.Name, err)
+		}
 	}
-	key := buildKey{dir: dir, name: name, overlay: os.Getenv(overlayEnv), flags: strings.Join(flags, "\x00")}
+	target := c.Target
+	if target == "" {
+		target = "."
+	}
+	args := append([]string{strconv.Itoa(len(c.Flags))}, c.Flags...)
+	key := buildKey{
+		dir:     dir,
+		name:    c.Name,
+		target:  target,
+		overlay: os.Getenv(overlayEnv),
+		args:    strings.Join(append(args, c.Env...), "\x00"),
+	}
 	buildsMu.Lock()
 	once, keyed := builds[key]
 	if !keyed {
-		// The caller owns its slice, and this one is read long after the call returns.
-		flags := slices.Clone(flags)
-		once = sync.OnceValues(func() (string, error) { return goBuild(key, flags) })
+		// The caller owns its slices, and these are read long after the call returns.
+		flags, env := slices.Clone(c.Flags), slices.Clone(c.Env)
+		once = sync.OnceValues(func() (string, error) { return goBuild(key, flags, env) })
 		builds[key] = once
 	}
 	buildsMu.Unlock()
@@ -96,7 +126,7 @@ func build(t testing.TB, name string, flags ...string) string {
 // goBuild runs one go build for key and returns the binary's path. Each build gets a directory of
 // its own under the test process's, so that two builds of one name, from different sources or
 // under different flags, each keep that name: a process is known by the name it runs under.
-func goBuild(key buildKey, flags []string) (string, error) {
+func goBuild(key buildKey, flags, env []string) (string, error) {
 	parent, err := buildsDir()
 	if err != nil {
 		return "", fmt.Errorf("build %s: %w", key.name, err)
@@ -111,11 +141,11 @@ func goBuild(key buildKey, flags []string) (string, error) {
 		args = append(args, "-overlay", key.overlay)
 	}
 	args = append(args, flags...)
-	args = append(args, ".")
+	args = append(args, key.target)
 	cmd := exec.Command("go", args...)
 	// The package built is the one the key names, whatever directory the test process stands in
 	// by the time a later caller's build runs.
-	cmd.Dir = key.dir
+	cmd.Dir, cmd.Env = key.dir, env
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build %s: %v\n%s", key.name, err, out)
 	}
@@ -315,20 +345,5 @@ func (h *HeldPort) Pass(cmd *exec.Cmd, envName string) {
 }
 
 // LockedBuffer is a buffer a process's output, or a logger, writes from more than one goroutine
-// while a test reads it.
-type LockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *LockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *LockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+// while a test reads it. Its body is logtest.Buffer's.
+type LockedBuffer = logtest.Buffer

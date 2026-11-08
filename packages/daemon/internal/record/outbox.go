@@ -746,18 +746,41 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // (ghautomerge.Submit). Warned is the row having told the issue's architect once that GitHub has
 // not completed the merge it submitted (merge-waiting, the daemon's mergeWaitWarn), which keeps it
 // from telling again however much longer it waits, and Queued is the moment the workflow queued
-// this submission, which that wait is measured from. A queue of the same issue and head starts the
-// row over unarmed, unwarned and at a fresh Queued (readyMergeConflict): the upsert replaces the
-// payload, so a reopen resets the clock and the once-flag together and the two can never disagree,
-// as they would were the wait measured from the row's created_at, which the upsert leaves at the
-// original queueing. A row a daemon before Queued enqueued carries the zero time, and its executor
-// measures that one from created_at, which is what it was measured from then.
+// this submission, which that wait is measured from. Unmergeable is the moment of the first read
+// that found the merge queue's entry for Head UNMERGEABLE while the queue had built it on
+// UnmergeableBase, the commit named there, which that read found to be the tip of the pull
+// request's own base branch: an entry built on its base branch's tip has nothing ahead of it in
+// the queue to blame, so its own head is what the queue cannot merge, and a mark that still
+// stands at the same base commit once the daemon's queueConflictBound has passed sends the issue
+// back to implementing. The two are written and read together, so an entry GitHub rebuilds onto
+// another base replaces the pair and starts the clock again. Resubmitted is the row having spent
+// its one further submission at Head after GitHub's merge queue took the entry out for a conflict
+// (merge_conflict) while GitHub reported the head mergeable, which is the queue having conflicted
+// the head with an entry ahead of it rather than with the base: nothing else would ever submit
+// that merge again, so the row submits it once more and marks the mark spent, and a second such
+// removal of the same head ends the row with the architect told. Only a queue of a new READY at a
+// new head clears it, by replacing the whole payload; the daemon's own re-submission never does,
+// which is what keeps the re-submission from becoming the loop a merge submitted again whenever
+// its arm vanishes falls into (LEGION-800). ConflictUnknown is the moment of the first read after
+// such a removal in which GitHub answered the merge state UNKNOWN, having computed none: nothing
+// is decided on an answer GitHub did not give, so the row asks again on its own backoff until the
+// daemon's conflictUnknownBound has passed from that moment and then ends with the architect
+// told. A queue of the same issue and head starts the row over unarmed, unwarned, with no mark at
+// all and at a fresh Queued (readyMergeConflict): the upsert replaces the whole payload, so a
+// reopen resets the clock, the once-flag and the marks together and they can never disagree, as
+// they would were the wait measured from the row's created_at, which the upsert leaves at the
+// original queueing. A row a daemon before Queued enqueued carries the zero time, and its
+// executor measures that one from created_at, which is what it was measured from then.
 type ReadyMerge struct {
-	Number int       `json:"number"`
-	Head   string    `json:"head"`
-	Armed  bool      `json:"armed,omitempty"`
-	Warned bool      `json:"warned,omitempty"`
-	Queued time.Time `json:"queued,omitzero"`
+	Number          int       `json:"number"`
+	Head            string    `json:"head"`
+	Armed           bool      `json:"armed,omitempty"`
+	Warned          bool      `json:"warned,omitempty"`
+	Queued          time.Time `json:"queued,omitzero"`
+	Unmergeable     time.Time `json:"unmergeable,omitzero"`
+	UnmergeableBase string    `json:"unmergeableBase,omitempty"`
+	Resubmitted     bool      `json:"resubmitted,omitempty"`
+	ConflictUnknown time.Time `json:"conflictUnknown,omitzero"`
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }
