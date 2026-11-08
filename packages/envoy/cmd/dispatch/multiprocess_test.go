@@ -94,6 +94,18 @@ func (p *dispatchPair) startSettling(t *testing.T, env map[string]string, settle
 	p.b.waitHealthy(t)
 }
 
+// startEach is start with an environment of each process's own, A's first and then B's, both
+// started together as start starts them. A row whose two processes must be told apart by the
+// calls they make -- a GitHub of its own per process, whose answers record which process asked
+// (mergedPullRequestFake) -- is what needs it; every other row gives the two one environment.
+func (p *dispatchPair) startEach(t *testing.T, envA, envB map[string]string) {
+	t.Helper()
+	p.a = p.startProcess(t, envA)
+	p.b = p.startProcess(t, envB)
+	p.a.waitHealthy(t)
+	p.b.waitHealthy(t)
+}
+
 // kill ends the process with SIGKILL (os.Process.Kill), as a task replaced mid-deploy or killed
 // for memory ends, with no chance to finish anything, and returns once it has exited.
 func (p *dispatchProcess) kill(t *testing.T) {
@@ -2323,6 +2335,492 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 		standby.waitForLog(t, 4*time.Second-time.Since(stopped), `msg="dispatch delivery: NATS consumer bound"`, "name="+durable)
 	}
 	t.Logf("the standby bound both durables %v after the stop", time.Since(stopped))
+}
+
+// ───── a frozen holder ──────────────────────────────────────────────────────
+
+// frozenHolderTakeOverWithin is what the standby gets to take a frozen holder's durable over,
+// read from the hold's own constants: the whole of delivery.intakeHoldTTL (15 s), since a freeze
+// the moment after a renewal leaves the hold its full life to lapse on the database's clock; one
+// delivery.durableBindInterval (2 s), the standby's poll that finds it lapsed; and the
+// take-over's own delete, subscribe and create under the durable's consumer lease, with a
+// margin. It is the bound TestOneProcessBindsEachDeliveryDurableAndTheOtherStandsBy gives that
+// take-over after a kill, for the same reasons: a process frozen with its connection open
+// renews its hold no more than a dead one does. Nothing in it is jittered, so it is a hang
+// guard and not a wait on a jittered event.
+const frozenHolderTakeOverWithin = 15*time.Second + 2*time.Second + 8*time.Second
+
+// frozenHolderResumedWindow is how long the row keeps publishing once the frozen process has
+// resumed: three of the intake's renewal intervals (delivery.intakeHoldRenew, 5 s), in which the
+// resumed intake's loop has run its hold renewal and its check of the durable
+// (delivery.heldDurable.check) three times over and its bind poll
+// (delivery.durableBindInterval, 2 s) seven times. Whatever a process that resumed holding
+// nothing would still do -- bind the durable, handle a message of it -- it has those loops'
+// turns to do it in, with messages arriving throughout.
+const frozenHolderResumedWindow = 3 * 5 * time.Second
+
+// frozenHolderHandledWithin bounds a wait for a round's pull requests to be handled. One
+// handling is four calls to a GitHub on loopback and a few writes, so this is a hang guard and
+// not a period being waited out.
+const frozenHolderHandledWithin = 60 * time.Second
+
+// A process frozen with its NATS connection still open -- a long garbage collection pause, a
+// host that stops scheduling it, a pod whose node has stopped -- keeps every subscription it had
+// and renews nothing. It is the production case the durable's hold is there for that no
+// connection says anything about: the server still holds the frozen process's subscription, so
+// nothing NATS knows tells the other process it may deliver, and only the hold lapsing on the
+// database's clock does.
+//
+// The standby takes the durable over within frozenHolderTakeOverWithin, and the row reads that
+// from the two servers as the one-binder row does (durableBinding.bound): the durable delivers
+// to a fresh subject, exactly one client connection subscribes there, and the durable's one
+// hold is live, under a holder that is not the frozen process's intake, recording that subject.
+// That one subscriber is the standby's: the take-over mints the subject while the other process
+// is frozen (delivery.heldDurable.takeOver), so no connection of the frozen process ever heard
+// of it, and the standby is the process that logged the bind.
+//
+// What the freeze then shows, and a kill cannot, is the resumed process: it comes back with its
+// connection, its subscription and its own hold still in hand, and must do nothing with any of
+// them. GitHub-shaped messages are published in four rounds -- before the freeze, while the
+// holder is frozen, once the standby has taken over, and across frozenHolderResumedWindow after
+// the resume -- and the row requires that the frozen process handled the first round and
+// nothing from the freeze on, that every message was handled exactly once across the two
+// processes (each process calls a GitHub of its own, so every handling is recorded with the
+// process that made it: mergedPullRequestFake), that the resumed process logged no bind of
+// either durable after it was frozen, that the deliver subject it had bound is left with no
+// subscriber, that both durables still deliver as the take-over left them, and that the events
+// durable ends with nothing pending, nothing unacknowledged and its ack floor at what it
+// delivered.
+func TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed(t *testing.T) {
+	pair := newPair(t)
+	seedMergedPullRequestSettings(t, pair.database)
+	fake := newMergedPullRequestFake()
+	// A GitHub of each process's own, and the delivery reconcile on a period the row meets
+	// several times over rather than its five minutes, whose jittered first pass would land
+	// inside this row now and then. A pass reads pull requests through the very call that
+	// counts a handling here (delivery.FetchPullRequest), so a pass that re-read one of the
+	// row's own merges would read as a second handling of a message; the merges published here
+	// are complete reads, which the reconcile's merged arm never offers again
+	// (publishMergedPullRequests), and running it throughout is what makes every run of the row
+	// show that rather than most runs missing it.
+	envFor := func(process string) map[string]string {
+		env := githubAppEnv(t, fake.serve(t, process))
+		env["DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL"] = (10 * time.Second).String()
+		return env
+	}
+	pair.startEach(t, envFor("A"), envFor("B"))
+
+	conn := testnats.Connect(t, pair.nats)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream context: %v", err)
+	}
+
+	holders := map[string]*dispatchProcess{}
+	bindings := map[string]durableBinding{}
+	for _, durable := range deliveryDurables {
+		binding, holder := waitForDurableBinder(t, pair, js, durable, 60*time.Second)
+		holders[durable], bindings[durable] = holder, binding
+		t.Logf("%s delivers from %s: %s", pair.name(holder), durable, binding)
+	}
+	requireOneHoldPerDurable(t, pair)
+
+	frozen := holders[bus.DispatchDeliveryDurable]
+	standby := pair.other(frozen)
+	run := strings.ToLower(uniqueProjectKey(t, ""))
+	// The holder handles messages before it is frozen, so what the resumed process must not do
+	// is what it was doing until the freeze; and the durable is drained when the freeze comes,
+	// so no message is in a handler of the frozen process for the standby to handle again.
+	before := publishMergedPullRequests(t, js, run, 1, 2, 0)
+	waitForHandled(t, pair, fake, before, frozenHolderHandledWithin)
+	requireHandledBy(t, pair, fake, before, frozen, "before the freeze")
+	waitForDurableDrained(t, pair, js, bus.DispatchDeliveryDurable, "before the freeze", 30*time.Second)
+	reconciledBefore := countLease(pair.a, leaseRan, "delivery-reconcile") + countLease(pair.b, leaseRan, "delivery-reconcile")
+
+	// What each process has bound when the holder is frozen: how many binds of each durable
+	// each has logged -- the frozen process's so that it logs no more, the standby's so that
+	// its take-over is a bind it logs after the freeze and not one it had logged already -- and
+	// the deliver subject of each durable that is the frozen process's, which the take-over
+	// replaces and nothing may be left subscribed to.
+	boundBeforeFreeze, standbyBoundBeforeFreeze := map[string]int{}, map[string]int{}
+	subjectsBeforeFreeze := map[string]string{}
+	for _, durable := range deliveryDurables {
+		boundBeforeFreeze[durable] = len(deliveryOutcomeFor(frozen, durable).bound)
+		standbyBoundBeforeFreeze[durable] = len(deliveryOutcomeFor(standby, durable).bound)
+		if holders[durable] == frozen {
+			subjectsBeforeFreeze[durable] = bindings[durable].subject
+		}
+	}
+	frozenAt := frozen.signal(t, syscall.SIGSTOP)
+	resumed := false
+	// So a failure never leaves a stopped process behind: the cleanup cmdtest.Start registered
+	// when the process started kills it, and runs after this one, which is registered later.
+	t.Cleanup(func() {
+		if !resumed {
+			_ = frozen.Cmd.Process.Signal(syscall.SIGCONT)
+		}
+	})
+	waitFrozen(t, frozen, 10*time.Second)
+
+	// Published at the frozen holder: NATS pushes them down its open connection, which reads
+	// nothing, and the take-over's recreated durable redelivers them to the standby.
+	whileFrozen := publishMergedPullRequests(t, js, run, 3, 3, 0)
+	for _, durable := range deliveryDurables {
+		if holders[durable] != frozen {
+			continue
+		}
+		bindings[durable] = waitForTakeOver(t, pair, js, durable, bindings[durable], standby,
+			standbyBoundBeforeFreeze[durable], frozenHolderTakeOverWithin-time.Since(frozenAt))
+		t.Logf("%s took %s over %v after %s was frozen: %s", pair.name(standby), durable,
+			time.Since(frozenAt).Round(time.Millisecond), pair.name(frozen), bindings[durable])
+	}
+	requireOneHoldPerDurable(t, pair)
+	waitForHandled(t, pair, fake, whileFrozen, frozenHolderHandledWithin)
+	afterTakeOver := publishMergedPullRequests(t, js, run, 6, 3, 0)
+	waitForHandled(t, pair, fake, afterTakeOver, frozenHolderHandledWithin)
+	requireHandledBy(t, pair, fake, slices.Concat(whileFrozen, afterTakeOver), standby, "while the holder was frozen")
+
+	resumedAt := frozen.signal(t, syscall.SIGCONT)
+	resumed = true
+	// Its hold's loss deadline passed while it was stopped, so the moment its timers fire it
+	// finds the hold lost and stops delivering (delivery.heldDurable.run).
+	frozen.waitForLog(t, frozenHolderResumedWindow,
+		`msg="dispatch delivery: the intake's hold is lost; it stops delivering"`, "name="+bus.DispatchDeliveryDurable)
+	t.Logf("the resumed process reported its hold of %s lost %v after it resumed", bus.DispatchDeliveryDurable,
+		time.Since(resumedAt).Round(time.Millisecond))
+	afterResume := publishMergedPullRequests(t, js, run, 9, 6, frozenHolderResumedWindow/6)
+	waitForHandled(t, pair, fake, afterResume, frozenHolderHandledWithin)
+	requireHandledBy(t, pair, fake, afterResume, standby, "after the frozen process resumed")
+
+	published := slices.Concat(before, whileFrozen, afterTakeOver, afterResume)
+	handled := fake.handled()
+	for _, number := range published {
+		if handlings := handled[number]; len(handlings) != 1 {
+			t.Errorf("pull request %d was handled %d times (%v), want exactly once across the two processes: every message the standby took over is one the frozen process never handled, and the standby handles each once.\n%s",
+				number, len(handlings), handlings, pair.buffers())
+		}
+	}
+	for number, handlings := range handled {
+		for _, handling := range handlings {
+			if handling.process == pair.name(frozen) && !handling.at.Before(frozenAt) {
+				t.Errorf("the frozen process handled pull request %d at %s, %v after it was frozen and %v after it resumed, holding no hold of %s by then.\n%s",
+					number, handling.at.Format("15:04:05.000"), handling.at.Sub(frozenAt).Round(time.Millisecond),
+					handling.at.Sub(resumedAt).Round(time.Millisecond), bus.DispatchDeliveryDurable, pair.buffers())
+			}
+		}
+	}
+	for _, durable := range deliveryDurables {
+		if bound := deliveryOutcomeFor(frozen, durable).bound; len(bound) > boundBeforeFreeze[durable] {
+			t.Errorf("the resumed process logged a bind of %s it had not logged before it was frozen, when the durable is the other process's under its hold:\n%s\n%s",
+				durable, strings.Join(bound[boundBeforeFreeze[durable]:], "\n"), pair.buffers())
+		}
+		if subject, held := subjectsBeforeFreeze[durable]; held {
+			if subscribers := natsSubscribers(t, pair.natsServer, subject); len(subscribers) > 0 {
+				t.Errorf("the deliver subject %s the frozen process had %s bound to is still subscribed by [%s] %v after it resumed; an intake that finds its hold lost drains its subscription (delivery.heldDurable.StopDelivering).\n%s",
+					subject, durable, strings.Join(subscribers, ", "), time.Since(resumedAt).Round(time.Millisecond), pair.buffers())
+			}
+		}
+	}
+	for _, durable := range deliveryDurables {
+		if binding := readDurableBinding(t, pair, js, durable); !binding.bound() || binding.String() != bindings[durable].String() {
+			t.Errorf("%s was %s once the take-over had settled and is %s now the frozen process has resumed, %v after it did: a process that resumed holding nothing takes no durable over.\n%s",
+				durable, bindings[durable], binding, time.Since(resumedAt).Round(time.Millisecond), pair.buffers())
+		}
+	}
+	waitForDurableDrained(t, pair, js, bus.DispatchDeliveryDurable, "once every published pull request was handled", 30*time.Second)
+	requireOneHoldPerDurable(t, pair)
+	// A delivery reconcile pass ran with the row's own pull requests stored, and re-read none
+	// of them: one that did would have read a pull request through the very call that counts a
+	// handling above (delivery.FetchPullRequest), and the counts would say so. The processes
+	// run it every ten seconds, so this waits out three of its periods at most.
+	waitUntil(t, 30*time.Second, "a delivery reconcile pass with the row's pull requests stored", func() bool {
+		return countLease(pair.a, leaseRan, "delivery-reconcile")+countLease(pair.b, leaseRan, "delivery-reconcile") > reconciledBefore
+	})
+	pair.requireRunning(t)
+}
+
+// waitFrozen waits for every thread of the process to be stopped as the kernel itself reports
+// it: /proc/<pid>/task/*/stat's state, T for a stopped task. signal returns when the signal was
+// sent and not when the process has stopped, and the difference is a message: a holder still
+// running when the row publishes can be handed one and freeze with it in its handler, which
+// leaves the message unacknowledged for the take-over to redeliver to the standby. Both would
+// then handle it -- the at-least-once repeat every holder that stops mid-handling causes, and
+// what the frozen-holder row is looking for is the opposite, a process that handles a message
+// it no longer holds. One run of 20 published into that window and read it as a repeat.
+func waitFrozen(t *testing.T, p *dispatchProcess, within time.Duration) {
+	t.Helper()
+	threads := fmt.Sprintf("/proc/%d/task/*/stat", p.Cmd.Process.Pid)
+	waitUntil(t, within, "every thread of the frozen process to be stopped", func() bool {
+		tasks, err := filepath.Glob(threads)
+		if err != nil || len(tasks) == 0 {
+			return false
+		}
+		for _, task := range tasks {
+			stat, err := os.ReadFile(task)
+			if err != nil {
+				return false
+			}
+			// The state follows comm, which is parenthesised and may hold spaces of its own.
+			name := bytes.LastIndexByte(stat, ')')
+			if name < 0 || name+2 >= len(stat) || stat[name+2] != 'T' {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// mergedPullRequestAuthor is the one population author the row's delivery settings name, and the
+// author of every merge it publishes, so each one is a pull request the intake completes rather
+// than one it drops before it reads GitHub (delivery.IsPopulationPR).
+const mergedPullRequestAuthor = "octocat"
+
+// seedMergedPullRequestSettings is seedDeliverySettings with mergedPullRequestAuthor as the one
+// population author, which the rows about the durables themselves have no need of: without it
+// every merge published here is outside the population, and the intake answers it with no
+// GitHub call at all, so no handling could be counted.
+func seedMergedPullRequestSettings(t *testing.T, database *store.Store) {
+	t.Helper()
+	if _, err := delivery.PutSettings(context.Background(), database.Pool, delivery.DeliverySettings{
+		DeployRepo:           "acme/deploy",
+		DeployWorkflowPath:   ".github/workflows/deploy.yaml",
+		PRChecksWorkflowPath: ".github/workflows/pr.yaml",
+		ProductionJobNames:   []string{"production"},
+		PopulationAuthors:    []string{mergedPullRequestAuthor},
+	}, model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
+		t.Fatalf("seed the delivery settings: %v", err)
+	}
+}
+
+// mergedPullRequestFake is the loopback GitHub the pair's intakes read while they handle a
+// merged pull request. It is one state served once per process (serve), so every handling is
+// recorded with the process whose server answered it: startGitHubFake is one server the two
+// processes share, and which of them handled a message cannot be read from that. The two-build
+// suite's pullRequestFake records a handling the same way, per build.
+//
+// A handling is counted at the pull request's own fetch, GET /repos/{owner}/{repo}/pulls/{number}
+// (delivery.FetchPullRequest): the merge path's first GitHub call, and the one call it makes
+// exactly once however the handling then ends. Every other path is answered as the suite's own
+// GitHub answers it (githubFakeAnswer), with the commit listing the fetch and the completion
+// both page added.
+type mergedPullRequestFake struct {
+	mu   sync.Mutex
+	done map[int][]pullRequestHandling
+}
+
+// pullRequestHandling is one handling of one merged pull request: the process whose GitHub
+// answered its fetch, as the pair names it (dispatchPair.name), and when.
+type pullRequestHandling struct {
+	process string
+	at      time.Time
+}
+
+func (h pullRequestHandling) String() string { return h.process + " at " + h.at.Format("15:04:05.000") }
+
+func newMergedPullRequestFake() *mergedPullRequestFake {
+	return &mergedPullRequestFake{done: map[int][]pullRequestHandling{}}
+}
+
+// serve starts a server on the fake's state whose handlings are process's, and returns its URL:
+// the DISPATCH_GITHUB_API_BASE that process boots with.
+func (f *mergedPullRequestFake) serve(t *testing.T, process string) string {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}", func(w http.ResponseWriter, r *http.Request) {
+		number, err := strconv.Atoi(r.PathValue("number"))
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		f.mu.Lock()
+		f.done[number] = append(f.done[number], pullRequestHandling{process: process, at: time.Now()})
+		f.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"number":%d,"title":"A merged pull request","html_url":"https://github.com/acme/deploy/pull/%d",`+
+			`"user":{"login":%q},"labels":[{"name":"non-task"}],"state":"closed","merged":true,`+
+			`"created_at":"2026-10-26T00:00:00Z","merged_at":"2026-10-27T00:00:00Z","merge_commit_sha":"%040d",`+
+			`"additions":1,"deletions":1,"head":{"ref":"a-branch","sha":"%040d","repo":{"full_name":"acme/deploy"}},`+
+			`"base":{"ref":"main"}}`, number, number, mergedPullRequestAuthor, number, number)
+	})
+	mux.HandleFunc("GET /repos/{owner}/{repo}/pulls/{number}/commits", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `[{"sha":"0000000000000000000000000000000000000001",`+
+			`"commit":{"message":"A change.","author":{"date":"2026-10-26T00:00:00Z"},"committer":{"date":"2026-10-26T00:00:00Z"}}}]`)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		status, body := githubFakeAnswer(r)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// handled is every handling of every pull request, by number, in the order they were made.
+func (f *mergedPullRequestFake) handled() map[int][]pullRequestHandling {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	done := make(map[int][]pullRequestHandling, len(f.done))
+	for number, handlings := range f.done {
+		done[number] = slices.Clone(handlings)
+	}
+	return done
+}
+
+// publishMergedPullRequests publishes count GitHub-shaped messages, from pull request number
+// first on: each a merge of a pull request of acme/deploy by mergedPullRequestAuthor, on
+// notifications.github.acme.deploy.pr.<number>, waiting every before each after the first. It
+// answers the numbers it published. run is this run's own, since the notification stream
+// suppresses a repeat of a dedupe key for DeliveryDuplicateWindow and the row publishes against
+// a server a harness may keep between runs.
+//
+// The payload carries what Envoy's normalizer puts in a `pull_request` envelope
+// (contracts/normalize.go), head_repo above all: a merge whose head is named is a complete read
+// of the pull request's attribution, so the head row it writes is stamped read and judged by
+// this build's rule, and the delivery reconcile's merged arm never offers it again
+// (delivery.ListStalePullRequestHeads). A reconcile pass that did read one of these pull
+// requests again would read it through the very call that counts a handling here, and the row
+// would see it as a second handling of a message.
+func publishMergedPullRequests(t *testing.T, js natsgo.JetStreamContext, run string, first, count int, every time.Duration) []int {
+	t.Helper()
+	numbers := make([]int, 0, count)
+	for index := range count {
+		if index > 0 && every > 0 {
+			time.Sleep(every)
+		}
+		number := first + index
+		id := fmt.Sprintf("frozen-holder-%s-%d", run, number)
+		payload, err := json.Marshal(map[string]string{
+			"kind": "pr", "action": "closed", "merged": "true",
+			"repo": "acme/deploy", "number": strconv.Itoa(number), "author": mergedPullRequestAuthor,
+			"title": "A merged pull request", "url": fmt.Sprintf("https://github.com/acme/deploy/pull/%d", number),
+			"head_repo": "acme/deploy", "head_ref": "a-branch", "head_sha": fmt.Sprintf("%040d", number),
+			"base_ref": "main", "merge_commit_sha": fmt.Sprintf("%040d", number),
+			"updated_at": time.Now().UTC().Format(time.RFC3339),
+		})
+		if err != nil {
+			t.Fatalf("encode the payload of pull request %d: %v", number, err)
+		}
+		envelope := contracts.Envelope{
+			EventID:       id,
+			Source:        "github",
+			SourceEventID: id,
+			Topic:         contracts.GithubResourceSubject("acme", "deploy", "pr", strconv.Itoa(number)),
+			DedupeKey:     id,
+			IssuedAt:      time.Now().Unix(),
+			Payload:       string(payload),
+			TraceID:       id,
+		}
+		data, err := json.Marshal(envelope)
+		if err != nil {
+			t.Fatalf("encode the envelope of pull request %d: %v", number, err)
+		}
+		if _, err := js.Publish(envelope.Topic, data, natsgo.MsgId(id)); err != nil {
+			t.Fatalf("publish %s: %v", envelope.Topic, err)
+		}
+		numbers = append(numbers, number)
+	}
+	return numbers
+}
+
+// waitForHandled waits for each of numbers to have been handled by one of the processes, and
+// names those that were not when it gives up.
+func waitForHandled(t *testing.T, pair *dispatchPair, fake *mergedPullRequestFake, numbers []int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		handled := fake.handled()
+		var missing []int
+		for _, number := range numbers {
+			if len(handled[number]) == 0 {
+				missing = append(missing, number)
+			}
+		}
+		if len(missing) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pull requests %v of %v were not handled within %v: the process holding %s's hold delivers them, and no other does.\n%s",
+				missing, numbers, within, bus.DispatchDeliveryDurable, pair.buffers())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// requireHandledBy requires each of numbers to have been handled, and every handling of it to be
+// process's. when names the round for a failure.
+func requireHandledBy(t *testing.T, pair *dispatchPair, fake *mergedPullRequestFake, numbers []int, process *dispatchProcess, when string) {
+	t.Helper()
+	handled := fake.handled()
+	want := pair.name(process)
+	for _, number := range numbers {
+		handlings := handled[number]
+		if len(handlings) == 0 {
+			t.Errorf("pull request %d, published %s, was handled by neither process.\n%s", number, when, pair.buffers())
+			continue
+		}
+		for _, handling := range handlings {
+			if handling.process != want {
+				t.Errorf("pull request %d, published %s, was handled by %s, want %s, the process delivering from %s then.\n%s",
+					number, when, handling, want, bus.DispatchDeliveryDurable, pair.buffers())
+			}
+		}
+	}
+}
+
+// waitForTakeOver waits for durable to be standby's to deliver from, having been the binding
+// before's: NATS has it push-bound to a deliver subject that is not before's, exactly one client
+// connection subscribes there, its hold is live and records that subject under a holder that is
+// not the one before recorded (durableBinding.bound), and standby has logged a bind of the
+// durable beyond the bound lines it had logged already. That one subscriber is standby's: the
+// take-over mints the deliver subject (delivery.heldDurable.takeOver), so a process frozen
+// before it existed can have no subscription to it.
+func waitForTakeOver(t *testing.T, pair *dispatchPair, js natsgo.JetStreamContext, durable string,
+	before durableBinding, standby *dispatchProcess, bound int, within time.Duration,
+) durableBinding {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		binding := readDurableBinding(t, pair, js, durable)
+		took := binding.bound() && binding.subject != before.subject && binding.hold.holder != before.hold.holder
+		if took && len(deliveryOutcomeFor(standby, durable).bound) > bound {
+			return binding
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s did not take %s over within %v of the holder being frozen: NATS has it %s, where it was %s, and %s has logged %d binds of it against the %d it had logged by the freeze. A frozen holder renews its hold no more, so the hold lapses within delivery.intakeHoldTTL and the standby's next poll of it takes the durable over.\n%s",
+				pair.name(standby), durable, within, binding, before, pair.name(standby),
+				len(deliveryOutcomeFor(standby, durable).bound), bound, pair.buffers())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// waitForDurableDrained waits for the durable to have nothing left to deliver and nothing
+// unacknowledged: no pending message, none awaiting an acknowledgement, and its acknowledgement
+// floor at what it has delivered, by consumer sequence and by stream sequence. Every message
+// published by then has been handled and acknowledged once, and the take-over left none behind.
+// when names the moment for a failure.
+func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStreamContext, durable, when string, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for {
+		info, err := js.ConsumerInfo(bus.Stream, durable)
+		if err != nil {
+			t.Fatalf("read %s: %v", durable, err)
+		}
+		if info.NumPending == 0 && info.NumAckPending == 0 &&
+			info.AckFloor.Consumer == info.Delivered.Consumer && info.AckFloor.Stream == info.Delivered.Stream {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s still has %d pending and %d awaiting acknowledgement %s, %v on, its ack floor at consumer %d of stream %d against %d of %d delivered.\n%s",
+				durable, info.NumPending, info.NumAckPending, when, within,
+				info.AckFloor.Consumer, info.AckFloor.Stream, info.Delivered.Consumer, info.Delivered.Stream, pair.buffers())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // deliveryOutcome is what one process has logged for one delivery durable: its binds of it and
