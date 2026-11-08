@@ -347,7 +347,7 @@ test("a phone finds the pinned agents in the sidebar sheet", async () => {
 // The registry keeps a sleeping pinned view and discards a sleeping unpinned one (`D8`), so the
 // shell - not the rail, which is off the page at a phone width or a collapsed sidebar - tells it
 // what the person has pinned. Without that, coming back to a pinned agent would lose where they
-// were reading and what its view opened with.
+// were reading.
 test("the shell tells the live-view registry which agents the person pinned", async () => {
   api.getMyAgentState = async () => ({
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z" },
@@ -358,14 +358,14 @@ test("the shell tells the live-view registry which agents the person pinned", as
   const views = liveViewsOf(queryClient);
   act(() => {
     views.show("planner-session");
-    views.setUnreadAtOpen("planner-session", 3);
+    views.setPlace("planner-session", { id: "dispatch:m-4", top: -120 });
     views.show("other-session");
-    views.setUnreadAtOpen("other-session", 2);
+    views.setPlace("other-session", { id: "dispatch:m-7", top: -40 });
     // A third view puts the first to sleep at once, where only a pin keeps its entry.
     views.show("third-session");
     views.show(null);
   });
 
-  expect(views.unreadAtOpen("planner-session")).toBe(3);
-  expect(views.unreadAtOpen("other-session")).toBe(0);
+  expect(views.place("planner-session")).toEqual({ id: "dispatch:m-4", top: -120 });
+  expect(views.place("other-session")).toBeNull();
 });

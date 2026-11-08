@@ -63,14 +63,13 @@ function rowFrom(tops: readonly number[], rowCount: number, offset: number): num
  * The window over `keys` - the list's rows in the order it draws them, each named by a key its
  * height is cached under - for a list scrolled to `scrollTop` under a viewport `viewportHeight`
  * tall. `kept` names the rows drawn wherever they have scrolled to, which on the Agents page is
- * every row the person has opened (D1); `overscan` is how many rows are drawn past each edge.
+ * every row the person has opened (D1).
  */
 export function rowWindow({
   estimate,
   kept,
   keys,
   measured,
-  overscan = OVERSCAN_ROWS,
   scrollTop,
   viewportHeight,
 }: {
@@ -82,7 +81,6 @@ export function rowWindow({
   scrollTop: number;
   viewportHeight: number;
   kept?: ReadonlySet<string>;
-  overscan?: number;
 }): RowWindow {
   const rowCount = keys.length;
   const tops: number[] = new Array<number>(rowCount + 1);
@@ -92,8 +90,11 @@ export function rowWindow({
     top += measured.get(keys[index] ?? "") ?? estimate;
   }
   tops[rowCount] = top;
-  const first = Math.max(0, rowCovering(tops, rowCount, scrollTop) - overscan);
-  const last = Math.min(rowCount, rowFrom(tops, rowCount, scrollTop + viewportHeight) + overscan);
+  const first = Math.max(0, rowCovering(tops, rowCount, scrollTop) - OVERSCAN_ROWS);
+  const last = Math.min(
+    rowCount,
+    rowFrom(tops, rowCount, scrollTop + viewportHeight) + OVERSCAN_ROWS
+  );
   const drawn: number[] = [];
   for (let index = 0; index < rowCount; index += 1) {
     const inRange = index >= first && index < last;

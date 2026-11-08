@@ -241,6 +241,9 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   (`features/delivery/lib/rowWindow.ts` through `useListWindow`): its box is as tall as every
   item, so the scrollbar measures the whole list, and only the items the screen holds and twelve
   either side are drawn, because the real page is six hundred sessions (R7).
+  The box is its own component (`WindowedList`), and the scroll state is its, not the page's:
+  the page groups, sorts and filters every listed session on each of its own renders, so a
+  scroll that re-rendered the page would do all of that again about once a frame.
   A row that a pin, or its own activity, moves from one group to another moves within the one
   parent, so React moves its node rather than remounting it.
   Two kinds of row are drawn wherever they have scrolled to (`kept`): one the reader has opened,

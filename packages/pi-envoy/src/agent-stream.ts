@@ -311,6 +311,12 @@ export class AgentStreamPublisher {
   /** The host-order prefix of `#listedCommands` that fits the replay, as last published. */
   #commands: readonly AgentStreamCommand[] | undefined;
   #commandsSeq = 0;
+  /** What the last fit was computed from, so a frame that changes neither the list nor the room
+   *  left for it does not walk every command again (`#fitCommands`). A running turn calls
+   *  `setContext` on every interval, and the answer there is the same list every time. */
+  #fitListed: readonly AgentStreamCommand[] | undefined;
+  #fitLimit = 0;
+  #fitEmptyBytes = 0;
   /** The session's model and thinking level, as last published; undefined until first read. */
   #settings: AgentStreamSettingsState | undefined;
   #settingsSeq = 0;
@@ -487,7 +493,16 @@ export class AgentStreamPublisher {
     const context =
       this.#context === undefined ? 0 : jsonBytes(this.#contextFrame(this.#context)) + 1;
     const limit = AGENT_STREAM_LIMITS.historyBytes - REPLAY_ARRAY_BYTES - settings - context;
-    let bytes = jsonBytes(this.#commandsFrame([], this.#seq + 1));
+    const emptyBytes = jsonBytes(this.#commandsFrame([], this.#seq + 1));
+    // The prefix that fits is a function of these three alone, so when none of them moved the
+    // answer is the list already kept and there is nothing to walk, serialise or publish.
+    const unchanged =
+      listed === this.#fitListed && limit === this.#fitLimit && emptyBytes === this.#fitEmptyBytes;
+    if (unchanged) return;
+    this.#fitListed = listed;
+    this.#fitLimit = limit;
+    this.#fitEmptyBytes = emptyBytes;
+    let bytes = emptyBytes;
     const kept: AgentStreamCommand[] = [];
     for (const command of listed) {
       const cost = jsonBytes(command) + (kept.length === 0 ? 0 : 1);

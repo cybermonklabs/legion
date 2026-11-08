@@ -542,6 +542,7 @@ function AgentRow({
   pinned,
   section,
   selected,
+  unreadReplies,
   waitingOnAgent,
 }: {
   agent: Agent;
@@ -577,6 +578,10 @@ function AgentRow({
    *  heading (`data-agent-section`). */
   section: AgentGroup;
   selected: boolean;
+  /** Replies to this session the reader has not read, from the viewer's agent state. The page
+   *  reads that state once for its grouping and hands each row its own number: a query of the
+   *  row's own would be one more subscription to the same key per mounted row. */
+  unreadReplies: number;
   /** This session's open questions whose next move is its own, counted in their own right
    *  rather than as what is left of `open_asks`. */
   waitingOnAgent: number;
@@ -590,8 +595,6 @@ function AgentRow({
   // under the name and a phone has no hover to ask that `title` with, so it shows the path
   // whole. The machine is drawn before it as a link of its own, so it is no part of this.
   const shownDir = mdViewport ? lastPathSegment(agent.dir) : agent.dir;
-  const unreadReplies =
-    useQuery(userAgentStateQuery()).data?.[agent.session_id]?.unread_replies ?? 0;
   // What the row holds itself is the reply the composer is answering; the page holds the rest.
   // A send the row's composer holds - out, or refused - still answers its reply when the row
   // mounts again, so the row restores the reply it was sent as.
@@ -889,9 +892,10 @@ function GroupHeading({
 /** Which filter panel is open; one at a time, since each is a popover over the page. */
 type OpenFilter = "group" | "machine" | "role" | null;
 
-/** A filter's own options, with anything picked that is no longer among them: a machine whose
+/** The role control's options, with anything picked that is no longer among them: a role whose
  *  last session left is still a row, so the reader sees what they are filtering by and can
- *  untick it. */
+ *  untick it. The machine control needs no such pass, because `filterOptions` already seeds its
+ *  host set with every picked machine. */
 function withPicked(options: readonly string[], picked: readonly string[]): string[] {
   return [...options, ...picked.filter((value) => !options.includes(value))];
 }
@@ -945,7 +949,7 @@ function AgentFilterBar({
           onChange={(next) => onFilters({ ...filters, machines: next })}
           onOpenChange={(next) => setOpen(next ? "machine" : null)}
           open={open === "machine"}
-          options={withPicked(machines, filters.machines)}
+          options={machines}
           searchLabel="Search machines"
           selected={filters.machines}
           triggerAriaLabel="Filter by machine"
@@ -1255,16 +1259,25 @@ function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): List
   const containerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState(() => ({ scrollTop: 0, viewportHeight: window.innerHeight }));
   const [measured, setMeasured] = useState<MeasuredHeights>(() => new Map());
-  const measure = useCallback(() => {
-    const items = containerRef.current?.querySelectorAll<HTMLElement>(LIST_ITEM_SELECTOR) ?? [];
-    const heights = [...items].flatMap((item) => {
+  /** Every item the list has drawn, each carrying the key its height is cached under. Queried
+   *  once per render and handed to both the measuring and the observer, rather than twice. */
+  const drawnItems = useCallback(
+    (): readonly HTMLElement[] => [
+      ...(containerRef.current?.querySelectorAll<HTMLElement>(LIST_ITEM_SELECTOR) ?? []),
+    ],
+    []
+  );
+  const measure = useCallback((items: readonly HTMLElement[]) => {
+    const heights = items.flatMap((item) => {
       const key = item.dataset.rowKey;
       return key === undefined ? [] : [[key, item.getBoundingClientRect().height] as const];
     });
     setMeasured((held) => withMeasuredHeights(held, heights));
   }, []);
+  // An arrow rather than `measure` itself: `ResizeObserver` hands its callback the entries that
+  // changed as its first argument, and the list measures every drawn item rather than those.
   const [observer] = useState(() =>
-    typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure)
+    typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => measure(drawnItems()))
   );
   const readView = useCallback(() => {
     const top = containerRef.current?.getBoundingClientRect().top ?? 0;
@@ -1284,16 +1297,28 @@ function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): List
       window.removeEventListener("resize", readView);
     };
   }, [readView]);
+  /** The items the observer is watching. Each render moves it to the items drawn now - what
+   *  left is unobserved, what arrived is observed - rather than disconnecting it and arming it
+   *  again over every one: `observe` delivers an entry for each newly observed element, so
+   *  re-observing them all would measure the whole list a second time after every render. */
+  const observed = useRef<readonly HTMLElement[]>([]);
   // After every render, because every render can change what is drawn and how tall it is.
   useLayoutEffect(() => {
-    measure();
-    if (observer === null) return undefined;
-    for (const item of containerRef.current?.querySelectorAll<HTMLElement>(LIST_ITEM_SELECTOR) ??
-      []) {
-      observer.observe(item);
+    const items = drawnItems();
+    measure(items);
+    if (observer === null) return;
+    const drawn = new Set(items);
+    for (const item of observed.current) {
+      if (!drawn.has(item)) observer.unobserve(item);
     }
-    return () => observer.disconnect();
+    const held = new Set(observed.current);
+    for (const item of items) {
+      if (!held.has(item)) observer.observe(item);
+    }
+    observed.current = items;
   });
+  // The observer belongs to the list rather than to a render, and goes once, with the list.
+  useEffect(() => () => observer?.disconnect(), [observer]);
   const list = rowWindow({
     estimate: ROW_ESTIMATE_PX,
     kept,
@@ -1303,6 +1328,66 @@ function useListWindow(keys: readonly string[], kept: ReadonlySet<string>): List
     viewportHeight: view.viewportHeight,
   });
   return { containerRef, drawn: list.drawn, height: list.height, tops: list.tops };
+}
+
+/**
+ * The list's own box: as tall as every item, drawn or not, so the scrollbar measures the list
+ * rather than the part of it on screen, and each drawn item sits at the place the window
+ * measured for it.
+ *
+ * The box owns the window, which is why it is a component of its own rather than part of the
+ * page. The window's state moves with every scroll event the page hears, and the page groups,
+ * sorts and filters every listed session on each of its own renders; here a scroll re-renders
+ * this box alone, and what the page worked out - `items`, `kept`, `keptAside` and `renderItem` -
+ * is untouched by it.
+ */
+function WindowedList({
+  items,
+  kept,
+  keptAside,
+  renderItem,
+}: {
+  /** The page's list in the order it draws it, each item under the key it is drawn with. */
+  items: readonly ListItem[];
+  /** The items drawn wherever they have scrolled to (D1). */
+  kept: ReadonlySet<string>;
+  /** The kept rows the list no longer holds, which the page draws hidden. They ride after the
+   *  drawn items in the one array: two arrays would be two slots, and a row moving between
+   *  them would remount. */
+  keptAside: readonly ReactNode[];
+  /** A heading or a row, as the page draws it. */
+  renderItem: (item: ListItem) => ReactNode;
+}): ReactNode {
+  const list = useListWindow(
+    items.map((item) => item.key),
+    kept
+  );
+  return (
+    <div
+      className="relative"
+      data-agents-list=""
+      ref={list.containerRef}
+      style={{ height: `${list.height}px` }}
+    >
+      {[
+        ...list.drawn.flatMap((index) => {
+          const item = items[index];
+          if (item === undefined) return [];
+          return [
+            <div
+              className="absolute inset-x-0 pb-3"
+              data-row-key={item.key}
+              key={item.key}
+              style={{ top: `${list.tops[index] ?? 0}px` }}
+            >
+              {renderItem(item)}
+            </div>,
+          ];
+        }),
+        ...keptAside,
+      ]}
+    </div>
+  );
 }
 
 export function AgentsPage(): ReactNode {
@@ -1488,10 +1573,6 @@ export function AgentsPage(): ReactNode {
   ]);
   const kept = new Set(openedRows);
   if (focusedRow !== null) kept.add(focusedRow);
-  const list = useListWindow(
-    items.map((item) => item.key),
-    kept
-  );
   useAgentsKeymap(
     {
       focusRow: (sessionID) => {
@@ -1550,6 +1631,7 @@ export function AgentsPage(): ReactNode {
       pinned={pinned.includes(agent.session_id)}
       section={group}
       selected={selected.has(agent.session_id)}
+      unreadReplies={agentStates[agent.session_id]?.unread_replies ?? 0}
       waitingOnAgent={waitingOnAgentBySession.get(agent.session_id) ?? 0}
     />
   );
@@ -1565,35 +1647,19 @@ export function AgentsPage(): ReactNode {
         </div>
       ))
   );
-  // Every drawn item at the place the window measured for it, and the kept rows after them in
-  // the one array: two arrays would be two slots, and a row moving between them would remount.
-  const rows = [
-    ...list.drawn.flatMap((index) => {
-      const item = items[index];
-      if (item === undefined) return [];
-      return [
-        <div
-          className="absolute inset-x-0 pb-3"
-          data-row-key={item.key}
-          key={item.key}
-          style={{ top: `${list.tops[index] ?? 0}px` }}
-        >
-          {item.kind === "group" ? (
-            <GroupHeading
-              agents={matchingIn[item.group]}
-              expanded={shown[item.group]}
-              group={item.group}
-              onToggle={() => toggleGroup(item.group)}
-              selected={selected}
-            />
-          ) : (
-            agentRow(item.agent, item.group, false)
-          )}
-        </div>,
-      ];
-    }),
-    ...keptAside,
-  ];
+  // A heading or a row, which the windowed box draws at the place it measured for it.
+  const renderItem = (item: ListItem) =>
+    item.kind === "group" ? (
+      <GroupHeading
+        agents={matchingIn[item.group]}
+        expanded={shown[item.group]}
+        group={item.group}
+        onToggle={() => toggleGroup(item.group)}
+        selected={selected}
+      />
+    ) : (
+      agentRow(item.agent, item.group, false)
+    );
 
   if (isPending) return <LoadingSkeleton label="Loading agents" />;
   // A refresh that fails keeps the list it has: unmounting every row would throw away what each
@@ -1661,17 +1727,7 @@ export function AgentsPage(): ReactNode {
               message="No agent matches these filters."
             />
           ) : null}
-          {/* The list's own box: as tall as every row, drawn or not, so the scrollbar measures
-              the list rather than the part of it on screen, and each drawn item sits at the
-              place the window measured for it. */}
-          <div
-            className="relative"
-            data-agents-list=""
-            ref={list.containerRef}
-            style={{ height: `${list.height}px` }}
-          >
-            {rows}
-          </div>
+          <WindowedList items={items} kept={kept} keptAside={keptAside} renderItem={renderItem} />
         </>
       )}
       {/* The sends sit outside the composer and outside the list, so a send's row outlives both:

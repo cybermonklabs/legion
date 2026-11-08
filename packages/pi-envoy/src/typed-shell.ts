@@ -133,7 +133,7 @@ export async function runShellCommand(
     return {
       command,
       cut,
-      output: (cut ? printed.slice(0, SHELL_OUTPUT_MAX) : printed).trimEnd(),
+      output: printed.slice(0, SHELL_OUTPUT_MAX).trimEnd(),
       status: statusOf(child, stopped, options.limitMs),
     };
   } finally {

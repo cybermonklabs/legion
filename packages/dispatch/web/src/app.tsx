@@ -1,14 +1,6 @@
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { lazy, type ReactNode, type RefObject, Suspense, useEffect, useRef, useState } from "react";
-import {
-  Link,
-  matchPath,
-  Navigate,
-  Route,
-  Routes,
-  useLocation,
-  useNavigate,
-} from "react-router-dom";
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
@@ -37,6 +29,7 @@ import {
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  liveViewSessionOf,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -468,7 +461,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // The session whose live view the address names, or `null` on every other page. The shell
   // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
   // is the one thing about the live view the router still decides.
-  const frontLiveView = matchPath(AGENT_LIVE_PATH, location.pathname)?.params.sessionId ?? null;
+  const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
   // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
   // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
   // on the page while the sidebar is collapsed or its sheet is closed.

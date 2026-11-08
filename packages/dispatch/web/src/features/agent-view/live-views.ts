@@ -48,15 +48,13 @@ interface Entry {
   awake: boolean;
   draft: string;
   place: LivePlace | null;
-  unreadAtOpen: number;
 }
 
-/** One view in the window snapshot below: a word and two numbers, nothing of what was written.
+/** One view in the window snapshot below: a word and a number, nothing of what was written.
  *  Exported for the browser check's own reader (`e2e/live-views.ts`). */
 export interface LiveViewSnapshot {
   readonly draftChars: number;
   readonly state: LiveViewState;
-  readonly unreadAtOpen: number;
 }
 
 /**
@@ -74,7 +72,7 @@ export interface DispatchLiveViews {
 
 declare global {
   interface Window {
-    /** Each opened view's state, draft length and unread-at-open count (D15). */
+    /** Each opened view's state and draft length (D15). */
     __dispatchLiveViews?: DispatchLiveViews;
     /** Set before the page loads, it turns the sleep rule off: every opened view stays mounted,
      *  which is the negative control of the check that counts what a sleeping view holds. */
@@ -85,6 +83,15 @@ declare global {
 /** One array for every store with nothing mounted, so a host reading `mounted()` re-renders only
  *  when the set itself changes. */
 const NOTHING_MOUNTED: readonly string[] = [];
+
+/** Whether two sets hold the same session ids, in any order. */
+function sameSet(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  if (left.size !== right.size) return false;
+  for (const sessionId of left) {
+    if (!right.has(sessionId)) return false;
+  }
+  return true;
+}
 
 /**
  * The live views of one app, as the shell mounts them and the rail reads them. One per
@@ -150,6 +157,11 @@ export class LiveViews {
    *  only by an unsent draft (D8). */
   setPinned(sessionIds: Iterable<string>): void {
     const pinned = new Set(sessionIds);
+    // The same set is the set already held, so nothing is dropped and nobody is told. The shell
+    // hands this a fresh array whenever the agent-state query's data changes - a read mark, an
+    // unread-reply count, an optimistic pin write - and without this guard each of those would
+    // rebuild the mounted list and the window snapshot and wake every listener.
+    if (sameSet(pinned, this.#pinned)) return;
     const unpinned = [...this.#pinned].filter((sessionId) => !pinned.has(sessionId));
     this.#pinned = pinned;
     // A pin is known before its view is ever opened and outlives every entry, so it is the
@@ -189,19 +201,6 @@ export class LiveViews {
     this.#changed();
   }
 
-  /** How many replies were unread when the view opened, which a lingering or sleeping view
-   *  leaves standing (R2). */
-  unreadAtOpen(sessionId: string): number {
-    return this.#entries.get(sessionId)?.unreadAtOpen ?? 0;
-  }
-
-  setUnreadAtOpen(sessionId: string, count: number): void {
-    const entry = count === 0 ? this.#entries.get(sessionId) : this.#entry(sessionId);
-    if (entry === undefined || entry.unreadAtOpen === count) return;
-    entry.unreadAtOpen = count;
-    this.#changed();
-  }
-
   subscribe = (listener: () => void): (() => void) => {
     this.#listeners.add(listener);
     return () => {
@@ -212,7 +211,7 @@ export class LiveViews {
   #entry(sessionId: string): Entry {
     let entry = this.#entries.get(sessionId);
     if (entry === undefined) {
-      entry = { awake: false, draft: "", place: null, unreadAtOpen: 0 };
+      entry = { awake: false, draft: "", place: null };
       this.#entries.set(sessionId, entry);
     }
     return entry;
@@ -251,14 +250,13 @@ export class LiveViews {
     for (const listener of this.#listeners) listener();
   }
 
-  /** The snapshot a browser check reads (D15): a word and two numbers per opened session. */
+  /** The snapshot a browser check reads (D15): a word and a number per opened session. */
   #report(): void {
     const views: Record<string, LiveViewSnapshot> = {};
     for (const [sessionId, entry] of this.#entries) {
       views[sessionId] = {
         draftChars: entry.draft.length,
         state: this.state(sessionId),
-        unreadAtOpen: entry.unreadAtOpen,
       };
     }
     window.__dispatchLiveViews ??= {};

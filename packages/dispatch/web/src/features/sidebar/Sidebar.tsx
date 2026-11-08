@@ -22,7 +22,7 @@ import {
   railSecondaryText,
 } from "../../theme/classes";
 import { useLiveViewState } from "../agent-view/live-views";
-import { pinnedAgentSessions, useAgentPinWrite } from "../agents/pins";
+import { useAgentPinWrite, usePinnedAgents } from "../agents/pins";
 import { totalUnreadReplies, unreadRepliesLabel } from "../agents/unread";
 import { useInboxCount } from "../inbox/useInboxCount";
 import { AgentName, useAgentText } from "../refs/AgentName";
@@ -162,7 +162,7 @@ export function Sidebar({
   // unpins one from here. The registry is told the whole set in the shell (`app.tsx`), not
   // here, because this rail is a sheet behind the Menu control below 1280 pixels and is not on
   // the page at all while the sidebar is collapsed.
-  const pinnedAgents = pinnedAgentSessions(agentState);
+  const pinnedAgents = usePinnedAgents();
   const writePin = useAgentPinWrite();
   const [agentsOpen, setAgentsOpen] = useState(true);
   // The live view the reader is in, which its row marks as the page and which makes a move to

@@ -80,12 +80,11 @@ test("leaving every live view lets the last one linger and then sleep", () => {
   expect(views.mounted()).toEqual([]);
 });
 
-test("a sleeping view keeps its draft, its place and its unread count at open", () => {
+test("a sleeping view keeps its draft and its place", () => {
   const views = onFakeClock();
   views.show(PLANNER);
   views.setDraft(PLANNER, "half a question");
   views.setPlace(PLANNER, { id: "dispatch:m-4", top: -120 });
-  views.setUnreadAtOpen(PLANNER, 3);
 
   views.show(REVIEWER);
   views.show(TESTER);
@@ -93,7 +92,6 @@ test("a sleeping view keeps its draft, its place and its unread count at open", 
 
   expect(views.draft(PLANNER)).toBe("half a question");
   expect(views.place(PLANNER)).toEqual({ id: "dispatch:m-4", top: -120 });
-  expect(views.unreadAtOpen(PLANNER)).toBe(3);
 });
 
 // D8: every link into a live view makes an entry, pinned or not, and an unpinned one that falls
@@ -102,7 +100,6 @@ test("a sleeping view keeps its draft, its place and its unread count at open", 
 test("an unpinned sleeping view is discarded, and one holding a draft is kept", () => {
   const views = onFakeClock();
   views.show(PLANNER);
-  views.setUnreadAtOpen(PLANNER, 2);
   views.setPlace(PLANNER, { id: "dispatch:m-4", top: -120 });
   views.show(REVIEWER);
   views.setDraft(REVIEWER, "the half-written message");
@@ -113,7 +110,6 @@ test("an unpinned sleeping view is discarded, and one holding a draft is kept", 
   // The unpinned view with nothing written is gone; opening its link makes it again from the
   // session's replay.
   expect(views.place(PLANNER)).toBeNull();
-  expect(views.unreadAtOpen(PLANNER)).toBe(0);
   expect(window.__dispatchLiveViews?.views?.[PLANNER]).toBeUndefined();
 
   expect(views.draft(REVIEWER)).toBe("the half-written message");
@@ -124,33 +120,33 @@ test("a pinned sleeping view is kept, and unpinning one that holds nothing disca
   const views = onFakeClock();
   views.setPinned([PLANNER]);
   views.show(PLANNER);
-  views.setUnreadAtOpen(PLANNER, 4);
   views.show(REVIEWER);
   views.show(TESTER);
 
   expect(views.state(PLANNER)).toBe("asleep");
-  expect(views.unreadAtOpen(PLANNER)).toBe(4);
+  expect(window.__dispatchLiveViews?.views?.[PLANNER]).toEqual({
+    draftChars: 0,
+    state: "asleep",
+  });
 
   views.setPinned([]);
-  expect(views.unreadAtOpen(PLANNER)).toBe(0);
   expect(window.__dispatchLiveViews?.views?.[PLANNER]).toBeUndefined();
 });
 
-test("the snapshot names each view's state, draft length and unread count", () => {
+test("the snapshot names each view's state and draft length", () => {
   const views = onFakeClock();
   // Another owner's reading on the same handle - the live socket's open subscriptions - is left
   // where it is.
   window.__dispatchLiveViews = { agentSubscriptions: 2 };
   views.show(PLANNER);
-  views.setUnreadAtOpen(PLANNER, 5);
   views.setDraft(PLANNER, "four");
   views.show(REVIEWER);
 
   expect(window.__dispatchLiveViews).toEqual({
     agentSubscriptions: 2,
     views: {
-      [PLANNER]: { draftChars: 4, state: "live 30s", unreadAtOpen: 5 },
-      [REVIEWER]: { draftChars: 0, state: "live", unreadAtOpen: 0 },
+      [PLANNER]: { draftChars: 4, state: "live 30s" },
+      [REVIEWER]: { draftChars: 0, state: "live" },
     },
   });
 });

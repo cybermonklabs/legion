@@ -335,7 +335,7 @@ export function AgentConversationPage({
           </select>
           {/* Only a current list says the session is gone; one that failed or is refilling says
               nothing here, and the header already names why it has no list to read. */}
-          {agent !== undefined ? null : current ? (
+          {agent === undefined && current ? (
             <span
               className={`shrink-0 whitespace-nowrap ${textMutedOnCanvas}`}
               data-testid="agent-not-listed"

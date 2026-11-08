@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useRef } from "react";
 
 import {
   card,
@@ -10,6 +10,7 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../theme/classes";
+import { usePanelDismiss } from "./usePanelDismiss";
 
 /** The two figures a session's `context` frame carries (INFRA-812). */
 export interface ContextUsage {
@@ -72,28 +73,7 @@ export function ContextRing({ onOpenChange, open, usage }: ContextRingProps): Re
   const triggerRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      // The panel is what Escape acts on while it stands open, not the view behind it.
-      event.stopPropagation();
-      onOpenChange(false);
-      triggerRef.current?.focus();
-    };
-    const closeOnOutsidePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
-      onOpenChange(false);
-    };
-    document.addEventListener("keydown", closeOnEscape);
-    document.addEventListener("pointerdown", closeOnOutsidePointerDown);
-    return () => {
-      document.removeEventListener("keydown", closeOnEscape);
-      document.removeEventListener("pointerdown", closeOnOutsidePointerDown);
-    };
-  }, [onOpenChange, open]);
+  usePanelDismiss({ onOpenChange, open, panelRef, triggerRef });
 
   if (usage === undefined || share === undefined) return null;
 
