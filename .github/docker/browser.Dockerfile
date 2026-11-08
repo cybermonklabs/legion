@@ -1,11 +1,13 @@
 # The image every CI job that can launch WebKit or Firefox runs in: Playwright's own browser
-# host image, with the few tools the Dispatch end-to-end harness and this repository's CI
-# actions need added at image-build time, so that no CI job installs a browser host package
-# from Ubuntu's apt mirror pool (dispatch://INFRA-1443).
+# host image, with the few tools the Dispatch end-to-end harness needs added at image-build
+# time, so that no CI job installs a browser host package from Ubuntu's apt mirror pool
+# (dispatch://INFRA-1443).
 #
 # .github/workflows/browser-image.yaml builds and publishes it, and .github/ci-images.yaml holds
 # its row: `built: .github/docker/browser.Dockerfile` where a copied row holds `upstream:`, with
-# the digest every `container:` of .github/workflows/ci.yaml pins.
+# the digest the two `container:` jobs of .github/workflows/dispatch-browser.yaml pin, `shard`
+# (:180) and `alone` (:645). ci.yaml declares no `container:` of its own: it reaches those jobs
+# by calling that workflow.
 #
 # The base bakes the browsers and every host package they need under /ms-playwright, with
 # PLAYWRIGHT_BROWSERS_PATH pointing at it, and its Playwright version is the one bun.lock
@@ -30,7 +32,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:bb05d66d2963b1cc48073190781c3dd29e2c
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
 
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
-LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with PostgreSQL 18 and pgvector, weed, gh, jq, yq, python3, flock and a DejaVu core font: the image every CI job that can launch WebKit or Firefox runs in"
+LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with PostgreSQL 18 and pgvector, weed, jq, python3, flock and a DejaVu core font: the image every CI job that can launch WebKit or Firefox runs in"
 
 # What the base image already carries, read from its own config history and then from the built
 # image rather than guessed: node 26 and npm (NODE_VERSION=26, not 24), yarn, curl, wget, gpg,
@@ -46,16 +48,22 @@ ARG DEBIAN_FRONTEND=noninteractive
 # (packages/dispatch/e2e/harness-postgres.ts). noble-pgdg carries postgresql-18 18.6 and
 # postgresql-18-pgvector 0.8.7.
 ARG PG_MAJOR=18
-ARG YQ_VERSION=v4.54.2
-ARG GH_VERSION=2.103.3
+# The SHA-256 of that repository's armored signing key, checked below before apt reads one index
+# signed by it: apt trusts every package the key signs, so a rotated or re-exported key has to
+# fail this build and be read by a person rather than be trusted as served. It is the same key,
+# from the same URL, that packages/daemon/docker/worker.Dockerfile fetches, and this value is
+# that file's own ARG PGDG_KEY_SHA256 copied across; its header records which key it stands for,
+# RSA-4096 B97B 0AFC AA1A 47F0 44F2 44A0 7FCC 7D46 ACCC 4CF8, uid "PostgreSQL Debian
+# Repository".
+ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76
 # The uid GitHub's ubuntu-24.04 runner runs as, and the uid that owns $GITHUB_WORKSPACE and
 # every bind mount a `container:` job gets. `initdb` refuses to run as root, so the job runs the
 # container as this uid -- and `initdb` refuses a uid with no passwd entry too. This base
 # already answers for uid 1001: it is `pwuser`, created by the base image's own `adduser
-# pwuser`. The block below therefore creates nothing and only records what holds the uid, so
-# that a future base which numbers pwuser differently still leaves `--user 1001` resolvable.
+# pwuser`. Nothing here creates that user, so the assertion block below is what holds the
+# promise: a future base that numbers pwuser differently fails the build by name instead of
+# publishing an image whose steps run as somebody else.
 ARG RUNNER_UID=1001
-ARG RUNNER_GID=1001
 
 # One layer for everything that is installed. The apt lists are removed in the same layer, so
 # they never reach the pushed image.
@@ -69,6 +77,12 @@ RUN set -eux; \
     install -d /usr/share/postgresql-common/pgdg; \
     curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
       -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc; \
+    # The key is checked before the source that trusts it is written, so no index signed by an
+    # unexpected key is ever read. The ARG above says what the value is and where it came from.
+    printf '%s  %s\n' "$PGDG_KEY_SHA256" \
+      /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc > /tmp/pgdg-key.sha256; \
+    sha256sum --check --strict /tmp/pgdg-key.sha256; \
+    rm -f /tmp/pgdg-key.sha256; \
     echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" \
       > /etc/apt/sources.list.d/pgdg.list; \
     apt-get update; \
@@ -99,30 +113,6 @@ RUN set -eux; \
       # GStreamer libraries and plugins WebKit links and loads, not the command-line tools. The
       # registry assertion below is the thing that needs it.
       gstreamer1.0-tools; \
-    # mikefarah's yq, not Debian's: ./.github/actions/ci-ok-report reads workflow YAML with it.
-    curl -fsSL "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
-      -o /usr/local/bin/yq; \
-    chmod 0755 /usr/local/bin/yq; \
-    yq --version; \
-    # GitHub's CLI, from its own release tarball: the Ubuntu archive carries none and GitHub's
-    # apt repository would be a third apt source for one static binary.
-    curl -fsSL "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
-      -o /tmp/gh.tar.gz; \
-    tar -xzf /tmp/gh.tar.gz -C /usr/local --strip-components=1 \
-      "gh_${GH_VERSION}_linux_amd64/bin/gh"; \
-    rm -f /tmp/gh.tar.gz; \
-    gh --version; \
-    # The runner's uid, with a home of its own, for the reason the ARG above gives. Neither
-    # `groupadd` nor `useradd` is unconditional: gid 1001 is already taken in this base (the
-    # build below prints by what), and a second `groupadd -g 1001` fails the build with
-    # `GID '1001' already exists`. What matters is that uid 1001 resolves to a passwd entry with
-    # a writable home, not that this file owns the group.
-    echo "gid 1001 is held by: $(getent group "${RUNNER_GID}" || echo '<nothing>')"; \
-    echo "uid 1001 is held by: $(getent passwd "${RUNNER_UID}" || echo '<nothing>')"; \
-    getent group "${RUNNER_GID}" > /dev/null || groupadd -g "${RUNNER_GID}" runner; \
-    getent passwd "${RUNNER_UID}" > /dev/null \
-      || useradd -m -u "${RUNNER_UID}" -g "${RUNNER_GID}" -s /bin/bash runner; \
-    getent passwd "${RUNNER_UID}"; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
@@ -132,7 +122,7 @@ COPY --from=weed /usr/bin/weed /usr/local/bin/weed
 # initdb and pg_ctl live only in the version directory (the DISPATCH_E2E_PG_BIN the suite
 # names); psql, pg_config and the rest are also reachable through postgresql-common's wrappers
 # in /usr/bin. Appended, so nothing here shadows a runner tool of the same name.
-ENV PATH="${PATH}:/usr/lib/postgresql/18/bin"
+ENV PATH="${PATH}:/usr/lib/postgresql/${PG_MAJOR}/bin"
 
 # What this image promises, asserted at build time rather than in a CI step: a base or package
 # change fails the build with the thing's own name rather than a browser row a day later.
@@ -149,12 +139,19 @@ RUN set -eux; \
         || { echo "::error::the GStreamer registry holds no $element"; exit 1; }; \
       echo "gst-inspect-1.0 --exists $element: present"; \
     done; \
-    # Every tool the Dispatch end-to-end harness, run-server.sh and ./.github/actions/ci-ok-report
-    # reach for, proven here so a missing one fails the build rather than a job.
-    for tool in psql initdb pg_ctl pg_config python3 flock jq yq gh weed git openssl unzip tar curl node fc-match; do \
+    # Every tool the Dispatch end-to-end harness and run-server.sh reach for, proven here so a
+    # missing one fails the build rather than a job.
+    for tool in psql initdb pg_ctl pg_config python3 flock jq weed git openssl unzip tar curl node fc-match; do \
       command -v "$tool" >/dev/null || { echo "::error::the image holds no $tool"; exit 1; }; \
       printf '%-10s %s\n' "$tool" "$(command -v "$tool")"; \
     done; \
+    # The uid every `container:` job of .github/workflows/dispatch-browser.yaml runs as
+    # (`--user 1001`), which the base's own `adduser pwuser` answers for. Nothing in this file
+    # creates it, so this read is what holds that promise: a base numbering pwuser differently
+    # fails the build here by name, rather than publishing an image whose steps run as a uid
+    # with no passwd entry -- which `initdb` refuses outright.
+    getent passwd "${RUNNER_UID}" \
+      || { echo "::error::no passwd entry holds uid ${RUNNER_UID}, which every container: job runs as"; exit 1; }; \
     # The generic family the docs site's screenshots and the suite's layout rows measure text
     # in. This image must answer it as GitHub's ubuntu-24.04 runner does, which is the whole
     # reason fonts-dejavu-core is installed above; without it fontconfig falls through to

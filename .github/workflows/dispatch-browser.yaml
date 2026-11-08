@@ -162,7 +162,7 @@ jobs:
     # tag browser-5f5aca44): Playwright's own browser host, which bakes Chromium, WebKit and
     # Firefox and every host package they need under /ms-playwright - where its
     # PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
-    # binary, gh, jq, yq, python3, flock and a DejaVu core font added. So this job downloads no
+    # binary, jq, python3, flock and a DejaVu core font added. So this job downloads no
     # browser and installs no browser host package from Ubuntu's mirror pool at run time
     # (dispatch://INFRA-1443). The digest is written out as a literal rather than through an
     # expression because .github/scripts/check-ci-images.sh reads a `container:` image out of
@@ -290,7 +290,7 @@ jobs:
           nproc
           free -m || true
           df -h /tmp "$RUNNER_TEMP"
-          for tool in psql initdb pg_ctl pg_config python3 flock gh jq yq weed git openssl unzip tar curl node bun go docker sudo; do
+          for tool in psql initdb pg_ctl pg_config python3 flock jq weed git openssl unzip tar curl node bun go docker sudo; do
             printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
           done
           pg_config --version
@@ -720,7 +720,7 @@ jobs:
           nproc
           free -m || true
           df -h /tmp "$RUNNER_TEMP"
-          for tool in psql initdb pg_ctl pg_config python3 flock gh jq yq weed git openssl unzip tar curl node bun go docker sudo; do
+          for tool in psql initdb pg_ctl pg_config python3 flock jq weed git openssl unzip tar curl node bun go docker sudo; do
             printf '%-14s %s\n' "$tool" "$(command -v "$tool" || echo MISSING)"
           done
           pg_config --version
