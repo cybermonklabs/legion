@@ -1090,8 +1090,11 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       }
     );
 
-    // Catches: a token directory or file that others can read while the judge runs. The stand-in
-    // omp sleeps 2 s, so a watcher sees the files while they exist.
+    // Catches: a token directory or file that others can read while the judge runs. The modes
+    // are the judge's own reading of them from inside the container, recorded while it ran
+    // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
+    // for nothing now, so there is no window for a watcher to look through, and a row that
+    // waited for one would be waiting on a sleep.
     test.skipIf(skip)("the token file is the owner's alone while the judge runs", () => {
       const dir = gatewayDir();
       const result = gatewayJudge("bare", dir);

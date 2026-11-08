@@ -85,9 +85,10 @@ const REAL_STEP_MS = 100;
  *  The page's clock must be installed before it loaded (`page.clock.install()`, which leaves the
  *  clock running at real speed), so the write loop's timers are the ones driven here.
  *
- *  While a write of the page's is out the clock runs at real speed instead of at eleven times
- *  it, and it never stops: the crawling step and the wait between turns are the one
- *  `REAL_STEP_MS`, which is what ties the two. An attempt the page has heard nothing of for
+ *  While a write of the page's is out the clock crawls a little behind real time instead of
+ *  running at eleven times it, and it never stops: the crawling step and the wait between turns
+ *  are the one `REAL_STEP_MS`, which is what holds it there. An attempt the page has heard
+ *  nothing of for
  *  `KEYED_SEND_ATTEMPT_MS` of the page's own time is given up and made again under its key
  *  (`writeUnderKey`), and at the ordinary pace this loop spends `stepMs` of page time for each
  *  `REAL_STEP_MS` of real time — 1.1 s for every 0.1 s. Driven at that pace over an attempt in
