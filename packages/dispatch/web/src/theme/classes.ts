@@ -810,6 +810,18 @@ export const chartBar = {
   targetLine: "stroke-slate-500 dark:stroke-slate-300",
 } as const;
 
+/** Distinct solid fills for the parts of one stacked bar (a worker type each), in order;
+ *  decorative, since each part's name is beside it or in its title. */
+export const chartParts = [
+  "bg-sky-500 dark:bg-sky-400",
+  "bg-violet-500 dark:bg-violet-400",
+  "bg-emerald-500 dark:bg-emerald-400",
+  "bg-amber-500 dark:bg-amber-400",
+  "bg-rose-500 dark:bg-rose-400",
+  "bg-teal-500 dark:bg-teal-400",
+  "bg-slate-400 dark:bg-slate-500",
+] as const;
+
 // ---------------------------------------------------------------------------------------------
 // Sizing-agnostic composites the components import directly
 // ---------------------------------------------------------------------------------------------

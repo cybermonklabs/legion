@@ -375,68 +375,105 @@ interface Comparison {
   readonly series: readonly ChartSeries[] | undefined;
 }
 
-/** One range's bars under the days they cover; `series` is undefined while its read is out. */
-function RangeGraph({
-  compare,
-  label,
+/** One range's bars for one series; `series` is undefined while its read is out. `labelBars`
+ *  writes each bar's row name under it, for a run of a few named rows (worker types). */
+function RangeBars({
+  labelBars,
   series,
 }: {
-  compare: boolean;
-  label: string;
+  labelBars: boolean;
   series: ChartSeries | undefined;
 }): ReactNode {
+  if (series === undefined) return <p className={noteClass}>{PENDING}</p>;
+  if (series.kind === "spread") {
+    return (
+      <SpreadBars
+        days={series.days}
+        format={series.format}
+        noun={series.noun}
+        target={series.target}
+      />
+    );
+  }
   return (
-    <div data-chart-range={compare ? "compare" : "window"}>
-      <div className={noteClass}>{compare ? `Compare ${label}` : label}</div>
-      {series === undefined ? (
-        <p className={noteClass}>{PENDING}</p>
-      ) : series.kind === "spark" ? (
-        <Sparkbars
-          format={series.format}
-          max={series.max}
-          met={series.met}
-          points={series.points}
-          target={series.target}
-        />
-      ) : (
-        <SpreadBars
-          days={series.days}
-          format={series.format}
-          noun={series.noun}
-          target={series.target}
-        />
-      )}
+    <div>
+      <Sparkbars
+        format={series.format}
+        max={series.max}
+        met={series.met}
+        points={series.points}
+        target={series.target}
+      />
+      {labelBars ? (
+        <div className="flex" data-chart-bar-labels>
+          {series.points.map((point) => (
+            <span
+              className={`min-w-0 flex-1 truncate text-center ${noteClass}`}
+              key={point.label}
+              title={point.label}
+            >
+              {point.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
 
-/** The chart itself: every series' bars, and with a comparison the second range's under each. */
+/** The most rows whose names fit under their bars; a longer run (one bar per issue) names each in
+ *  its tooltip and its table row instead. */
+const LABELLED_BARS = 12;
+
+/** The chart itself: one header naming each range once, then one row per series, its name in
+ *  the legend column and its bars under each range, a compared range beside the window's. */
 function Graph({
   against,
   range,
+  rows,
   series,
 }: {
   against: Comparison | null;
   range: ChartRange;
+  rows: ChartRows;
   series: readonly ChartSeries[];
 }): ReactNode {
+  const named = rows !== UTC_DAYS;
+  // The rows' names go once, under the last series, as one axis for every series above it.
+  const last = (index: number) => index === series.length - 1;
+  const labelBars = (one: ChartSeries | undefined) =>
+    named && one?.kind === "spark" && one.points.length <= LABELLED_BARS;
+  const columns =
+    against === null
+      ? "grid-cols-[minmax(6rem,9rem)_1fr]"
+      : "grid-cols-[minmax(6rem,9rem)_1fr_1fr]";
   return (
-    <>
-      {series.map((one, index) =>
-        against === null ? (
-          <RangeGraph compare={false} key={one.label} label={rangeLabel(range)} series={one} />
-        ) : (
-          <Fragment key={one.label}>
-            <RangeGraph compare={false} label={rangeLabel(range)} series={one} />
-            <RangeGraph
-              compare={true}
-              label={rangeLabel(against.range)}
-              series={against.series?.[index]}
-            />
-          </Fragment>
-        )
+    <div className={`grid items-center gap-x-3 gap-y-1 ${columns}`} data-chart-graph>
+      <span className={noteClass}>{named ? rows.header : ""}</span>
+      <div data-chart-range="window">
+        <span className={noteClass}>{rangeLabel(range)}</span>
+      </div>
+      {against === null ? null : (
+        <div data-chart-range="compare">
+          <span className={noteClass}>{`Compare ${rangeLabel(against.range)}`}</span>
+        </div>
       )}
-    </>
+      {series.map((one, index) => (
+        <Fragment key={one.label}>
+          <span
+            className={`truncate text-xs ${textMutedOnSurface}`}
+            data-chart-legend
+            title={one.label}
+          >
+            {one.label}
+          </span>
+          <RangeBars labelBars={last(index) && labelBars(one)} series={one} />
+          {against === null ? null : (
+            <RangeBars labelBars={last(index) && labelBars(one)} series={against.series?.[index]} />
+          )}
+        </Fragment>
+      ))}
+    </div>
   );
 }
 
@@ -677,7 +714,7 @@ export function Chart({
   return (
     <div className="flex min-w-0 flex-col gap-1" data-chart={label}>
       {mode === "graph" ? (
-        <Graph against={against} range={range} series={series} />
+        <Graph against={against} range={range} rows={rows} series={series} />
       ) : (
         <NumberTable
           against={against}

@@ -49,6 +49,7 @@ function report(overrides: Partial<LegionMetricsResponse> = {}): LegionMetricsRe
             in_a_turn: 4,
             waiting_on_children: 0,
             waiting_on_person: 0,
+            unknown: 0,
           },
           issue_keys: ["ACME-6", "ACME-7"],
           segment_issues: {
@@ -68,12 +69,15 @@ function report(overrides: Partial<LegionMetricsResponse> = {}): LegionMetricsRe
             in_a_turn: 0,
             waiting_on_children: 0,
             waiting_on_person: 2,
+            unknown: 0,
           },
           issue_keys: ["ACME-6"],
           segment_issues: { waiting_on_person: ["ACME-6"] },
         },
       ],
       idle_share: 0.125,
+      observed_hours: 8,
+      unknown_hours: 0,
     },
     project: "ACME",
     rework: {
@@ -279,34 +283,108 @@ function figure(metric: string, label: string): string {
   return card(metric).querySelector(`[data-legion-figure="${label}"]`)?.textContent ?? "";
 }
 
-test("the four metrics are drawn, each through the one chart component", async () => {
+/** Waits for the tiles, then opens one tile's card. */
+async function openCard(tile: string): Promise<void> {
+  await waitFor(() => {
+    if (document.querySelector('[data-health-tile="work_time"] [data-health-number]') === null) {
+      throw new Error("no numbers yet");
+    }
+  });
+  fireEvent.click(document.querySelector(`[data-health-tile="${tile}"]`) as HTMLElement);
+}
+
+function tileText(tile: string): string {
+  return document.querySelector(`[data-health-tile="${tile}"]`)?.textContent ?? "";
+}
+
+test("six tiles show the headline numbers, and no card is open until one is clicked", async () => {
   await renderPanel([setting("ACME")], () => report());
 
-  await screen.findByText("Work time to merge");
+  await waitFor(() => expect(tileText("work_time")).toContain("24.0h"));
+  expect(document.querySelectorAll("[data-health-tile]")).toHaveLength(6);
+  expect(tileText("work_time")).toContain("36.8h");
+  expect(tileText("phase_time")).toContain("idle 13%");
+  expect(tileText("rework")).toContain("1.0");
+  expect(tileText("rework")).toContain("50%");
+  expect(tileText("splitting")).toContain("per root");
+  expect(document.querySelectorAll("[data-legion-metric]")).toHaveLength(0);
+});
+
+test("a tile opens its one card, another tile replaces it, and a second click closes it", async () => {
+  await renderPanel([setting("ACME")], () => report());
+
+  await openCard("work_time");
+  expect(document.querySelectorAll("[data-legion-metric]")).toHaveLength(1);
+  expect(card("work_time").querySelector('[data-chart="Work time to merge"]')).not.toBeNull();
+  fireEvent.click(document.querySelector('[data-health-tile="rework"]') as HTMLElement);
+  expect(document.querySelectorAll("[data-legion-metric]")).toHaveLength(1);
+  expect(card("rework")).toBeDefined();
+  fireEvent.click(document.querySelector('[data-health-tile="rework"]') as HTMLElement);
+  expect(document.querySelectorAll("[data-legion-metric]")).toHaveLength(0);
+});
+
+test("each card is drawn through the one chart component, with its legend and its two controls", async () => {
+  await renderPanel([setting("ACME")], () => report());
+
   for (const [metric, label] of [
     ["work_time", "Work time to merge"],
-    ["phase_time", "Phase time by worker type"],
+    ["phase_time", "Time per worker type"],
     ["rework", "Rework"],
     ["splitting", "Splitting and follow-ups"],
-  ]) {
+  ] as const) {
+    await openCard(metric);
     expect(card(metric).querySelector(`[data-chart="${label}"]`)).not.toBeNull();
-    // Each chart has the two controls every chart of a measure over a range has.
     expect(card(metric).querySelector(`select[data-chart-compare="${label}"]`)).not.toBeNull();
     expect(screen.getByRole("group", { name: `${label} view` })).toBeDefined();
+    // One range label for the whole chart, and each series named in the legend column.
+    expect(card(metric).querySelectorAll('[data-chart-range="window"]')).toHaveLength(1);
+    expect(card(metric).querySelectorAll("[data-chart-legend]").length).toBeGreaterThan(0);
+    fireEvent.click(document.querySelector(`[data-health-tile="${metric}"]`) as HTMLElement);
   }
-  expect(document.querySelectorAll("[data-legion-metric]")).toHaveLength(4);
+});
+
+test("the worker-type card labels each bar with its worker type", async () => {
+  await renderPanel([setting("ACME")], () => report());
+
+  await openCard("phase_time");
+  const labels = card("phase_time").querySelector("[data-chart-bar-labels]")?.textContent;
+  expect(labels).toContain("implementer");
+  expect(labels).toContain("no role");
+});
+
+test("with no observation the idle share is not observed yet, and the card names the unknown hours", async () => {
+  const unobserved = report();
+  await renderPanel([setting("ACME")], () => ({
+    ...unobserved,
+    phase_time: {
+      ...unobserved.phase_time,
+      idle_share: null,
+      observed_hours: 0,
+      unknown_hours: 6,
+    },
+  }));
+
+  await waitFor(() => expect(tileText("phase_time")).toContain("idle: not observed yet"));
+  await openCard("phase_time");
+  expect(figure("phase_time", "Idle share")).toBe("not observed yet");
+  expect(card("phase_time").querySelector("[data-legion-unknown-note]")?.textContent).toContain(
+    "booked as unknown, not as idle"
+  );
 });
 
 test("each card's headline numbers are the answer's own", async () => {
   await renderPanel([setting("ACME")], () => report());
 
-  await screen.findByText("Work time to merge");
+  await openCard("work_time");
   expect(figure("work_time", "Median")).toBe("24.0h");
   expect(figure("work_time", "p90")).toBe("36.8h");
   expect(figure("work_time", "Issues finished")).toBe("2");
+  fireEvent.click(document.querySelector('[data-health-tile="phase_time"]') as HTMLElement);
   expect(figure("phase_time", "Idle share")).toBe("12.5%");
+  fireEvent.click(document.querySelector('[data-health-tile="rework"]') as HTMLElement);
   expect(figure("rework", "Median review rounds")).toBe("1.0");
   expect(figure("rework", "Sent back at least once")).toBe("50.0%");
+  fireEvent.click(document.querySelector('[data-health-tile="splitting"]') as HTMLElement);
   expect(figure("splitting", "Issues filed")).toBe("1");
   expect(figure("splitting", "Roots finished")).toBe("1");
 });
@@ -314,22 +392,12 @@ test("each card's headline numbers are the answer's own", async () => {
 test("a card's table holds every number its graph draws", async () => {
   await renderPanel([setting("ACME")], () => report());
 
-  await screen.findByText("Work time to merge");
-  fireEvent.click(
-    screen
-      .getByRole("group", { name: "Phase time by worker type view" })
-      .querySelector("button:last-of-type") as HTMLElement
-  );
-  const table = await waitFor(() => {
-    const found = document.querySelector('[data-chart-table="Phase time by worker type"]');
-    if (found === null) throw new Error("no table");
-    return found;
-  });
-  // One row per worker type, named as the card draws it, with a column per segment.
+  await openCard("phase_time");
+  const table = await openTable("Time per worker type");
   expect(table.textContent).toContain("Worker type");
   expect(table.textContent).toContain("implementer");
   expect(table.textContent).toContain("no role");
-  for (const segment of ["Waiting on a person", "In a turn", "CI wait", "Idle"]) {
+  for (const segment of ["Waiting on a person", "In a turn", "CI wait", "Idle", "Unknown"]) {
     expect(table.textContent).toContain(segment);
   }
 });
@@ -339,11 +407,9 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
     query.scope === "roots" ? report({ finished: 1, scope: "roots" }) : report()
   );
 
-  await screen.findByText("Work time to merge");
+  await openCard("work_time");
   expect(figure("work_time", "Issues finished")).toBe("2");
-
   fireEvent.click(screen.getByRole("button", { name: "Roots" }));
-
   await waitFor(() => expect(figure("work_time", "Issues finished")).toBe("1"));
   expect(metrics).toHaveBeenCalledWith(
     expect.objectContaining({ project: "ACME", scope: "roots" })
@@ -353,9 +419,9 @@ test("the scope toggle reads the metrics again for the roots alone", async () =>
 test("a project that names no daemon says so and reads no metrics", async () => {
   const { metrics } = await renderPanel([setting("LINUX")], () => report());
 
-  await waitFor(() =>
-    expect(document.querySelector("[data-legion-health-unconfigured]")).not.toBeNull()
-  );
+  await waitFor(() => expect(tileText("work_time")).toContain("No Legion daemon"));
+  fireEvent.click(document.querySelector('[data-health-tile="work_time"]') as HTMLElement);
+  expect(document.querySelector("[data-legion-health-unconfigured]")).not.toBeNull();
   expect(document.querySelectorAll("[data-legion-metric]")).toHaveLength(0);
   expect(metrics).not.toHaveBeenCalled();
 });
@@ -365,7 +431,7 @@ test("the metrics are read for the panel's own project over the last seven days"
     report({ project: query.project })
   );
 
-  await screen.findByText("Work time to merge");
+  await waitFor(() => expect(metrics).toHaveBeenCalled());
   const query = metrics.mock.calls[0]?.[0];
   expect(query?.project).toBe("ACME");
   expect(Date.parse(query?.to ?? "") - Date.parse(query?.from ?? "")).toBe(7 * 24 * 3600 * 1000);
@@ -377,8 +443,8 @@ test("a segment of a worker type's bar names the issues behind it", async () => 
     onSelectIssues: (keys, label) => selected.push([keys, label]),
   });
 
-  await screen.findByText("Work time to merge");
-  await openTable("Phase time by worker type");
+  await openCard("phase_time");
+  await openTable("Time per worker type");
   fireEvent.click(
     screen.getByRole("button", { name: "Show the issues behind CI wait of implementer" })
   );
@@ -395,7 +461,7 @@ test("a work time row and the finished count name their issues", async () => {
     onSelectIssues: (keys, label) => selected.push([keys, label]),
   });
 
-  await screen.findByText("Work time to merge");
+  await openCard("work_time");
   fireEvent.click(screen.getByRole("button", { name: "Show the issues: Issues finished" }));
   await openTable("Work time to merge");
   fireEvent.click(screen.getByRole("button", { name: "Show the issues of ACME-6" }));
@@ -408,7 +474,7 @@ test("a work time row and the finished count name their issues", async () => {
 test("a host that filters nothing gets no buttons in the tables", async () => {
   await renderPanel([setting("ACME")], () => report());
 
-  await screen.findByText("Work time to merge");
+  await openCard("work_time");
   await openTable("Work time to merge");
   expect(document.querySelector("[data-chart-select]")).toBeNull();
 });
@@ -419,8 +485,10 @@ test("a project whose repositories are not the deploy repository has no CI or de
     repos: [mapping("ACME", "acme/widgets")],
   });
 
-  expect(await screen.findByText("No deploy measured for this project yet.")).toBeDefined();
-  expect(screen.getByText("No CI measured for this project yet.")).toBeDefined();
+  await waitFor(() => expect(tileText("deploy")).toContain("Not measured yet"));
+  expect(tileText("ci")).toContain("Not measured yet");
+  fireEvent.click(document.querySelector('[data-health-tile="deploy"]') as HTMLElement);
+  expect(screen.getByText("No deploy measured for this project yet.")).toBeDefined();
   expect(pipeline).not.toHaveBeenCalled();
   expect(measures).not.toHaveBeenCalled();
 });
@@ -435,15 +503,13 @@ test("a project that maps the deploy repository shows its CI and deploys for its
     ],
   });
 
-  await waitFor(() =>
-    expect(
-      document.querySelector('[data-health-card="deploy"] [data-health-figure="Deploys a day"]')
-        ?.textContent
-    ).toBe("2.0")
-  );
+  await waitFor(() => expect(tileText("deploy")).toContain("2.0"));
+  expect(tileText("ci")).toContain("75%");
+  fireEvent.click(document.querySelector('[data-health-tile="deploy"]') as HTMLElement);
   expect(
-    document.querySelector('[data-health-card="ci"] [data-health-figure="Success"]')?.textContent
-  ).toBe("75%");
+    document.querySelector('[data-health-card="deploy"] [data-health-figure="Deploys a day"]')
+      ?.textContent
+  ).toBe("2.0");
   expect(pipeline).toHaveBeenCalledWith(
     expect.objectContaining({ repo: ["acme/deploy", "acme/widgets"] })
   );
@@ -452,11 +518,11 @@ test("a project that maps the deploy repository shows its CI and deploys for its
   );
 });
 
-test("the panel collapses and reads nothing more while closed", async () => {
+test("the panel collapses and shows nothing while closed", async () => {
   await renderPanel([setting("ACME")], () => report());
 
-  await screen.findByText("Work time to merge");
-  fireEvent.click(screen.getByRole("button", { expanded: true }));
-  expect(screen.queryByText("Work time to merge")).toBeNull();
-  expect(screen.getByRole("button", { expanded: false })).toBeDefined();
+  await waitFor(() => expect(tileText("work_time")).toContain("24.0h"));
+  fireEvent.click(screen.getByRole("button", { expanded: true, name: /ACME health/ }));
+  expect(document.querySelectorAll("[data-health-tile]")).toHaveLength(0);
+  expect(screen.getByRole("button", { expanded: false, name: /ACME health/ })).toBeDefined();
 });

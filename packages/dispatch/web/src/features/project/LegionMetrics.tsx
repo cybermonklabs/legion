@@ -27,6 +27,7 @@ import {
   Chart,
   type ChartCompareSource,
   type ChartRange,
+  type ChartRows,
   type ChartSeries,
   chartCompare,
   PENDING,
@@ -44,6 +45,7 @@ const SEGMENTS: readonly { readonly key: keyof LegionSegments; readonly label: s
   { key: "ci_wait", label: "CI wait" },
   { key: "waiting_on_children", label: "Waiting on children" },
   { key: "idle", label: "Idle" },
+  { key: "unknown", label: "Unknown (not observed)" },
 ];
 
 /** The four classes of filing, in the order the card lists them (`metrics.classes`). */
@@ -197,59 +199,52 @@ export function splittingSeries(report: LegionMetricsResponse): ChartSeries[] {
   ];
 }
 
-/** The four cards for one answer of the route. `compare` is the page's comparison, which every
- *  card offers and one second answer serves; a host that reads no second range passes none and
- *  the cards show their graph-or-table control alone. */
-export function LegionMetrics({
+/** Which of the four Legion cards. */
+export type LegionMetricKey = "work_time" | "phase_time" | "rework" | "splitting";
+
+/** One of the four Legion cards for one answer of the route, opened in full: its headline numbers
+ *  and its chart. `compare` is the panel's comparison; `onSelectIssues`, when given, makes the
+ *  numbers and table rows name the issues behind them. */
+export function LegionCard({
   compare,
+  metric,
   onSelectIssues,
   report,
 }: {
   compare?: ChartCompareSource<LegionMetricsResponse>;
-  /** Called with the issues behind a number and words naming it; omitted, nothing is a button. */
+  metric: LegionMetricKey;
   onSelectIssues?: (keys: string[], label: string) => void;
   report: LegionMetricsResponse;
 }): ReactNode {
-  // What each card draws, and what the compare range's answer draws beside it: built once per
-  // answer rather than on every render, since `Chart` builds its table of every number from the
-  // series it is handed.
-  const series = useMemo(
-    () => ({
-      phaseTime: phaseTimeSeries(report),
-      rework: reworkSeries(report),
-      splitting: splittingSeries(report),
-      workTime: workTimeSeries(report),
-    }),
-    [report]
-  );
+  const series = useMemo(() => SERIES[metric](report), [metric, report]);
   const comparedData = compare?.data;
   const compared = useMemo(
-    () =>
-      comparedData === undefined
-        ? undefined
-        : {
-            phaseTime: phaseTimeSeries(comparedData),
-            rework: reworkSeries(comparedData),
-            splitting: splittingSeries(comparedData),
-            workTime: workTimeSeries(comparedData),
-          },
-    [comparedData]
+    () => (comparedData === undefined ? undefined : SERIES[metric](comparedData)),
+    [comparedData, metric]
   );
   const range: ChartRange = { kind: "custom", from: report.from, to: report.to };
-  const rework = report.rework;
-  const splitting = report.splitting;
   const select = useMemo(() => selectors(report), [report]);
-  // Each chart's selection, or none where the host filters nothing.
   const on = (pick: (row: string, column: string | null) => [string[], string]) =>
     onSelectIssues === undefined
       ? undefined
       : (row: string, column: string | null) => onSelectIssues(...pick(row, column));
   const figureKeys = (keys: string[], label: string) =>
     onSelectIssues === undefined ? undefined : () => onSelectIssues(keys, label);
-
-  return (
-    <div className="@container">
-      <div className="grid min-w-0 grid-cols-1 gap-2 @min-[56rem]:grid-cols-2">
+  const { rework, splitting, phase_time: phase } = report;
+  const chart = (label: string, rows: ChartRows, pick: Parameters<typeof on>[0]) => (
+    <Chart
+      compare={chartCompare(compare, compared)}
+      label={label}
+      onSelect={on(pick)}
+      range={range}
+      rows={rows}
+      series={series}
+    />
+  );
+  const byIssue: ChartRows = { header: "Issue", over: "issue", pair: "name" };
+  switch (metric) {
+    case "work_time":
+      return (
         <MetricCard
           figures={[
             { label: "Median", value: hours(report.work_time.median_hours) },
@@ -263,29 +258,37 @@ export function LegionMetrics({
           metric="work_time"
           title="Work time to merge"
         >
-          <Chart
-            compare={chartCompare(compare, compared?.workTime)}
-            label="Work time to merge"
-            onSelect={on((row) => [[row], `Work time: ${row}`])}
-            range={range}
-            rows={{ header: "Issue", over: "issue", pair: "name" }}
-            series={series.workTime}
-          />
+          {chart("Work time to merge", byIssue, (row) => [[row], `Work time: ${row}`])}
         </MetricCard>
+      );
+    case "phase_time":
+      return (
         <MetricCard
-          figures={[{ label: "Idle share", value: pct(report.phase_time.idle_share) }]}
+          figures={[
+            {
+              label: "Idle share",
+              value: phase.idle_share === null ? "not observed yet" : pct(phase.idle_share),
+            },
+            { label: "Observed hours", value: hours(phase.observed_hours) },
+            { label: "Unknown hours", value: hours(phase.unknown_hours) },
+          ]}
           metric="phase_time"
-          title="Phase time by worker type"
+          title="Time per worker type"
         >
-          <Chart
-            compare={chartCompare(compare, compared?.phaseTime)}
-            label="Phase time by worker type"
-            onSelect={on(select.phase)}
-            range={range}
-            rows={{ header: "Worker type", over: "worker type", pair: "name" }}
-            series={series.phaseTime}
-          />
+          <p className={`text-xs ${textMutedOnSurface}`} data-legion-unknown-note>
+            {phase.observed_hours === 0
+              ? `The daemon reported nothing of these issues in this range, so in a turn, CI wait, waiting on children and idle are unknown: all ${hours(phase.unknown_hours)} not waiting on a person are booked as unknown, not as idle.`
+              : `${hours(phase.unknown_hours)} fall before the daemon reported on their issue, so whether a role was in a turn, CI was running or nothing happened is unknown; they are booked as unknown, not as idle.`}
+          </p>
+          {chart(
+            "Time per worker type",
+            { header: "Worker type", over: "worker type", pair: "name" },
+            select.phase
+          )}
         </MetricCard>
+      );
+    case "rework":
+      return (
         <MetricCard
           figures={[
             { label: "Median review rounds", value: rework.median_review_rounds.toFixed(1) },
@@ -298,15 +301,11 @@ export function LegionMetrics({
           metric="rework"
           title="Rework"
         >
-          <Chart
-            compare={chartCompare(compare, compared?.rework)}
-            label="Rework"
-            onSelect={on((row) => [[row], `Rework: ${row}`])}
-            range={range}
-            rows={{ header: "Issue", over: "issue", pair: "name" }}
-            series={series.rework}
-          />
+          {chart("Rework", byIssue, (row) => [[row], `Rework: ${row}`])}
         </MetricCard>
+      );
+    case "splitting":
+      return (
         <MetricCard
           figures={[
             {
@@ -332,19 +331,29 @@ export function LegionMetrics({
           metric="splitting"
           title="Splitting and follow-ups"
         >
-          <Chart
-            compare={chartCompare(compare, compared?.splitting)}
-            label="Splitting and follow-ups"
-            onSelect={on(select.week)}
-            range={range}
-            rows={{ header: "Week", over: "UTC week", pair: "position" }}
-            series={series.splitting}
-          />
+          {chart(
+            "Splitting and follow-ups",
+            { header: "Week", over: "UTC week", pair: "position" },
+            select.week
+          )}
         </MetricCard>
-      </div>
-    </div>
-  );
+      );
+  }
 }
+
+/** Each card's series builder. */
+const SERIES: Record<LegionMetricKey, (report: LegionMetricsResponse) => ChartSeries[]> = {
+  phase_time: phaseTimeSeries,
+  rework: reworkSeries,
+  splitting: splittingSeries,
+  work_time: workTimeSeries,
+};
+
+/** The worker types' names, in the route's bar order, for the panel's stacked bar. */
+export const roleName = (role: LegionBarRole): string => ROLES[role];
+
+/** Hours as the cards write them. */
+export const formatHours = hours;
 
 /** One metric: its headline numbers and its chart. */
 function MetricCard({

@@ -108,8 +108,13 @@ type WorkTimeIssue struct {
 // PhaseTime is metric 2: the seven bars, each split into the five segments.
 type PhaseTime struct {
 	Bars []RoleBar `json:"bars"`
-	// IdleShare is the idle hours of every bar over their whole time.
-	IdleShare float64 `json:"idle_share"`
+	// IdleShare is the idle hours of every bar over the hours the daemon reported on (ObservedHours),
+	// null while it reported on none of them: an hour before any observation is unknown, not idle.
+	IdleShare *float64 `json:"idle_share"`
+	// ObservedHours and UnknownHours are the bars' hours the daemon reported on, and the hours no
+	// observation covers and no ask claimed.
+	ObservedHours float64 `json:"observed_hours"`
+	UnknownHours  float64 `json:"unknown_hours"`
 }
 
 // RoleBar is one worker type's bar.
@@ -460,6 +465,7 @@ func firstWorkerEvent(issue *Issue) (time.Time, bool) {
 func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 	metric := PhaseTime{Bars: make([]RoleBar, len(bars))}
 	perIssue := make([][]float64, len(bars))
+	var observed time.Duration
 	for index, bar := range bars {
 		metric.Bars[index].Role = bar.Role
 		metric.Bars[index].IssueKeys = []string{}
@@ -472,6 +478,7 @@ func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 		for index, bar := range bars {
 			spans := intersect(phaseSpansOf(view.timeline, bar.Phases...), shared)
 			segments := view.split(spans)
+			observed += view.observedOf(spans)
 			// Every issue of the population counts towards each bar's median, one the role
 			// never worked as a zero, so the seven medians describe one population and not
 			// seven.
@@ -489,17 +496,20 @@ func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 			}
 		}
 	}
-	var whole, idle float64
+	var idle, unknown float64
 	for index := range metric.Bars {
 		row := &metric.Bars[index]
 		row.Hours = round(row.Segments.total())
 		row.MedianHoursPerIssue = median(perIssue[index])
 		row.Segments = rounded(row.Segments)
-		whole += row.Hours
 		idle += row.Segments.Idle
+		unknown += row.Segments.Unknown
 	}
-	if whole > 0 {
-		metric.IdleShare = round(idle / whole)
+	metric.ObservedHours = hours(observed)
+	metric.UnknownHours = round(unknown)
+	if metric.ObservedHours > 0 {
+		share := round(idle / metric.ObservedHours)
+		metric.IdleShare = &share
 	}
 	return metric
 }
@@ -774,5 +784,6 @@ func rounded(segments Segments) Segments {
 		CIWait:            round(segments.CIWait),
 		WaitingOnChildren: round(segments.WaitingOnChildren),
 		Idle:              round(segments.Idle),
+		Unknown:           round(segments.Unknown),
 	}
 }

@@ -200,9 +200,13 @@ func TestEachPhaseStartsAtItsRolesFirstEventAndEndsWhereTheNextStarts(t *testing
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v: the architect's design and accepting, and the implementer's phase from the plan handoff rather than from its own first event, which leaves the bar of no role empty", hoursPerBar, want2)
 	}
-	// Nothing was observed, so segments 2 and 3 can hold through nothing and every hour is idle.
-	if report.PhaseTime.IdleShare != 1 {
-		t.Errorf("the idle share = %g, want 1 before any observation exists", report.PhaseTime.IdleShare)
+	// Nothing was observed, so whether an hour was in a turn, in CI or idle is unknown: the idle
+	// share is null and every hour is unknown, none of it idle.
+	if report.PhaseTime.IdleShare != nil {
+		t.Errorf("the idle share = %g, want null before any observation exists", *report.PhaseTime.IdleShare)
+	}
+	if report.PhaseTime.UnknownHours != 10 || report.PhaseTime.ObservedHours != 0 {
+		t.Errorf("unknown %g, observed %g; want 10 unknown and 0 observed", report.PhaseTime.UnknownHours, report.PhaseTime.ObservedHours)
 	}
 }
 

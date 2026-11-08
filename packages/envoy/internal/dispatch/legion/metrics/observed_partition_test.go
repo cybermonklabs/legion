@@ -182,14 +182,14 @@ func partitionsItsWorkTime(t *testing.T, issue *Issue) {
 	for _, bar := range report.PhaseTime.Bars {
 		bars += bar.Hours
 		segments += bar.Segments.WaitingOnPerson + bar.Segments.InATurn +
-			bar.Segments.CIWait + bar.Segments.WaitingOnChildren + bar.Segments.Idle
+			bar.Segments.CIWait + bar.Segments.WaitingOnChildren + bar.Segments.Idle + bar.Segments.Unknown
 	}
 	if bars != work {
 		t.Errorf("the seven bars hold %g h against a work time of %g h: %g h of this issue's life is on no bar, or on two",
 			bars, work, bars-work)
 	}
 	if segments != bars {
-		t.Errorf("the five segments hold %g h against the seven bars' %g h: each hour of a bar goes to exactly one segment",
+		t.Errorf("the six segments hold %g h against the seven bars' %g h: each hour of a bar goes to exactly one segment",
 			segments, bars)
 	}
 }

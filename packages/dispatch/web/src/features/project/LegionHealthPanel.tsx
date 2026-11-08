@@ -29,11 +29,14 @@ import type {
   DeliveryMeasuresResponse,
   DeliveryPipelineResponse,
   DeliveryTimingDay,
+  LegionMetricsResponse,
   LegionMetricsScope,
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
+  borderStrong,
+  chartParts,
   surfaceBg,
   textMutedOnCanvas,
   textMutedOnSurface,
@@ -48,11 +51,17 @@ import {
   chartCompare,
   daysRange,
 } from "../delivery/Chart";
-import { formatDuration, formatRate } from "../delivery/lib/format";
+import { formatDuration, formatRate, pct } from "../delivery/lib/format";
 import type { WindowChoice } from "../delivery/lib/window";
 import { type SegmentedOption, SegmentedToggle } from "../delivery/SegmentedToggle";
 import { WindowControl } from "../delivery/WindowControl";
-import { LegionMetrics, metricsRange } from "./LegionMetrics";
+import {
+  formatHours,
+  LegionCard,
+  type LegionMetricKey,
+  metricsRange,
+  roleName,
+} from "./LegionMetrics";
 
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
 
@@ -105,6 +114,28 @@ function notMeasured(error: unknown): boolean {
   );
 }
 
+/** Which card is open under the tile row. */
+type CardKey = LegionMetricKey | "ci" | "deploy";
+
+/** A number's change against the compare range, signed, in the number's own format; empty while
+ *  either is unknown. */
+function delta(
+  now: number | null | undefined,
+  before: number | null | undefined,
+  format: (v: number) => string
+): string {
+  if (now === null || now === undefined || before === null || before === undefined) return "";
+  const change = now - before;
+  if (change === 0) return "no change";
+  return `${change > 0 ? "+" : "−"}${format(Math.abs(change))}`;
+}
+
+/** Filings per week over a report's range. */
+function filedPerWeek(report: LegionMetricsResponse): number {
+  const weeks = (Date.parse(report.to) - Date.parse(report.from)) / (7 * 24 * 3600 * 1000);
+  return weeks > 0 ? report.splitting.filed.length / weeks : 0;
+}
+
 export function LegionHealthPanel({
   onSelectIssues,
   project,
@@ -114,6 +145,7 @@ export function LegionHealthPanel({
 }): ReactNode {
   const headingId = useId();
   const [open, setOpen] = useState(true);
+  const [card, setCard] = useState<CardKey | null>(null);
   const [chosen, setChosen] = useState<WindowChoice>({ kind: "preset", preset: "7d" });
   const [compare, setCompare] = useState<ChartRange | null>(null);
   const [scope, setScope] = useState<LegionMetricsScope>("all");
@@ -123,6 +155,7 @@ export function LegionHealthPanel({
     () => metricsRange(chosen, Math.floor(Date.now() / 60_000) * 60_000),
     [chosen]
   );
+  const against = compare ?? range;
 
   const legionSettings = useQuery(legionSettingsQuery());
   const hasLegion = (legionSettings.data ?? []).some((setting) => setting.project === project);
@@ -131,12 +164,7 @@ export function LegionHealthPanel({
     enabled: open && hasLegion,
   });
   const comparedMetrics = useQuery({
-    ...legionMetricsQuery({
-      from: (compare ?? range).from,
-      project,
-      scope,
-      to: (compare ?? range).to,
-    }),
+    ...legionMetricsQuery({ from: against.from, project, scope, to: against.to }),
     enabled: open && hasLegion && compare !== null,
   });
 
@@ -157,11 +185,7 @@ export function LegionHealthPanel({
     enabled: open && measured,
   });
   const comparedPipeline = useQuery({
-    ...projectPipelineQuery({
-      from: (compare ?? range).from,
-      repo: repos,
-      to: (compare ?? range).to,
-    }),
+    ...projectPipelineQuery({ from: against.from, repo: repos, to: against.to }),
     enabled: open && measured && compare !== null,
   });
   const measures = useQuery({
@@ -169,11 +193,7 @@ export function LegionHealthPanel({
     enabled: open && measured,
   });
   const comparedMeasures = useQuery({
-    ...projectMeasuresQuery({
-      from: (compare ?? range).from,
-      repo: repos,
-      to: (compare ?? range).to,
-    }),
+    ...projectMeasuresQuery({ from: against.from, repo: repos, to: against.to }),
     enabled: open && measured && compare !== null,
   });
   const source = <T,>(data: T | undefined): ChartCompareSource<T> => ({
@@ -181,6 +201,22 @@ export function LegionHealthPanel({
     onRange: setCompare,
     range: compare,
   });
+  const report = metrics.data;
+  const before = compare === null ? undefined : comparedMetrics.data;
+  const ciMeasured = measured && !notMeasured(pipeline.error);
+  const deployMeasured = measured && !notMeasured(measures.error);
+  const legionNote = legionSettings.isPending
+    ? "Loading…"
+    : !hasLegion
+      ? "No Legion daemon"
+      : metrics.isError
+        ? "Couldn't load"
+        : "Loading…";
+  const ci = pipeline.data?.pr_checks.run.total;
+  const ciBefore = compare === null ? undefined : comparedPipeline.data?.pr_checks.run.total;
+  const deploys = measures.data?.measures;
+  const deploysBefore = compare === null ? undefined : comparedMeasures.data?.measures;
+  const toggle = (key: CardKey) => setCard(card === key ? null : key);
 
   return (
     <section aria-labelledby={headingId} className={`mb-3 ${CARD}`} data-legion-health={project}>
@@ -193,7 +229,7 @@ export function LegionHealthPanel({
           onClick={() => setOpen(!open)}
           type="button"
         >
-          {open ? "▾" : "▸"} {project} health: Legion, CI and deploys
+          {open ? "▾" : "▸"} {project} health
         </button>
         {open ? (
           <div className="flex flex-wrap items-center gap-2">
@@ -211,8 +247,162 @@ export function LegionHealthPanel({
       </header>
       {open ? (
         <div className="flex flex-col gap-2" id={`${headingId}-body`}>
-          {legionSettings.isPending ? (
-            <p className={`text-sm ${textMutedOnCanvas}`}>Loading Legion…</p>
+          <fieldset
+            aria-label={`${project} health tiles`}
+            className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6"
+          >
+            <Tile
+              card="work_time"
+              change={delta(
+                report?.work_time.median_hours,
+                before?.work_time.median_hours,
+                formatHours
+              )}
+              name="Work time to merge"
+              note={report === undefined ? legionNote : undefined}
+              onToggle={toggle}
+              open={card}
+            >
+              {report === undefined ? null : (
+                <>
+                  <TileNumber label="median" value={formatHours(report.work_time.median_hours)} />
+                  <TileNumber label="p90" value={formatHours(report.work_time.p90_hours)} />
+                </>
+              )}
+            </Tile>
+            <Tile
+              card="phase_time"
+              change={delta(report?.phase_time.idle_share, before?.phase_time.idle_share, (v) =>
+                pct(v)
+              )}
+              name="Time per worker type"
+              note={report === undefined ? legionNote : undefined}
+              onToggle={toggle}
+              open={card}
+            >
+              {report === undefined ? null : <WorkerBar report={report} />}
+            </Tile>
+            <Tile
+              card="rework"
+              change={delta(
+                report?.rework.median_review_rounds,
+                before?.rework.median_review_rounds,
+                (v) => v.toFixed(1)
+              )}
+              name="Rework"
+              note={report === undefined ? legionNote : undefined}
+              onToggle={toggle}
+              open={card}
+            >
+              {report === undefined ? null : (
+                <>
+                  <TileNumber
+                    label="rounds"
+                    value={report.rework.median_review_rounds.toFixed(1)}
+                  />
+                  <TileNumber label="sent back" value={pct(report.rework.sent_back_share, 0)} />
+                </>
+              )}
+            </Tile>
+            <Tile
+              card="splitting"
+              change={delta(report && filedPerWeek(report), before && filedPerWeek(before), (v) =>
+                v.toFixed(0)
+              )}
+              name="Splitting"
+              note={report === undefined ? legionNote : undefined}
+              onToggle={toggle}
+              open={card}
+            >
+              {report === undefined ? null : (
+                <>
+                  <TileNumber label="filed/wk" value={filedPerWeek(report).toFixed(0)} />
+                  <TileNumber
+                    label="per root"
+                    value={report.splitting.children_per_root.toFixed(1)}
+                  />
+                </>
+              )}
+            </Tile>
+            <Tile
+              card="ci"
+              change={delta(ci?.median_minutes, ciBefore?.median_minutes, formatDuration)}
+              name="PR CI"
+              note={
+                loadingDelivery || (measured && pipeline.isPending)
+                  ? "Loading…"
+                  : !ciMeasured
+                    ? "Not measured yet"
+                    : pipeline.isError
+                      ? "Couldn't load"
+                      : undefined
+              }
+              onToggle={toggle}
+              open={card}
+            >
+              {ci === undefined ? null : (
+                <>
+                  <TileNumber label="median run" value={formatDuration(ci.median_minutes)} />
+                  <TileNumber label="success" value={formatRate(ci.success_rate)} />
+                </>
+              )}
+            </Tile>
+            <Tile
+              card="deploy"
+              change={delta(
+                deploys?.deploy_frequency.per_day,
+                deploysBefore?.deploy_frequency.per_day,
+                (v) => v.toFixed(1)
+              )}
+              name="Deploys"
+              note={
+                loadingDelivery || (measured && measures.isPending)
+                  ? "Loading…"
+                  : !deployMeasured
+                    ? "Not measured yet"
+                    : measures.isError
+                      ? "Couldn't load"
+                      : undefined
+              }
+              onToggle={toggle}
+              open={card}
+            >
+              {deploys === undefined ? null : (
+                <>
+                  <TileNumber label="a day" value={deploys.deploy_frequency.per_day.toFixed(1)} />
+                  <TileNumber
+                    label="run success"
+                    value={formatRate(deploys.deploy_run_success.rate)}
+                  />
+                </>
+              )}
+            </Tile>
+          </fieldset>
+          {card === null ? null : card === "ci" || card === "deploy" ? (
+            <DeliveryCard
+              failed={
+                card === "ci" ? pipeline.isError && ciMeasured : measures.isError && deployMeasured
+              }
+              loading={
+                loadingDelivery ||
+                (measured && (card === "ci" ? pipeline.isPending : measures.isPending))
+              }
+              measured={card === "ci" ? ciMeasured : deployMeasured}
+              metric={card}
+              none={
+                card === "ci"
+                  ? "No CI measured for this project yet."
+                  : "No deploy measured for this project yet."
+              }
+              onRetry={() => void (card === "ci" ? pipeline.refetch() : measures.refetch())}
+              title={card === "ci" ? "PR CI" : "Deploys"}
+            >
+              {card === "ci" && pipeline.data !== undefined ? (
+                <CiChart compare={source(comparedPipeline.data)} pipeline={pipeline.data} />
+              ) : card === "deploy" && measures.data !== undefined ? (
+                <DeployChart compare={source(comparedMeasures.data)} measures={measures.data} />
+              ) : null}
+            </DeliveryCard>
           ) : !hasLegion ? (
             <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-health-unconfigured>
               {project} names no Legion daemon, so there are no Legion numbers. The Settings page
@@ -224,48 +414,101 @@ export function LegionHealthPanel({
               onRetry={() => void metrics.refetch()}
               retrying={metrics.isFetching}
             />
-          ) : metrics.data === undefined ? (
+          ) : report === undefined ? (
             <p className={`text-sm ${textMutedOnCanvas}`}>Loading the Legion metrics…</p>
           ) : (
-            <LegionMetrics
+            <LegionCard
               compare={source(comparedMetrics.data)}
+              metric={card}
               onSelectIssues={onSelectIssues}
-              report={metrics.data}
+              report={report}
             />
           )}
-          <div className="@container">
-            <div className="grid min-w-0 grid-cols-1 gap-2 @min-[56rem]:grid-cols-2">
-              <DeliveryCard
-                loading={loadingDelivery || (measured && pipeline.isPending)}
-                measured={measured && !notMeasured(pipeline.error)}
-                metric="ci"
-                none="No CI measured for this project yet."
-                onRetry={() => void pipeline.refetch()}
-                failed={pipeline.isError && !notMeasured(pipeline.error)}
-                title="PR CI"
-              >
-                {pipeline.data === undefined ? null : (
-                  <CiChart compare={source(comparedPipeline.data)} pipeline={pipeline.data} />
-                )}
-              </DeliveryCard>
-              <DeliveryCard
-                loading={loadingDelivery || (measured && measures.isPending)}
-                measured={measured && !notMeasured(measures.error)}
-                metric="deploy"
-                none="No deploy measured for this project yet."
-                onRetry={() => void measures.refetch()}
-                failed={measures.isError && !notMeasured(measures.error)}
-                title="Deploys"
-              >
-                {measures.data === undefined ? null : (
-                  <DeployChart compare={source(comparedMeasures.data)} measures={measures.data} />
-                )}
-              </DeliveryCard>
-            </div>
-          </div>
         </div>
       ) : null}
     </section>
+  );
+}
+
+/** One headline tile: the metric's name, its numbers, and their change against the compare
+ *  range. A click opens its card under the row, and a second click closes it. */
+function Tile({
+  card,
+  change,
+  children,
+  name,
+  note,
+  onToggle,
+  open,
+}: {
+  card: CardKey;
+  change: string;
+  children: ReactNode;
+  name: string;
+  note: string | undefined;
+  onToggle: (key: CardKey) => void;
+  open: CardKey | null;
+}): ReactNode {
+  const pressed = open === card;
+  return (
+    <button
+      aria-expanded={pressed}
+      className={`flex h-20 min-w-0 flex-col justify-between rounded border px-2 py-1.5 text-left ${surfaceBg} ${pressed ? `border-2 ${borderStrong}` : borderDefault}`}
+      data-health-tile={card}
+      onClick={() => onToggle(card)}
+      type="button"
+    >
+      <span className={`truncate text-xs font-medium ${textSecondaryOnCanvas}`}>{name}</span>
+      {note === undefined ? (
+        <span className="flex min-w-0 flex-wrap items-baseline gap-x-2 overflow-hidden">
+          {children}
+        </span>
+      ) : (
+        <span className={`text-xs ${textMutedOnSurface}`} data-health-tile-note>
+          {note}
+        </span>
+      )}
+      <span className={`truncate text-[11px] ${textMutedOnSurface}`} data-health-tile-change>
+        {change === "" ? "\u00a0" : `vs compare ${change}`}
+      </span>
+    </button>
+  );
+}
+
+/** One number of a tile, with its few words. */
+function TileNumber({ label, value }: { label: string; value: string }): ReactNode {
+  return (
+    <span className="flex items-baseline gap-1 whitespace-nowrap" data-health-number={label}>
+      <span className={`text-sm font-semibold ${textPrimaryOnCanvas}`}>{value}</span>
+      <span className={`text-[10px] ${textMutedOnSurface}`}>{label}</span>
+    </span>
+  );
+}
+
+/** The worker-type tile: one small bar of the seven bars' hours, each part a worker type, and the
+ *  idle share, or that no observation exists to judge it by. */
+function WorkerBar({ report }: { report: LegionMetricsResponse }): ReactNode {
+  const bars = report.phase_time.bars;
+  const total = bars.reduce((sum, bar) => sum + bar.hours, 0);
+  const idle = report.phase_time.idle_share;
+  return (
+    <span className="flex w-full min-w-0 flex-col gap-0.5">
+      <span className="flex h-2.5 w-full overflow-hidden rounded-sm" data-health-worker-bar>
+        {bars.map((bar, index) =>
+          bar.hours === 0 || total === 0 ? null : (
+            <span
+              className={chartParts[index % chartParts.length]}
+              key={bar.role}
+              style={{ width: `${(100 * bar.hours) / total}%` }}
+              title={`${roleName(bar.role)}: ${formatHours(bar.hours)}`}
+            />
+          )
+        )}
+      </span>
+      <span className={`truncate text-[11px] ${textMutedOnSurface}`} data-health-idle>
+        {idle === null ? "idle: not observed yet" : `idle ${pct(idle, 0)}`}
+      </span>
+    </span>
   );
 }
 

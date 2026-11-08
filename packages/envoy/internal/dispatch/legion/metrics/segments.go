@@ -18,6 +18,11 @@ const (
 	SegmentCIWait            Segment = "ci_wait"
 	SegmentWaitingOnChildren Segment = "waiting_on_children"
 	SegmentIdle              Segment = "idle"
+	// SegmentUnknown is an hour before the daemon reported anything of the issue: no claim state
+	// or CI verdict was observed, so whether a role was in a turn, CI was running or nothing
+	// happened is not known, and the hour is booked as none of them. Only waiting on a person,
+	// which Dispatch's own ask events hold, is known there.
+	SegmentUnknown Segment = "unknown"
 )
 
 // segmentRule is one row of the precedence: a segment and every span of the issue's life in which
@@ -45,13 +50,14 @@ type Segments struct {
 	CIWait            float64 `json:"ci_wait"`
 	WaitingOnChildren float64 `json:"waiting_on_children"`
 	Idle              float64 `json:"idle"`
+	Unknown           float64 `json:"unknown"`
 }
 
 // byName is each segment's hours by its JSON name.
 func (s Segments) byName() map[string]float64 {
 	return map[string]float64{
 		"waiting_on_person": s.WaitingOnPerson, "in_a_turn": s.InATurn, "ci_wait": s.CIWait,
-		"waiting_on_children": s.WaitingOnChildren, "idle": s.Idle,
+		"waiting_on_children": s.WaitingOnChildren, "idle": s.Idle, "unknown": s.Unknown,
 	}
 }
 
@@ -68,12 +74,14 @@ func (s *Segments) add(segment Segment, spent time.Duration) {
 		s.WaitingOnChildren += hours(spent)
 	case SegmentIdle:
 		s.Idle += hours(spent)
+	case SegmentUnknown:
+		s.Unknown += hours(spent)
 	}
 }
 
 // total is every segment's hours.
 func (s Segments) total() float64 {
-	return s.WaitingOnPerson + s.InATurn + s.CIWait + s.WaitingOnChildren + s.Idle
+	return s.WaitingOnPerson + s.InATurn + s.CIWait + s.WaitingOnChildren + s.Idle + s.Unknown
 }
 
 // addSegments adds every segment of other.
@@ -83,6 +91,7 @@ func (s *Segments) addSegments(other Segments) {
 	s.CIWait += other.CIWait
 	s.WaitingOnChildren += other.WaitingOnChildren
 	s.Idle += other.Idle
+	s.Unknown += other.Unknown
 }
 
 // issueView is one issue with everything its segments read: its tree's root and children, its own
@@ -100,23 +109,67 @@ type issueView struct {
 	end         time.Time
 
 	claimed []([]Span)
+	// observed is the part of the issue's life the daemon reported on: from its first observation
+	// of a phase or a claim state to the issue's end; nil for an issue never observed.
+	observed     []Span
+	observedRead bool
 }
 
 // split shares a phase's spans between the segments, each span's time going to the first rule of
 // the precedence that holds through it and the rest to idle.
+//
+// Waiting on a person is read from Dispatch's own asks and holds through every hour. The other
+// rules read the daemon's observations, so outside the hours the daemon reported on (observedOf)
+// an hour no ask claimed is unknown, never idle.
 func (v *issueView) split(spans []Span) Segments {
 	var segments Segments
 	rest := normalize(spans)
+	observed := v.observedSpans()
 	for index, rule := range precedence {
 		if len(rest) == 0 {
 			break
 		}
-		taken := intersect(rest, v.claims(index))
+		claim := v.claims(index)
+		if rule.Segment != SegmentWaitingOnPerson {
+			claim = intersect(claim, observed)
+		}
+		taken := intersect(rest, claim)
 		segments.add(rule.Segment, totalOf(taken))
 		rest = subtract(rest, taken)
 	}
-	segments.add(SegmentIdle, totalOf(rest))
+	segments.add(SegmentIdle, totalOf(intersect(rest, observed)))
+	segments.add(SegmentUnknown, totalOf(subtract(rest, observed)))
 	return segments
+}
+
+// observedOf is how much of spans the daemon reported on.
+func (v *issueView) observedOf(spans []Span) time.Duration {
+	return totalOf(intersect(normalize(spans), v.observedSpans()))
+}
+
+// observedSpans is the issue's observed part, read once.
+func (v *issueView) observedSpans() []Span {
+	if v.observedRead {
+		return v.observed
+	}
+	v.observedRead = true
+	// Only a claim state or a phase tells what the issue's roles were doing: a slot or a wait the
+	// daemon sends with its own older time says nothing of the turns around it.
+	var first time.Time
+	for field, marks := range v.issue.Observed {
+		if field != legion.FieldPhase && !strings.HasPrefix(field, legion.ClaimFieldPrefix) {
+			continue
+		}
+		for _, mark := range marks {
+			if first.IsZero() || mark.At.Before(first) {
+				first = mark.At
+			}
+		}
+	}
+	if !first.IsZero() && first.Before(v.end) {
+		v.observed = []Span{{From: first, To: v.end}}
+	}
+	return v.observed
 }
 
 // claims is the spans the rule at index holds through, computed once per issue: a bar asks for

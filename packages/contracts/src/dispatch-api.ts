@@ -5030,6 +5030,9 @@ export interface LegionSegments {
   readonly ci_wait: number;
   readonly waiting_on_children: number;
   readonly idle: number;
+  /** Hours before the daemon reported anything of the issue, which no ask claimed: whether a
+   *  role was in a turn, CI was running or nothing happened is not known. */
+  readonly unknown: number;
 }
 
 /** One finished issue's work time with what was taken out of it: the hours from its first worker
@@ -5140,7 +5143,10 @@ export interface LegionMetricsResponse {
    *  over their whole time. */
   readonly phase_time: {
     readonly bars: readonly LegionRoleBar[];
-    readonly idle_share: number;
+    /** Idle hours over the hours the daemon reported on; null until it reported on any. */
+    readonly idle_share: number | null;
+    readonly observed_hours: number;
+    readonly unknown_hours: number;
   };
   /** Metric 3, rework: the median review rounds per issue, the share of issues sent back to
    *  implementing at least once, the implementing and testing hours after the first review with
