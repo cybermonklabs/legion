@@ -193,8 +193,9 @@ resolution, or reply that hands an open ask back to the agent; so does your appr
 request of the root's spec, and so does the spec's design gate standing open. The wait also ends
 when nothing is asked of you any more: Dispatch retracts the question because its decision block
 left the spec, a session closes it, or a session hands it back to the agent's turn. The answered
-root goes to the front of the waiting line, among the issues whose work came back and ahead of
-every issue whose first phase has yet to start, and its promotion there gives the same architect
+root goes into the waiting line's first part, among the issues whose work came back, oldest first,
+and so behind every issue of that part whose work came back before it, a root's own first phase
+included, and its promotion there gives the same architect
 session a task naming what answered it and what is still with you: at once, taking no slot, once
 the root's design gate has opened, and at the next free
 slot while its architect is still writing the first spec. While it waits for that slot,

@@ -567,10 +567,12 @@ func CanWaitOnPerson(root Issue, gate TreeGate, slotted bool) bool {
 }
 
 // WaitingLineBand is where the line puts an issue whose work came back: in its first part, oldest
-// first, and not at the front of the whole line (Waiting). Every shipped text that states the
-// line's order carries this fragment word for word — the daemon's own comments, the architect's
-// skills and the operator's guides — and workflow's TestTheShippedWordsNameTheWaitingLineNotice
-// reads it from here and holds each of those files to it.
+// first, and never first in the whole line (Waiting). The texts that state the line's order carry
+// this fragment word for word — the daemon's own comments, the architect's skills and the
+// operator's guides — and workflow's TestTheShippedWordsNameTheWaitingLineNotice reads it from
+// here and holds the files it lists to it. That test reads whether a file carries the words,
+// never whether the sentence around them is true, and a file it lists in neither place is held to
+// nothing: both are why it also bans, in every file it lists, the wording that put an issue first.
 const WaitingLineBand = "among the issues whose work came back, oldest first"
 
 // Waiting is the line of issues that wait for an admission slot, in the order admission gives
