@@ -114,12 +114,16 @@
 #      published image and only a read of the registry can see it.
 #      The remedy is the build: let .github/workflows/browser-image.yaml push the image this
 #      recipe makes, then move the row's digest onto what it pushed.
-#      What this rule does NOT prove is where the published bytes came from: the label is
-#      written by the run that published, and on a pull request that run is the pull request's
-#      own copy of that workflow. It holds a row to an image some run stamped this recipe's
-#      hash into, which catches a row left behind at an old digest; the attestation's own
-#      certificate is what names the commit a build ran at, and AGENTS.md says what a reviewer
-#      reads by hand when a `built` row's digest moves.
+#      What this rule does NOT prove is where the published bytes came from: it reads only the
+#      image's label, which the run that published the image writes, so it passes any image at
+#      the row's digest whose label carries this tree's recipe hash, whatever built its bytes.
+#      On a pull request that run executes the pull request's own copy of that workflow, and of
+#      the install-crane action and ci_images.py it runs before the build, none of which is
+#      checked against the bytes it pushed. What it catches is a row left behind at an old
+#      digest. A gate on the bytes would read the attestation's source commit; none exists, by
+#      the controller's decision, no such attack having been seen, and no by-hand reading stands
+#      in for it (one was written and withdrawn, dispatch://INFRA-1443). AGENTS.md states the
+#      same limit in the item after its "Container images" one.
 #
 # CI'S REACH is every .github/workflows/*.yaml, every .github/actions/*/action.yml, and each
 # other file a CI job runs that names an image. The first two kinds come from those two globs;

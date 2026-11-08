@@ -32,8 +32,8 @@ on:
 # the two-push order AGENTS.md describes has the push that changes any part of the build recipe
 # build and push the image, and a later push move the row's `digest:` onto it. A pull request
 # runs its own head's copy of this file, so a head that widens that `if:` attests what its own
-# run pushed and nothing else; the attestation names that run, its workflow and its ref, which
-# is what the verify command above the `attest` job reads.
+# run pushed and nothing else; the attestation names that run, its workflow and its ref, and
+# nothing of the source the run built from.
 #
 # `actions: read` and `checks: write` are the scopes of the build's ci-ok report, which runs on
 # every call; GitHub refuses a caller that grants less than this block declares.
@@ -184,12 +184,13 @@ jobs:
       # not yet name, because the package can hold a digest no row points at — the one an earlier
       # push's build pushed, whose row lands in a later push — and this build would push a NEW
       # digest on every run until the row caught up, since a rebuild of one recipe does not
-      # reproduce the bytes it built before (measured: the Dockerfile is byte-identical at
-      # d3bbd5f18339 and e25ec3364287, sha256 6a1e68f543ade8a0…, and those two builds' images
-      # differ), so the row would chase a digest that moved. So this publishes unless the row
-      # names a digest AND the image at that digest carries this build recipe's own sha256 in
-      # its legion.browser-image.source-sha256 label. This answer decides the build and not only
-      # the push: the three steps below it run on `publish=true` and on nothing else.
+      # reproduce the bytes it built before — the manifest reading in
+      # .github/workflows/dispatch-browser.yaml, where three builds of one Dockerfile share layers
+      # 1 to 7 and differ in 8 to 10 — so the row would chase a digest that moved. So this
+      # publishes unless the row names a digest AND the image at that digest carries this build
+      # recipe's own sha256 in its legion.browser-image.source-sha256 label. This answer decides
+      # the build and not only the push: the three steps below it run on `publish=true` and on
+      # nothing else.
       # crane reads that label anonymously, before the login step below: the package is public
       # (.github/ci-images.yaml says why). Any failure of that read — a digest the package does
       # not hold, an image with no such label, a registry that answered with an error — leaves
@@ -450,17 +451,17 @@ jobs:
   # runs it.
   #
   # WHAT THE GATES ON THAT ROW PROVE IS NARROWER THAN IT LOOKS, AND THE REST IS AN ACCEPTED
-  # LIMIT. Rule 9 and rule 10 of .github/scripts/check-ci-images.sh hold the row to an image the
-  # package serves whose label carries recipe_sha256 of the row's own Dockerfile and this
-  # workflow, so a row left behind at the digest an older recipe was built into — which every
-  # consumer would keep running while this tree describes another image — is refused. The one
-  # case those rules do not catch is an image built from a recipe other than the one its label
-  # names, the label stamped with the honest recipe's hash and that recipe restored at the head.
-  # There is no automated gate for it: building one is out of this tree by the controller's
-  # decision, no such attack having been seen, and no reliable by-hand reading stands in for it
-  # either — one was written here and in AGENTS.md and withdrawn, after seven rounds in which
-  # every version of it claimed more than it proved (dispatch://INFRA-1443). So this is a known
-  # limit of the row's gates, written down rather than papered over with prose.
+  # LIMIT. Rules 9 and 10 of .github/scripts/check-ci-images.sh read only the image's label,
+  # which the run that publishes the image writes, so they pass any image at the row's digest
+  # whose label carries this tree's recipe hash, whatever built its bytes: on a pull request that
+  # run executes the pull request's own copy of this workflow, and of the install-crane action
+  # and .github/scripts/ci_images.py it runs before the build, none of which is checked against
+  # the bytes it pushed. What they do catch is the mistake they exist for, a row left behind at
+  # the digest an older recipe was built into, which every consumer would keep running while this
+  # tree describes another image. A gate on the bytes would read the attestation's source commit;
+  # none exists, by the controller's decision, no such attack having been seen, and no by-hand
+  # reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443). So this is a
+  # known limit of the row's gates, written down rather than papered over with prose.
   #
   # AGENTS.md's rule that an image is accepted only at a revision main contains is about
   # the worker and Envoy images a deployment runs, which no pull request's run may publish.
