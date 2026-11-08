@@ -3251,7 +3251,8 @@ Each item below names a path with its method and identity, then its purpose.
 
   - It is `unknown` whenever Dispatch cannot see the repository the check's issue resolves to — it resolves to none, or the App cannot read it — whatever the check's `when`, and whenever a read of Dispatch's own fails:
     a commit there may head a pull request Dispatch was never able to learn, so it is marked neither current nor older.
-    A base branch GitHub no longer holds is none of those: it answers that the commit is not on that branch, and the default branch decides.
+    An earlier branch of an `after_merge` check is the one exception, and only where GitHub refused the read of it — a 403 or a 404, which a base branch GitHub no longer holds answers with: that says the branch does not carry the commit, and the default branch decides.
+    Every other failure of that read, a rate limit, a 5xx, a timeout or a request whose caller went away, leaves the result `unknown` wherever no branch carries the commit, and never `older`.
 
   - A `before_merge` result is current while its commit is the head of an `open` pull request, or the final head of a `merged` one, attributed to the check's own issue, and the check's words are the ones it proved.
 

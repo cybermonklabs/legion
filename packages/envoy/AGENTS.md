@@ -302,7 +302,8 @@ Each item below names a task and where its code is, then notes on it.
 
   - a `default_branch` result while the repository's default branch carries its commit, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
 
-  - `unknown` when the check's issue resolves to no repository or the App cannot read it, and never for a base branch GitHub no longer holds, which answers that the commit is not on it and leaves the default branch to decide.
+  - `unknown` when the check's issue resolves to no repository or the App cannot read it, and wherever a read of a branch failed and no branch carried the commit;
+    a read GitHub refused on an `after_merge` check's base branch is the one exception (a 403 or 404, which a branch it no longer holds answers with), and says the commit is not on that branch, leaving the default branch to decide.
 
   A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).

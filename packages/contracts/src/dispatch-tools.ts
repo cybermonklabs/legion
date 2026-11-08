@@ -1418,9 +1418,11 @@ export const dispatchToolSpecs = [
       "on the repository's default branch (which answers alone where Dispatch holds no merge of " +
       "that issue), or for a default_branch check a commit on the repository's default branch, " +
       "whatever branch the pull request merged into — and the check's words have not changed " +
-      "since; older otherwise, and unknown when Dispatch cannot read the repository. A base " +
-      "branch GitHub no longer holds is not unknown: it answers that the commit is not on that " +
-      "branch, and the default branch decides. A push that moves the " +
+      "since; older otherwise, and unknown when Dispatch cannot read the repository. On an " +
+      "after_merge check's base branch a read GitHub refused — a 403 or 404, which a branch it " +
+      "no longer holds answers with — says the commit is not on that branch and leaves the " +
+      "default branch to decide; every other failure of that read, a rate limit or a 5xx " +
+      "among them, leaves the result unknown and never older. A push that moves the " +
       "pull request's head makes a result older with no write of anyone's: record it again at " +
       "the new head. " +
       ISSUE_REFERENCE,
