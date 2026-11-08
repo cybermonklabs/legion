@@ -133,13 +133,18 @@ function endRecordedProcess(pidFile: string): ProcessEnding {
  * the run that started it, so a row that starts one has it write down the pid it ends up with
  * and ends it here; a descendant that ended before the run did would leave the row proving
  * nothing, and the assertion prints the ending it came to instead.
+ *
+ * A descendant that writes must ignore `SIGPIPE`. Its output goes into the socket whose only
+ * reader is the helper, and the row waits for the helper to exit, so on a stock kernel the next
+ * write after that exit ends the writer and this helper answers `already gone`. The writing row
+ * below carries the measurement.
  */
 async function withEscapedDescendant(
   name: string,
   body: (pidFile: string) => Promise<void>
 ): Promise<void> {
   const pidFile = join(dir, name);
-  let ending: ProcessEnding = "no pid file";
+  let ending: ProcessEnding | undefined;
   try {
     await body(pidFile);
   } finally {
@@ -343,21 +348,15 @@ describe("app-logins.ts", () => {
     // therefore names the writer itself. Killing it ends the writing and leaves the `sleep` of
     // the iteration it stood in, which holds the inherited stderr for the rest of its second and
     // then exits. `setsid` puts the loop in a session of its own, so no process group the helper
-    // kills reaches it: in the issue pod (gVisor 4.19.0, dash, bun 1.4.4) the token command ran
-    // as pid 268 with pgid 268 and sid 268, and the loop as pid 270 with ppid 1, pgid 270 and
-    // sid 270. The loop's fd 1 and fd 2 are one and the same socket, the end whose only reader
-    // is the helper (in that pod `/proc/270/fd/1` and `/proc/270/fd/2` both read
-    // `socket:[4030]`), and this row waits for the helper's exit, so the reader has always gone
-    // by the time the cleanup kills the loop. That is why the loop ignores `SIGPIPE`: on a stock
-    // Linux kernel the helper's exit does end it, because the next write into that socket raises
-    // that signal, whose default disposition ends the `sh` the loop runs in. Measured in the pod
-    // on a real pipe, which behaves as a stock kernel's socket does: the same loop writing into
-    // a pipe whose reader had closed was ended, and a non-writing wrapper around it recorded
-    // status 141. That is what failed this row on CI (`ubuntu-24.04`, run 42514904982, job
-    // 128835746683). Under gVisor the write succeeds instead and the loop survives: in the pod
-    // it was still iterating 12 seconds after the run returned. `trap "" PIPE` is what makes
-    // the two kernels agree, measured in the pod as the same loop running to its end against
-    // the same closed reader. It counts its writes rather than looping for ever, so a run that
+    // kills reaches it. Its fd 1 and fd 2 are the one socket whose only reader is the helper,
+    // and this row waits for the helper's exit, so that reader has always gone before the
+    // cleanup kills the loop. That is why the loop ignores `SIGPIPE`: on a stock Linux kernel
+    // the next write into a socket whose reader has gone raises it, and its default disposition
+    // ends the `sh` the loop runs in, which is what failed this row at random on CI's
+    // ubuntu-24.04 runners; under this repository's gVisor sandboxes that write succeeds and
+    // the loop survives. `trap "" PIPE` makes the two kernels agree (measured both ways: the
+    // same loop against a closed reader is ended with wait status 141 without it and runs to
+    // its end with it). It counts its writes rather than looping for ever, so a run that
     // never reaches the cleanup still ends it, as the silent row's `sleep 60` ends itself;
     // thirty seconds is six times the bound it must not push out.
     await withEscapedDescendant("escaped-writing.pid", async (pidFile) => {
