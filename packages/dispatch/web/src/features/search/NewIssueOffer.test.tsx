@@ -1,6 +1,8 @@
 import { expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -124,16 +126,18 @@ function openBar(settings: { label: string; session: string }): Stubs {
   };
 }
 
-/** Types the words and waits for the offer the bar makes of them. */
-async function offerFor(): Promise<HTMLElement> {
-  fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: words } });
+/** Puts the words in the bar's box and waits for the offer the bar makes of them. */
+async function offerFor(user: UserEvent): Promise<HTMLElement> {
+  await user.click(screen.getByRole("combobox", { name: "Search" }));
+  await user.paste(words);
   return await waitFor(() => screen.getByText(`Make a new issue from “${words}”`));
 }
 
 test("offers words that matched nothing as a new issue and writes nothing until it is pressed", async () => {
+  const user = userEvent.setup();
   const bar = openBar({ label: "from-the-bar", session: "sess-1" });
   try {
-    await offerFor();
+    await offerFor(user);
     expect(bar.createIssue).not.toHaveBeenCalled();
   } finally {
     bar.restore();
@@ -141,9 +145,10 @@ test("offers words that matched nothing as a new issue and writes nothing until 
 });
 
 test("accepting writes the words as the issue's first criterion, labels it, routes it and opens it", async () => {
+  const user = userEvent.setup();
   const bar = openBar({ label: "from-the-bar", session: "sess-1" });
   try {
-    fireEvent.click(await offerFor());
+    await user.click(await offerFor(user));
 
     await waitFor(() => expect(bar.createMessage).toHaveBeenCalled());
     expect(bar.createIssue.mock.calls[0]?.[0]).toEqual({
@@ -171,9 +176,10 @@ test("accepting writes the words as the issue's first criterion, labels it, rout
 });
 
 test("with no session configured it makes the issue and says no conversation was started", async () => {
+  const user = userEvent.setup();
   const bar = openBar({ label: "from-the-bar", session: "" });
   try {
-    fireEvent.click(await offerFor());
+    await user.click(await offerFor(user));
 
     await waitFor(() =>
       expect(screen.getByTestId("search-new-issue-said").textContent).toContain(
@@ -186,7 +192,7 @@ test("with no session configured it makes the issue and says no conversation was
     // The issue is made and nothing is running on it, so the bar leaves it to the person to
     // open, on the row that made it.
     expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE/issues");
-    fireEvent.click(screen.getByText("Open CORE-7"));
+    await user.click(screen.getByText("Open CORE-7"));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
     );
@@ -199,9 +205,10 @@ test("with no session configured it makes the issue and says no conversation was
 // made, so the words the person typed no longer match nothing. The row goes, because there is
 // no second issue to make; the line stays, because it says what their press did.
 test("the search catching up withdraws the row and leaves the line about the press", async () => {
+  const user = userEvent.setup();
   const bar = openBar({ label: "from-the-bar", session: "" });
   try {
-    fireEvent.click(await offerFor());
+    await user.click(await offerFor(user));
     await waitFor(() => expect(screen.getByText("Open CORE-7")).toBeDefined());
 
     bar.search.mockResolvedValue(theMadeIssue());
@@ -227,12 +234,13 @@ test("the criterion is the person's words in a check block carrying no attribute
 // way to open it: pressing again would make a second issue, which is the husk R14
 // (dispatch://INFRA-1042/spec#b-r14) exists to stop.
 test("a write refused after the create reports the issue as made and offers to create no more", async () => {
+  const user = userEvent.setup();
   const bar = openBar({ label: "from-the-bar", session: "sess-1" });
   try {
     bar.uploadArtifact.mockRejectedValue(
       new ApiError(400, { code: "ARTIFACT_INPUT", error: "the document was refused" })
     );
-    fireEvent.click(await offerFor());
+    await user.click(await offerFor(user));
 
     await waitFor(() =>
       expect(screen.getByTestId("search-new-issue-said").textContent).toBe(
@@ -246,7 +254,7 @@ test("a write refused after the create reports the issue as made and offers to c
     expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE/issues");
 
     expect(screen.queryByText(`Make a new issue from “${words}”`)).toBeNull();
-    fireEvent.click(screen.getByText("Open CORE-7"));
+    await user.click(screen.getByText("Open CORE-7"));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
     );

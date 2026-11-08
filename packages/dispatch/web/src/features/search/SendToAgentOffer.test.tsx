@@ -1,7 +1,9 @@
 import { expect, type Mock, spyOn, test } from "bun:test";
 import type { IssueClaimHolderState } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -127,10 +129,11 @@ function openBar(claim: IssueClaim | null, holderState: IssueClaimHolderState | 
   };
 }
 
-/** Types the words and waits for the hits, so a row still absent after this is absent because
- *  the bar does not offer it and not because the bar has not answered yet. */
-async function typeWords(): Promise<void> {
-  fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: words } });
+/** Puts the words in the box and waits for the hits, so a row still absent after this is absent
+ *  because the bar does not offer it and not because the bar has not answered yet. */
+async function typeWords(user: UserEvent): Promise<void> {
+  await user.click(screen.getByRole("combobox", { name: "Search" }));
+  await user.paste(words);
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
 }
 
@@ -157,16 +160,18 @@ function placeCaretInBlock(text: string): { readonly chip: string; readonly remo
 }
 
 /** Presses one key on the bar's box, which is where the two keys that move the chip act. */
-function pressOnBox(key: string): void {
-  fireEvent.keyDown(screen.getByRole("combobox", { name: "Search" }), { key });
+async function pressOnBox(user: UserEvent, key: string): Promise<void> {
+  await user.click(screen.getByRole("combobox", { name: "Search" }));
+  await user.keyboard(`{${key}}`);
 }
 
 const offerLabel = `Send this to the agent on ${issueKey}`;
 
 test("offers the words to the agent holding the claim, and sends nothing until the row is pressed", async () => {
+  const user = userEvent.setup();
   const bar = openBar(sessionClaim, "live");
   try {
-    await typeWords();
+    await typeWords(user);
     await waitFor(() => expect(screen.getByText(offerLabel)).toBeDefined());
     expect(bar.createAgentMessage).not.toHaveBeenCalled();
   } finally {
@@ -175,10 +180,11 @@ test("offers the words to the agent holding the claim, and sends nothing until t
 });
 
 test("approving sends one message naming the issue and the words, and the bar says it was sent", async () => {
+  const user = userEvent.setup();
   const bar = openBar(sessionClaim, "live");
   try {
-    await typeWords();
-    fireEvent.click(await waitFor(() => screen.getByText(offerLabel)));
+    await typeWords(user);
+    await user.click(await waitFor(() => screen.getByText(offerLabel)));
 
     await waitFor(() => expect(bar.createAgentMessage).toHaveBeenCalled());
     expect(bar.createAgentMessage.mock.calls[0]?.[0]).toBe(session);
@@ -200,6 +206,7 @@ test("approving sends one message naming the issue and the words, and the bar sa
 });
 
 test("the row is absent with no claim, a person's claim, a holder that stopped, or no registry", async () => {
+  const user = userEvent.setup();
   const absent: [string, IssueClaim | null, IssueClaimHolderState | null][] = [
     ["no claim at all", null, null],
     [
@@ -214,7 +221,7 @@ test("the row is absent with no claim, a person's claim, a holder that stopped, 
   for (const [what, claim, holderState] of absent) {
     const bar = openBar(claim, holderState);
     try {
-      await typeWords();
+      await typeWords(user);
       expect(screen.queryByText(offerLabel), what).toBeNull();
     } finally {
       bar.restore();
@@ -227,11 +234,12 @@ test("the body names the issue, then the person's words as they typed them", () 
 });
 
 test("Backspace widens the chip to the project, which no agent holds, so the row goes with it", async () => {
+  const user = userEvent.setup();
   const bar = openBar(sessionClaim, "live");
   try {
     // Backspace acts on an empty box alone, so it is pressed before the words are typed.
-    pressOnBox("Backspace");
-    await typeWords();
+    await pressOnBox(user, "Backspace");
+    await typeWords(user);
 
     expect(screen.getByTestId("search-scope").textContent).toContain("the project CORE");
     expect(screen.queryByText(offerLabel)).toBeNull();
@@ -243,13 +251,14 @@ test("Backspace widens the chip to the project, which no agent holds, so the row
 
 test("Tab narrows the chip to the block, and the message names that block before the words", async () => {
   const block = placeCaretInBlock("The sextant sights the horizon.");
+  const user = userEvent.setup();
   const bar = openBar(sessionClaim, "live");
   try {
-    pressOnBox("Tab");
-    await typeWords();
+    await pressOnBox(user, "Tab");
+    await typeWords(user);
 
     expect(screen.getByTestId("search-scope").textContent).toContain(block.chip);
-    fireEvent.click(await waitFor(() => screen.getByText(offerLabel)));
+    await user.click(await waitFor(() => screen.getByText(offerLabel)));
 
     await waitFor(() => expect(bar.createAgentMessage).toHaveBeenCalled());
     expect(bar.createAgentMessage.mock.calls[0]?.[1]).toEqual({
