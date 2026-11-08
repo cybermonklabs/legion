@@ -371,12 +371,11 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
 test("an agent's answer on a failed attempt is accepted and shown as the answer", async ({
   browser,
 }) => {
-  // None of the three reads another; only the issue waits on its project.
-  await Promise.all([
-    setLiveSessions([planner]),
-    setSessionSendStatus("s1", 404),
-    createProject({ key: "CORE", name: "Core" }),
-  ]);
+  // `setSessionSendStatus` patches the session `setLiveSessions` writes - `planner` is `s1` - so
+  // it cannot share their round: a PATCH that arrives first answers
+  // `404 unknown fixture session s1` and fails the row. Only the project is independent.
+  await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
+  await setSessionSendStatus("s1", 404);
   const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {

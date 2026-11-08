@@ -2398,6 +2398,18 @@ name had not gone, it had fallen back. Only with both gone did the page report `
 (critical). So on a control that carries a `title`, a missing label is invisible here - and a
 negative control that deletes one and reads a green pass has measured nothing.
 
+The visual layer has the same trap in its own shape, and it cost this change a test round. A
+control of it does not go in `web/src/theme/palette.ts`: a `Swatch` there feeds contrast
+arithmetic alone - `pair()` builds the `{light, dark}` objects `CONTRAST_CHECKS` reads - while
+every colour a page actually draws is a static Tailwind literal such as `bg-slate-200`, whose
+value is Tailwind's own, and that file's head says its numbers are copied from `tailwindcss`'s
+`theme.css`. So moving a swatch's OKLCH numbers changes no pixel, and a run that compares
+baselines after one passes with nothing different. A control that moves a rendered colour edits
+a class literal in `web/src/theme/classes.ts` together with its paired swatch, or a hex in
+`web/src/styles.css`. Keep the other layers green while you do it: `sky-700` in place of
+`slate-700` drops the offline pill below AA and reddens the unit step, and a control whose
+earlier step is red hides the reading it exists to take.
+
 A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
 disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
 entry by its `name`, the selector axe reported for the node, the reason in a sentence a reviewer
