@@ -119,7 +119,11 @@ bash docs/research/temporal-evaluation-2026-11/check-citations.sh
 It reads the answer and the plan live from Dispatch and resolves the citations of both that its grammar reads: a Legion file and identifier in either order, a quoted literal, a table or a column with its table, a numbered experiment and the figures attributed to it, a `dispatch://` reference, and a web address with the date it was read.
 A figure resolves only against the measured lines of its experiment's transcript, below the header's dashed rule, as a number of its own, so a figure that stands only in a header, or only inside a longer number, fails.
 An experiment this directory holds no transcript for is refused, its number standing above the highest transcript here or in a gap below it alike, and its figures are refused with it, so the count can never read as a pass for a figure nothing looked at.
-It does not read every citation those documents carry: a dotted identifier with no path beside it is read by no rule, and a span mixing a code citation with another kind is read only in the part that matches.
+It does not read every citation those documents carry, and the gaps are these four.
+A dotted identifier with no path beside it is read by no rule.
+A span mixing a code citation with another kind is read only in the part that matches.
+A figure of one digit is not read at all, which includes the counts the comparison at the heart of the answer rests on, two side effects against one: those were checked by hand, by the tester and again by the reviewer, rather than by any rule here.
+And a scope never crosses a table cell, so a figure in a table is not attributed to the experiment the neighbouring cell names.
 What the count covers is that grammar and nothing wider, and whether a claim is missing its citation altogether is the reviewer's reading, as the issue's Verification document says in its own words.
 It ends with `citations: N resolved, M unreachable, 0 failed`.
 

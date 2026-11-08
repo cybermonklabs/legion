@@ -2,12 +2,17 @@
 #
 # check-citations.sh resolves the citations of the two documents of INFRA-1546 that
 # the grammar below reads, and prints how many resolved. It does not read every
-# citation those documents carry: a dotted identifier with no path beside it, in
-# either order, is read by no rule here, and a span mixing a code citation with
-# another kind is read only in the part that matches. What the count covers is the
-# grammar below and nothing wider, and whether a claim is missing its citation
-# altogether is the reviewer's reading, as the issue's Verification document says in
-# its own words. The two documents:
+# citation those documents carry, and the gaps are these four. A dotted identifier
+# with no path beside it, in either order, is read by no rule here. A span mixing a
+# code citation with another kind is read only in the part that matches. A figure of
+# one digit is not read at all, which includes the counts the comparison at the heart
+# of the answer rests on, two side effects against one: those were checked by hand,
+# by the tester and again by the reviewer, rather than by any rule here. And a scope
+# never crosses a table cell, so a figure in a table is not attributed to the
+# experiment the neighbouring cell names. What the count covers is the grammar below
+# and nothing wider, and whether a claim is missing its citation altogether is the
+# reviewer's reading, as the issue's Verification document says in its own words.
+# The two documents:
 #
 #   the answer   dispatch://INFRA-1546/artifact/temporal-evaluation-md
 #   the plan     dispatch://INFRA-1546/artifact/implementation-plan-md
