@@ -371,7 +371,7 @@ func TestClosedIssueTakesOnlyCommentMarksUnderWithCommentMarks(t *testing.T) {
 			return err
 		},
 		"a text replacement": func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, "after", actor)
+			_, err := service.ReplaceText(ctx, artifactID, "after", actor, nil)
 			return err
 		},
 	} {
