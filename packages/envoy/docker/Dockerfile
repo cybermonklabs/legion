@@ -46,17 +46,16 @@ COPY docs/site/package.json docs/site/package.json
 # packages/dispatch/web/vite.config.ts). Every manifest is still copied above: the lockfile
 # resolves against all of them. Each pattern begins with ./ because Bun reads a pattern
 # without one as a package name, and these workspaces are named @sjawhar/dispatch,
-# @legion/contracts and @legion/proof-editor. Remove './' and `bun run build:web` below fails
-# with `Cannot find package 'spdx-expression-parse'`.
+# @legion/contracts and @legion/proof-editor. Remove `--filter './'` and `bun run build:web`
+# below fails with `Cannot find package 'spdx-expression-parse'`.
 # --frozen-lockfile stays immediately after install:
 # .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
 # flag written between the two takes this install out of that check's sight, silently.
 # --ignore-scripts skips the lifecycle script of every package installed here. better-sqlite3 is
-# the reason for it: prebuild-install fetches no prebuilt binary for that package under Bun
-# ("not yet supported in Bun", oven-sh/bun#4290), so node-gyp compiles it from source on every
-# install, and the stage would then need python3, make and g++ for a module the image never
-# ships, which packages/proof-editor reaches through proof-sdk and nothing copies out of this
-# stage.
+# the reason for it: under Bun that package's install script ends in node-gyp compiling it from
+# source (oven-sh/bun#4290), and the stage would then need python3, make and g++ for a module
+# the image never ships, which packages/proof-editor reaches through proof-sdk and nothing
+# copies out of this stage.
 RUN bun install --frozen-lockfile --ignore-scripts \
     --filter './' \
     --filter './packages/dispatch' \
