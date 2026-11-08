@@ -1645,7 +1645,7 @@ describe("the ledger", () => {
   // The 30 s limit is a hang guard, not a budget: the row records one frame more than
   // REPLAY_LEDGER_LIMIT, the boundary it exists to prove, and bun's unwritten 5,000 ms per-test
   // default is a limit on that work rather than on a hang. Measured in a 2-CPU pod: 1.00 s idle;
-  // under 16 busy loops (8 x nproc), 2.90 s at most in a whole-suite run and 2.87 s with this file
+  // under 16 busy loops (8 x nproc), 3.79 s at most in a whole-suite run and 2.87 s with this file
   // alone. It fires only if a record stops returning.
   test("past its limit the ledger forgets the oldest entry first", async () => {
     const { engine } = setup();

@@ -62,7 +62,7 @@ test("a key that names its event is remembered for the duplicate window and not 
 //
 // The 30 s limit is a hang guard, not a budget: the 100,029 claims are pure CPU work, and bun's
 // unwritten 5,000 ms per-test default is a limit on that work rather than on a hang. Measured in a
-// 2-CPU pod: 0.33 s idle; under 16 busy loops (8 x nproc), 6.19 s at most in a whole-suite run and
+// 2-CPU pod: 0.33 s idle; under 16 busy loops (8 x nproc), 6.44 s at most in a whole-suite run and
 // 6.93 s with this file alone. It fires only if a claim stops returning.
 test("a repeat is still recognised after as many other keys as the whole stream stored in one window", () => {
   const dedupe = createDeliveryDedupe(() => 0);
@@ -81,7 +81,7 @@ test("a repeat is still recognised after as many other keys as the whole stream 
 // goes first, and every later one is still recognised. Each frame carries an event id as well, and
 // those are held apart, so they do not spend the key limit.
 //
-// Measured in a 2-CPU pod: 0.95 s idle; under 16 busy loops (8 x nproc), 15.90 s at most in a
+// Measured in a 2-CPU pod: 0.95 s idle; under 16 busy loops (8 x nproc), 18.61 s at most in a
 // whole-suite run and 15.76 s with this file alone, so bun's unwritten 5,000 ms per-test default
 // timed this row out on a busy machine, 16 runs of 20. The count is DELIVERY_DEDUPE_KEY_LIMIT
 // itself, the boundary the row exists to prove, so it stays and the limit becomes an explicit 60 s

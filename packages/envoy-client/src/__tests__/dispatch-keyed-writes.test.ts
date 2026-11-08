@@ -720,7 +720,7 @@ describe("DispatchClient's writes", () => {
   // out, and it reads no clock to do it: the pause it must not wait out is 30 s, well above the
   // row's own 20 s limit, so a pause that ran would fail the row by that limit. The limit is that
   // discriminator rather than a bound on work: measured in a 2-CPU pod the row costs 0.10 s idle
-  // and, under 16 busy loops (8 x nproc), 0.17 s at most in a whole-suite run and 0.15 s with this
+  // and, under 16 busy loops (8 x nproc), 0.52 s at most in a whole-suite run and 0.43 s with this
   // file alone. It stays on the row because the suite's 30 s default would equal that pause.
   test("the production pause waits out its time and stops when the signal aborts", async () => {
     const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), json(posted, 201)]);
@@ -1077,8 +1077,8 @@ function answerOn(socket: Socket, status: number, body: unknown, key?: string): 
 /**
  * A Dispatch on a real socket, so a request's body goes out at the pace the connection takes it.
  * Each write's connection takes its body as the next of `intakes` says - at once, in a fixed number
- * of paced steps, or nothing past its headers - and answers 201 carrying back its key once it holds
- * all of it. `GET /healthz` answers that the keyed layer runs.
+ * of paced steps, or nothing past the first of it - and answers 201 carrying back its key once it
+ * holds all of it. `GET /healthz` answers that the keyed layer runs.
  */
 async function socketDispatch(intakes: readonly Intake[]) {
   const writes: Taken[] = [];
@@ -1117,12 +1117,15 @@ async function socketDispatch(intakes: readonly Intake[]) {
         intake = intakes[writes.length] ?? "full";
         writes.push(taken);
         chunk = head.subarray(end + 4);
-        if (intake === "stall") {
-          socket.pause();
-          return;
-        }
       }
       taken.received += chunk.length;
+      if (intake === "stall") {
+        // What the connection took is counted before it stops, so a row can tell an attempt that
+        // went out and was cut off part way from one that never started. It stops once the first
+        // of the body is in, which is with the headers when they came together.
+        if (taken.received > 0) socket.pause();
+        return;
+      }
       if (taken.received >= taken.length) {
         answerOn(socket, 201, { artifact: { id: "artifact-1" } }, taken.key);
       } else if (typeof intake === "object") {
@@ -1223,22 +1226,28 @@ describe("DispatchClient's uploads on a real connection", () => {
   // and the client is right to send a third, which is how this row failed. So it asserts what it
   // means - the first attempt went out incomplete, the last one landed whole, every attempt carried
   // the one key - and not the count, which is the machine's answer rather than the client's. The
-  // body is 2 MiB, just over `STREAMED_BODY_MIN`, so the attempt that lands is short, and the
+  // body is 16 MiB rather than the 2 MiB just over `STREAMED_BODY_MIN`, because the socket buffers
+  // in this pod took 2 MiB and 512 bytes whole 1 round of 5: at that size the first attempt can
+  // leave the client entirely, and what cuts it off is then the silence after the body went rather
+  // than a connection that stopped taking it. At 16 MiB the connection stops taking it part way,
+  // which is the row's subject, and the first attempt's own count says so: the server counts what
+  // the connection took before it stopped, so `received` is above nothing and below the body. The
   // silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy attempt. The
   // 30 s limit is a hang guard, not a budget: it fires only if the resend never lands. Measured in
-  // a 2-CPU pod: 2.03 s idle; under 16 busy loops (8 x nproc), 3.19 s at most in a whole-suite run
-  // and 2.40 s with this file alone.
+  // a 2-CPU pod: 2.18 s idle; under 16 busy loops (8 x nproc), 3.68 s at most in a whole-suite
+  // run.
   test("an upload its connection stops taking is cut off and sent again under its key", async () => {
     const silenceMs = 1_000;
     const dispatch = await dispatchOn(["stall", "full"]);
     const started = performance.now();
-    await upload(dispatch.url, silenceMs, 2 << 20);
+    await upload(dispatch.url, silenceMs, 16 << 20);
 
     expect(performance.now() - started).toBeGreaterThanOrEqual(silenceMs);
     const { writes } = dispatch;
     expect(writes.length).toBeGreaterThan(1);
     const first = writes[0] as Taken;
     const landed = writes.at(-1) as Taken;
+    expect(first.received).toBeGreaterThan(0);
     expect(first.received).toBeLessThan(first.length);
     expect(landed.received).toBe(landed.length);
     expect(first.key).toMatch(IDEMPOTENCY_KEY_PATTERN);

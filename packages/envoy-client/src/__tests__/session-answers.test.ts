@@ -887,9 +887,10 @@ describe("readSessionAnswers", () => {
   // own deadline is 120 s, four times the row's 30 s limit, so a read that waited on either fails
   // the row by that limit instead of by what the machine cost. The limit is that discriminator
   // rather than a bound on work: measured in a 2-CPU pod the row costs 0.06 s idle and, under 16
-  // busy loops (8 x nproc), 0.08 s at most in a whole-suite run and 0.10 s with this file alone.
+  // busy loops (8 x nproc), 0.45 s at most in a whole-suite run and 0.10 s with this file alone.
   // The 30 s stays on the row rather than taking the suite's default, because the row's claim is
-  // that number.
+  // that number. The second read's own reason says which path answered it, so the limit is a hang
+  // guard and not the only thing that tells a read that waited from one that did not.
   test("waits at most the deadline, does not wait again on a read past it, and the late answer fills the cache", async () => {
     const session = newSession();
     const dispatch = dispatchAt();
@@ -908,6 +909,7 @@ describe("readSessionAnswers", () => {
     // The read in flight already cost one request its deadline: the next does not wait on it.
     const second = await readSessionAnswers({ ...options, deadlineMs: 120_000 });
     expect(second.source).toBe("failure");
+    expect(second.reason).toBe("an earlier read is still waiting on Dispatch");
     expect(calls).toHaveLength(1);
 
     // The background read answers, and the cache holds its list.

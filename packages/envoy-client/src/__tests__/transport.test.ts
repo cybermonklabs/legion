@@ -1564,7 +1564,7 @@ describe("EnvoyClient", () => {
   // own replay deadline is 10 s, so a client that ignored the caller's 50 ms deadline would wait
   // that out. The row's 5 s limit is what catches it, and it stays on the row below the suite's
   // 30 s default for exactly that reason. It has 11 times the 0.45 s the row costs at most under
-  // 16 busy loops (8 x nproc) in a 2-CPU pod with this file alone, and 0.07 s in a whole-suite run.
+  // 16 busy loops (8 x nproc) in a 2-CPU pod, in a whole-suite run and with this file alone alike.
   test("gives up a replay at the deadline its caller names", async () => {
     const client = createEnvoyClient({
       baseUrl: "http://listener",

@@ -112,8 +112,10 @@ while (!(await stdin.read()).done);
     await Promise.all(children.map((child) => child.exited));
   }
   // The limit is a hang guard, not a margin for a slow machine: a child that never prints its
-  // line, or a renameSync or readdirSync that never returns.
-}, 60_000);
+  // line, or a renameSync or readdirSync that never returns. It is three and a half times the
+  // row's worst measured cost: in a 2-CPU pod the row costs 1.47 s idle and, under 16 busy loops
+  // (8 x nproc), 25.67 s at most in a whole-suite run.
+}, 90_000);
 
 // A pid and a start time name a process only in the pid namespace they were read in, and an agent
 // box is a namespace of its own over the host's state directory. The owner carries its namespace in

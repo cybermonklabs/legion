@@ -11,7 +11,7 @@ import { freePorts } from "../../test/envoy-stack";
 // envoy-session-stall lane failed at f41a4d8c (run 41167627270, job 124443217959). Measured on
 // this checkout's own probe, 1 triple of 2,000 repeated a port.
 describe("the ports a stack is given", () => {
-  // Measured in a 2-CPU pod: 0.68 s idle; under 16 busy loops (8 x nproc), 10.89 s at most in a
+  // Measured in a 2-CPU pod: 0.68 s idle; under 16 busy loops (8 x nproc), 11.64 s at most in a
   // whole-suite run and 12.54 s with this file alone, so bun's unwritten 5,000 ms per-test default
   // timed this row out on a busy machine, 4 runs of 20. The 2,000 rounds are what the probe above
   // measured a reused port at, so they stay and the limit becomes an explicit 60 s hang guard,

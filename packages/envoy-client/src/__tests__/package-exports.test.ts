@@ -16,7 +16,7 @@ const buildEntries = manifest.scripts.build
 
 // The 30 s limit is a hang guard, not a budget: the row resolves and imports every build entry,
 // and bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
-// Measured in a 2-CPU pod: 0.34 s idle; under 16 busy loops (8 x nproc), 4.33 s at most in a
+// Measured in a 2-CPU pod: 0.34 s idle; under 16 busy loops (8 x nproc), 8.46 s at most in a
 // whole-suite run and 6.35 s with this file alone, which passes that default. It fires only if an
 // import never resolves.
 test("exposes and resolves every package build entry", async () => {

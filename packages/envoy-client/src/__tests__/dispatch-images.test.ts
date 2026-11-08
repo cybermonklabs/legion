@@ -298,7 +298,7 @@ describe("sending pictures", () => {
   // The 30 s limit is a hang guard, not a budget: the row uploads 25 MiB, the most one Dispatch
   // upload takes, and bun's unwritten 5,000 ms per-test default is a limit on moving those bytes
   // rather than on a hang. Measured in a 2-CPU pod: 0.94 s idle; under 16 busy loops (8 x nproc),
-  // 3.98 s at most in a whole-suite run and 5.13 s with this file alone, which passes that
+  // 5.05 s at most in a whole-suite run and 5.13 s with this file alone, which passes that
   // default. It fires only if the upload never answers.
   test("a picture of exactly 25 MiB, the most one Dispatch upload takes, is uploaded and posted", async () => {
     const server = dispatch();
