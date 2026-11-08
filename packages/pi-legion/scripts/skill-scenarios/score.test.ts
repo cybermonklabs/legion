@@ -3133,7 +3133,38 @@ const reviewRecord = {
     decision: "approved",
   }),
 };
-function reviewRun(name: string, files: Record<string, string | null>) {
+/** A message one of a run's agents sent on Envoy: the `envoy_publish` write to `role`'s topic,
+ * as the run's transcript records the tool call. */
+const publishTo = (role: string, text: string) => ({
+  type: "message",
+  message: {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        id: "call-publish",
+        name: "write",
+        arguments: {
+          path: "xd://envoy_publish",
+          content: JSON.stringify({
+            topic: `notifications.role.legion-skills1-lweval-1-${role}`,
+            message: text,
+          }),
+        },
+      },
+    ],
+  },
+});
+/** The reviewer's wake of the implementer, which an approval that leaves text threads open owns:
+ * the daemon starts no phase for the fix, so the implementer learns its turn began from this
+ * message naming the head the fix lands above, and from nothing else. */
+const toldImplementer = (commit: string) =>
+  publishTo("implementer", `Approved ${commit}: the two text threads are yours to close above it.`);
+function reviewRun(
+  name: string,
+  files: Record<string, string | null>,
+  transcript: object[] = [...header, ...turn, toldImplementer(head)]
+) {
   run(
     name,
     {
@@ -3143,7 +3174,7 @@ function reviewRun(name: string, files: Record<string, string | null>) {
       "handoffs.json": handoffs(reviewRecord),
       ...files,
     },
-    [...header, ...turn]
+    transcript
   );
 }
 // The submission, and after it the read of the reviews already on the pull request, which a round
@@ -3233,35 +3264,48 @@ reviewRun("reviewer-text-findings-text-only-head-8", {
     submission(approval()),
   ]),
 });
+// The approval the rule asks for, and no message to the implementer: the round left the two text
+// threads open and woke nobody to close them.
+reviewRun(
+  "reviewer-text-findings-text-only-head-10",
+  { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
+  [...header, ...turn]
+);
 // Another label, for the counts.
 reviewRun("reviewer-text-findings-text-only-base-1", {
   "case.txt": "text-only\n",
   "calls.jsonl": calls([submission(approval())]),
 });
 // defect: the behavioural finding stands, so the round sends the change back, here with
-// `gh pr review --request-changes`.
-reviewRun("reviewer-text-findings-defect-head-1", {
-  "case.txt": "defect\n",
-  "calls.jsonl": calls([
-    {
-      at: "2026-09-30T17:29:30.000Z",
-      as: "gh",
-      argv: [
-        "pr",
-        "review",
-        "1001",
-        "--request-changes",
-        "--body",
-        "The blank-name guard is gone.",
-      ],
-      exit: 0,
-    },
-  ]),
-});
-reviewRun("reviewer-text-findings-defect-head-2", {
-  "case.txt": "defect\n",
-  "calls.jsonl": calls([submission(approval())]),
-});
+// `gh pr review --request-changes`. A round that sends the change back opens no fix loop, so its
+// transcript carries no message to the implementer.
+reviewRun(
+  "reviewer-text-findings-defect-head-1",
+  {
+    "case.txt": "defect\n",
+    "calls.jsonl": calls([
+      {
+        at: "2026-09-30T17:29:30.000Z",
+        as: "gh",
+        argv: [
+          "pr",
+          "review",
+          "1001",
+          "--request-changes",
+          "--body",
+          "The blank-name guard is gone.",
+        ],
+        exit: 0,
+      },
+    ]),
+  },
+  [...header, ...turn]
+);
+reviewRun(
+  "reviewer-text-findings-defect-head-2",
+  { "case.txt": "defect\n", "calls.jsonl": calls([submission(approval())]) },
+  [...header, ...turn]
+);
 // The rig's two records of the case disagree, and a directory that names no case at all.
 reviewRun("reviewer-text-findings-defect-head-3", {
   "case.txt": "text-only\n",
@@ -3400,28 +3444,15 @@ const movedBack = (reason: string) => ({
   to: "implementing",
   reason,
 });
-/** The message to the architect the control asks for: `envoy_publish` to the architect's role
- * topic, naming the thread no text fix closes, as the run's transcript records the call. */
-const publishToArchitect = (text: string) => ({
-  type: "message",
-  message: {
-    role: "assistant",
-    content: [
-      {
-        type: "toolCall",
-        id: "call-publish",
-        name: "write",
-        arguments: {
-          path: "xd://envoy_publish",
-          content: JSON.stringify({
-            topic: "notifications.role.legion-skills1-lweval-1-architect",
-            message: text,
-          }),
-        },
-      },
-    ],
-  },
-});
+/** The implementer's wake of the reviewer: the loop runs in `accepting`, where the daemon starts
+ * no phase, so the reviewer learns the fix is pushed from this message naming the new head. */
+const toldReviewerOfPush = (commit: string) =>
+  publishTo("reviewer", `The text fixes are pushed: the head to read is ${commit}.`);
+/** The reviewer's wake of the architect: the second approval is the architect's gate, and no
+ * phase ends to carry it, so this message naming the head it approved is how the architect
+ * learns the loop closed. */
+const toldArchitectOfHead = (commit: string) =>
+  publishTo("architect", `I approved the head the fix landed on, ${commit}.`);
 /** The run's own remote: the head the reviewer approved, a commit that changes the threads' two
  * files alone, and one that changes the code with them. Each run that reads a push gets a bare
  * clone of it in its own directory, as rig.sh's worker_fixture leaves one.
@@ -3482,6 +3513,8 @@ const fixNames = [
   "threads-closed-text-fixes-head-18",
   "threads-closed-text-fixes-head-19",
   "threads-closed-text-fixes-head-20",
+  "threads-closed-text-fixes-head-21",
+  "threads-closed-text-fixes-head-22",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -3489,6 +3522,7 @@ const fixNames = [
   "threads-closed-code-defect-head-4",
   "threads-closed-code-defect-head-5",
   "threads-closed-code-defect-head-6",
+  "threads-closed-code-defect-head-7",
   "threads-closed-head-9",
 ];
 const fix = fixRemotes(fixNames);
@@ -3496,7 +3530,8 @@ const pushed = (sha: string) =>
   `2026-09-30T17:35:00.000Z refs/heads/legion/LWEVAL-1 ${fix.approved} ${sha}\n`;
 /** A threads-closed run: the text-fixes world and its two threads unless `files` says otherwise,
  * with the reviewer's own transcript in <run>/sessions/reviewer, where rig.sh's worker_boot puts
- * the second agent's. */
+ * the second agent's. Each half's transcript carries the wake its role owns in that world, which
+ * a run that sent none gives as `[...header, ...turn]`. */
 function fixRun(
   name: string,
   files: Record<string, string | null>,
@@ -3514,7 +3549,7 @@ function fixRun(
       "handoffs.json": handoffs(reviewRecord),
       ...files,
     },
-    transcripts.implementer ?? [...header, ...turn]
+    transcripts.implementer ?? [...header, ...turn, toldReviewerOfPush(fix.fixed)]
   );
   // `reviewer: null` is the run whose second agent never started at all: rig.sh made the
   // directory and nothing wrote a transcript into it.
@@ -3523,7 +3558,7 @@ function fixRun(
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     path.join(dir, "2026-09-30T15-51-17-651Z_01b1f3dd.jsonl"),
-    (transcripts.reviewer ?? [...header, ...turn])
+    (transcripts.reviewer ?? [...header, ...turn, toldArchitectOfHead(fix.fixed)])
       .map((entry) => `${JSON.stringify(entry)}\n`)
       .join("")
   );
@@ -3560,10 +3595,18 @@ fixRun("threads-closed-text-fixes-head-3", {
   "pushes.log": pushed(fix.fixed),
 });
 // The commit carries the code with the text fixes, which the one commit of text fixes does not.
-fixRun("threads-closed-text-fixes-head-4", {
-  "calls.jsonl": calls([...closedBoth.slice(0, 6), secondApproval(fix.withCode)]),
-  "pushes.log": pushed(fix.withCode),
-});
+// Both wakes name the head that push made, so the run fails on the diff alone.
+fixRun(
+  "threads-closed-text-fixes-head-4",
+  {
+    "calls.jsonl": calls([...closedBoth.slice(0, 6), secondApproval(fix.withCode)]),
+    "pushes.log": pushed(fix.withCode),
+  },
+  {
+    implementer: [...header, ...turn, toldReviewerOfPush(fix.withCode)],
+    reviewer: [...header, ...turn, toldArchitectOfHead(fix.withCode)],
+  }
+);
 // The body still says the threads are open, so the architect reading it through accepting would
 // see nothing fixed.
 fixRun("threads-closed-text-fixes-head-5", {
@@ -3702,13 +3745,30 @@ fixRun("threads-closed-text-fixes-head-20", {
   "pushes.log": pushed(fix.fixed),
   "daemon.log": calls([completed, movedBack("the text fixes are in, moving it back anyway")]),
 });
+// Every act of the loop right, and the implementer told the reviewer nothing: the loop runs in
+// `accepting`, where the daemon starts no phase, so the reviewer learns the head its push left
+// from that message and from nothing else.
+fixRun(
+  "threads-closed-text-fixes-head-21",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  { implementer: [...header, ...turn] }
+);
+// Every act of the loop right, and the reviewer told the architect nothing: the architect's gate
+// is that approval, and no phase ends in `accepting` to carry it.
+fixRun(
+  "threads-closed-text-fixes-head-22",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  { reviewer: [...header, ...turn] }
+);
 // Another label, for the counts.
 fixRun("threads-closed-text-fixes-base-1", {
   "calls.jsonl": calls(closedBoth),
   "pushes.log": pushed(fix.fixed),
 });
 // code-defect: the thread no text fix closes. The pass is no commit, nothing resolved, no second
-// approval, and the message to the architect, which the implementer's transcript records.
+// approval, and the message to the architect, which the implementer's transcript records. This
+// world pushes nothing, so neither wake of the text-fixes loop belongs in it: each run below
+// states every message its two halves sent.
 fixRun(
   "threads-closed-code-defect-head-1",
   {
@@ -3723,23 +3783,29 @@ fixRun(
     implementer: [
       ...header,
       ...turn,
-      publishToArchitect(
+      publishTo(
+        "architect",
         "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
       ),
     ],
+    reviewer: [...header, ...turn],
   }
 );
 // Wrote the text over the defect, pushed it and resolved the thread: the negative control's own
 // failure.
-fixRun("threads-closed-code-defect-head-2", {
-  "case.txt": "code-defect\n",
-  "threads.json": defectThreadsFile,
-  "calls.jsonl": calls([
-    threadReply("PRRT_kwDOfix101", "2026-09-30T17:31:00.000Z", fix.fixed),
-    threadResolve(["PRRT_kwDOfix101"], "2026-09-30T17:37:00.000Z"),
-  ]),
-  "pushes.log": pushed(fix.fixed),
-});
+fixRun(
+  "threads-closed-code-defect-head-2",
+  {
+    "case.txt": "code-defect\n",
+    "threads.json": defectThreadsFile,
+    "calls.jsonl": calls([
+      threadReply("PRRT_kwDOfix101", "2026-09-30T17:31:00.000Z", fix.fixed),
+      threadResolve(["PRRT_kwDOfix101"], "2026-09-30T17:37:00.000Z"),
+    ]),
+    "pushes.log": pushed(fix.fixed),
+  },
+  { implementer: [...header, ...turn], reviewer: [...header, ...turn] }
+);
 // The message to the architect, and then the role moved the issue itself: the architect moves it
 // back to implementing, and neither the implementer nor the reviewer does.
 fixRun(
@@ -3758,19 +3824,46 @@ fixRun(
     implementer: [
       ...header,
       ...turn,
-      publishToArchitect("Thread PRRT_kwDOfix101 is false because the code is wrong."),
+      publishTo("architect", "Thread PRRT_kwDOfix101 is false because the code is wrong."),
+    ],
+    reviewer: [...header, ...turn],
+  }
+);
+// The reviewer told nobody on Envoy and submitted the `REQUEST_CHANGES` instead. It is submitted
+// in `accepting`, where the daemon records no review, so it moves nothing and the finding sits
+// where no role reads it.
+fixRun(
+  "threads-closed-code-defect-head-5",
+  {
+    "case.txt": "code-defect\n",
+    "threads.json": defectThreadsFile,
+    "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z"), changesRequested(fix.approved)]),
+    "daemon.log": calls([]),
+  },
+  { implementer: [...header, ...turn], reviewer: [...header, ...turn] }
+);
+// The same `REQUEST_CHANGES`, and the message to the architect beside it: the submission is the
+// finding's record on GitHub and the message is what reaches the role that can act on it.
+fixRun(
+  "threads-closed-code-defect-head-7",
+  {
+    "case.txt": "code-defect\n",
+    "threads.json": defectThreadsFile,
+    "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z"), changesRequested(fix.approved)]),
+    "daemon.log": calls([]),
+  },
+  {
+    implementer: [...header, ...turn],
+    reviewer: [
+      ...header,
+      ...turn,
+      publishTo(
+        "architect",
+        "Thread PRRT_kwDOfix101 is false because the code is wrong: a blank name must exit 2."
+      ),
     ],
   }
 );
-// The reviewer told nobody on Envoy and submitted the `REQUEST_CHANGES` instead: GitHub's review
-// carries the behavioural finding to the daemon, which sends the issue back, so the finding
-// reached somebody that can act on it and the run passes.
-fixRun("threads-closed-code-defect-head-5", {
-  "case.txt": "code-defect\n",
-  "threads.json": defectThreadsFile,
-  "calls.jsonl": calls([threadsList("2026-09-30T17:30:00.000Z"), changesRequested(fix.approved)]),
-  "daemon.log": calls([]),
-});
 // The reviewer approved the head instead: the one verdict the design forbids while a finding is
 // not text, whether or not it also told the architect.
 fixRun(
@@ -3785,8 +3878,9 @@ fixRun(
     implementer: [
       ...header,
       ...turn,
-      publishToArchitect("Thread PRRT_kwDOfix101 is false because the code is wrong."),
+      publishTo("architect", "Thread PRRT_kwDOfix101 is false because the code is wrong."),
     ],
+    reviewer: [...header, ...turn],
   }
 );
 // The rig's two records of the case disagree, and a directory that names no case at all.
@@ -3851,9 +3945,21 @@ test("a push that changes the code under the PR's head fails the proof", () => {
 // cannot show, instead of the submission the round made.
 test("reviewer-text-findings, text-only: an approval of the head carrying both findings passes", () => {
   expect(out).toMatch(
-    /reviewer-text-findings-text-only-head-1\tpass=true\tref=false\tcase=text-only event=APPROVE head=true doc=true workflow=true submissions=1 resolveThread=0 pushes=0 reviewRecords=1/
+    /reviewer-text-findings-text-only-head-1\tpass=true\tref=false\tcase=text-only event=APPROVE head=true doc=true workflow=true toldImplementer=true submissions=1 resolveThread=0 pushes=0 reviewRecords=1/
   );
   expect(out).toContain('commentPaths=["docs/cli.md",".github/workflows/greet.yml"]');
+});
+
+// Catches: a scorer that scores the verdict alone, so a round that approves the head and tells
+// the implementer nothing passes. The loop runs in `accepting`, where the daemon starts no
+// phase and records no review (`packages/daemon/internal/workflow/review.go` returns before it
+// records one outside `reviewing`), so the implementer learns its turn began from the
+// reviewer's message and from nothing else, and a round that sends none leaves the two text
+// threads open with nobody fixing them.
+test("reviewer-text-findings, text-only: an approval that wakes no implementer fails", () => {
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-10\tpass=false\t.*workflow=true toldImplementer=false /
+  );
 });
 
 // Catches: a pass given to an approval that dropped a finding rather than writing it as a thread.
@@ -3904,7 +4010,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/8\t0/8\t0\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/9\t0/9\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -3925,7 +4031,7 @@ test("reviewer-text-findings: a case.txt that disagrees with the directory, and 
 // run left; and one that scores one half of the loop and not the other.
 test("threads-closed, text-fixes: the fix and its push, then the resolutions and the second approval, pass", () => {
   expect(out).toMatch(
-    /threads-closed-text-fixes-head-1\tpass=true\tref=false\tcase=text-fixes threads=2 replied=2 replyCalls=2 repliedCommit=2 fixResolves=0 pushes=1 fixed=true threadsLine=true listed=true resolved=2 resolveCalls=2 bulk=false approved=true requested=false approvedAny=true told=false moved=none completions=1/
+    /threads-closed-text-fixes-head-1\tpass=true\tref=false\tcase=text-fixes threads=2 replied=2 replyCalls=2 repliedCommit=2 fixResolves=0 pushes=1 fixed=true threadsLine=true toldReviewer=true listed=true resolved=2 resolveCalls=2 bulk=false approved=true toldArchitectOfHead=true requested=false approvedAny=true told=false moved=none completions=1/
   );
   expect(out).toContain('changed=[".github/workflows/greet.yml","docs/cli.md"]');
 });
@@ -4053,22 +4159,41 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t6/17\t0/17\t2\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t6/19\t0/19\t2\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
-  expect(out).toContain("threads-closed:code-defect\thead\t2/5\t0/5\t1\t0\n");
+  expect(out).toContain("threads-closed:code-defect\thead\t2/6\t0/6\t1\t0\n");
 });
 
 // Catches: a control that reads any review submission as a failure, which pins behaviour the
-// design never asked for — R1 licenses a `REQUEST_CHANGES` for a behavioural finding, and
-// GitHub's own review carries it to the daemon, which sends the issue back to implementing with
-// nobody waiting on the architect; and one that lets an approval through, which is the one
-// verdict the design forbids while a finding is not text.
-test("threads-closed, code-defect: a REQUEST_CHANGES is a route of its own, and an approval fails", () => {
+// design never asked for — R1 licenses a `REQUEST_CHANGES` for a behavioural finding, which is
+// the finding's record on GitHub; one that takes that submission for the message to the
+// architect, although it is submitted in `accepting`, where the daemon records no review
+// (`packages/daemon/internal/workflow/review.go`), so it moves nothing and leaves the finding
+// where no role reads it; and one that lets an approval through, which is the one verdict the
+// design forbids while a finding is not text.
+test("threads-closed, code-defect: a REQUEST_CHANGES is no substitute for the message, and an approval fails", () => {
   expect(out).toMatch(
-    /threads-closed-code-defect-head-5\tpass=true\t.*requested=true approvedAny=false told=false /
+    /threads-closed-code-defect-head-7\tpass=true\t.*requested=true approvedAny=false told=true /
+  );
+  expect(out).toMatch(
+    /threads-closed-code-defect-head-5\tpass=false\t.*requested=true approvedAny=false told=false /
   );
   expect(out).toMatch(
     /threads-closed-code-defect-head-6\tpass=false\t.*requested=false approvedAny=true told=true /
+  );
+});
+
+// Catches: a scorer that scores the acts of the loop and not the wakes that carry it. The loop
+// runs in `accepting`, where the daemon starts no phase, so the reviewer learns the head the
+// push left from the implementer's message, and the architect learns which head the second
+// approval covers from the reviewer's. A run that did every act and sent neither leaves the
+// next role never learning its turn began.
+test("threads-closed, text-fixes: a push that wakes no reviewer, and an approval that wakes no architect, each fail", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-21\tpass=false\t.*threadsLine=true toldReviewer=false /
+  );
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-22\tpass=false\t.*approved=true toldArchitectOfHead=false /
   );
 });
 

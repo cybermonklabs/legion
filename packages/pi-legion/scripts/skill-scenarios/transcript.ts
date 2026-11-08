@@ -66,19 +66,19 @@ function parsedSession(full: string): SessionEntry[] {
     });
 }
 
-/** The run's own session transcript, parsed whole, or empty when it never got a model turn. A line
- * that does not parse is the rig's fault. */
-export function session(runDir: string): SessionEntry[] {
-  const full = fileIn(path.join(runDir, "sessions"));
-  return full === undefined ? [] : parsedSession(full);
-}
-
 /** The transcript in session directory `dir`, parsed whole, or empty when it holds none: the
  * session directory of one agent of a run that boots more than one (rig.sh's worker_boot gives
- * the first agent the run's own and each later one <run>/sessions/<role>). */
+ * the first agent the run's own and each later one <run>/sessions/<role>). A line that does not
+ * parse is the rig's fault. */
 export function sessionIn(dir: string): SessionEntry[] {
   const full = fileIn(dir);
   return full === undefined ? [] : parsedSession(full);
+}
+
+/** The run's own session transcript, which is the first agent's, or empty when it never got a
+ * model turn. */
+export function session(runDir: string): SessionEntry[] {
+  return sessionIn(path.join(runDir, "sessions"));
 }
 
 /** Each subagent the run's session started, by its name, with its transcript parsed whole. Oh My Pi

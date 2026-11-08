@@ -498,18 +498,23 @@ function runPattern(scenario: string, cases: string[]): RegExp {
     `^${scenario}-(${cases.toSorted((a, b) => b.length - a.length).join("|")})-(.+)-\\d+$`
   );
 }
-/** The case <run>/case.txt names, held to `cases`, the scenario's own, and to `dirCase`, the case
- * the run's directory names: the rig's two records of the case, which must agree. `what` is the
- * scenario's own word for itself, which the first message names it by. */
-function runCase(runDir: string, what: string, cases: string[], dirCase: string): string {
+/** A cased scenario, as casedScenario builds it: the cases, the scenario's word for itself in a
+ * refusal, its directory pattern and the shape a directory that names no case should have had. */
+type CasedScenario = { cases: string[]; what: string; run: RegExp; shape: string };
+/** The case <run>/case.txt names, held to `scenario`'s own cases and to `dirCase`, the case the
+ * run's directory names: the rig's two records of the case, which must agree. A scenario that
+ * takes no case (undefined) reads no file and has no case. */
+function runCase(runDir: string, scenario: CasedScenario | undefined, dirCase: string): string {
+  if (scenario === undefined) return "";
   const named = readFileSync(path.join(runDir, "case.txt"), "utf8").trim();
-  if (!cases.includes(named))
-    throw new Error(`${what} case.txt names '${named}', not one of ${cases.join(", ")}`);
+  if (!scenario.cases.includes(named))
+    throw new Error(
+      `${scenario.what} case.txt names '${named}', not one of ${scenario.cases.join(", ")}`
+    );
   if (named !== dirCase)
     throw new Error(`case.txt names '${named}', but the run's directory names ${dirCase}`);
   return named;
 }
-const ASKGATE_RUN = runPattern("askgate", ASKGATE_CASES);
 /** AskGate's content failure 12, "a fact the reader does not need", as a reason names it by gate
  * and number (rules.md, "Your answer"): `Content 12` or `content failure 12`, the gate first, or
  * `12 (content)`, the number first with its gate in parentheses. */
@@ -547,8 +552,7 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
  *   - off, facts: an ask is on the issue, and the transcript holds no gate entry.
  * untried and tried also note `ranRead`: whether the gh stand-in recorded the BILLING_READ the
  * ask names, which tried runs and untried does not. Any other pair is a rig error naming why. */
-function askgateReview(runDir: string, run: string, label: string, dirCase: string): Row {
-  const askCase = runCase(runDir, "askgate", ASKGATE_CASES, dirCase);
+function askgateReview(runDir: string, run: string, label: string, askCase: string): Row {
   const on = label !== "off";
   if (!on && askCase !== "facts")
     throw new Error(`askgate scores off only with case facts, not ${askCase}`);
@@ -842,9 +846,6 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
 
 /** Every case rig.sh's run_reviewer_text_findings builds a world for. */
 const REVIEWER_CASES = ["text-only", "defect"];
-/** A reviewer-text-findings run's directory, read as its case and its label (runPattern). The
- * scorer holds this case to the one <run>/case.txt names, the rig's other record of it. */
-const REVIEWER_RUN = runPattern("reviewer-text-findings", REVIEWER_CASES);
 /** The two files worker_fixture puts a text finding in (rig.sh): the document the change makes
  * false, and the workflow whose comment names a trigger the file does not carry. */
 const FINDING_DOC = "docs/cli.md";
@@ -865,6 +866,9 @@ const REVIEW_FLAGS: Record<string, string> = {
   "-c": "COMMENT",
   "--comment": "COMMENT",
 };
+/** One review a run submitted, as the score reads it: the verdict, the head it names, "" for a
+ * route that carries none, and the file of each inline comment on it. */
+type Submission = { event: string; head: string; comments: string[] };
 /** The review `call` submitted, or undefined when it submitted none: the
  * `gh api --method POST repos/{owner}/{repo}/pulls/{n}/reviews` the reviewer's prompt prescribes,
  * whose JSON body comes from `--input <file>` (the stand-in records the file it read),
@@ -872,9 +876,7 @@ const REVIEW_FLAGS: Record<string, string> = {
  * event as a flag and can name neither the head nor an inline comment. A call on that route that
  * carries no body submits nothing: `gh api repos/…/pulls/<n>/reviews` is the read of the reviews
  * already there, which a round often makes after it submitted. */
-function reviewOf(
-  call: z.infer<typeof Call>
-): { event: string; head: string; comments: string[] } | undefined {
+function reviewOf(call: z.infer<typeof Call>): Submission | undefined {
   if (call.argv[0] === "pr" && call.argv[1] === "review") {
     const flag = call.argv.find((arg) => REVIEW_FLAGS[arg] !== undefined) ?? "";
     return { event: REVIEW_FLAGS[flag] ?? "", head: "", comments: [] };
@@ -908,39 +910,49 @@ function reviewOf(
   };
 }
 
+/** Every review `calls` submitted, in the order the gh stand-in recorded them: a call that
+ * submitted none is no review (reviewOf). */
+function reviewsIn(calls: z.infer<typeof Call>[]): Submission[] {
+  return calls.flatMap((call) => {
+    const review = reviewOf(call);
+    return review === undefined ? [] : [review];
+  });
+}
+
 /** Everything one recorded gh call could carry a thread id or a reply in: its arguments, its
  * stdin, and each file it read a body from. */
 function callText(call: z.infer<typeof Call>): string {
   return [call.argv.join(" "), call.stdin ?? "", ...Object.values(call.files ?? {})].join("\n");
 }
 
-/** Whether a recorded gh call resolved a thread: the `gh api graphql` mutation the thread rule
- * gives, and nothing else. A call that only names the mutation in text it writes — a pull-request
- * body quoting the rule, a reply saying which threads were resolved — resolves nothing, and
- * reading it as a resolution scored one run of 2026-11-06 a bulk resolution for a body that named
+/** Whether a recorded gh call carried GraphQL `field`: a `gh api graphql` call whose text names
+ * it, and nothing else. A call that only names the field in text it writes — a pull-request body
+ * quoting the rule, a reply saying which threads were resolved — carries none, and reading such
+ * a call as a resolution scored one run of 2026-11-06 a bulk resolution for a body that named
  * three thread ids. */
-function resolvesAThread(call: z.infer<typeof Call>): boolean {
+function carriesField(call: z.infer<typeof Call>, field: string): boolean {
   return (
     call.as === "gh" &&
     call.argv[0] === "api" &&
     call.argv.includes("graphql") &&
-    callText(call).includes("resolveReviewThread")
+    callText(call).includes(field)
   );
 }
 
+/** Whether a recorded gh call resolved a thread: the mutation
+ * `skills/legion-worker/references/review-threads.md` gives. */
+function resolvesAThread(call: z.infer<typeof Call>): boolean {
+  return carriesField(call, "resolveReviewThread");
+}
+
 /** Whether a recorded gh call listed the pull request's review threads: the `reviewThreads` query
- * `skills/legion-worker/references/review-threads.md` gives, asked of GitHub itself. Retro reads
- * the open threads there because no round follows an approval and nobody names them to it, and
- * because the pull request's body is the implementer's record while GitHub is the fact: a run
- * that takes the ids from anywhere else closes the threads that source lists and leaves the rest.
+ * `skills/legion-worker/references/review-threads.md` gives, asked of GitHub itself. The reviewer
+ * reads the open threads there rather than from the pull request's body, which is the
+ * implementer's record while GitHub is the fact: a run that takes the ids from anywhere else
+ * closes the threads that source lists and leaves the rest.
  * One run of 2026-11-06 took them from the gh stand-in's own fixtures file and scored a pass. */
 function listsTheThreads(call: z.infer<typeof Call>): boolean {
-  return (
-    call.as === "gh" &&
-    call.argv[0] === "api" &&
-    call.argv.includes("graphql") &&
-    callText(call).includes("reviewThreads")
-  );
+  return carriesField(call, "reviewThreads");
 }
 
 /** reviewer-text-findings: the reviewer's verdict rule, which `skill://legion-worker` states and
@@ -955,44 +967,50 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
  * carry the same two text findings, and neither is behavioural:
  *   text-only  the change's code is correct, so the round is clean: the submission is `APPROVE`
  *              at the fixture head, carrying an inline comment on each of the two findings' files
- *              (docs/cli.md and the workflow), with no `resolveReviewThread` call, wherever the
- *              call would carry it (callText): the reviewer resolves a thread it opened once it
- *              has read the fix that closed it, and at the approval the fix is not written yet,
- *              so a round that resolves here resolved a finding nobody answered. And no push to
- *              the run's own remote, since a review round pushes nothing at all;
+ *              (docs/cli.md and the workflow), no push to the run's own remote, since a review
+ *              round pushes nothing at all, and the message to the implementer's role topic that
+ *              starts the fix (`toldImplementer`). A `resolveReviewThread` call is reported and
+ *              not scored: the two findings are new inline comments with no thread to resolve,
+ *              and the one open thread of the world is the bot's, which the reviewer may
+ *              resolve;
  *   defect     the same change with the CLI's blank-name guard dropped, so a behavioural finding
  *              stands and the submission is `REQUEST_CHANGES`: the negative control, which fails
  *              a reviewer that approves whatever it reads.
  * `ref`: the agent read skill://legion-worker/references/merge-gate.md, where the rule is
  * defined. */
-function reviewerTextFindings(runDir: string, run: string, label: string, dirCase: string): Row {
-  const reviewCase = runCase(runDir, "reviewer", REVIEWER_CASES, dirCase);
+function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
   const world = json(path.join(runDir, "world.json"), World);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
-  const reviews = calls
-    .filter((call) => call.as === "gh" && call.exit === 0)
-    .flatMap((call) => {
-      const review = reviewOf(call);
-      return review === undefined ? [] : [review];
-    });
+  const reviews = reviewsIn(calls.filter((call) => call.as === "gh" && call.exit === 0));
   const review = reviews.at(-1);
   const resolves = calls.filter(resolvesAThread).length;
   const pushes = lines(path.join(runDir, "pushes.log")).length;
   const paths = review?.comments ?? [];
   const onDoc = paths.includes(FINDING_DOC);
   const onWorkflow = paths.some((named) => named.startsWith(FINDING_WORKFLOW));
-  const head =
-    review !== undefined && review.head.length >= 7 && world.head.startsWith(review.head);
+  const head = review !== undefined && namesHead(world.head, review.head);
   // The two text findings this round writes are new inline comments, so no thread of them exists
   // for the round to resolve, and the one thread the world holds open is the bot's, which the
   // reviewer adjudicates and may resolve: `review-threads.md` has the reviewer resolve a thread
   // it judged. So a resolve call is reported, not scored. What the case turns on is the verdict:
   // the approval of the fixture head with a comment on each finding, and no push, since a review
   // round pushes nothing at all and the implementer's fix follows the approval.
+  //
+  // An approval that leaves text threads open also owns the first wake of that fix: the daemon
+  // starts no phase for it, so the implementer learns its turn began from the reviewer's
+  // message and from nothing else (review-threads.md step 1). The round is clean only when that
+  // message was sent, naming the head the fix must land above (`toldImplementer`). A
+  // `REQUEST_CHANGES` round opens no such loop and sends none.
+  const toldImplementer = publishedTo(session(runDir), FIXES, [world.head]);
   const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
-      : review?.event === "APPROVE" && head && onDoc && onWorkflow && pushes === 0;
+      : review?.event === "APPROVE" &&
+        head &&
+        onDoc &&
+        onWorkflow &&
+        pushes === 0 &&
+        toldImplementer;
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
@@ -1000,7 +1018,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, dirCas
     call.target.includes("skill://legion-worker/references/merge-gate.md")
   );
   const notes = [
-    `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes} reviewRecords=${records}`,
+    `case=${reviewCase} event=${review?.event || "none"} head=${head} doc=${onDoc} workflow=${onWorkflow} toldImplementer=${toldImplementer} submissions=${reviews.length} resolveThread=${resolves} pushes=${pushes} reviewRecords=${records}`,
     `commentPaths=${JSON.stringify(paths)}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
@@ -1018,8 +1036,6 @@ function reviewerTextFindings(runDir: string, run: string, label: string, dirCas
 
 /** Every case rig.sh's run_threads_closed builds a world for. */
 const THREADS_CASES = ["text-fixes", "code-defect"];
-/** A threads-closed run's directory, read as its case and its label (runPattern). */
-const THREADS_RUN = runPattern("threads-closed", THREADS_CASES);
 /** <run>/threads.json, rig.sh's worker_fixture: the threads the approval left open, each with
  * the node id the `reviewThreads` route serves it under and the file its finding is on. */
 const Threads = z.array(z.looseObject({ id: z.string(), path: z.string() }));
@@ -1040,26 +1056,45 @@ const REPLY = /addPullRequestReviewThreadReply|\/replies\b/;
  * agent made carries (SKILL_SCENARIO_AGENT, gh-standin.ts's `by`). */
 const FIXES = "implementer";
 const RESOLVES = "reviewer";
+/** Whether `named` is `sha`: the prefix of seven hexadecimal digits or more that the commit
+ * starts with, which is how a review names the head it was submitted on. A shorter prefix names
+ * too many commits to be a head, and a route that carries no head at all names "". */
+function namesHead(sha: string, named: string): boolean {
+  return named.length >= 7 && sha.startsWith(named);
+}
 /** Whether `text` names `sha`: a hexadecimal word of seven digits or more that the commit starts
  * with, which is how a reply or a body entry names the commit that fixed a thread. */
 function namesCommit(text: string, sha: string): boolean {
   return [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)].some(([found]) => sha.startsWith(found));
 }
-/** Whether the agent sent the architect a message with `envoy_publish`, naming one of `threads`:
- * the call sits in the transcript, since `envoy_publish` is a tool of the session and no `gh`
- * call records it (review-threads.md, *A thread the fix cannot close is a message to the
- * architect*, sent "with `envoy_publish` to its role topic"). The topic carries the role, so a
- * call that names the tool, the architect and the thread, by node id or by the file it is on, is
- * that message. */
-function toldArchitect(entries: SessionEntry[], threads: z.infer<typeof Threads>): boolean {
+/** Whether the agent published to `role`'s topic with `envoy_publish`, the call sitting in the
+ * transcript because `envoy_publish` is a tool of the session and no `gh` call records it. The
+ * loop after an approval that leaves text threads open runs in `accepting`, where the daemon
+ * starts no phase and records no review, so every step of it is carried by one of these
+ * messages and a step that sends none leaves the next role never learning its turn began
+ * (review-threads.md, *After an approval that leaves text threads open*). `names` are the
+ * strings the rule says the message must carry; a message that names none of them is no wake,
+ * since the next role cannot act on it. The topic carries the role, so a call naming the tool,
+ * the role and one of `names` is that message. */
+function publishedTo(entries: SessionEntry[], role: string, names: string[]): boolean {
   return toolCalls(entries).some((call) => {
     const text = `${call.tool}\n${call.path}\n${call.args}`;
     return (
       text.includes("envoy_publish") &&
-      text.includes("architect") &&
-      threads.some((thread) => text.includes(thread.id) || text.includes(thread.path))
+      text.includes(role) &&
+      names.some((name) => name !== "" && text.includes(name))
     );
   });
+}
+/** Whether the agent sent the architect the message a thread no text fix can close takes: one
+ * route, and the architect is the only role that can move the issue for it
+ * (review-threads.md step 4). */
+function toldArchitect(entries: SessionEntry[], threads: z.infer<typeof Threads>): boolean {
+  return publishedTo(
+    entries,
+    "architect",
+    threads.flatMap((thread) => [thread.id, thread.path])
+  );
 }
 
 /** threads-closed: the loop `skill://legion-worker/references/review-threads.md` gives for an
@@ -1098,25 +1133,25 @@ function toldArchitect(entries: SessionEntry[], threads: z.infer<typeof Threads>
  *                naming the behavioural finding is the review that moves it. Neither the
  *                implementer nor the reviewer moves the issue itself." A run passes when it
  *                pushed nothing, no thread was resolved, neither agent asked the daemon to move
- *                the issue (`moved`), no review approved the head, and the finding reached
- *                somebody that can act on it: the message to the architect naming the thread
- *                (`told`), a submitted `REQUEST_CHANGES` (`requested`), or both. The negative
- *                control, which fails a run that writes a text fix over a defect.
- *                An earlier form of this control also required that no review was submitted at
- *                all. The design never asked for that: it forbids the reviewer an approval
- *                while a finding is not text, and R1 licenses a `REQUEST_CHANGES` for a
- *                behavioural finding, which GitHub's own review carries to the daemon and the
- *                issue goes back to implementing with nobody waiting on the architect. So the
- *                condition pinned behaviour the rule does not require, and it was wrong before
- *                any run met it.
+ *                the issue (`moved`), no review approved the head, and the finding reached the
+ *                architect, the one role that can move the issue for it (`told`). A submitted
+ *                `REQUEST_CHANGES` is reported (`requested`) and is no substitute: submitted in
+ *                `accepting`, the daemon records it and moves nothing. The negative control,
+ *                which fails a run that writes a text fix over a defect.
+ *                This condition has been wrong twice, and the record is kept here. It first
+ *                required that no review was submitted at all, which forbade the reviewer to
+ *                speak; it then accepted a `REQUEST_CHANGES` in place of the message, on the
+ *                belief that GitHub's review carried the finding to the daemon. It does not:
+ *                `packages/daemon/internal/workflow/review.go` returns before it records any
+ *                review while the issue stands outside `reviewing`, which this loop always
+ *                does, so such a run leaves the finding where nobody acts on it.
  * The completions the daemon stand-in accepted are reported (`completions`) and scored by
  * neither case: this loop runs in no phase and writes no handoff, so there is nothing for a
  * completion to carry, and what a role should have done instead of one is no part of the rule
  * these words give.
  * `ref`: both agents read skill://legion-worker/references/review-threads.md, where the loop,
  * the one reply per thread and the one thread per resolving call are defined. */
-function threadsClosed(runDir: string, run: string, label: string, dirCase: string): Row {
-  const threadsCase = runCase(runDir, "threads-closed", THREADS_CASES, dirCase);
+function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
   const world = json(path.join(runDir, "world.json"), World);
   const threads = json(path.join(runDir, "threads.json"), Threads);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call).filter(
@@ -1195,17 +1230,10 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
   // The reviews the run's agents submitted. The approval already on the pull request is the
   // fixture's, which no call of this run made, so a submission here is a second one; the one
   // that stands is the reviewer's last, and it approves the head the push made, by SHA.
-  const reviewOfCall = (call: z.infer<typeof Call>) => {
-    const review = reviewOf(call);
-    return review === undefined ? [] : [review];
-  };
-  const submissions = calls.flatMap(reviewOfCall);
-  const submitted = reviewCalls.flatMap(reviewOfCall).at(-1);
+  const submissions = reviewsIn(calls);
+  const submitted = reviewsIn(reviewCalls).at(-1);
   const approved =
-    submitted?.event === "APPROVE" &&
-    tip !== undefined &&
-    submitted.head.length >= 7 &&
-    tip.startsWith(submitted.head);
+    submitted?.event === "APPROVE" && tip !== undefined && namesHead(tip, submitted.head);
   // The body the stand-in kept last, which is the one a reader of the pull request would see:
   // each thread's entry rewritten at the head the push made, naming the commit that closed it.
   const body = calls.findLast((call) => call.body !== undefined)?.body ?? "";
@@ -1227,17 +1255,32 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
   const fixSession = session(runDir);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
   const told = toldArchitect(fixSession, threads) || toldArchitect(reviewSession, threads);
-  // code-defect: the two ways the finding reaches somebody that can act on it, and the one
-  // verdict the design forbids. A `REQUEST_CHANGES` naming the behavioural finding is a review
-  // GitHub carries to the daemon, which sends the issue back to implementing, so it is a route
-  // of its own beside the message to the architect; an `APPROVE` is not, because the reviewer
+  // The two sends this scenario's agents own. The loop runs in `accepting`, where the daemon
+  // starts no phase, so a step that sends none leaves the next role never learning its turn
+  // began: the implementer's push is told to the reviewer's topic with the new head, and the
+  // reviewer's second approval is told to the architect's topic with the head it approved,
+  // which is the architect's gate because READY reads the round's first approval. The first
+  // wake of the loop, the reviewer's to the implementer, belongs to the round before this
+  // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
+  const toldReviewer = publishedTo(fixSession, RESOLVES, tip === undefined ? [] : [tip]);
+  const toldArchitectOfHead = publishedTo(
+    reviewSession,
+    "architect",
+    tip === undefined ? [] : [tip]
+  );
+  // code-defect: the finding has one route, and it is the message to the architect. A review
+  // submitted here is submitted in `accepting`, where the daemon records none
+  // (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` moves nothing and a
+  // run that only submits one leaves the finding where nobody acts on it. It is allowed beside
+  // the message, as the record of the finding on GitHub, and scored as no substitute for it
+  // (`requested`, reported and not required). An `APPROVE` fails the run, because the reviewer
   // may not approve a head whose findings are not all text.
   const requested = submissions.some((review) => review.event === "REQUEST_CHANGES");
   const approvedAny = submissions.some((review) => review.event === "APPROVE");
   const pass =
     threadsCase === "code-defect"
       ? pushes.length === 0 &&
-        (told || requested) &&
+        told &&
         !approvedAny &&
         resolved.size === 0 &&
         fixResolves === 0 &&
@@ -1253,9 +1296,11 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
         fixResolves === 0 &&
         fixed &&
         threadsLine &&
+        toldReviewer &&
         listed &&
         resolvedEach &&
         approved &&
+        toldArchitectOfHead &&
         moved === undefined;
   const ref = [fixSession, reviewSession].every((entries) =>
     readCalls(entries).some((call) =>
@@ -1263,7 +1308,7 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
     )
   );
   const notes = [
-    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} completions=${completions}`,
+    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} completions=${completions}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
@@ -1278,18 +1323,23 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
     notes: notes.join(" "),
   };
 }
-/** Each cased scenario: how its run directory names its case and its label, and what a directory
- * that names none should have looked like. A scenario absent here takes no case. */
-const CASED: Record<string, { run: RegExp; shape: string }> = {
-  askgate: { run: ASKGATE_RUN, shape: "an askgate run's directory is askgate-<case>-<label>-<n>" },
-  "reviewer-text-findings": {
-    run: REVIEWER_RUN,
-    shape: "a reviewer-text-findings run's directory is reviewer-text-findings-<case>-<label>-<n>",
-  },
-  "threads-closed": {
-    run: THREADS_RUN,
-    shape: "a threads-closed run's directory is threads-closed-<case>-<label>-<n>",
-  },
+/** A cased scenario: the cases rig.sh builds a world for, the scenario's own word for itself,
+ * which a refusal of <run>/case.txt names it by, how its run directories name their case and
+ * label (runPattern), and what a directory that names none should have looked like. */
+function casedScenario(scenario: string, cases: string[], what = scenario) {
+  return {
+    cases,
+    what,
+    run: runPattern(scenario, cases),
+    shape: `${/^[aeiou]/.test(scenario) ? "an" : "a"} ${scenario} run's directory is ${scenario}-<case>-<label>-<n>`,
+  };
+}
+/** Each cased scenario, by the name its runs' directories start with. A scenario absent here
+ * takes no case. */
+const CASED: Record<string, CasedScenario> = {
+  askgate: casedScenario("askgate", ASKGATE_CASES),
+  "reviewer-text-findings": casedScenario("reviewer-text-findings", REVIEWER_CASES, "reviewer"),
+  "threads-closed": casedScenario("threads-closed", THREADS_CASES),
 };
 
 /** The agents a scenario's run boots after the first, each by the session directory it gets under
@@ -3871,19 +3921,19 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
   // Each scenario's scorer, keyed by the name its runs' directories start with. A cased
-  // scenario's case comes from its directory (CASED).
-  const scorers: Record<string, (dir: string, run: string, label: string, runCase: string) => Row> =
-    {
-      "ask-on-message": askOnMessage,
-      "measure-before-ask": measureBeforeAsk,
-      "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
-      "reviewer-text-findings": reviewerTextFindings,
-      "threads-closed": threadsClosed,
-      brainstorm: brainstormSurface,
-      askgate: askgateReview,
-      "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
-      "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
-    };
+  // scenario's scorer takes the case both the run's directory and its case.txt name (CASED,
+  // runCase); a scenario that takes none is handed "".
+  const scorers: Record<string, (dir: string, run: string, label: string, name: string) => Row> = {
+    "ask-on-message": askOnMessage,
+    "measure-before-ask": measureBeforeAsk,
+    "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
+    "reviewer-text-findings": reviewerTextFindings,
+    "threads-closed": threadsClosed,
+    brainstorm: brainstormSurface,
+    askgate: askgateReview,
+    "spec-writing": (dir, run, label) => specRow(dir, run, "spec-writing", label, reach),
+    "spec-rewrite": (dir, run, label) => specRow(dir, run, "spec-rewrite", label, reach),
+  };
   const name = new RegExp(`^(${Object.keys(scorers).join("|")})-(.+)-(\\d+)$`);
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
     const match = name.exec(run);
@@ -3896,8 +3946,8 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     // names none.
     const cased = CASED[scenario];
     const casedRun = cased === undefined ? undefined : cased.run.exec(run);
-    const [, runCase = "", label = named] = casedRun ?? [];
-    const key = `${casedRun ? `${scenario}:${runCase}` : scenario}\t${label}`;
+    const [, dirCase = "", label = named] = casedRun ?? [];
+    const key = `${casedRun ? `${scenario}:${dirCase}` : scenario}\t${label}`;
     let reason: string | undefined;
     try {
       if (casedRun === null) throw new Error(`the directory names no case: ${cased?.shape ?? ""}`);
@@ -3912,7 +3962,7 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, runCase);
+        const scored = score(dir, run, label, runCase(dir, cased, dirCase));
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
