@@ -160,6 +160,19 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // text whose headline was corrected and whose boundary sentence was not. A file that names no
 // such pair is passed over, so a later text in another file is covered the moment it names the
 // two together.
+//
+// What it does not catch: a number more than 220 bytes from the field's name. A passage that
+// states the boundary a paragraph away from the word `waitingLine` is outside every window this
+// reads, and it is read by nothing else here. The window is where the sentences that state the
+// boundary fall today, and no count of bytes is right for every layout a later text may take.
+//
+// What to do when it fires on a sentence that is true — a passage that names another contract
+// beside the field, as one about two boundaries at once does: correct that sentence, or widen
+// the window until it takes in the word that marks the other contract (`retired`, `stranded`),
+// which is what makes this pass such a passage over. Changing the number is never the answer:
+// the number is the daemon's own, and the test above is what holds it. This is honest machinery
+// for the renumber that already left five sentences behind, not a reader of every text that
+// names a contract.
 func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 	named := regexp.MustCompile(`(?:contract|below) (\d+)`)

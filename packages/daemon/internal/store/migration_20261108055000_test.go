@@ -32,9 +32,9 @@ func TestTheAwaitingShapeConstraintNamesTheNoticeMark(t *testing.T) {
 		t.Fatalf("the mark of the told root = %v, %v; want the moment the notice was written", told, err)
 	}
 
-	// Each refused write states a mark of its own, which is the write a daemon of this release
-	// would make if it wrote the mark into a shape the wait does not hold: the check reads a
-	// stated mark, and only a mark a write carries forward unnamed is cleared for it
+	// Each refused write states a mark the row did not hold, which is what the check is left to
+	// refuse. A mark a write leaves unchanged while it takes the row out of its answered wait is
+	// cleared by the trigger before the check reads the row, whichever release wrote it
 	// (TestAnEarlierDaemonsWriteOfAToldRootClearsTheMarkItCarries).
 	const stated = `awaiting_slot_notice_at = timestamptz '2026-11-08 09:00:00+00'`
 	for _, refused := range []struct{ why, statement string }{

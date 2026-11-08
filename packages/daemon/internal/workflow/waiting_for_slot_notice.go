@@ -3,6 +3,7 @@ package workflow
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -19,18 +20,24 @@ const WaitingForSlotNoticeKind = record.NoticeKind("waiting-for-slot")
 // next free slot. The architect acts on none of it. It is told once per wait, by the mark the
 // pass writes beside the answer (record.Awaiting's SlotNoticeAt).
 //
-// The whole of it is the reason: record.validateOutboxPayload refuses an actor and a ref on a
-// kind that is not a spec decision, so the notice carries no other field to say any of this in.
-// The place is a snapshot, which the reason says, since the line moves with every pass; the
-// issue's own record carries the live place in `waitingLine`.
-func WaitingForSlotNotice(by record.Answer, detail string, place, length int) record.Notice {
+// answeredAt is when that act answered the wait (record.Awaiting.AnsweredAt), and it goes on the
+// row rather than into the text: it is which wait the row speaks of, which the daemon reads
+// before it publishes a row held since (record.WaitingForSlot, the daemon's stillWaitsForSlot).
+// A reader of the notice is told the answer in words by the sentence below.
+//
+// The whole of what the architect reads is the reason: record.validateOutboxPayload refuses an
+// actor and a ref on a kind that is not a spec decision, so the notice carries no other field to
+// say any of this in. The place is a snapshot, which the reason says, since the line moves with
+// every pass; the issue's own record carries the live place in `waitingLine`.
+func WaitingForSlotNotice(by record.Answer, detail string, answeredAt time.Time, place, length int) record.Notice {
 	reason := fmt.Sprintf("%s Your issue needs an admission slot, and the admission cap has no free slot now. "+
 		"Your issue stands at place %d of %d in the admission line. "+
 		"The daemon starts you again by itself at the next free slot. Do nothing until it starts you. "+
 		"The place above is the place at the moment of this notice. "+
 		"The issue's own record carries the live place in its `waitingLine` field.",
 		waitAnswered(by, detail), place, length)
-	return record.Notice{Kind: WaitingForSlotNoticeKind, Role: claim.RoleArchitect, Reason: reason}
+	return record.Notice{Kind: WaitingForSlotNoticeKind, Role: claim.RoleArchitect, Reason: reason,
+		WaitingForSlot: &record.WaitingForSlot{AnsweredAt: answeredAt}}
 }
 
 // waitAnswered is the one sentence that says what answered the root's wait: the act (by) and that

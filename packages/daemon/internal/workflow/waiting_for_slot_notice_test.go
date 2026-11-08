@@ -17,6 +17,9 @@ import (
 // is. It goes to the architect's role, since the root's architect is the one the daemon starts
 // again at the next free slot.
 func TestTheWaitingForSlotNoticeNamesTheAnswerAndThePlace(t *testing.T) {
+	// The moment the wait was answered rides on the row rather than in the text: the test reads
+	// it back off the notice below, and no sentence of the reason names it.
+	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
 		name   string
 		by     record.Answer
@@ -38,9 +41,13 @@ func TestTheWaitingForSlotNoticeNamesTheAnswerAndThePlace(t *testing.T) {
 		{"Dispatch's settlement", record.AnsweredByRetraction, "", "retracted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			notice := WaitingForSlotNotice(tc.by, tc.detail, 2, 5)
+			notice := WaitingForSlotNotice(tc.by, tc.detail, answered, 2, 5)
 			if notice.Kind != WaitingForSlotNoticeKind || notice.Role != claim.RoleArchitect {
 				t.Fatalf("the notice is %s to the %s, want %s to the architect", notice.Kind, notice.Role, WaitingForSlotNoticeKind)
+			}
+			if notice.WaitingForSlot == nil || !notice.WaitingForSlot.AnsweredAt.Equal(answered) {
+				t.Fatalf("the notice names the wait %#v, want the wait answered at %s: a held row is published only while the record's wait carries that answer",
+					notice.WaitingForSlot, answered)
 			}
 			if !strings.Contains(notice.Reason, tc.says) {
 				t.Errorf("the reason %q does not name what answered the wait, %q", notice.Reason, tc.says)
@@ -58,7 +65,7 @@ func TestTheWaitingForSlotNoticeNamesTheAnswerAndThePlace(t *testing.T) {
 // An answer this release does not know leaves the architect a sentence that stands on its own,
 // never one with a hole where its subject belongs.
 func TestTheWaitingForSlotNoticeStandsWithoutTheAnswersDetail(t *testing.T) {
-	reason := WaitingForSlotNotice(record.Answer("whenever"), "", 1, 1).Reason
+	reason := WaitingForSlotNotice(record.Answer("whenever"), "", time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC), 1, 1).Reason
 	if !strings.Contains(reason, "A person's act answered the wait of your issue.") {
 		t.Errorf("the reason of an answer with no detail = %q, want the sentence that names no subject it has not got", reason)
 	}
@@ -71,7 +78,8 @@ func TestTheWaitingForSlotNoticeStandsWithoutTheAnswersDetail(t *testing.T) {
 // the transaction that marks the wait told: a kind missing from record.validNoticeKind would
 // fail that whole transaction rather than lose one notice.
 func TestTheOutboxTakesAWaitingForSlotNotice(t *testing.T) {
-	row, err := record.NewOutboxRow("LEGION-208", WaitingForSlotNotice(record.AnsweredByAsk, "ask-q", 1, 3),
+	row, err := record.NewOutboxRow("LEGION-208",
+		WaitingForSlotNotice(record.AnsweredByAsk, "ask-q", time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC), 1, 3),
 		time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("encode a waiting-for-slot notice for the outbox: %v", err)

@@ -31,20 +31,30 @@
 -- would fail every fact of its project — each Dispatch event, each tick, each boot pass — until
 -- a person repaired it by hand.
 --
--- issues_carried_slot_notice_cleared clears a mark a write carries forward unchanged into a row
--- that is no longer an answered wait, whichever build writes the row, as 0020's
--- issues_hold_reason_follows_hold clears a hold's reason on any write that leaves the issue
--- unheld. So an earlier daemon's writes land, and the next wait it starts inherits nothing of
--- the telling of the old one. A write that states the mark itself is left for the check, which
--- refuses it outside an answered wait: this release writes the mark in one place
--- (admit.tellWaitingForSlot), on a row that is an answered wait, and the check stays what holds
--- that release to it.
+-- issues_carried_slot_notice_cleared clears any mark a write leaves unchanged while it leaves the
+-- row standing in something other than an answered wait, whichever release writes that row, as
+-- 0020's issues_hold_reason_follows_hold clears a hold's reason on any write that leaves the
+-- issue unheld. Unchanged is the whole of what the condition can read: it compares the new value
+-- with the old one, and no trigger can tell a column a write named from one it left alone. This
+-- release's PutIssue names awaiting_slot_notice_at in its insert and in its on-conflict update,
+-- so every write of a marked row restates the struct's value, and a write of this release's that
+-- carried a marked root out of its answered wait with the mark still in the struct would be
+-- cleared here, silently, rather than refused by the check. No path does that: each one builds a
+-- fresh Awaiting or sets it to nil, which record.Awaiting's own comment lists one by one. So an
+-- earlier daemon's writes land, this release's land, and the next wait, whichever release starts
+-- it, inherits nothing of the telling of the old one.
+--
+-- What the check is left to hold is a mark stated anew outside an answered wait — a value the
+-- row did not hold before this write — which no release writes and the check refuses.
 --
 -- What a rollback costs is the notice nobody writes. The earlier release has no such notice at
 -- all, so a root whose wait it answers waits with its architect told nothing; and a root told
 -- before the rollback keeps its mark across it, so the first pass after the roll forward tells
--- that architect nothing again, the mark still saying its wait was told. Migrations here are
--- forward-only and this one has no down file.
+-- that architect nothing again, the mark still saying its wait was told. It costs one operator
+-- step as well, which is not this file's: a waiting-for-slot row still in the outbox is a notice
+-- kind the earlier release cannot decode, and docs/kubernetes.md, under "The outbox rows the
+-- earlier release refuses must go", carries the statement that deletes it and says when to run
+-- it. Migrations here are forward-only and this one has no down file.
 alter table issues add column awaiting_slot_notice_at timestamptz;
 alter table issues drop constraint issues_awaiting_shape;
 alter table issues add constraint issues_awaiting_shape check (
@@ -66,10 +76,10 @@ begin
   return new;
 end $$;
 
--- The condition is the carried mark exactly: a row that held one, a write that names no other
--- value for it, and a row left standing in something other than an answered wait. An insert
--- carries nothing, so it is not here: a row inserted with a mark states it, and the check reads
--- it.
+-- The condition is the mark a write leaves unchanged: a row that held one, a write that leaves
+-- that same value standing, whether by naming it again or by not naming the column at all, and a
+-- row left in something other than an answered wait. An insert is not here: it carries nothing
+-- forward, so a row inserted with a mark states it, and the check reads it.
 create trigger issues_carried_slot_notice_cleared before update on issues
   for each row
   when (old.awaiting_slot_notice_at is not null

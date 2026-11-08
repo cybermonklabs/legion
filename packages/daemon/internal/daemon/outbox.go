@@ -976,9 +976,11 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			return nil
 		}
 	}
-	if payload.Kind == workflow.WaitingForSlotNoticeKind && !stillWaitsForSlot(issue) {
-		r.log.Info("outbox waiting-for-slot notice finished without publishing: its root no longer waits for a slot",
-			"row", row.ID, "issue", row.Issue, "phase", issue.Phase)
+	// The wait is on the row of a waiting-for-slot notice and of no other kind
+	// (record.validateOutboxPayload), so the field itself says which rows this asks about.
+	if wait := payload.WaitingForSlot; wait != nil && !stillWaitsForSlot(issue, *wait) {
+		r.log.Info("outbox waiting-for-slot notice finished without publishing: its root no longer stands in the wait it was written for",
+			"row", row.ID, "issue", row.Issue, "phase", issue.Phase, "answered", wait.AnsweredAt)
 		return nil
 	}
 	architect, err := owningArchitect(tree.project, tree.issues, issue, payload.Kind, r.holdsItsRole)
@@ -1019,11 +1021,14 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 }
 
 // stillWaitsForSlot says whether root, as the record holds it now, still stands in the wait a
-// waiting-for-slot row was written for: in awaiting_person with a person's act recorded against
-// the wait (record.Issue.Answered) and, beside that answer, the mark that says this wait's
-// architect was told (record.Awaiting.SlotNoticeAt), which admit's tellWaitingForSlot writes in
-// the transaction that enqueues the row. A row whose root stands anywhere else finishes without
-// publishing (deliverNotice), as a superseded catch-up does (catchUpSuperseded).
+// waiting-for-slot row was written for. The wait is the row's own: wait names the moment a
+// person's act answered it (record.WaitingForSlot.AnsweredAt), which admit's tellWaitingForSlot
+// put on the row from the answer it told the architect about. The root stands in that same wait
+// when it is in awaiting_person with an answer recorded against the wait (record.Issue.Answered),
+// that answer is the one this row names, and beside it stands the mark that says this wait's
+// architect was told (record.Awaiting.SlotNoticeAt), which that same transaction wrote. A row
+// whose root stands anywhere else finishes without publishing (deliverNotice), as a superseded
+// catch-up does (catchUpSuperseded).
 //
 // The row and the resume that contradicts it travel on lanes nothing orders against each other:
 // the notice is a board-lane row, the resume a `start` on the lifecycle lane
@@ -1034,15 +1039,23 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 // waited for, and the held row would then tell an architect that is already working to do
 // nothing until the daemon starts it.
 //
-// Each of the two conditions is the wait itself rather than a guess at it. The wait goes whole
+// The answer is read, and not the two states alone, because that window reaches further than one
+// resume: the root can wait again, be answered again and be told again while the first row is
+// still held, and the record then carries an answer and a mark once more. Read without the
+// answer, both rows would publish — the older first, by earlierNoticeFor — and one wait would
+// earn two notices, the older naming the answer and the place of a wait that is over. Each wait
+// is answered once and its answer never moves while it stands, so the moment names the wait.
+//
+// Each of the three conditions is the wait itself rather than a guess at it. The wait goes whole
 // wherever the root goes (record.Awaiting), so a resume, a re-admission, a linger and the
-// operator's hold each leave the root with no wait to read, and a wait begun since carries no
-// mark until its own notice is written. A notice still rightly pending — its root waiting,
-// answered and marked — meets both and is published as before. Nothing here writes a mark or a
-// row, so one wait still earns one notice, and the mark keeps its meaning: a notice was written,
-// never that one was read.
-func stillWaitsForSlot(root record.Issue) bool {
-	return root.Answered() && root.Awaiting.SlotNoticeAt != nil
+// operator's hold each leave the root with no wait to read, and a wait begun since carries
+// another answer and no mark until its own notice is written. A notice still rightly pending —
+// its root waiting, answered at the moment this row names, and marked — meets all three and is
+// published as before. Nothing here writes a mark or a row, so one wait still earns one notice,
+// and the mark keeps its meaning: a notice was written, never that one was read.
+func stillWaitsForSlot(root record.Issue, wait record.WaitingForSlot) bool {
+	return root.Answered() && root.Awaiting.SlotNoticeAt != nil &&
+		root.Awaiting.AnsweredAt.Equal(wait.AnsweredAt)
 }
 
 // mergeQueue publishes the merger's READY packet, or the daemon's withdrawal of it, to the

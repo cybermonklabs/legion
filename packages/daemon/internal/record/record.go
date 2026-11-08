@@ -224,7 +224,12 @@ type Awaiting struct {
 	// once that its root waits and that the daemon starts it again by itself. It records that the
 	// notice was written, never that an architect read it.
 	//
-	// The mark belongs to this wait and goes where the wait goes. Nothing clears it on its own.
+	// The mark belongs to this wait and goes where the wait goes. The stored shape clears it
+	// for a write that leaves it unchanged while leaving the row in anything but an answered
+	// wait (the trigger issues_carried_slot_notice_cleared, migration 20261108055000), whichever
+	// release makes that write, and the shape check refuses a mark stated anew outside an
+	// answered wait. Nothing in Go clears it on its own.
+	//
 	// Nine places outside the tests write Issue.Awaiting. admit.tellWaitingForSlot writes this
 	// field itself, beside the answer, in the transaction that enqueues the notice.
 	// workflow.enterAwaiting builds a fresh Awaiting for each new wait, which is why a new wait

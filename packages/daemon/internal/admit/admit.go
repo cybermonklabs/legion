@@ -1513,7 +1513,10 @@ func slotFor(entry record.LineEntry, gate record.TreeGate) bool {
 // (record.Awaiting.SlotNoticeAt) in the same transaction as the notice row is what holds the
 // daemon to one notice per wait, and the mark it reads is the candidate's own, from the record
 // this scan was built on: the pass re-reads the records between scans, so the mark it reads
-// must come from the scan that wrote it.
+// must come from the scan that wrote it. The row itself carries the moment this wait was
+// answered (record.WaitingForSlot), which is which wait it was written for: the publish can be
+// held past the wait's end, and the daemon reads that moment against the record before it
+// delivers the row (the daemon's stillWaitsForSlot).
 //
 // Three things are asked before anything is written, each for its own reason.
 //
@@ -1533,7 +1536,7 @@ func slotFor(entry record.LineEntry, gate record.TreeGate) bool {
 // costs those reads each pass — the Dispatch claim workflow.Unresumable reads, and one
 // record.Store.RoleRun — and a wait already marked costs none of them.
 func (a *Admission) tellWaitingForSlot(ctx context.Context, tx pgx.Tx, issue record.Issue, place, length int) error {
-	if issue.Awaiting == nil || issue.Awaiting.SlotNoticeAt != nil {
+	if issue.Awaiting == nil || issue.Awaiting.AnsweredAt == nil || issue.Awaiting.SlotNoticeAt != nil {
 		return nil
 	}
 	reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
@@ -1559,7 +1562,8 @@ func (a *Admission) tellWaitingForSlot(ctx context.Context, tx pgx.Tx, issue rec
 		return nil
 	}
 	now := a.now()
-	notice := workflow.WaitingForSlotNotice(issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail, place, length)
+	notice := workflow.WaitingForSlotNotice(issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail,
+		*issue.Awaiting.AnsweredAt, place, length)
 	if err := a.enqueue(ctx, tx, issue.Key, notice, now); err != nil {
 		return err
 	}
