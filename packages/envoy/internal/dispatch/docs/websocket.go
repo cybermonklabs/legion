@@ -59,7 +59,7 @@ func isOwnerVerified(ctx context.Context) bool {
 type commentMarksContextKey struct{}
 
 // WithCommentMarks marks ctx as a comment's writes to the document its anchor is in, made by a
-// caller holding the document's owner row locked in its joined transaction that decided there
+// caller holding the document owner's lock in its joined transaction that decided there
 // the comment is written. A closed issue still takes a comment, so its document still takes
 // that comment's anchor: the comment mark MarkQuote places and VerifyMark reads, the version
 // SnapshotVersion pins the anchor to, the margin record ProjectMark writes, and the
