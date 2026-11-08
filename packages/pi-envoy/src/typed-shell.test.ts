@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -120,6 +120,39 @@ describe("running a person's command", () => {
         `The output was cut at ${SHELL_OUTPUT_MAX} characters.`
       );
     } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  // The module reads back `4 * SHELL_OUTPUT_MAX` bytes and says a command that prints without end
+  // "costs the session this much memory and no more". It costs the session that much memory and
+  // the whole of its disk: nothing bounds what the shell writes into the file those bytes are read
+  // from, so `!yes`, `!cat /dev/urandom` or an ordinary `!grep -r … /` writes until the limit
+  // (120 s by default) or until the filesystem is full. Measured at c974ed1e653a on the issue pod:
+  // 376,043,850 bytes in 1.5 s, which the default limit scales to about 28 GiB. The bound here is
+  // sixteen times the character cut, far above anything a fix that caps the writer would leave.
+  // The watcher samples the real filesystem while a real child process writes to it, so no fake
+  // clock can drive it: the bytes come from the shell, not from a timer this test owns.
+  test("bounds what an endless command writes to disk, not only what it reads back", async () => {
+    const directory = scratch();
+    const bound = 16 * SHELL_OUTPUT_MAX;
+    let peak = 0;
+    const watch = setInterval(() => {
+      for (const name of readdirSync(tmpdir())) {
+        if (!name.startsWith("envoy-shell-")) continue;
+        try {
+          peak = Math.max(peak, statSync(join(tmpdir(), name, "output")).size);
+        } catch {
+          // The command's directory is removed as soon as it ends.
+        }
+      }
+    }, 20);
+    try {
+      const result = await runShellCommand("yes legion", { cwd: directory, limitMs: 400 });
+      expect(result.cut).toBe(true);
+      expect(peak).toBeLessThanOrEqual(bound);
+    } finally {
+      clearInterval(watch);
       rmSync(directory, { recursive: true, force: true });
     }
   }, 30_000);
