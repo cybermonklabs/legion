@@ -59,7 +59,7 @@ var schemaNames = map[reflect.Type]string{
 
 	// The members of the collaborators answer, whose Go names say which handler built them and
 	// whose names here are the ones main's TypeScript exported and a consumer imports
-	// (packages/contracts/.changes/unreleased/pr2234-added-1.yaml announces the three).
+	// (packages/contracts/.changes/unreleased/pr2234-added-1.yaml announces them).
 	// Declared under their Go names they would delete three exports main publishes.
 	reflect.TypeOf(collaboratorPerson{}): "IssueCollaboratorPerson",
 	reflect.TypeOf(collaboratorAgent{}):  "IssueCollaboratorAgent",

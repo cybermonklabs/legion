@@ -4,11 +4,20 @@ body: |-
   rather than mirrored by hand: `bun run gen:api` renders `schemas/dispatch-openapi.json`
   into `src/dispatch-api.generated.ts`, and `src/dispatch-api.ts` re-exports it, keeping by
   hand only what no route of that table answers — the event payloads, the live-socket
-  frames, the closed string enums and the helpers. Every name any code imports keeps its
-  spelling: where a Go type is spelled otherwise, `schemaNames` gives the schema the name
-  its consumers already use. Nineteen names nothing imports are gone, each a union the
-  generated types now write inline on the fields that carried it (`AskKind`, `DocEditOp`,
-  `RelatedCheckOutcome` and the like). Where the mirror and the server disagreed the server
+  frames, the closed string enums and the helpers. Nineteen exported names are gone, and
+  this change moved every consumer that imported one. Eleven were string unions the
+  generated types now write inline on the fields that carried them: `AgentSessionState`,
+  `ArchitectureTreeAttachment`, `ArtifactReviewState`, `AskKind`, `BlockEmbedding`,
+  `CredentialRequestKind`, `DeliveryJobConclusion`, `DocEditOp`, `IssueRouteStatusReason`,
+  `RelatedCheckOutcome` and `RelatedCheckSearch`. Eight were object types. Three are
+  renamed to their Go types' names: `MarkInboxReadRequest` and `MarkInboxReadResponse`,
+  which an earlier entry of this release announces, are `InboxReadRequest` and
+  `InboxReadResponse`, and `DeliveryTimelineResponse` is `DeliveryTimelineWithMeasures`.
+  Four were groups of fields that the generated row types now carry directly:
+  `IssueRouteReach`, `AskReach`, `AnchorPosition` and `IssueClaimLiveness`. `Broadcast` is
+  gone; the broadcast routes answer `BroadcastSummary`, `BroadcastRead` and
+  `BroadcastCreated`. The collaborators route keeps the names an earlier entry of this
+  release announces, through `schemaNames`. Where the mirror and the server disagreed the server
   wins, so a few shapes are stricter: a nil slice and a nullable pointer are stated as
   `| null`, 35 fields the mirror made optional for older servers are required, and a closed
   string union the document still widens to `string` no longer narrows a `switch`.

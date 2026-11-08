@@ -331,7 +331,7 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/delivery/testdata/dev-only-run-jobs.json", "internal/dispatch/api/delivery_test.go:714")),
     f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
-         "internal/dispatch/api/openapi_test.go:177-178 (the path built runtime-relative ../../../../.., then "
+         "internal/dispatch/api/openapi_test.go:189-190 (the path built runtime-relative ../../../../.., then "
          "read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
          "emitter's bytes with)")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,

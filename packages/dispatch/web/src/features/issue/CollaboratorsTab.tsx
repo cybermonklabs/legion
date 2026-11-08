@@ -43,7 +43,7 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
    *  both belong to `others`. */
   const known = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
     agent.legion !== null && isLegionRole(agent.legion.role);
-  // An empty list is sent as `null`, as every list of the route table is.
+  // The document types every list as nullable, though this handler always sends `[]`.
   const agents = collaborators.agents ?? [];
   const legion = agents.filter(known);
   return {
@@ -94,7 +94,7 @@ function Worked({
   lastAt: string | null;
   reasons: IssueCollaboratorPerson["reasons"];
 }): ReactNode {
-  // No reason is sent as `null`, as every list of the route table is.
+  // The document types every list as nullable, though this handler always sends `[]`.
   const worked = reasons ?? [];
   return (
     <>
