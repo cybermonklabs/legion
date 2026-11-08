@@ -217,7 +217,10 @@ If you are that child's architect:
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
   `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
   merger's READY waits for its approval.
-  A registration that leaves the approval request with the person returns your root's admission slot, and while a step your root still needs has never opened and every slot is taken you get one `waiting-for-slot` notice and your record carries `waitingLine`, your place in the line and its length.
+  A registration that leaves the approval request with the person returns your root's admission slot, and what brings the root back is the answer, not the registration.
+  An approval opens your gate, and a root whose gate has ever opened needs no slot, so it resumes however full the cap is.
+  A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so the root needs a slot again: while every slot is taken you get one `waiting-for-slot` notice, and your record carries `waitingLine`, your place in the line and its length.
+  You get the notice only while this session holds its Envoy role: a session whose pod the daemon released while the root waited is told nothing, and its resume task says what answered the wait.
   Act on neither: the daemon starts you again at the next free slot.
   When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In

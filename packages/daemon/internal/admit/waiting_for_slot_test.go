@@ -20,10 +20,12 @@ import (
 
 // slotWait is the fixture of the waiting-for-slot notice: one Dispatch project's admission over a
 // cap of one slot, the root whose architect hands its work to a person, and the roots that take
-// that slot while it waits. The project key is a field rather than testProject because nothing of
-// this notice reads it, and TestAnAnsweredRootWithNoSlotIsToldOnce runs the whole case under two
-// keys to prove it; the package's own seeds name testProject, so this fixture records through
-// their project-taking twins (seedSlottedForProject and the rest).
+// that slot while it waits. The project key is a field rather than testProject because the
+// telling reads the admission's own project and nothing else — it addresses the architect's
+// claim by it (claim.ProjectToken in tellWaitingForSlot) and the notice's text names no key at
+// all — and TestAnAnsweredRootWithNoSlotIsToldOnce runs the whole case under two keys to prove
+// both; the package's own seeds name testProject, so this fixture records through their
+// project-taking twins (seedSlottedForProject and the rest).
 type slotWait struct {
 	t         *testing.T
 	pool      *pgxpool.Pool
@@ -203,8 +205,10 @@ func (w *slotWait) waitAnsweredWithNoSlot(label, filler string, by record.Answer
 // many passes run before a slot frees.
 //
 // The whole case runs under two Dispatch project keys, with nothing else between the runs: the
-// notice's text and the place it names are the same under both, because nothing of this notice
-// reads a project key.
+// claim the notice goes to is the architect's claim under the admission's own project
+// (claim.ProjectToken in tellWaitingForSlot, which this fixture's architect token follows), and
+// the notice's text and the place it names are the same under both, because the text itself
+// reads no project key.
 func TestAnAnsweredRootWithNoSlotIsToldOnce(t *testing.T) {
 	said := map[string]string{}
 	for _, project := range []string{"LEGION", "WIDGETS"} {

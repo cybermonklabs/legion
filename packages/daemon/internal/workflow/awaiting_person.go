@@ -146,12 +146,10 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 }
 
 // answerWait records that by answered root's wait now, with detail, which puts the root in the
-// waiting line (record.Waiting) —
-// among the issues whose work came back, oldest first — and names the act in the task its
-// architect resumes
-// with (resumeTask). The detail is the act's own: the ask a person acted on, the version and
-// reason of the review that answered, or who took the question away, so a later act of the same
-// kind does not rename it.
+// waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
+// names the act in the task its architect resumes with (resumeTask). The detail is the act's
+// own: the ask a person acted on, the version and reason of the review that answered, or who
+// took the question away, so a later act of the same kind does not rename it.
 func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string) error {
 	at := e.now()
 	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, by, detail

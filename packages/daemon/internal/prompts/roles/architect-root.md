@@ -62,7 +62,9 @@ with the person. A root waiting on a person gets no `design-approved` notice: wh
 While that resume waits for an admission slot, you get one `waiting-for-slot` notice saying what
 answered the wait, where your root stands in the admission line then and that the daemon starts
 you again by itself at the next free slot; your record's `waitingLine` gives the live place and
-the line's length. Act on neither.
+the line's length. You get the notice only while this session holds its Envoy role: a session
+whose pod the daemon released while the root waited is told nothing, and its resume task says
+what answered the wait. Act on neither.
 Approval is pinned to the spec version: any new version closes the gate until it is approved,
 except the version a human's own answer to a decision block writes when that answer is the whole
 change since the version they approved, and a version whose text is exactly the text of the

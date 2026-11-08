@@ -882,6 +882,8 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 // finishes any other way leaves them claimed until its row's deletion releases them, for the
 // architect's next ready to name. However the row ends, a catch-up that told its decisions in any
 // run forgets them here rather than let its ending release what the architect has already heard.
+// A waiting-for-slot notice whose root has left the wait it was written for finishes without a
+// publish too (stillWaitsForSlot), since its architect is working again by then.
 //
 // A row the wake pacing held to its turn (record.Notice.PacedAt) writes the line a wake writes,
 // once, on the attempt that publishes it (noticeAnswered's wakeRan, notice_exceptions.go):
@@ -974,6 +976,11 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			return nil
 		}
 	}
+	if payload.Kind == workflow.WaitingForSlotNoticeKind && !stillWaitsForSlot(issue) {
+		r.log.Info("outbox waiting-for-slot notice finished without publishing: its root no longer waits for a slot",
+			"row", row.ID, "issue", row.Issue, "phase", issue.Phase)
+		return nil
+	}
 	architect, err := owningArchitect(tree.project, tree.issues, issue, payload.Kind, r.holdsItsRole)
 	if err != nil {
 		return fmt.Errorf("the architect of %s: %w", row.Issue, err)
@@ -1009,6 +1016,33 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 	}
 	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(architect), noticeSummary(payload.Kind, row.Issue), notice, key)
 	return r.noticeAnswered(ctx, row, payload, tree, architect, published)
+}
+
+// stillWaitsForSlot says whether root, as the record holds it now, still stands in the wait a
+// waiting-for-slot row was written for: in awaiting_person with a person's act recorded against
+// the wait (record.Issue.Answered) and, beside that answer, the mark that says this wait's
+// architect was told (record.Awaiting.SlotNoticeAt), which admit's tellWaitingForSlot writes in
+// the transaction that enqueues the row. A row whose root stands anywhere else finishes without
+// publishing (deliverNotice), as a superseded catch-up does (catchUpSuperseded).
+//
+// The row and the resume that contradicts it travel on lanes nothing orders against each other:
+// the notice is a board-lane row, the resume a `start` on the lifecycle lane
+// (workflow.ResumeAwaitedRoot, record.OutboxLane). A publish that finds no holder is held while
+// the architect's claim can hold its role again (notice, above), so the whole window is
+// reachable: the architect is told while its claim holds the role, its session drops before the
+// publish lands, a slot frees, the resume relaunches that architect with the task of the work it
+// waited for, and the held row would then tell an architect that is already working to do
+// nothing until the daemon starts it.
+//
+// Each of the two conditions is the wait itself rather than a guess at it. The wait goes whole
+// wherever the root goes (record.Awaiting), so a resume, a re-admission, a linger and the
+// operator's hold each leave the root with no wait to read, and a wait begun since carries no
+// mark until its own notice is written. A notice still rightly pending — its root waiting,
+// answered and marked — meets both and is published as before. Nothing here writes a mark or a
+// row, so one wait still earns one notice, and the mark keeps its meaning: a notice was written,
+// never that one was read.
+func stillWaitsForSlot(root record.Issue) bool {
+	return root.Answered() && root.Awaiting.SlotNoticeAt != nil
 }
 
 // mergeQueue publishes the merger's READY packet, or the daemon's withdrawal of it, to the
