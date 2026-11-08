@@ -44,10 +44,11 @@ const (
 	kubernetesGuide = "../../../../docs/kubernetes.md"
 	// treeRoot is the prefix every path of the two lists carries: where this layout mounts the
 	// issue's volume, sandbox.TreeRoot in the runtime. It is written out rather than imported
-	// because this package imports no product code — a check whose subject is text should not pull
-	// the Kubernetes runtime into its build — and a root that moved cannot pass silently either
-	// way: the paragraph and the extract are both written in it, so a value this no longer matches
-	// makes the parse below name no path at all, which fails loudly.
+	// because this file reaches no product package: importing internal/runtime/sandbox would put
+	// the Kubernetes runtime, and every file that package's own tests read, back in this job's
+	// filter, which is what splitting the check took out. A root that moved cannot pass silently
+	// either way: the paragraph and the extract are both written in it, so a value this no longer
+	// matches makes the parse below name no path at all, which fails loudly.
 	treeRoot = "/legion"
 )
 
@@ -105,8 +106,18 @@ func TestTheReclaimParagraphNeverDeletesWhatItExempts(t *testing.T) {
 
 // reclaimExtractLists reads the committed copy's two lists. A line ending in a colon opens a list,
 // every other line is one path, and the blank lines and the `#` header are passed over; the file is
-// written to be read that way. The parse is deliberately not the one below: a copy of a document
-// held to it by the same reader that reads the document can drift with it and still agree.
+// written to be read that way. The parse is deliberately not reclaimParagraphLists below: a copy of
+// a document held to it by the same reader that reads the document can drift with it and still
+// agree.
+//
+// internal/runtime/sandbox keeps a parse of the same shape over the same file, and the copy
+// stands rather than being shared: this file may not import that package (see treeRoot above),
+// and a package both could import would be a new package of this module carrying nine lines.
+//
+// The two do not read the extract identically. That one refuses a line outside TreeRoot, because
+// a path outside the tree answers for no rendered directory there; this one takes the line, and
+// the comparison with the guide is what refuses it, naming both lists rather than the line alone,
+// since the guide's own bullets carry no path outside treeRoot (bulletPath).
 func reclaimExtractLists(t *testing.T) (deleted, exempt map[string]bool) {
 	t.Helper()
 	text, err := os.ReadFile(filepath.FromSlash(reclaimExtract))

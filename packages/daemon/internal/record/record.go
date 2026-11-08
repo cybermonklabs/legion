@@ -831,7 +831,7 @@ const (
 //
 // The type lives in this package rather than beside the `gates.design` list that declares it,
 // because internal/classify answers the questions the steps raise and may import no package of
-// this module but this one (TestProductionImportsArePure in internal/textcheck, which reads
+// this module but this one (TestClassifyImportsArePure in internal/textcheck, which reads
 // internal/classify's source).
 type DesignStep string
 

@@ -16,33 +16,35 @@ broker-client beside its own package, the dispatch-ui job the proof editor besid
 and the test job the three script directories that are no workspace).
 """
 
+
+def at(job: str, step: str) -> str:
+    """A `why` naming a step of a ci.yaml job, in the file that holds it: ci.yaml's job of that
+    id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, where the steps are. A job
+    whose steps are in a file of another name writes its own `why`, as the docs row does."""
+    return f"ci-job-{job}.yaml's {job} job: {step}"
+
+
 PROGRAMS = [
-    ("contracts", "packages/contracts",
-     "ci-job-contracts.yaml's contracts job: Typecheck contracts (bun run typecheck: bunx tsc --noEmit)"),
-    ("envoy_client", "packages/envoy-client", "ci-job-envoy-client.yaml's envoy-client job: Typecheck Envoy client"),
-    ("envoy_client", "packages/broker-client", "ci-job-envoy-client.yaml's envoy-client job: Typecheck broker client"),
-    ("pi_shared", "packages/pi-shared", "ci-job-pi-shared.yaml's pi-shared job: Typecheck pi-shared"),
-    ("pi_envoy", "packages/pi-envoy", "ci-job-pi-envoy.yaml's pi-envoy job: Typecheck pi-envoy"),
-    ("pi_legion", "packages/pi-legion", "ci-job-pi-legion.yaml's pi-legion job: Typecheck pi-legion"),
-    ("claude_envoy", "packages/claude-envoy",
-     "ci-job-claude-envoy.yaml's claude-envoy job: Typecheck Claude Envoy plugin"),
-    ("dispatch_ui", "packages/dispatch", "ci-job-dispatch-ui.yaml's dispatch-ui job: Typecheck dispatch dashboard"),
+    ("contracts", "packages/contracts", at("contracts", "Typecheck contracts (bun run typecheck: bunx tsc --noEmit)")),
+    ("envoy_client", "packages/envoy-client", at("envoy-client", "Typecheck Envoy client")),
+    ("envoy_client", "packages/broker-client", at("envoy-client", "Typecheck broker client")),
+    ("pi_shared", "packages/pi-shared", at("pi-shared", "Typecheck pi-shared")),
+    ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
+    ("pi_legion", "packages/pi-legion", at("pi-legion", "Typecheck pi-legion")),
+    ("claude_envoy", "packages/claude-envoy", at("claude-envoy", "Typecheck Claude Envoy plugin")),
+    ("dispatch_ui", "packages/dispatch", at("dispatch-ui", "Typecheck dispatch dashboard")),
     # The proof editor's and the docs site's steps run the same `bun run typecheck`, whose recipe
     # names a project file of its own rather than the directory's tsconfig.json.
     ("dispatch_ui", "packages/proof-editor/tsconfig.check.json",
-     "ci-job-dispatch-ui.yaml's dispatch-ui job: Typecheck proof editor "
-     "(bun run typecheck: bunx tsc --noEmit -p tsconfig.check.json)"),
+     at("dispatch-ui", "Typecheck proof editor (bun run typecheck: bunx tsc --noEmit -p tsconfig.check.json)")),
     ("docs", "docs/site/tsconfig.tools.json",
      "docs-site.yaml's build job: Typecheck the docs site (bun run typecheck: tsc --noEmit -p tsconfig.tools.json), "
      "which ci.yaml's docs job calls"),
-    ("conflicts_script", "scripts/conflicts",
-     "ci-job-conflicts-script.yaml's conflicts-script job: Typecheck the conflict measurement script"),
+    ("conflicts_script", "scripts/conflicts", at("conflicts-script", "Typecheck the conflict measurement script")),
     ("test", "scripts/dispatch",
-     "ci-job-test.yaml's test job: Typecheck the Dispatch census script (bunx tsc --noEmit -p scripts/dispatch)"),
+     at("test", "Typecheck the Dispatch census script (bunx tsc --noEmit -p scripts/dispatch)")),
     ("test", "scripts/github-apps",
-     "ci-job-test.yaml's test job: Typecheck the GitHub App registration script "
-     "(bunx tsc --noEmit -p scripts/github-apps)"),
+     at("test", "Typecheck the GitHub App registration script (bunx tsc --noEmit -p scripts/github-apps)")),
     ("test", "scripts/sessions",
-     "ci-job-test.yaml's test job: Typecheck the session message-wait script "
-     "(bunx tsc --noEmit -p scripts/sessions)"),
+     at("test", "Typecheck the session message-wait script (bunx tsc --noEmit -p scripts/sessions)")),
 ]

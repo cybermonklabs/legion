@@ -16,7 +16,11 @@ import (
 // loadgen is reached as `stack.sh loadgen ...` or as "$LOADTEST_ROOT/bin/loadgen".
 func TestREADMEBashCommandsRunAsWritten(t *testing.T) {
 	const scriptDir = "packages/envoy/loadtest/"
-	b, err := os.ReadFile(filepath.Join("..", "..", "loadtest", "README.md"))
+	const readme = scriptDir + "README.md"
+	// The repository root is four directories above this package, and the README is reached from
+	// the same constant the refusals below tell a writer to spell a script with, so the location
+	// has one spelling here.
+	b, err := os.ReadFile(filepath.Join("..", "..", "..", "..", filepath.FromSlash(readme)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,9 +46,9 @@ func TestREADMEBashCommandsRunAsWritten(t *testing.T) {
 		word, _, _ := strings.Cut(cmd, " ")
 		switch {
 		case strings.HasSuffix(word, ".sh") && !strings.HasPrefix(word, scriptDir):
-			bad = append(bad, fmt.Sprintf("README.md:%d: %q names a script that is not on a reader's PATH; write %s%s", i+1, word, scriptDir, word))
+			bad = append(bad, fmt.Sprintf("%s:%d: %q names a script that is not on a reader's PATH; write %s%s", readme, i+1, word, scriptDir, word))
 		case word == "loadgen":
-			bad = append(bad, fmt.Sprintf("README.md:%d: %q is not on a reader's PATH; run it as `%sstack.sh loadgen ...` or as \"$LOADTEST_ROOT/bin/loadgen\"", i+1, word, scriptDir))
+			bad = append(bad, fmt.Sprintf("%s:%d: %q is not on a reader's PATH; run it as `%sstack.sh loadgen ...` or as \"$LOADTEST_ROOT/bin/loadgen\"", readme, i+1, word, scriptDir))
 		}
 	}
 	if len(bad) > 0 {

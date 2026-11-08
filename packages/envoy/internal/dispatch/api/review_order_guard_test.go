@@ -46,7 +46,7 @@ var (
 // SQL files the scan does not read, and test sources, which hold the previous release's
 // statements on purpose.
 func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
 		t.Fatal(err)

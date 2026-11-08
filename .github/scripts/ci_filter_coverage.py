@@ -400,14 +400,26 @@ def repo_files() -> list:
 
 
 class Expander:
+    """The files each glob of a filter or a declared read names. A glob's answer is kept: the
+    repository's files do not change during a run, and the three rules that expand patterns -
+    check_dead_patterns, the per-gate loop and check_dead_gate_patterns - ask for the same ones.
+    An answer is shared with every caller, so none of them may change the list it is given."""
+
     def __init__(self, files: list):
         self.files = files
         self.known = set(files)
         self.by_parent = defaultdict(list)
         for f in files:
             self.by_parent[os.path.dirname(f)].append(f)
+        self.expanded: dict = {}
 
     def expand(self, glob: str) -> list:
+        found = self.expanded.get(glob)
+        if found is None:
+            found = self.expanded[glob] = self.sweep(glob)
+        return found
+
+    def sweep(self, glob: str) -> list:
         if glob.endswith("/**") and not any(c in glob[:-3] for c in "*?["):
             return [f for f in self.files if f.startswith(glob[:-2])]
         if glob.endswith("/*") and not any(c in glob[:-2] for c in "*?["):
@@ -416,6 +428,24 @@ class Expander:
             return [glob] if glob in self.known else []
         regex = glob_regex(glob)
         return [f for f in self.files if regex.fullmatch(f)]
+
+
+class Selection:
+    """The files a filter selects, in the repository's own order, computed once per filter: rule
+    15 (check_tag_runs) and rule 9's second direction, through rule_required_files, ask for the
+    same TAG_RUNS filters, and a sweep is a covers() call per file of the repository. An answer
+    is shared with every caller, so none of them may change the list it is given."""
+
+    def __init__(self, filters: dict, quantifiers: dict, files: list):
+        self.filters, self.quantifiers, self.files = filters, quantifiers, files
+        self.selected: dict = {}
+
+    def of(self, name: str) -> list:
+        found = self.selected.get(name)
+        if found is None:
+            matcher = PathsFilter(self.filters[name], self.quantifiers[name])
+            found = self.selected[name] = [f for f in self.files if matcher.covers(f)]
+        return found
 
 
 def flatten(value) -> list:
@@ -1046,7 +1076,7 @@ EXEMPT_LIST = "CI_OK_EXEMPT"
 # ENV_ALLOWED above and ci-ok-report.sh's yq read write the same keys again.
 
 
-def check_ci_ok(document: dict, problems: list) -> None:
+def check_ci_ok(documents: dict, problems: list) -> None:
     """ci-ok.sh fails a job CI_OK_SELECTED_BY says `changes` selected unless the job succeeded, and
     ci-ok-report.sh reads every selected job's result for the verdict it posts, so CI_OK_SELECTED_BY
     must be exactly
@@ -1066,11 +1096,13 @@ def check_ci_ok(document: dict, problems: list) -> None:
     is read by whichever class ci-ok.sh reaches first. A job ALWAYS_RUN_LIST names is gated by no
     output of changes, since ci-ok.sh holds it to success on a run that rightly skipped it.
 
-    It reads ci.yaml alone, and no workflow ci.yaml calls: the three class lists are ci.yaml's
-    env, the jobs they must account for are ci.yaml's jobs, and a job that gave its steps to a
-    called file keeps its caller here, which is the job ci-ok's verdict needs and the one the
-    report step of the called file names. What that called file owes is checked from here all
-    the same, through the caller's `uses:`: the report step below."""
+    It judges ci.yaml's jobs alone, and no workflow ci.yaml calls: the three class lists are
+    ci.yaml's env, the jobs they must account for are ci.yaml's jobs, and a job that gave its
+    steps to a called file keeps its caller here, which is the job ci-ok's verdict needs and the
+    one the report step of the called file names. What that called file owes is checked from here
+    all the same, through the caller's `uses:`, read out of the document set main() loaded: the
+    report step below."""
+    document = documents[WORKFLOW]
     jobs = document.get("jobs") or {}
     env = document.get("env") or {}
     try:
@@ -1223,8 +1255,11 @@ def check_ci_ok(document: dict, problems: list) -> None:
             if str((job.get("with") or {}).get("ci-ok-changes", "")) != REPORT_CHANGES:
                 problems.append(f"::error file={WORKFLOW}::job {job_id} calls {job['uses']} without "
                                 f"`ci-ok-changes: {REPORT_CHANGES}`, so the called job cannot report to ci-ok")
-            called = REPO / str(job["uses"]).removeprefix("./")
-            called_jobs = ((yaml.safe_load(called.read_text()) or {}).get("jobs") or {}) if called.is_file() else {}
+            # The called file is the set's: main() parsed every workflow ci.yaml calls, and a
+            # `uses:` the set does not hold is either a workflow of another repository or a path
+            # this repository has not got, which workflow_documents has already refused.
+            called = documents.get(str(job["uses"]).removeprefix("./")) or {}
+            called_jobs = called.get("jobs") or {}
             # The job that reports is the called workflow's job whose last step is the report:
             # always() first, so it runs after a failed step too, and ended only by the call's own
             # condition (docs-site.yaml's input, worker-image.yaml's event).
@@ -1308,7 +1343,8 @@ def tag_run_steps(documents: dict) -> list:
     return found
 
 
-def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, files: list, problems: list) -> list:
+def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, selection: Selection,
+                   problems: list) -> list:
     """A step that runs a package under a build tag and passes `-run` runs only the tests the tag
     adds, so the package's untagged tests must run elsewhere in every run that step runs. The job
     that runs them is declared (TAG_RUNS), and its filter must cover every file the tag step's
@@ -1355,9 +1391,8 @@ def check_tag_runs(documents: dict, data, filters: dict, quantifiers: dict, file
             problems.append(f"::error file=.github/scripts/ci_job_reads.py::TAG_RUNS names {where}, which passes no "
                             f"-run, so it runs the package's untagged tests itself; drop the entry")
             continue
-        tagged = PathsFilter(filters[entry.filter], quantifiers[entry.filter])
         untagged = PathsFilter(filters[entry.untagged_filter], quantifiers[entry.untagged_filter])
-        selected = [f for f in files if tagged.covers(f)]
+        selected = selection.of(entry.filter)
         uncovered = [f for f in selected if not untagged.covers(f)]
         report.append(f"{where}: {len(selected)} files selected by filter {entry.filter}, {len(uncovered)} "
                       f"uncovered by {entry.untagged_job} (filter {entry.untagged_filter})")
@@ -1421,7 +1456,7 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list)
                         f"the repository, so it holds its filter to nothing; correct the path or drop the read")
 
 
-def rule_required_files(data, filters: dict, quantifiers: dict, files: list) -> dict:
+def rule_required_files(data, filters: dict, selection: Selection) -> dict:
     """Per filter, the files another rule of this check holds that filter to whatever its job
     reads, which rule 9's second direction has to pass over: refusing one of those patterns
     would be refusing the rule that put it there.
@@ -1443,24 +1478,23 @@ def rule_required_files(data, filters: dict, quantifiers: dict, files: list) -> 
             required[name].add(path)
     for entry in data.TAG_RUNS:
         if entry.filter in filters and entry.untagged_filter in filters:
-            tagged = PathsFilter(filters[entry.filter], quantifiers[entry.filter])
-            required[entry.untagged_filter].update(f for f in files if tagged.covers(f))
+            required[entry.untagged_filter].update(selection.of(entry.filter))
     return required
 
 
-def check_dead_gate_patterns(data, filters: dict, quantifiers: dict, files: list, gate_reads: dict,
-                             gate_wheres: dict, expander: Expander, problems: list) -> None:
+def check_dead_gate_patterns(data, filters: dict, gate_files: dict, expander: Expander,
+                             selection: Selection, problems: list) -> None:
     """Rule 9's second direction: a pattern of a gate's filter that matches files of the
     repository but none its job reads. Such a pattern selects the job for a change no step of it
     can see, which costs a full run of that job every time one of those files changes - the fault
     rule 1 cannot see, since it reads the other way round, from the files a job reads to the
     patterns that must match them.
 
-    `gate_reads` is, per filter, the union of the files the gates on it read: the keys of the
-    `reason` dict main() builds per gate, which is exactly the set rule 1 holds the filter to.
-    The union is what a shared filter must be judged over - two gates name envoy_go_race_docs
-    today - since a pattern matching only what the second job reads does start a job that reads
-    the change. `gate_wheres` names those gates the way the rest of the check does, the job and,
+    `gate_files` is, per filter, the union of the files the gates on it read and how the check
+    names those gates. The read set is the keys of the `reason` dict main() builds per gate,
+    which is exactly the set rule 1 holds the filter to. The union is what a shared filter must
+    be judged over - two gates name envoy_go_race_docs today - since a pattern matching only
+    what the second job reads does start a job that reads the change. The names are the job and,
     for a gate that is a step's, the step.
 
     Four kinds of pattern are passed over. A `!` pattern, as in the first direction: it names what
@@ -1472,9 +1506,9 @@ def check_dead_gate_patterns(data, filters: dict, quantifiers: dict, files: list
     .github/scripts/check-image-trigger-paths.sh proves that filter's coverage instead. And a
     pattern whose every file another rule of this check holds the filter to (rule_required_files
     above), which is the one case where a pattern matching no read is right rather than idle."""
-    required = rule_required_files(data, filters, quantifiers, files)
-    for name in sorted(gate_reads):
-        reads, wheres = gate_reads[name], gate_wheres[name]
+    required = rule_required_files(data, filters, selection)
+    for name in sorted(gate_files):
+        reads, wheres = gate_files[name].reads, gate_files[name].wheres
         where = " and ".join(wheres) + (" read" if len(wheres) > 1 else " reads")
         for pattern in dict.fromkeys(filters[name]):
             matched = expander.expand(pattern) if not pattern.startswith("!") else []
@@ -1483,6 +1517,15 @@ def check_dead_gate_patterns(data, filters: dict, quantifiers: dict, files: list
             problems.append(f"::error file={WORKFLOW}::filter {name} has {pattern}, which matches no file {where}, "
                             f"though it matches {len(matched)} of the repository's, so a change to one of them runs "
                             f"that job over a change no step of it sees; drop the pattern")
+
+
+@dataclass
+class GateFiles:
+    """Per filter, what rule 9's second direction is judged over: the union of the files the
+    gates on it read, and how the check names each of those gates."""
+
+    reads: set = field(default_factory=set)
+    wheres: list = field(default_factory=list)
 
 
 def main() -> int:
@@ -1500,25 +1543,24 @@ def main() -> int:
     filters, quantifiers = changes_filters(document, problems)
     files = repo_files()
     unreduced = check_table(documents, data, filters, set(files), problems)
-    check_ci_ok(document, problems)
+    check_ci_ok(documents, problems)
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
     rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
-    expander = Expander(files)
+    expander, selection = Expander(files), Selection(filters, quantifiers, files)
     # Rule 9's first direction, over the repository's files alone: it needs no closure, so a
     # mistyped path is named even when the go work below cannot run. Its second direction is
     # after that work, where the files each gate reads exist.
     check_dead_patterns(data, filters, expander, problems)
     session = Session()
     report = []
-    # Per filter, the union of the files the gates on it read, and how the check names those
-    # gates: what rule 9's second direction is judged over, collected as each gate's set is
-    # built rather than computed a second time.
-    gate_reads: dict = defaultdict(set)
-    gate_wheres: dict = defaultdict(list)
+    # Per filter, the files the gates on it read and how the check names those gates: what rule
+    # 9's second direction is judged over, collected as each gate's set is built rather than
+    # computed a second time.
+    gate_files: dict = defaultdict(GateFiles)
     fallback = None  # module_trees_and_go_files(files), once a gate needs it
     for g in data.GATES:
         if g.filter not in filters:
@@ -1556,8 +1598,8 @@ def main() -> int:
         matcher = PathsFilter(patterns, quantifiers[g.filter])
         uncovered = sorted(f for f in reason if not matcher.covers(f))
         where = g.job + (f' step "{g.step}"' if g.step else "")
-        gate_reads[g.filter].update(reason)
-        gate_wheres[g.filter].append(where)
+        gate_files[g.filter].reads.update(reason)
+        gate_files[g.filter].wheres.append(where)
         report.append(f"{where}: {len(reason)} files, {len(uncovered)} uncovered (filter {g.filter})")
         for f in uncovered[:SHOWN]:
             problems.append(f"::error file={f}::{where} reads {f}, which its filter {g.filter} does not match, so a "
@@ -1567,10 +1609,10 @@ def main() -> int:
                             f"{g.filter} does not match")
         if held and not set(fallback).isdisjoint(uncovered):
             problems += held
-    check_dead_gate_patterns(data, filters, quantifiers, files, gate_reads, gate_wheres, expander, problems)
+    check_dead_gate_patterns(data, filters, gate_files, expander, selection, problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
-    report += check_tag_runs(documents, data, filters, quantifiers, files, problems)
+    report += check_tag_runs(documents, data, filters, quantifiers, selection, problems)
     for line in report:
         print(line)
     problems = list(dict.fromkeys(problems))

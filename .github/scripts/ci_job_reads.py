@@ -84,7 +84,15 @@ def at(job, step, workflow=""):
 def gate(filter, job, runs=(), reads=(), step="", exact=(), workflow=""):
     """A gate, whose job holds its steps in its own called file unless another file is named.
     The job is ci.yaml's, which keeps the `if:` the filter gates whichever file holds the
-    steps."""
+    steps.
+
+    Every such gate reads two files: ci.yaml, where every job's `if:` is, and the job's own
+    ci-job-<id>.yaml, where the steps it runs are. That pair is appended here rather than
+    written out on each gate, so a gate's own `reads` say only what is its own. The two gates
+    that name a file - docs and dispatch_browser, whose called workflows carry job ids of their
+    own - declare the pair they read themselves."""
+    if not workflow:
+        reads = list(reads) + CI_SELF + job_self(job)
     return gate_in(filter, job, runs, reads, step, exact, workflow or job_file(job))
 
 
@@ -288,8 +296,8 @@ PACK_READS = [  # bun pm pack of pi-envoy / pi-legion runs their prepack (script
 PMDOC_GEN = [f"{ENVOY}/internal/dispatch/pmdoc/gen/**", "packages/proof-editor/**", CONTRACTS_SRC, "package.json", "bun.lock", "patches/**"]
 BROKER_REFGEN_DIRS = ("internal/broker/api", "internal/broker/helper", "internal/broker/config", "internal/broker/approval", "cmd/broker", "cmd/agent-secrets")
 MODULE_SOURCES = [Read(f"{ENVOY}/**", "internal/dispatch/api/lock_level_test.go's moduleSources walks every non-test .go file "
-                                      "under packages/envoy (infra included); used by :88, event_insert_guard_test.go:37, "
-                                      "review_write_guard_test.go:49")]
+                                      "under packages/envoy (infra included); used by :89, event_insert_guard_test.go:44, "
+                                      "review_write_guard_test.go:51")]
 
 
 def legion_build(why):
@@ -347,11 +355,11 @@ RULES = {
         ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../.."),
         (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
-        (f"{DAEMON}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
-    f"{DAEMON}/internal/textcheck/production_imports_test.go": reads(
-        (f"{DAEMON}/internal/classify/*", "internal/textcheck/production_imports_test.go:14-15 globs ../classify/*.go")),
+        (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
+    f"{DAEMON}/internal/textcheck/classify_imports_test.go": reads(
+        (f"{DAEMON}/internal/classify/*", "internal/textcheck/classify_imports_test.go:14-15 globs ../classify/*.go")),
     f"{DAEMON}/internal/textcheck/reclaim_doc_test.go": reads(
-        ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,156 reads it under ../../../.."),
+        ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
          "internal/textcheck/reclaim_doc_test.go:43 reads the committed copy it holds the guide's paragraph to")),
     # --- envoy
@@ -412,7 +420,7 @@ RULES = {
     f"{ENVOY}/internal/textcheck/file_copy_test.go": reads(
         (f"{ENVOY}/**", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
     f"{ENVOY}/internal/textcheck/readme_commands_test.go": reads(
-        (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:19 reads ../../loadtest/README.md")),
+        (f"{ENVOY}/loadtest/README.md", "internal/textcheck/readme_commands_test.go:23 reads packages/envoy/loadtest/README.md under ../../../..")),
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
         run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go's buildEnvoyCommand go build . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],
@@ -420,9 +428,9 @@ RULES = {
         run(ENVOY, ["./cmd/listener"], "infra/host/heldportwrapper/main_test.go:113-114 go build . in ../../../cmd/listener (root go.work)", mode="build")],
     f"{INFRA}/host/live_test.go": [run(INFRA, ["./cmd/pulumi-resource-envoy-infra"], "infra/host/live_test.go pulumitest.Plugin -> internal/pulumitest/pulumitest.go:168 go build", mode="build")],
     f"{INFRA}/internal/textcheck/core_imports_test.go": [
-        run(INFRA, ["./core"], "infra/internal/textcheck/core_imports_test.go:19-20 go list -deps ./core in ../..", mode="build")],
+        run(INFRA, ["./core"], "infra/internal/textcheck/core_imports_test.go:20 moduleDeps, whose go list -deps ./core runs in ../.. (:31-32)", mode="build")],
     f"{INFRA}/internal/textcheck/gcp_imports_test.go": [
-        run(INFRA, ["./gcp"], "infra/internal/textcheck/gcp_imports_test.go:18-19 go list -deps ./gcp in ../..", mode="build")],
+        run(INFRA, ["./gcp"], "infra/internal/textcheck/gcp_imports_test.go:16 moduleDeps, whose go list -deps ./gcp runs in ../.. (core_imports_test.go:31-32)", mode="build")],
 }
 
 
@@ -916,8 +924,10 @@ RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 TEXT_CHECK_JOB = "text-checks"
 TEXT_CHECK_PKG = f"./{TEXT_CHECK_PACKAGE}/"
 TEXT_CHECK_TEXT = f"go test -count=1 {TEXT_CHECK_PKG}"
-TEXT_CHECK_STEPS = {ENVOY: "Check the text packages/envoy pins", INFRA: "Check the text packages/envoy/infra pins",
-                    DAEMON: "Check the text packages/daemon pins"}
+# The three modules whose text checks the job runs, in the order its steps run them: each step's
+# name carries the module path, so the path is written once and the name is built from it.
+TEXT_CHECK_MODULES = (ENVOY, INFRA, DAEMON)
+TEXT_CHECK_STEPS = {module: f"Check the text {module} pins" for module in TEXT_CHECK_MODULES}
 GUARD_PACKAGE = "./internal/dispatch/api"
 GUARD_STEP = "Test the Dispatch API's source guards (no database)"
 GUARD_SCRIPT = ("go test -count=1 -run "
@@ -980,7 +990,7 @@ def harness(filter, step, harness_script, subjects, lib=True):
     if lib:
         entries.append((TEST_LIB, f"{harness_script} sources it for check/is/summary"))
     return gate(filter, "test", step=step,
-                reads=reads(*entries, *subjects) + CI_SELF + job_self("test"))
+                reads=reads(*entries, *subjects))
 
 
 SCRIPT_TEST_GATES = [
@@ -1151,7 +1161,7 @@ GATES = [
     gate("typecheck", "typecheck", runs=[
         step_run("typecheck", "Vet the Go daemon, its e2e-tagged live proofs included", "go vet -tags e2e ./...", DAEMON, ["./..."],
                  tags="e2e", mode="vet"),
-    ], reads=CI_SELF + job_self("typecheck") + setup_go("typecheck", f"{DAEMON}/go.mod")),
+    ], reads=setup_go("typecheck", f"{DAEMON}/go.mod")),
 
     # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
     # the plain step over every package of the module but the three concurrent ones and the text
@@ -1185,7 +1195,7 @@ GATES = [
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
     ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
-      + bun_job("daemon-go") + CI_SELF + job_self("daemon-go")),
+      + bun_job("daemon-go")),
 
     # What is left of the test job once the daemon's Go suite has a job of its own: the Claude
     # Code plugin build, the changelog fold, about thirty script harnesses - each behind a gate
@@ -1227,14 +1237,14 @@ GATES = [
     ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11; "
                          "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch)")
       + setup_go("test", f"{DAEMON}/go.mod")
-      + biome(at("test", "Lint the Dispatch census script")) + bun_job("test") + CI_SELF + job_self("test")),
+      + biome(at("test", "Lint the Dispatch census script")) + bun_job("test")),
 
     # The test job's guide-layout step, gated on a filter of its own: the test spawns the
     # checker over five guides, and no other step of the job reads one of them. The job's own
     # filter names them too (GUIDE_LAYOUT_READS above, in the test gate's reads): a job's `if:`
     # may test one changes output only, so without them a guide-only change selected no job and
     # this step - the one check that change is about - ran nowhere.
-    gate("guide_layout", "test", step=GUIDES_STEP, reads=GUIDE_LAYOUT_READS + CI_SELF + job_self("test")),
+    gate("guide_layout", "test", step=GUIDES_STEP, reads=GUIDE_LAYOUT_READS),
 
 
     # The job ci.yaml gates is docs, and the steps it runs are docs-site.yaml's (at_docs), under
@@ -1296,13 +1306,12 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:147 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:6,54-58 and gen-go.ts's outputs list (--check compares the committed file)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:7-10,54-58 and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
-    ) + bun_job("contracts") + CI_SELF + job_self("contracts")),
+    ) + bun_job("contracts")),
 
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
                                  "and test (__tests__/ and __fixtures__/); its modules import only one another, node: and bun:"),
-    ) + biome(at("conflicts-script", "Lint the conflict measurement script")) + bun_job("conflicts-script")
-      + CI_SELF + job_self("conflicts-script")),
+    ) + biome(at("conflicts-script", "Lint the conflict measurement script")) + bun_job("conflicts-script")),
 
     gate("envoy_client", "envoy-client", reads=reads(
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
@@ -1313,7 +1322,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:14-21 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:683-690 reads skills/<skill>/SKILL.md for every skill a notice cites"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:23-29 reads the Go package's own corpus by relative path - that file itself, never a copy, so the two clients are held to one wire"),
-    ) + bun_job("envoy-client") + CI_SELF + job_self("envoy-client")),
+    ) + bun_job("envoy-client")),
 
     gate("pi_shared", "pi-shared", reads=reads(
         ("packages/pi-shared/**", f"{at('pi-shared', 'Typecheck pi-shared')} and test in packages/pi-shared"),
@@ -1327,7 +1336,7 @@ GATES = [
         (".github/workflows/release.yaml", "packages/pi-shared/test/skills-partition.test.ts:82"),
     ) + envoy_client_dep("packages/pi-shared/tsconfig.json paths @legion/envoy-client/errors; src imports "
                          "@legion/envoy-client/* (exports.bun -> src)")
-      + bun_job("pi-shared") + CI_SELF + job_self("pi-shared")),
+      + bun_job("pi-shared")),
 
     gate("pi_envoy", "pi-envoy", reads=reads(
         ("packages/pi-envoy/**", f"{at('pi-envoy', 'Typecheck pi-envoy')}, test and pack in packages/pi-envoy"),
@@ -1346,8 +1355,7 @@ GATES = [
         ("scripts/e2e/lib/pack-plugin.sh", "packages/pi-envoy/scripts/prepack.test.ts:92-102"),
         (f"{DAEMON}/internal/prompts/**", "packages/pi-envoy/src/skills-guard.test.ts:30-33 (skillAndPromptRoots)"),
     ) + envoy_client_dep("packages/pi-envoy/tsconfig.json paths @legion/envoy-client/*; extensions/envoy.ts:19-101 imports")
-      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")
-      + CI_SELF + job_self("pi-envoy")),
+      + install_jj("pi-envoy") + install_omp("pi-envoy") + bun_job("pi-envoy")),
 
     gate("pi_legion", "pi-legion", runs=[
         script_run("packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts",
@@ -1383,7 +1391,7 @@ GATES = [
     ) + envoy_client_dep("packages/pi-legion/tsconfig.json paths @legion/envoy-client/*; scripts/skill-scenarios/*.ts "
                          "import @legion/envoy-client/*")
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
-      + bun_job("pi-legion") + CI_SELF + job_self("pi-legion")),
+      + bun_job("pi-legion")),
 
     # The dashboard's and the proof editor's fast checks (ci.yaml's comment on dispatch-ui says
     # what they are). No go command runs here.
@@ -1402,7 +1410,7 @@ GATES = [
                            "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it); "
                            "@legion/broker-client does not come with them, since no source of this program reaches "
                            "packages/envoy-client/src/broker-credential.ts"),
-    ) + bun_job("dispatch-ui") + CI_SELF + job_self("dispatch-ui")),
+    ) + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the shard legs, the three `-alone` projects, the
     # two-process job and the merge job, all in dispatch-browser.yaml, which ci.yaml's
@@ -1475,7 +1483,7 @@ GATES = [
       + CI_SELF + BROWSER_SITE_SELF, workflow=CI),
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + biome(at("claude-envoy", "Lint Claude Envoy plugin"))
-         + bun_job("claude-envoy") + CI_SELF + job_self("claude-envoy")),
+         + bun_job("claude-envoy")),
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
@@ -1511,7 +1519,7 @@ GATES = [
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', NATS_MATRIX_STEP)} takes its -run from it"),
-    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go") + CI_SELF + job_self("envoy-go")),
+    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")),
 
     # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
@@ -1540,7 +1548,7 @@ GATES = [
         (f"{ENVOY}/loadtest/common.sh", "packages/envoy/loadtest/common.test.sh sources it; run-step.sh and run-series.sh source it"),
         (NOTICES, f"{at('envoy-go-checks', 'Pack envoy binaries')} runs it"),
         (GO_TARGETS, f"{at('envoy-go-checks', 'Pack envoy binaries')}: jq -r '.envoy[]'"),
-    ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks") + CI_SELF + job_self("envoy-go-checks")),
+    ) + setup_go("envoy-go-checks", f"{ENVOY}/go.mod") + bun_job("envoy-go-checks")),
 
 
     gate("envoy_infra_go", "envoy-infra-go", runs=[
@@ -1567,7 +1575,7 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
-    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + CI_SELF + job_self("envoy-infra-go")),
+    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod")),
 
     # The text-check job: one `go test` of each module's text checks, in that module's own
     # directory, and the Dispatch API's source guards by name. Two workspaces meet here - the
@@ -1575,9 +1583,8 @@ GATES = [
     # itself and packages/envoy - so each Run's workspace names the module files it reads. No
     # Bun and no database: nothing here starts either.
     gate("text_checks", TEXT_CHECK_JOB, runs=[
-        step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[ENVOY], TEXT_CHECK_TEXT, ENVOY, [TEXT_CHECK_PKG]),
-        step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[INFRA], TEXT_CHECK_TEXT, INFRA, [TEXT_CHECK_PKG]),
-        step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[DAEMON], TEXT_CHECK_TEXT, DAEMON, [TEXT_CHECK_PKG]),
+        *[step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[module], TEXT_CHECK_TEXT, module, [TEXT_CHECK_PKG])
+          for module in TEXT_CHECK_MODULES],
     ], exact=[
         # The eleven guard tests by name: a -run is outside the simple form, so the step is
         # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
@@ -1586,7 +1593,7 @@ GATES = [
         pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
             (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's eleven source guards in {GUARD_PACKAGE}", {}),
         ]),
-    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + CI_SELF + job_self(TEXT_CHECK_JOB)),
+    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod")),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one
@@ -1594,10 +1601,10 @@ GATES = [
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"])],
-         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF + job_self("envoy-go-race")),
+         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[race_step(RACE_JOBS["envoy-go-race-api"])],
-         reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + CI_SELF + job_self("envoy-go-race-api")),
+         reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod")),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -1605,7 +1612,7 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-    ) + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod") + CI_SELF + job_self("envoy-go-race-docs")),
+    ) + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod")),
 
     # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
     # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
@@ -1614,7 +1621,7 @@ GATES = [
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/", {}),
         ]),
-    ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod") + CI_SELF + job_self("envoy-go-docs-finalizers")),
+    ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod")),
 
     gate("dispatch_memory", "dispatch-memory", exact=[
         pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [
@@ -1622,7 +1629,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-memory", f"{ENVOY}/go.mod") + CI_SELF + job_self("dispatch-memory")),
+    ) + setup_go("dispatch-memory", f"{ENVOY}/go.mod")),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [
@@ -1630,7 +1637,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + CI_SELF + job_self("dispatch-multiprocess")),
+    ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod")),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
@@ -1638,7 +1645,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('listener-server-change', SOAK_STEP)} takes its -run from it"),
-    ) + setup_go("listener-server-change", f"{ENVOY}/go.mod") + CI_SELF + job_self("listener-server-change")),
+    ) + setup_go("listener-server-change", f"{ENVOY}/go.mod")),
 
     gate("broker_multiprocess", "broker-multiprocess", exact=[
         pinned_step("broker-multiprocess", BROKER_MP_STEP, ENVOY, BROKER_MP_SCRIPT, [
@@ -1646,7 +1653,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('broker-multiprocess', BROKER_MP_STEP)} takes its -run from it"),
-    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + CI_SELF + job_self("broker-multiprocess")),
+    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod")),
 
 
     # The listener image this job builds and smokes is built from the repository root, so every
@@ -1702,7 +1709,7 @@ GATES = [
         (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:79 COPY packages/envoy/listenfd ./listenfd"),
         (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:86 COPY packages/envoy/migrationid ./migrationid"),
         (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:88 COPY packages/envoy/roleholder ./roleholder"),
-    ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + CI_SELF + job_self("envoy-smoke")),
+    ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod")),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
         script_run(f"{ENVOY}/scripts/e2e-local.sh", 'go build -o "$listener_binary" ./cmd/listener',
@@ -1717,7 +1724,7 @@ GATES = [
         (CONTRACTS_SRC, "packages/envoy-client/src/delivery.ts imports @legion/contracts"),
     ) + envoy_client_dep("packages/envoy/scripts/e2e-local.sh:658-675 and :851-895 run bun in packages/envoy-client "
                          "importing @legion/envoy-client/delivery and @legion/envoy-client/transport")
-      + setup_go("envoy-e2e-local", f"{ENVOY}/go.mod") + bun_job("envoy-e2e-local") + CI_SELF + job_self("envoy-e2e-local")),
+      + setup_go("envoy-e2e-local", f"{ENVOY}/go.mod") + bun_job("envoy-e2e-local")),
 
     gate("envoy_session_stall", STALL, runs=[
         script_run("packages/envoy-client/test/envoy-stack.ts",
@@ -1731,7 +1738,7 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-22"),
-    ) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL) + CI_SELF + job_self(STALL)),
+    ) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL)),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
@@ -1739,7 +1746,7 @@ GATES = [
         (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
-    ) + CI_SELF + job_self("lint")),
+    )),
 
     # This check itself: it lists every module's packages (vet mode: each package directory, its
     # dependencies' and the test files, without the files tests read), reads the target lists
@@ -1773,7 +1780,7 @@ GATES = [
                                  "directory, and a rule that refuses a new one has to run on the change that adds it"),
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
-      + setup_go("ci-filters", f"{DAEMON}/go.mod") + CI_SELF + job_self("ci-filters")),
+      + setup_go("ci-filters", f"{DAEMON}/go.mod")),
 
     # The ci-images job: the copy, and the package mode of the image gate, which reads ghcr.io.
     # These are the files that decide what those two steps do. The gate's tree mode is a step of
@@ -1785,7 +1792,7 @@ GATES = [
         (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
         (".github/scripts/ci_images.py", "both scripts read a row's upstream with it"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
-    ) + CI_SELF + job_self("ci-images")),
+    )),
 ] + SCRIPT_TEST_GATES
 
 # One entry per step of ci.yaml that runs a package under a build tag and passes -run: the job

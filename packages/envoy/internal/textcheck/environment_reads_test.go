@@ -97,9 +97,7 @@ func environmentReads(roots ...string) (reads, storetestImporters []string, err 
 	return reads, storetestImporters, nil
 }
 
-// writeFile writes contents under a test directory and returns its path. It is a copy of
-// cmd/dispatch's own helper (settings_test.go): four tests that stayed there use that one, so the
-// guard below, which moved here without them, carries its own.
+// writeFile writes contents under a test directory and returns its path.
 func writeFile(t *testing.T, name, contents string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)

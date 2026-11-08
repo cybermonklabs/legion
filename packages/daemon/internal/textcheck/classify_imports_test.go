@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// TestProductionImportsArePure protects the pure decision package from gaining transport, clock,
-// database, or workflow dependencies.
-func TestProductionImportsArePure(t *testing.T) {
+// TestClassifyImportsArePure protects internal/classify, the pure decision package, from gaining
+// transport, clock, database, or workflow dependencies.
+func TestClassifyImportsArePure(t *testing.T) {
 	packageDirectory := filepath.Join("..", "classify")
 	files, err := filepath.Glob(filepath.Join(packageDirectory, "*.go"))
 	if err != nil {
@@ -37,10 +37,10 @@ func TestProductionImportsArePure(t *testing.T) {
 	}
 	for imported := range imports {
 		if !allowed[imported] {
-			t.Errorf("production package imports %q; classifiers must be pure", imported)
+			t.Errorf("the classify package imports %q; classifiers must be pure", imported)
 		}
 	}
 	if !imports["time"] || !imports["github.com/sjawhar/legion/daemon/internal/record"] {
-		t.Error("production package must retain its record and time contracts")
+		t.Error("the classify package must retain its record and time contracts")
 	}
 }

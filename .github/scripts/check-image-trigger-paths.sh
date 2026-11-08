@@ -1805,10 +1805,11 @@ for entry in NOT_A_BUILD_STEPS:
 # The same discipline for BUILD_PLUMBING_STEPS: an entry names exactly one step of that job,
 # and that step runs exactly the commands it pins. Zero means the step was deleted, renamed or
 # re-keyed; more than one means the key does not identify a step; different commands mean the
-# step does something the entry's reason was not written for. Each fails, so the list cannot go
+# step does something the entry's reason was not written for, and that refusal prints the
+# reason, which is where a reader meets it. Each fails, so the list cannot go
 # on excusing a step that has moved on. An entry naming a workflow the tree has not got excuses
 # nothing there and is passed over, which is what lets this check run over a tree of its own.
-for workflow_path, job_name, step_id, pinned, _ in BUILD_PLUMBING_STEPS:
+for workflow_path, job_name, step_id, pinned, reason in BUILD_PLUMBING_STEPS:
     document = documents.get(Path(workflow_path))
     if document is None:
         continue
@@ -1829,8 +1830,8 @@ for workflow_path, job_name, step_id, pinned, _ in BUILD_PLUMBING_STEPS:
         problems.append(
             f"::error file={workflow_path}::BUILD_PLUMBING_STEPS pins {workflow_path} job "
             f"{job_name} step id {step_id!r} to {list(pinned)}, and it runs {list(ran)}: the "
-            f"entry says the step is the image build's own plumbing, so update the entry's "
-            f"commands and its reason, or drop the entry and let the job read as doing more"
+            f"entry says the step is the image build's own plumbing ({reason}), so update the "
+            f"entry's commands and its reason, or drop the entry and let the job read as doing more"
         )
 
 problems = list(dict.fromkeys(problems))

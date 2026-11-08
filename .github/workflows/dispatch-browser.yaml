@@ -35,9 +35,13 @@ name: Dispatch browser suite
 # report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
 # A job budget is the backstop above the sum of its step budgets, so it never fires first.
 #
-# No permissions: block, so each caller's permissions stand. The merge job reads the run's jobs
-# through the API (`actions: read`) and ends with the ci-ok report (`checks: write`), both of
-# which ci.yaml already gives the job that calls this workflow.
+# No permissions: block, and that is not what decides this workflow's scopes. A called workflow
+# runs under the calling job's `permissions:`, and a caller that declares none hands it the
+# default GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's
+# reusable-workflow reference, "Supported keywords for jobs that call a reusable workflow").
+# ci.yaml's dispatch-browser job declares what these jobs need: `contents: read` for every job's
+# checkout, and the merge job's `actions: read` (it reads the run's jobs through the API) and
+# `checks: write` (the ci-ok report it ends with, which only that call turns on).
 on:
   workflow_call:
     inputs:

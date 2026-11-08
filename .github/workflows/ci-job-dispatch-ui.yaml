@@ -4,9 +4,8 @@ name: CI job dispatch-ui
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
-# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
-# change to that one file runs every job; once this job's filter names this file instead, a
-# change to these steps selects this job alone.
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -20,15 +19,6 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
-
-# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
-# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
-# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
-# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
-# straight from the source and checks them against go.sum, so this is a second path, not a weaker
-# check.
-env:
-  GOPROXY: https://proxy.golang.org|direct
 
 jobs:
   dispatch-ui:

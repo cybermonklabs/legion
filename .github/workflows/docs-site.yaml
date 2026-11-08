@@ -19,9 +19,14 @@ name: Docs site
 # workflow's jobs run in the caller's run, so the artifact the build job uploads here is the one
 # the deploy job finds.
 #
-# No permissions: block either, so each caller's permissions stand. docs-pages.yaml gives this job
-# `contents: read`; ci.yaml also gives it the `actions: read` and `checks: write` its ci-ok report
-# needs.
+# No permissions: block either, and that is not what decides this job's scopes. A called workflow
+# runs under the calling job's `permissions:`, and a caller that declares none hands it the default
+# GITHUB_TOKEN permissions rather than its own workflow's block (GitHub's reusable-workflow
+# reference, "Supported keywords for jobs that call a reusable workflow"). So what this job gets is
+# the calling job's to declare: ci.yaml's docs job declares `contents: read` for the checkout and
+# the `actions: read` and `checks: write` its ci-ok report needs. docs-pages.yaml's build job
+# declares none, so this job runs there on the default token; that call passes no `ci-ok-changes`,
+# so the report step skips and the checkout is the whole of what it asks the token for.
 #
 # .github/scripts/ci_job_reads.py's docs gate cites the steps below by name, and
 # .github/scripts/check-ci-filters.sh fails when a cited step is gone. The docs filter of ci.yaml

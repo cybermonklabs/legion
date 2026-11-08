@@ -203,8 +203,11 @@ func issuedClaims(t *testing.T) []string {
 //
 // The parse is a split and a filter because the extract is written to be parsed that way. It knows
 // nothing of the guide's bullets, its backticks or its em dash — reading that shape is
-// internal/textcheck's job, on the guide itself — so the two halves of this check share no parser
-// that could agree with itself while both drift.
+// internal/textcheck's job, on the guide itself — so no reader of the guide's own shape is shared
+// between the two halves of this check, which is the parser that could agree with itself while
+// both drift. The reading of the extract itself is the same few lines in both halves
+// (internal/textcheck's extractLines): a copy rather than a shared package, since the two live in
+// different packages of this module and sharing nine lines would cost a package of its own.
 func extractedClaims(t *testing.T) []string {
 	t.Helper()
 	// Read it and fail when it cannot be read: a skip here would be an absence that reads exactly

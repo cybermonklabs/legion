@@ -48,7 +48,7 @@ var (
 // previous release's insert, a row recorded before the column -- so test sources are outside it,
 // as are the migrations, which are SQL files the scan does not read.
 func TestOnlyWriteReviewWritesReviews(t *testing.T) {
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
 		t.Fatal(err)

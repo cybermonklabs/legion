@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -85,7 +86,7 @@ var (
 // strings.Repeat("issues", 0) prints `... for update issues`: the tell is a word the statement
 // did not spell, an owner table outside its `from` or a lock clause the query never assembles.
 func TestNoForUpdateOnOwnerTables(t *testing.T) {
-	sources := moduleSources(t, "../../..")
+	sources := moduleSources(t)
 	constants, err := stringConstants(sources)
 	if err != nil {
 		t.Fatal(err)
@@ -131,12 +132,29 @@ type moduleSource struct {
 	positions *token.FileSet
 }
 
+// moduleRoot is the envoy module's root, from this package.
+const moduleRoot = "../../.."
+
+// sharedModuleSources is the module's parsed source, walked once per test binary: four of the
+// guards here read the same files, and the text-check job's step runs all four in one go test.
+// A failed walk's error is kept and reported by each test that asks for the sources, as the
+// copy-lock guard's graph is.
+var sharedModuleSources = sync.OnceValues(func() ([]moduleSource, error) { return scanModuleSources(moduleRoot) })
+
 // moduleSources reads and parses every non-test Go file of the envoy module, not just the
 // Dispatch server: the broker's owner locks live in internal/events, and a future caller could
 // lock one of these rows from anywhere. Test sources hold these strings deliberately - the
 // upload regressions and the sabotage copies a red proof makes - so they are skipped.
-func moduleSources(t *testing.T, root string) []moduleSource {
+func moduleSources(t *testing.T) []moduleSource {
 	t.Helper()
+	sources, err := sharedModuleSources()
+	if err != nil {
+		t.Fatalf("scan dispatch sources: %v", err)
+	}
+	return sources
+}
+
+func scanModuleSources(root string) ([]moduleSource, error) {
 	fileSet := token.NewFileSet()
 	var sources []moduleSource
 	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -153,9 +171,9 @@ func moduleSources(t *testing.T, root string) []moduleSource {
 		sources = append(sources, moduleSource{path: path, file: file, positions: fileSet})
 		return nil
 	}); err != nil {
-		t.Fatalf("scan dispatch sources: %v", err)
+		return nil, err
 	}
-	return sources
+	return sources, nil
 }
 
 // stringConstants maps every package-level string constant of the module - and every `var` bound

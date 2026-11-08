@@ -28,6 +28,7 @@ a module Python has finished loading by then.
 import json
 import re
 from collections import defaultdict
+from functools import cache
 
 import yaml
 
@@ -54,10 +55,21 @@ PUSH_CONDITION = re.compile("|".join((comparison(r"github\.event_name", "'push'"
 PUSH_INSTEAD = (f"a cache that must be filled on a push to main belongs in {CACHE_WORKFLOW}, and a job that must "
                 f"run at main's tip is started by the workflow_dispatch "
                 f".github/workflows/main-bypass-check.yaml sends")
-# The one `on:` a workflow this rule reads beyond ci.yaml may declare, and the two names the
-# directory walk below needs - WORKFLOW_DIR and WORKFLOW_SUFFIXES, the merge-group rule's at the
-# foot of this module, since both rules read that one directory and it has one spelling here.
+# The one `on:` a workflow this rule reads beyond ci.yaml may declare, and the directory and the
+# two suffixes GitHub reads it in, which this rule and the merge-group rule at the foot of this
+# module both walk.
 WORKFLOW_CALL = "workflow_call"
+WORKFLOW_DIR = ".github/workflows"
+WORKFLOW_SUFFIXES = (".yaml", ".yml")
+
+
+@cache
+def directory_workflows() -> dict:
+    """Every workflow of this repository, as {its repository-relative path: the parsed document},
+    in path order. The two rules that walk the directory read this one answer: parsing each file
+    for each of them is a second read of every workflow in the repository."""
+    return {f"{WORKFLOW_DIR}/{path.name}": yaml.safe_load(path.read_text()) or {}
+            for path in sorted((REPO / WORKFLOW_DIR).iterdir()) if path.suffix in WORKFLOW_SUFFIXES}
 
 
 def ci_only_documents(documents: dict) -> dict:
@@ -77,9 +89,9 @@ def ci_only_documents(documents: dict) -> dict:
     other case: nothing else calls them and they run on workflow_call alone, so a push condition
     in one of them is as dead as it would be in ci.yaml."""
     called_elsewhere: set = set()
-    for path in sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES):
-        if f"{WORKFLOW_DIR}/{path.name}" != WORKFLOW:
-            called_elsewhere |= set(called_workflows(yaml.safe_load(path.read_text()) or {}))
+    for path, document in directory_workflows().items():
+        if path != WORKFLOW:
+            called_elsewhere |= set(called_workflows(document))
     return {path: document for path, document in documents.items()
             if path == WORKFLOW
             or (path not in called_elsewhere and set(events(document)) == {WORKFLOW_CALL})}
@@ -403,9 +415,6 @@ def check_workspace_table(workspaces: list, problems: list) -> None:
 
 
 # ------------------------------------------------- the one workflow a merge group runs
-# The directory every workflow of this repository is in, and the two suffixes GitHub reads there.
-WORKFLOW_DIR = ".github/workflows"
-WORKFLOW_SUFFIXES = (".yaml", ".yml")
 MERGE_GROUP = "merge_group"
 
 
@@ -424,9 +433,8 @@ def check_one_merge_group_workflow(problems: list) -> None:
     merge_group workflow puts the early POST back in another suite, and nothing in ci.yaml would
     say so: the workflow that broke it is the new file. So the rule is about every other
     workflow, and names the file it found."""
-    for path in sorted(p for p in (REPO / WORKFLOW_DIR).iterdir() if p.suffix in WORKFLOW_SUFFIXES):
-        name = f"{WORKFLOW_DIR}/{path.name}"
-        if name == WORKFLOW or MERGE_GROUP not in events(yaml.safe_load(path.read_text()) or {}):
+    for name, document in directory_workflows().items():
+        if name == WORKFLOW or MERGE_GROUP not in events(document):
             continue
         problems.append(f"::error file={name}::{name} runs on {MERGE_GROUP}, which only {WORKFLOW} may: "
                         f"ci-ok-report.sh POSTs the failing ci-ok of a merge-group run the reporting job's own "

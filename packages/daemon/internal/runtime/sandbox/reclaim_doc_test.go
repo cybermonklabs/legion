@@ -49,8 +49,14 @@ const (
 	// reclaimExtract is read from this package's own directory, where the file sits beside the
 	// code it is about and needs no declared read of its own.
 	reclaimExtract = "reclaim_doc_extract.txt"
-	// The two lines of it that open a list. The same two open the extract's lists for the test
-	// that holds the file to the guide, in the other module's own copy of this parse.
+	// The two lines of it that open a list. The same two open the extract's lists for
+	// internal/textcheck's TestTheReclaimExtractIsTheGuidesReclaimParagraph, which keeps a parse
+	// of its own over this same file. The copy stands rather than being shared: that package may
+	// not import this one - doing so would put the Kubernetes runtime, and every file this
+	// package's tests read, back in the text-check job's filter, which is what splitting the
+	// check took out - and a package both could import would be a new package of this module
+	// carrying nine lines. The two parses differ in one point, below: this one refuses a line
+	// outside TreeRoot, where that one takes it and lets the comparison with the guide refuse it.
 	reclaimDeleteList = "delete:"
 	reclaimExemptList = "exempt:"
 )

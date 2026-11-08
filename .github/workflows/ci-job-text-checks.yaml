@@ -4,9 +4,8 @@ name: CI job text-checks
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
-# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
-# change to that one file runs every job; once this job's filter names this file instead, a
-# change to these steps selects this job alone.
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
 #
 # What runs here is the tests whose subject is text: a guide's wording against the code it
 # pins, a file copied from one tree to another, the imports a package may have, and the

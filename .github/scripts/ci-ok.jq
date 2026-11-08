@@ -20,7 +20,7 @@ def selection($job; $map; $out; $pr; $event):
   $map[$job] as $output
   | ($out[$output] // "unset") as $value
   | ($pr | any(. == $job)) as $pr_only
-  | ((($out.filter_verdicts // "{}") | try (fromjson | objects) catch empty) // {}) as $verdicts
+  | (($out.filter_verdicts | try (fromjson | objects) catch empty) // {}) as $verdicts
   | if $value != "true" then
       if $event == "pull_request" and $verdicts[$output] == "true" then
         {selected: false, why: "selected by paths, gated by full-ci: runs in the merge queue"}

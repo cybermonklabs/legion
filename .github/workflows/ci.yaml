@@ -1703,19 +1703,29 @@ jobs:
             # guards: the tests whose subject is a file's words. Their job runs
             # packages/envoy/internal/textcheck, packages/envoy/infra/internal/textcheck and
             # packages/daemon/internal/textcheck, which the three Go lanes leave out of their
-            # own runs, and the guards' eleven tests by name. The wide roots are the subject of
-            # those tests: file_copy_test.go walks every .go file under packages/envoy (infra
-            # included) and under packages/daemon, and the API's guards walk every non-test .go
-            # file of the envoy module.
+            # own runs, and the guards' eleven tests by name. packages/envoy stays a wide root:
+            # file_copy_test.go walks every .go file under it (infra included), the API's guards
+            # walk every non-test .go file of the module, and the guard step compiles that
+            # package's whole test closure, which reaches testdata and goldens across the module.
+            # Of packages/daemon the job reads the .go files its own file_copy_test.go walks and
+            # the two files below, so the module's other files - its .sql, .txt, .json and .md -
+            # are no input of this job and no pattern here matches them.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
               - *go_workspace
               - 'packages/envoy/**'
-              - 'packages/daemon/**'
+              - 'packages/daemon/**/*.go'
+              # internal/intake's testdata, the one testdata directory under this module that the
+              # text-check run compiles a package of (`go list -deps -test ./internal/textcheck/`).
+              - 'packages/daemon/internal/intake/testdata/**'
+              # The prompt design_approved_wake_test.go:19-26 holds the resume's wake to, and the
+              # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
+              - 'packages/daemon/internal/prompts/roles/architect-root.md'
+              - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
               # The guide packages/envoy/internal/broker/oauth and
               # packages/daemon/internal/runtime/sandbox hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:36,43 and reclaim_doc_test.go:44,156).
+              # (internal/textcheck/claims_doc_test.go:36,43 and reclaim_doc_test.go:44,167).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:19-26).
@@ -2499,6 +2509,15 @@ jobs:
   docs:
     needs: changes
     if: needs.changes.outputs.docs == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    # A calling job that declares no `permissions:` hands the called workflow the default
+    # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
+    # "Supported keywords for jobs that call a reusable workflow"), so the scopes docs-site.yaml
+    # needs are declared here. `contents: read` is its checkout's; `actions: read` and
+    # `checks: write` are its last step's, the ci-ok report this call turns on.
+    permissions:
+      contents: read
+      actions: read
+      checks: write
     uses: ./.github/workflows/docs-site.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
@@ -2618,6 +2637,15 @@ jobs:
   dispatch-browser:
     needs: changes
     if: needs.changes.outputs.dispatch_browser == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    # The same rule as the docs job above: a caller that declares no `permissions:` hands the
+    # called workflow the default GITHUB_TOKEN permissions rather than this file's block.
+    # `contents: read` is every job of dispatch-browser.yaml's checkout; `actions: read` is the
+    # merge job's `gh api .../actions/runs/<id>/jobs` read of this run's jobs, and `checks: write`
+    # that job's last step, the ci-ok report.
+    permissions:
+      contents: read
+      actions: read
+      checks: write
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       # An unlabelled pull request gets the two-project `pull-request` lane; a pull request
