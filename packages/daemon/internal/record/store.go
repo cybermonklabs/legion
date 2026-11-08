@@ -2324,11 +2324,26 @@ type roleRunIdentity struct {
 	generation string
 }
 
-// RoleRuns reads the claims and queued supervise rows of keys in two bounded queries, under the
-// caller's transaction snapshot. The outbox query reads the selected issues' supervise rows by the
-// outbox_issue index with each payload's role and generation as text, and decodes only the rows of
-// keys' roles and generations. A row of another role is never decoded, so one that does not decode
-// fails only a read of its own role's run, as RoleRun's did.
+// RoleRuns reads the queued supervise rows and the claims of keys in two bounded queries. The
+// outbox query reads the selected issues' supervise rows by the outbox_issue index with each
+// payload's role and generation as text, and decodes only the rows of keys' roles and
+// generations. A row of another role is never decoded, so one that does not decode fails only a
+// read of its own role's run, as RoleRun's did.
+//
+// The rows are read first and the claims second, and that order is what makes the two answers
+// safe to judge together under a READ COMMITTED transaction, which every fact handler's is
+// (intake.ApplyFact opens it with the default options): there the two statements share no
+// snapshot, each takes one of its own, and a writer may commit between them. A caller that reads
+// under REPEATABLE READ has one snapshot for both statements and no such gap at all, as the
+// boot's report of the claims nothing will wake does (internal/daemon's reportStranded, then
+// workflow.Stranded). Every writer that turns a queued start into claim state commits the claim
+// before it deletes the row — the outbox runs the row through the claim's machine, which
+// persists the claim's new state, and finishes the row in a transaction after that
+// (internal/daemon's outbox: supervise, then settle, then finish) — so a row the first statement
+// misses was deleted before the second one ran, and the second one reads the claim state that
+// delete stands for. Reading the rows first is therefore what keeps a caller from ever seeing a
+// queued start gone beside a claim that has not yet moved, which is the one pair a rule that
+// deletes a row would read as a worker nothing is starting again (admit's finishFencedStarts).
 func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error) {
 	runs := make(map[claim.Token]RoleRun, len(keys))
 	if len(keys) == 0 {
@@ -2351,12 +2366,53 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 	}
 
-	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, d.claim_token is not null,
+	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', '')
+		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
+	}
+	for rows.Next() {
+		var row OutboxRow
+		var kind, role, generation string
+		var payload []byte
+		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
+			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
+		}
+		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
+		if !wanted {
+			continue
+		}
+		row.Kind = OutboxKind(kind)
+		row.Payload = append(json.RawMessage(nil), payload...)
+		decoded, err := DecodeOutboxPayload(row)
+		if err != nil {
+			rows.Close()
+			return nil, err
+		}
+		request, ok := decoded.(SuperviseRequest)
+		if !ok {
+			rows.Close()
+			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
+		}
+		run := runs[token]
+		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request})
+		runs[token] = run
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
+	}
+	rows.Close()
+
+	rows, err = tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, d.claim_token is not null,
 		coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var token string
 		var held RoleClaim
@@ -2364,7 +2420,6 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var task supervise.Delivery
 		var confirmed *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &pending, &task.Generation, &task.Phase, &confirmed); err != nil {
-			rows.Close()
 			return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
 		}
 		if pending {
@@ -2378,45 +2433,7 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		runs[claim.Token(token)] = run
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
 		return nil, fmt.Errorf("read the claims of %d role runs: %w", len(keys), err)
-	}
-	rows.Close()
-
-	rows, err = tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', '')
-		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
-	if err != nil {
-		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var row OutboxRow
-		var kind, role, generation string
-		var payload []byte
-		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation); err != nil {
-			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
-		}
-		token, wanted := candidates[roleRunIdentity{issue: row.Issue, role: role, generation: generation}]
-		if !wanted {
-			continue
-		}
-		row.Kind = OutboxKind(kind)
-		row.Payload = append(json.RawMessage(nil), payload...)
-		decoded, err := DecodeOutboxPayload(row)
-		if err != nil {
-			return nil, err
-		}
-		request, ok := decoded.(SuperviseRequest)
-		if !ok {
-			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
-		}
-		run := runs[token]
-		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request})
-		runs[token] = run
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 	}
 	return runs, nil
 }
