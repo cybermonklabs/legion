@@ -670,6 +670,64 @@ test("a classDef that opens a style element of its own imports nothing and fetch
   }
 });
 
+/** The same `</style><style>` split as `SPLIT_SHEET_SOURCE`, holding 6,000 levels of nesting
+ *  instead of an `@import`: `.q{` six thousand times and the braces that close them. Mermaid's
+ *  stylis flattens the nesting an author writes outside a string and leaves what a quoted
+ *  string holds alone, so this text reaches the drawing whole — as five rules, one per shape
+ *  Mermaid styles, so the markup carries five `<style>` elements of the author's after the
+ *  drawing's own — and the HTML parse ends Mermaid's `<style>` at each `</style>` and opens
+ *  the author's. Round 4 of INFRA-925 measured where that killed the reader's tab, and it is
+ *  the parse itself: a `<style>` a parse puts into a document is a sheet that document's CSS
+ *  engine reads as the markup is read, so in this Chromium (156.0.8078.4) the drawing's own
+ *  `DOMParser.parseFromString(markup, "text/html")` reads 4,700 levels in 34 ms and crashes
+ *  the tab at 4,800, before a sanitizer holds a node of it. The worker drew this source in
+ *  1.1 s, well inside its own bound, so nothing before the page stops it. 24,068 characters,
+ *  well under `MERMAID_MAX_SOURCE_CHARS`. */
+const DEEP_SHEET_SOURCE =
+  "block-beta\n  a\n  classDef zzx stroke:'</style><style>" +
+  `${".q{".repeat(6_000)}${"}".repeat(6_000)}'\n  class a zzx`;
+
+// SLOW(>=2s): Mermaid's chunks load before this source is drawn at all; the download is the
+// whole cost, and no part of this row is a timer.
+test("a classDef that nests a style element of its own 6,000 deep draws, and the reader's page answers after it", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({
+    project: "CORE",
+    spec: diagramBody("Deep sheet:", DEEP_SHEET_SOURCE),
+    title: "Deep sheet source",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const crashes: string[] = [];
+    page.on("crash", () => crashes.push("the reader's tab crashed"));
+    await openSpec(page, issue.key, "Deep sheet:");
+    const editor = documentEditor(page);
+    const preview = editor.locator(".proof-mermaid-preview");
+    await expect(diagramIn(preview)).toBeVisible();
+    // Mermaid writes one `<style>` and the author's split writes the second, which the page
+    // drops under the HTML parse, so nothing of the author's nesting is mounted at all.
+    const mounted = await preview.evaluate((element) =>
+      element.shadowRoot === null
+        ? null
+        : Array.from(element.shadowRoot.querySelectorAll("style"), (style) => style.textContent)
+    );
+    expect(mounted, "the preview holds a shadow root").not.toBeNull();
+    expect(mounted?.filter((sheet) => sheet?.includes(".q{"))).toEqual([]);
+    // The reader's own page still answers after the drawing is mounted: the caret goes where
+    // the reader puts it and the document takes what the reader types.
+    await placeCaret(page, "after", "Deep sheet:");
+    await page.keyboard.type(" drawn");
+    await expect(editor.getByText("Deep sheet: drawn")).toBeVisible();
+    expect(crashes).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
 // SLOW(>=2s): one real draw, the typing, the redraw the page's own debounce runs after it, and
 // the document reads that show the click changed nothing; in WebKit the debounce is 2.3 s, and
 // the row waits out no part of it.

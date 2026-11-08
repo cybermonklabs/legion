@@ -24,7 +24,9 @@ const XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
  *  - `"html"`: upstream Mermaid's markup, read the way the browser mounts it. Mermaid serializes
  *    a `foreignObject`'s content with an HTML serializer, so a label holding a void `<br>` or
  *    `<img>` is not well-formed XML and an XML parse of it fails outright. An HTML parse reports
- *    no `parsererror` node, so the root is tested by what the body holds instead. */
+ *    no `parsererror` node, so the root is tested by what the parse left instead — the content
+ *    of the `<template>` the markup is read into, which is the same fragment parser and no
+ *    document for a `<style>` to become a sheet in (`htmlRoot`). */
 export type MermaidParse = "xml" | "html";
 
 /** Which allowlist a node is matched against and which namespace it is kept in: the drawing, or
@@ -166,10 +168,12 @@ export function showMermaidSvg(host: HTMLElement, svg: SVGSVGElement, sheet: str
  * carrying `ALLOWED_XHTML_ATTRIBUTES`, so no `<img>`, `<a>` or `href` survives in a label; and
  * each kept `<style>` is rebuilt from the rules `document`'s own CSS parser reads in it, less
  * every rule that fetches, which is where the same `classDef` paint lands in upstream Mermaid's
- * markup, and the whole sheet goes instead where what that parser left still fetches or still
- * holds an `@import` (`sanitizedSheet`). The parser and every node come from `document` and its
- * window, never from the global scope, so the engine that reads a sheet here is the engine that
- * reads it when the page mounts it.
+ * markup, and the whole sheet goes instead where what that parser left still fetches, still
+ * holds an `@import`, or held more `{` than `MAX_SHEET_BRACES` before that parser was given it
+ * (`sanitizedSheet`). Under `"html"` the drawing keeps the first `<style>` alone, since Mermaid
+ * writes one and every later one is an author's `</style><style>` (`keepFirstStyle`). The
+ * parser and every node come from `document` and its window, never from the global scope, so
+ * the engine that reads a sheet here is the engine that reads it when the page mounts it.
  */
 export function sanitizeMermaidSvg(
   markup: string,
@@ -179,6 +183,7 @@ export function sanitizeMermaidSvg(
   const view = document.defaultView;
   if (view === null) throw new Error("sanitizeMermaidSvg needs a document that has a window");
   const root = parse === "xml" ? xmlRoot(view, markup) : htmlRoot(view, markup);
+  if (parse === "html") keepFirstStyle(root, false);
   return document.adoptNode(sanitizeElement(root, view, parse, "svg")) as SVGSVGElement;
 }
 
@@ -198,16 +203,63 @@ function xmlRoot(view: Window & typeof globalThis, markup: string): Element {
 }
 
 /** The root of an HTML parse, which reports no `parsererror` node of its own and takes any markup
- *  it is given: the body must hold exactly one element, and its local name — already the one the
- *  browser's own parse gives it — must be `svg`. The namespace the parse assigned is not read
- *  here, nor trusted below: `sanitizeElement` puts the drawing in the SVG namespace. */
+ *  it is given: the content must hold exactly one element, and its local name — already the one
+ *  the browser's own parse gives it — must be `svg`. The namespace the parse assigned is not read
+ *  here, nor trusted below: `sanitizeElement` puts the drawing in the SVG namespace.
+ *
+ *  The markup is read into a `<template>`'s content rather than with `DOMParser`, because a
+ *  `<style>` a parse puts into a document is a sheet that document's own CSS engine parses as
+ *  the markup is read, before this module holds a node of it. That engine is where the drawing
+ *  of a hostile source dies: in Chromium 156.0.8078.4, an author's `</style><style>` holding
+ *  4,800 levels of `{` takes the tab down inside `parseFromString` itself, where the same
+ *  markup read into a template parses in 2 ms and leaves every `<style>`'s `sheet` null
+ *  (INFRA-925 round 4; the XML parse of the same markup crashes the same way, and
+ *  beautiful-mermaid writes no author text into a sheet, which is why `xmlRoot` reads as it
+ *  did). A template's content is parsed by the same HTML fragment parser, so the drawing is
+ *  read as a browser reads it — a `foreignObject`'s void `<br>` included — and held in an
+ *  inert document instead, where nothing of it is a sheet, a load or a style resolution. What
+ *  the page finally mounts is the text `sanitizedSheet` built from the rules it read, under
+ *  `MAX_SHEET_BRACES`. */
 function htmlRoot(view: Window & typeof globalThis, markup: string): Element {
-  const body = new view.DOMParser().parseFromString(markup, "text/html").body;
-  const root = body.firstElementChild;
-  if (body.children.length !== 1 || root === null || root.localName !== "svg") {
+  const holder = view.document.createElement("template");
+  holder.innerHTML = markup;
+  const content = holder.content;
+  const root = content.firstElementChild;
+  if (content.children.length !== 1 || root === null || root.localName !== "svg") {
     throw new Error("Invalid SVG output");
   }
   return root;
+}
+
+/** Removes every `<style>` of an HTML parse's drawing but the first, which is the only one
+ *  Mermaid writes: one drawing of each of the 37 types it registers was read, and 36 carry one
+ *  `<style>` and wardley none. So a second one is no renderer's, and there is one way for it to
+ *  be there at all — the HTML parse ends the drawing's own `<style>` at an author's `</style>`
+ *  and opens whatever the author wrote after it (`htmlRoot`, `sanitizedSheet`). Dropping it
+ *  takes that route away rather than filtering what came down it, and it is dropped here,
+ *  before the walk, so nothing of it reaches an engine, an allowlist or a count.
+ *
+ *  The `"xml"` parse is left alone, and must be: beautiful-mermaid writes two sheets for an
+ *  xychart (1,081 and 1,274 characters, measured over one drawing of each of its six
+ *  families), so a rule that kept the first would drop a sheet of that renderer's own. Nothing
+ *  of an author's reaches the start of a sheet there either: that renderer writes an author's
+ *  `classDef` or `style` line into presentation attributes, where the attribute rules filter
+ *  it, and never into the markup of a `<style>`.
+ *
+ *  `kept` is whether a `<style>` has been seen before `element`, so the walk keeps the first in
+ *  document order rather than the first of each parent; it answers whether one has been seen
+ *  by the end of this subtree. A `<style>`'s own content is text, so no walk descends into it. */
+function keepFirstStyle(element: Element, kept: boolean): boolean {
+  let seen = kept;
+  for (const child of Array.from(element.children)) {
+    if (child.localName === "style") {
+      if (seen) child.remove();
+      seen = true;
+      continue;
+    }
+    seen = keepFirstStyle(child, seen);
+  }
+  return seen;
 }
 
 /** A `url(#id)` reference to an element of the same SVG, unquoted or quoted. */
@@ -230,6 +282,35 @@ function fetches(text: string): boolean {
  *  a quoted target is no fetching function. An escaped spelling (`@\69mport`, which a browser
  *  reads as this one) needs no pattern of its own, since a backslash refuses the sheet. */
 const IMPORT_RULE = /@import/i;
+
+/** The most `{` a sheet may hold before it is refused whole, counted before any engine reads a
+ *  character of it (`sanitizedSheet`). A browser's CSS parser descends as a sheet nests, and
+ *  deep enough nesting takes the tab down rather than taking time, so what reaches
+ *  `replaceSync` has to be bounded by something that cannot itself be got past: an author
+ *  writes that nesting with `classDef zzx stroke:'</style><style>' + ".q{"×n + "}"×n + "'"`,
+ *  which Mermaid's stylis leaves alone inside the quoted string (INFRA-925 round 4). The
+ *  element that `</style><style>` opens is dropped before this (`keepFirstStyle`) and the
+ *  parse that reads the markup builds no sheet at all (`htmlRoot`); this is the bound on what
+ *  is left — the author's own text inside the drawing's own sheet, and whatever a later
+ *  renderer, parse or engine puts in front of `replaceSync`.
+ *
+ *  Both numbers behind it were measured in round 4, and it sits between them:
+ *  - what a drawing of this product writes. Mermaid writes about six rules per `classDef` on
+ *    top of its theme sheet, and the page refuses a source the worker has not drawn within
+ *    `RENDER_TIME_LIMIT_MS` (5 s, `mermaid-diagrams.ts`), so a sheet larger than that bound
+ *    allows never reaches this function. Measured through the product in Chromium on a 2 vCPU
+ *    pod, a `block-beta` of 300 `classDef`s draws in time and writes 1,552 `{` (92,580
+ *    characters), where one of 400 is refused for the bound; one drawing of each of the 37
+ *    types Mermaid registers writes at most 184 (mindmap's), and beautiful-mermaid's sheets at
+ *    most 15 (the second of the two an xychart writes). So the cap stands at nearly twice the
+ *    largest sheet measured, which also covers a reader's machine drawing about twice as many
+ *    `classDef`s inside the same five seconds as this pod.
+ *  - where the engine gives way. In the Chromium the browser suite runs (156.0.8078.4),
+ *    `new CSSStyleSheet().replaceSync(".q{"×n + "}"×n)` reads n = 4,600 in 41 ms and n = 4,750
+ *    in 26 ms, and crashes the tab outright at n = 4,800. The cap is 0.63 of that depth, and a
+ *    sheet at the cap costs the page 3.6 ms flat (3,000 rules, 46,890 characters) or 11.3 ms
+ *    nested 3,000 deep, measured in the same browser. */
+const MAX_SHEET_BRACES = 3_000;
 
 /**
  * `sheet` as the window's own CSS parser reads it: the rules that parser yields, each in its
@@ -270,19 +351,42 @@ const IMPORT_RULE = /@import/i;
  * is mounted. Mermaid's own DOMPurify does not run in the worker (see `ALLOWED_XHTML_ELEMENTS`),
  * so this is the only gate on that text.
  *
- * An author reaches the start of a sheet, not only the middle of one: the page reads Mermaid's
- * markup with the HTML parser (`htmlRoot`), which in SVG content ends the drawing's `<style>`
- * at an author's own `</style>` and opens the element after it, so a `classDef` carrying
- * `</style><style>` writes a second sheet of its own that the allowlist keeps and this function
- * reads whole.
+ * An author reaches the text of this sheet because Mermaid writes a `classDef` into it
+ * unescaped; an author no longer reaches the start of a sheet of their own. The page reads
+ * Mermaid's markup with the HTML parser (`htmlRoot`), which in SVG content ends the drawing's
+ * `<style>` at an author's own `</style>` and opens the element written after it, so a
+ * `classDef` carrying `</style><style>` used to write a second sheet that the allowlist kept
+ * and this function read whole. That second element is now dropped before anything reads it
+ * (`keepFirstStyle`).
  *
  * The page's main thread pays this cost for every drawing it mounts (`answerOf`,
  * `mermaid-diagrams.ts`), outside the worker's five-second bound, so it has to grow with the
  * sheet's length: a regular expression reading a declaration as `property:value` did not, and a
  * 20,000-character class name a `classDef` can write, or a run of `:` a `classDef` value can
  * write, froze the tab of every reader of the comment that held it (INFRA-925 review).
+ *
+ * What bounds the engine itself is a count, taken before `replaceSync` is called: deep enough
+ * nesting crashes a browser's CSS parser rather than costing it time, and no answer of the
+ * parser's can be waited for once the tab is gone (`MAX_SHEET_BRACES` holds the two
+ * measurements). The count runs before any engine has parsed anything, so it holds whichever
+ * engine mounts the sheet, and it is one pass over the text rather than a second reading of
+ * it: it counts `{` and never takes one back for a `}`. An author can hide a `}` in a string,
+ * where it closes nothing, so subtracting for one would let a sheet of `.q{'}'…` nest past the
+ * cap while the count stood still, and counting every `{` can only read the nesting high. An
+ * over-count costs an author the styling of one enormous drawing; an under-count costs every
+ * reader of that comment their tab. Nothing else of the text is read here, and nothing else
+ * may be: a comment, a string or an escape is the engine's to resolve, which is why three
+ * readers of our own lost to them in three rounds of this issue, and a counter that only
+ * counts cannot lose the same way.
  */
 function sanitizedSheet(view: Window & typeof globalThis, sheet: string): string {
+  let braces = 0;
+  for (let index = 0; index < sheet.length; index += 1) {
+    // 0x7b is `{`.
+    if (sheet.charCodeAt(index) !== 0x7b) continue;
+    braces += 1;
+    if (braces > MAX_SHEET_BRACES) return "";
+  }
   const parsed = new view.CSSStyleSheet();
   parsed.replaceSync(sheet);
   let kept = "";

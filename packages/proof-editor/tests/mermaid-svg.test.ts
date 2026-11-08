@@ -456,6 +456,61 @@ describe("sanitizeMermaidSvg", () => {
     expect(took).toBeLessThan(1_000);
   });
 
+  /** Mirrors `MAX_SHEET_BRACES` in `src/mermaid-svg.ts`, which is not exported: the row reads
+   *  the boundary from both sides, so a cap moved there without this row fails here. */
+  const SHEET_BRACE_CAP = 3_000;
+
+  /** A flat sheet of `count` rules, the shape a `classDef`-heavy drawing writes: upstream
+   *  Mermaid writes about six rules per `classDef`, and the largest sheet the product was
+   *  measured writing holds 1,552 `{` (`MAX_SHEET_BRACES`). */
+  const flatSheet = (count: number): string =>
+    Array.from({ length: count }, (_, index) => `.c${index}{fill:red}`).join("");
+
+  // The count is taken before `replaceSync`, so this row reads the same answer under happy-dom
+  // as under a browser; what the two parsers differ on is the sheet at the cap, which happy-dom
+  // keeps rule for rule here, and what a browser's engine costs at that size is measured in the
+  // comment on `MAX_SHEET_BRACES` (3.6 ms flat, 11.3 ms nested 3,000 deep, and the tab gone at
+  // 4,800 deep) and read by a browser row (`packages/dispatch/e2e/mermaid.e2e.ts`).
+  test("refuses a sheet holding more braces than the cap, and keeps one at it", () => {
+    const atTheCap = filteredSheet(flatSheet(SHEET_BRACE_CAP));
+    expect(atTheCap).toContain(".c0 { fill: red; }");
+    expect(atTheCap).toContain(`.c${SHEET_BRACE_CAP - 1} { fill: red; }`);
+
+    // One rule more is one `{` more, and the sheet goes whole rather than in part.
+    expect(filteredSheet(flatSheet(SHEET_BRACE_CAP + 1))).toBe("");
+    // The shape the cap is for: the nesting a `classDef` writes into a sheet of its own through
+    // `</style><style>`, which crashes a browser's CSS parser rather than costing it time.
+    const nested = SHEET_BRACE_CAP + 1;
+    expect(filteredSheet(".q{".repeat(nested) + "}".repeat(nested))).toBe("");
+    // A `}` never gives a count back: here every one of them sits inside a string, where it
+    // closes nothing, so a counter that subtracted would read this sheet as flat and let it
+    // through. Counting `{` alone can only read the nesting high, and reading it high only
+    // refuses a sheet.
+    expect(filteredSheet(".q{'}'".repeat(nested))).toBe("");
+  });
+
+  // beautiful-mermaid writes two `<style>` elements for an xychart (1,081 and 1,274 characters,
+  // measured over one drawing of each of its six families), so the rule that keeps the first
+  // `<style>` alone is the HTML parse's and never this one. Nothing of an author's reaches the
+  // start of a sheet here: that renderer writes a `classDef` or `style` line into presentation
+  // attributes, where the attribute rules filter it.
+  test("keeps every style element of an xml parse, since beautiful-mermaid writes two", () => {
+    const svg = sanitizeMermaidSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        "<style>text{fill:red}</style>" +
+        "<style>rect{fill:blue}</style>" +
+        '<rect id="shape" width="1" height="1"/></svg>',
+      document,
+      "xml"
+    );
+
+    expect(
+      allElements(svg)
+        .filter((element) => element.localName === "style")
+        .map((style) => style.textContent)
+    ).toEqual(["text { fill: red; }\n", "rect { fill: blue; }\n"]);
+  });
+
   test("compares element names exactly, since XML names are case-sensitive", () => {
     expect(() =>
       sanitizeMermaidSvg('<SVG xmlns="http://www.w3.org/2000/svg"><rect/></SVG>', document, "xml")
@@ -626,5 +681,39 @@ describe("sanitizeMermaidSvg, over upstream Mermaid's drawings", () => {
     ).toContain("dispatch-mermaid-0_block-pointEnd");
     expect(attributeValues(svg)).toContain("url(#dispatch-mermaid-0_block-pointEnd)");
     expect(svg.textContent).toContain("Dispatch");
+  });
+
+  // One `<style>` is all Mermaid writes — 36 of the 37 types it registers carry one and
+  // wardley none — so a second is an author's, written by a `classDef` whose value carries
+  // `</style><style>`: the HTML parse ends the drawing's own element at that `</style>` and
+  // opens the author's, at the very start of a sheet of their own.
+  //
+  // happy-dom 20.14.0's HTML parser loses an svg `<style>`'s text and every element after it
+  // (the module comment of `src/mermaid-svg.ts`), so no row here can write two of them the way
+  // a browser reads them. It writes `<svg:style>` instead, the one spelling that parser carries
+  // into the drawing as a `style` of the SVG namespace holding its own text; a browser needs no
+  // such spelling and reads that one as an element named `svg:style`, so a browser's own parse
+  // of this attack is read by a row of its own (`packages/dispatch/e2e/mermaid.e2e.ts`, the
+  // `classDef` that nests a style element 6,000 deep).
+  test("keeps the first style element of an html parse and drops the author's second", () => {
+    const svg = sanitizeMermaidSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        "<svg:style>text{fill:red}</svg:style>" +
+        "<svg:style>text{fill:blue}</svg:style>" +
+        '<rect id="shape" width="1" height="1"/></svg>',
+      document,
+      "html"
+    );
+
+    // Mermaid's own sheet comes through, rule for rule, and the author's whole element is gone.
+    expect(
+      allElements(svg)
+        .filter((element) => element.localName === "style")
+        .map((style) => style.textContent)
+    ).toEqual(["text { fill: red; }\n"]);
+    // What the author wrote after it is dropped with the element it opened, not with the rest
+    // of the drawing: the shape written after both sheets is still drawn.
+    expect(svg.textContent).not.toContain("blue");
+    expect(elementNames(svg)).toEqual(["svg", "style", "rect"]);
   });
 });
