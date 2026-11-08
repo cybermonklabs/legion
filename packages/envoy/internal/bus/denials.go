@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -147,4 +148,92 @@ func (c *Client) clearPublishDenials() {
 // the errors a caller matches are the same whichever path named the denial.
 func deniedPublishError(subject string, violation error) error {
 	return fmt.Errorf("bus: %w to %q: %w", ErrPublishDenied, subject, violation)
+}
+
+// liveClients holds every client that has been built and has not closed or drained, and
+// liveClientsMu guards it. It exists because the record of the server's refusals lives on the
+// client (recordPublishDenial) while a caller that must read it may hold only a connection:
+// EnsureKeyValue is handed conn and a JetStream context, and nats.go builds the bucket's lookup
+// and its create inside itself, so that call has no publish of its own to take an error off and
+// nothing but the connection to name the client by. clientOwning is the read.
+//
+// It holds the clients rather than mapping each connection to its client, so that it is keyed on
+// the Conn a client holds now: a client replaces its connection, in the constructor's install and
+// again for each one ensureConnWithContext dials after a close, and a map written at every such
+// event would both need writing there and hold connections nobody uses until the next one. A
+// client's Conn is read under that client's own lock instead (Connection), so a lookup sees the
+// connection a client had or the one it has and never a half-installed one.
+//
+// Nothing takes liveClientsMu while holding a client's own lock, which is what lets clientOwning
+// read Connection under it: registerClient runs in install once c.mu is released, and
+// forgetClient in Close and Drain outside their own hold of it.
+var (
+	liveClientsMu sync.Mutex
+	liveClients   = map[*Client]struct{}{}
+)
+
+// registerClient puts c in the registry of live clients, from install, so a connection the client
+// owns can find it for as long as a caller holds the client.
+func registerClient(c *Client) {
+	liveClientsMu.Lock()
+	defer liveClientsMu.Unlock()
+	liveClients[c] = struct{}{}
+}
+
+// forgetClient takes c out of that registry, where the client closes (Close) and where it drains
+// (Drain): its connection is going, and no send on it reads a record of it again.
+func forgetClient(c *Client) {
+	liveClientsMu.Lock()
+	defer liveClientsMu.Unlock()
+	delete(liveClients, c)
+}
+
+// clientOwning is the live client whose connection is conn, and nil when no client owns it: a
+// connection a caller opened for itself, which every testnats.Connect in a test is, finds none
+// and reads no record.
+func clientOwning(conn *nats.Conn) *Client {
+	if conn == nil {
+		return nil
+	}
+	liveClientsMu.Lock()
+	defer liveClientsMu.Unlock()
+	for client := range liveClients {
+		if client.Connection() == conn {
+			return client
+		}
+	}
+	return nil
+}
+
+// refusedSend is send's answer, with an answer the server never gave (unanswered) replaced by its
+// refusal of one of subjects, the subjects send publishes to, when the client owning conn
+// recorded one of them at or after the moment this send began. The server reports such a refusal
+// on the connection and never in the request's own answer (publishRefusal), so a request it
+// refused reads exactly like one it is still working on; the record is what tells the two apart.
+//
+// A request the connection's grant does not cover is refused however often it is sent, so naming
+// the refusal is also what keeps it from being sent again: sentAgain stops at the first answer
+// that is not unanswered, so a step wrapped in this makes one send and ends with an error naming
+// the subject the server refused. subjects are listed in the order a send publishes them, so the
+// refusal a step ends on is the one of the request it stopped at.
+//
+// The time is read before send, because deniedPublish takes only a violation recorded at or after
+// the moment the caller's own message went out and send's message goes out after this. A
+// connection no client owns records nothing, so its send is answered as it was before.
+func refusedSend[T any](conn *nats.Conn, subjects []string, send func() (T, error)) (T, error) {
+	owner := clientOwning(conn)
+	if owner == nil {
+		return send()
+	}
+	sentAt := time.Now()
+	answer, err := send()
+	if !unanswered(err) {
+		return answer, err
+	}
+	for _, subject := range subjects {
+		if denial := owner.deniedPublish(subject, sentAt); denial != nil {
+			return answer, denial
+		}
+	}
+	return answer, err
 }
