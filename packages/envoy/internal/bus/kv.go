@@ -206,10 +206,12 @@ func namedRequest(request string, err error) error {
 // (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
 // already there, which is the ordinary start, a restart of a deployment whose buckets exist.
 // EnsureKeyValue is how a program opens a bucket it needs before it can serve: the listener's
-// start, where losing that answer ends the program, and Dispatch's webhook redelivery sweep
-// (redeliver.OpenState), which logs the failure and tries again on its next pass. A caller that
-// waits on a budget of its own, such as a request or a watcher's repair, opens a bucket through
-// OpenKeyValue or WrapKeyValue instead, which send it once.
+// start, where losing that answer ends the program for the buckets it must hold before it
+// serves, while the legion agent registry's open logs one ERROR, leaves the registry
+// unavailable and is retried in the background (openLegionAgentRegistry), and Dispatch's
+// webhook redelivery sweep (redeliver.OpenState), which logs the failure and tries again on its
+// next pass. A caller that waits on a budget of its own, such as a request or a watcher's
+// repair, opens a bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
