@@ -28,6 +28,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/stream"
@@ -485,12 +486,8 @@ func TestTheRealShimRefusesAnAdoptionAStaleLockWedges(t *testing.T) {
 	home, workspace := t.TempDir(), t.TempDir()
 	// The init takes no -R and opens no workspace, so with no Dir jj would walk up from the test
 	// process's directory to the closest .jj and write that repository (docs/testing.md).
-	initialize := exec.Command(jj, "git", "init", "--colocate", workspace)
-	initialize.Dir = workspace
-	initialize.Env = append(fixtureenv.Isolated(home), "JJ_USER=implementer", "JJ_EMAIL=implementer@example.test")
-	if output, err := initialize.CombinedOutput(); err != nil {
-		t.Fatalf("jj git init: %v\n%s", err, output)
-	}
+	fixturegit.Isolated(t, home).With("JJ_USER=implementer", "JJ_EMAIL=implementer@example.test").
+		Run(workspace, append([]string{jj}, fixturegit.JJInit(workspace, true)[1:]...)...)
 	// A file the adoption's first jj snapshots, so that jj rewrites the git index it cannot lock.
 	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("smoke\n"), 0o644); err != nil {
 		t.Fatal(err)
