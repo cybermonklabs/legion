@@ -223,6 +223,9 @@ jobs:
     outputs:
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
+      # The guides' layout step of the test job, which has a filter of its own: the job's other
+      # steps read none of the guides, so a run that changed none of them skips that step.
+      guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.guide_layout }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -309,11 +312,21 @@ jobs:
           # recomputes those sets and fails naming each file a filter misses.
           #
           # dorny/paths-filter v4.0.3's `some-with-excludes` quantifier matches a change to a filter
-          # when one of its patterns without `!` matches and none of its `!` patterns does. Only
-          # worker_image has `!` patterns: they drop what the .dockerignore keeps out of the worker
-          # image's build context. Every other filter must stay without one, so it means what it
-          # would under the default, `some` (any pattern matches), where a `!` pattern would match
-          # every file outside it. .github/scripts/check-image-trigger-paths.sh reads the filters
+          # when one of its patterns without `!` matches and none of its `!` patterns does. Three
+          # filters have `!` patterns. worker_image's drop what the .dockerignore keeps out of the
+          # worker image's build context. envoy_e2e_local and ci_images each end in '!**/*.md': no
+          # step of either job reads a Markdown file, so a guide written under a directory pattern
+          # of theirs (patches/**, packages/broker-client/**, .github/actions/install-crane/**)
+          # starts neither. No Markdown file of the repository matches either filter today, so the
+          # pattern holds no run back now; it keeps the next guide from riding in, which is what a
+          # week of Markdown-only pull requests cost 1,504 runner-minutes (dispatch://INFRA-1413).
+          # Every other filter of this file was tried with that pattern
+          # and refused by rule 1 of .github/scripts/check-ci-filters.sh, which fails a filter that
+          # stops matching a file its gate reads: those jobs read an embedded prompt, a README
+          # packed into a plugin or an image, or a guide a test compares with code. A filter
+          # without a `!` pattern means what it would under the default, `some` (any pattern
+          # matches), where a `!` pattern would match every file outside it.
+          # .github/scripts/check-image-trigger-paths.sh reads the filters
           # that gate an image build (worker_image, envoy_smoke) under this quantifier, and only as
           # flat lists of globs, so those two name no anchor standing for a list. The one anchor
           # they do name, ci_router below, is on the glob itself, which leaves their lists flat.
@@ -828,6 +841,25 @@ jobs:
               - '.github/changelog-packages'
               - 'packages/*/.changie.yaml'
               - 'packages/*/.changes/unreleased/**'
+            # The guides' layout step of the test job (ci-job-test.yaml's
+            # "Check the guides' semantic line breaks"): the five guides
+            # scripts/semantic-line-breaks.guides.test.ts reads, the checker it spawns and the
+            # test itself. The job's own filter above names none of them, since no other step
+            # of it reads a guide; the Bun install the step leans on is the job's, gated by
+            # that filter.
+            guide_layout:
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - 'scripts/semantic-line-breaks.guides.test.ts'
+              # The checker the test spawns (its :9 and :16).
+              - 'scripts/semantic-line-breaks.ts'
+              # The three guides of its GUIDES list (:12), read by two of its three tests.
+              - 'AGENTS.md'
+              - 'scripts/e2e/README.md'
+              - 'docs/kubernetes.md'
+              # The two its first test names (:26-27).
+              - 'packages/envoy/AGENTS.md'
+              - 'packages/envoy/cmd/dispatch/README.md'
             # docs/site's lint, typecheck, screenshots and build, with the sources its reference
             # generators and its screenshot harness read. docs-site.yaml holds those steps, and
             # both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
@@ -1748,6 +1780,10 @@ jobs:
               # e2e-local.sh:148-149 builds ./cmd/listener and ./internal/testnats/cmd/natsd.
               - *listener_command
               - 'packages/envoy/internal/testnats/cmd/natsd/*'
+              # The job reads no Markdown file: the listener, the renderer and the contracts
+              # between them are its whole input, so a guide written under one of the directory
+              # patterns above would start it for nothing.
+              - '!**/*.md'
             # The session stall suites (envoy-session-stall): envoy-client's stall proxy and stack
             # (test/envoy-stack.ts) build natsd and the listener with go build in workspace mode and
             # run each plugin's NATS client through them; the plugins inline pi-shared.
@@ -1934,6 +1970,10 @@ jobs:
               - '.github/actions/install-crane/**'
               - *ci_router
               - '.github/workflows/ci-job-ci-images.yaml'
+              # The job reads no Markdown file: its two steps read the image rows, the two
+              # scripts that copy and check them, and the crane the action installs, so a guide
+              # written under one of those directories would start it for nothing.
+              - '!**/*.md'
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:
@@ -2004,6 +2044,7 @@ jobs:
     uses: ./.github/workflows/ci-job-test.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
+      guide_layout: ${{ needs.changes.outputs.guide_layout }}
 
   # Builds the documentation site (docs/site) on every pull request and merge group that could
   # change it. No run of this workflow is a push to main: docs-pages.yaml builds and publishes

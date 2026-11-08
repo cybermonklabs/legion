@@ -924,6 +924,7 @@ SMOKE_IMAGE_STEP = "Build the listener image the smoke test runs against"
 BASE_IMAGES_STEP = "Read the smoke image's base images"
 FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
+GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
 
@@ -1013,6 +1014,18 @@ GATES = [
                          "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch)")
       + install_jj("test") + install_omp("test") + setup_go("test", f"{DAEMON}/go.mod")
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test") + CI_SELF + job_self("test")),
+
+    # The test job's guide-layout step, gated on a filter of its own: the test spawns the
+    # checker over five guides, and no other step of the job reads one of them.
+    gate("guide_layout", "test", step=GUIDES_STEP, reads=reads(
+        ("scripts/semantic-line-breaks.guides.test.ts", at("test", GUIDES_STEP)),
+        ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:9,16 spawns it"),
+        ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES, read by its second and third tests"),
+        ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES"),
+        ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES"),
+        ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:26"),
+        ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:27"),
+    ) + CI_SELF + job_self("test")),
 
 
     # The job ci.yaml gates is docs, and the steps it runs are docs-site.yaml's (at_docs), under

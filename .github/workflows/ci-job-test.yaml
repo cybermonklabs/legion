@@ -20,6 +20,12 @@ on:
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
+      guide_layout:
+        description: >-
+          ci.yaml's `needs.changes.outputs.guide_layout`: the guides' layout step below runs
+          when that filter matched.
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -124,10 +130,17 @@ jobs:
       - name: Test third-party notices
         run: bun test scripts/third-party-notices.test.ts
 
-      # The checker's own unit tests only. scripts/semantic-line-breaks.guides.test.ts checks the
-      # guides' layout and runs on demand, deliberately not here: no CI gate over the guides.
       - name: Test the semantic line-break checker
         run: bun test scripts/semantic-line-breaks.test.ts
+
+      # The guides' own layout, in this job because it installs Bun's dependencies, which the
+      # test's Markdown parser needs (scripts/semantic-line-breaks.guides.test.ts:5-7). The
+      # step has a filter of its own, guide_layout, naming the five guides the test reads and
+      # the checker it spawns: no other step of this job reads one of them, so a run that
+      # changed none of them skips this step.
+      - name: Check the guides' semantic line breaks
+        if: inputs.guide_layout == 'true'
+        run: bun test scripts/semantic-line-breaks.guides.test.ts
 
       - name: Test the Bun pin check
         run: .github/scripts/check-bun-version.test.sh

@@ -1,9 +1,10 @@
 // Checks and re-lays out the semantic line breaks of a markdown file, so concurrent edits to it
 // touch different lines: one sentence per line (R1), a blank line before each list item (R2), and
 // no list item or table row longer than one screen (R3, which counts a nested item's lines toward
-// that item, not toward its parent). It is not a CI gate: the guides that
-// scripts/semantic-line-breaks.guides.test.ts checks keep this layout, and `--write` fixes it by
-// changing only whitespace.
+// that item, not toward its parent). The guides that
+// scripts/semantic-line-breaks.guides.test.ts checks keep this layout, and ci.yaml's test job
+// runs that test behind the guide_layout filter, which names those guides and this script;
+// `--write` fixes the layout by changing only whitespace.
 //
 // `--write` is conservative by rule. It leaves a leading YAML front matter block (closed by `---`
 // or by YAML's `...`) and the text of a setext heading byte for byte, and R1 does not read them.

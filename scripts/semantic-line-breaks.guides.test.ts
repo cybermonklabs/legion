@@ -1,4 +1,4 @@
-// Checks the guides' layout; runs on demand (bun test scripts/semantic-line-breaks.guides.test.ts) and is deliberately not in CI: the deployment's rule is an instruction first, and a gate only once a measurement shows one is needed.
+// Checks the guides' layout, on demand (bun test scripts/semantic-line-breaks.guides.test.ts) and in CI: ci.yaml's test job runs it in the step "Check the guides' semantic line breaks", behind the guide_layout filter, which names the guides below and the checker it spawns.
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
