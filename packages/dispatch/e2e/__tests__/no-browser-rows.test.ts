@@ -50,6 +50,10 @@ const signInListing = retained(
 
 const scannedFiles = specFiles(e2eDirectory);
 const realRows = scannedFiles.flatMap(rowsOfFile);
+// Each rule is run over the suite once, here, because two tests below read each result: the one
+// that asserts it and the one that prints the evidence line only when every rule held.
+const realUnexplained = unexplainedRows(realRows, exemptions);
+const realStale = staleExemptions(realRows, exemptions);
 
 // The three listings run at once and cost about twelve seconds together on this machine, half as
 // much again as the two of e2e/__tests__/row-configurations.test.ts, which allows them 90 s. This
@@ -57,26 +61,29 @@ const realRows = scannedFiles.flatMap(rowsOfFile);
 // the same cores, and the ceiling is the point at which something is wrong rather than slow.
 const listingTimeout = 180_000;
 
-/** The two planted controls, read by name rather than by pointing `specFiles` at their
+/** The three planted controls, read by name rather than by pointing `specFiles` at their
  *  directory: they are no part of the suite, and a file that was would run in it. Each is read
- *  and parsed once, here, for the two tests below that read its rows. */
+ *  and parsed once, here, for the tests below that read its rows. */
 const noBrowserFixture = "__tests__/fixtures/no-browser-row.fixture.ts";
 const browserFixture = "__tests__/fixtures/browser-row.fixture.ts";
+const unreadShapesFixture = "__tests__/fixtures/unread-row-shapes.fixture.ts";
 const noBrowserFixtureRows = rowsOfFile(noBrowserFixture);
 const browserFixtureRows = rowsOfFile(browserFixture);
+const unreadShapesFixtureRows = rowsOfFile(unreadShapesFixture);
 
-test("every row of the suite drives a browser or stands on an exemption with a reason", () => {
-  // A scan that found nothing would satisfy the assertion below without reading a row.
+// A scan that found nothing would satisfy every rule below without reading a row, so this is
+// asserted once here rather than again in each test that reads `realRows`.
+test("the scan reads files and rows of the real suite", () => {
   expect(scannedFiles.length).toBeGreaterThan(0);
   expect(realRows.length).toBeGreaterThan(0);
+});
 
-  expect(unexplainedRows(realRows, exemptions)).toEqual([]);
+test("every row of the suite drives a browser or stands on an exemption with a reason", () => {
+  expect(realUnexplained).toEqual([]);
 });
 
 test("no exemption names a row the suite lost or a row that drives a browser", () => {
-  expect(realRows.length).toBeGreaterThan(0);
-
-  expect(staleExemptions(realRows, exemptions)).toEqual([]);
+  expect(realStale).toEqual([]);
 });
 
 test(
@@ -102,12 +109,9 @@ test(
     const listed = [...new Set([...plainFiles, ...multiprocessFiles, ...signInFiles])].sort();
     expect(listed).toEqual(scannedFiles);
 
-    // The evidence a reader of CI records for this check. It recomputes the two assertions above
-    // rather than remembering whether they ran, so the line is printed only when all three hold.
-    if (
-      unexplainedRows(realRows, exemptions).length === 0 &&
-      staleExemptions(realRows, exemptions).length === 0
-    ) {
+    // The evidence a reader of CI records for this check. It prints the two results the tests
+    // above assert, so the line is there only when all three rules held in this run.
+    if (realUnexplained.length === 0 && realStale.length === 0) {
       console.log(
         "no-browser rows: read the default, DISPATCH_E2E_PROCESSES=2 and DISPATCH_E2E_SIGNIN=oidc " +
           `DISPATCH_E2E_PROCESSES=2 listings (${plainFiles.length}, ${multiprocessFiles.length} ` +
@@ -140,6 +144,30 @@ test("a planted row that drives no browser is named, and one that drives a brows
       fixtures: [],
     },
   ]);
+});
+
+test("a planted row with a computed title, and one with a callback by name, are both named", () => {
+  // Both rows are read: the first by its inline callback, whatever its title is, the second by
+  // its literal title, with no fixtures because its callback is out of this module's reach.
+  expect(unreadShapesFixtureRows).toEqual([
+    {
+      file: unreadShapesFixture,
+      line: 19,
+      title: "computedTitle",
+      fixtures: [],
+    },
+    {
+      file: unreadShapesFixture,
+      line: 29,
+      title: '"a planted row whose callback is declared beside it"',
+      fixtures: [],
+    },
+  ]);
+
+  // Neither shape gets past the rule: a reading that dropped them would report no row for a file
+  // that holds two, and the file-set test could not see it, because a real spec keeps its other
+  // rows whatever one row is written like.
+  expect(unexplainedRows(unreadShapesFixtureRows, exemptions)).toEqual(unreadShapesFixtureRows);
 });
 
 test("an exemption for a row that drives a browser, and one for a row no file holds, are stale", () => {

@@ -17,8 +17,8 @@ import { fileURLToPath } from "node:url";
 import type { Listing } from "../configurations";
 
 // The preload (web/src/__tests__/setup.ts) puts happy-dom's Response on globalThis, which cannot
-// read a subprocess's pipe; the listing below reads one with Bun's own, as
-// e2e/__tests__/harness-lanes.test.ts:16-18 does.
+// read a subprocess's pipe; the listing below reads one with Bun's own, taken off a `data:` fetch
+// as `NativeResponse` in e2e/__tests__/harness-lanes.test.ts is.
 const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 

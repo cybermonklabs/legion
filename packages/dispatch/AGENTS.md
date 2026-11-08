@@ -1656,15 +1656,16 @@ a command, and a Go test for a claim about the server (INFRA-1404). Every row
 of this suite binds `page`, `browser` or `context`, and
 `cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
 check that decides it: it reads every `test(` call of `e2e/**/*.e2e.ts` for the
-fixtures its callback binds and refuses a row that binds none of the three,
-having read the three Playwright listings first to prove it scanned the files
-the suite runs. A row may stand all the same as a named exemption with its
-reason, written in `e2e/no-browser-rows.ts`, whose list ships empty; the check
-refuses a stale exemption too — one naming a row the suite no longer holds, or
-one that drives a browser now — so the rule cannot come to lie in the other
-direction either. INFRA-1554 moved the last four rows out: the CLI's
-nested-reply read, the agent API's duplicate gate, a spec write's
-invalid-markdown refusal, and the two-build rollout row.
+fixtures its callback binds and refuses a row that binds none of the three, a
+row whose callback it cannot read among them, since fixtures it did not read
+are not fixtures it saw. It reads the three Playwright listings first, to prove
+it scanned the files the suite runs. A row may stand all the same as a named
+exemption with its reason, written in `e2e/no-browser-rows.ts`, whose list
+ships empty; the check refuses a stale exemption too — one naming a row the
+suite no longer holds, or one that drives a browser now — so the rule cannot
+come to lie in the other direction either. INFRA-1554 moved the last four rows
+out: the CLI's nested-reply read, the agent API's duplicate gate, a spec
+write's invalid-markdown refusal, and the two-build rollout row.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites

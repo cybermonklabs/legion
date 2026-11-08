@@ -11123,12 +11123,17 @@ describe("executeDispatchTool", () => {
       // the server folds the answers edge of every comment whose reply_to is that same root
       // (packages/envoy/internal/dispatch/refs/graph.go:344-357). The leaf's own links keep
       // the answers edge, which is the only place the middle comment is named as answered.
+      //
+      // Every read is newest first, and the client prints the edges in the order it is given
+      // them: `readEdgeRows` (the same file) orders `created_at desc, kind, other_kind,
+      // other_id, at_block`. So the leaf's edge leads the root's incoming read, and the leaf's
+      // own two, made in the same second, stand in the order their kinds sort in.
       if (target.pathname === "/api/v1/references") {
         if (target.searchParams.get("to") === ref(root)) {
           return response(
             graph([
-              edge("replies_to", "in", middle, "2026-09-09T01:00:00Z"),
               edge("replies_to", "in", leaf, "2026-09-09T02:00:00Z"),
+              edge("replies_to", "in", middle, "2026-09-09T01:00:00Z"),
             ])
           );
         }
@@ -11162,8 +11167,8 @@ describe("executeDispatchTool", () => {
     expect(result.text).toContain(
       [
         "Referenced by:",
-        `- replies_to comment ${ref(middle)} (2026-09-09T01:00:00Z)`,
         `- replies_to comment ${ref(leaf)} (2026-09-09T02:00:00Z)`,
+        `- replies_to comment ${ref(middle)} (2026-09-09T01:00:00Z)`,
         "Links:",
         "- none",
       ].join("\n")

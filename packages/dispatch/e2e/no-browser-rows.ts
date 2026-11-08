@@ -16,8 +16,8 @@
  * there are projects that run the file. The set of files is the one thing the two agree on
  * exactly.
  *
- * Every function here reads text and nothing else: no environment, no network, no database and no
- * server, so any process may call it.
+ * Every function here but `specFiles`, which reads the file system, is pure over its arguments:
+ * no environment, no network, no database and no server, so any process may call it.
  */
 
 import { readdirSync } from "node:fs";
@@ -79,16 +79,13 @@ export type StaleExemption = {
 export const exemptions: readonly Exemption[] = [];
 
 /** The callees that declare a row. `test.describe`, `test.step` and `test.use` declare none, and
+ *  neither does `test.slow`: @playwright/test 1.64.1 (`types/test.d.ts`) gives it three forms,
+ *  `slow(): void`, `slow(condition: boolean, description?: string): void` and
+ *  `slow(callback: ConditionBody<TestArgs & WorkerArgs>, description?: string): void`, each of
+ *  which marks a row already declared as slow rather than declaring one.
  *  `test.skip(condition, reason)` inside a row body is a skip, not a row: it is left out by the
- *  first-argument and callback tests in `rowOfCall` rather than by its callee. */
-const rowCallees = new Set([
-  "test",
-  "test.skip",
-  "test.only",
-  "test.fixme",
-  "test.fail",
-  "test.slow",
-]);
+ *  title and callback tests in `rowOfCall` rather than by its callee. */
+const rowCallees = new Set(["test", "test.skip", "test.only", "test.fixme", "test.fail"]);
 
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */
@@ -107,14 +104,17 @@ function calleeName(expression: ts.Expression): string | undefined {
   return undefined;
 }
 
-/** The row's callback: the first argument that is a function, which both an arrow function and a
- *  function expression carry a body for. A row may take a details object between its title and
- *  its callback (`test(title, { tag }, callback)`), so this reads the arguments rather than one
- *  position. */
+/** The row's callback among the arguments that follow the title: the first that is a function,
+ *  which both an arrow function and a function expression carry a body for. A row may take a
+ *  details object between its title and its callback (`test(title, { tag }, callback)`), so this
+ *  reads the arguments rather than one position. It is passed the arguments after the first
+ *  because a function in first position is a condition, not a callback:
+ *  `test.skip(({ browserName }) => browserName === "webkit", "reason")` inside a row body
+ *  declares no row. */
 function rowCallback(
-  call: ts.CallExpression
+  argumentsAfterTitle: readonly ts.Expression[]
 ): ts.ArrowFunction | ts.FunctionExpression | undefined {
-  for (const argument of call.arguments) {
+  for (const argument of argumentsAfterTitle) {
     if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) return argument;
   }
   return undefined;
@@ -134,7 +134,21 @@ function fixturesOfCallback(callback: ts.ArrowFunction | ts.FunctionExpression):
   return fixtures;
 }
 
-/** The row `call` declares, or nothing when it declares none. */
+/** The row `call` declares, or nothing when it declares none.
+ *
+ * A call whose callback is written inline is a row whatever its first argument is, so a row
+ * titled from a variable is read as surely as one titled by a literal, and its `title` is that
+ * argument's source text — all a reader of the source alone can have.
+ *
+ * A call with a literal title whose callback this module cannot read, because it is declared
+ * beside the row and passed by name, is reported too, with no fixtures. It is reported rather
+ * than skipped because a gate a row can get past is a gap in the gate: fixtures this module did
+ * not read are not fixtures it saw, so the check fails closed and `unexplainedRows` names the
+ * row until someone moves it or writes it an exemption. A literal title is what tells such a row
+ * from `test.skip(test.info()…, "reason")` inside a row body, whose first argument is a
+ * condition and no title at all; and a call whose arguments are all strings after the title is
+ * `test.fixme(condition, description)` and its kin, which declare nothing either.
+ */
 function rowOfCall(
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
@@ -142,19 +156,20 @@ function rowOfCall(
 ): SuiteRow | undefined {
   const callee = calleeName(call.expression);
   if (callee === undefined || !rowCallees.has(callee)) return undefined;
-  const [title] = call.arguments;
-  // A title is a string literal or a template literal; `test.skip(test.info()…, "reason")` inside
-  // a body leads with a condition and declares no row.
-  if (title === undefined || !(ts.isStringLiteralLike(title) || ts.isTemplateExpression(title))) {
-    return undefined;
+  const [title, ...rest] = call.arguments;
+  // Every form that declares a row names it and gives it a body, so a call of one argument or
+  // none — `test.skip()`, `test.fail("this is broken")` — marks the row it stands in.
+  if (title === undefined || rest.length === 0) return undefined;
+  const callback = rowCallback(rest);
+  if (callback === undefined) {
+    const titled = ts.isStringLiteralLike(title) || ts.isTemplateExpression(title);
+    if (!titled || rest.every((argument) => ts.isStringLiteral(argument))) return undefined;
   }
-  const callback = rowCallback(call);
-  if (callback === undefined) return undefined;
   return {
     file,
     line: sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line + 1,
     title: title.getText(sourceFile),
-    fixtures: fixturesOfCallback(callback),
+    fixtures: callback === undefined ? [] : fixturesOfCallback(callback),
   };
 }
 
@@ -165,8 +180,8 @@ function rowOfCall(
 export function rowsOfSource(file: string, source: string): SuiteRow[] {
   // `setParentNodes` is false: nothing here reads a node's `.parent`. The walk is
   // `ts.forEachChild`, and both position reads pass the source file (`call.getStart(sourceFile)`,
-  // `title.getText(sourceFile)`), so attaching a parent to every node of 149 files would roughly
-  // double this parse for no reader.
+  // `title.getText(sourceFile)`), so attaching a parent to every node of every spec of the
+  // suite would roughly double this parse for no reader.
   const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false);
   const rows: SuiteRow[] = [];
   const visit = (node: ts.Node): void => {
@@ -185,9 +200,9 @@ export function rowsOfSource(file: string, source: string): SuiteRow[] {
  *  (`e2e/playwright.config.ts`) takes every matching file below the `e2e` directory, so a spec in
  *  a subdirectory is in the suite as surely as one beside the config. None is today.
  *  `node_modules` is skipped, as Playwright's own default ignores it, and `test-results` with it:
- *  that is the `outputDir` the config sets (`outputDir: "test-results"`,
- *  e2e/playwright.config.ts:421), resolved beside the config, so after a browser run it is a tree
- *  of traces, videos and screenshots holding no spec. */
+ *  that is the `outputDir` the config sets (`outputDir: "test-results"` in
+ *  e2e/playwright.config.ts), resolved beside the config, so after a browser run it is a tree of
+ *  traces, videos and screenshots holding no spec. */
 export function specFiles(directory: string): string[] {
   const files: string[] = [];
   const walk = (relative: string): void => {
