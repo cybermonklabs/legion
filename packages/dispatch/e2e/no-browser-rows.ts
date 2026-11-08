@@ -16,13 +16,17 @@
  * there are projects that run the file. The set of files is the one thing the two agree on
  * exactly.
  *
- * Which calls are rows is TypeScript's answer too: a callee is a row callee when its type is
- * @playwright/test's `TestType`, or, for the `only`, `skip`, `fixme`, `fail` and `fail.only`
- * members that carry a title-first form, when the object before that member has it. So every
- * spelling of a `test` declares its rows — `test`, an import renamed to `it`, `pw.test` through
- * a namespace, a `const` bound to one, `test["skip"]`, `(test)(…)`, and the `test.extend(…)`
- * Playwright documents for adding a fixture — while `test.describe`, `test.step`, `test.use`
- * and `test.slow` declare none of them.
+ * Which calls are rows is TypeScript's answer too, and it is read off a type rather than off
+ * the text of the callee. A callee whose type is @playwright/test's `TestType` declares a row;
+ * so does a callee whose type is the type of one of the five members of `TestType` that carry
+ * a title-first form — `only`, `skip`, `fixme`, `fail` and `fail.only` — which the scan keys by
+ * the symbol of each member's own declared type. So every spelling of a `test` declares its
+ * rows — `test`, an import renamed to `it`, `pw.test` through a namespace, a `const` bound to
+ * one, `test["skip"]`, `(test)(…)`, and the `test.extend(…)` Playwright documents for adding a
+ * fixture — and so does a member of one however it was reached: `test.only`, `const only =
+ * test.only`, `const { skip } = test`. `test.describe`, `test.step`, `test.use` and `test.slow`
+ * declare none of them, and neither do `describe.only` and `step.skip`, which are declarations
+ * of their own and so other symbols than `test.only` and `test.skip`.
  *
  * What a name in a row's callback position stands for is TypeScript's own answer, not this
  * module's: `rowsOfFiles` builds one `ts.Program` over the files it scans and asks
@@ -161,9 +165,55 @@ function testTypeSymbol(program: ts.Program, directory: string): ts.Symbol {
     : exported;
 }
 
-/** What one scan reads its rows with: the program's checker, and the `TestType` symbol every
- *  row callee of that program is recognised by. */
-type Scan = { checker: ts.TypeChecker; testType: ts.Symbol };
+/** What each member of a `TestType` that carries a title-first form declares, keyed by the
+ *  symbol of that member's own type: `only`, `skip`, `fixme` and `fail` of `TestType` itself,
+ *  and the `only` of the type of its `fail`.
+ *
+ * A member is keyed by its type rather than by the name it is written under because a member
+ * bound to another name is the member it came from, which a reading of the written name cannot
+ * see: `const only = test.only` and `const { skip } = test` declare rows under names that say
+ * nothing, and Playwright binds those functions, so the calls run. The symbol of a member's
+ * type is the declaration it was written as, so `test.fail.only`, `describe.only` and
+ * `step.skip` are three keys rather than the two names they share — only the first is here.
+ *
+ * A scan that could key none of the five would read no row declared by a member and so pass
+ * every rule, which is an error rather than an empty map. */
+function rowCalleeMembers(checker: ts.TypeChecker, testType: ts.Symbol): Map<ts.Symbol, RowCallee> {
+  const members = new Map<ts.Symbol, RowCallee>();
+  // The key is built the way `rowCallee` looks one up — the symbol of the type the member has —
+  // so that the two agree.
+  const record = (owner: ts.Type, name: string, callee: RowCallee): ts.Type | undefined => {
+    const member = checker.getPropertyOfType(owner, name);
+    if (member === undefined) return undefined;
+    const type = checker.getTypeOfSymbol(member);
+    const key = type.getSymbol();
+    if (key !== undefined) members.set(key, callee);
+    return type;
+  };
+  const declared = checker.getDeclaredTypeOfSymbol(testType);
+  record(declared, "only", "row");
+  record(declared, "skip", "conditional");
+  record(declared, "fixme", "conditional");
+  const fail = record(declared, "fail", "conditional");
+  if (fail !== undefined) record(fail, "only", "row");
+  if (members.size !== 5) {
+    throw new Error(
+      "@playwright/test's TestType gives this scan no distinct type for each of only, skip, " +
+        `fixme, fail and fail.only (${members.size} of 5), so a row declared by a member of a ` +
+        "test could go unread"
+    );
+  }
+  return members;
+}
+
+/** What one scan reads its rows with: the program's checker, the `TestType` symbol every row
+ *  callee of that program is recognised by, and the members of that `TestType` which declare a
+ *  row, keyed as `rowCalleeMembers` keys them. */
+type Scan = {
+  checker: ts.TypeChecker;
+  testType: ts.Symbol;
+  members: ReadonlyMap<ts.Symbol, RowCallee>;
+};
 
 /** Whether a type is `TestType`. A union or an intersection holding it is one as well, since a
  *  value of that type carries `TestType`'s call signatures and its members. */
@@ -179,47 +229,25 @@ function isTestType(expression: ts.Expression, scan: Scan): boolean {
   return holdsTestType(scan.checker.getTypeAtLocation(expression), scan.testType);
 }
 
-/** The object a member expression reads and the name it reads from it, for the two spellings of
- *  one member — `test.skip` and `test["skip"]` — and nothing for an expression that reads no
- *  named member. Parentheses are taken off first: `(test).skip` and `test.skip` are the same
- *  member of the same object. */
-function memberAccess(
-  expression: ts.Expression
-): { object: ts.Expression; name: string } | undefined {
-  let inner = expression;
-  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
-  if (ts.isPropertyAccessExpression(inner) && ts.isIdentifier(inner.name)) {
-    return { object: inner.expression, name: inner.name.text };
-  }
-  if (ts.isElementAccessExpression(inner) && ts.isStringLiteralLike(inner.argumentExpression)) {
-    return { object: inner.expression, name: inner.argumentExpression.text };
-  }
-  return undefined;
-}
-
 /** What `expression`, standing in a call's callee position, declares: a row where it is a `test`
- *  itself, and a row or a marker where it is one of the five members of a `test` that carry a
- *  title-first form. Nothing for every other callee, whatever it computes.
+ *  itself, and a row or a marker where its type is the type of one of the five members of a
+ *  `test` that carry a title-first form. Nothing for every other callee, whatever it computes.
  *
- * No chain of `describe` or `step` is a row callee, however it is spelled: `describe` and its
- * `only`, `skip`, `fixme`, `serial` and `parallel` take a `() => void` block, which declares
- * rows rather than being one, and `step` and its `skip` take a step body inside a row already
- * running. Neither is `use`, which takes a fixture object, nor `slow`, whose three forms all
- * mark a row already declared, nor `extend`, which returns the `test` whose calls are the rows.
- * Each of those is read here as the member of a `TestType` it is and left. */
+ * The member is decided by the symbol of the callee's type, so a member reached under another
+ * name — `const only = test.only`, `const { skip } = test`, `test["skip"]` — is the member it
+ * was bound to, and a member of another object that shares its name is not. No chain of
+ * `describe` or `step` is a row callee, however it is spelled: `describe` and its `only`,
+ * `skip`, `fixme`, `serial` and `parallel` take a `() => void` block, which declares rows
+ * rather than being one, and `step` and its `skip` take a step body inside a row already
+ * running. Neither is a titled hook — `beforeEach`, `afterEach`, `beforeAll` and `afterAll`
+ * take `(title, inner)` as well, and each runs around a row rather than declaring one — nor
+ * `use`, which takes a fixture object, nor `slow`, whose three forms all mark a row already
+ * declared, nor `extend`, which returns the `test` whose calls are the rows. Each of those
+ * carries a type of its own and so is no key of the map. */
 function rowCallee(expression: ts.Expression, scan: Scan): RowCallee | undefined {
   if (isTestType(expression, scan)) return "row";
-  const member = memberAccess(expression);
-  if (member === undefined) return undefined;
-  if (member.name === "skip" || member.name === "fixme" || member.name === "fail") {
-    return isTestType(member.object, scan) ? "conditional" : undefined;
-  }
-  if (member.name !== "only") return undefined;
-  // `fail.only` is the one row callee two members deep; `describe.only` and every other `only`
-  // below a member is none, because the object before the suffix is no `test`.
-  const under = memberAccess(member.object);
-  const test = under?.name === "fail" ? under.object : member.object;
-  return isTestType(test, scan) ? "row" : undefined;
+  const member = scan.checker.getTypeAtLocation(expression).getSymbol();
+  return member === undefined ? undefined : scan.members.get(member);
 }
 
 /** A function this module reads a row's fixtures from: one written in the call, or one a name in
@@ -405,10 +433,9 @@ export function rowsOfFiles(directory: string, files: readonly string[]): SuiteR
     rootNames: files.map((file) => join(directory, file)),
     options: scanOptions(directory),
   });
-  const scan: Scan = {
-    checker: program.getTypeChecker(),
-    testType: testTypeSymbol(program, directory),
-  };
+  const checker = program.getTypeChecker();
+  const testType = testTypeSymbol(program, directory);
+  const scan: Scan = { checker, testType, members: rowCalleeMembers(checker, testType) };
   const rows: SuiteRow[] = [];
   for (const file of files) {
     const path = join(directory, file);

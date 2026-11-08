@@ -64,9 +64,10 @@ const namedCallbackFixture = "__tests__/fixtures/named-callback-fixtures.fixture
 const shadowedNamesFixture = "__tests__/fixtures/shadowed-names.fixture.ts";
 const rowCalleesFixture = "__tests__/fixtures/row-callees.fixture.ts";
 const calleeSpellingsFixture = "__tests__/fixtures/row-callee-spellings.fixture.ts";
+const compilerOptionsFixture = "__tests__/fixtures/compiler-options.fixture.ts";
 
-// One scan over all nine, because a scan is a program: read one file at a time it would build
-// nine of them, and each fixture's imports — the callbacks three of them pass by name out of a
+// One scan over all ten, because a scan is a program: read one file at a time it would build
+// ten of them, and each fixture's imports — the callbacks four of them pass by name out of a
 // module beside them — are resolved the same way either way.
 const fixtureRows = rowsOfFiles(e2eDirectory, [
   noBrowserFixture,
@@ -78,6 +79,7 @@ const fixtureRows = rowsOfFiles(e2eDirectory, [
   shadowedNamesFixture,
   rowCalleesFixture,
   calleeSpellingsFixture,
+  compilerOptionsFixture,
 ]);
 
 /** The rows one planted control declares, in the order the scan read them. */
@@ -94,6 +96,7 @@ const namedCallbackFixtureRows = rowsOf(namedCallbackFixture);
 const shadowedNamesFixtureRows = rowsOf(shadowedNamesFixture);
 const rowCalleesFixtureRows = rowsOf(rowCalleesFixture);
 const calleeSpellingsFixtureRows = rowsOf(calleeSpellingsFixture);
+const compilerOptionsFixtureRows = rowsOf(compilerOptionsFixture);
 
 // A scan that found nothing would satisfy every rule below without reading a row, so this is
 // asserted once here rather than again in each test that reads `realRows`.
@@ -250,12 +253,14 @@ test("the fixtures of a callback passed by name are read, whatever the row's tit
 // The correctness the checker is here for. Each of the first five rows passes a name that a
 // reading matching names against the functions a file declares resolved to a function of the
 // fixture that binds `page`: run over this fixture, that reading reports `fixtures: ["page"]`
-// for all five, and the gate passes five rows that drive nothing. Each name is bound somewhere
-// else - a for-of `const`, a `let` in a describe, a destructured `const`, a parameter, an
-// import beside a nested function of its name - and the scan reads each binding where it
-// stands. Two more pass no name at all, and the last two are the other direction: the file's
-// own `opensAPage` where nothing shadows it, and an import that binds `page` in the module it
-// comes from, both read and both left.
+// for all five and the gate passes all five. Four of them drive nothing. The fifth is the
+// `let`, which holds a callback that opens a page by the time Playwright would run its row;
+// the scan names that row because no `let` can be read, not because nothing opens a page.
+// Each name is bound somewhere else - a for-of `const`, a `let` in a describe, a destructured
+// `const`, a parameter, an import beside a nested function of its name - and the scan reads
+// each binding where it stands. Two more pass no name at all, and the last two are the other
+// direction: the file's own `opensAPage` where nothing shadows it, and an import that binds
+// `page` in the module it comes from, both read and both left.
 test("a name in a row's callback position is read as what it is bound to", () => {
   expect(shadowedNamesFixtureRows).toEqual([
     {
@@ -344,31 +349,31 @@ test("every member of a test that declares a row is read as one, and no other me
   expect(rowCalleesFixtureRows).toEqual([
     {
       file: rowCalleesFixture,
-      line: 58,
+      line: 63,
       title: '"a planted row declared by test.fail"',
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 60,
+      line: 65,
       title: "skipTitle",
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 62,
+      line: 67,
       title: "fixmeTitle",
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 64,
+      line: 69,
       title: "failTitle",
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 66,
+      line: 71,
       title: '"a planted row declared by test.fail.only"',
       fixtures: [],
     },
@@ -377,7 +382,7 @@ test("every member of a test that declares a row is read as one, and no other me
     // `test.step.skip(…)` inside this one, or there would be more rows here than six.
     {
       file: rowCalleesFixture,
-      line: 72,
+      line: 77,
       title: '"a planted row inside a describe block"',
       fixtures: ["page"],
     },
@@ -388,46 +393,47 @@ test("every member of a test that declares a row is read as one, and no other me
   );
 });
 
-// How a `test` is spelled, which the callee's type answers and its text cannot. Every row below
-// is declared by a `TestType` under another spelling, and a reading that matched the text found
-// none of them: it reported no row for this file at all, so no file-set comparison and no row
-// count could have caught them. `test.extend` is Playwright's documented way to add a fixture,
-// so the first of them is the likely shape of a real row that drives no browser.
+// How a `test` and a member of one are spelled, which the callee's type answers and its text
+// cannot. Every row below is declared by a `TestType`, or by a member of one, under another
+// spelling, and a reading that matched the text found none of them: it reported no row for
+// this file at all, so no file-set comparison and no row count could have caught them.
+// `test.extend` is Playwright's documented way to add a fixture, so the first of them is the
+// likely shape of a real row that drives no browser.
 test("a row is read whatever the test that declares it is called", () => {
   expect(calleeSpellingsFixtureRows).toEqual([
     {
       file: calleeSpellingsFixture,
-      line: 36,
+      line: 45,
       title: '"a planted row declared by an extended test"',
       fixtures: ["request"],
     },
     {
       file: calleeSpellingsFixture,
-      line: 40,
+      line: 49,
       title: '"a planted row declared by a const bound to test"',
       fixtures: [],
     },
     {
       file: calleeSpellingsFixture,
-      line: 44,
+      line: 53,
       title: '"a planted row declared by an import renamed to it"',
       fixtures: [],
     },
     {
       file: calleeSpellingsFixture,
-      line: 48,
+      line: 57,
       title: '"a planted row declared through a namespace import"',
       fixtures: [],
     },
     {
       file: calleeSpellingsFixture,
-      line: 53,
+      line: 62,
       title: '"a planted row declared by element access"',
       fixtures: [],
     },
     {
       file: calleeSpellingsFixture,
-      line: 58,
+      line: 67,
       title: '"a planted row declared by a parenthesized test"',
       fixtures: [],
     },
@@ -438,16 +444,76 @@ test("a row is read whatever the test that declares it is called", () => {
     // after it, and a reading that took the first would name a row that opens a page.
     {
       file: calleeSpellingsFixture,
-      line: 67,
+      line: 76,
       title: '"a planted row inside an extended describe"',
+      fixtures: ["page"],
+    },
+    // The five members bound to names of their own. Playwright binds `only`, `skip`, `fixme`,
+    // `fail` and `fail.only` as functions, so each of these calls runs a row; the name says
+    // nothing about which member it holds, and a reading of the written name read none of the
+    // five. The scan keys a member by the symbol of its type, so each is the member it came
+    // from.
+    {
+      file: calleeSpellingsFixture,
+      line: 94,
+      title: '"a planted row declared by a const bound to test.only"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 98,
+      title: '"a planted row declared by a destructured skip"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 102,
+      title: '"a planted row declared by a destructured fixme"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 106,
+      title: '"a planted row declared by a const bound to test.fail"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 110,
+      title: '"a planted row declared by the only of a const bound to test.fail"',
+      fixtures: [],
+    },
+  ]);
+
+  // Every row of this file but the one inside the describe block, which is the only one that
+  // opens a page. Playwright's `request` is no browser, so the extended row is named with the
+  // rest.
+  expect(unexplainedRows(calleeSpellingsFixtureRows, exemptions)).toEqual([
+    ...calleeSpellingsFixtureRows.slice(0, 6),
+    ...calleeSpellingsFixtureRows.slice(7),
+  ]);
+});
+
+// What taking the package's `tsconfig.json` whole is worth, which no other control measures:
+// each of these two is read wrong under a picked set of options. The first row's callback is
+// imported from a `.tsx` module, which resolves only with `jsx` among the options — without it
+// the import is refused (TS6142) and the row is read with no fixtures, so a row that opens a
+// page is refused on correct source. The `test.skip(<condition>, <reason>)` below it declares
+// no row only while `bun` is among `types` and `process.env.SKIP_REASON` is therefore a
+// `string | undefined`; without it `process` is `any`, the reason reads as a body, and the
+// marking call is reported as a row that drives no browser.
+test("the scan's options are the package's own, so a .tsx callback and process are read", () => {
+  expect(compilerOptionsFixtureRows).toEqual([
+    {
+      file: compilerOptionsFixture,
+      line: 30,
+      title: '"a planted row whose callback is imported from a .tsx module"',
       fixtures: ["page"],
     },
   ]);
 
-  // Playwright's `request` is no browser, so the extended row is named with the other five.
-  expect(unexplainedRows(calleeSpellingsFixtureRows, exemptions)).toEqual(
-    calleeSpellingsFixtureRows.slice(0, 6)
-  );
+  // The row opens a page and the marking call is no row, so this file leaves the rule nothing.
+  expect(unexplainedRows(compilerOptionsFixtureRows, exemptions)).toEqual([]);
 });
 
 test("an exemption for a row that drives a browser, and one for a row no file holds, are stale", () => {

@@ -1,20 +1,29 @@
-/** The planted shapes of e2e/__tests__/no-browser-rows.test.ts that turn on HOW A `test` IS
- *  SPELLED. A reading that matched the callee's text against `test`, `test.only`, `test.skip`,
- *  `test.fixme`, `test.fail` and `test.fail.only` found no row at all in any of the six calls
- *  below: each declares one through a `TestType` under another spelling, and a row that drives
- *  no browser walked past a gate that never saw it.
+/** The planted shapes of e2e/__tests__/no-browser-rows.test.ts that turn on HOW A `test` AND A
+ *  MEMBER OF ONE ARE SPELLED. A reading that matched the callee's text against `test`,
+ *  `test.only`, `test.skip`, `test.fixme`, `test.fail` and `test.fail.only` found no row at all
+ *  in any of the eleven calls below: each declares one through a `TestType`, or a member of
+ *  one, under another spelling, and a row that drives no browser walked past a gate that never
+ *  saw it.
  *
- * Six rows, one per spelling: a `test` extended by `test.extend`, which is Playwright's
- * documented way to add a fixture; a `const` bound to `test`; an import renamed to `it`; `test`
- * reached through a namespace import; `test["skip"]` by element access; and a parenthesized
- * `test`. None of the six binds a browser fixture, so the check must name all six.
+ * Twelve rows stand here. Six are one per spelling of the `test` itself: a `test` extended by
+ * `test.extend`, which is Playwright's documented way to add a fixture; a `const` bound to
+ * `test`; an import renamed to `it`; `test` reached through a namespace import; `test["skip"]`
+ * by element access; and a parenthesized `test`.
+ *
+ * Five more are one per spelling of a MEMBER that declares a row: a `const` bound to
+ * `test.only`, a destructured `skip`, a destructured `fixme`, a `const` bound to `test.fail`,
+ * and the `only` of that `const`. Playwright binds each of those functions, so every one of the
+ * five calls runs a row; the name each is written under says nothing about which member it is,
+ * and the member's type is what says it.
+ *
+ * None of those eleven binds a browser fixture, so the check must name all eleven.
  *
  * Around them stand calls of those same spellings that declare no row: the `apiTest.describe`
- * block, whose row is the one row of this file that does drive a browser, and the
- * `apiTest.skip(<condition>, <reason>)` and `alias.slow()` inside it. A member of a `TestType`
- * is read as the member it is whatever the `TestType` is called. That one row is this file's
- * control for a callback declaring a `this` parameter too: `this` binds no fixture, and a
- * reading that took it for the fixture parameter would name a row that opens a page.
+ * block, whose row is the twelfth and the one row of this file that does drive a browser, and
+ * the `apiTest.skip(<condition>, <reason>)` and `alias.slow()` inside it. A member of a
+ * `TestType` is read as the member it is whatever the `TestType` is called. That one row is
+ * this file's control for a callback declaring a `this` parameter too: `this` binds no fixture,
+ * and a reading that took it for the fixture parameter would name a row that opens a page.
  *
  * Its name ends `.fixture.ts` and not `.e2e.ts` because e2e/playwright.config.ts says
  * `testDir: "."` and `testMatch: /.*\.e2e\.ts/`: Playwright walks the `e2e` directory
@@ -72,4 +81,32 @@ apiTest.describe("a planted describe of an extended test, which declares no row"
       await page.goto("/");
     }
   );
+});
+
+/** The five members below, each bound to a name of its own. Playwright declares `only`, `skip`,
+ *  `fixme`, `fail` and `fail.only` as functions, so a name bound to one of them calls the same
+ *  function `test.only(…)` calls and declares the same row; nothing in the name says which
+ *  member it holds, which is why the scan keys a member by the symbol of its type. */
+const only = test.only;
+const { skip, fixme } = test;
+const fail = test.fail;
+
+only("a planted row declared by a const bound to test.only", async () => {
+  expect(await Promise.resolve("the layer that owns this claim")).toContain("claim");
+});
+
+skip("a planted row declared by a destructured skip", async () => {
+  expect(await Promise.resolve("the layer that owns this claim")).toContain("claim");
+});
+
+fixme("a planted row declared by a destructured fixme", async () => {
+  expect(await Promise.resolve("the layer that owns this claim")).toContain("claim");
+});
+
+fail("a planted row declared by a const bound to test.fail", async () => {
+  expect(await Promise.resolve("the layer that owns this claim")).toContain("claim");
+});
+
+fail.only("a planted row declared by the only of a const bound to test.fail", async () => {
+  expect(await Promise.resolve("the layer that owns this claim")).toContain("claim");
 });

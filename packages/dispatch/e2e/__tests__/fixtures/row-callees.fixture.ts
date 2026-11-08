@@ -1,9 +1,13 @@
 /** The planted shapes of e2e/__tests__/no-browser-rows.test.ts that turn on WHICH MEMBER OF A
  *  `test` DECLARES A ROW. @playwright/test 1.64.1 (`types/test.d.ts`) gives `test` itself,
  *  `only`, `skip`, `fixme`, `fail` and `fail.only` a `(title, body)` form and a
- *  `(title, details, body)` form, and no other member of a `TestType` carries one; the modifier
- *  forms of `skip`, `fixme`, `fail` and `slow`, every chain of `describe` and of `step`, `use`
- *  and `extend` declare no row. Which spellings of a `test` those members are read on is the
+ *  `(title, details, body)` form. They are not the only members written title first: `describe`
+ *  carries both those forms, `step` carries `(title, body)`, and so do the titled `beforeEach`,
+ *  `afterEach`, `beforeAll` and `afterAll`. None of those declares a row, for the reason
+ *  `rowCallee` (e2e/no-browser-rows.ts) records: a `describe` block declares rows rather than
+ *  being one, a step body runs inside a row already running, and a hook runs around one. The
+ *  modifier forms of `skip`, `fixme`, `fail` and `slow`, and `use` and `extend`, declare no row
+ *  either. Which spellings of a `test` and of its members all of these are read on is the
  *  neighbouring row-callee-spellings.fixture.ts.
  *
  * Six rows here, and the file is as full of the calls that are not rows as of the calls that
@@ -15,11 +19,12 @@
  * e2e/plain-http-origin.ts — a `test.slow()`, and a `test.step.skip(…)`, none of which may be
  * read as a row.
  *
- * Of those five, a reading that took a row from a literal title or a callback the file itself
- * declares read one: the `test.fail` written with both. The other four it declared no row for —
- * `test.fail.only`, whose callee it did not spell, and the `skip`, `fixme` and three-argument
- * `fail` below, whose title is a name and whose body is a `let` that no such reading resolves.
- * The callee is all there is to read those three from.
+ * Of those five, a reading that took a row from a literal title read one: the `test.fail`
+ * written with one, whose callback is imported from the module beside this file rather than
+ * declared in it. The other four it declared no row for — `test.fail.only`, whose callee it did
+ * not spell, and the `skip`, `fixme` and three-argument `fail` below, whose title is a name and
+ * whose body is a `let` that no such reading resolves. The callee is all there is to read those
+ * three from.
  *
  * Every row but the one in the block drives no browser, so the check must name the five and
  * leave that one.
@@ -27,9 +32,9 @@
  * Its name ends `.fixture.ts` and not `.e2e.ts` because e2e/playwright.config.ts says
  * `testDir: "."` and `testMatch: /.*\.e2e\.ts/`: Playwright walks the `e2e` directory
  * recursively, so a `.e2e.ts` file here, under `__tests__/fixtures/`, would join the real suite
- * and run - and `test.fail.only` would then be the only row of the whole run. `bun test`
- * collects only `*.test.ts` and its kin, so this file runs nowhere; the scan parses it and the
- * test reads the rows.
+ * and run - and the whole run would be the `test.fail.only` row and the row inside the
+ * `test.describe.only` block, both of them focused. `bun test` collects only `*.test.ts` and
+ * its kin, so this file runs nowhere; the scan parses it and the test reads the rows.
  */
 
 import { expect, test } from "@playwright/test";

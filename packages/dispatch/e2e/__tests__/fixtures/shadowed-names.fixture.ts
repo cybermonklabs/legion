@@ -8,10 +8,10 @@
  * that binds `page`: `opensAPage` under a for-of `const` of that name, a `let` inside a
  * `describe`, a `const` destructured out of an object, and a helper's parameter; and
  * `readsNothing` under the import beside a nested function of that same name. None of the five
- * is bound to the declaration a file-wide match of names found, and none of their rows drives a
- * browser, so the check must report all five with no fixtures. The `let` is the sharp one: it
- * holds a callback that opens a page by the time Playwright would run its row, which is why a
- * `let` cannot be read from its initializer, and the check names that row all the same.
+ * is bound to the declaration a file-wide match of names found, so all five are reported with
+ * no fixtures. Four of them drive no browser; the fifth, the `let`, holds a callback that opens
+ * a page by the time Playwright would run its row, which is why no `let` is read from its
+ * initializer, and the check names that row on a binding it could not read.
  *
  * Then the two a name settles nothing about — the value a call returns, and a property of an
  * imported object — which the check reports with no fixtures because it read no declaration,
@@ -33,9 +33,9 @@ import { expect, type Page, test } from "@playwright/test";
 
 import { opensAPageInAnotherFile, readsNothing, rowHelpers } from "./shadowed-names-callbacks";
 
-/** The trap: the only function this file declares that binds a browser fixture, and the one a
- *  reading by name alone resolved four of the five rows below to. The fifth it read as the
- *  nested function named after the import. */
+/** The trap: the function a reading by name alone resolved four of the five rows below to. The
+ *  fifth it read as the nested function named after the import, which binds a browser fixture
+ *  of its own, so this is not the only function of this file that takes one. */
 async function opensAPage({ page }: { page: Page }): Promise<void> {
   await page.goto("/");
 }

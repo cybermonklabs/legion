@@ -1742,11 +1742,14 @@ a command, and a Go test for a claim about the server (INFRA-1404). Every row
 of this suite binds `page`, `browser` or `context`, and
 `cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
 check that decides it: it reads every call of `e2e/**/*.e2e.ts` whose callee
-TypeScript types as @playwright/test's `TestType`, or whose callee is one of
-the title-first members `only`, `skip`, `fixme`, `fail` and `fail.only` of a
-value it does — so a `test` extended by `test.extend`, renamed on import,
-reached through a namespace or bound to another name declares its rows like
-`test` itself — for the fixtures its callback binds, and refuses a row that
+TypeScript types as @playwright/test's `TestType`, or types as one of the
+title-first members `only`, `skip`, `fixme`, `fail` and `fail.only` of one — so
+a `test` extended by `test.extend`, renamed on import, reached through a
+namespace or bound to another name declares its rows like `test` itself, and a
+member bound to another name, by `const only = test.only` or
+`const { skip } = test`, declares its row like `test.only` and `test.skip`,
+since each is decided by the type the callee carries and not by the name it is
+written under — for the fixtures its callback binds, and refuses a row that
 binds none of the three. A callback written in the call is read there, and one
 passed by name is read where TypeScript's own checker says that name is bound:
 in its own scope, and in the module an import leads to, so a `for`-of `const`,
