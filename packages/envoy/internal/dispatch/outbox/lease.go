@@ -83,6 +83,26 @@ type Outbox struct {
 	hold atomic.Pointer[duty.Hold]
 	// claims counts the batches this outbox read, one per scanBatch: how often it scanned.
 	claims atomic.Int64
+	// afterRetryArmed is given the wait serve armed its one retry timer for, each time it arms
+	// one. Nil in production; a test uses it to read the sequence the outbox went through - which
+	// wait it armed, and when - rather than measuring the wall clock the publish landed on. Set
+	// it only before Run starts, so nothing races it.
+	afterRetryArmed func(wait time.Duration)
+	// afterListening is called each time a LISTEN connection comes up, at the end of listen's
+	// OnConnected and after the wakes it sends. Nil in production; a test uses it to know the
+	// connection is up, so the catch-up wake that connection sends is accounted for rather than
+	// arriving later as a scan out of nowhere. Set it only before Run starts, so nothing races
+	// it.
+	afterListening func()
+	// afterServeWait is called in serve each time it is about to wait. Nil in production; a test
+	// uses it to know the holder has stopped working for now. What is pending is not handed in:
+	// serve would have to read the wake queue before the call, and a test judging rest on that
+	// reading would be judging one taken before the wake it is looking for. A test reads the
+	// queue itself, under whatever lock it holds its own facts with. Even then a wait is the
+	// outbox at rest only while its NATS connection is up: a holder whose publisher is
+	// disconnected waits here without having scanned, and says nothing about what is due. Set it
+	// only before Run starts, so nothing races it.
+	afterServeWait func()
 	// probeBeforeHold is set when this process gave the publisher hold up for NATS lost, and
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
@@ -186,6 +206,9 @@ func (o *Outbox) listen(ctx context.Context) {
 		OnConnected: func() {
 			o.signal()
 			o.signalStandby()
+			if o.afterListening != nil {
+				o.afterListening()
+			}
 		},
 		OnNotify: func(channel, payload string) {
 			switch {
@@ -381,12 +404,18 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				if wait, ok := o.nextRetry(ctx, end.failed); ok {
 					retryTimer = time.NewTimer(wait)
 					retryDue = retryTimer.C
+					if o.afterRetryArmed != nil {
+						o.afterRetryArmed(wait)
+					}
 				}
 				// The client's state is read again before waiting: a scan takes the wakes that
 				// reach it while it runs (scan), the change of this connection among them, so the
 				// loop would otherwise wait on a grace it never armed.
 				continue
 			}
+		}
+		if o.afterServeWait != nil {
+			o.afterServeWait()
 		}
 		select {
 		case <-ctx.Done():

@@ -481,7 +481,7 @@ const ENDED_SESSION_LINE = "Not in the live session list — it may have ended."
 /** What the live view says of a listed session that advertises no delivery mode. */
 const NO_DELIVERY_LINE =
   "This session advertises no delivery mode, so a message sent here records a failed attempt. " +
-  "A Claude Code session takes messages only when it was started with its Envoy channel.";
+  "A session advertises none while its plugin cannot reach its conversation.";
 
 /** Said under a reply the session took as its user's own turn: the answer is streamed in the live
  *  view rather than stored under the reply. */
