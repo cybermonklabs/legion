@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -286,8 +287,8 @@ func TestAnApprovalTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) 
 			if len(applied) != 1 || len(logged) != 1 {
 				t.Fatalf("the run applied %d decisions and logged %d rows; want one attempt and one row", len(applied), len(logged))
 			}
-			if applied[0]["applied"] != true {
-				t.Errorf("the attempt's row reads applied %v; want true, as it was written before the refusal", applied[0]["applied"])
+			if _, carries := applied[0]["applied"]; carries {
+				t.Errorf("the attempt's row reads applied %v; want the key left to the transaction, which is the only thing that knows what it did", applied[0]["applied"])
 			}
 			row := logged[0]
 			if row["verdict"] != Approve || row["applied"] != false {
@@ -437,9 +438,112 @@ func TestConsiderRunsTheJudgeOffTheRunnersContext(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
 	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
 
-	waitFor(t, "the run Consider started to apply its decision", func() bool {
+	waitFor(t, "the run Consider started to apply its decision", 10*time.Second, func() bool {
 		applied, _ := machine.rows()
 		return len(applied) == 1
+	})
+}
+
+// TestTheWorstCaseStillWritesItsJudgedRow is the run the three bounds are arithmetic for: the
+// Dispatch phase spends what dispatchBound gives it, the model call then runs out its own
+// modelBound, and the transaction that records the verdict takes two seconds of its own. That
+// is the longest a run can be, and its row is still written, because the two bounds leave the
+// write its seconds. Were they to fill runBudget between them, this run would write nothing at
+// all — the broker would have paid for two HTTP reads and a model call with no audit row to
+// show for them, which is the one outcome the trail exists to prevent.
+//
+// The request is left pending either way, so the row is the whole of what this proves. It takes
+// the wall-clock time it says it does — the bounds are real durations — and runs beside the
+// rest of the package's tests rather than after them.
+func TestTheWorstCaseStillWritesItsJudgedRow(t *testing.T) {
+	t.Parallel()
+	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+	// Each of the phase's two GETs takes half of its bound, less a twentieth of a second
+	// for the two round trips themselves: the phase has to spend its bound and still
+	// answer, since a read the bound cut short would fail the issue check and the model
+	// would never be asked at all.
+	dispatch.delay = dispatchBound/2 - 50*time.Millisecond
+	// The model never answers, so the call ends on modelBound.
+	model.delay = runBudget
+	// The row's own transaction, which has to commit inside what is left of the budget.
+	machine.writeTakes = 2 * time.Second
+	started := time.Now()
+	New(t.Context(), testOptions(t, dispatch, model, machine)).Consider(pending())
+
+	waitFor(t, "the slowest run there is to write its row", runBudget+5*time.Second, func() bool {
+		_, logged := machine.rows()
+		return len(logged) == 1
+	})
+	if took := time.Since(started); took < dispatchBound+modelBound-time.Second {
+		t.Errorf("the run wrote its row after %s; want it to have spent both bounds, %s", took, dispatchBound+modelBound)
+	}
+	row := theOneRow(t, machine)
+	if row["verdict"] != Refer || row["asked"] != true {
+		t.Errorf("the row reads verdict %v, asked %v; want the model asked and the request referred", row["verdict"], row["asked"])
+	}
+	if _, carries := row["error"].(string); !carries {
+		t.Errorf("the row carries error %v; want the model call's own timeout", row["error"])
+	}
+	if failed := failedCheck(t, row); failed != "" {
+		t.Errorf("the row names %q as a failed check; want every check passed before the model", failed)
+	}
+}
+
+// TestARequestThatIsNoLongerPendingIsNeverPutToTheModel: the run reads the request's state again
+// immediately before the model call, and asks nothing about a request that has gone — cancelled
+// by its session, decided by its person, or expired while the run was reading Dispatch. The row
+// says so and names no failed check: nothing was wrong with the request, there is simply no
+// request left to decide. A state that could not be read at all is the same answer, since the
+// model call is what a run that guessed wrong would be paying for.
+func TestARequestThatIsNoLongerPendingIsNeverPutToTheModel(t *testing.T) {
+	for _, c := range []struct {
+		name, state string
+		err         error
+		want        string
+	}{
+		{name: "its session cancelled it", state: "cancelled", want: "the request is no longer pending: it is cancelled"},
+		{name: "its person decided it", state: "granted", want: "the request is no longer pending: it is granted"},
+		{name: "its pending window passed", state: "expired", want: "the request is no longer pending: it is expired"},
+		{
+			name: "its state could not be read", err: errors.New("the request is gone"),
+			want: "the request's state could not be read: the request is gone",
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+			machine.state, machine.stateErr = c.state, c.err
+			New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
+
+			if model.asked() != 0 {
+				t.Errorf("the model got %d requests; want none for a request that is no longer pending", model.asked())
+			}
+			row := theOneRow(t, machine)
+			if row["not_pending"] != c.want {
+				t.Errorf("the row reads not_pending %q; want %q", row["not_pending"], c.want)
+			}
+			if row["verdict"] != Refer || row["asked"] != false {
+				t.Errorf("the row reads verdict %v, asked %v; want a referral the model was never asked for", row["verdict"], row["asked"])
+			}
+			if failed := failedCheck(t, row); failed != "" {
+				t.Errorf("the row names %q as a failed check; want every check passed: the request itself was fine", failed)
+			}
+		})
+	}
+
+	t.Run("a request still pending", func(t *testing.T) {
+		dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()
+		New(t.Context(), testOptions(t, dispatch, model, machine)).consider(t.Context(), pending())
+
+		if model.asked() != 1 || machine.stateAsked != 1 {
+			t.Errorf("the run read the state %d times and asked the model %d times; want one read and the one model call it gates", machine.stateAsked, model.asked())
+		}
+		applied, _ := machine.rows()
+		if len(applied) != 1 {
+			t.Fatalf("the run applied %d decisions; want the pending request judged", len(applied))
+		}
+		if _, carries := applied[0]["not_pending"]; carries {
+			t.Errorf("the row reads not_pending %v; want the key absent for a request that was pending", applied[0]["not_pending"])
+		}
 	})
 }
 

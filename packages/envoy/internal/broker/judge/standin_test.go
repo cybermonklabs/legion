@@ -72,6 +72,10 @@ type dispatchStandIn struct {
 	// bodies it answers with when that status is 200.
 	issueStatus, specStatus int
 	issue, spec             map[string]any
+	// delay holds each answer back, which is how a test spends the Dispatch phase's
+	// bound. A read the judge gave up on ends the handler at once, so a stand-in told to
+	// wait longer than the bound never keeps the server from closing.
+	delay time.Duration
 }
 
 // newDispatch is a Dispatch holding one open issue with a spec document.
@@ -91,11 +95,18 @@ func newDispatch(t *testing.T, status, markdown string) *dispatchStandIn {
 func (d *dispatchStandIn) serve(w http.ResponseWriter, r *http.Request) {
 	d.mu.Lock()
 	d.calls = append(d.calls, dispatchCall{r.Method, r.URL.Path, r.Header.Get("Authorization")})
-	status, body := d.issueStatus, d.issue
+	status, body, delay := d.issueStatus, d.issue, d.delay
 	if strings.HasSuffix(r.URL.Path, "/artifacts/spec/text") {
 		status, body = d.specStatus, d.spec
 	}
 	d.mu.Unlock()
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	if status != http.StatusOK {
 		w.WriteHeader(status)
@@ -269,14 +280,25 @@ type fakeRequests struct {
 	withheld    bool
 	policyErr   error
 	policyAsked []string
+	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
+	// times a run asked it.
+	state      string
+	stateErr   error
+	stateAsked int
 	// applyErr is what ApplyJudgeDecision answers, and logErr what LogJudged answers.
 	applyErr, logErr error
+	// writeTakes is how long each of the two writes takes before it commits, which is how
+	// a test gives the run's own transaction something to need its remaining budget for.
+	writeTakes time.Duration
 	// applied and logged are the detail objects of each write, in order.
 	applied, logged []map[string]any
 }
 
 func newRequests() *fakeRequests {
-	return &fakeRequests{decision: policy.Decision{Outcome: policy.Approval, Approver: "sami@example.com"}}
+	return &fakeRequests{
+		decision: policy.Decision{Outcome: policy.Approval, Approver: "sami@example.com"},
+		state:    "pending",
+	}
 }
 
 func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.Decision, bool, error) {
@@ -286,17 +308,46 @@ func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.De
 	return f.decision, f.withheld, f.policyErr
 }
 
-func (f *fakeRequests) ApplyJudgeDecision(_ context.Context, recordID, modelID string, judged map[string]any) (requests.Decision, error) {
+func (f *fakeRequests) JudgeRequestState(_ context.Context, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stateAsked++
+	return f.state, f.stateErr
+}
+
+// transact is one write of this machine: the time it takes, and then whether the caller's
+// context outlived it. A transaction needs its context alive to commit, so a run that reaches a
+// write with none of its budget left writes nothing and says why, as Postgres would.
+func (f *fakeRequests) transact(ctx context.Context) error {
+	f.mu.Lock()
+	takes := f.writeTakes
+	f.mu.Unlock()
+	if takes > 0 {
+		select {
+		case <-time.After(takes):
+		case <-ctx.Done():
+		}
+	}
+	return ctx.Err()
+}
+
+func (f *fakeRequests) ApplyJudgeDecision(ctx context.Context, recordID, modelID string, judged map[string]any) (requests.Decision, error) {
+	if err := f.transact(ctx); err != nil {
+		return requests.Decision{}, err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.applied = append(f.applied, judged)
 	if f.applyErr != nil {
 		return requests.Decision{}, f.applyErr
 	}
-	return requests.Decision{RequestID: recordID, State: "approved", GrantID: "grant-" + modelID}, nil
+	return requests.Decision{RequestID: recordID, State: "granted", GrantID: "grant-" + modelID}, nil
 }
 
-func (f *fakeRequests) LogJudged(_ context.Context, _, _ string, judged map[string]any) error {
+func (f *fakeRequests) LogJudged(ctx context.Context, _, _ string, judged map[string]any) error {
+	if err := f.transact(ctx); err != nil {
+		return err
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.logged = append(f.logged, judged)
@@ -338,15 +389,16 @@ func testOptions(t *testing.T, d *dispatchStandIn, m *modelStandIn, r *fakeReque
 }
 
 // waitFor blocks until done answers true, which is how a test reads the work Consider put on a
-// goroutine of its own.
-func waitFor(t *testing.T, what string, done func() bool) {
+// goroutine of its own. within is how long it waits: a run that spends its bounds takes most of
+// runBudget, and a run against stand-ins that answer at once takes milliseconds.
+func waitFor(t *testing.T, what string, within time.Duration, done func() bool) {
 	t.Helper()
-	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
+	for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(2 * time.Millisecond) {
 		if done() {
 			return
 		}
 	}
-	t.Fatalf("waited ten seconds for %s", what)
+	t.Fatalf("waited %s for %s", within, what)
 }
 
 // theOneRow is the single detail object a run wrote through LogJudged, and fails when the run

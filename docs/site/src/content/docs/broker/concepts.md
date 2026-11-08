@@ -820,7 +820,11 @@ at the first that fails, asking the model nothing:
 
 A request that passes all five goes to one model, with the secret's name and rules, the reason and
 the issue put to it as data to judge rather than as instructions, and the model answers `approve`
-or `refer`. Everything else leaves the request where it was, pending for its person: a check that
+or `refer`. The run reads the request's state once more immediately before that call and asks
+nothing about a request that is no longer pending — one its session cancelled, one a person
+decided, or one whose wait ran out while the run was reading Dispatch — so a session that creates
+and cancels requests in a loop costs one model call per request that is still there to decide.
+Everything else leaves the request where it was, pending for its person: a check that
 failed, `refer`, a model that could not be reached or did not answer within the 20 seconds, an
 answer that is neither word, a run past its 30 seconds, and a broker that stops serving mid-run.
 

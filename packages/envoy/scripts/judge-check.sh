@@ -515,7 +515,9 @@ judged_actor() { psql_stack -c "select actor from audit where kind='request.judg
 
 # judged_summary is one judged row read back as a line a result block can carry: the checks in
 # order with the first that failed named, the model, whether it was asked, the verdict and the
-# reason.
+# reason. not_pending is the run's own last gate rather than one of the checks: the request's
+# state, read again immediately before the model call, showed it no longer pending, so the run
+# asked nothing (judge's Runner.stillPending).
 judged_summary() { # <request id>
 	local detail
 	detail="$(judged_detail "$1")"
@@ -529,6 +531,7 @@ judged_summary() { # <request id>
 		" detail=" + (([.checks[] | select(.passed | not) | .detail] | first) // "") +
 		" model=" + (.model // "") + " asked=" + ((.asked // false)|tostring) +
 		" verdict=" + (.verdict // "") + " reason=" + (.reason // "") +
+		(if has("not_pending") then " not_pending=" + .not_pending else "" end) +
 		(if has("applied") then " applied=" + (.applied|tostring) else "" end) +
 		(if has("not_applied") then " not_applied=" + .not_applied else "" end) +
 		(if has("error") then " error=" + .error else "" end) +

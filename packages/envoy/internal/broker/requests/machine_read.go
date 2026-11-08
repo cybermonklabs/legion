@@ -550,6 +550,35 @@ func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (p
 	return decision, slices.Contains(requester.Withheld, name), nil
 }
 
+// JudgeRequestState answers the state a decision on recordID would meet now: the second
+// question the broker's model judge asks the machine (judge.Requests), read immediately before
+// it spends a model call on the request.
+//
+// It answers what applyDecisionAttempt's own state read answers, in the same words: "pending"
+// for a request still waiting on its person, "expired" for one whose pending_expires_at has
+// passed though the sweep has not written that transition yet — the decision transaction
+// answers such a request ErrExpired, so a judge that asked a model about it would have paid for
+// an approval the machine then refused — and the row's own state for one already granted,
+// denied, cancelled or expired. The request is the one the record names, as every read of this
+// package is, and the read takes no lock: it is a gate on work the judge is about to start and
+// never the check a decision is made under, which applyDecisionAttempt makes again under its
+// own `for update`.
+//
+// A record with no request row is pgx.ErrNoRows, which the judge records as a state it could
+// not read and asks nothing on.
+func (m *Machine) JudgeRequestState(ctx context.Context, recordID string) (string, error) {
+	var state string
+	var expired bool
+	if err := m.Store.Pool.QueryRow(ctx, `select state, pending_expires_at <= now() from requests where record_id=$1`, recordID).
+		Scan(&state, &expired); err != nil {
+		return "", err
+	}
+	if state == "pending" && expired {
+		return "expired", nil
+	}
+	return state, nil
+}
+
 // Get reads one request by id. Its Approver is the approver column of its credential-request
 // record, the column PendingForApprover lists the record by, so the request names exactly the
 // person whose list shows it; a request with no record has none.

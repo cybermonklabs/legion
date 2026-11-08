@@ -103,24 +103,26 @@ func readDecided(t *testing.T, m *Machine, recordID string) decided {
 }
 
 // judgedRows is every request.judged audit row of a record's request, as actor, the grant it
-// names (empty for none) and the verdict its detail carries.
+// names (empty for none), the verdict its detail carries and what that detail says the
+// transaction applied ("true", "false", or "" for a row with no such key).
 type judgedRow struct {
 	actor   string
 	grantID string
 	verdict string
+	applied string
 }
 
 func readJudged(t *testing.T, m *Machine, recordID string) []judgedRow {
 	t.Helper()
 	rows, err := m.Store.Pool.Query(t.Context(),
-		`select a.actor, coalesce(a.grant_id::text,''), coalesce(a.detail->>'verdict','') from audit a
+		`select a.actor, coalesce(a.grant_id::text,''), coalesce(a.detail->>'verdict',''), coalesce(a.detail->>'applied','') from audit a
 			join requests r on r.id=a.request_id where r.record_id=$1 and a.kind='request.judged' order by a.id`, recordID)
 	if err != nil {
 		t.Fatalf("read request.judged rows: %v", err)
 	}
 	judged, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (judgedRow, error) {
 		var j judgedRow
-		return j, row.Scan(&j.actor, &j.grantID, &j.verdict)
+		return j, row.Scan(&j.actor, &j.grantID, &j.verdict, &j.applied)
 	})
 	if err != nil {
 		t.Fatalf("read request.judged rows: %v", err)
@@ -319,5 +321,104 @@ func TestOneDecisionBetweenThePersonAndTheJudge(t *testing.T) {
 				t.Errorf("request.judged rows = %+v; want %d", judged, wantJudged)
 			}
 		})
+	}
+}
+
+// TestTheJudgedRowSaysWhatTheTransactionDid: an approval the judge makes can commit and grant
+// nothing — the current policy may have dropped the session from the secret's requesters list,
+// which is recorded as the request's own denial, and the requesting enrollment may have gone,
+// which is recorded approved and then denied. Either way the request.judged row beside that
+// decision commits with it, and what it says it applied is what the transaction did and not
+// what the judge asked for. A reader of GET /v1/grant-log reads the row to learn whether the
+// judge's verdict released a credential, so a row saying applied where nothing was granted is
+// the trail telling them something untrue.
+func TestTheJudgedRowSaysWhatTheTransactionDid(t *testing.T) {
+	for name, c := range map[string]struct {
+		// before runs between the pending request and the judge's approval.
+		before      func(t *testing.T, m *Machine, enrollmentID string)
+		wantState   string
+		wantApplied string
+		wantDetail  string
+	}{
+		"an approval that grants": {wantState: "granted", wantApplied: "true"},
+		"an enrollment that has gone": {
+			before: func(t *testing.T, m *Machine, enrollmentID string) {
+				t.Helper()
+				if _, err := m.Store.Pool.Exec(t.Context(),
+					`update enrollments set lease_expires_at = now() - interval '1 minute' where id=$1`, enrollmentID); err != nil {
+					t.Fatalf("lapse the enrollment's lease: %v", err)
+				}
+			},
+			wantState: "denied", wantApplied: "false",
+			wantDetail: "the requesting enrollment is no longer live",
+		},
+		"a requesters list that dropped the session": {
+			before: func(t *testing.T, m *Machine, _ string) {
+				t.Helper()
+				retag(t, m, listedSecret("DEEL_API_KEY", fixtureOperator, policy.TierHuman, otherPerson))
+			},
+			wantState: "denied", wantApplied: "false",
+			wantDetail: "DEEL_API_KEY: " + policy.ReasonRequesterNotListed,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, enr, key := newJudgeFixture(t)
+			req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+			if c.before != nil {
+				c.before(t, m, enr)
+			}
+
+			dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"})
+			if err != nil {
+				t.Fatalf("ApplyJudgeDecision = %+v, %v; want the decision made", dec, err)
+			}
+			if dec.State != c.wantState || dec.Detail != c.wantDetail {
+				t.Fatalf("the decision = state %q detail %q; want %q and %q", dec.State, dec.Detail, c.wantState, c.wantDetail)
+			}
+
+			judged := readJudged(t, m, *req.RecordID)
+			if len(judged) != 1 {
+				t.Fatalf("request.judged rows = %+v; want the one the decision wrote beside itself", judged)
+			}
+			if judged[0].applied != c.wantApplied {
+				t.Errorf("the row reads applied %q; want %q, which is what the transaction did (%s, grant %q)",
+					judged[0].applied, c.wantApplied, dec.State, dec.GrantID)
+			}
+			if (judged[0].grantID != "") != (c.wantState == "granted") {
+				t.Errorf("the row names grant %q for a %s request; want it to name one only where the approval granted", judged[0].grantID, dec.State)
+			}
+		})
+	}
+}
+
+// TestTheJudgeSettlesNoWithheldName: the judge's run checks what the session's operator withheld
+// before it asks a model anything, and then spends up to twenty seconds on that model call. The
+// decision transaction checks it again, so a name withheld in those seconds is never settled by
+// the judge — neither granted nor denied — and the request waits for the person who decides it
+// today. The guard is the judge's alone: the same withheld name, on the same request, is still
+// the owner's to approve, which is the path a person has had all along.
+func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
+	m, enr, key := newJudgeFixture(t)
+	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the key", 600, "DEEL_API_KEY")
+	if _, err := m.Store.Pool.Exec(t.Context(),
+		`insert into withheld_secrets (enrollment_id, name) values ($1,'DEEL_API_KEY')`, enr); err != nil {
+		t.Fatalf("withhold the name: %v", err)
+	}
+
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of a withheld name = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	got := readDecided(t, m, *req.RecordID)
+	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
+	}
+	if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+		t.Errorf("request.judged rows = %+v; want none: the transaction wrote nothing", judged)
+	}
+
+	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || person.State != "granted" || person.GrantID == "" {
+		t.Fatalf("the owner's approval of the same withheld name = %+v, %v; want it granted, as it always was", person, err)
 	}
 }

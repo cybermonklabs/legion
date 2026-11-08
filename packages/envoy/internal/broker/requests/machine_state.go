@@ -35,6 +35,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"sort"
 	"strconv"
@@ -941,8 +942,11 @@ func (m *Machine) ApplyDecision(ctx context.Context, recordID string, approve bo
 // judged is the judge's verdict, written as one request.judged audit row inside the approval's
 // own transaction, so a grant and the record of why it exists commit together or not at all
 // (D11). It is a map[string]any rather than this package's own auditDetail because the judge
-// that calls this lives outside the package and must be able to name the type; the two types are
-// one, and judgedDetail converts.
+// that calls this lives outside the package and must be able to name the type; the two types
+// are one. The row written from it carries one key the judge does not write: applied, set from
+// what this transaction did with the approval rather than from what the judge asked for, since
+// an approval can commit and grant nothing (decider.judgedRow). The caller's own map is left
+// as it was.
 //
 // The judge only ever approves. A record the airlock rules do not let it decide is refused with
 // record.ErrNotJudgeable and nothing is written; a record a person decided first, or one that
@@ -950,7 +954,7 @@ func (m *Machine) ApplyDecision(ctx context.Context, recordID string, approve bo
 // that lost the race and no fault of its (D10). Each of those leaves the request where it was,
 // for the person who decides it today, and the judge records its reasoning with LogJudged.
 func (m *Machine) ApplyJudgeDecision(ctx context.Context, recordID, modelID string, judged map[string]any) (Decision, error) {
-	return m.applyDecision(ctx, recordID, true, byJudge(modelID, judgedDetail(judged)))
+	return m.applyDecision(ctx, recordID, true, byJudge(modelID, auditDetail(judged)))
 }
 
 // applyDecision is the retry loop both entry points share: one attempt, made again when the
@@ -1014,15 +1018,17 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	return nil
 }
 
-// judgedDetail is a caller's verdict as the audit row holds it. A verdict a caller left nil is
-// written as the empty object the column defaults to, since audit.detail is NOT NULL and a nil
-// map is a null parameter: a judge that recorded no reasoning records an empty one, and the
-// approval it just made is not lost to a constraint.
+// judgedDetail is a caller's verdict as the audit row holds it: a copy of what the caller gave,
+// and never nil. Never nil because audit.detail is NOT NULL and a nil map is a null parameter,
+// so a judge that recorded no reasoning records the empty object the column defaults to and
+// the approval it just made is not lost to a constraint. A copy because the row a transaction
+// writes is the transaction's to finish — decider.judgedRow sets applied on it from what that
+// transaction did — and the map a caller passed is still the caller's, held across the retries
+// applyDecision may make. The one spare slot is that applied.
 func judgedDetail(judged map[string]any) auditDetail {
-	if judged == nil {
-		return auditDetail{}
-	}
-	return auditDetail(judged)
+	row := make(auditDetail, len(judged)+1)
+	maps.Copy(row, judged)
+	return row
 }
 
 // decider is who is deciding a record in one applyDecisionAttempt: a person, named by the login
@@ -1048,6 +1054,24 @@ func byPerson(login string) decider { return decider{login: login} }
 // otherwise have decided is named nowhere in what it writes.
 func byJudge(modelID string, judged auditDetail) decider {
 	return decider{modelID: modelID, judged: judged}
+}
+
+// judgedRow is the judge's verdict as the request.judged row of this decision's own transaction
+// records it: what the judge wrote, with applied set from next, the state that transaction is
+// leaving the request in.
+//
+// The judge cannot write that key itself, and the row has to carry it: an approval the judge
+// makes can commit and grant nothing. The current policy may have dropped the requester from
+// the secret's list, which is recorded as the request's own denial under PolicyDeniedActor, and
+// the requesting enrollment may have gone, which is recorded approved and then denied. Both
+// commit, both leave the row beside them, and in both the judge granted nothing — so applied is
+// read off what the transaction did and never off what the judge asked for. The row it builds
+// is a copy (judgedDetail), so neither the judge's own map nor an earlier attempt's answer is
+// what the next attempt writes.
+func (d decider) judgedRow(next string) auditDetail {
+	row := judgedDetail(d.judged)
+	row["applied"] = next == "granted"
+	return row
 }
 
 // isJudge reports whether this decider is the model judge rather than a person.
@@ -1361,13 +1385,18 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if err := audit(ctx, tx, "request."+next, enr.ID, requestID, nullable(grantID), by, rowDetail); err != nil {
 		return Decision{}, false, err
 	}
+	// judged is the row the judge's verdict goes in as, built once here and logged below from
+	// the same object, so the line and the row cannot say different things.
+	var judged auditDetail
 	if who.isJudge() {
 		// D11: the judge's verdict goes in beside the decision, inside the decision's own
 		// transaction, so the grant and the record of why it exists are written together or not
 		// at all. Its actor is the judge even where the policy made the answer
 		// (PolicyDeniedActor above): this row says what the judge decided, not what the request
-		// became.
-		if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nullable(grantID), who.actor(), who.judged); err != nil {
+		// became. Its applied, though, is what the request became: next, and nothing the judge
+		// wrote (decider.judgedRow).
+		judged = who.judgedRow(next)
+		if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nullable(grantID), who.actor(), judged); err != nil {
 			return Decision{}, false, err
 		}
 	}
@@ -1393,7 +1422,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	ev.Reason, ev.Detail, ev.Raw = obj.Reason, detail, rawJSON(rowDetail)
 	store.LogGrantEvent(ev)
 	if who.isJudge() {
-		logGrantRow(judgedKind, who.actor(), enr, requestID, grantID, rawJSON(who.judged))
+		logGrantRow(judgedKind, who.actor(), enr, requestID, grantID, rawJSON(judged))
 	}
 	return Decision{RequestID: requestID, State: next, GrantID: grantID, Detail: detail}, false, nil
 }
@@ -1477,10 +1506,28 @@ const PolicyDeniedActor = "broker:policy"
 // below the request's lifetime, or that now has one the request names none for, is no one's to
 // approve now, as with a withheld name: the session asks again within it.
 //
+// The model judge is held to one rule of its own, ahead of all of this: it settles no withheld
+// name, however the policy reads that name now. The run made that check itself before it asked
+// a model anything (judge's withheld check), and then spent up to 20 seconds on the model call,
+// so a name the session's operator took back in the meantime would otherwise be the one thing
+// the run checked that this transaction does not check again — every other check it made is
+// made again here or in record.MayJudge. It is hard to reach, since only names granted
+// automatically are withheld and the name must have changed tier while the request waited, and
+// it is one comparison to close. A person's path never reaches the guard: a withheld name a
+// person may approve is still theirs to approve, on the rules below, which are the rules they
+// have always been held to.
+//
 // set is the one snapshot the whole decision is made against, the one whose airlock fingerprints
 // the request then records as what it was decided under (decidedUnder), and requested the
 // request's names, read once by the approve path that calls this.
 func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester policy.Requester, who decider, recordApprover string, lifetime *int) error {
+	if who.isJudge() {
+		for _, g := range requested {
+			if slices.Contains(requester.Withheld, g.name) {
+				return fmt.Errorf("%w: %s is withheld from this session, and the judge settles no withheld name", record.ErrNotApprover, g.name)
+			}
+		}
+	}
 	for _, g := range requested {
 		d, err := set.Evaluate(g.name, requester)
 		if errors.Is(err, policy.ErrUnknownSecret) {

@@ -22,7 +22,10 @@ var ErrNotApprover = errors.New("only the record's approver may decide it")
 // cancelled — the login that decided it, "" for an event no human decided, and the audit actor
 // the event was written under: HumanActor for a person's decision, JudgeActor for one the model
 // judge made, which carries no login at all, and the broker itself for an event it ended on its
-// own.
+// own. Verify reads which arm admits an approval off Actor, so the two strings beside each other
+// must not be able to swap: store.Store.ChainVerifier fills these in by column name
+// (pgx.RowToStructByName), which makes each field's name the column's and no reordering of them
+// a change of meaning.
 type TerminalEvent struct {
 	Event string
 	Login string
