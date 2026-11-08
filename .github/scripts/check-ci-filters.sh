@@ -256,8 +256,8 @@
 #      taking the highest tree that may go whole, naming file by file the excluded files of a
 #      directory that holds a read one too, and reading directories and files in sorted order,
 #      so two runs over one tree write one text. They are generated because they are too many
-#      to keep by hand - 520 patterns over 19 of this file's filters today, 22 for
-#      daemon_go_tests and 137 for docs - and because none of them is a judgement: each follows
+#      to keep by hand - 525 patterns over 19 of this file's filters today, 22 for
+#      daemon_go_tests and 138 for docs - and because none of them is a judgement: each follows
 #      from the read sets above. The block belongs to the filter whose list holds it and never
 #      to a group an anchor names, since two filters sharing an anchor need not run the same
 #      tests; a filter with nothing to exclude carries no block, and so does a filter no gate
@@ -272,14 +272,14 @@
 #      filter badly, it stops the job from starting at all, with `An error occurred trying to
 #      start process '.../node24/bin/node' ... Argument list too long` and no filter output for
 #      any job of the run. That is what one run gave (dispatch://INFRA-1413, pull request
-#      #2945): the whole block in one step measured 137,498 bytes of this branch's text once
-#      rule 17's 520 generated `!` patterns were written into it (137,494 when that issue
-#      measured it), against 76,669 bytes on main. The cure is that the changes job declares
-#      its filters in two paths-filter steps rather than one - 77,794 and 62,209 bytes today -
-#      and this rule is what keeps the next filter from growing one of
+#      #2945): the whole block in one step measured 137,498 bytes of this branch's text once the
+#      520 generated `!` patterns rule 17 wrote at that measurement were in it (137,494 when
+#      that issue measured it), against 76,669 bytes on main. The cure is that the changes job
+#      declares its filters in two paths-filter steps rather than one - 79,863 and 65,650 bytes
+#      today - and this rule is what keeps the next filter from growing one of
 #      them back over the cap: it fails here, on the pull request that writes it, rather than
 #      on a runner. The margin is a quarter of the cap, which leaves the longer of the two
-#      20,510 bytes to grow in and covers many times over the 14 bytes of `INPUT_FILTERS=` the
+#      18,441 bytes to grow in and covers many times over the 14 bytes of `INPUT_FILTERS=` the
 #      kernel counts beside the value. Every rule above reads the filters of all those steps as
 #      one set, since that is what the job's outputs hand on; a group an anchor names that
 #      filters of both steps share is written out in both, because a YAML anchor reaches no

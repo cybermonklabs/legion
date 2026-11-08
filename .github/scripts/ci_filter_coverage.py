@@ -354,7 +354,7 @@ def directory_reads(dir_rel: str, tests: set, why: str) -> list:
     lines here only to find that constraint. Counting it as a read of this run would say a job
     that compiles it nowhere must run on a change to it, which rule 17 could then not exclude:
     the 97 test files under a build constraint here would hold their unconstrained siblings in
-    the gate filters that way, 4,566 generated patterns where there are now 520."""
+    the gate filters that way, 4,566 generated patterns where there are now 525."""
     names = sorted(os.listdir(REPO / dir_rel))
     left_out = {name for name in names if name in tests or name.endswith(TEST_SUFFIX)}
     if not left_out:

@@ -21,6 +21,11 @@ name: CI job test
 # carrying a caller's value is `inputs` - which is why each of these is an input here and
 # `.github/scripts/check-ci-filters.sh` resolves it through the caller's `with:`.
 #
+# ci.yaml keeps this job running when `changes` did not succeed, "so this buys signal", and an
+# input it fills from that job is empty then. So each gated step reads `changes-result` too and
+# runs whenever `changes` failed, which is what the job did before the gates were written; lint
+# spells the same term for its own two steps. A gated step added here takes both halves.
+#
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
@@ -31,6 +36,13 @@ on:
         description: >-
           ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+      changes-result:
+        description: >-
+          ci.yaml's `needs.changes.result`: every gated step below runs when `changes` did not
+          succeed, as they did before this job's `if:` gated them one by one, and as lint's two
+          notices steps do.
         type: string
         required: true
       guide_layout:
@@ -256,11 +268,11 @@ jobs:
           .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
       - name: Test release scripts
-        if: inputs.release_push_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.release_push_test == 'true'
         run: .github/scripts/release-push.test.sh
 
       - name: Test the release version bump
-        if: inputs.release_bump_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.release_bump_test == 'true'
         run: .github/scripts/release-bump.test.sh
 
       - name: Test third-party notices
@@ -275,103 +287,103 @@ jobs:
       # the checker it spawns: no other step of this job reads one of them, so a run that
       # changed none of them skips this step.
       - name: Check the guides' semantic line breaks
-        if: inputs.guide_layout == 'true'
+        if: inputs.changes-result != 'success' || inputs.guide_layout == 'true'
         run: bun test scripts/semantic-line-breaks.guides.test.ts
 
       - name: Test the Bun pin check
-        if: inputs.check_bun_version_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_bun_version_test == 'true'
         run: .github/scripts/check-bun-version.test.sh
 
       - name: Test the frozen Bun workspace manifest check
-        if: inputs.check_bun_workspace_manifests_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_bun_workspace_manifests_test == 'true'
         run: .github/scripts/check-bun-workspace-manifests.test.sh
 
       - name: Test the zod version check
-        if: inputs.check_zod_version_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_zod_version_test == 'true'
         run: .github/scripts/check-zod-version.test.sh
 
       - name: Test the gh version check
-        if: inputs.check_gh_version_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_gh_version_test == 'true'
         run: .github/scripts/check-gh-version.test.sh
 
       - name: Test the workflow path model the path checks import
-        if: inputs.workflow_paths_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.workflow_paths_test == 'true'
         run: .github/scripts/workflow_paths.test.sh
 
       - name: Test the image trigger path check
-        if: inputs.check_image_trigger_paths_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_image_trigger_paths_test == 'true'
         run: .github/scripts/check-image-trigger-paths.test.sh
 
       - name: Test the CI image check
-        if: inputs.check_ci_images_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_ci_images_test == 'true'
         run: .github/scripts/check-ci-images.test.sh
 
       - name: Test the CI image mirror
-        if: inputs.mirror_ci_images_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.mirror_ci_images_test == 'true'
         run: .github/scripts/mirror-ci-images.test.sh
 
       - name: Test the action pin check
-        if: inputs.check_action_pins_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_action_pins_test == 'true'
         run: .github/scripts/check-action-pins.test.sh
 
       - name: Test the private-name check
-        if: inputs.check_private_names_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_private_names_test == 'true'
         run: .github/scripts/check-private-names.test.sh
 
       - name: Test the plugin-name check
-        if: inputs.check_plugin_names_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_plugin_names_test == 'true'
         run: .github/scripts/check-plugin-names.test.sh
 
       - name: Test the fireEvent reason check
-        if: inputs.check_fireevent_reasons_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_fireevent_reasons_test == 'true'
         run: .github/scripts/check-fireevent-reasons.test.sh
 
       - name: Test the release credential check
-        if: inputs.check_release_credentials_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_release_credentials_test == 'true'
         run: .github/scripts/check-release-credentials.test.sh
 
       - name: Test the repository path derivation
-        if: inputs.repo_paths_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.repo_paths_test == 'true'
         run: .github/scripts/repo-paths.test.sh
 
       - name: Test the Playwright dependency list check
-        if: inputs.playwright_deps_current_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.playwright_deps_current_test == 'true'
         run: .github/scripts/playwright-deps-current.test.sh
 
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.
       - name: Test the e2e proof selector
-        if: inputs.select_e2e_proofs_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.select_e2e_proofs_test == 'true'
         run: .github/scripts/select-e2e-proofs.test.sh
 
       # The lister the build-tag steps take their `-run` from, over fixture packages and over
       # this repository's own tagged test files.
       - name: Test the build-tag test lister
-        if: inputs.go_tagged_tests_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.go_tagged_tests_test == 'true'
         run: .github/scripts/go-tagged-tests.test.sh
 
       - name: Test ci-ok's verdict
-        if: inputs.ci_ok_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.ci_ok_test == 'true'
         run: .github/scripts/ci-ok.test.sh
 
       - name: Test ci-ok's report and the check-run post (a stand-in gh)
-        if: inputs.ci_ok_report_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.ci_ok_report_test == 'true'
         run: .github/scripts/ci-ok-report.test.sh
 
       - name: Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)
-        if: inputs.ci_ok_reconcile_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.ci_ok_reconcile_test == 'true'
         run: .github/scripts/ci-ok-reconcile.test.sh
 
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
-        if: inputs.find_pr_payload_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.find_pr_payload_test == 'true'
         run: .github/scripts/find-pr-payload.test.sh
 
       - name: Test the merge-group cancel decision
-        if: inputs.merge_group_cancels_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.merge_group_cancels_test == 'true'
         run: .github/scripts/merge-group-cancels.test.sh
 
       - name: Test the main bypass check's decision
-        if: inputs.main_bypass_check_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.main_bypass_check_test == 'true'
         run: .github/scripts/main-bypass-check.test.sh
 
       # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
@@ -379,14 +391,14 @@ jobs:
       # chosen or a re-run is judged on the attempt it replaced; these are the assertions that
       # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
       - name: Test the browser lane's blob attempt selection
-        if: inputs.dispatch_browser_latest_blobs_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
 
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
       # notice titles are held here, where no browser and no runner are needed.
       - name: Test the browser lane's memory and CPU sampler
-        if: inputs.dispatch_browser_samples_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_samples_test == 'true'
         run: .github/scripts/dispatch-browser-samples.test.sh
 
       # The apt archive cache key dispatch-browser.yaml's two browser jobs restore under and
@@ -394,19 +406,19 @@ jobs:
       # misses every entry saved under the old one, so the whole string and the refusals that
       # keep it from naming nothing are held here.
       - name: Test the apt archive cache key
-        if: inputs.apt_archive_cache_key_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.apt_archive_cache_key_test == 'true'
         run: .github/scripts/apt-archive-cache-key.test.sh
 
       - name: Test the race memory sampler
-        if: inputs.race_memory_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
 
       - name: Test the disk watch
-        if: inputs.disk_watch_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
 
       - name: Test the session import pods script (a stand-in kubectl)
-        if: inputs.sessions_import_pods_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.sessions_import_pods_test == 'true'
         run: bash scripts/sessions-import-pods.test.sh
 
       - name: Lint the Dispatch census script
@@ -456,20 +468,20 @@ jobs:
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
-        if: inputs.check_ci_filters_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_ci_filters_test == 'true'
         run: .github/scripts/check-ci-filters.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
-        if: inputs.check_ts_filters_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.check_ts_filters_test == 'true'
         run: .github/scripts/check-ts-filters.test.sh
 
       # Beside the two checks above, and needing no Go either: every case is one line of text,
       # read by the line reader of .github/scripts/go-test-step-expansion.py, whose own run
       # compiles both Go modules and is run by hand rather than by any job.
       - name: Test the go test step expansion
-        if: inputs.go_test_step_expansion_test == 'true'
+        if: inputs.changes-result != 'success' || inputs.go_test_step_expansion_test == 'true'
         run: .github/scripts/go-test-step-expansion.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
