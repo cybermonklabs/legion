@@ -230,6 +230,16 @@
 #
 # Run from anywhere: .github/scripts/check-ci-filters.sh
 # CI runs it in ci.yaml's ci-filters job, and its tests in ci.yaml's test job.
+#
+# On a machine whose `go` is a bootstrap that switches to a toolchain in the module cache - every
+# Legion worker pod is one, where `go version` says 1.27.3 while the binary on PATH is 1.27.1 -
+# every closure above fails with `toolchain not available`, because the go commands run over an
+# emptied GOMODCACHE and so cannot reach the toolchain module either. The two real findings then
+# sit among 85 such errors, where a reader judging this by its tail or its exit status sees
+# nothing. Run it on the toolchain's own binary instead, and it answers as CI does:
+#   PATH="$(go env GOMODCACHE)/golang.org/toolchain@*/bin:$PATH" GOTOOLCHAIN=local \
+#     .github/scripts/check-ci-filters.sh
+# Either way, read its output by grepping for the problem rather than by its last line.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

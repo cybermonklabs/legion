@@ -417,7 +417,7 @@ func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 // before this). A field that is no slice keeps its enum where the reflector put it, which is
 // where it belongs.
 func openAPIEnumOntoItems(schema *jsonschema.Schema, field reflect.StructField) error {
-	if schema == nil || len(schema.Enum) == 0 || openAPIElementOf(field.Type) == nil {
+	if schema == nil || len(schema.Enum) == 0 || !openAPIIsList(field.Type) {
 		return nil
 	}
 	if schema.Items == nil || schema.Items.SchemaOrBool == nil || schema.Items.SchemaOrBool.TypeObject == nil {
@@ -428,16 +428,13 @@ func openAPIEnumOntoItems(schema *jsonschema.Schema, field reflect.StructField) 
 	return nil
 }
 
-// openAPIElementOf is the element type of a slice or array, through the pointers around it, and
-// nil for a type that holds no list.
-func openAPIElementOf(t reflect.Type) reflect.Type {
+// openAPIIsList answers whether a type holds a list: a slice or an array, through the pointers
+// around it.
+func openAPIIsList(t reflect.Type) bool {
 	for t != nil && t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	if t == nil || (t.Kind() != reflect.Slice && t.Kind() != reflect.Array) {
-		return nil
-	}
-	return t.Elem()
+	return t != nil && (t.Kind() == reflect.Slice || t.Kind() == reflect.Array)
 }
 
 // openAPIOmitsEmpty is whether a json tag leaves its field out of the object when the value is
@@ -472,8 +469,8 @@ func openAPIAllowNullRef(schema *jsonschema.Schema, field reflect.Type) {
 	schema.WithAnyOf(referred.ToSchemaOrBool(), null.ToSchemaOrBool())
 }
 
-// rawFieldKey answers the rawFieldSchemas key of one property, "<go type name>.<json field name>",
-// and whether that table names it.
+// rawFieldKey answers the rawFieldSchemas key of one property, the rawFieldKeyOf of the owning
+// struct's reflect.Type and the property's json name, and whether that table names it.
 func (e *openAPIEmitter) rawFieldKey(p jsonschema.InterceptPropParams) (bool, rawFieldKeyOf) {
 	if p.ParentSchema == nil || p.ParentSchema.ReflectType == nil {
 		return false, rawFieldKeyOf{}

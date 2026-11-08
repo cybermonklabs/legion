@@ -102,10 +102,6 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(itemblocks.Carried{}):                 "CarriedBlock",
 }
 
-// rawField is what one json.RawMessage field's bytes carry, for rawFieldSchemas. GoType names the
-// Go type the bytes hold, which is reflected like any other, so a rename fails to compile rather
-// than leaving a reference to a schema nothing declares; Fragment writes the schema out where no
-// Go type names it (a login, a timestamp, a bounded integer).
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
 // unqualified name, so two packages cannot collide and a renamed type fails to compile here
 // rather than at the emit. schemaNames in this file is keyed the same way.
@@ -114,6 +110,10 @@ type rawFieldKeyOf struct {
 	Field string
 }
 
+// rawField is what one json.RawMessage field's bytes carry, for rawFieldSchemas. GoType names the
+// Go type the bytes hold, which is reflected like any other, so a rename fails to compile rather
+// than leaving a reference to a schema nothing declares; Fragment writes the schema out where no
+// Go type names it (a login, a timestamp, a bounded integer).
 type rawField struct {
 	// GoType is a zero value of the Go type the bytes hold; nil where Fragment describes them.
 	GoType any

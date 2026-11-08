@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -233,46 +234,57 @@ func TestOpenAPIRequestBodySchemasRequireWhatTheirFieldsTag(t *testing.T) {
 // those strings where the route takes a list of them: ProjectGatedStepsInput.steps was generated
 // as `"decisions" | "criteria" | "spec" | null` until openAPIEnumOntoItems moved it. So every
 // enum of the document sits where its Go field says, and a reader of the schema can tell which.
+// The whole document is walked rather than the top-level properties of its component schemas,
+// since the emitter moves a query parameter's enum (queryParameters) and a nested object's by
+// the same call, and an enum left on an array there reads the same way to a client.
 func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
-	_, document := readOpenAPI(t)
-	read := 0
-	for name, declared := range document.Components.Schemas {
-		var schema struct {
-			Properties map[string]struct {
-				Enum  []string `json:"enum"`
-				Type  any      `json:"type"`
-				Items *struct {
-					Enum []string `json:"enum"`
-				} `json:"items"`
-			} `json:"properties"`
-		}
-		if err := json.Unmarshal(declared, &schema); err != nil {
-			t.Errorf("read schema %s: %v", name, err)
-			continue
-		}
-		for property, value := range schema.Properties {
-			if len(value.Enum) == 0 {
-				continue
-			}
-			read++
-			if openAPITypeHolds(value.Type, "array") {
-				t.Errorf("%s.%s is an array and carries the enum %v on the array itself: a list's "+
-					"values are its items', so the document says the field is one of them rather "+
-					"than a list of them", name, property, value.Enum)
-			}
-		}
-		for property, value := range schema.Properties {
-			if value.Items != nil && len(value.Items.Enum) > 0 {
-				read++
-				if !openAPITypeHolds(value.Type, "array") {
-					t.Errorf("%s.%s carries an enum on its items and is no array", name, property)
-				}
-			}
-		}
+	raw, _ := readOpenAPI(t)
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		t.Fatalf("read the emitted document: %v", err)
+	}
+	var misplaced []string
+	read := collectOpenAPIEnums(tree, "", &misplaced)
+	sort.Strings(misplaced)
+	for _, found := range misplaced {
+		t.Error(found)
 	}
 	if read == 0 {
 		t.Fatal("the document declares no enum at all, so this test proves nothing")
 	}
+}
+
+// collectOpenAPIEnums walks every node the document holds, wherever it holds it, as
+// collectOpenAPIReferences does: a component schema's property, a property of a nested object, a
+// query parameter's schema. It appends to misplaced what each enum sitting on an array rather
+// than on the array's items is, by the path it sits at, and answers how many enums it read, so a
+// walk that silently found none cannot pass for one that found every enum right.
+func collectOpenAPIEnums(node any, path string, misplaced *[]string) int {
+	read := 0
+	switch value := node.(type) {
+	case map[string]any:
+		if enum, carried := value["enum"].([]any); carried {
+			read++
+			if openAPITypeHolds(value["type"], "array") {
+				*misplaced = append(*misplaced, fmt.Sprintf("%s is an array and carries the enum "+
+					"%v on the array itself: a list's values are its items', so the document says "+
+					"the field is one of them rather than a list of them", path, enum))
+			}
+		}
+		if items, nested := value["items"].(map[string]any); nested {
+			if _, carried := items["enum"]; carried && !openAPITypeHolds(value["type"], "array") {
+				*misplaced = append(*misplaced, fmt.Sprintf("%s carries an enum on its items and is no array", path))
+			}
+		}
+		for key, child := range value {
+			read += collectOpenAPIEnums(child, path+"/"+key, misplaced)
+		}
+	case []any:
+		for index, child := range value {
+			read += collectOpenAPIEnums(child, fmt.Sprintf("%s/%d", path, index), misplaced)
+		}
+	}
+	return read
 }
 
 // openAPITypeHolds answers whether a schema's `type`, which is one name or a list of them, holds

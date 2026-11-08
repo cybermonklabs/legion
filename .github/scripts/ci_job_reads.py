@@ -323,6 +323,10 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/delivery/measures/testdata/dora-fixture.json", "internal/dispatch/api/delivery_measures_test.go:82")),
     f"{ENVOY}/internal/dispatch/api/delivery_test.go": reads(
         (f"{ENVOY}/internal/dispatch/delivery/testdata/dev-only-run-jobs.json", "internal/dispatch/api/delivery_test.go:714")),
+    f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         "internal/dispatch/api/openapi_test.go:176 (runtime-relative ../../../../.., the committed document "
+         "TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the emitter's bytes with)")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
@@ -1106,6 +1110,11 @@ GATES = [
         (f"{ENVOY}/**", f"{at('envoy-go-checks', 'Check Go formatting')}: gofmt -l . in packages/envoy reads every .go file under it, infra included; the script tests below live here too"),
         ("packages/contracts/scripts/gen-go.ts", f"{at('envoy-go-checks', 'Check Go contracts are generated from the shared schema')} (packages/contracts/package.json check:go)"),
         ("packages/contracts/schemas/**", "packages/contracts/scripts/gen-go.ts's envelopeFile and blockSchemaFile read schemas/"),
+        # The pinned step above compares the emitter's bytes with this file, so an edit of it alone
+        # must start this job: the Run stands for what the command compiles, never for what it reads.
+        ("packages/contracts/schemas/dispatch-openapi.json",
+         f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
+         "cmd/dispatch/subcommands.go:171 reads the committed document to compare it"),
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-5 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts)"),
