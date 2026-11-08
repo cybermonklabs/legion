@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import type { MermaidDrawing } from "@legion/proof-editor/mermaid";
 import * as mermaidRenderer from "@legion/proof-editor/mermaid-render";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, waitFor, within } from "@testing-library/react";
+import { configure, fireEvent, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { renderWithQueries as render } from "../../__tests__/query-provider";
@@ -81,6 +81,17 @@ class FakeWorker {
     for (const listener of this.listeners[type] ?? []) listener(event);
   }
 }
+
+// Every wait here is on a mermaid render, which is the slowest work any case of this suite does:
+// one case draws 33 diagrams and waits for all of them. Testing Library's default is one second,
+// which is under what that takes whenever the machine is busy, so the cases failed by the clock
+// rather than by their assertion - measured on a two-core Legion pod with four busy loops beside
+// the run, where this file alone passes 34 of 34 idle and fails exactly the two heaviest cases
+// under load, at 1100 ms and 1178 ms against that one-second default, and in the whole suite once
+// in about fifteen runs. The budget below is for the slowest machine rather than the fastest: it
+// weakens nothing, since a case whose diagrams never arrive still fails, only later, and a render
+// that does arrive is not judged by how loaded the box was.
+configure({ asyncUtilTimeout: 15_000 });
 
 // The worker's renderer runs on the test's thread here, under happy-dom, where ELK, which lays out
 // flowcharts, cannot be built; so these draw sequence diagrams, and a dangling edge is refused in
