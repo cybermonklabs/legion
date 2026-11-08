@@ -102,7 +102,11 @@
       "tree": "LEGION-210",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "waitingLine": {
+        "place": 1,
+        "length": 2
+      }
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -112,7 +116,11 @@
       "tree": "LEGION-211",
       "repo": "acme/widgets",
       "defaultBranch": "main",
-      "workers": {}
+      "workers": {},
+      "waitingLine": {
+        "place": 2,
+        "length": 2
+      }
     }
   },
   "pendingStatusWrites": [],

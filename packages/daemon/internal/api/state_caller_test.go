@@ -135,12 +135,13 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds and the gated steps among the keys it is served without, since such a pod is
-// below treeContract, wakesWaitingContract and gatedStepsContract too. A pod at this contract,
-// and a caller in no pod — the operator's `legion state`, whose open-rounds line reads both
-// fields and whose queue line reads those wakes — are served everything. The claims are the
-// state snapshot's own, so there is no readable state whose caller's contract is unknown: a
-// snapshot without them is no state, and the route refuses it.
+// pacing holds, the gated steps and the places in the admission line among the keys it is served
+// without, since such a pod is below treeContract, wakesWaitingContract, gatedStepsContract and
+// waitingLineContract too. A pod at this contract, and a caller in no pod — the operator's
+// `legion state`, whose open-rounds line reads both fields and whose queue line reads those
+// wakes — are served everything. The claims are the state snapshot's own, so there is no
+// readable state whose caller's contract is unknown: a snapshot without them is no state, and
+// the route refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -189,8 +190,9 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// refuses those as well (memory_test.go holds that half), with contract 51's two tree
 			// keys — `admission.trees` and each issue's `tree` — gone (tree_test.go holds that
 			// half), with `wakesWaiting` gone, the key a reader before contract 53 refuses empty
-			// as surely as filled (withoutWakesWaiting), and with the gated steps gone, the
-			// field contract 55 added.
+			// as surely as filled (withoutWakesWaiting), with the gated steps gone, the field
+			// contract 55 added, and with the places in the admission line gone, the field
+			// contract 56 added.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -216,6 +218,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				delete(issue, "memoryDrawnAt")
 				delete(issue, "tree")
 				delete(issue, "gatedSteps")
+				delete(issue, "waitingLine")
 			}
 			if err := json.Unmarshal(body, &got); err != nil {
 				t.Fatal(err)
