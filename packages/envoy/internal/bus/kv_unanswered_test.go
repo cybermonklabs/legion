@@ -346,15 +346,13 @@ func TestAnUnansweredAccountInfoIsSentAgainAndTheStartGoesOn(t *testing.T) {
 }
 
 // unansweredKeyValue creates the bucket on a connection through relay and returns that connection
-// with the legacy handle a start holds when it comes to open the jetstream handle of it.
+// with the legacy handle a start holds when it comes to open the jetstream handle of it. The
+// connection is relayedJetStream's, a client's, so a row that drives the whole of EnsureKeyValue
+// on it reads the refusal record that call reads (refusedSend, clientOwning) rather than the
+// early exit a connection no client owns takes.
 func unansweredKeyValue(t *testing.T, relay *unansweredRelay) (*nats.Conn, nats.JetStreamContext, nats.KeyValue) {
 	t.Helper()
-	conn := testnats.Connect(t, relay.url)
-	t.Cleanup(conn.Close)
-	js, err := conn.JetStream(nats.MaxWait(RequestTimeout))
-	if err != nil {
-		t.Fatalf("open JetStream through the relay: %v", err)
-	}
+	conn, js := relayedJetStream(t, relay)
 	kv, err := js.CreateKeyValue(&nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage})
 	if err != nil {
 		t.Fatalf("create the bucket: %v", err)

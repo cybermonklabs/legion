@@ -162,19 +162,24 @@ func namedRequest(request string, err error) error {
 // knows it has no leader answers an error instead, which unanswered() does not match and this
 // call still ends on. Every production caller opens its JetStream context with
 // nats.MaxWait(10 * time.Second) (cmd/listener/brokerauth.go:149,
-// internal/cistore/cistore.go:357, internal/session/registry.go:369, internal/store/kv.go:94,
-// internal/bus/nats.go:508), which bounds one request and not one step of this call, so what a
-// step that draws no answer costs is counted a request at a time, and every case of it is
-// counted here. Where the server answers nothing at all, each send ends at its first unanswered
-// request, so each step costs unansweredSends waits of ten seconds: 30 s for the lookup, and
-// 30 s for the create, which nats.go leaves at the first of the requests the comment on the
-// create below lists. The create costs more when some of its requests do answer: at most 60 s
-// where every account info answers and the STREAM.CREATE behind it draws nothing, and up to
-// 120 s where the server answers that create "stream name already in use", since nats.go then
-// reads the stream and may update it, so a send there is up to four requests. The wait on a
-// member that has not applied the create costs bucketAppliedDeadline and up to 30 s beyond it,
-// since awaitBucketApplied reads that deadline between reads and cuts no read in flight: a
-// lookup begun just under the deadline still spends its own three sends after it.
+// internal/cistore/cistore.go:357, internal/session/registry.go:396, internal/store/kv.go:94,
+// internal/bus/nats.go:511), and internal/legionagents/store.go:75 opens its own with
+// nats.MaxWait(openTimeout), the same ten seconds (store.go:29). That wait bounds one request and
+// not one step of this call, so what a step that draws no answer costs is counted a request at a
+// time, and every case of it is counted here. Where the server answers nothing at all, each send
+// ends at its first unanswered request, so each step costs unansweredSends waits of ten seconds:
+// 30 s for the lookup, and 30 s for the create, which nats.go leaves at the first of the requests
+// the comment on the create below lists. The create costs more when some of its requests do
+// answer: at most 60 s where every account info answers and the STREAM.CREATE behind it draws
+// nothing, and up to 120 s where the server answers that create "stream name already in use",
+// since nats.go then reads the stream and may update it, so a send there is up to four requests.
+// The wait on a member that has not applied the create costs bucketAppliedDeadline and up to
+// 30 s beyond it, since awaitBucketApplied reads that deadline between reads and cuts no read in
+// flight: a lookup begun just under the deadline still spends its own three sends after it.
+// The handle open this call ends with is a third such step (wrapKeyValue): 30 s on a start that
+// found its bucket, and bucketAppliedDeadline and up to 30 s beyond it on one that created it,
+// twice on the "stream name already in use" path, which waits a member out before it opens the
+// handle (awaitBucketApplied, below) and again inside the open.
 //
 // A request the server refuses under the connection's grant is not sent again, since it would be
 // refused again: the server answers such a request with nothing and reports the refusal on the
@@ -199,9 +204,12 @@ func namedRequest(request string, err error) error {
 //
 // The handle open this function ends with is sent again too when the server leaves it unanswered
 // (wrapKeyValue, sentAgain), on both of its paths: a bucket this start created and one it found
-// already there, which is the ordinary start, a restart of a deployment whose buckets exist. A
-// caller that waits on a budget of its own, such as a request or a watcher's repair, opens a
-// bucket through OpenKeyValue or WrapKeyValue instead, which send it once.
+// already there, which is the ordinary start, a restart of a deployment whose buckets exist.
+// EnsureKeyValue is how a program opens a bucket it needs before it can serve: the listener's
+// start, where losing that answer ends the program, and Dispatch's webhook redelivery sweep
+// (redeliver.OpenState), which logs the failure and tries again on its next pass. A caller that
+// waits on a budget of its own, such as a request or a watcher's repair, opens a bucket through
+// OpenKeyValue or WrapKeyValue instead, which send it once.
 func EnsureKeyValue(conn *nats.Conn, js nats.JetStreamContext, config *nats.KeyValueConfig) (KeyValue, error) {
 	stream := "KV_" + config.Bucket
 	lookup := stream + " STREAM.INFO"
@@ -480,7 +488,7 @@ func wrapKeyValue(conn *nats.Conn, kv nats.KeyValue, created, sendAgain bool) (K
 	if err != nil {
 		return KeyValue{}, err
 	}
-	request := "KV_" + kv.Bucket() + " STREAM.INFO"
+	request := "KV_" + kv.Bucket() + " handle open"
 	open := func() (jetstream.KeyValue, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), RequestTimeout)
 		defer cancel()

@@ -31,14 +31,10 @@ func TestADeniedBucketLookupIsNotSentAgain(t *testing.T) {
 	relay := startUnansweredRelayOn(t, grant.URL, openSubject(bucket))
 	// The call under test reads the record of the refusal through the client that owns the
 	// connection (clientOwning), so the connection is a client's and not a bare one.
-	client, err := Connect([]string{relay.url})
-	if err != nil {
-		t.Fatalf("connect the client whose connection the start opens the bucket on: %v", err)
-	}
-	t.Cleanup(client.Close)
+	conn, js := relayedJetStream(t, relay)
 
 	relay.arm(0)
-	_, err = EnsureKeyValue(client.Conn, client.JS(), &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
+	_, err := EnsureKeyValue(conn, js, &nats.KeyValueConfig{Bucket: bucket, Storage: nats.MemoryStorage})
 
 	if !errors.Is(err, ErrPublishDenied) {
 		t.Fatalf("a start whose bucket lookup the server refused = %v, want ErrPublishDenied", err)
