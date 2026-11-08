@@ -412,7 +412,13 @@ export default function legionExtension(pi: PiApi): void {
    * the `task` call running that subagent among them, and its stuck call would be judged by
    * nobody; through either of the two closing by id it would do the same wherever the provider
    * gives the two calls one id, which the ids being the provider's own leaves open. Each of the
-   * seven is held by a case of `legion.test.ts` that is red when that guard alone is cut. */
+   * seven is held by a case of `legion.test.ts` that is red when that guard alone is cut.
+   *
+   * **The guard on `message_end` and the close behind it hold each other**, and neither is
+   * deleted on the evidence of a green suite: its case, "a subagent's run cancelled on its own
+   * closes none of the worker's calls", asserts that this guard keeps a subagent's aborted
+   * message off the worker's book, so deleting the close that line guards would leave the case
+   * passing with the guard gone. The same sentence is written at that handler. */
   const subagentEvent = (context: SessionContext): boolean => context.agent?.kind === "sub";
 
   /**
@@ -724,6 +730,14 @@ export default function legionExtension(pi: PiApi): void {
   // so nothing it has been reminded of is unanswered — read from `message_end` rather than from
   // the `tool_call` handler above, which records a call's arguments and says nothing about
   // whether the turn it belongs to settled.
+  //
+  // Deleting this close would take nothing red and would quietly hollow another case: "a
+  // subagent's run cancelled on its own closes none of the worker's calls" asserts that the
+  // guard in front of it keeps a subagent's aborted message off the worker's book, and with no
+  // close behind the guard that case passes with the guard gone. The line and that guard hold
+  // each other, which is why neither is deleted on the evidence of a green suite. The case that
+  // holds this line is "an assistant message that ended aborted closes the calls of the turn it
+  // ended".
   pi.on("message_end", async (event, context) => {
     if (!subagentEvent(context)) stallWatch?.assistantMessage(event.message);
     if (!phaseWorkerSession(context)) return;

@@ -86,9 +86,21 @@ import {
 //     thing — the real worker exits, the real counter file is written and read back by the
 //     relaunch, and the real notice reaches the listener.
 
+/**
+ * What one case's cleanup has to do, and why it gets a bound of its own: each pane's steps kill a
+ * real Oh My Pi and wait for it to be reaped, close the stand-in server and the socket that
+ * refuses NATS, and remove a scratch root holding that pane's home, its sessions and its `eval`
+ * kernel's temporary files. On a loaded pod that is seconds of real work, and Bun's default hook
+ * bound is 5 s: one run of three at `c9f2ddf3c71f` came back 6 pass, 2 fail with 68 `expect()`
+ * calls against a clean run's 83, two cases cut short at the hook rather than at an assertion.
+ * The bound here is proportionate to what the hook does, in a suite whose own cases are allowed
+ * three minutes each; a cleanup that really hangs still fails, two minutes later.
+ */
+const CLEANUP_MS = 120_000;
+
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, CLEANUP_MS);
 
 test.skipIf(skip)(
   "a cell that ends when its child dies: the call is judged from its execution start, the evidence names the child, the owner is told, and the first step ends the child with no abort sent",
