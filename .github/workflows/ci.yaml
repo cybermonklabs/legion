@@ -2258,6 +2258,48 @@ jobs:
         name: Start the origin that stands in for all three sources
         run: .github/scripts/ci-tools-proof.sh origin-start
 
+      # Case 5 of 8 of the corrupted payloads, and the one that runs here rather than with the
+      # other seven: the jj binary in mise's install directory is one byte changed.
+      # That directory is where .github/actions/install-jj reads an installed jj from, so a
+      # changed binary there is the primary path's own mismatch: `mise install` finds the tool
+      # installed, the action holds the binary mise points at to the jj row, and refuses it.
+      # It runs before the fault because `mise install` resolves the tool's version list over
+      # api.github.com even when the install directory already holds it, and the fault below
+      # holds every host under github.com. Under the fault that resolve fails, the action takes
+      # its second source instead, and this case would read the fallback rather than the
+      # primary — which is what happened at 1725f7ce before this step moved.
+      # Here it needs no release asset either: the rig seeds mise's directory from the payload
+      # it staged, so a release-asset outage, which is what this whole job is about, leaves this
+      # case exactly as it is. api.github.com is not a release-asset host and does not go down
+      # with one.
+      - name: Corrupt nothing at the origin for the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh corrupt
+
+      - name: Seed mise's install of jj with the staged binary, one byte changed
+        run: |
+          set -euo pipefail
+          proof=.github/scripts/ci-tools-proof.sh
+          corrupted="$RUNNER_TEMP/jj-one-byte-changed"
+          cp -- "$("$proof" payload-path jj)" "$corrupted"
+          "$proof" flip-last-byte "$corrupted"
+          "$proof" seed-mise-jj "$corrupted"
+          rm -f "$corrupted"
+
+      - id: jj-primary
+        continue-on-error: true
+        uses: ./.github/actions/install-jj
+        env:
+          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
+
+      - name: Read the jj-primary case
+        run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
+
+      # What that case seeded goes, so the head's own install-jj below must read the copy: under
+      # the fault `mise install` cannot resolve the tool at all, and an install directory left
+      # here would be the one thing that could answer it.
+      - name: Take mise's install away again, so the faulted install must read the copy
+        run: rm -rf "$HOME/.local/share/mise"
+
       - id: fault
         name: Start the fault in front of GitHub's release assets
         run: >-
@@ -2425,45 +2467,14 @@ jobs:
       - name: Read the changie-second-source case
         run: .github/scripts/ci-tools-proof.sh report changie-second-source --outcome ${{ steps.changie-second-source.outcome }} --row changie --expect-source ghcr-mirror
 
-      # Case 5 of 8: the jj binary in mise's install directory is one byte changed.
-      # That directory is where .github/actions/install-jj reads an installed jj from, so a
-      # changed binary there is the primary path's own mismatch: `mise install` finds the tool
-      # installed, the action holds the binary mise points at to the jj row, and refuses it.
-      # The rig seeds that directory from the payload it staged while the network was whole,
-      # instead of letting mise download jj inside the fault. jj's release asset is on a host
-      # the fault holds, so a live `mise install` here is the job going red during the outage it
-      # exists to prove survivable; the rig's `seed-mise-jj` carries the measurement that says a
-      # seeded directory answers `mise install` and `mise x` with no network at all.
-      # Nothing is corrupted at the origin, so the mise half of that action still serves.
-      - name: Corrupt nothing at the origin for the jj-primary case
-        run: .github/scripts/ci-tools-proof.sh corrupt
-
-      - name: Seed mise's install of jj with the staged binary, one byte changed
-        run: |
-          set -euo pipefail
-          proof=.github/scripts/ci-tools-proof.sh
-          corrupted="$RUNNER_TEMP/jj-one-byte-changed"
-          cp -- "$("$proof" payload-path jj)" "$corrupted"
-          "$proof" flip-last-byte "$corrupted"
-          "$proof" seed-mise-jj "$corrupted"
-          rm -f "$corrupted"
-
-      - id: jj-primary
-        continue-on-error: true
-        uses: ./.github/actions/install-jj
-        env:
-          CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
-
-      - name: Read the jj-primary case
-        run: .github/scripts/ci-tools-proof.sh report jj-primary --outcome ${{ steps.jj-primary.outcome }} --row jj --expect-source github-release
-
       # Case 6 of 8: the copy of the jj binary serves one byte changed, with mise unable to
       # install the tool at all.
       # Its data directory goes, so `mise install` must reach the faulted host and fails, which
       # is what sends the action to the second source. Only jj is corrupted, so the action's own
       # mise fetch still serves from the origin.
-      # The case above left ~/.local/bin/jj as it found it: install-jj verifies the binary where
-      # mise put it and copies only after that passes, so a refused jj never reaches that path.
+      # Case 5, which ran before the fault, left ~/.local/bin/jj as it found it: install-jj
+      # verifies the binary where mise put it and copies only after that passes, so a refused
+      # jj never reaches that path.
       - name: Corrupt the jj copy for its second-source case
         run: .github/scripts/ci-tools-proof.sh corrupt jj
 
