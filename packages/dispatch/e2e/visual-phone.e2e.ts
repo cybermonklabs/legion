@@ -106,7 +106,9 @@ for (const route of phoneRoutes) {
           //
           // `e2e/visual.e2e.ts` carries the whole reading: why `threshold` cannot be the bound
           // here (the drift and the smallest real colour change are the same magnitude, one
-          // 8-bit step), what a real change gives (451,448 pixels), and what 20 does not see.
+          // 8-bit step), what a real change gives at both ends of its range (79 pixels for an
+          // ordinary token, 451,448 for the app shell's canvas), and the sentence that bounds
+          // this layer - a colour change under about 20 pixels is one it does not see.
           threshold: 0,
           maxDiffPixels: 20,
         });

@@ -184,15 +184,30 @@ for (const route of shotRoutes) {
           // comparisons, by 2 to 7 pixels, each pixel one 8-bit step in one channel: a
           // distance of 0.4 to 0.5, the same magnitude as the smallest real colour change
           // there is, so NO threshold separates this drift from a re-colour. Area separates
-          // them. The control measured for this head - `slate-50` to `#f7fafc`, one step of
-          // red on the app shell's canvas, nothing else changed - reddens the light shot of
-          // every page, 451,448 pixels on `inbox-light` alone
-          // (control/infra-1409-visual-light, run 42476321285). 20 against 451,448 is a
-          // separation of 22,572, and 20 is the measured 7 with room for three times it.
+          // them, and `maxDiffPixels: 20` is where that line is drawn.
           //
-          // What this layer therefore does not see: a colour change confined to fewer than 20
-          // pixels, which is a patch of about 4 by 4. It sees any change above that, down to
-          // one 8-bit step, because the per-pixel bound is zero.
+          // WHAT THIS LAYER THEREFORE DOES NOT SEE: a colour change confined to fewer than 20
+          // pixels, which is a patch of about 4 by 4. That is the sentence to read this bound
+          // by. It sees any change above that, down to one 8-bit step, because the per-pixel
+          // bound is zero.
+          //
+          // What a real change gives is NOT one number, and a reader judging whether 20 is
+          // safe needs the small end of it rather than the large. Two controls, each one
+          // 8-bit step and nothing else, measured in this container:
+          //
+          //   `canvasText`, the app shell's own background and the largest area any token
+          //   covers - `slate-50` to `#f7fafc` - reddens the light shot of every page,
+          //   451,448 pixels on `inbox-light` (run 42476321285).
+          //
+          //   `TEXT_PRIMARY`, which paints glyphs and is an ordinary token - `slate-900` to
+          //   `#0f172c` and `slate-100` to `#f1f5fa`, distance 0.0565 - reddens 79 pixels on
+          //   `project-documents-light` (run 42486290091) and 84 on `project-documents-dark`
+          //   (run 42486321928).
+          //
+          // So the honest picture is drift 7 < bound 20 < nearest measured real change 79: a
+          // factor of 3.95, not the 22,572 the canvas alone suggests. A token drawn over less
+          // than about 20 pixels of a page is outside this gate, and the kept row of
+          // `e2e/theme.e2e.ts` is what binds an element to its swatch there.
           //
           // Eleven sources of difference were measured on the way here and nine removed rather
           // than tolerated - two races in the seeded corpus, a reconcile tick jittered across

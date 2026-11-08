@@ -2423,12 +2423,27 @@ rendering can hold: one step of red is a distance of 0.160, a normalised 0.0021.
 threshold can be the bound. Two clean container runs of one unchanged tree drift by 2 to 7
 pixels, each pixel one 8-bit step, a normalised 0.0038 - LARGER than the one-step change above -
 so a threshold that absorbs the drift blinds the layer to a real re-colour. Area separates them
-instead: 7 pixels of drift against the 451,448 that one step of red on the app shell's canvas
-reddens. So compute the distance before spending a run, read what the count means rather than
-the distance, and never read a clean comparison as proof that a token is absent from the
-baseline - the first reading of these three was exactly that mistake, and the DOM disproved it
-(`bg-slate-50` covers 921,600 px² of the inbox, and the shell computes to amber when amber is
-applied).
+instead, and the range is two controls rather than one: `canvasText`, the app shell's own
+background and the largest area any token covers, reddens 451,448 pixels for one 8-bit step,
+while `TEXT_PRIMARY`, which paints glyphs, reddens 79 on `project-documents-light` and 84 on
+its dark half. So the picture a reader needs is drift 7 < bound 20 < nearest measured real
+change 79, a factor of 3.95, and the sentence that bounds this layer is that it does not see a
+colour change confined to fewer than about 20 pixels. Quoting the canvas alone states a margin
+of 22,572 and is a false claim. So compute the distance before spending a run, read what the
+count means rather than the distance, measure an ordinary token and not the biggest one, and
+never read a clean comparison as proof that a token is absent from the baseline - the first
+reading of these three was exactly that mistake, and the DOM disproved it (`bg-slate-50` covers
+921,600 px² of the inbox, and the shell computes to amber when amber is applied).
+**A swatch and a class literal are many-to-one, so a control must move the literal the page
+actually draws.** `SURFACE` is spelled by both `surfaceBg` (`web/src/theme/classes.ts:66`) and
+`card` (`:771`), the same two colours in two strings, and only `card` draws the Settings
+mappings table: a control on `surfaceBg` reddened 11 of 18 pages and left both `settings` shots
+untouched, while the `card` control reddened `settings-light` at 482,641 pixels and
+`settings-dark` at 482,765. It is the same shape as the `palette.ts` trap above - a clean
+comparison told you nothing about the token, only about the string you edited.
+**A control that moves both schemes at once is what shows `expect.soft` reporting both.** It
+gives 36 snapshots where a hard assertion inside the `SCHEMES` loop gives 18, and nothing in
+the suite pins that behaviour, so a both-scheme control is the only check of it there is.
 **And the host cannot read these baselines at all** - they are the pinned container's rendering,
 which is what each spec's `SKIP_REASON` says, and the skip is defeated by setting
 `DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails
