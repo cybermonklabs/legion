@@ -62,3 +62,4 @@ if saved.group(1) != pinned.group(1):
     )
 print(f"the saved gh help is gh {saved.group(1)}'s, the worker image's pin")
 PY
+# probe: a one-line change for INFRA-1413's selection evidence.
