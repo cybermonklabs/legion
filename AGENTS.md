@@ -133,7 +133,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
   The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
   A `built:` row's digest moving is read by hand too: rule 10 trusts a label its own run wrote.
-  The three items after this one are that reading: the attestation, the head its certificate names, and the one `git diff` that compares the build's source with this tree.
+  The three items after this one are that reading: the attestation, the head its certificate names, and the comparison of the build's source with this tree, which takes one of two forms.
   Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
@@ -185,33 +185,35 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   printed `Merge 1f240c0049b7bda0edc40891ffeb5307450262bf into 30f6270b5868f3561bb3bec4900c9cebde41f639`, then those two parents in that order:
   the base first, the head the build read second.
 
-- **The comparison itself is one command**, run with that second parent in hand (`git fetch origin <it>` where the clone has not got the commit).
+- **The comparison itself is one reading**, run with that second parent in hand (`git fetch origin <it>` where the clone has not got the commit).
+  It compares the source the build actually read with this tree, so it reaches every file the build job reads or runs under `.github`, which the rule below names.
   For a head with no merge after that second parent it is `git diff <that second parent> <the head under review> -- .github`.
   For a head that merged `main` after it — which any long-lived branch does — read it as
   `git log --first-parent --remerge-diff -p <that second parent>..<the head under review> -- .github` instead, which shows this branch's own commits and, of each merge, only its conflict resolutions:
-  measured on this pull request's `7d56e209c1d0..d3bbd5f18339`, the plain diff is 662 lines of `.github`, almost all of it what `main` brought in, and this form is 30.
-  A merge here puts the branch side first, which is what makes `--first-parent` the branch's own history.
-  It compares the source the build actually read with this tree, so it covers every file the build job reads or runs under `.github` — `.github/docker`, `browser-image.yaml`, `.github/scripts/ci_images.py` and `.github/actions/install-crane/**` among them — and every file it starts reading next.
-  Nothing shorter stands in for it, and no list of paths replaces it:
-  a list is a thing someone must remember to extend, and the diff is both wider and shorter than any list.
+  measured on this pull request's `7d56e209c1d0..d3bbd5f18339`, the plain diff is 662 lines of `.github`, almost all of it `main`'s, and this form 30.
+  That form holds only while every merge in the range is a merge of `main`.
+  Another kind defeats it: a `--no-ff` merge of the branch's own child, where that child reverts a build input and moves the row, is never visited by `--first-parent`, and `--remerge-diff` prints nothing of it, merging those parents reproducing the recorded tree, so the reader sees a merge with no hunks while rule 10 passes on the restored recipe's hash.
+  So list the merges first, `git log --first-parent --merges --format='%H %P' <that second parent>..<the head under review>`, require each one's non-first parent to be on `main` (`git merge-base --is-ancestor <that parent> origin/main`), and where one is not, read the plain `git diff`, which visits every commit of the range.
 
-- **What that reading may show is a closed list**, and "whatever this pull request is reviewed for" is not on it.
-  No hunk may touch a file the build job reads or runs — every file of `.github/docker`, `browser-image.yaml`, `.github/scripts/ci_images.py`, `.github/actions/install-crane/**` — whatever the pull request under review is reviewed for, because in the honest two-push order every change to those files is before the second parent and appears in no such hunk.
-  A hunk in one of them is the case this reading exists for:
-  a push that changes a build input so that it stamps the hash of the recipe the next push will hold, then a push that reverts the input and moves the row, which rule 10 passes.
-  The exemptions are three and closed:
-  the row's own `digest:` and `tag:` lines of `.github/ci-images.yaml`, which are the move being read, and the `container:` pins that move with them, which are in a file the build neither reads nor runs.
-  Exempting the row costs nothing, because a row pointing at another Dockerfile is refused by rule 10 itself:
-  the label records `recipe_sha256` of the row's own Dockerfile, and rule 10 compares the two.
-  Two members of the guarded set, `.github/scripts/ci_images.py` and `.github/actions/install-crane/**`, are not folded into `recipe_sha256`, which takes the Dockerfile's path, the files of its context and the workflow (`ci_images.py:179`), so an honest edit to either of them after the attested build head — a forward merge's conflict resolution in one of them is such an edit — leaves a hunk this rule refuses, where a recipe edit would have forced a rebuild and carried the attested head past itself.
-  The remedy is to touch a recipe file in the same push, which rebuilds the image and moves the attested head onto a commit that holds the edit.
-  Re-running the build workflow does not: with `recipe_sha256` unchanged the decide step writes `publish=false` (`browser-image.yaml:211`), the build and push steps run on `publish=true` alone (`:270`) and `attest` on that output (`:485`), so the run pushes nothing, attests nothing, and the row keeps a digest whose only attestation names the earlier head.
-  Recomputing the recipe hash at that head proves nothing, which is why this procedure has no such step:
-  that head's own run stamped the label from that head's own files with that head's own `.github/scripts/ci_images.py` (`browser-image.yaml`'s row step computes it to stamp the label, and that script is not among the inputs `recipe_sha256` folds), so `recipe_sha256` run there matches the label whatever the recipe there was.
-  A later push that restores this tree's recipe and moves the row onto the image the changed recipe built is refused by rule 10 only when the changed push stamped its own recipe's hash;
-  a push that stamped the restored recipe's hash passes rule 10, and that case is the one this reading catches.
-  A reviewer runs it by hand because no gate reads the attestation's own source commit:
-  building one was decided out, no attack having been seen, so this reading is the check.
+  - **What that reading may show is one rule**, and "whatever this pull request is reviewed for" is not part of it:
+    refuse any hunk in `.github/docker/**`, `.github/workflows/browser-image.yaml`, `.github/scripts/ci_images.py` or `.github/actions/install-crane/**`, and any hunk of `.github/ci-images.yaml` other than the `built:` row's `digest:` and `tag:` lines;
+    every other hunk is reviewed as the pull request's own change, the forward merges' conflict resolutions and the `container:` pins that move with the row among them.
+    A refused hunk is the case this reading exists for:
+    a push that changes a build input so that it stamps the hash of the recipe the next push holds, then a push that reverts it and moves the row, which rule 10 passes.
+    The row's `digest:` and `tag:` lines are the move being read and cost nothing to allow, since a row naming another Dockerfile is refused by rule 10, which compares the label with `recipe_sha256` of the row's own;
+    that is why the row's `built:` line is refused with the rest of that file.
+    `.github/actions/ci-ok-report`, which the build job also runs, runs after the push and attest steps have taken their digest, so it is no build input.
+
+  - **Two files the rule guards are not folded into the hash**, `.github/scripts/ci_images.py` and `.github/actions/install-crane/**`, which `recipe_sha256` leaves out: it takes the Dockerfile's path, its context's files and the workflow (`ci_images.py:177-187`).
+    So an honest edit to either after the attested head — a forward merge's conflict resolution among them is one — leaves a hunk the rule refuses.
+    The remedy is to change a byte of a recipe file in the same push, which rebuilds the image, and to move the row onto that build in a later push, the two-push order over again;
+    a reader who stops at the rebuild leaves the row on a digest whose only attestation names the earlier head.
+    Re-running the build is no remedy: with `recipe_sha256` unchanged the decide step writes `publish=false` (`browser-image.yaml:211`), and the push and `attest` steps run on `publish=true` alone (`:270`, `:485`).
+    Recomputing the recipe hash at that head proves nothing either, which is why this procedure has no such step:
+    that head's own run stamped the label with that head's own `ci_images.py`, which `recipe_sha256` does not fold, so the two agree whatever the recipe there was.
+    A later push that restores this tree's recipe and moves the row onto what the changed recipe built is refused by rule 10 only when the changed push stamped its own recipe's hash;
+    a push that stamped the restored recipe's hash passes rule 10, and that case is the one this reading catches.
+    A reviewer runs it by hand because no gate reads the attestation's own source commit, building one having been decided out with no attack seen.
 
 ## Commands
 
