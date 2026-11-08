@@ -353,9 +353,17 @@ const (
 // count of the tests that failed ("  1 failed").
 var browserCount = regexp.MustCompile(`^\s*\d+ failed\s*$`)
 
+// logStamp is the prefix GitHub's job-log route writes before every line it carries: the UTC
+// instant the line was printed and one space, as in "2026-11-07T18:04:24.8502586Z   1 failed",
+// which stand before whatever the step printed, that line's own indentation included.
+var logStamp = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z `)
+
 // failingTests is what tail, the end of a failing job's log, states failed: each test it names as
-// failed, and the first line naming one, verbatim. Two shapes are read, the two the measured
-// cases carry, both printed at the end of a log, which is the part this read holds:
+// failed, and the first line naming one, verbatim. Every line is read with GitHub's timestamp
+// prefix taken off it first (logStamp), since the job-log route the tail is read from writes one
+// before every line; a line that carries none is read as it stands, so a log off that route and
+// one off a runner's own output read the same. Two shapes are read, the two the measured cases
+// carry, both printed at the end of a log, which is the part this read holds:
 //
 //   - Go's test binary, which prints "--- FAIL: <name> (<time>)" for each test that failed, its
 //     subtests among them. The name is the word after the marker, and the first failure line that
@@ -371,6 +379,11 @@ var browserCount = regexp.MustCompile(`^\s*\d+ failed\s*$`)
 // neither shape names no test, which the caller reports as a log it could not read (jobFailures).
 func failingTests(tail string) ([]string, string) {
 	lines := strings.Split(tail, "\n")
+	for i, line := range lines {
+		if stamp := logStamp.FindStringIndex(line); stamp != nil {
+			lines[i] = line[stamp[1]:]
+		}
+	}
 	var names []string
 	first := ""
 	for _, line := range lines {

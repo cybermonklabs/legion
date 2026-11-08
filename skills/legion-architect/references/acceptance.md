@@ -77,11 +77,14 @@ in one turn:
 2. `request_backward_move` to `implementing`, with the reason "Last round: merge the default
    branch your addressing line names into the branch, push, end your forward-merge comment with
    `parent's last round: full test round`, and complete." Never use a hard-coded `main`. The move
-   counts a review round.
+   counts a review round, or a conflict round, which `review_round_cap` leaves out, where the
+   record holds the head conflicting with its base.
 
 While the parent waits in `accepting`, a conflict on its head or a child's merge needs no move of
-its own: the last round's forward merge resolves them all, so spend no backward move per child,
-because every backward move counts toward `review_round_cap`.
+its own: the last round's forward merge resolves them all, so spend no backward move per child.
+A move for a child's merge counts toward `review_round_cap`, since the record holds no conflict on
+the head to leave it out; a move for a conflict the record does hold is left out, and still costs
+the implementer a forward merge the last round makes anyway.
 
 A criterion proven on a deployed system is proven there after that child's deploy, as the
 repository's deploy skill says.

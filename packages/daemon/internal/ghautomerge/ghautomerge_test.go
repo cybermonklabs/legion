@@ -1128,6 +1128,14 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 				"its log names TestTheQueueTakesTheEntryOut, TestTheNoticeNamesTheRun/a_run_that_failed as failing",
 				`its first failure line "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"`},
 			absent: []string{"could not read", "removal_test.go"}},
+		// Go's shape off that same route, measured on job 128558893568, whose first failure
+		// line reads "2026-11-07T23:22:24.4790233Z --- FAIL: …": the names are the names, and
+		// the first failure line is the line a reader would quote, with no timestamp in front.
+		{name: "a Go log as GitHub's job log carries it", log: stamped(goLog),
+			wants: []string{"integration (failure, " + failedRun + ")",
+				"its log names TestTheQueueTakesTheEntryOut, TestTheNoticeNamesTheRun/a_run_that_failed as failing",
+				`its first failure line "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"`},
+			absent: []string{"could not read", "removal_test.go", "2026-11-07"}},
 		{name: "a browser runner's summary block", log: browserLog,
 			wants: []string{"its log names e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step for the primary document, and the longest awaiting label, fits every width @phone as failing",
 				`its first failure line "[chromium] › e2e/gated-step-approvals.e2e.ts:386:1 › a gate`},
