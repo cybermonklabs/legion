@@ -155,11 +155,25 @@ for (const route of shotRoutes) {
           // this head compared all 44 baselines in the pinned container and every row passed,
           // so no run has yet produced a difference this layer did not mean.
           //
-          // A real change of one colour gives 2 to 186 pixels. The control moved the
-          // `slate-200` swatch to a pink of the same lightness, which the palette's own
-          // contrast test accepts, and three rows failed: 2, 105, 174, 176 and 186 pixels
-          // across them. So the smallest real change this gate has been shown to catch is
-          // 2 pixels against a legitimate 0, and any bound above 1 would have hidden it.
+          // What a real change gives is recorded below, and the figure that used to stand here
+          // was misattributed: it came from a control commit that carried a second edit, to
+          // `web/src/features/refs/AgentName.tsx`, and the three rows that failed - `broadcast`,
+          // `issue-activity` and the phone Inbox - are the three pages that draw an inline agent
+          // name, while `settings`, `issue-spec` and the desktop Inbox, which draw the token the
+          // control moved, all passed. So 2 to 186 pixels measured a link's underline, not a
+          // palette change.
+          //
+          // `threshold` is the thing that actually bounds this layer, and it matters more than
+          // the ratio below. A pixel counts as different only when its normalised YIQ distance
+          // from the baseline exceeds 0.2, and that distance is dominated by luma. Three
+          // controls of this layer compared clean over all 22 rows for exactly that reason, each
+          // having kept lightness constant so the contrast rows stayed green: `slate-50` to
+          // `amber-50` is 0.0005, `slate-200` to `sky-200` is 0.0046, `slate-900` to `sky-900`
+          // is 0.017. `slate-50` to `slate-800` is 0.343 and is caught. So this layer does not
+          // catch a re-colour that preserves luma, at any area, however widely the token is
+          // drawn - and a clean comparison is never on its own evidence that a token is absent
+          // from the baseline. `web/src/theme/palette.ts` is a further trap: a Swatch there
+          // feeds contrast arithmetic alone, so moving its numbers changes no pixel at all.
           //
           // Eleven sources of difference were measured on the way to that zero and nine were
           // removed rather than tolerated - two races in the seeded corpus, a reconcile tick
@@ -168,10 +182,14 @@ for (const route of shotRoutes) {
           // could not be removed are pages this layer does not shoot at all, each with its
           // reason in `e2e/review-routes.ts`. That is why this number is 0 and not a tolerance:
           // a bound wide enough for the drift this layer began with would have swallowed the
-          // whole of the control.
-          //
-          // `threshold` stays at Playwright's default 0.2 - the per-pixel YIQ difference at
-          // which a pixel counts as different - and is part of what was measured.
+          // whole of it.
+          // `threshold` is MEASURED the same way, by starting at zero. It was Playwright's
+          // inherited default of 0.2 until this head, which is a per-pixel YIQ distance of 0.04
+          // normalised (pixelmatch cuts at `35215 * threshold^2`): a re-colour under that is
+          // tolerated at every pixel it covers, so `slate-200` to a saturated pink at 0.0117 -
+          // a change no reader could miss - counted zero different pixels. With both numbers at
+          // zero the comparison is exact, which is what "nothing is tolerated" has to mean.
+          threshold: 0,
           maxDiffPixelRatio: 0,
         });
       }

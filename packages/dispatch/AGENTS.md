@@ -2410,18 +2410,23 @@ a class literal in `web/src/theme/classes.ts` together with its paired swatch, o
 `slate-700` drops the offline pill below AA and reddens the unit step, and a control whose
 earlier step is red hides the reading it exists to take.
 
-Two more things that cost runs here, both measured rather than reasoned. **The literal must be
-one the shot set actually draws.** `surfaceMutedStrongBg` moved with its paired swatch compared
-clean over all 22 rows in the container: that composite lives in `Chip`, `Pill`, `Avatar` and
-the issue header, none of which the seeded corpus puts on a shot page where it shows. The shell's
-own background did the same, because its children paint over it. So a control is read as a
-measurement with a zero: a run that reports no difference has not shown the gate is deaf, only
-that the colour was not on screen. **And the host cannot read these baselines at all** - they are
-the pinned container's rendering, which is what each spec's `SKIP_REASON` says, and the skip is
-defeated by setting `DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change
-whatever, fails every row at thousands of pixels. Every figure a control of this layer reports
-comes from a container run, and the way to know the rig is honest is to run it once with nothing
-changed.
+Two more things that cost runs here, both measured rather than reasoned. **A control must move
+the colour's luma, not its hue.** `threshold` is `0.2`: Playwright counts a pixel as different
+only when its normalised YIQ distance from the baseline exceeds that, and that distance is
+dominated by luma. Three controls of this change compared clean over all 22 rows because each
+kept lightness constant to keep the contrast rows green - `slate-50` to `amber-50` is 0.0005,
+`slate-200` to `sky-200` is 0.0046, `slate-900` to `sky-900` is 0.017, against a threshold of
+0.2 - while `slate-50` to `slate-800` is 0.343 and counts. So the real sensitivity of this layer
+is the threshold and not `maxDiffPixelRatio: 0`: a re-colour that preserves luma is tolerated
+completely, at any area, however widely the token is drawn. Compute the distance before spending
+a run, and never read a clean comparison as proof that a token is absent from the baseline - the
+first reading of these three was exactly that mistake, and the DOM disproved it (`bg-slate-50`
+covers 921,600 px² of the inbox, and the shell computes to amber when amber is applied).
+**And the host cannot read these baselines at all** - they are the pinned container's rendering,
+which is what each spec's `SKIP_REASON` says, and the skip is defeated by setting
+`DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails
+every row at thousands of pixels. Every figure a control of this layer reports comes from a
+container run, and the way to know the rig is honest is to run it once with nothing changed.
 
 A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
 disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`

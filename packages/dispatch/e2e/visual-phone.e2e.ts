@@ -86,13 +86,18 @@ for (const route of phoneRoutes) {
           //
           // The legitimate maximum is 0 pixels: with this bound at zero, a full-lane run of
           // this head compared both phone baselines in the pinned container and both passed.
-          // A real change of one colour gives 105 pixels on this project's Inbox, which the
-          // control measured by moving the `slate-200` swatch to a pink of the same lightness.
-          // So the gate catches that change at 105 pixels against a legitimate 0, and any
-          // bound above 104 would have hidden it.
+          // The 105 pixels that used to stand here were credited to a palette change and were
+          // not one: that control commit also edited `web/src/features/refs/AgentName.tsx`, and
+          // this project's Inbox is one of the three pages that draw an inline agent name, so
+          // the figure measured a link's underline.
           //
-          // `e2e/visual.e2e.ts` carries the whole reading, and the reason this is a zero and
-          // not a tolerance: the drift that stood in the way was removed rather than absorbed.
+          // `e2e/visual.e2e.ts` carries the whole reading, including the thing that actually
+          // bounds both projects - `threshold: 0.2`, above which a pixel counts, a distance
+          // dominated by luma - and the reason this is a zero and not a tolerance: the drift
+          // that stood in the way was removed rather than absorbed.
+          // `threshold` zero as well, and for the reason `e2e/visual.e2e.ts` gives: the
+          // inherited 0.2 tolerated a per-pixel difference of 0.04 normalised everywhere.
+          threshold: 0,
           maxDiffPixelRatio: 0,
         });
       }
