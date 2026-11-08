@@ -33,9 +33,10 @@ type intakeDelivery struct {
 	mu sync.Mutex
 	// held is what the stop answers once no handler of this delivery is running and the client has
 	// a connection to answer over: the messages that were waiting behind their keys, those the
-	// callback was handed since, and those whose handler finished while the stop was under way
-	// and whose own acknowledgement the bus refused (acknowledgeOrHold). A handler that finishes
-	// over a live link acknowledges its message itself and leaves nothing here.
+	// callback was handed since, and those whose handler finished before the stop released and
+	// whose own acknowledgement the bus refused (acknowledgeOrHold), a refusal that can come before
+	// the stop begins. A handler that finishes over a live link acknowledges its message itself and
+	// leaves nothing here.
 	held []heldMessage
 	// released is set once held has been answered; the callback then answers a message at once.
 	released bool
@@ -52,7 +53,7 @@ type intakeMessage struct {
 
 // heldMessage is one message the stop holds and the answer that message is owed: a negative
 // acknowledgement for one this process did not finish handling (giveBack), and an
-// acknowledgement for one whose own acknowledgement the bus refused while the stop was under way
+// acknowledgement for one whose own acknowledgement the bus refused before the stop released
 // (acknowledgeOrHold). Both are publishes, and a client with no live connection refuses one, so
 // both wait for the connection the stop waits for and are published over it (answerHeld).
 type heldMessage struct {
@@ -188,7 +189,7 @@ func (in *Intake) StopDelivering(ctx context.Context) {
 // an acknowledgement, negative or not, is a publish, and a stop a connection event runs begins
 // while the link is down, where the client refuses one. Each held message is then answered by
 // its own kind (heldMessage), over the connection the client holds now (answerHeld):
-// acknowledged when its handler finished inside the stop and its own acknowledgement was
+// acknowledged when its handler finished before the stop released and its own acknowledgement was
 // refused, handed back when this process did not finish it.
 func (d *intakeDelivery) stop(ctx context.Context) {
 	giveUp := context.AfterFunc(ctx, d.abandon)
@@ -317,10 +318,11 @@ func (d *intakeDelivery) giveBack(msg *natsgo.Msg) {
 //
 // It covers that handler only once nats.go has noticed the drop, which is all any reading here
 // can cover. Until it does, the connection's status is still CONNECTED and the acknowledgement
-// is appended to the connection's write buffer and returns nil (nats.go v1.53.1's Conn.publish,
-// nats.go:4649-4661; its one refusal before that, atLimitIfUsingPending, is false while the
-// writer holds no pending buffer, nats.go:2368-2373), so it goes out on a socket that is gone
-// and is lost with no error to read, exactly as on main. From the moment nats.go switches the
+// is appended to the connection's write buffer, where the publish returns nil unless that append
+// flushes a full buffer into the dead socket (nats.go v1.53.1's Conn.publish, nats.go:4649-4661;
+// its one refusal before that, atLimitIfUsingPending, is false while the writer holds no pending
+// buffer, nats.go:2368-2373). Returning nil, it goes out on a socket that is gone and is lost
+// with no error to read, and intakeAckWait is its backstop. From the moment nats.go switches the
 // writer to pending and goes to RECONNECTING (processOpErr, nats.go:3556-3574) a publish is
 // refused -- the bus sets opts.ReconnectBufSize = -1 (internal/bus/connect.go), so that pending
 // buffer is at its limit from the first byte -- and that refusal is the one this reads.

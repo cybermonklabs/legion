@@ -80,9 +80,10 @@ const (
 	jobQuiet         = 2 * time.Second
 	jobMaxWait       = 10 * time.Second
 	jobMaxAckPending = 64
-	// jobAckWait bounds a message the handler never reached, and one the callback was handed
-	// after the stop whose hand-back the link refused (deliver, which Naks such a message rather
-	// than leaving it unanswered); every other message is acked on receipt, before its checks.
+	// jobAckWait bounds a message the handler never reached, one whose acknowledgement on receipt
+	// the link refused, and one the callback was handed after the stop whose hand-back the link
+	// refused (deliver, which Naks such a message rather than leaving it unanswered); every other
+	// message is acked on receipt, before its checks.
 	jobAckWait = 30 * time.Second
 	// jobCheckTimeout bounds one message's indexed read (RunTracked).
 	jobCheckTimeout = 10 * time.Second
@@ -239,10 +240,10 @@ func (j *JobIntake) bind(ctx, stopping context.Context) (*natsgo.Subscription, b
 // A message handed to this callback while the subscription is still bound is the other case:
 // one the server delivers after j.ctx is done and before Run reaches giveUp (Run's ctx case),
 // or during a bind confirmation under a context already cancelled. Its Nak reaches the server
-// with this subscriber's interest still in place, so the server may hand it here once more
-// before the UNSUB lands, and it is handed back again. That is bounded -- the hand-back after
-// the UNSUB goes to the next subscriber -- and loses nothing, since neither pass reads the
-// message.
+// with this subscriber's interest still in place, so the server may hand it here again, and it
+// is handed back again, until the UNSUB giveUp sends lands. That window is all that bounds it --
+// the hand-back after the UNSUB goes to the next subscriber -- and nothing is lost, since no pass
+// reads the message.
 //
 // A Nak the link refuses -- which is the state a give-up over an outage begins in -- leaves the
 // message outstanding, as the bare unsubscribe this give-up replaced left it: the next holder is
