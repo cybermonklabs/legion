@@ -2,9 +2,11 @@
 // requests by policy or, for a request that needs a person, on its own approval page, where the
 // approver signs in to the broker itself (BROKER_SIGNIN_*), over a signed credential-request
 // record, and releases granted values. Its HTTP API is documented at
-// https://cybermonklabs.github.io/legion/broker/reference/api/. The broker holds no Dispatch credential
-// and never opens a Dispatch ask: Dispatch's server lists pending requests and links each to the
-// broker's page, and relays a machine login's decision with its typed code.
+// https://cybermonklabs.github.io/legion/broker/reference/api/. The broker opens no Dispatch ask
+// and issues nothing in Dispatch: Dispatch's server lists pending requests and links each to the
+// broker's page, and relays a machine login's decision with its typed code. The one thing the
+// broker reads in Dispatch is its model judge's, whether an issue is open
+// (BROKER_JUDGE_DISPATCH_URL), with the broker's own projected ServiceAccount token.
 package main
 
 import (
@@ -806,14 +808,15 @@ func refusePortZeroPublicURLInProduction(publicURL, fakeSecretsFile string) erro
 	return fmt.Errorf("BROKER_PUBLIC_URL %q: port 0 is never dialable in production (BROKER_FAKE_SECRETS_FILE is unset); only a local run may use it as dev-broker.sh's derive-from-bind convention", redact.URL(publicURL))
 }
 
-// refuseAirlockTestSettingsInProduction refuses every one of the airlock's test-only settings
-// unless BROKER_FAKE_SECRETS_FILE makes this a local run, as the port-0 refusal above does and
-// for the same reason: each of them points the broker at a stand-in, lets it dial an address no
-// production proxy may dial, or turns off a part of the airlock, so one reaching a real
-// deployment must fail loudly at boot rather than quietly serve a broker that is not the one
-// the operator configured. The refusal names the variable it found, since an operator reads
-// which of its settings it has to take out. Extracted from main so a test can drive it
-// directly instead of through fatal, which calls os.Exit.
+// refuseAirlockTestSettingsInProduction refuses every one of the local stack's test-only
+// settings, the airlock's seven and the judge's one, unless BROKER_FAKE_SECRETS_FILE makes this
+// a local run, as the port-0 refusal above does and for the same reason: each of them points
+// the broker at a stand-in, lets it dial an address no production proxy may dial, or turns off
+// a check the airlock or the judge is made of, so one reaching a real deployment must fail
+// loudly at boot rather than quietly serve a broker that is not the one the operator
+// configured. The refusal names the variable it found, since an operator reads which of its
+// settings it has to take out. Extracted from main so a test can drive it directly instead of
+// through fatal, which calls os.Exit.
 func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile string) error {
 	if fakeSecretsFile != "" {
 		return nil
@@ -829,6 +832,7 @@ func refuseAirlockTestSettingsInProduction(cfg config.Config, fakeSecretsFile st
 		{"BROKER_AIRLOCK_TEST_RESOLVE", len(cfg.AirlockTestResolve) > 0},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", cfg.AirlockTestKeepValues},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", cfg.AirlockTestNoKind},
+		{"BROKER_JUDGE_TEST_SKIP_CHECKS", cfg.JudgeTestSkipChecks},
 	} {
 		if setting.set {
 			return fmt.Errorf("%s is for the broker's local stack alone and is set on a production start (BROKER_FAKE_SECRETS_FILE is unset); take it out", setting.name)

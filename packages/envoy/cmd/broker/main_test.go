@@ -112,10 +112,10 @@ func TestNonZeroPortPublicURLIsFineInProduction(t *testing.T) {
 	}
 }
 
-// airlockTestSettings is the seven settings of the airlock's local stack, each as a Config the
-// refusal below reads and as the environment a real broker is started with. One row per
-// setting: the refusal has to name whichever one it found, since an operator reads from it
-// which setting to take out.
+// airlockTestSettings is the eight test-only settings of the broker's local stack, the
+// airlock's seven and the judge's one, each as a Config the refusal below reads and as the
+// environment a real broker is started with. One row per setting: the refusal has to name
+// whichever one it found, since an operator reads from it which setting to take out.
 func airlockTestSettings() []struct {
 	name string
 	cfg  func(*config.Config)
@@ -135,12 +135,13 @@ func airlockTestSettings() []struct {
 		}, "s.airlock.test=127.0.0.1"},
 		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", func(c *config.Config) { c.AirlockTestKeepValues = true }, "true"},
 		{"BROKER_AIRLOCK_TEST_NO_KIND", func(c *config.Config) { c.AirlockTestNoKind = true }, "true"},
+		{"BROKER_JUDGE_TEST_SKIP_CHECKS", func(c *config.Config) { c.JudgeTestSkipChecks = true }, "true"},
 	}
 }
 
-// TestEachAirlockTestSettingIsRefusedInProduction: every one of the seven points the broker at
-// a stand-in, lets it dial what no production proxy may, or turns a part of the airlock off, so
-// each on its own refuses a start that is not a local run, naming itself.
+// TestEachAirlockTestSettingIsRefusedInProduction: every one of the eight points the broker at
+// a stand-in, lets it dial what no production proxy may, or turns a check off, so each on its
+// own refuses a start that is not a local run, naming itself.
 func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	for _, setting := range airlockTestSettings() {
 		var cfg config.Config
@@ -156,7 +157,7 @@ func TestEachAirlockTestSettingIsRefusedInProduction(t *testing.T) {
 	}
 }
 
-// TestEveryAirlockTestSettingIsFineForALocalRun: all seven at once, with the fake secrets file
+// TestEveryAirlockTestSettingIsFineForALocalRun: all eight at once, with the fake secrets file
 // that makes a start a local run, are accepted - and a production start naming none of them is
 // accepted too, since this refusal must not stand in the way of an ordinary boot.
 func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
@@ -165,7 +166,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 		setting.cfg(&cfg)
 	}
 	if err := refuseAirlockTestSettingsInProduction(cfg, "/dev/fake-secrets.json"); err != nil {
-		t.Fatalf("all seven with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
+		t.Fatalf("all eight with BROKER_FAKE_SECRETS_FILE set: want nil, got %v", err)
 	}
 	if err := refuseAirlockTestSettingsInProduction(config.Config{}, ""); err != nil {
 		t.Fatalf("a production start naming none of them: want nil, got %v", err)
@@ -173,7 +174,7 @@ func TestEveryAirlockTestSettingIsFineForALocalRun(t *testing.T) {
 }
 
 // TestMainRefusesAnAirlockTestSettingInProduction drives the REAL compiled binary with each of
-// the seven, as the port-0 row above drives it: the helper's rows prove it is correct, and this
+// the eight, as the port-0 row above drives it: the helper's rows prove it is correct, and this
 // proves the broker runs it at boot, before it migrates the database or binds a socket. The
 // database it is given is unreachable, so a broker that read these settings later would fail on
 // the host instead of on the setting.
