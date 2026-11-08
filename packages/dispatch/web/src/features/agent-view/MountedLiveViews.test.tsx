@@ -52,6 +52,7 @@ function agentOf(sessionId: string, title: string): Agent {
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    state: "running",
     title,
   };
 }
@@ -62,22 +63,26 @@ function exchange(session: string, at: string): MessageRead {
     message: {
       author: { id: "sami", kind: "user" },
       body: "Where is the dashboard?",
+      broadcast_id: null,
       created_at: "2026-09-27T21:16:15Z",
       deliveries: [],
       id: `m-${session}`,
       in_reply_to: null,
       issue_key: null,
+      reply_block: null,
       target: `session:${session}`,
     },
     replies: [
       {
         author: { id: session, kind: "session" },
         body: "Done: it is at /dash.",
+        broadcast_id: null,
         created_at: at,
         deliveries: [],
         id: `r-${session}-${at}`,
         in_reply_to: `m-${session}`,
         issue_key: null,
+        reply_block: null,
         target: `session:${session}`,
       },
     ],
@@ -129,7 +134,8 @@ afterEach(() => {
 /** Dispatch's reads, signed in as sami, and the one write these rows make: the read mark. */
 function mockDispatch(agentState: UserAgentStates = {}): Mock<typeof api.putAgentState> {
   const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
-    ...input,
+    cleared_before: input.cleared_before ?? undefined,
+    read_through: input.read_through ?? undefined,
     unread_replies: 0,
   }));
   spies.push(
@@ -241,7 +247,9 @@ function replay(socket: FakeLiveSocket, session: string, frames: readonly AgentS
 }
 
 /** Every read mark the page sent, as the session it was for and how far it read. */
-function readMarks(putAgentState: Mock<typeof api.putAgentState>): [string, string | undefined][] {
+function readMarks(
+  putAgentState: Mock<typeof api.putAgentState>
+): [string, string | null | undefined][] {
   return putAgentState.mock.calls.map(([session, input]) => [session, input.read_through]);
 }
 

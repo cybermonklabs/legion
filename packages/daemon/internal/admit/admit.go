@@ -68,9 +68,10 @@ type Admission struct {
 	// catchingUp names each root the daemon's boot catch-up has yet to finish
 	// (HoldForCatchUp): its record may still miss what its Dispatch event log holds, so no pass
 	// decides whether it waits on a person (workflow's ReconcileAwaiting), nor resumes it once
-	// answered — it keeps its place at the front of the waiting line — until the catch-up has
-	// applied its window and releases it (ReleaseCatchUp). Unlike pending, a release's own pass
-	// does not lift it.
+	// answered — it keeps the place its answer gives it in the waiting line's first part,
+	// among the issues whose work came back, oldest first (record.Waiting) — until the catch-up
+	// has applied its window and releases it (ReleaseCatchUp). Unlike pending, a release's own
+	// pass does not lift it.
 	catchingUp map[string]struct{}
 
 	// openCapabilities answers the deployment capabilities with no decision, by name
@@ -1166,8 +1167,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		return 0, nil, fmt.Errorf("reconcile the roots waiting on a person: %w", err)
 	}
 	// Reconcile wrote roots of the snapshot (a wait entered or answered, a resume told in place),
-	// so what follows reads them as they now stand: an answer it recorded puts its root at the
-	// front of this pass's waiting line.
+	// so what follows reads them as they now stand: an answer it recorded puts its root in the
+	// first part of this pass's waiting line, among the issues whose work came back, oldest first
+	// (record.Waiting), at the moment its own wait was answered.
 	if changed {
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, nil, err
@@ -1222,7 +1224,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	for {
 		own := ownSlots(issues, slots)
 		stopped, opened := false, false
-		for _, candidate := range line {
+		for place, candidate := range line {
 			issue := candidate.Issue
 			// A hold stops the whole pass, the candidates behind this one included. Every
 			// candidate competes for the same slots now that the cap counts the project's
@@ -1268,6 +1270,23 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// kept whole, while the candidates the cap cannot bind — the ones slotFor is
 				// false for — are promoted as they are reached, which is what makes a hand-over
 				// and an answered root resume under a cap that is permanently full.
+				//
+				// An answered root this branch passes over is told, once per wait, that it
+				// waits for a slot (tellWaitingForSlot). The telling sits inside the branch
+				// rather than below the cap test because a root the test lets through is
+				// resumed by this very transaction: a notice written above the test would tell
+				// an architect to wait and start it again in the same commit. A member a
+				// Dispatch link blocks never reaches this branch, so it is told nothing and
+				// marked nothing, and a later pass tells it once its blockers close. The place
+				// the notice carries is the candidate's own place in this pass's line, as the
+				// pass found it, which the notice says is a snapshot: a promotion this same
+				// scan makes can shorten the line before `admission.waiting` is read again,
+				// and the issue's own `waitingLine` is the live place (api.WaitingLineView).
+				if candidate.Kind == record.LineAnswered {
+					if err := a.tellWaitingForSlot(ctx, tx, issue, place+1, len(line)); err != nil {
+						return admitted, released, err
+					}
+				}
 				continue
 			}
 			if candidate.Kind == record.LineAnswered {
@@ -1485,6 +1504,78 @@ func slotFor(entry record.LineEntry, gate record.TreeGate) bool {
 	default:
 		return record.AtWork(entry.Issue, gate)
 	}
+}
+
+// tellWaitingForSlot tells the architect of an answered root the cap has no slot for that its
+// root waits, once per wait: what answered the wait, where the root stands in this pass's line
+// (place of length) and that the daemon starts it again by itself at the next free slot
+// (workflow.WaitingForSlotNotice). The mark it writes beside the answer
+// (record.Awaiting.SlotNoticeAt) in the same transaction as the notice row is what holds the
+// daemon to one notice per wait, and the mark it reads is the candidate's own, from the record
+// this scan was built on: the pass re-reads the records between scans, so the mark it reads
+// must come from the scan that wrote it. The row itself carries the moment this wait was
+// answered (record.WaitingForSlot), which is which wait it was written for: the publish can be
+// held past the wait's end, and the daemon reads that moment against the record before it
+// delivers the row (the daemon's stillWaitsForSlot).
+//
+// Three things are asked before anything is written, each for its own reason.
+//
+// A wait already marked is told nothing again: the architect has the notice, and the place in
+// it moves with every pass, which the notice itself says.
+//
+// A root workflow.Unresumable refuses is told nothing at all, and the question is asked here
+// rather than left to the check below the cap test: a notice above it would promise a resume to
+// a root whose `legion` label is gone or whose Dispatch claim a person holds, and the mark
+// would then silence the telling for ever. Such a root leaves the workflow on this same pass
+// (releaseUnslotted).
+//
+// A root whose architect holds no claim row of its generation, or whose claim has not taken its
+// Envoy role (supervise.TookRole), is told nothing either: there is no session to read the
+// notice, and the pass after that architect takes its role tells it then. The claim is read as
+// workflow.ReconcileAwaiting reads it, by the architect token of this project. An untold wait
+// costs those reads each pass — the Dispatch claim workflow.Unresumable reads, and one
+// record.Store.RoleRun — and a wait already marked costs none of them.
+func (a *Admission) tellWaitingForSlot(ctx context.Context, tx pgx.Tx, issue record.Issue, place, length int) error {
+	if issue.Awaiting == nil || issue.Awaiting.AnsweredAt == nil || issue.Awaiting.SlotNoticeAt != nil {
+		return nil
+	}
+	reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
+	if err != nil {
+		return fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)
+	}
+	if reason != "" {
+		return nil
+	}
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return fmt.Errorf("read the architect claim of %s: %w", issue.Key, err)
+	}
+	architect, err := claim.NewToken(project, issue.Key, claim.RoleArchitect)
+	if err != nil {
+		return fmt.Errorf("read the architect claim of %s: %w", issue.Key, err)
+	}
+	run, err := a.store.RoleRun(ctx, tx, architect, issue.Key, claim.RoleArchitect, issue.Generation)
+	if err != nil {
+		return fmt.Errorf("read the architect claim of %s: %w", issue.Key, err)
+	}
+	if run.Claim == nil || !supervise.TookRole(run.Claim.State) {
+		return nil
+	}
+	now := a.now()
+	notice := workflow.WaitingForSlotNotice(issue.Awaiting.AnsweredBy, issue.Awaiting.AnsweredDetail,
+		*issue.Awaiting.AnsweredAt, place, length)
+	if err := a.enqueue(ctx, tx, issue.Key, notice, now); err != nil {
+		return err
+	}
+	awaiting := *issue.Awaiting
+	awaiting.SlotNoticeAt = &now
+	issue.Awaiting = &awaiting
+	if err := a.store.PutIssue(ctx, tx, issue); err != nil {
+		return fmt.Errorf("mark that the architect of %s was told its root waits for a slot: %w", issue.Key, err)
+	}
+	a.log.Info("admission tells an answered root's architect that it waits for a slot",
+		"issue", issue.Key, "place", place, "length", length, "answered_by", issue.Awaiting.AnsweredBy)
+	return nil
 }
 
 // held says whether Reconcile still holds key for the Dispatch consumer to reach the stream

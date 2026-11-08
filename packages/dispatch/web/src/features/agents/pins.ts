@@ -65,9 +65,11 @@ export function usePinnedAgents(): readonly string[] {
 }
 
 /** One session's state as a pin or an unpin leaves it, touching neither its Clear nor its read
- *  mark: the page shows the pin from the press, and Dispatch's answer replaces it. */
+ *  mark: the page shows the pin from the press, and Dispatch's answer replaces it. A session the
+ *  viewer holds no state for has no reply they have not read either, so the drawn state counts
+ *  none until Dispatch answers. */
 function withPin(state: UserAgentState | undefined, pinned: boolean, at: string): UserAgentState {
-  const { pinned_at: _was, ...rest } = state ?? {};
+  const { pinned_at: _was, ...rest } = state ?? { unread_replies: 0 };
   return pinned ? { ...rest, pinned_at: at } : rest;
 }
 

@@ -8,9 +8,9 @@ import { legacyPinnedIds, pinnedAgentSessions } from "./pins";
 // cleared is not in the rail at all.
 test("the pins are the sessions with a pinned_at, oldest pin first", () => {
   const states: UserAgentStates = {
-    "tester-session": { pinned_at: "2026-09-14T00:00:03Z" },
+    "tester-session": { pinned_at: "2026-09-14T00:00:03Z", unread_replies: 0 },
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 2 },
-    "reviewer-session": { pinned_at: "2026-09-14T00:00:02Z" },
+    "reviewer-session": { pinned_at: "2026-09-14T00:00:02Z", unread_replies: 0 },
     "quiet-session": { read_through: "2026-09-14T00:00:00Z", unread_replies: 1 },
   };
 
@@ -25,8 +25,8 @@ test("the pins are the sessions with a pinned_at, oldest pin first", () => {
 // text (`lib/timestamps.ts`): a pin made at `…00.12Z` is older than one at `…00.123456Z`.
 test("two pins in the same second are ordered by their fractions, not as text", () => {
   const states: UserAgentStates = {
-    "second-session": { pinned_at: "2026-09-14T00:00:00.123456Z" },
-    "first-session": { pinned_at: "2026-09-14T00:00:00.12Z" },
+    "second-session": { pinned_at: "2026-09-14T00:00:00.123456Z", unread_replies: 0 },
+    "first-session": { pinned_at: "2026-09-14T00:00:00.12Z", unread_replies: 0 },
   };
 
   expect(pinnedAgentSessions(states)).toEqual(["first-session", "second-session"]);
@@ -41,8 +41,8 @@ test("nothing is pinned when the viewer has no agent state yet", () => {
 // rail - every other pin with it - off the page.
 test("a pin whose time cannot be read is listed last, not thrown on", () => {
   const states: UserAgentStates = {
-    "broken-session": { pinned_at: "yesterday" },
-    "planner-session": { pinned_at: "2026-09-14T00:00:01Z" },
+    "broken-session": { pinned_at: "yesterday", unread_replies: 0 },
+    "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   };
 
   expect(pinnedAgentSessions(states)).toEqual(["planner-session", "broken-session"]);

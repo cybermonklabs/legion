@@ -33,6 +33,7 @@ function agent(sessionId: string, title: string): Agent {
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    state: "running",
     title,
   };
 }
@@ -116,9 +117,9 @@ function rowTexts(): (string | null)[] {
 
 const pins: UserAgentStates = {
   // Keyed in neither pin order nor name order: the rail orders by `pinned_at`.
-  [TESTER]: { pinned_at: "2026-09-14T00:00:03Z" },
+  [TESTER]: { pinned_at: "2026-09-14T00:00:03Z", unread_replies: 0 },
   [PLANNER]: { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 2 },
-  [REVIEWER]: { pinned_at: "2026-09-14T00:00:02Z" },
+  [REVIEWER]: { pinned_at: "2026-09-14T00:00:02Z", unread_replies: 0 },
 };
 
 // Exactly the person's pins, in the order they pinned them, each carrying what R1 asks of a row:
@@ -152,7 +153,7 @@ test("the rail lists the pinned agents, oldest pin first, with their state and u
 // is no longer running says so rather than reading as live.
 test("a pinned session Dispatch no longer lists reads as not running", async () => {
   renderRail({
-    agentState: { [PLANNER]: { pinned_at: "2026-09-14T00:00:01Z" } },
+    agentState: { [PLANNER]: { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 } },
     listed: [agent(REVIEWER, "Reviewer")],
   });
 

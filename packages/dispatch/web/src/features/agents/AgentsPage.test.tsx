@@ -34,6 +34,8 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { AuthGate } from "../../app";
+import type { BroadcastRequest } from "./broadcast-plan";
+import { messageDeliveryFields } from "./delivery-fixture";
 // The live view is a lazy route of the app. Importing it here loads its module with the test
 // file, so a `findByRole` after the click waits for the render alone, not for that first load,
 // which takes longer than the second such a wait allows.
@@ -92,6 +94,7 @@ const agents = [
     open_asks: 2,
     roles: ["planner"],
     session_id: "planner-session",
+    state: "running",
     title: "Planner",
   },
   {
@@ -104,6 +107,7 @@ const agents = [
     open_asks: 0,
     roles: [],
     session_id: "reviewer-session",
+    state: "running",
     title: "Reviewer",
   },
 ] satisfies Agent[];
@@ -118,13 +122,16 @@ function currentList(listed: readonly Agent[]): BroadcastRoster {
 const inbox: InboxRow[] = [1, 2].map((number) => ({
   anchor: null,
   answer: null,
+  artifact_id: null,
   author: { id: "planner-session", kind: "session" },
+  block_id: null,
   created_at: new Date(now - 60_000).toISOString(),
   edited_at: null,
   id: `ask-${number}`,
   issue: { assignee: "alice", key: "CORE-1", title: "Core work" },
   issue_key: "CORE-1",
   kind: "question",
+  last_reply: null,
   multiple: false,
   opened_event_id: number,
   options: [],
@@ -151,11 +158,13 @@ function message(body: string, overrides: Partial<Message> = {}): Message {
   return {
     author: { id: "alice", kind: "user" },
     body,
+    broadcast_id: null,
     created_at: "2026-09-14T00:00:00Z",
     deliveries: [],
     id: "message-1",
     in_reply_to: null,
     issue_key: null,
+    reply_block: null,
     target: "session:planner-session",
     ...overrides,
   };
@@ -213,7 +222,7 @@ function renderAgents({
       delivery: input.delivery,
       excluded: [],
       id: "broadcast-1",
-      recipients: input.session_ids.map((sessionID) => ({
+      recipients: (input.session_ids ?? []).map((sessionID) => ({
         message: message(input.body, { target: `session:${sessionID}` }),
         replies: [],
         session_id: sessionID,
@@ -238,27 +247,32 @@ function renderAgents({
   );
   const getBlockSchema = spyOn(api, "getBlockSchema").mockResolvedValue({ types: [], version: 1 });
   const createMessageDelivery = spyOn(api, "createMessageDelivery").mockResolvedValue({
+    accepted_as: null,
+    accepted_at: null,
     attempt: 2,
     created_at: recentAttemptAt,
     delivery: "steer",
+    duplicate: false,
     envelope_id: "envelope-2",
     error: null,
     message_id: "message-1",
     reply_id: null,
+    requested_by: null,
     session_id: "planner-session",
     state: "sent",
   });
   const getMyAgentState = spyOn(api, "getMyAgentState").mockResolvedValue(agentState);
   // Dispatch answers a state write with the session's whole state: the marks the write set over
   // the state it held, with `pinned_at` added by a pin and dropped by an unpin, and nothing left
-  // unread.
+  // unread. A mark the body leaves out rides as a null the write does not read.
   const putAgentState = answerAgentStates().mockImplementation(async (session, input) => {
-    const { pinned, read_replies: _read, ...marks } = input;
+    const { cleared_before: cleared, pinned, read_through: read } = input;
     const { pinned_at: held, ...rest } = agentState[session] ?? {};
-    const pinnedAt = pinned === undefined ? held : pinned ? ANSWERED_PIN_AT : undefined;
+    const pinnedAt = pinned == null ? held : pinned ? ANSWERED_PIN_AT : undefined;
     return {
       ...rest,
-      ...marks,
+      ...(cleared == null ? {} : { cleared_before: cleared }),
+      ...(read == null ? {} : { read_through: read }),
       ...(pinnedAt === undefined ? {} : { pinned_at: pinnedAt }),
       unread_replies: 0,
     };
@@ -911,7 +925,7 @@ test("Agents keeps a pinned session in its own group, first among its rows", asy
   // The pin is the person's, held by Dispatch (INFRA-812): this page reads it from their agent
   // state, where it was `dispatch.agents.pinned:<login>` in this browser before.
   const page = renderAgents({
-    agentState: { "silent-session": { pinned_at: "2026-09-14T00:00:00Z" } },
+    agentState: { "silent-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
     listedAgents: [...agents, silent],
   });
   const titles = (region: HTMLElement) =>
@@ -993,7 +1007,7 @@ test("Agents puts a session unseen for ten minutes in Quiet, which collapses and
 test("Agents keeps a pinned session unseen for ten minutes in Quiet", async () => {
   const user = userEvent.setup();
   const page = renderAgents({
-    agentState: { "stale-session": { pinned_at: "2026-09-14T00:00:00Z" } },
+    agentState: { "stale-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
     listedAgents: [...agents, stale],
   });
 
@@ -1120,7 +1134,7 @@ test("Agents pins a card by writing the person's agent state, not a browser pref
     first.restore();
     firstActive = false;
     const second = renderAgents({
-      agentState: { "planner-session": { pinned_at: "2026-09-14T00:00:00Z" } },
+      agentState: { "planner-session": { pinned_at: "2026-09-14T00:00:00Z", unread_replies: 0 } },
     });
     try {
       const elsewhere = await screen.findByRole("button", { name: "Unpin Planner" });
@@ -1167,6 +1181,7 @@ const coreIssue: IssueSummary = {
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
   key: "CORE-1",
+  labels: [],
   last_seq: 0,
   open_asks: 0,
   progress: { tasks: null, children: null },
@@ -1251,6 +1266,7 @@ test("Agents renders each targeted message and its reply beneath the matching ca
   const root = message("Can this ship?", {
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "btw",
@@ -1301,6 +1317,7 @@ test("Agents keeps an issue-attached legacy reply on its issue message route", a
     target: "session:planner-session",
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "btw",
@@ -1349,6 +1366,7 @@ test("Agents retain targeted-message retries and attempt history", async () => {
   const root = message("Can this ship?", {
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "btw",
@@ -1399,6 +1417,7 @@ test("Use Send instead is disabled when the target does not advertise steer", as
   const root = message("Can this ship?", {
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "btw",
@@ -1435,6 +1454,7 @@ function sentAttempt(
   overrides: Partial<MessageDelivery> = {}
 ): MessageDelivery {
   return {
+    ...messageDeliveryFields(),
     attempt: 1,
     created_at: recentAttemptAt,
     delivery,
@@ -1946,6 +1966,7 @@ test("a reply to an Aside-only agent after a refused Send goes as an Aside", asy
   const root = message("Can this ship?", {
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "steer",
@@ -1992,6 +2013,7 @@ test("Agents replies to an issue-less exchange through the agent route, threaded
   const root = message("Can this ship?", {
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "btw",
@@ -2118,6 +2140,7 @@ test("a reply inherits the mode of the exchange's newest attempt even within one
     createdAt: string,
     number: number
   ): MessageDelivery => ({
+    ...messageDeliveryFields(),
     attempt: number,
     created_at: createdAt,
     delivery,
@@ -2186,6 +2209,7 @@ test("a root targeted-message retry on the Agents page checks the role's current
     target: "role:reviewer",
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "steer",
@@ -2208,6 +2232,7 @@ test("a root targeted-message retry on the Agents page checks the role's current
     open_asks: 0,
     roles: ["reviewer"],
     session_id: "new-reviewer-session",
+    state: "live",
     title: "New reviewer",
   };
   const page = renderAgents({
@@ -2239,6 +2264,7 @@ test("a reply's targeted-message retry on the Agents page checks the thread's cu
     target: "role:reviewer",
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "steer",
@@ -2262,6 +2288,7 @@ test("a reply's targeted-message retry on the Agents page checks the thread's cu
     author: { id: "alice", kind: "user" },
     deliveries: [
       {
+        ...messageDeliveryFields(),
         attempt: 1,
         created_at: recentAttemptAt,
         delivery: "steer",
@@ -2286,6 +2313,7 @@ test("a reply's targeted-message retry on the Agents page checks the thread's cu
     open_asks: 0,
     roles: ["reviewer"],
     session_id: "new-reviewer-session",
+    state: "live",
     title: "New reviewer",
   };
   const page = renderAgents({
@@ -2802,7 +2830,7 @@ test("a restored send names a selected session it leaves out by the reason an ed
       body: "Still here?",
       delivery: "btw",
       session_ids: ["planner-session"],
-    } satisfies CreateBroadcastInput,
+    } satisfies BroadcastRequest,
     key: "refused-key",
   };
   const composition = {
@@ -2870,7 +2898,7 @@ test("a restored send claims no absence from an agent list that is not current",
       body: "Still here?",
       delivery: "btw",
       session_ids: ["planner-session"],
-    } satisfies CreateBroadcastInput,
+    } satisfies BroadcastRequest,
     key: "refused-key",
   };
   const composition = {
@@ -2949,7 +2977,7 @@ test("a selected session listed without the mode on an agent list that is not cu
       body: "Still here?",
       delivery: "btw",
       session_ids: [planner.session_id],
-    } satisfies CreateBroadcastInput,
+    } satisfies BroadcastRequest,
     key: "refused-key",
   };
   const composition = {
@@ -3631,7 +3659,7 @@ test("an open row a collapsed group hides marks nothing read, and opening the gr
     page.listAgentMessages.mockResolvedValue([
       {
         ...answered,
-        replies: answered.replies.map((reply) => ({
+        replies: (answered.replies ?? []).map((reply) => ({
           ...reply,
           author: { id: "stale-session", kind: "session" as const },
         })),

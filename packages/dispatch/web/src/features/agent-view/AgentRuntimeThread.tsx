@@ -25,6 +25,7 @@ import {
   turnKey,
 } from "./dispatch-marks";
 import { type LivePlace, useLiveViews } from "./live-views";
+import { storedMessages } from "./stored-messages";
 
 /** Who wrote a stored message, when it was not the viewer: its author as Dispatch recorded it
  *  (a session's stamped title with it, for `AgentName` to name it by), and its issue if any. */
@@ -116,7 +117,7 @@ export function AgentRuntimeThread({
   viewer: string | undefined;
 }): ReactNode {
   const messages = useMemo(() => {
-    const storedMessages = stored.flatMap((read) => [read.message, ...read.replies]);
+    const messagesOfReads = storedMessages(stored);
     // A person's direct message the session took as its own user turn is in the stream too,
     // normally tagged with its Dispatch id: then it shows once, where the session took it, still
     // naming whoever wrote it. An untagged one is returned unchanged and its stored copy is never
@@ -128,7 +129,7 @@ export function AgentRuntimeThread({
     // session's reply to that message, which is the same text once more: the turn the stream
     // took over is the one the reader gets, and that reply is drawn nowhere (`reported`).
     const byID = new Map(
-      storedMessages
+      messagesOfReads
         .filter((message) => message.author.kind === "user")
         .map((message) => [message.id, message])
     );
@@ -163,7 +164,7 @@ export function AgentRuntimeThread({
     // stream's times are whole milliseconds, so the merge below compares milliseconds; the stored
     // messages carry microseconds, so they are put in time order first, and the stable merge keeps
     // that order between two stored messages in one millisecond.
-    const dispatch: KeyedMessage[] = storedMessages
+    const dispatch: KeyedMessage[] = messagesOfReads
       .filter(
         (message) =>
           !taken.has(message.id) &&

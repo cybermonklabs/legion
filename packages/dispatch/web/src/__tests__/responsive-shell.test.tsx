@@ -27,6 +27,8 @@ const issue: IssueDetails = {
       kind: "doc",
       name: "Spec",
       primary: true,
+      ref_key: "CORE-1/spec",
+      session_id: null,
       slug: "spec",
       versions: [],
     },
@@ -47,7 +49,10 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  decisions_artifact_id: "",
+  plan_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   project: "CORE",
   referenced_by_count: 0,
   route: null,
@@ -120,6 +125,7 @@ function renderShellAt(
       open_asks: 0,
       progress: { tasks: null, children: null },
       last_seq: 0,
+      labels: [],
       parent: issue.parent,
       blocked_by: issue.blocked_by,
       primary_artifact_id: issue.primary_artifact_id,
@@ -139,7 +145,13 @@ function renderShellAt(
   api.getIssue = async () => issue;
   api.getInbox = async () => inbox;
   api.listProjects = async () => [
-    { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ];
   api.listIssueAsks = async () => [];
   api.listComments = async () => [];
@@ -211,13 +223,16 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     {
       anchor: null,
       answer: null,
+      artifact_id: null,
       author: { id: "session-1", kind: "session" },
+      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-waiting",
       // The badge counts the reader's own: the shell signs in as `alice`.
       issue: { assignee: "alice", key: "CORE-1", title: "Responsive shell" },
       issue_key: "CORE-1",
+      last_reply: null,
       kind: "question",
       multiple: false,
       opened_event_id: 1,
@@ -243,7 +258,9 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     {
       anchor: null,
       answer: null,
+      artifact_id: null,
       author: { id: "session-2", kind: "session" },
+      block_id: null,
       created_at: "2026-09-10T00:00:00Z",
       edited_at: null,
       id: "ask-answered",
@@ -309,6 +326,7 @@ function agent(sessionId: string, title: string): Agent {
     open_asks: 0,
     roles: [],
     session_id: sessionId,
+    state: "running",
     title,
   };
 }
@@ -326,7 +344,9 @@ const PINS_KEY = "dispatch.agents.pinned:alice";
 test("the shell writes the browser's old pins one at a time and forgets the key once they land", async () => {
   const planner = Promise.withResolvers<UserAgentState>();
   const putAgentState = answerAgentStates().mockImplementation(async (session) =>
-    session === "planner-session" ? planner.promise : { pinned_at: "2026-09-14T12:00:01Z" }
+    session === "planner-session"
+      ? planner.promise
+      : { pinned_at: "2026-09-14T12:00:01Z", unread_replies: 0 }
   );
   window.localStorage.setItem(PINS_KEY, JSON.stringify(["planner-session", "reviewer-session"]));
   api.getMyAgentState = async () => ({});
@@ -339,7 +359,7 @@ test("the shell writes the browser's old pins one at a time and forgets the key 
     expect(window.localStorage.getItem(PINS_KEY)).not.toBeNull();
 
     await act(async () => {
-      planner.resolve({ pinned_at: "2026-09-14T12:00:00Z" });
+      planner.resolve({ pinned_at: "2026-09-14T12:00:00Z", unread_replies: 0 });
       await planner.promise;
     });
     await waitFor(() => expect(putAgentState).toHaveBeenCalledTimes(2));
@@ -372,7 +392,7 @@ test("a pin write Dispatch refuses leaves the browser's old key as it was", asyn
     if (session === "planner-session") {
       throw new ApiError(400, { code: "AGENT_STATE_INPUT", error: "Dispatch refused it" });
     }
-    return { pinned_at: "2026-09-14T12:00:01Z" };
+    return { pinned_at: "2026-09-14T12:00:01Z", unread_replies: 0 };
   });
   window.localStorage.setItem(PINS_KEY, kept);
   api.getMyAgentState = async () => ({});
@@ -397,7 +417,7 @@ test("a pin write Dispatch refuses leaves the browser's old key as it was", asyn
 test("a phone finds the pinned agents in the sidebar sheet", async () => {
   const user = userEvent.setup();
   api.getMyAgentState = async () => ({
-    "planner-session": { pinned_at: "2026-09-14T00:00:01Z" },
+    "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   });
   renderShellAt(800, [], 0, [agent("planner-session", "Planner")]);
 
@@ -415,7 +435,7 @@ test("a phone finds the pinned agents in the sidebar sheet", async () => {
 // were reading.
 test("the shell tells the live-view registry which agents the person pinned", async () => {
   api.getMyAgentState = async () => ({
-    "planner-session": { pinned_at: "2026-09-14T00:00:01Z" },
+    "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   });
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });

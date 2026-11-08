@@ -59,7 +59,7 @@ function session(sessionID: string, title: string): FakeSession {
  *  one settled turn, the model and thinking level the two pickers switch, the session's own
  *  commands - without which those settings are text rather than pickers, since the switch is a
  *  command the session runs - and how full its window is, which is the ring in the row. */
-function replayOf(sessionID: string): object {
+function replayOf(sessionID: string): Record<string, unknown> {
   return {
     frames: [
       {

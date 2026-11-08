@@ -89,7 +89,10 @@ export function matchesFilters(
 ): boolean {
   if (filters.groups.length > 0 && !filters.groups.includes(group)) return false;
   if (filters.machines.length > 0 && !filters.machines.includes(agent.host)) return false;
-  if (filters.roles.length > 0 && !filters.roles.some((role) => agent.roles.includes(role))) {
+  if (
+    filters.roles.length > 0 &&
+    !filters.roles.some((role) => (agent.roles ?? []).includes(role))
+  ) {
     return false;
   }
   if (words.length === 0) return true;
@@ -121,7 +124,7 @@ export function filterOptions(
   const roles = new Set<string>();
   for (const agent of agents) {
     if (agent.host !== "") hosts.add(agent.host);
-    for (const role of agent.roles) roles.add(role);
+    for (const role of agent.roles ?? []) roles.add(role);
   }
   return { machines: [...hosts].sort(), roles: [...roles].sort() };
 }

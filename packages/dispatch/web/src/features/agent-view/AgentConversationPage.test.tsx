@@ -70,6 +70,7 @@ const agent: Agent = {
   open_asks: 0,
   roles: [],
   session_id: SESSION,
+  state: "live",
   title: "Planner",
 };
 
@@ -77,11 +78,13 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
   return {
     author: { id: "sami", kind: "user" },
     body,
+    broadcast_id: null,
     created_at: "2026-09-27T21:16:15Z",
     deliveries: [],
     id,
     in_reply_to: null,
     issue_key: null,
+    reply_block: null,
     target: `session:${SESSION}`,
     ...overrides,
   };
@@ -231,7 +234,7 @@ function answer(
 function renderLiveView({
   agentState,
   agents,
-  capabilities = agent.capabilities,
+  capabilities = agent.capabilities ?? [],
   messages,
   other,
   putAgentState,
@@ -328,7 +331,8 @@ function relayStatus(view: HTMLElement = screen.getByTestId("agent-conversation"
 // and seeing them there is reading them.
 test("the live view shows the session's Dispatch replies to direct messages and marks them read", async () => {
   const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
-    ...input,
+    cleared_before: input.cleared_before ?? undefined,
+    read_through: input.read_through ?? undefined,
     unread_replies: 0,
   }));
   renderLiveView({
@@ -359,7 +363,11 @@ test("the live view shows the session's Dispatch replies to direct messages and 
 test("the live view retries a read mark that failed to save", async () => {
   const putAgentState = answerAgentStates()
     .mockRejectedValueOnce(new ApiError(503, { code: "UNAVAILABLE", error: "restarting" }))
-    .mockImplementation(async (_session, input) => ({ ...input, unread_replies: 0 }));
+    .mockImplementation(async (_session, input) => ({
+      cleared_before: input.cleared_before ?? undefined,
+      read_through: input.read_through ?? undefined,
+      unread_replies: 0,
+    }));
   renderLiveView({
     agentState: { [SESSION]: { unread_replies: 2 } },
     messages: conversation,
@@ -2444,7 +2452,9 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
  *  and none once the viewer unpinned it. */
 function answerPinWrites(): Mock<typeof api.putAgentState> {
   return answerAgentStates().mockImplementation(async (_session, input) =>
-    input.pinned === true ? { pinned_at: "2026-09-27T22:00:00Z", unread_replies: 0 } : {}
+    input.pinned === true
+      ? { pinned_at: "2026-09-27T22:00:00Z", unread_replies: 0 }
+      : { unread_replies: 0 }
   );
 }
 
@@ -2479,7 +2489,7 @@ test("the live view's header unpins the session, and the rail's row goes", async
   const user = userEvent.setup();
   const putAgentState = answerPinWrites();
   renderLiveView({
-    agentState: { [SESSION]: { pinned_at: "2026-09-27T21:00:00Z" } },
+    agentState: { [SESSION]: { pinned_at: "2026-09-27T21:00:00Z", unread_replies: 0 } },
     messages: [],
     putAgentState,
   });

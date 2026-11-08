@@ -45,12 +45,12 @@ function session(sessionID: string, title: string, dir = "/workspaces/context"):
 }
 
 /** The session's `context` frame: the two figures and nothing else. */
-function contextFrame(seq: number, tokens: number, contextWindow: number): object {
+function contextFrame(seq: number, tokens: number, contextWindow: number): Record<string, unknown> {
   return { contextWindow, kind: "context", seq, tokens, v: 1 };
 }
 
 /** One settled turn, so the view opens on a conversation rather than on its empty line. */
-function turnFrame(seq: number): object {
+function turnFrame(seq: number): Record<string, unknown> {
   return {
     kind: "message",
     message: {
@@ -66,7 +66,7 @@ function turnFrame(seq: number): object {
 }
 
 /** What the session answers the next viewer's replay request with. */
-function replayOf(sessionID: string, frames: object[]): object {
+function replayOf(sessionID: string, frames: Record<string, unknown>[]): Record<string, unknown> {
   return { frames, session_id: sessionID, v: 1 };
 }
 
