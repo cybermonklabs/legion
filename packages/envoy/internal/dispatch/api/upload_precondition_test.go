@@ -273,8 +273,14 @@ func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
 	if conflict.Code != "PRECONDITION_FAILED" {
 		t.Fatalf("the refusal's code = %q, want PRECONDITION_FAILED: %s", conflict.Code, refused.Body.String())
 	}
-	if !strings.Contains(conflict.Error, "dispatch doc-read") {
-		t.Fatalf("the refusal reads %q, want it to say where the token comes from", conflict.Error)
+	// The refusal of a stale base sends the caller to dispatch doc-read for a fresh token. This
+	// one must not: the owner holds no document under that name, so there is no token to read,
+	// and the caller's upload creates the document rather than replacing one.
+	if !strings.Contains(conflict.Error, "replaces nothing: send it again with no base") {
+		t.Fatalf("the refusal reads %q, want it to say the name holds no document and the upload names no base", conflict.Error)
+	}
+	if strings.Contains(conflict.Error, "dispatch doc-read") {
+		t.Fatalf("the refusal reads %q, want it not to send the caller after a token no document has", conflict.Error)
 	}
 	var artifacts int
 	if err := database.Pool.QueryRow(context.Background(),

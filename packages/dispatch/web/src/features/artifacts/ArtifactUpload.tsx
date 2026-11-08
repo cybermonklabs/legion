@@ -91,10 +91,24 @@ export async function uploadFile(
   );
 }
 
+/** What the row says when the document moved under an upload the dashboard sent a base for. The
+ *  server writes its own refusal for a caller holding the `dispatch` command, naming the command
+ *  that reads the token and the argument that sends it; a person uploading here runs no command
+ *  and pastes no token, and the dashboard reads the token for them on every attempt, so pressing
+ *  Upload again sends the base the document has now. Reading what changed first is the point of
+ *  the guard, which is why the row says to open the document rather than only to try again. */
+export const UPLOAD_BASE_REFUSAL =
+  "This document changed while you were uploading it. Open it to see what it says now, then upload again.";
+
 // A refused upload is described by the server, which names the bound it hit: a markdown document
-// is at most 1 MiB and any other file at most 25 MiB, so a 413 is not one message.
+// is at most 1 MiB and any other file at most 25 MiB, so a 413 is not one message. The two
+// refusals of the document base are the exception: the server writes those for the `dispatch`
+// command and the dashboard says what they mean to a person (UPLOAD_BASE_REFUSAL).
 export function uploadErrorMessage(error: unknown): string {
   if (error instanceof ApiError) {
+    if (error.code === "PRECONDITION_FAILED" || error.code === "PRECONDITION_REQUIRED") {
+      return UPLOAD_BASE_REFUSAL;
+    }
     return error.message;
   }
   return "Could not upload the artifact.";

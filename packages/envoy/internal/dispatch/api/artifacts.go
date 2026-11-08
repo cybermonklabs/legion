@@ -619,10 +619,14 @@ func (s *server) storeArtifact(
 	// A first upload under a name the owner holds nothing under replaces nothing, so a base
 	// names a document that is not there: the caller read something this owner does not hold,
 	// or another writer has taken the name since. That is a failed precondition rather than a
-	// malformed request, so it is answered as a stale base is, with no current token to give.
+	// malformed request, so it is answered as a stale base is, with no current token to give -
+	// and so with words of its own, since telling the caller to read a document the owner holds
+	// nothing under would send it after a token nothing can print.
 	if kind == "doc" && created && input.precondition != nil {
 		s.writeHandlerError(w, &docs.ErrPreconditionFailed{
-			Advice: uploadBaseAdvice,
+			Advice: fmt.Sprintf(
+				"%q names no document of this owner, so this upload creates one and replaces nothing: send it again with no base",
+				input.name),
 			Mismatches: []model.EditPreconditionMismatch{{
 				Scope:    "document",
 				Expected: input.precondition.Document,
