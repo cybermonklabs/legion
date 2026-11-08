@@ -191,10 +191,10 @@ function depthOf(node: ProseMirrorNode, type: string): number {
   return node.type.name === type ? deepest + 1 : deepest;
 }
 
-// The `300_000` each row below carries is a hang guard, not the bound on work: on bun 1.4.4 a
-// per-test limit cannot interrupt a synchronous body, and is reported once that body returns, so
-// what ends a hang is the `dispatch-ui` job's `timeout-minutes: 15` in .github/workflows/ci.yaml.
-// `parseCpuBudgetMs` is the bound on work.
+// Every `300_000` in this file, on the rows below and on the nesting-bound rows after them, is a
+// hang guard, not a bound on work: on bun 1.4.4 a per-test limit cannot interrupt a synchronous
+// body, and is reported once that body returns, so what ends a hang is the `dispatch-ui` job's
+// `timeout-minutes: 15` in .github/workflows/ci.yaml. `parseCpuBudgetMs` is the bound on work.
 for (const shape of shapes) {
   const smallBody = shape.grow(Math.floor(shape.full / growthStep));
   const fullBody = shape.grow(shape.full);
