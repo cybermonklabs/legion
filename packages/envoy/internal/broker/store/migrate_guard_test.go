@@ -85,7 +85,7 @@ func TestMigrateRefusesTwoMigrationsSharingAVersionBeforeApplyingAny(t *testing.
 }
 
 func TestMigrateRefusesNonTransactionalFilesBeforeApplyingAnything(t *testing.T) {
-	s := emptySchemaStore(t)
+	s := emptyDatabaseStore(t)
 	set := fstest.MapFS{
 		"migrations/0001_first.up.sql": {Data: []byte("create table guard_first (id integer)")},
 		"migrations/0002_index.up.sql": {Data: []byte("-- pgmigrate:non-transactional\ncreate index concurrently if not exists guard_index on guard_first (id)")},
