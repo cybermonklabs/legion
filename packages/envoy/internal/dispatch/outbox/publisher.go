@@ -284,7 +284,11 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	var recordErr error
 	lostHold := false
 	// releasedEarly is a release an owner's own settle wrote (settleOwner), which blocks the
-	// batch as one the batch's final settle wrote does.
+	// batch as one the batch's final settle wrote does. A fenced batch is the one path it does
+	// not reach: that result returns before the blocked flag is set, because such a batch is
+	// left unrecorded and reported fenced instead, and the scan stops on fenced as it stops on
+	// blocked (Outbox.serve), so the events an early settle released are not read again at once
+	// either way.
 	releasedEarly := false
 	// settleAndRecord settles each due event of owned (settleEvent), defers the due events their
 	// owners' windows left unread (deferPastWindow) and writes what they all came to in one
