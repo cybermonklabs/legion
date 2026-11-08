@@ -392,12 +392,10 @@ const (
 // which is every repair of a session nothing raced (bus.SessionConsumers.Ensure, whose answer
 // says which of the three it did). after names what this repair follows, for the log.
 //
-// The write is fenced on the interest row it was built from (fenceFilterWrite): a registration on
-// another listener can store its row between this repair's read and its call, and an older row's
-// filter landing over that registration's leaves the session answered 200 for a topic its
-// consumer does not filter on, with nothing to find it again - a filter update keeps the
-// consumer's position, so every message published on that topic in the window is skipped for
-// good.
+// The write is fenced on the interest row it was built from: a registration on another listener
+// can store its row between this repair's read and its call, and an older row's filter landing
+// over that registration's leaves the session answered 200 for a topic its consumer does not
+// filter on, at the cost fenceFilterWrite's doc states.
 //
 // A pass that finds the bucket holding no record of the session ends the repair, and the fence
 // with it: the record was deleted by a clean stop or a reaper pass, the same delete takes the

@@ -2230,10 +2230,7 @@ func (d *listenerDeps) registerSession(
 	// (sessionDelivery.confirmRegistered). A registration that reaches no entry - every plan it
 	// made was outrun, or its entry write failed - leaves the filter of a plan nothing stored
 	// over the filter the registration that won the row set: that session is answered 200 for a
-	// topic its consumer does not filter on, and a message stored on that topic is lost once the
-	// consumer's position moves past it, which the delivery of anything stored after it does,
-	// since neither a filter update nor the registration the session's next heartbeat makes
-	// moves that position (bus.SessionConsumers.UpdateFilter, bus.SessionConsumers.Ensure).
+	// topic its consumer does not filter on, at the cost fenceFilterWrite's doc states.
 	//
 	// It writes the filter alone and creates no consumer, where the repair of an answered
 	// registration creates one: this registration was answered nothing, so it promises no

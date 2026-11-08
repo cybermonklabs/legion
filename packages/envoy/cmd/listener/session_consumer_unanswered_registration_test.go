@@ -28,9 +28,8 @@ import (
 // A registration whose row is rewritten under every plan it makes is answered the
 // bus-unavailable 503, and the last plan it filtered the consumer on is one it never stored:
 // the writer that won the row holds topics that filter leaves out, and a message stored on one
-// of them would be lost once the consumer's position moves past it, which the delivery of
-// anything stored after it does. The registration sets the filter back to the row the bucket
-// holds before it answers.
+// of them would be lost at the cost fenceFilterWrite's doc states. The registration sets the
+// filter back to the row the bucket holds before it answers.
 func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_outrun_filter"
