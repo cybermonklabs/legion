@@ -50,7 +50,9 @@ import {
   COLUMN_MIN,
   COLUMN_SIZES,
   COMPACT_COLUMN_MIN,
+  PHONE_PINNED_SHARE,
   PINNED,
+  PINNED_SHARE,
   useIssueTableColumns,
 } from "./issues-table-columns";
 import {
@@ -178,7 +180,9 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         Math.max(COLUMN_MIN[id] ?? 116, sizing[id] ?? fallback),
       ])
     );
-    const budget = boxWidth * 0.6;
+    // On a phone the key and title are the row, so they take most of the box, leaving an edge of
+    // the next column to show the table scrolls sideways; wider boxes keep room for the rest.
+    const budget = boxWidth * (boxWidth < 640 ? PHONE_PINNED_SHARE : PINNED_SHARE);
     if (boxWidth < 640) {
       widths.key = COMPACT_COLUMN_MIN.key;
       widths.title = Math.max(

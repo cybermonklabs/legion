@@ -75,7 +75,11 @@ export const COLUMN_MIN: Record<string, number> = {
   created: 148,
   updated: 148,
 };
-export const COMPACT_COLUMN_MIN = { key: 88, title: 60 };
+export const COMPACT_COLUMN_MIN = { key: 88, title: 120 };
+/** How much of the table's box the pinned columns may cover: on a phone (below 640 px) the key
+ *  and title are what identify a row, so they take most of it. */
+export const PINNED_SHARE = 0.6;
+export const PHONE_PINNED_SHARE = 0.85;
 
 export function useIssueTableColumns(
   userState: UserState | undefined,

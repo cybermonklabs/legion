@@ -74,7 +74,7 @@ Use **Group by** for status, priority, epic, assignee, created by, claimed by, o
 An epic is an open root issue labelled `epic`; its descendants are the table rows, while its linked group heading represents the epic itself.
 
 The table scrolls vertically and horizontally inside its own box.
-Its header stays visible. On phones Select, Key and Title stay pinned within 60% of the box; Priority scrolls with the other columns.
+Its header stays visible. On phones Select, Key and Title stay pinned within 85% of the box, so a title reads as words; Priority and the other columns scroll sideways.
 Title narrows and keeps its two-line clamp, even with saved desktop widths.
 The box has room for at least three full issue rows; on compact windows, scroll the page to reach the table and its pager.
 Drag a header edge to resize a column, double-click it to reset its width, or drag a header to reorder columns.
