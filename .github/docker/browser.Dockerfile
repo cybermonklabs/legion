@@ -33,7 +33,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:bb05d66d2963b1cc48073190781c3dd29e2c
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
 
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
-LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with PostgreSQL 18 and pgvector, weed, jq, python3, flock and a DejaVu core font: the image every CI job that can launch WebKit or Firefox runs in"
+LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with PostgreSQL 18 and pgvector, weed, jq, python3, flock, a C/C++ toolchain and a DejaVu core font: the image every CI job that can launch WebKit or Firefox runs in"
 
 # What the base image already carries, read from its own config history and then from the built
 # image rather than guessed: node 26 and npm (NODE_VERSION=26, not 24), yarn, curl, wget, gpg,
@@ -42,6 +42,13 @@ LABEL org.opencontainers.image.description="Playwright v1.64.1-noble with Postgr
 # **uid 1001, gid 1001** -- not 1000 -- and the browsers at /ms-playwright. Its apt sources
 # point at azure.archive.ubuntu.com, which this build inherits. A stalled mirror here fails one
 # image build and no test job, which is the whole point of installing at build time.
+# What it does not carry is a toolchain: its own build installs curl, wget, gpg,
+# ca-certificates, nodejs, git, openssh-client and zstd, adds yarn through npm, and then runs
+# `playwright-core install-deps`, which is the browsers' runtime libraries and no compiler.
+# Read rather than inferred from an error: mcr.microsoft.com/playwright:v1.64.1-noble answers
+# today with this base's own digest, none of the seven layers of its linux/amd64 manifest holds
+# usr/bin/make, gcc, g++, cc or c++, and the 515 packages of its dpkg status hold no make, gcc,
+# g++, binutils or libc6-dev. build-essential below is what answers for that, and says why.
 ARG DEBIAN_FRONTEND=noninteractive
 
 # PostgreSQL's own apt repository (apt.postgresql.org), because Ubuntu noble carries 16 and the
@@ -110,6 +117,26 @@ RUN set -eux; \
       # extractZip execs `unzip` on Linux (dist/setup/index.js, extractZipNix). Without it
       # ./.github/actions/setup-bun fails in a container before anything else runs.
       unzip \
+      # A C and C++ toolchain, for the dependency whose prebuilt binary is not there to be
+      # downloaded: `bun install --frozen-lockfile` falls back to building that package from
+      # source with node-gyp, which runs make and a compiler. The bare ubuntu-24.04 runner
+      # these jobs ran on until this image carries build-essential, so that fallback compiled
+      # there and nobody had to think about it. This container had nothing to fall back to:
+      # job 128723749461 died inside `bun install` with
+      # `gyp ERR! stack Error: not found: make` before a browser started, because
+      # better-sqlite3 12.11.1's prebuilt download was answering 5xx through that run. No
+      # green leg's log holds `node-gyp` at all, so the source build is the exception -- which
+      # is what makes it worth carrying here rather than reading again at the next 5xx, since
+      # an image that is occasionally less survivable than the runner it replaces is this
+      # issue's own failure mode in a new coat.
+      #
+      # build-essential and not a hand-picked `make gcc g++`: gcc pulls libc6-dev and g++
+      # pulls libstdc++-13-dev either way, so the trio is 41 new packages and 236 MiB
+      # installed where the metapackage is 48 and 240 MiB -- 4.4 MiB for the name the runner
+      # itself carries. Those figures are summed from noble's own package indexes against this
+      # base's dpkg status rather than measured in a built image, which no machine outside CI
+      # here can build.
+      build-essential \
       # gst-inspect-1.0, which Playwright's own dependency list does not install: it ships the
       # GStreamer libraries and plugins WebKit links and loads, not the command-line tools. The
       # registry assertion below is the thing that needs it.
@@ -140,9 +167,16 @@ RUN set -eux; \
         || { echo "::error::the GStreamer registry holds no $element"; exit 1; }; \
       echo "gst-inspect-1.0 --exists $element: present"; \
     done; \
-    # Every tool the Dispatch end-to-end harness and run-server.sh reach for, proven here so a
-    # missing one fails the build rather than a job.
-    for tool in psql initdb pg_ctl pg_config python3 flock jq weed git openssl unzip tar curl node fc-match; do \
+    # Every tool the Dispatch end-to-end harness and run-server.sh reach for, and the toolchain
+    # a source build of a dependency reaches for, proven here so a missing one fails the build
+    # rather than a job. make, gcc and g++ are what build-essential installs; cc and c++ are the
+    # update-alternatives links gcc's and g++'s own postinst registers. A node-gyp build reaches
+    # for both kinds: the Makefile gyp writes leaves CC and CXX to make's built-in rules, which
+    # are `cc` and `g++`, and its host compilers default to the literal `gcc` and `g++`
+    # (node-gyp's gyp/pylib/gyp/generator/make.py). All five, so the build fails on a package
+    # that went missing and on an alternative that was never registered alike.
+    for tool in psql initdb pg_ctl pg_config python3 flock jq weed git openssl unzip tar curl \
+      node fc-match make gcc g++ cc c++; do \
       command -v "$tool" >/dev/null || { echo "::error::the image holds no $tool"; exit 1; }; \
       printf '%-10s %s\n' "$tool" "$(command -v "$tool")"; \
     done; \
