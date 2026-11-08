@@ -1469,6 +1469,9 @@ jobs:
               # to, the packages it builds the SPA and the Go binaries from, and the notices
               # scripts.
               - 'packages/envoy/docker/Dockerfile'
+              # PROBE ONLY (dispatch://INFRA-1526): main's copy of the Dockerfile, which this
+              # branch's envoy-smoke job builds beside the real one.
+              - 'packages/envoy/docker/Dockerfile.baseline'
               - '.dockerignore'
               - '.bun-version'
               - 'package.json'
@@ -4318,7 +4321,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_smoke == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     env:
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
       # clean up, and its image would be one more registry pull a test could fail on.
@@ -4386,6 +4389,55 @@ jobs:
           load: true
           provenance: false
           tags: ${{ env.ENVOY_SMOKE_IMAGE }}
+          # PROBE ONLY (dispatch://INFRA-1526): neither arm reads a cache, so the two installs
+          # are measured cold against each other on one runner.
+          no-cache: true
+      # PROBE ONLY (dispatch://INFRA-1526): main's copy of the Dockerfile, built right after
+      # this change's copy on the same runner. Never on the pull request's branch.
+      - name: Build the baseline listener image main's Dockerfile makes
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        env:
+          BUILDX_METADATA_PROVENANCE: disabled
+          DOCKER_BUILD_SUMMARY: "false"
+        with:
+          context: .
+          file: packages/envoy/docker/Dockerfile.baseline
+          load: true
+          provenance: false
+          tags: legion-envoy-baseline:${{ github.sha }}
+          no-cache: true
+      # PROBE ONLY (dispatch://INFRA-1526): what each image holds.
+      - name: Compare the two images file by file
+        env:
+          ENVOY_BASELINE_IMAGE: legion-envoy-baseline:${{ github.sha }}
+        run: |
+          set -eu
+          read_image() {
+            image="$1"; out="$2"
+            docker run --rm --user 0 --entrypoint find "$image" / -xdev -type f -printf '%p %s\n' | sort > "$out"
+          }
+          read_image "$ENVOY_SMOKE_IMAGE" /tmp/changed.txt
+          read_image "$ENVOY_BASELINE_IMAGE" /tmp/baseline.txt
+          normalise() {
+            sed -E 's#(/srv/dispatch-web/.*)-[A-Za-z0-9_-]{8,}\.#\1-HASH.#' "$1" | sort
+          }
+          normalise /tmp/changed.txt > /tmp/changed.norm
+          normalise /tmp/baseline.txt > /tmp/baseline.norm
+          echo "=== normalised listing difference (baseline then changed; empty is the pass)"
+          diff /tmp/baseline.norm /tmp/changed.norm && echo "(empty)"
+          echo "=== size multiset difference (empty is the pass)"
+          diff <(awk '{print $2}' /tmp/baseline.txt | sort -n) <(awk '{print $2}' /tmp/changed.txt | sort -n) && echo "(empty)"
+          echo "=== file counts"
+          wc -l /tmp/baseline.txt /tmp/changed.txt
+          for image in "$ENVOY_BASELINE_IMAGE" "$ENVOY_SMOKE_IMAGE"; do
+            echo "=== $image binaries"
+            docker run --rm --user 0 --entrypoint sha256sum "$image" \
+              /usr/local/bin/envoy-listener /usr/local/bin/envoy-dispatch \
+              /usr/local/bin/envoy-broker /usr/local/bin/agent-secrets
+            echo "=== $image notices"
+            docker run --rm --user 0 --entrypoint sha256sum "$image" \
+              /usr/share/doc/legion/THIRD_PARTY_NOTICES /srv/dispatch-web/THIRD_PARTY_NOTICES.txt
+          done
       # The image envoy-infra's live tests run (pulumitest.HeldPortImage): the smoke image above with
       # packages/envoy/infra/host/heldportwrapper as its envoy-listener, which takes the listening
       # socket the test holds for the container's port over an abstract unix socket and executes the
