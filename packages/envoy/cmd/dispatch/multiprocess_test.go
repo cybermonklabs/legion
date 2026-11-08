@@ -2704,11 +2704,16 @@ func TestSyncedEditorWaitsForItsOwnAppend(t *testing.T) {
 // knows the tab's own writing is durable, so only a later write somewhere else can leave the
 // tab's room behind the durable head. The marker changes no text, so what the tab renders is
 // what it opened.
+//
+// It marks in the document's own marks map, under a key no mark of the editor's uses, because a
+// room refuses an update naming any root outside the document's tree and its margin records -
+// content no editor sends (docs' allowed roots, DOC_UPDATE_REFUSED, INFRA-179). A root of the
+// marker's own would be refused 4413 before the append this waits for was ever made.
 func (p *dispatchPair) openMarkedEditor(t *testing.T, process *dispatchProcess, login, artifactID, want string) *docstest.Peer {
 	t.Helper()
 	editor := p.openSyncedEditor(t, process, login, artifactID, want)
-	markers := editor.Doc.GetMap("test-sync")
-	marker := strconv.FormatUint(uint64(editor.Doc.ClientID()), 10)
+	markers := editor.Doc.GetMap("marks")
+	marker := "test-sync-" + strconv.FormatUint(uint64(editor.Doc.ClientID()), 10)
 	update, err := editor.Send(func(txn *crdt.Transaction) { markers.Set(txn, marker, true) })
 	if err != nil {
 		t.Fatalf("send %s's sync marker: %v", login, err)
