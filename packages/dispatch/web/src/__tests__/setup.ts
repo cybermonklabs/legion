@@ -39,11 +39,13 @@ GlobalRegistrator.register();
 // is kept as small as that rule allows, because every hung test costs the whole budget on CI as
 // well as in a pod. dispatch://INFRA-1405 sets this same budget for its own loaded rows; the
 // overlap is intended.
-// Measured at this head: this deadline reached every file of a run in each shape tried - a
-// trivial file and one holding a 6 s test run serially, that second file alone, the two under
-// `--parallel` (what this package's `bun run test` and CI run), each of two longer files
-// followed serially by it, and the whole `web/src/__tests__` directory serially with it late in
-// 289 tests - where the 6 s test passed every time.
+// This line is not enough on its own, measured here: on bun 1.4.4 a preload's `jest.setTimeout`
+// reaches only the first file of a serial run, so a 6 s test in this directory ends "this test
+// timed out after 5000ms" three times of three under `bun test web/src/__tests__`, and passes
+// alone, under `--parallel`, and under `--timeout 30000`. So `package.json`'s `test` script
+// carries `--timeout 30000` as well, which reaches every file in every run mode, and this line
+// is what a run of one file or of a directory started by hand still gets. The two numbers are
+// one budget and move together.
 jest.setTimeout(30_000);
 
 // Testing Library reads the document as it loads, so it must load after
@@ -60,9 +62,10 @@ jest.setTimeout(30_000);
 // measured there that the 1000 ms default failed 13 of 30 loaded runs, a different row each
 // time, which is why the budget is the suite's and not a deadline per row; the overlap is
 // intended.
-// The same runs show this budget reaching every file too: in each of those shapes, the
-// `--parallel` one among them, a `waitFor` that never passes ran about 10 s rather than the 1 s
-// default.
+// This budget needs no such help: measured with the deadline held off by `--timeout 30000`, a
+// `waitFor` that never passes ran about 10 s rather than the 1 s default in every shape tried,
+// the serial directory run among them, so `configure` from a preload reaches every file where
+// `jest.setTimeout` does not.
 const { configure } = await import("@testing-library/react");
 configure({ asyncUtilTimeout: 10_000 });
 
