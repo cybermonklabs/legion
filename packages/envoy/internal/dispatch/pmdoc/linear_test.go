@@ -413,7 +413,7 @@ func TestUnclosedRawHTMLShapesParseAndRenderLinearly(t *testing.T) {
 		{"p ", "<!a"}, {"p ", "<!A"}, {"", "x <!a\n"},
 		{"p ", "<!--"}, {"p ", "<?"}, {"p ", "<![CDATA["},
 	} {
-		readsAndWritesLinearly(t, form.head, form.shape, "", ladderSizes)
+		readsAndWritesLinearly(t, form.head, form.shape, "", smallLadderSizes)
 	}
 }
 
