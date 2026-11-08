@@ -19,11 +19,20 @@
 # `ghcr-mirror` or `npm`. A failure leaves no file at the destination, so a call site that checks
 # the exit status never runs a half-written or unverified file, and one that does not check it
 # finds nothing to run.
-# Those three words are the whole vocabulary, and a row's own `second_source` is written in them,
-# so a line, a refusal and the manifest say one word for one source. A call site takes the word
-# from the row with ci_tools_source_name below and writes none of its own: a row that moved to
-# another source while an action held the old word would name a service that served no byte of
-# what it installed.
+# Those three words are the whole vocabulary of a source, and a row's own `second_source` is
+# written in the two of them a second source is read with, so a line, a refusal and the manifest
+# say one word for one source. A call site takes the word from the row with ci_tools_source_name
+# below and writes none of its own: a row that moved to another source while an action held the
+# old word would name a service that served no byte of what it installed.
+# `github-release` is every row's primary and no row's second source, and ci_tools__second_fetch
+# below is the one list of the words a `second_source:` may hold, so no word is printed for a row
+# and then refused when the bytes are fetched.
+#
+# A fourth word a line may say and no row may hold: `cache`. .github/actions/setup-bun writes it
+# itself, from oven-sh/setup-bun's own `cache-hit` output, where that action restored Bun from
+# this repository's Actions cache instead of downloading the release asset. The cache holds bytes
+# a row already pins and is no store an install can fetch a tool from, so it is no property of a
+# row, no `second_source:` may name it, and nothing in this file prints it.
 #
 # THIS FILE IS SOURCED, NEVER EXECUTED. It defines functions, declares the empty cache those
 # functions keep a read manifest row in, reads nothing and fetches nothing at load, and it is
@@ -59,6 +68,13 @@
 #                                         address a ghcr-mirror row's second source is read
 #                                         from, and the one .github/scripts/mirror-ci-tools.sh
 #                                         writes and reads back.
+#   ci_tools_registry                     the package `registry:` names, printed, for the one
+#                                         line a run writes about which package it read.
+#   ci_tools_registry_url                 the registry API address of that package,
+#                                         <CI_TOOLS_GHCR_BASE>/v2/<its path>. It is the one
+#                                         owner of that address: ci_tools_blob_url and every
+#                                         URL .github/scripts/mirror-ci-tools.sh pushes to and
+#                                         reads back are built from it.
 #   ci_tools_token_of <file>              the `.token` of a registry token response. It is the
 #                                         one reader of such an answer this repository has, and
 #                                         ci_tools_ghcr_token below reads every token with it.
@@ -87,7 +103,8 @@
 #                          this file by any path finds the manifest without naming it.
 #   CI_TOOLS_GITHUB_BASE   default https://github.com. A row's `primary` and `mirror_from` begin
 #                          with that string, and this file replaces exactly that prefix.
-#   CI_TOOLS_GHCR_BASE     default https://ghcr.io.
+#   CI_TOOLS_GHCR_BASE     default https://ghcr.io, read by ci_tools__ghcr alone, so every
+#                          address of the package is built the one way.
 #   CI_TOOLS_NPM_BASE      default https://registry.npmjs.org.
 #
 # .github/scripts/ci-tools.test.sh serves all three sources from a local HTTP origin through those
@@ -206,12 +223,11 @@ ci_tools_field() {
 # from, so no action holds a source word of its own and a row that moves to another second source
 # moves every sentence about it with one edit.
 #
-# `second` is the row's own `second_source`, and a word that is not one of the three this
-# repository writes is refused rather than printed: the three are the whole vocabulary, and an
-# unknown one would reach a log line and a refusal as the name of a service nobody can look up.
-# This is the vocabulary and not the list of sources a fetch can read, which is the case in
-# ci_tools__second_source below: `github-release` is a word a line may say and not a second
-# source any row has.
+# `second` is the row's own `second_source`, and a word ci_tools__second_fetch below has no
+# fetch function for is refused rather than printed: that one case decides which words a second
+# source is written in, so a word this file would name and then refuse to fetch — which
+# `github-release` was, since it is every row's primary and no row's second source — cannot
+# exist, and a new second source is one edit in one place.
 #
 # `primary` is `github-release` for every row, because every row's primary is a GitHub release
 # asset: this helper fetches it for crane, changie and mise, and a third party fetches it for jj
@@ -223,7 +239,7 @@ ci_tools_source_name() {
     ci_tools__error "ci_tools_source_name takes a row and primary or second, and this call gave $#"
     return 1
   fi
-  local row=$1 which=$2 second
+  local row=$1 which=$2 second fetch
   ci_tools__row "$row" || return 1
   case "$which" in
     primary)
@@ -231,13 +247,10 @@ ci_tools_source_name() {
       ;;
     second)
       ci_tools__read second "$row" second_source || return 1
-      case "$second" in
-        github-release | ghcr-mirror | npm) printf '%s\n' "$second" ;;
-        *)
-          ci_tools__error "$row: the manifest's second_source is '$second', and the sources this repository names are github-release, ghcr-mirror and npm"
-          return 1
-          ;;
-      esac
+      # The word is printed only where a fetch answers to it, and which function that is has no
+      # use here: reading it is the whole check.
+      ci_tools__second_fetch "$row" "$second" fetch || return 1
+      printf '%s\n' "$second"
       ;;
     *)
       ci_tools__error "ci_tools_source_name reads the primary or the second source of a row, and this call asked for '$which'"
@@ -408,15 +421,12 @@ ci_tools_ghcr_token() {
     return 1
   fi
   local max_time=${1:-60} scope=${2:-pull} credential=${3:-}
-  local base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
-  local registry path token_file token status=0
+  local base path token_file token status=0
   # A credential is passed to curl as its own argument and never spliced into the URL, so the
   # secret reaches no log line and no process name of a redirect.
   local -a authentication=()
   [ -z "$credential" ] || authentication=(-u "$credential")
-  ci_tools__registry registry || return 1
-  # The registry's path is the manifest's `registry:` with its host removed.
-  path=${registry#*/}
+  ci_tools__ghcr base path || return 1
   token_file=$(ci_tools__tempfile ghcr-token) || {
     printf 'this run could not make a temporary file for the %s token\n' "$scope"
     return 1
@@ -452,6 +462,44 @@ ci_tools__registry() {
   ci_tools__read "$__variable" "$first" registry
 }
 
+# ci_tools_registry: the package every ghcr copy lives in, printed. It is what a call site says
+# in the one line that names the package it read or wrote.
+ci_tools_registry() {
+  if [ "$#" -ne 0 ]; then
+    ci_tools__error "ci_tools_registry takes no argument, and this call gave $#"
+    return 1
+  fi
+  local registry
+  ci_tools__registry registry || return 1
+  printf '%s\n' "$registry"
+}
+
+# ci_tools__ghcr <base variable> <path variable>: the CI_TOOLS_GHCR_BASE seam and the package's
+# path under it, which is the manifest's `registry:` with its host taken off, into those two
+# variables. It is the one place either is written: the token request above and the address
+# below are built from it, so no reader of the package holds a spelling of its own for where
+# that package is.
+ci_tools__ghcr() {
+  local __base=$1 __path=$2 registry
+  ci_tools__registry registry || return 1
+  printf -v "$__base" '%s' "${CI_TOOLS_GHCR_BASE:-https://ghcr.io}"
+  printf -v "$__path" '%s' "${registry#*/}"
+}
+
+# ci_tools_registry_url: the registry API address of that package, <base>/v2/<path>. Every URL
+# of the package is this address and what follows it: ci_tools_blob_url below is this and the
+# row's digest, and .github/scripts/mirror-ci-tools.sh's uploads, manifests and read-backs are
+# this and theirs, so the filler of a copy and every reader of one address one package.
+ci_tools_registry_url() {
+  if [ "$#" -ne 0 ]; then
+    ci_tools__error "ci_tools_registry_url takes no argument, and this call gave $#"
+    return 1
+  fi
+  local base path
+  ci_tools__ghcr base path || return 1
+  printf '%s/v2/%s\n' "$base" "$path"
+}
+
 # ci_tools_blob_url <row>: the row's blob in the package the manifest's `registry:` names. It is
 # the address of a ghcr-mirror row's second source, which is the row's own pinned digest: the
 # fetch below reads it, and .github/scripts/mirror-ci-tools.sh writes it and reads it back, so
@@ -461,11 +509,12 @@ ci_tools_blob_url() {
     ci_tools__error "ci_tools_blob_url takes a row, and this call gave $#"
     return 1
   fi
-  local row=$1 registry digest
-  ci_tools__read registry "$row" registry || return 1
+  local row=$1 digest registry_url
+  # The row first, so a call that names no row of the manifest is refused by its own name
+  # rather than by the package it has no row in.
   ci_tools__read digest "$row" digest || return 1
-  # The registry's path is the manifest's `registry:` with its host removed.
-  printf '%s/v2/%s/blobs/sha256:%s\n' "${CI_TOOLS_GHCR_BASE:-https://ghcr.io}" "${registry#*/}" "$digest"
+  registry_url=$(ci_tools_registry_url) || return 1
+  printf '%s/blobs/sha256:%s\n' "$registry_url" "$digest"
 }
 
 # ci_tools__fetch_ghcr <row> <max_time> <file>: the row's blob from the copy in the package the
@@ -522,6 +571,25 @@ ci_tools__fetch_npm() {
   return 0
 }
 
+# ci_tools__second_fetch <row> <second source word> <variable>: the function that reads that
+# second source, into <variable>, and a refusal naming the row and the word where this file has
+# none. It is the one list of the words a second source is written in: ci_tools__second_source
+# below fetches a row's bytes with the function it answers, and ci_tools_source_name above
+# prints a row's word only where it answers one, so a word the manifest carries and no source
+# of this file reads is refused by both, in one sentence, and a new second source is one case
+# here rather than three lists that can disagree.
+ci_tools__second_fetch() {
+  local row=$1 second=$2 __variable=$3
+  case "$second" in
+    ghcr-mirror) printf -v "$__variable" '%s' ci_tools__fetch_ghcr ;;
+    npm) printf -v "$__variable" '%s' ci_tools__fetch_npm ;;
+    *)
+      ci_tools__error "$row: the manifest's second_source is '$second', and this file reads ghcr-mirror and npm"
+      return 1
+      ;;
+  esac
+}
+
 # ci_tools__second_source <row> <dest> <what the primary did>: the second source alone. The third
 # argument is empty where there was no primary to try, and the refusal then names one source.
 ci_tools__second_source() {
@@ -530,19 +598,12 @@ ci_tools__second_source() {
   ci_tools__read second "$row" second_source || return 1
   ci_tools__read max_time "$row" max_time || return 1
   # The row's own word is the source a line and a refusal name, so nothing here translates it,
-  # and this case decides one thing: which function reads that source. A source word the
-  # manifest carries and this file has no reader for is refused here rather than left to fetch
+  # and the mapper above decides the one thing left: which function reads that source. A word
+  # the manifest carries and no fetch answers to is refused there rather than left to fetch
   # nothing, since an empty temporary file would be refused by the digest check instead, which
   # is the wrong refusal for the wrong reason.
   source=$second
-  case "$second" in
-    ghcr-mirror) fetch=ci_tools__fetch_ghcr ;;
-    npm) fetch=ci_tools__fetch_npm ;;
-    *)
-      ci_tools__error "$row: the manifest's second_source is '$second', and this file reads ghcr-mirror and npm"
-      return 1
-      ;;
-  esac
+  ci_tools__second_fetch "$row" "$second" fetch || return 1
   file=$(ci_tools__tempfile "$row") || {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
     return 1

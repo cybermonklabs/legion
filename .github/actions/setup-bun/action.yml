@@ -18,12 +18,21 @@ description: >-
   the third step checks the installed binary's sha256 against the row .github/ci-tools.yaml holds
   for this runner's Bun, whichever source served the bytes — oven-sh/setup-bun verifies no
   checksum of its own.
-  Both source words come from that row, through `ci_tools_source_name`, so this action writes
-  none of its own and a row that moves to another second source moves every line that names it.
+  Both of a row's source words come from that row, through `ci_tools_source_name`, so this
+  action writes none of its own and a row that moves to another second source moves every line
+  that names it.
+  One word is this action's own and no row's: `cache`, which the second step says where
+  oven-sh/setup-bun reports a cache hit, since the Actions cache holds bytes a row already pins
+  and is no store a manifest row could name.
 
-  A refusal leaves no tool behind: ~/.bun/bin is on this job's PATH from the first step, so the
-  third step removes the bun and the bunx there before it exits, and no later step of the job
-  runs a binary this action refused.
+  A refusal leaves no tool behind, and that holds for each of the two steps that can refuse.
+  The third step removes the binary it refused at the path `command -v bun` gave it, the bunx
+  beside it, and the pair in ~/.bun/bin where the refused one came from elsewhere, and it names
+  the paths it removed and any it could not, so what it says is true of the filesystem.
+  The second step removes the unpinned bun in ~/.bun/bin before it fetches, because a second
+  source that refuses ends that step and the third step never runs at all.
+  ~/.bun/bin is on this job's PATH from the first step, so either way no later step of the job
+  runs a bun no digest answers for.
 
   A run off main passes no-cache, so only a run on main saves: an entry a pull request writes is
   readable by no other pull request. ci.yaml runs on no push, so the entry comes from the
@@ -41,7 +50,8 @@ runs:
     # puts ~/.bun/bin on $GITHUB_PATH before it downloads anything, and a runner applies a step's
     # $GITHUB_PATH whether that step succeeded or failed, so every later step finds a bun there
     # either way.
-    - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+    - id: setup-bun
+      uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       continue-on-error: true
       with:
         bun-version-file: .bun-version
@@ -81,12 +91,28 @@ runs:
           revision=$("$HOME/.bun/bin/bun" --revision) || revision=
         fi
         if [ -n "$revision" ] && [ "${revision%%+*}" = "$pinned" ]; then
-          # The release asset oven-sh/setup-bun fetched, which is every row's primary.
-          source=$(ci_tools_source_name "$row" primary)
-          echo "setup-bun: the release asset served Bun $pinned, so this step installs nothing"
+          # Which store served those bytes: oven-sh/setup-bun restores Bun from this
+          # repository's Actions cache where it has an entry for this version, and downloads
+          # the release asset where it has none. `cache` is a literal here because a cache of
+          # bytes a row already pins is no source a row can hold, which is where
+          # .github/scripts/ci-tools.sh's header keeps that word; the release asset is every
+          # row's primary, so that word is read from the row.
+          if [ "${{ steps.setup-bun.outputs.cache-hit }}" = 'true' ]; then
+            source=cache
+          else
+            source=$(ci_tools_source_name "$row" primary)
+          fi
+          echo "setup-bun: $source served Bun $pinned, so this step installs nothing"
         else
           source=$(ci_tools_source_name "$row" second)
           echo "setup-bun: no Bun $pinned at $HOME/.bun/bin/bun, so the second source serves it"
+          # Whatever is at that path is not the pinned version — that is what this branch was
+          # chosen on — and no step has held it to the row's digest. It goes before the fetch
+          # and not after: a second source that refuses ends this step under errexit, and the
+          # third step, the one that takes a refused bun away, never runs. The bun and the bunx
+          # would then stay in ~/.bun/bin, which the first step put on this job's PATH, where a
+          # later step whose `if:` is `always()` would find them.
+          rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
           mkdir -p "$HOME/.bun/bin"
           # The fetch's own destination, so the 107 MB binary is written once and not three
           # times. The trust boundary is where it was: .github/scripts/ci-tools.sh verifies the
@@ -117,7 +143,42 @@ runs:
         # takes the binary away. ci_tools_verify leaves the file where it is, by design, and
         # this is the call site that owns it.
         if ! ci_tools_verify "${{ steps.bun-second-source.outputs.row }}" "$bun" "${{ steps.bun-second-source.outputs.source }}"; then
-          rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
-          echo "::error::setup-bun: the refused bun is removed, with the bunx beside it, from $HOME/.bun/bin, which is on this job's PATH, so no later step of this job runs the binary this step refused." >&2
+          # Every bun this refusal takes away: the one it refused, at the path it was found at,
+          # the bunx beside it, and the pair in ~/.bun/bin where the refused one came from
+          # somewhere else, since nothing held that pair to the row either and the first step
+          # put that directory on this job's PATH. Removing the refused file is the choice taken
+          # over refusing a bun outside ~/.bun/bin and leaving it where it is: a refusal that
+          # leaves the binary a later step runs is the state this action exists to prevent.
+          # A bunx is a symbolic link to the bun beside it, and a link whose target this loop
+          # has already removed answers -e with false, so each path is read as a link too.
+          removed=
+          left=
+          for path in "$bun" "$(dirname -- "$bun")/bunx" "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"; do
+            [ -e "$path" ] || [ -L "$path" ] || continue
+            rm -f -- "$path" || true
+            if [ -e "$path" ] || [ -L "$path" ]; then
+              left="$left $path"
+            else
+              removed="$removed $path"
+            fi
+          done
+          # What this shell ran as bun is in its own hash table, so the table is dropped before
+          # the path is read again: this sentence is about the filesystem, not about a name
+          # this step looked up before it removed the file.
+          hash -r
+          still=$(command -v bun) || still=
+          message="setup-bun: the bun at $bun is not the binary the ${{ steps.bun-second-source.outputs.row }} row pins, so this step refused it."
+          if [ -n "$removed" ]; then
+            message="$message It removed${removed}, so no later step of this job runs them."
+          else
+            message="$message It removed nothing, because nothing was at those paths to remove."
+          fi
+          if [ -n "$left" ]; then
+            message="$message It could not remove${left}, which stay on this job's PATH."
+          fi
+          if [ -n "$still" ]; then
+            message="$message A bun this action did not install is still on this job's PATH at $still."
+          fi
+          echo "::error::$message" >&2
           exit 1
         fi

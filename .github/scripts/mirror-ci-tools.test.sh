@@ -5,8 +5,9 @@
 # naming the row, an asset that serves other bytes than the row pins fails naming both digests and
 # pushes nothing, a blob the package held and no longer holds fails naming the row, an asset that
 # does not answer leaves the row cold and the run green, a row with a mirror_member pushes and
-# checks the member's own digest, and a run with no push credential refuses before it reads
-# anything.
+# checks the member's own digest, a row whose second source this repository reads from no
+# service stops the run where that read failed, and a run with no push credential refuses
+# before it reads anything.
 #
 # NO CASE REACHES THE NETWORK. Each case starts an HTTP origin of its own on 127.0.0.1, at a port
 # the kernel picks. It answers the registry API at its root, as ghcr.io does, and serves the
@@ -254,8 +255,9 @@ with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
 PY
 
 # row <name>: that row of the fixture manifest. The `whole` row pushes its archive as it stands,
-# the `inner` row pushes the member of its archive, and the `packaged` row is an npm row, which
-# needs no copy at all.
+# the `inner` row pushes the member of its archive, the `packaged` row is an npm row, which
+# needs no copy at all, and the `odd` row names a second source this repository reads from no
+# service.
 row() {
   case "$1" in
     whole)
@@ -295,6 +297,17 @@ YAML
     max_time: 7
     npm_package: "@fixture/packaged"
     npm_member: package/bin/packaged
+YAML
+      ;;
+    odd)
+      cat <<YAML
+  - name: odd
+    version: 4.0.0
+    digest: $WHOLE
+    digest_of: the fixture's release tarball, whole
+    primary: ""
+    second_source: s3
+    max_time: 7
 YAML
       ;;
     *)
@@ -525,5 +538,21 @@ check "fails" "$(is "$status" 1)"
 check "refuses in one sentence" \
   "$(is "$out" '::error file=.github/ci-tools.yaml::this run has no GITHUB_ACTOR and GITHUB_TOKEN to mint a push token from, and it writes to the package ci.yaml'"'"'s ci-images job logs in to, so it reads nothing and fills nothing.')"
 check "and reads nothing at all" "$(is "$(cat "$log")" "")"
+
+echo "case: a row whose second source this repository reads from no service"
+# Each row's word is read inside the loop, where a read that fails stops the run. Read outside
+# it, in the list of a `for`, that failure would be no failure at all under errexit, and every
+# row of the manifest would be reported as one that needs no copy.
+fixture second-source-unknown whole odd
+cp "$work/payloads/whole.tar.gz" "$state/blobs/sha256:$WHOLE"
+printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
+run_mirror
+check "fails" "$(is "$status" 1)"
+check "naming the row and the word" \
+  "$(contains "$out" "^::error::ci-tools: odd: the manifest's second_source is 's3', and this file reads ghcr-mirror and npm\$")"
+check "stops at that row, after the row before it was read" \
+  "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)\$")"
+check "says of no row that it needs no copy" "$(is "$(contains "$out" 'needs no copy')" false)"
+check "and prints no summary line" "$(is "$(contains "$out" 'row(s) held')" false)"
 
 summary "mirror-ci-tools.sh"

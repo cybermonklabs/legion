@@ -36,10 +36,11 @@
 # WHAT THIS SCRIPT DECIDES, AND WHAT IT READS FROM THE HELPER BESIDE IT.
 # The copy is written here and read by every install through .github/scripts/ci-tools.sh, so the
 # two must agree on the row, the digest and the address, and this script holds no second copy of
-# any of that: it reads the rows with `ci_tools_rows ghcr-mirror` and their fields with
-# `ci_tools_field`, fetches the asset with `ci_tools_curl`, holds the bytes to the row with
-# `ci_tools_verify`, addresses the blob with `ci_tools_blob_url` and mints its token with
-# `ci_tools_ghcr_token`.
+# any of that: it reads the rows with `ci_tools_rows`, each row's second source with
+# `ci_tools_source_name` and their fields with `ci_tools_field`, fetches the asset with
+# `ci_tools_curl`, holds the bytes to the row with `ci_tools_verify`, names the package with
+# `ci_tools_registry`, addresses that package with `ci_tools_registry_url` and the row's blob in
+# it with `ci_tools_blob_url`, and mints its token with `ci_tools_ghcr_token`.
 # What is this script's own is what no install does: the state of the copy — `held`, `filled` or
 # `cold` — the blob and manifest pushes, the read-back, and the refusal of a blob the package
 # held and no longer holds.
@@ -85,7 +86,9 @@
 #
 #   CI_TOOLS_MANIFEST     the manifest. Default .github/ci-tools.yaml, relative to the repository
 #                         root this script cd's to.
-#   CI_TOOLS_GHCR_BASE    default https://ghcr.io.
+#   CI_TOOLS_GHCR_BASE    default https://ghcr.io, applied by that helper's own
+#                         ci_tools_registry_url, which every URL this run reads or writes is
+#                         built from.
 #   CI_TOOLS_GITHUB_BASE  default https://github.com, applied to a row's `mirror_from` by that
 #                         helper's own ci_tools_github_url, which is what applies it to a row's
 #                         `primary`.
@@ -114,7 +117,6 @@ cd "$script_dir/../.."
 # the same file through this same seam.
 manifest=${CI_TOOLS_MANIFEST:-.github/ci-tools.yaml}
 CI_TOOLS_MANIFEST=$manifest
-ghcr_base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
 
 # The media types of the copy. A row that pushes an archive whole pushes a gzipped tar layer, and
 # a row that pushes a member taken out of one pushes those bytes as they are.
@@ -134,35 +136,35 @@ work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/mirror-ci-tools.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 headers="$work/headers"
 
-# Every row of the manifest, and the set of those whose second source is the copy this run
-# fills. Both lists come from the helper, so the rows this script fills are the rows an install
-# reads, and neither list is parsed here.
+# Every row of the manifest, in its own order. There is one list: each row's second source is
+# read in the loop below, so a read of it that fails stops this run where it failed, rather
+# than leaving every row to be reported as one that needs no copy.
 rows=$(ci_tools_rows)
 if [ -z "$rows" ]; then
   error "this file holds no row, so there is nothing to fill."
   exit 1
 fi
-declare -A mirrored=()
-for name in $(ci_tools_rows ghcr-mirror); do
-  mirrored[$name]=1
-done
 
-# The package every copy lives in, which the manifest names once for the whole file: every row
-# carries it, so the first row answers for all of them.
-registry=$(ci_tools_field "${rows%%$'\n'*}" registry)
+# The package every copy lives in, which the manifest names once for the whole file, and the
+# registry API address of it. Both come from the helper, so the address this run pushes to is
+# the address every install reads the copy at.
+registry=$(ci_tools_registry)
 if [ -z "$registry" ]; then
   error "this file names no registry:, and every copy this run fills lives in that package."
   exit 1
 fi
-# The registry's path is the manifest's `registry:` with its host removed.
-path=${registry#*/}
+registry_url=$(ci_tools_registry_url)
+# The origin of that address, which an upload location written as a path is resolved against.
+# It is read off the address and not off the seam, so a location resolves against the host the
+# push that answered it was addressed to.
+origin=${registry_url%/v2/*}
 
 # The push token: the helper's one token request, asked for `pull,push` with the credential
 # ci.yaml's ci-images job holds, where an install asks the same request for an anonymous
 # `pull`. The empty first argument takes the helper's own per-attempt bound.
 # Every request below carries this token, because the same run writes to the package it reads.
 if ! token=$(ci_tools_ghcr_token "" pull,push "$GITHUB_ACTOR:$GITHUB_TOKEN"); then
-  error "the registry would not answer a pull,push token request for $path ($token), so this run reads nothing and fills nothing."
+  error "the registry would not answer a pull,push token request for $registry ($token), so this run reads nothing and fills nothing."
   exit 1
 fi
 
@@ -195,15 +197,15 @@ push_blob() {
   local row=$1 file=$2 digest=$3 what=$4 status location separator
   status=$(curl -sS -X POST -o /dev/null -D "$headers" -w '%{http_code}' \
     -H "Authorization: Bearer $token" -H 'Content-Length: 0' \
-    "$ghcr_base/v2/$path/blobs/uploads/") || status=000
+    "$registry_url/blobs/uploads/") || status=000
   if [ "$status" != 202 ]; then
-    error "$row: the upload of the $what started with POST $ghcr_base/v2/$path/blobs/uploads/, and the package answered $status where the registry API answers 202. The copy of this row is unchanged."
+    error "$row: the upload of the $what started with POST $registry_url/blobs/uploads/, and the package answered $status where the registry API answers 202. The copy of this row is unchanged."
     return 1
   fi
   location=$(header_value location)
   case "$location" in
     http://* | https://*) ;;
-    /*) location="$ghcr_base$location" ;;
+    /*) location="$origin$location" ;;
     *)
       error "$row: the upload of the $what answered 202 with Location '$location', and this run reads an absolute URL or a path. The copy of this row is unchanged."
       return 1
@@ -284,9 +286,9 @@ with open(path, "w") as handle:
 PY
   status=$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
     -H "Authorization: Bearer $token" -H "Content-Type: $MANIFEST_TYPE" \
-    --data-binary "@$document" "$ghcr_base/v2/$path/manifests/$tag") || status=000
+    --data-binary "@$document" "$registry_url/manifests/$tag") || status=000
   if [ "$status" != 201 ]; then
-    error "$row: the manifest was PUT to $ghcr_base/v2/$path/manifests/$tag and the package answered $status where the registry API answers 201. The blob is in the package and the tag $tag names nothing, so re-run the ci-images job."
+    error "$row: the manifest was PUT to $registry_url/manifests/$tag and the package answered $status where the registry API answers 201. The blob is in the package and the tag $tag names nothing, so re-run the ci-images job."
     return 1
   fi
 }
@@ -296,8 +298,11 @@ filled=0
 cold=0
 uncopied=0
 for name in $rows; do
-  if [ -z "${mirrored[$name]:-}" ]; then
-    second=$(ci_tools_source_name "$name" second)
+  # The row's own second source word, read with the one reader of it. A read that fails stops
+  # this run: a row whose word that reader refuses is a row nothing here can call copied,
+  # filled or in need of no copy.
+  second=$(ci_tools_source_name "$name" second)
+  if [ "$second" != ghcr-mirror ]; then
     echo "none $name needs no copy: its second source is $second, which serves the bytes itself"
     uncopied=$((uncopied + 1))
     continue
@@ -319,7 +324,7 @@ for name in $rows; do
   # The address every install reads this copy at, which is the one this run writes and reads
   # back: the helper builds it, so neither side can address a blob the other does not.
   blob_url=$(ci_tools_blob_url "$name")
-  tag_url="$ghcr_base/v2/$path/manifests/$tag"
+  tag_url="$registry_url/manifests/$tag"
   blob_status=$(registry_head "$blob_url")
   blob_size=$(header_value content-length)
   tag_status=$(registry_head "$tag_url" -H "Accept: $MANIFEST_TYPE")

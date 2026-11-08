@@ -10,12 +10,13 @@
 # the kernel picks, serving a directory this file builds: `github/…` for the release asset,
 # `ghcr/token` and `ghcr/v2/…/blobs/sha256:…` for the package copy, and `npm/@scope/…tgz` for the
 # npm package. The case points the helper's four seams (CI_TOOLS_MANIFEST, CI_TOOLS_GITHUB_BASE,
-# CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE) at that origin and at a fixture manifest of five rows:
+# CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE) at that origin and at a fixture manifest of six rows:
 # a ghcr-mirror row with a primary, a ghcr-mirror row without one (jj's shape, where mise fetches
 # the primary bytes), an npm row (Bun's shape), a row whose `primary:` the manifest leaves null,
-# and a row whose `second_source` is a word this repository does not write. The origin writes
-# every path it is asked for to a log, which is how a case says where a run went and, for the
-# mismatch case, where it did not go.
+# a row whose `second_source` is a word this repository does not write, and a row whose
+# `second_source` is `github-release`, which it does write and reads no second source from.
+# The origin writes every path it is asked for to a log, which is how a case says where a run
+# went and, for the mismatch case, where it did not go.
 #
 # Every run of the helper is `bash -euo pipefail -c 'source …'`, the shell a GitHub `run:` step
 # has, because the file under test is sourced into such a shell and carries no `set` of its own.
@@ -149,6 +150,16 @@ tools:
     digest_of: the fixture's release tarball, whole
     primary: ""
     second_source: s3
+    max_time: 7
+  # A row whose second source is `github-release`: a word this repository writes for a primary
+  # and reads no second source from. One reader decides which words a second source is written
+  # in, so the name and the fetch refuse this row in the same sentence.
+  - name: secondrelease
+    version: 6.0.0
+    digest: $TARRED
+    digest_of: the fixture's release tarball, whole
+    primary: ""
+    second_source: github-release
     max_time: 7
 YAML
 
@@ -398,7 +409,7 @@ check "and prints nothing" "$(is "$out" "")"
 run ci_tools_digest crane
 check "an unknown row fails" "$(is "$status" 1)"
 check "naming the row and what the manifest holds" \
-  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name (it holds: jjlike, nullprimary, oddsource, packaged, tarred)$")"
+  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name (it holds: jjlike, nullprimary, oddsource, packaged, secondrelease, tarred)$")"
 run ci_tools_field tarred npm_package
 check "a field this row does not carry fails" "$(is "$status" 1)"
 check "naming the row and the field" \
@@ -441,9 +452,23 @@ check "the second source is the row's own word" "$(is "$out" "ghcr-mirror")"
 run ci_tools_source_name packaged second
 check "for an npm row too" "$(is "$out" "npm")"
 run ci_tools_source_name oddsource second
-check "a word that is none of the three fails" "$(is "$status" 1)"
-check "naming the row, the word and the three" \
-  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and the sources this repository names are github-release, ghcr-mirror and npm$")"
+check "a word no second source is read from fails" "$(is "$status" 1)"
+check "naming the row, the word and the two" \
+  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and this file reads ghcr-mirror and npm$")"
+# `github-release` is every row's primary and no row's second source. One reader decides which
+# words a second source is written in, so this row is refused by the name and by the fetch in
+# one sentence, rather than named here and refused where the bytes are read.
+run ci_tools_source_name secondrelease second
+check "github-release as a second source fails" "$(is "$status" 1)"
+check "in the sentence the fetch refuses it with" \
+  "$(contains "$out" "^::error::ci-tools: secondrelease: the manifest's second_source is 'github-release', and this file reads ghcr-mirror and npm$")"
+run ci_tools_source_name secondrelease primary
+check "while that row's primary is still that word" "$(is "$out" "github-release")"
+run ci_tools_fetch_fallback secondrelease "$work/dest/secondrelease"
+check "and the fetch of that row fails" "$(is "$status" 1)"
+check "with the same sentence" \
+  "$(contains "$out" "^::error::ci-tools: secondrelease: the manifest's second_source is 'github-release', and this file reads ghcr-mirror and npm$")"
+check "and nothing is at the destination" "$(nothing_at "$work/dest/secondrelease")"
 run ci_tools_source_name tarred both
 check "a mode that is neither primary nor second fails" "$(is "$status" 1)"
 check "naming what the call asked for" \
@@ -456,6 +481,30 @@ run ci_tools_source_name crane primary
 check "a row the manifest does not hold fails" "$(is "$status" 1)"
 check "naming that row" \
   "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name")"
+
+echo "case: the address of the package"
+# One owner of that address: ci_tools_registry_url builds it from the CI_TOOLS_GHCR_BASE seam
+# and the manifest's own `registry:`, ci_tools_blob_url is that address and the row's digest,
+# and .github/scripts/mirror-ci-tools.sh pushes to it, so the filler of a copy and every reader
+# of one address one package. These cases read the manifest and no source, so the base is a
+# port nothing listens on.
+base="http://127.0.0.1:1"
+run ci_tools_registry
+check "the package is the manifest's own registry:" "$(is "$out" "$REGISTRY")"
+run ci_tools_registry_url
+check "its address is the seam and that package's path" \
+  "$(is "$out" "$base/ghcr/v2/$REGISTRY_PATH")"
+run ci_tools_blob_url tarred
+check "a row's blob is that address and the row's digest" \
+  "$(is "$out" "$base/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED")"
+run ci_tools_blob_url crane
+check "the blob of a row the manifest does not hold fails" "$(is "$status" 1)"
+check "naming that row" \
+  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name")"
+run ci_tools_registry_url tarred
+check "an argument to the address fails" "$(is "$status" 1)"
+check "saying it takes none" \
+  "$(contains "$out" "^::error::ci-tools: ci_tools_registry_url takes no argument, and this call gave 1$")"
 
 echo "case: ci_tools_verify holds a file this run did not fetch to its row"
 run ci_tools_verify tarred "$work/payloads/tarred" ghcr-mirror
