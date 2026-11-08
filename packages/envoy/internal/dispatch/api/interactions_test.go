@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func newInteractionHandler(t *testing.T, makeDocs func(*store.Store) docs.API) (http.Handler, *store.Store) {
@@ -147,11 +148,10 @@ func (g *firstReplaceGate) AcceptSuggestion(ctx context.Context, artifactID, mar
 
 func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, secondReplacement <-chan struct{}) {
 	t.Helper()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
+	if !testwait.Holds(time.Second, 5*time.Millisecond, func() bool {
 		select {
 		case <-secondReplacement:
-			return
+			return true
 		default:
 		}
 		var waiting int
@@ -161,12 +161,10 @@ func waitForSecondReplacementOrCommentLock(t *testing.T, database *store.Store, 
 		`).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
-		if waiting > 0 {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
+		return waiting > 0
+	}) {
+		t.Fatal("second accept did not reach document service or wait for the comment lock")
 	}
-	t.Fatal("second accept did not reach document service or wait for the comment lock")
 }
 
 func TestAskWithoutOptionsEmitsEmptyOptionsArray(t *testing.T) {
@@ -1854,7 +1852,9 @@ func TestAskReplyMustBelongToItsIssue(t *testing.T) {
 	}
 }
 
-func TestAskReplyOnClosedIssueIsRefused(t *testing.T) {
+// A closed issue still takes a comment, a reply on one of its asks included: the ask stays open
+// and unanswerable, but the conversation under it goes on.
+func TestAskReplyOnClosedIssueIsPosted(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Closing soon", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -1870,11 +1870,26 @@ func TestAskReplyOnClosedIssueIsRefused(t *testing.T) {
 	reply := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Too late?", "ask_id": ask.ID,
 	}, "alice")
-	if reply.Code != http.StatusConflict || !strings.Contains(reply.Body.String(), `"code":"ISSUE_CLOSED"`) {
+	if reply.Code != http.StatusCreated {
 		t.Fatalf("reply on closed issue: status=%d body=%s", reply.Code, reply.Body.String())
+	}
+	if posted := decodeBody[model.Comment](t, reply); posted.AskID == nil || *posted.AskID != ask.ID {
+		t.Fatalf("reply on closed issue = %#v, want it under ask %s", posted, ask.ID)
+	}
+	agentReply := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Not too late.", "ask_id": ask.ID, "actor": sessionActor(),
+	})
+	if agentReply.Code != http.StatusCreated {
+		t.Fatalf("agent's reply on closed issue: status=%d body=%s", agentReply.Code, agentReply.Body.String())
+	}
+	answer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{"text": "Yes"}, "alice")
+	if answer.Code != http.StatusConflict || !strings.Contains(answer.Body.String(), `"code":"ISSUE_CLOSED"`) {
+		t.Fatalf("answer on closed issue: status=%d body=%s, want 409 ISSUE_CLOSED", answer.Code, answer.Body.String())
 	}
 }
 
+// A done issue refuses every mutation but a comment and a message, which a closed issue still
+// takes (TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents).
 func TestDoneIssueRejectsEveryMutation(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Done issue", "before")
@@ -1957,17 +1972,21 @@ func TestDoneIssueRejectsEveryMutation(t *testing.T) {
 	assertClosed("ask resolution", sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/resolve", map[string]any{
 		"kind": "retracted", "reason": "Later retraction.", "actor": sessionActor(),
 	}))
-	assertClosed("comment", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+	if later := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Later comment", "actor": sessionActor(),
-	}))
+	}); later.Code != http.StatusCreated {
+		t.Fatalf("comment after done: status=%d body=%s, want 201", later.Code, later.Body.String())
+	}
 	assertClosed("comment resolution", sessionRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/resolve", map[string]any{
 		"actor": sessionActor(),
 	}))
 	assertClosed("suggestion acceptance", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+suggestionID+"/accept", map[string]any{}, "alice"))
 	assertClosed("suggestion rejection", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+secondSuggestionID+"/reject", map[string]any{}, "alice"))
-	assertClosed("message", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+	if later := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "Later message", "actor": sessionActor(),
-	}))
+	}); later.Code != http.StatusCreated {
+		t.Fatalf("message after done: status=%d body=%s, want 201", later.Code, later.Body.String())
+	}
 	assertClosed("upload", multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "later.md",
 	}, "later.md", "text/markdown", []byte("later"), "alice"))

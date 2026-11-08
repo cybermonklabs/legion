@@ -37,6 +37,53 @@ func TestAdvancePullRequestHeadCountsEveryPushOntoRedButTheReviewApps(t *testing
 	}
 }
 
+// max_fix_attempts charges a head only for arriving while a red verdict stands at the head it
+// replaces (advance): HeadVerdict is empty whenever no required check is judged at that head, so
+// the forward merge that answers a conflict round costs the implementer nothing. GitHub computes
+// no merge ref for a head that conflicts with its base and runs no check on it, so no settlement
+// stands for it and the merge arrives on no verdict at all. This is a reading of the rule, not a
+// rule of its own, and it is pinned here so that a later change to the charge cannot start
+// charging a conflict round's merge in silence (dispatch://INFRA-1442, where the conflict round
+// stopped counting against review_round_cap and max_fix_attempts was left as it was). The one
+// case that is charged sits beside it: a head whose required check had settled red before the
+// base moved under it is red when the merge replaces it, and the merge is that red's fix attempt
+// as any push onto a red is.
+func TestAFixAttemptIsChargedOnlyForAHeadThatArrivesOnARedVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// prior is the pull request as the forward merge finds it, its head the conflicting one.
+		prior    record.PullRequest
+		attempts int
+		counted  string
+	}{
+		{
+			name:     "the forward merge that answers a conflict round",
+			prior:    record.PullRequest{HeadSHA: "conflicted", Required: []string{"pr-checks-result"}},
+			attempts: 2,
+		},
+		{
+			name: "a head whose required check settled red before its base moved under it",
+			prior: record.PullRequest{HeadSHA: "conflicted", CheckedHead: "conflicted",
+				Failing: []string{"pr-checks-result"}, Required: []string{"pr-checks-result"}},
+			attempts: 3,
+			counted:  "merged",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			prior := tc.prior
+			prior.FixAttempts = 2
+			if verdict := HeadVerdict(prior); (verdict == "red") != (tc.counted != "") {
+				t.Fatalf("the verdict at the conflicting head is %q, which is not the one this row is about", verdict)
+			}
+			got := AdvancePullRequestHead(prior, Arrival{Before: "conflicted", Sender: "implementer"}, "merged")
+			if got.FixAttempts != tc.attempts || got.HeadCounted != tc.counted {
+				t.Fatalf("the forward merge = fixAttempts=%d headCounted=%q, want %d and %q",
+					got.FixAttempts, got.HeadCounted, tc.attempts, tc.counted)
+			}
+		})
+	}
+}
+
 // A head counted before its push arrived is taken back when the push proves the move the review
 // App's: the count reported at it is no longer reached, so its report is cleared too. Any other
 // push keeps the count.

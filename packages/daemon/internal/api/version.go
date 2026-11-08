@@ -650,4 +650,93 @@ package api
 // branch takes the number above them all, as the collision note says. main held 53 at the
 // forward merge that renumbered this entry, d43e0fe9bbb1; read main's own number again at the
 // next merge rather than from this line.)
-const DaemonAPIVersion = 54
+//
+// 55: INFRA-1272 -- the design gate is a list of steps a deployment declares, and the issue
+// record of `GET /legion/v1/state` gains `gatedSteps`, one entry for each step the deployment
+// gates, in the order it gates them (`api.GatedStepView`): the `step` (`decisions`, `criteria` or
+// `spec`), the document its architect registered for that step and that document's
+// `currentVersion` (both absent until one is registered), the `approvedVersion` a person
+// approved (null until one does), the `status` — `unregistered`, `waiting`, `approved` or
+// `changes_requested` — and `changesReason`, what the reviewer asked for, on that last status
+// alone. It is absent, as `designGate` is, from an issue that is not its tree's root, from every
+// issue of a deployment that gates no step and from an issue the workflow does not record, so the
+// wire carries no empty list. `designGate` is unchanged beside it, the spec step's row as it has
+// always been, so a reader that asks one question of one gate reads what it read before.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 55 is served the issues without the field (api's stateFor, withoutGatedSteps),
+// as a caller below 53 is served a body with no wakes waiting, one below 51 the issues without
+// the admission's trees and each issue's tree, one below 49 without the memory draw and one
+// below 46 without the claim views' update rounds; the five compose, and every reader from 55 on
+// takes the field as optional.
+// `POST /legion/v1/controller/secret` answers the same list as `designGateSteps` in place of the
+// one word `designGate`, which 55 drops: `legion controller start` is built from this daemon's
+// own tree, so the two always ship together, and a `legion` of this release refuses an answer
+// that names no list at all.
+// (This branch took 50 while main held 49, then 52 when main landed its admission cap as 51, then
+// 53 when main landed the issue-key trailer as 52, then 54 when main landed the wake pacing as
+// 53, and main has since landed the optional production check as 54, so this change takes the
+// number above it, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main held 54 at the forward merge that renumbered this entry, b5482068c554; read main's
+// own number again at the next merge rather than from this line.)
+//
+// 56: dispatch://INFRA-1480 -- `api.StrandedClaim.state` on `GET /legion/v1/state` may now be
+// `retired` as well as `suspended` and `failed`, because `workflow.Stranded` now reports a retired
+// claim that owns the phase its issue's worker works: only a start of that phase relaunches such a
+// claim, and no rule the daemon runs queues that start by itself, so nothing will wake it. A plugin
+// before 56 parses `strandedClaims[].state` with a strict enum of two values and refuses the whole
+// state body for a third, and every worker's `read_record` goes through that parse. The route
+// authenticates nobody, so a caller from a pod whose claims record a contract below 56 is served
+// the report without its retired entries (api's stateFor, withoutRetiredStranded), as a caller
+// below 49 is served it without the memory group. Dropping those entries, rather than serving
+// them, is the only choice that keeps such a pod able to read the state at all: the value is the
+// claim's own state and there is no older value to put in its place, and one retired entry refuses
+// the whole body, which takes every role's `read_record` in that pod with it. Such a pod is served
+// a report missing its retired entries until the pod is replaced, and that window is the one the
+// plugin pair already bounds: the boot gate and `legion probe-image` refuse a daemon and a plugin
+// that declare different contracts, so the only reader below 56 is a pod of the contract before
+// this one still being replaced. The same change adds three fields to the operator claim view's
+// pending delivery (api.DeliveryView): `sendFailures`, `lastSendFailureAt` and `lastSendError`,
+// how many sends of the task failed, when the last one failed and the error it failed with. They
+// need no gate, because no plugin calls the operator routes. This change adds one store migration,
+// for those three columns, named for the UTC moment it was written, since the numbered series is
+// closed. (This branch has been renumbered three times, which is what a hand-allocated serial
+// costs: 51, then 53 when main reached 52, then 55 when main reached 54, and 56 now that main
+// carries 55 — INFRA-1272's gated steps, merged as #2848 while this branch stood approved at
+// its own 55. So it takes the number above every number main declares, as the collision note
+// says, and that number was read from main at this merge rather than assumed. Two other open
+// branches declare 55 as well: whichever merges after another takes the next free number, and
+// the number is read again at every forward merge, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 57: dispatch://INFRA-1274 -- every claim view carries `step`, what the daemon last saw that
+// claim's agent do: `at`, when the daemon received that step, `turnStartedAt`, when the turn it
+// belongs to began, the `tool` and `callId` of the call the agent is in, that call's `argsBytes`
+// and `argsHash` — its arguments' length and an eight-byte fingerprint of them, never their text,
+// since a shell command routinely holds a credential — and its `startedAt` and `endedAt`. It is on
+// the claim views of `GET /legion/v1/state` and on the operator's `legion claims list` (api's
+// StepView, ClaimView.Step and OperatorClaim.Step), absent for a claim whose agent has neither
+// begun a turn nor made a call the daemon saw, and a call carrying `startedAt` and no `endedAt` is
+// the shape a turn that stopped moving leaves behind. A strict reader before 57 knows no such key
+// and refuses the whole state body for it, so the route serves a caller whose pod's claims record
+// a contract below 57 the state with no `step` at all (api's stateFor, withoutStallRecord), as it
+// serves a caller below 56 one whose claims nothing will wake name no retired claim, a caller
+// below 55 one with no gated steps, a caller below 53 one with no `wakesWaiting` and a caller
+// below 49 one with no memory group. The key is left off that body rather than
+// emptied, so it is left off the body a pod whose claims cannot be read is served as well, which
+// may be a pod at this contract. 57 also brings the three numbers a deployment moves a session's
+// watch on its own tool calls with — LEGION_STALL_CALL_BOUND_MS, LEGION_STALL_CALL_GRACE_MS and
+// LEGION_STALL_STEP_MS — in the environment of every pane and of every pod's worker container,
+// the controller's among them (`internal/daemon/specs.go`'s stallLimitVariables, merged into
+// `spec.Env` after SpawnSpec's fork, which a pane's `-e` pairs and a pod launcher's start command
+// carry verbatim): a session told none of them runs on the defaults its plugin holds. This change
+// adds the store migration the record is kept in, `20261107052815_claim_step_record`. (53 is the
+// contract this branch declared at its bump; main has since landed the optional production check
+// at 54, INFRA-1272's design-gate steps at 55 and INFRA-1480's retired stranded state at 56, none
+// of which carries the claim step record or the stall numbers, so this branch takes 57, above
+// them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
+// own number again at the next merge rather than from this line.)
+const DaemonAPIVersion = 57

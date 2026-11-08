@@ -85,6 +85,23 @@ const schemas: Record<string, z.ZodType> = {
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
   "version.json": z.strictObject({ daemonApiVersion: z.number().int().positive() }),
+  // Nor this one: the numbers a worker's own stall watch runs on, written from the daemon's
+  // copies of them (`internal/config/stalldefaults.go`) so that
+  // `packages/pi-shared/src/stall-limits.test.ts` can hold the plugin's own numbers — the one
+  // source — to the numbers the daemon computes its backstop floor from. The three defaults are
+  // `src/stall-limits.ts`'s; `declaredDeadlineMostMs` is the hour the host clamps a call's own
+  // declared deadline to (`src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS), the other half of
+  // that floor.
+  "stall-defaults.json": z.strictObject({
+    callGraceMs: z.number().int().positive(),
+    callBoundMs: z.number().int().positive(),
+    stepMs: z.number().int().positive(),
+    declaredDeadlineMostMs: z.number().int().positive(),
+    callBoundMsByRole: z.record(
+      z.enum([...LEGION_ROLES, "controller"]),
+      z.number().int().nonnegative()
+    ),
+  }),
 };
 
 function fixture(name: string): unknown {
@@ -753,6 +770,65 @@ test("the state golden carries a worker's handoff record", () => {
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
 });
 
+// The state shows what the daemon last saw a claim's agent do: the turn it is in, the call it is
+// in, and the length and fingerprint of that call's arguments, never their text. A call still
+// open carries `startedAt` and no `endedAt`, which is the shape a turn that stopped moving
+// leaves behind; a claim whose agent has not stepped carries no `step` at all, as does every
+// claim view served to a pod below contract 57.
+test("the state golden carries what the daemon last saw an agent do", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        architect?: { step?: Record<string, unknown> };
+        workers: Record<string, { claim: { step?: Record<string, unknown> } }>;
+      }
+    >;
+  };
+  const implementer = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  const architect = state.issues["LEGION-208"]?.architect;
+  if (implementer === undefined || architect === undefined) {
+    throw new Error("state fixture lacks LEGION-208's architect and implementer");
+  }
+  expect(implementer.step).toEqual({
+    at: "2026-09-22T09:17:12Z",
+    turnStartedAt: "2026-09-22T09:16:30Z",
+    tool: "bash",
+    callId: "toolu_impl_11",
+    argsBytes: 128,
+    argsHash: "9b2e45c0d1f8a673",
+    startedAt: "2026-09-22T09:17:12Z",
+  });
+  expect(architect.step?.endedAt).toBe("2026-09-22T09:16:58Z");
+
+  implementer.step = { argsBytes: 0 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = { tool: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// The only surface a controller's record reaches is the operator's claim listing: the state puts
+// the controller's claim on no issue, so no claim view of it can carry one.
+test("an operator's claim carries what the daemon last saw its agent do", () => {
+  const claim = fixture("operator-claim.json") as { step?: Record<string, unknown> };
+  expect(claim.step).toEqual({
+    at: "2026-09-22T09:31:22Z",
+    turnStartedAt: "2026-09-22T09:31:06Z",
+    tool: "eval",
+    callId: "toolu_impl_209_4",
+    argsBytes: 412,
+    argsHash: "c40d9e1b7a52f368",
+    startedAt: "2026-09-22T09:31:22Z",
+  });
+
+  claim.step = { argsBytes: -1 };
+  expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
+  claim.step = undefined;
+  expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
+});
+
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
 // leave it out, since its grant names its own.
 test("a backward move may name its issue", () => {
@@ -958,9 +1034,8 @@ test("the state golden names what every blocked issue waits on", () => {
 // tree — and each issue's `tree` names its own root, so a child is told from a root. The computed
 // golden carries a child: LEGION-209 stands in LEGION-208's tree, and all three live trees are
 // named while one issue alone holds a slot. Neither key is required: a daemon at this contract
-// strips both from the state it serves a caller whose pod's plugin is older than 51, and from the
-// one it serves a caller whose pod's claims it cannot read at all, which may be a pod at this
-// contract (`api.stateFor`, `withoutTrees`). So a body without them parses, and a reader of it
+// strips both from the state it serves a caller whose pod's plugin is older than 51
+// (`api.stateFor`, `withoutTrees`). So a body without them parses, and a reader of it
 // learns nothing about which trees run rather than losing the whole state; what is refused is a
 // `tree` that is no issue key. A daemon older than this plugin is kept away by the boot gate and
 // `legion probe-image`, not by this schema.
@@ -1383,12 +1458,28 @@ const strandedClaimAt45 = z.strictObject({
 });
 
 test("a reader at the previous contract parses the state body this daemon serves", () => {
-  const state = fixture("state.json") as { strandedClaims: unknown[] };
-  // The golden carries both kinds: a failed claim and a released one whose wake never brought
-  // its pod back, which is the entry a `suspendedBy` would have ridden on.
-  expect(state.strandedClaims.length).toBeGreaterThan(1);
-  for (const stranded of state.strandedClaims) {
+  const state = fixture("state.json") as { strandedClaims: { state: string }[] };
+  // The golden carries all three kinds: a failed claim, a released one whose wake never brought
+  // its pod back — the entry a `suspendedBy` would have ridden on — and the retired claim
+  // contract 56 added. Every entry but the retired one is read by the 45 reader as it stands.
+  const older = state.strandedClaims.filter((stranded) => stranded.state !== "retired");
+  expect(older.length).toBeGreaterThan(1);
+  for (const stranded of older) {
     expect(strandedClaimAt45.safeParse(stranded).error?.issues ?? []).toEqual([]);
+  }
+
+  // A retired entry is the one this reader cannot take: its state enum names two values, so the
+  // entry — and with it the whole state body, since `strandedClaims` is an array this reader
+  // parses whole — is refused over the third. That is why the state route serves a pod below
+  // contract 56 the report without its retired entries (`api`'s `withoutRetiredStranded`, pinned
+  // on the Go side) rather than the body it would refuse: what such a pod is served is the list
+  // above, which parses.
+  const retired = state.strandedClaims.filter((stranded) => stranded.state === "retired");
+  expect(retired.length).toBeGreaterThan(0);
+  for (const stranded of retired) {
+    const refused = strandedClaimAt45.safeParse(stranded);
+    expect(refused.success).toBeFalse();
+    expect(refused.error?.issues[0]?.path).toEqual(["state"]);
   }
 
   // What serving it would do, and why it is not served: the 45 reader does not know the key, and
@@ -1514,14 +1605,17 @@ test("the state golden shows a claim's capability report beside its locator", ()
 });
 
 // The claims nothing will wake (contract 23): the golden names LEGION-210's failed implementer,
-// whose issue is held, and LEGION-211's released one, whose wake never brought its pod back —
-// three keys each, the released one no wider than the failed one — and a state with none carries
-// an empty list rather than none.
+// whose issue is held, LEGION-211's released one, whose wake never brought its pod back, and
+// LEGION-212's retired tester, which a close or a stop retired while its tree runs, so only a
+// start of the phase it owns — one no rule the daemon runs queues — would relaunch it (contract
+// 56) — three keys each, neither the released nor the retired one wider than the failed one —
+// and a state with none carries an empty list rather than none.
 test("the state golden names the claims nothing will wake, and the list cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.strandedClaims).toEqual([
     { issue: "LEGION-210", role: "implementer", state: "failed" },
     { issue: "LEGION-211", role: "implementer", state: "suspended" },
+    { issue: "LEGION-212", role: "tester", state: "retired" },
   ]);
   expect(LegionStateResponse.parse(fixture("state-stage3.json")).strandedClaims).toEqual([]);
 

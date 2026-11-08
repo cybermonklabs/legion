@@ -153,7 +153,7 @@ ARG YQ_SHA256=8e34fc298390875de416e6a4afcb8cabeceb25d9aa8506c1a2f9353cf702ea5f
 # the suite's next update. The base image's suite is the pin.
 # The PostgreSQL server and pgvector come from apt.postgresql.org, not trixie: trixie's own archive
 # stops at PostgreSQL 17, and the pod's cluster has to be the major the deployment's databases and CI
-# run, 18 (packages/daemon/internal/testpg/testpg.go). That suite is no pin either, and a version pin
+# run, 18 (packages/daemon/internal/testpg/testdb/testdb.go). That suite is no pin either, and a version pin
 # is no answer there: read on 2026-10-30, the trixie-pgdg index carries the last three point releases
 # of a major and no more (postgresql-18 at 18.6, 18.4 and 18.3; postgresql-17 at 17.11, 17.10 and
 # 17.9, with 17.0 through 17.8 gone), so `postgresql-18=18.6-1.pgdg13+2` would stop resolving at the
@@ -180,8 +180,8 @@ ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS plugin
 WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
-# python3/make/g++: native devDependencies in the workspace lockfile (mirrors
-# packages/envoy/docker/Dockerfile).
+# python3/make/g++: under Bun, better-sqlite3's install script in the install below ends in
+# node-gyp compiling it from source (oven-sh/bun#4290), and node-gyp needs all three.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends jq python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
@@ -195,7 +195,11 @@ COPY packages/pi-legion/package.json packages/pi-legion/package.json
 COPY packages/pi-shared/package.json packages/pi-shared/package.json
 COPY packages/claude-envoy/package.json packages/claude-envoy/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
+# proof-sdk-upstream is file:./proof-sdk-<commit>.tgz, a dependency of that manifest rather than a
+# registry fetch: the upstream editor sources, which the install below reads from the context.
+COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
 COPY packages/dispatch/package.json packages/dispatch/package.json
+COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
 RUN bun install --frozen-lockfile
@@ -572,7 +576,7 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:f6b08b09a05725f9431502d3b5714f5c4576
 # Without a server in the image, a role that needs Postgres either unpacks debs onto the issue volume
 # for twenty minutes or points its test at the deployment's sessions database, whose login drops
 # databases on the instance the whole fleet's sessions live in. 18 is the major the deployment's
-# databases and CI run (packages/daemon/internal/testpg/testpg.go), so both come from
+# databases and CI run (packages/daemon/internal/testpg/testdb/testdb.go), so both come from
 # apt.postgresql.org: trixie serves 17 alone, and a cluster of another major is a different planner,
 # a different catalog and a different dump format from the one a test meets everywhere else. The ARG
 # note above says what is pinned there and why a version pin is not. The source list and the key go
@@ -1002,8 +1006,9 @@ ENV AWS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt COREPACK_DEFAULT_TO_LATEST=
 # killed instead would leave its shutdown checkpoint running and the `rm -rf` below would race it.
 # An issue pod's launcher runs the same command, so a build whose server package, extension or
 # script no longer works fails here rather than at every role's start in every pod. The DSN is the
-# one the runtime sets for every role: a loopback host, no password, and legion_test, the
-# non-superuser role `ensure` creates, not the cluster's own superuser.
+# one this image's own launcher serves to every role of an issue pod: a loopback host, no password,
+# and legion_test for both the login and the database — the non-superuser role `ensure` creates,
+# not the cluster's own superuser, and the database `ensure` creates with that role as its owner.
 RUN set -eu; \
     scratch="$(mktemp -d)"; \
     export TMPDIR="$scratch" COREPACK_HOME="$scratch/corepack" XDG_CONFIG_HOME="$scratch/config"; \
@@ -1026,7 +1031,7 @@ RUN set -eu; \
     flock --version; \
     psql --version; redis-cli --version; sqlite3 --version; nc -h; dig -v; unzip -v; \
     legion-testpg check; \
-    probe_dsn='postgres://legion_test@127.0.0.1:5433/postgres?sslmode=disable'; \
+    probe_dsn='postgres://legion_test@127.0.0.1:5433/legion_test?sslmode=disable'; \
     LEGION_TESTPG_DIR="$scratch/testpg" LEGION_TEST_PG_DSN="$probe_dsn" legion-testpg ensure; \
     psql -X -q "$probe_dsn" -c 'create database probe'; \
     psql -X -tAq 'postgres://legion_test@127.0.0.1:5433/probe?sslmode=disable' -c "select extname from pg_extension where extname = 'vector'" | grep -qx vector; \

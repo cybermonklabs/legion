@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -411,7 +412,14 @@ type Issue struct {
 	Workers     map[claim.Role]PhaseView `json:"workers"`
 	PullRequest *PullRequestView         `json:"pullRequest,omitempty"`
 	DesignGate  *GateView                `json:"designGate,omitempty"`
-	Slot        *SlotView                `json:"slot,omitempty"`
+	// GatedSteps is the deployment's design gate as this issue stands in it: one entry for each
+	// step the deployment gates, in the order it gates them (contract 55). It is absent, as the
+	// gate itself is, for an issue that is not its tree's root, for a deployment that gates no
+	// step and for an issue the workflow does not record, so the wire never carries an empty
+	// list. DesignGate is unchanged beside it: it is the spec step's row, which every reader that
+	// asks one question of one gate still takes.
+	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
+	Slot       *SlotView       `json:"slot,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
@@ -467,7 +475,8 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // process's: a reader compares it with `locator.incarnation` to tell the running process's report
 // from a predecessor's. A socket path never appears in the view. A claim with no process (queued,
 // suspended, failed, retired) has no locator; a claim whose session has not reported, or whose
-// role never reports (the controller), has no capabilities.
+// role never reports (the controller), has no capabilities. A claim whose agent has stepped —
+// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView).
 type ClaimView struct {
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
@@ -485,6 +494,50 @@ type ClaimView struct {
 	// before its first push). It is the worker's word, which nothing verifies.
 	UpdateRound string `json:"updateRound,omitempty"`
 	UpdateHead  string `json:"updateHead,omitempty"`
+	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
+	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
+	Step *StepView `json:"step,omitempty"`
+}
+
+// StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the
+// daemon last saw the claim's agent step, when the turn that step belongs to began, and the call
+// the agent is in. It is what says a worker mid-turn is still moving, so the stall backstop and
+// an operator read the same record.
+//
+// The call's arguments are never here: their length and an eight-byte fingerprint of them stand
+// for them, because a shell command routinely holds a credential and this record reaches every
+// surface an operator reads (supervise.StepRecord). Every field is absent where the record holds
+// nothing for it: a claim whose turn has begun and whose agent has called nothing carries
+// `turnStartedAt` alone; a call still open carries `startedAt` and no `endedAt`, which is the
+// shape a stalled turn leaves behind; `argsBytes` and `argsHash` are absent for a call the
+// daemon saw no arguments of.
+type StepView struct {
+	At            *time.Time `json:"at,omitempty"`
+	TurnStartedAt *time.Time `json:"turnStartedAt,omitempty"`
+	Tool          string     `json:"tool,omitempty"`
+	CallID        string     `json:"callId,omitempty"`
+	ArgsBytes     int        `json:"argsBytes,omitempty"`
+	ArgsHash      string     `json:"argsHash,omitempty"`
+	StartedAt     *time.Time `json:"startedAt,omitempty"`
+	EndedAt       *time.Time `json:"endedAt,omitempty"`
+}
+
+// StepViewOf is step as a claim view shows it, and nil for the zero record — a claim whose agent
+// has neither begun a turn nor made a call the daemon saw — so no such claim carries the key.
+func StepViewOf(step supervise.StepRecord) *StepView {
+	if step == (supervise.StepRecord{}) {
+		return nil
+	}
+	return &StepView{
+		At:            instant(step.At),
+		TurnStartedAt: instant(step.TurnStartedAt),
+		Tool:          step.Tool,
+		CallID:        step.CallID,
+		ArgsBytes:     step.ArgsBytes,
+		ArgsHash:      step.ArgsHash,
+		StartedAt:     instant(step.StartedAt),
+		EndedAt:       instant(step.EndedAt),
+	}
 }
 
 // CapabilityReportView is one session's capability report as the state shows it: when the session
@@ -566,6 +619,76 @@ type GateView struct {
 	ArtifactID      string `json:"artifactId"`
 	CurrentVersion  int    `json:"currentVersion"`
 	ApprovedVersion *int   `json:"approvedVersion"`
+}
+
+// GatedStepStatus is where one gated step of a deployment stands, as the issue's gate records say
+// it: the four answers a record can give.
+type GatedStepStatus string
+
+const (
+	// GatedStepUnregistered is a step the deployment gates that the issue holds no gate record
+	// for: its architect has registered no document for that step, and the step holds the tree's
+	// work until it does.
+	GatedStepUnregistered GatedStepStatus = "unregistered"
+	// GatedStepWaiting is a registered step whose current document version no person has reviewed:
+	// the approval or the changes request it records, if any, is of a version below the current
+	// one, which a newer version of the document left behind. It waits on a person.
+	GatedStepWaiting GatedStepStatus = "waiting"
+	// GatedStepApproved is a step a person approved at its current document version: the one
+	// status that lets the tree's work past the step (classify.DesignGateOpen).
+	GatedStepApproved GatedStepStatus = "approved"
+	// GatedStepChangesRequested is a step whose reviewer asked for changes at its current document
+	// version, which the architect was told of; ChangesReason carries the reason the reviewer gave.
+	GatedStepChangesRequested GatedStepStatus = "changes_requested"
+)
+
+// GatedStepView is one step of the deployment's design gate as one issue stands in it: the step,
+// the document its architect registered for the step, that document's current version, the
+// version a person approved, where the step stands and, for a step whose reviewer asked for
+// changes, the reason they gave. A step nobody has registered carries no document, no version and
+// no approval.
+type GatedStepView struct {
+	Step            record.DesignStep `json:"step"`
+	ArtifactID      string            `json:"artifactId,omitempty"`
+	CurrentVersion  int               `json:"currentVersion,omitempty"`
+	ApprovedVersion *int              `json:"approvedVersion"`
+	Status          GatedStepStatus   `json:"status"`
+	ChangesReason   string            `json:"changesReason,omitempty"`
+}
+
+// GatedStepViewsOf is steps, the design-gate steps a deployment gates, as one issue stands in
+// them: gates are that issue's gate rows by step (record.Store.GatesOf), and the answer is one
+// entry for each step, in the order the deployment gates them, never nil.
+//
+// The entries are the deployment's steps and not the issue's rows. A row of a step the deployment
+// no longer gates stays in the record — a deployment that gates that step again reads its true
+// state — and appears in no entry here, because it holds no work: every reader of the gate asks
+// the configured steps (classify.DesignGatesOpen). A configured step with no row is the other
+// direction, and is answered unregistered: it holds the tree's work, so a reader must see it.
+func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) []GatedStepView {
+	views := make([]GatedStepView, 0, len(steps))
+	for _, step := range steps {
+		gate, registered := gates[step]
+		if !registered {
+			views = append(views, GatedStepView{Step: step, Status: GatedStepUnregistered})
+			continue
+		}
+		view := GatedStepView{
+			Step:            step,
+			ArtifactID:      gate.ArtifactID,
+			CurrentVersion:  gate.LatestVersion,
+			ApprovedVersion: gate.ApprovedVersion,
+			Status:          GatedStepWaiting,
+		}
+		switch {
+		case classify.DesignGateOpen(gate):
+			view.Status = GatedStepApproved
+		case gate.ToldChangesVersion != nil && *gate.ToldChangesVersion == gate.LatestVersion:
+			view.Status, view.ChangesReason = GatedStepChangesRequested, gate.ToldChangesReason
+		}
+		views = append(views, view)
+	}
+	return views
 }
 
 // SlotView is the admission slot the issue occupies and when it took it.
@@ -733,14 +856,28 @@ func StrandedMoves() []StrandedMove {
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
+//   - StrandedWorkflowStart, a retired claim, whatever its role: only a workflow start relaunches
+//     one, since the operator's retry refuses a claim that has not failed and a retired claim
+//     ignores resume and deliver. A start of its phase sends it the retry the daemon's own start
+//     executor makes of a retired claim, so the move is the act that queues such a start: the
+//     architect's retry_or_escalate of a held phase, a transition into the phase, or the tree's
+//     close and re-admission for an architect, whose tree's admission is the only start of it.
+//
+// The retired case is read before every other, because a claim released and then retired keeps
+// `suspendedBy: released` on its row and SuspendersOfOperatorClaims copies that value whatever the
+// state: read as released, it would name a pod coming back from a wake, and nothing is coming
+// back. For the same reason the released case asks for the suspended state itself rather than for
+// anything that has not failed.
 func (c StrandedClaim) Move(suspendedBy string) StrandedMove {
-	failed := c.State == string(supervise.StateFailed)
+	state := supervise.ClaimState(c.State)
 	switch {
-	case !failed && suspendedBy == string(supervise.SuspendedByReleased):
+	case state == supervise.StateRetired:
+		return StrandedWorkflowStart
+	case state == supervise.StateSuspended && suspendedBy == string(supervise.SuspendedByReleased):
 		return StrandedReleasedNoResume
-	case failed && c.Role == claim.RoleArchitect:
+	case state == supervise.StateFailed && c.Role == claim.RoleArchitect:
 		return StrandedRetry
-	case failed:
+	case state == supervise.StateFailed:
 		return StrandedWorkflowStart
 	case c.Role == claim.RoleArchitect:
 		return StrandedResume
@@ -824,9 +961,12 @@ func WakesWaitingOf(held []supervise.WaitingWake, queued []WakeWaiting) []WakeWa
 
 // StateSource maps the daemon's durable and live facts through the transaction the state route
 // owns. It does not commit it: the route can refuse one failed projection without publishing a
-// partial snapshot.
+// partial snapshot. It answers the project's claims beside the state, the ones it read through
+// that transaction to build the claim views, so the route decides what the caller's plugin reads
+// (server's stateFor) from the claims of the snapshot it serves, rather than reading the table a
+// second time at another moment.
 type StateSource interface {
-	State(ctx context.Context, tx pgx.Tx) (State, error)
+	State(ctx context.Context, tx pgx.Tx) (State, []supervise.Claim, error)
 }
 
 // StateTransactions begins the one snapshot transaction every state response reads through.

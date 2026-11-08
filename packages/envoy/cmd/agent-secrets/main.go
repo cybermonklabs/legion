@@ -50,7 +50,12 @@
 // exec form's wait) names the approver the broker names, and the record's page on the secrets
 // broker that the broker's own answer carries as approve_url. The exec form's child keeps
 // AGENT_SECRETS_URL, AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK, since it is the same
-// session (buildChildEnv). A machine session enrolls automatically through the helper's own
+// session (buildChildEnv). For a name the broker holds back behind its airlock, that child's
+// environment holds a placeholder in place of the value and the way to spend it: the broker's
+// proxy in HTTPS_PROXY and https_proxy, a NO_PROXY that keeps the secret's own hosts on that
+// proxy, NODE_USE_ENV_PROXY, and a trust bundle naming both the trust the command would have had
+// and the proxy's certificate, in every bundle variable and in a WGETRC (airlock.go).
+// A machine session enrolls automatically through the helper's own
 // enroll loop, and a Legion pod's enrollment is its daemon's job — this CLI has no direct
 // enrollment path for either; on a devbox only a session key a launcher holds (a box's) enrolls
 // through it, and only via --helper (the shared broker contract has no launcher bearer token:
@@ -76,6 +81,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -146,7 +152,7 @@ var commands = []command{
 	{"renew", "agent-secrets renew [--pod-token-file FILE]",
 		"Keep an agent box's or pod's enrollment lease alive, renewing it until interrupted. A pod\nnames its projected service-account token's file, read again before each renewal, so each\nrenewal sends the token of that moment, which the broker checks names the pod the enrollment\nwas made for. POD_TOKEN_REQUIRED, ENROLLMENT_NOT_LIVE, or an older broker's PROOF_INVALID\nsaying \"not live\" exits 76, naming the enrollment, HTTP status and broker code; every other\nrefusal retries."},
 	{"request", "agent-secrets request NAME... [--reason TEXT] [--ttl DURATION] [--json]",
-		"Request secrets and print the request's id, state and source, the broker's own detail when\nit denied them, and who approves it and where while it waits; exit 75 while it waits for\napproval and 77 when it is denied. The\ngrant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours\notherwise (until this session ends when every secret is tagged\ndefault-grant=session)."},
+		"Request secrets and print the request's id, state and source, the broker's own detail when\nit denied them, and who approves it and where while it waits; exit 75 while it waits for\napproval and 77 when it is denied. A name a person must approve needs\n--reason; with none the whole request is denied. The\ngrant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours\notherwise (until this session ends when every secret is tagged\ndefault-grant=session)."},
 	{"status", "agent-secrets status <request_id> [--json]",
 		"Print a request's state, the broker and store it is at, who approves it and where while it\nwaits, its grant once granted, who decided it, and the broker's own detail when it was\ndenied."},
 	{"cancel", "agent-secrets cancel <request_id>",
@@ -160,7 +166,7 @@ var commands = []command{
 	{"sign", "agent-secrets sign --method M --url U [--enrollment E]",
 		"Print the proof this session would sign for one broker call, without making the call."},
 	{"", "agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] [--github-owner LOGIN [--github-repo NAME]... [--github-read-only]] -- <command> [args...]",
-		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing."},
+		"Request secrets, wait up to --wait (default 30m) for a person to decide, and run <command>\nwith each granted secret in its environment under its NAME; nothing runs unless all are\ngranted. One line on stderr names those secrets and the broker and store they came from,\nnever a value. A name a person must approve needs --reason; with none the\nwhole request is denied. The grant lasts --ttl, or 15 minutes when any secret is human tier and 12 hours otherwise (until this session ends when every secret is tagged default-grant=session). --github-owner narrows each\nGitHub App token the grant releases to that account's installation, and --github-repo and\n--github-read-only narrow it further, to those repositories and to read access; a token\nnarrowed to repositories alone keeps every permission the App holds, so a machine that must\nonly read needs --github-read-only too. <command> runs only once the broker answers that it\napplied the narrowing."},
 }
 
 // usageEnvironment closes usage: the variables every form reads, and the exit codes.
@@ -898,7 +904,7 @@ func renewLoop(ctx context.Context, c *client, signer Signer, enrollmentID, podT
 func cmdRequest(args []string, stdout, stderr io.Writer) int {
 	flagArgs, names := splitArgs(args, map[string]bool{"reason": true, "ttl": true})
 	flags := newFlagSet("request", stderr)
-	reason := flags.String("reason", "", "why these secrets are needed")
+	reason := flags.String("reason", "", "why these secrets are needed; necessary where a person approves")
 	ttlFlagValue := flags.Duration("ttl", 0, ttlFlag)
 	asJSON := flags.Bool("json", false, "print the response body verbatim")
 	if err := flags.Parse(flagArgs); err != nil {
@@ -1127,7 +1133,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 
 	flagArgs, names := splitArgs(before, map[string]bool{"reason": true, "wait": true, "ttl": true, "github-owner": true, "github-repo": true})
 	flags := newFlagSet("", stderr)
-	reason := flags.String("reason", "", "why these secrets are needed")
+	reason := flags.String("reason", "", "why these secrets are needed; necessary where a person approves")
 	wait := flags.Duration("wait", 30*time.Minute, "how long to wait for a pending request")
 	ttlFlagValue := flags.Duration("ttl", 0, ttlFlag)
 	githubOwner := flags.String("github-owner", "", "narrow each GitHub App token the grant releases to this account's installation")
@@ -1225,14 +1231,40 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 		return 1
 	}
+	// A name behind the airlock is released too: the broker hands over a placeholder and the
+	// proxy that stands behind it (values.Airlock.Names) instead of the value, so only a name
+	// in neither is one nothing was released for. A CLI from before the airlock finds such a
+	// name in neither "values" nor anything it knows and refuses here, which is what makes a
+	// broker with rules safe to deploy ahead of its clients: no old CLI runs a command with a
+	// placeholder it cannot reach the value behind.
 	var missing []string
 	for _, name := range names {
-		if _, ok := values.Values[name]; !ok {
+		_, released := values.Values[name]
+		if !released && values.Airlock != nil {
+			_, released = values.Airlock.Names[name]
+		}
+		if !released {
 			missing = append(missing, name)
 		}
 	}
 	if len(missing) > 0 {
 		fmt.Fprintf(stderr, "agent-secrets: the grant from %s released no value for %s; nothing was run\n", src(), strings.Join(missing, ", "))
+		return 1
+	}
+
+	// The airlock's two files are written before anything is said or run: without the trust
+	// bundle the command cannot verify the proxy, and a command that cannot reach its secret is
+	// better refused here than failed halfway through its own work.
+	var files airlockFiles
+	if values.Airlock != nil {
+		if files, err = prepareAirlock(os.Environ(), values.Airlock, *grantID, values.ExpiresAt); err != nil {
+			fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
+			return 1
+		}
+	}
+	childEnv, err := buildChildEnv(os.Environ(), values.Values, values.Airlock, files)
+	if err != nil {
+		fmt.Fprintf(stderr, "agent-secrets: %v; nothing was run\n", err)
 		return 1
 	}
 
@@ -1247,7 +1279,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 	// CLI's for the same names.
 	fmt.Fprintf(stderr, "agent-secrets: %s from %s\n", strings.Join(names, ", "), src())
 	warnTrailingNewline(stderr, values.Values)
-	if err := syscall.Exec(path, command, buildChildEnv(os.Environ(), values.Values)); err != nil {
+	if err := syscall.Exec(path, command, childEnv); err != nil {
 		fmt.Fprintf(stderr, "agent-secrets: exec %s: %v\n", command[0], err)
 		return 1
 	}
@@ -1327,12 +1359,32 @@ var sessionIdentityVars = map[string]bool{
 }
 
 // buildChildEnv is the exec form's child environment: the inherited environment minus every
-// AGENT_SECRETS_* variable but sessionIdentityVars and, for every released secret name, minus its
-// inherited entry too, before that name's granted value is appended. Without that second strip,
-// a duplicate key from the inherited environment could shadow the broker-released value under an
-// execve implementation that keeps the first occurrence of a repeated key rather than the last.
-func buildChildEnv(environ []string, values map[string]string) []string {
-	envp := make([]string, 0, len(environ)+len(values))
+// AGENT_SECRETS_* variable but sessionIdentityVars and, for every variable this CLI sets, minus
+// its inherited entry too, before the set ones are appended. Without that second strip, a
+// duplicate key from the inherited environment could shadow the broker-released value under an
+// execve implementation that keeps the first occurrence of a repeated key rather than the last —
+// and, with the airlock, an inherited HTTPS_PROXY or SSL_CERT_FILE could shadow the proxy and the
+// trust bundle the command must use.
+//
+// What this CLI sets is every released value, and, for a grant the airlock holds a name of
+// (release, and files, the two files prepareAirlock has written for it), that name's placeholder,
+// the AWS variables its slots fill, the proxy, and the trust bundle (airlockVars). release is nil
+// for every grant the airlock holds no name of, which is every grant of a broker with no rules
+// file, and then nothing of the airlock is in the child's environment at all.
+//
+// The set entries are appended in sorted order, so one grant's child environment is one string
+// whatever Go's map iteration gave.
+func buildChildEnv(environ []string, values map[string]string, release *AirlockRelease, files airlockFiles) ([]string, error) {
+	set := make(map[string]string, len(values))
+	maps.Copy(set, values)
+	if release != nil {
+		vars, err := airlockVars(environ, release, files)
+		if err != nil {
+			return nil, err
+		}
+		maps.Copy(set, vars)
+	}
+	envp := make([]string, 0, len(environ)+len(set))
 	for _, e := range environ {
 		key, _, ok := strings.Cut(e, "=")
 		if !ok {
@@ -1341,15 +1393,15 @@ func buildChildEnv(environ []string, values map[string]string) []string {
 		if strings.HasPrefix(key, "AGENT_SECRETS_") && !sessionIdentityVars[key] {
 			continue
 		}
-		if _, released := values[key]; released {
+		if _, ours := set[key]; ours {
 			continue
 		}
 		envp = append(envp, e)
 	}
-	for name, value := range values {
-		envp = append(envp, name+"="+value)
+	for _, name := range slices.Sorted(maps.Keys(set)) {
+		envp = append(envp, name+"="+set[name])
 	}
-	return envp
+	return envp, nil
 }
 
 // warnTrailingNewline writes one line naming each released secret whose value ends in a line
@@ -1370,6 +1422,13 @@ func buildChildEnv(environ []string, values map[string]string) []string {
 // `secret set` drops one final LF from its standard input and nothing else (readSecretValue): a
 // value re-piped as it is keeps a CR, whether it ends in CRLF or in a lone CR, and keeps every
 // LF but the last.
+//
+// It reads the handed-over values alone, and not what a name behind the airlock puts in the
+// child's environment, because no airlock name's value can end in a line ending: it is either a
+// placeholder, which is agent-secrets-placeholder- and 32 characters of letters and digits, or a
+// JSON object encoding/json re-emitted with placeholders in it, which ends in '}'. A value that
+// ends in a newline behind the airlock ends in one inside the proxy, where the proxy puts it into
+// the request it rewrites and no command ever sees it.
 func warnTrailingNewline(stderr io.Writer, values map[string]string) {
 	ending := make([]string, 0, len(values))
 	for name, value := range values {

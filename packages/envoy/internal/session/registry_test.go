@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // setupNATS connects t to the package's shared NATS server, in the JetStream account testnats.URL
@@ -42,6 +43,56 @@ func TestSessionEntry_HostOrMachine(t *testing.T) {
 	legacy := SessionEntry{MachineID: "example-listener"}
 	if got := legacy.HostOrMachine(); got != "example-listener" {
 		t.Fatalf("HostOrMachine() = %q, want the fallback to MachineID for a session with no reported host", got)
+	}
+}
+
+// An entry is JSON in the session bucket, so a place reaches the bucket and comes back whole
+// with nothing to migrate. A session in no pane must write no tmux_place key at all, rather than
+// a null or an empty place: a cluster whose sessions run outside tmux pays no bytes per entry,
+// and a reader never mistakes an empty place for a pane that exists.
+func TestSessionEntryTmuxPlaceSurvivesTheBucketAndIsOmittedWhenNil(t *testing.T) {
+	placed := SessionEntry{MachineID: "example-listener", TmuxPlace: &TmuxPlace{
+		Socket:      "/tmp/tmux-1000/default",
+		ServerPID:   "4242",
+		SessionName: "legion",
+		WindowID:    "@7",
+		WindowIndex: 3,
+		WindowName:  "infra-883",
+		PaneID:      "%12",
+		PaneIndex:   1,
+		Layout:      "a1b2,180x44,0,0,7",
+		Zoomed:      true,
+	}}
+	stored, err := json.Marshal(placed)
+	if err != nil {
+		t.Fatalf("encode the placed entry: %v", err)
+	}
+	var read SessionEntry
+	if err := json.Unmarshal(stored, &read); err != nil {
+		t.Fatalf("decode the placed entry: %v", err)
+	}
+	if read.TmuxPlace == nil || *read.TmuxPlace != *placed.TmuxPlace {
+		t.Fatalf("place read back = %+v, want %+v", read.TmuxPlace, placed.TmuxPlace)
+	}
+
+	outside, err := json.Marshal(SessionEntry{MachineID: "example-listener"})
+	if err != nil {
+		t.Fatalf("encode the entry of a session outside tmux: %v", err)
+	}
+	if bytes.Contains(outside, []byte("tmux_place")) {
+		t.Fatalf("entry of a session outside tmux = %s, want no tmux_place key", outside)
+	}
+
+	// The client sends the other nine members when a finely split window grew the layout past
+	// what a registration carries, and the entry must carry that place without an empty layout.
+	dropped := *placed.TmuxPlace
+	dropped.Layout = ""
+	encoded, err := json.Marshal(dropped)
+	if err != nil {
+		t.Fatalf("encode the place whose layout the client dropped: %v", err)
+	}
+	if bytes.Contains(encoded, []byte("layout")) {
+		t.Fatalf("place with no layout = %s, want no layout key", encoded)
 	}
 }
 
@@ -806,16 +857,7 @@ func (kv *historyFailSessionKeyValue) History(string, ...natsgo.WatchOpt) ([]nat
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if condition() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for observable state")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, timeout, testwait.Poll, "observable state", condition)
 }
 
 func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string, timeout time.Duration) {
@@ -834,22 +876,7 @@ func captureSessionRegistryLogs(t *testing.T) *lockedBuffer {
 	return &logs
 }
 
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
-}
+type lockedBuffer = logtest.Buffer
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
 func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }

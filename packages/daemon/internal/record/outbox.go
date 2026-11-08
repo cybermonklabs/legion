@@ -38,9 +38,13 @@ const (
 	OutboxKindPhaseEnded        OutboxKind = "phase_ended"
 	OutboxKindIssueBundle       OutboxKind = "issue_bundle"
 	OutboxKindIssueRelease      OutboxKind = "issue_release"
+	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
+	// holds the bare project key (GatedStepsPublish).
+	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
+	OutboxKindClaimRelease      OutboxKind = "claim_release"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on three lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -51,25 +55,34 @@ const (
 // (check_wake, check_look, check_bound), which start and end the checking role's looks in order
 // with the starts and suspends they queue. The board lane runs the issue's Dispatch writes and
 // notice publishes beside them, so a status write or a notice never waits behind a start pulling
-// an image, and a slow publish never holds a stop back. The role-message lane runs the one kind the
-// daemon addresses to a role of the issue that is not its architect (phase_ended), on a lane of its
-// own because the board lane's architect notices are ordered among themselves and one of them waits
+// an image, and a slow publish never holds a stop back. It carries the deployment's gated-steps
+// publish too, the one row addressed to the bare project key rather than to an issue, so that
+// write runs on a board lane of the project's own, behind none of any issue's rows and holding
+// none of them back. The role-message lane runs the one kind the daemon addresses to a role of
+// the issue that is not its architect (phase_ended), on a lane of its own because the board
+// lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
 // phase ended must hear it while that is news, not after whatever its tree's architect is owed.
+// The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
+// own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
+// waiting on one issue's claim must delay no status write and no notice of that same issue, which
+// is what a place on the board lane would cost it.
 type OutboxLane string
 
 const (
 	LaneLifecycle   OutboxLane = "lifecycle"
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
+	LaneClaim       OutboxLane = "claim"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
 // one lane (TestEveryOutboxKindIsInExactlyOneLane).
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded},
+	LaneClaim:       {OutboxKindClaimRelease},
 }
 
 // LaneOf is the lane that runs kind.
@@ -130,7 +143,7 @@ type StatusWrite struct {
 	Status         string `json:"status"`
 	ObservedStatus string `json:"observedStatus"`
 	// Reason is a done write's reason: the runner posts it as a message on the issue before it
-	// writes the status, since Dispatch refuses a message on a closed issue. Empty for a write
+	// writes the status, so the reason is on the issue before the close. Empty for a write
 	// with no reason to record.
 	Reason string `json:"reason,omitempty"`
 	// HandOver also puts dispatch.LegionLabel on the issue, in the same Dispatch write: the write
@@ -152,6 +165,14 @@ type StatusWrite struct {
 }
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
+
+// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
+// it carries. The holder and the issue's record are read when the row runs, not when it is
+// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
+// the row on their own, with no generation or holder to fence it.
+type ClaimRelease struct{}
+
+func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
 // marker.
@@ -286,7 +307,8 @@ type Notice struct {
 	// Dispatch actor as `<kind>:<id>`, a person `user:<login>`. Empty where no person decided:
 	// gates.design off opened the gate.
 	Actor string `json:"actor,omitempty"`
-	// Ref is that decision's Dispatch reference: `dispatch://<KEY>/spec` for a spec decision,
+	// Ref is that decision's Dispatch reference: the document of the design-gate step a design
+	// decision is of (workflow's stepRef), `dispatch://<KEY>/spec` for the spec step,
 	// `dispatch://<KEY>/ask/<id>` for an answer or a resolution, `dispatch://<KEY>/comment/<id>`
 	// for a reply.
 	Ref string `json:"ref,omitempty"`
@@ -379,8 +401,8 @@ func (b BlockedIssue) MarshalJSON() ([]byte, error) {
 // task, or only with the decisions kept for it. It is the tree as the daemon records it then: the
 // root's generation, the launch of the architect's claim it was written for, whether a hand-over
 // created the root at this generation with its child's phase and pull request (HandedOver) and
-// whether its old root's gate came with them (Carried), the design gate policy and the root's
-// gate, and every issue of the tree. A handed-over root's workers already run their phases, so its
+// whether its old root's gate came with them (Carried), the design gate step by step (Gates),
+// and every issue of the tree. A handed-over root's workers already run their phases, so its
 // architect decomposes nothing anew; one that carried no gate registers its own spec. Decided names
 // what a person decided on the tree while nobody in it could hear it and the start did not name (a
 // decision made while the architect's claim had ended, before this relaunch), in the words of
@@ -393,20 +415,31 @@ type CatchUp struct {
 	Launch     uint64         `json:"launch"`
 	HandedOver bool           `json:"handed_over,omitempty"`
 	Carried    bool           `json:"carried,omitempty"`
-	Gate       CatchUpGate    `json:"gate"`
+	Gates      []CatchUpGate  `json:"gates"`
 	Issues     []CatchUpIssue `json:"issues"`
 	Decided    string         `json:"decided,omitempty"`
 	Kept       *KeptDecisions `json:"kept,omitempty"`
 }
 
-// CatchUpGate is the design gate as a catch-up states it: the project's policy (gates.design,
-// root-issues or off) and, once the architect has registered one, the root's registered document,
-// its latest version, and whether that version is approved.
+// CatchUpGate is one design-gate step as a catch-up states it: the step, whether a person must
+// approve its document (Gated) and, once the architect has registered it, the document, its
+// latest version, the version a person approved, if any, and whether the step is open.
+// Unregistered says the root holds no record of the step at all, which is the step its architect
+// has still to register.
+//
+// A catch-up carries one entry for each step the root must hold open before its tree works
+// (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
+// Gated false: that registration opens the step at once and asks no person, which is what the
+// policy word `off` said. The list replaced that word, because one word cannot name a list and
+// each entry now says its own step's part of it.
 type CatchUpGate struct {
-	Policy   string `json:"policy"`
-	Artifact string `json:"artifact,omitempty"`
-	Version  int    `json:"version,omitempty"`
-	Open     bool   `json:"open"`
+	Step         DesignStep `json:"step"`
+	Gated        bool       `json:"gated"`
+	Unregistered bool       `json:"unregistered,omitempty"`
+	Artifact     string     `json:"artifact,omitempty"`
+	Version      int        `json:"version,omitempty"`
+	Approved     int        `json:"approved,omitempty"`
+	Open         bool       `json:"open"`
 }
 
 // CatchUpIssue is one issue of the tree as a catch-up lists it.
@@ -566,10 +599,14 @@ type SuperviseRequest struct {
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
 
-// GateSeed records the design document version that starts a gate.
+// GateSeed records the design document version that starts a gate, and the step whose row it
+// starts: the seed reads that document from Dispatch and applies what it finds there.
 type GateSeed struct {
 	ArtifactID string `json:"artifactId"`
-	Version    int    `json:"version"`
+	// Step is the design-gate step the registered document is that of. A row written before a
+	// deployment could name a list carries none, and the facts its seed builds name no step.
+	Step    DesignStep `json:"step,omitempty"`
+	Version int        `json:"version"`
 	// Generation is the issue generation that registered the gate; the seed's fact is that
 	// generation's.
 	Generation uint64 `json:"generation"`
@@ -658,6 +695,22 @@ type MergeQueuePublish struct {
 
 func (MergeQueuePublish) OutboxKind() OutboxKind { return OutboxKindMergeQueuePublish }
 
+// GatedStepsPublish is the design-gate steps the deployment gates, written onto the Dispatch
+// project row so a person reading Dispatch sees what holds a tree's work without reading the
+// deployment's configuration. Project is the Dispatch project key, and Steps the configured list
+// in the order the deployment gates it, empty for a deployment that gates nothing.
+//
+// The row belongs to no issue: its issue column holds Project itself, the bare key, which the
+// same split_part every reader scopes a row by answers. The daemon publishes at every boot and
+// keeps no record of what it last published, so the route is what decides whether anything
+// changed; a boot whose list matches the stored one writes no row there and appends no event.
+type GatedStepsPublish struct {
+	Project string       `json:"project"`
+	Steps   []DesignStep `json:"steps"`
+}
+
+func (GatedStepsPublish) OutboxKind() OutboxKind { return OutboxKindGatedStepsPublish }
+
 // IssueBranch creates the row's issue's branch, legion/<KEY>, on GitHub at the repository's default
 // branch, where GitHub does not have it yet, before any role of the issue starts: GitHub can refuse
 // the push that creates a branch of a large repository, where it takes a push that moves one. A
@@ -693,18 +746,41 @@ func (AutoMergeDisable) OutboxKind() OutboxKind { return OutboxKindAutoMergeDisa
 // (ghautomerge.Submit). Warned is the row having told the issue's architect once that GitHub has
 // not completed the merge it submitted (merge-waiting, the daemon's mergeWaitWarn), which keeps it
 // from telling again however much longer it waits, and Queued is the moment the workflow queued
-// this submission, which that wait is measured from. A queue of the same issue and head starts the
-// row over unarmed, unwarned and at a fresh Queued (readyMergeConflict): the upsert replaces the
-// payload, so a reopen resets the clock and the once-flag together and the two can never disagree,
-// as they would were the wait measured from the row's created_at, which the upsert leaves at the
-// original queueing. A row a daemon before Queued enqueued carries the zero time, and its executor
-// measures that one from created_at, which is what it was measured from then.
+// this submission, which that wait is measured from. Unmergeable is the moment of the first read
+// that found the merge queue's entry for Head UNMERGEABLE while the queue had built it on
+// UnmergeableBase, the commit named there, which that read found to be the tip of the pull
+// request's own base branch: an entry built on its base branch's tip has nothing ahead of it in
+// the queue to blame, so its own head is what the queue cannot merge, and a mark that still
+// stands at the same base commit once the daemon's queueConflictBound has passed sends the issue
+// back to implementing. The two are written and read together, so an entry GitHub rebuilds onto
+// another base replaces the pair and starts the clock again. Resubmitted is the row having spent
+// its one further submission at Head after GitHub's merge queue took the entry out for a conflict
+// (merge_conflict) while GitHub reported the head mergeable, which is the queue having conflicted
+// the head with an entry ahead of it rather than with the base: nothing else would ever submit
+// that merge again, so the row submits it once more and marks the mark spent, and a second such
+// removal of the same head ends the row with the architect told. Only a queue of a new READY at a
+// new head clears it, by replacing the whole payload; the daemon's own re-submission never does,
+// which is what keeps the re-submission from becoming the loop a merge submitted again whenever
+// its arm vanishes falls into (LEGION-800). ConflictUnknown is the moment of the first read after
+// such a removal in which GitHub answered the merge state UNKNOWN, having computed none: nothing
+// is decided on an answer GitHub did not give, so the row asks again on its own backoff until the
+// daemon's conflictUnknownBound has passed from that moment and then ends with the architect
+// told. A queue of the same issue and head starts the row over unarmed, unwarned, with no mark at
+// all and at a fresh Queued (readyMergeConflict): the upsert replaces the whole payload, so a
+// reopen resets the clock, the once-flag and the marks together and they can never disagree, as
+// they would were the wait measured from the row's created_at, which the upsert leaves at the
+// original queueing. A row a daemon before Queued enqueued carries the zero time, and its
+// executor measures that one from created_at, which is what it was measured from then.
 type ReadyMerge struct {
-	Number int       `json:"number"`
-	Head   string    `json:"head"`
-	Armed  bool      `json:"armed,omitempty"`
-	Warned bool      `json:"warned,omitempty"`
-	Queued time.Time `json:"queued,omitzero"`
+	Number          int       `json:"number"`
+	Head            string    `json:"head"`
+	Armed           bool      `json:"armed,omitempty"`
+	Warned          bool      `json:"warned,omitempty"`
+	Queued          time.Time `json:"queued,omitzero"`
+	Unmergeable     time.Time `json:"unmergeable,omitzero"`
+	UnmergeableBase string    `json:"unmergeableBase,omitempty"`
+	Resubmitted     bool      `json:"resubmitted,omitempty"`
+	ConflictUnknown time.Time `json:"conflictUnknown,omitzero"`
 }
 
 func (ReadyMerge) OutboxKind() OutboxKind { return OutboxKindReadyMerge }
@@ -891,6 +967,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindGatedStepsPublish:
+		value := GatedStepsPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindIssueBranch:
 		value := IssueBranch{}
 		if err := decoder.Decode(&value); err != nil {
@@ -933,6 +1015,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindClaimRelease:
+		value := ClaimRelease{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	default:
 		return nil, fmt.Errorf("decode outbox row %d: unknown kind %q", row.ID, row.Kind)
 	}
@@ -963,7 +1051,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" {
 			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
 		}
-	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound:
+	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -1058,6 +1146,15 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Packet == "" {
 			return fmt.Errorf("merge queue publish requires packet")
 		}
+	case GatedStepsPublish:
+		if value.Project == "" {
+			return fmt.Errorf("a gated-steps publish requires the project whose row it writes")
+		}
+		for _, step := range value.Steps {
+			if !step.Valid() {
+				return fmt.Errorf("a gated-steps publish names %q, which is no design-gate step", step)
+			}
+		}
 	case AutoMergeDisable:
 		if value.Number <= 0 {
 			return fmt.Errorf("auto-merge disable requires its pull request number")
@@ -1096,9 +1193,19 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	return nil
 }
 
+// validNoticeKind says whether kind is a notice an architect is told. `worker-stalled` is what
+// the daemon's stall backstop did to a worker whose agent stopped stepping, with the task it
+// was serving still owed (internal/daemon's backstopStalledTurns), which is a fact of that
+// worker's issue and so the issue's architect's to read, as `worker-died` is. What it did is
+// usually the turn ended and the session brought back; where the wake pacing parked the
+// relaunch, it is the task taken back with that launch queued and the stalled process still
+// running until the launch's turn, which the notice names. The notice says what became of that
+// stalled process as well, where the end let it go: that it was stopped, or that the runtime
+// did not confirm the stop and it may be running still (internal/daemon's stallBackstopEnds,
+// stallStopClause).
 func validNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case "phase-finished", "worker-died", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused", "merge-refused", "merge-stalled", "merge-removed", "merge-waiting", "design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused", "child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted":
+	case "phase-finished", "worker-died", "worker-stalled", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused", "merge-refused", "merge-stalled", "merge-removed", "merge-waiting", "design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused", "child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted":
 		return true
 	default:
 		return false

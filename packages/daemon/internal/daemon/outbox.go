@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghautomerge"
 	"github.com/sjawhar/legion/daemon/internal/ghbranch"
@@ -82,10 +81,11 @@ type outbox struct {
 	// is shared, and another project's rows are another daemon's.
 	dispatchProject string
 	stateDir        string
-	// designGate is the project's design gate policy (gates.design), which a catch-up this runner
-	// writes states and whose kept approval pair a start task names (workflow.QueueCatchUp). A
-	// test that builds the runner by hand leaves it zero, which reads as the shipped policy.
-	designGate config.DesignGate
+	// gatedSteps are the design-gate steps the project gates (gates.design), which a catch-up
+	// this runner writes states and whose kept approval pair a start task names
+	// (workflow.QueueCatchUp). A test that builds the runner by hand leaves it nil, which
+	// newOutbox reads as the shipped list, the one step spec.
+	gatedSteps []record.DesignStep
 	log        *slog.Logger
 	// backstop is how long after a release its one open phase's worker is woken whatever else
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
@@ -161,13 +161,13 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, designGate config.DesignGate, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
 		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
-		handlers: handlers, designGate: designGate,
+		handlers: handlers, gatedSteps: gatedSteps,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
 		// WarmCodegraphIndexInBackground runs here, never in provisionWorkspace: every outbox
@@ -390,6 +390,16 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told = func() {
 			r.log.Log(scoped, level, "outbox READY merge ended without a merge; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
 		}
+	case record.ClaimRelease:
+		// Nobody is told: the claim stands where it was, which is the state the daemon would
+		// have left behind had the row never run, and the issue's tree is over. The line is
+		// what says the row ended, since without it a 404 — an issue Dispatch no longer has —
+		// would end it in silence.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+				"status", refusal.Status, "code", refusal.Code, "error", cause)
+		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
 		if follow != nil {
@@ -569,10 +579,19 @@ func retryBackoff(attempts int) time.Duration {
 // refuses where it still stands (ghautomerge.Refused), whose pull request GitHub has shown closed
 // or at another head than the record awaits for longer than ghautomerge.LagBound at now
 // (ghautomerge.Lagging.Stalled), or whose arm or merge-queue entry someone else removed without a
-// merge (ghautomerge.Removed), which a retry must not undo.
+// merge (ghautomerge.Removed), which a retry must not undo. The merge queue's own removal for a
+// conflict reaches this only as the *Removed the row decided it to be
+// (ghautomerge.ConflictRemoval.Ended, the daemon's conflictRemoval): the ConflictRemoval itself is
+// no *Removed and ends nothing, since a conflict with an entry ahead of it in the queue is
+// submitted once more rather than ended. A claim release is the shared
+// Dispatch rule whole: its executor answers both of Dispatch's 409s as waits of its own before
+// this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
+// purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
+// refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
+// stay permanent and end the row.
 func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	switch row.Kind {
-	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage:
+	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
 	case record.OutboxKindReadyMerge:
@@ -585,10 +604,12 @@ func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	}
 }
 
-// routineWait is a wait only GitHub's own rules hold back, which ends without anyone acting for
-// Legion: a pull request armed or queued at READY's head (ghautomerge.Armed), one GitHub reports not
-// mergeable yet for a reason its rules end (ghautomerge.Unmergeable.Routine), or one the merge queue
-// took out to merge, which GitHub has yet to show merged (ghautomerge.Merging).
+// routineWait is a wait nobody has to act on for Legion, which ends on its own: one only GitHub's
+// own rules hold back — a pull request armed or queued at READY's head (ghautomerge.Armed), one
+// GitHub reports not mergeable yet for a reason its rules end (ghautomerge.Unmergeable.Routine),
+// or one the merge queue took out to merge, which GitHub has yet to show merged
+// (ghautomerge.Merging) — and a Dispatch claim release waiting on the claim's holder or on a
+// contended answer (claimWait), which the hour claimReleaseWait caps rather than an operator.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -604,6 +625,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.status(ctx, row, value)
 	case record.MessagePost:
 		return r.message(ctx, row, value)
+	case record.ClaimRelease:
+		return r.releaseClaim(ctx, row)
 	case record.Notice:
 		return r.notice(ctx, row, value)
 	case record.ControllerNotice:
@@ -641,6 +664,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.removeWorkspace(ctx, row, value)
 	case record.MergeQueuePublish:
 		return r.mergeQueue(ctx, row, value)
+	case record.GatedStepsPublish:
+		return r.publishGatedSteps(ctx, value)
 	case record.IssueBranch:
 		return r.issueBranch(ctx, row, value)
 	case record.AutoMergeDisable:
@@ -700,7 +725,7 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 		}
 		return r.consumeHandover(ctx, row, payload)
 	}
-	// A done write's reason goes on the issue first: Dispatch refuses a message on a closed issue.
+	// A done write's reason goes on the issue first, so it is there before the status closes it.
 	// It is posted as this row's message, so a retry after a failed write finds it and posts none.
 	// A reason Dispatch refuses the same way on every attempt (dispatch.PermanentRefusal, a block
 	// over its own bound among them) must not cost the issue its status, which is the write its
@@ -733,6 +758,23 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	}
 	if refused != nil {
 		return &statusWriteFailure{err: refused, wrote: statusWrites{status: true}}
+	}
+	return nil
+}
+
+// publishGatedSteps writes the deployment's design-gate steps onto the project's Dispatch row.
+// The row's own issue is that project key, and the payload names it too, so the write addresses
+// the project the boot that queued it served however the row is read back.
+//
+// A Dispatch that has not got the route yet answers 404, and nothing here treats that as final:
+// the kind is no permanent refusal, so the lane's backoff holds the row until the server has the
+// route, which is what lets the daemon and Dispatch deploy in either order.
+func (r *outbox) publishGatedSteps(ctx context.Context, payload record.GatedStepsPublish) error {
+	if r.dispatch == nil {
+		return errors.New("gated steps executor has no Dispatch client")
+	}
+	if err := r.dispatch.PutGatedSteps(ctx, payload.Project, record.StepNames(payload.Steps)); err != nil {
+		return fmt.Errorf("publish the gated steps of %s: %w", payload.Project, err)
 	}
 	return nil
 }
@@ -1125,13 +1167,38 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 	machine, found := r.supervisor.Machine(token)
 	switch payload.Op {
 	case "start":
-		// A tree that lingers has left the workflow, and linger holds each member where it stood: a
-		// start that reaches its claim after the close (queued before it and backing off) finishes
-		// without acting and records no start, so the close's suspend still applies. Re-admission
-		// starts the member again (admit's startMidPhaseChildren). A check start is the one start
-		// a lingering tree runs: a look of a closed issue's production check, which resumes the
-		// implementer the linger suspended.
+		// An issue the workflow has taken out — closed, parked, iceboxed, sent back to triage —
+		// has had its Sandbox given back by the departure that took it out, so a start that
+		// reaches the runner behind that departure would build the pod again and pick up the
+		// claim that departure had just put down. The row returns here, above machine.StartedBy,
+		// so it records no start against the claim: the departure's own stop is not superseded by
+		// it, and the suspension that follows that stop is not dropped for a start that started
+		// nothing. admit.(*Admission).finishFencedStarts deletes an owed start of the same shape
+		// on the same predicate, so a row that never reaches a lane and one that does are
+		// declined alike.
+		//
+		// The status read is the issue's own recorded Status and not its DispatchStatus: a close
+		// the daemon authored writes Status with the rows that carry it out and leaves
+		// DispatchStatus at what the board last showed until Dispatch's echo arrives, while
+		// Engine.keepStatus writes DispatchStatus and keeps Status for a status the daemon sets
+		// back, which leaves the issue in the workflow and its start a start. It is the issue's own
+		// status and not its root's, because a child carried into a tree of its own stands in the
+		// workflow while the tree it left lingers, and the tree is what the guard below reads. A
+		// production check's look is exempt — it is the one start an issue out of the workflow
+		// still runs — which the enclosing payload.CheckLook == 0 gives it.
 		if payload.CheckLook == 0 {
+			if record.OutOfWorkflow(issue.Status) {
+				r.log.Info("outbox start of an issue that has left the workflow; finished without acting", "row", row.ID,
+					"issue", issue.Key, "status", issue.Status, "role", payload.Role)
+				return nil
+			}
+			// A tree that lingers has left the workflow, and linger holds each member where it
+			// stood: a start that reaches its claim after the close (queued before it and backing
+			// off) finishes without acting and records no start, so the close's suspend still
+			// applies. Re-admission starts the member again (admit's startMidPhaseMembers). A
+			// check start is the one start a lingering tree runs: a look of a closed issue's
+			// production check, which resumes the role that check records
+			// (record.ProductionCheck.Role) the linger suspended.
 			root, err := r.root(ctx, issue)
 			if err != nil {
 				return err
@@ -1221,7 +1288,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		case supervise.StateSuspended:
 			// The role owns the issue's phase this start is for: the rule resumes it, unless an
 			// operator suspended it meanwhile, when the task's delivery below waits instead. A check
-			// start resumes the implementer the close or the linger suspended, in a Sandbox the
+			// start resumes the role the check records the close or the linger suspended, in a Sandbox the
 			// resume relaunches (runtime/sandbox's relaunch).
 			reason := fmt.Sprintf("start row %d of %s (phase %q)", row.ID, issue.Key, payload.Phase)
 			if payload.CheckLook > 0 {
@@ -1262,7 +1329,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// released and spawned again, after this start, so the row's task goes in its place. A check
 		// start names no phase, so it is never one of these: each look's task is delivered, its row
 		// id its delivery's, and a delivery with no phase is held by nothing (supervise's
-		// phaseHolds), so the task reaches the implementer whatever the issue's phase.
+		// phaseHolds), so the task reaches the role the check records whatever the issue's phase.
 		held, gave := machine.Claim(), false
 		if (payload.ResumeTask || state == supervise.StateFailed) && keepsStartTask(held, payload) {
 			r.log.Info("outbox start of a claim that holds its phase's task; not delivered again", "row", row.ID, "issue", issue.Key,
@@ -1917,13 +1984,13 @@ func (r *outbox) seedGate(ctx context.Context, row record.OutboxRow, payload rec
 		return nil
 	}
 	if approval.LatestVersion < payload.Version {
-		id := fmt.Sprintf("gate-above:%s:%d:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
+		id := fmt.Sprintf("gate-above:%s:%d:%s:%s:%d:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, payload.Version, fact.Kind, fact.Version, fact.Mark.ID())
 		if _, err := intake.ApplyFact(ctx, r.pool, "outbox", id, intake.GateAboveDispatch{Generation: payload.Generation, Above: payload.Version, Read: fact}, r.handlers...); err != nil {
 			return fmt.Errorf("reset the gate of %s to the version Dispatch holds: %w", row.Issue, err)
 		}
 		return nil
 	}
-	id := fmt.Sprintf("gate-seed:%s:%d:%s:%s:%d:%d", row.Issue, payload.Generation, payload.ArtifactID, fact.Kind, fact.Version, fact.Mark.ID())
+	id := fmt.Sprintf("gate-seed:%s:%d:%s:%s:%s:%d:%d", row.Issue, payload.Generation, payload.Step, payload.ArtifactID, fact.Kind, fact.Version, fact.Mark.ID())
 	// A version fact carries no mark, so its id also says whether the read showed the request with
 	// the agent: a later seed of the same version that finds it moved there is another fact, not a
 	// duplicate of one that answered nothing.

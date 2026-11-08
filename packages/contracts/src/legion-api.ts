@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DISPATCH_KEY_PATTERN, LEGION_ROLES } from "./legion-roles";
+import { DISPATCH_KEY_PATTERN, GATED_STEPS, LEGION_ROLES } from "./legion-roles";
 
 /**
  * The Legion daemon's HTTP API, as its readers see it.
@@ -141,6 +141,29 @@ const legionCapabilityReportView = z.object({
   open: z.array(z.object({ name: nonEmptyString, detail: nonEmptyString })),
 });
 
+/** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
+ * its worker stream (contract 57): `at`, when the daemon received that step; `turnStartedAt`,
+ * when the turn it belongs to began; `tool` and `callId`, the call the agent is in, which the
+ * start and end frames pair by; `argsBytes` and `argsHash`, the length of that call's arguments
+ * and an eight-byte fingerprint of them; and `startedAt` and `endedAt`, when the daemon received
+ * that call's start and end.
+ *
+ * The arguments themselves are never on the wire: a shell command routinely holds a credential,
+ * and this record reaches every surface an operator reads. Every field is absent where the
+ * record holds nothing for it — a claim whose turn has begun and whose agent has called nothing
+ * carries `turnStartedAt` alone, and a call still open carries `startedAt` and no `endedAt`,
+ * which is the shape a stalled turn leaves behind. */
+const legionStepView = z.object({
+  at: timestamp.optional(),
+  turnStartedAt: timestamp.optional(),
+  tool: nonEmptyString.optional(),
+  callId: nonEmptyString.optional(),
+  argsBytes: z.number().int().positive().optional(),
+  argsHash: nonEmptyString.optional(),
+  startedAt: timestamp.optional(),
+  endedAt: timestamp.optional(),
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), and `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does). */
@@ -160,6 +183,11 @@ const legionClaimView = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
+   * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
+   * contract below 57 is served the state with no such key at all (the daemon's
+   * `withoutStallRecord`), so every reader takes it as optional. */
+  step: legionStepView.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -202,6 +230,29 @@ const legionGateView = z.object({
   artifactId: nonEmptyString,
   currentVersion: z.number().int().positive(),
   approvedVersion: z.number().int().positive().nullable(),
+});
+
+/** `record.DesignStep` — one step of a deployment's design gate, each naming one document of the
+ * root issue: `decisions` its decisions document, `criteria` its Verification document, `spec`
+ * its primary document. */
+const legionDesignStep = z.enum(GATED_STEPS);
+
+/** `api.GatedStepView` — one step of the deployment's design gate as one issue stands in it
+ * (contract 55). `artifactId` and `currentVersion` are the document its architect registered for
+ * the step and that document's current version, absent until one is registered; `approvedVersion`
+ * is the version a person approved, null until one does. `status` is where the step stands:
+ * `unregistered` (the deployment gates it and the issue holds no record of it, so it holds the
+ * tree's work), `waiting` (registered, and no person has reviewed its current version),
+ * `approved` (a person approved its current version, the one status that lets the work past the
+ * step) or `changes_requested` (its reviewer asked for changes at its current version, with
+ * `changesReason` the reason they gave; absent under every other status). */
+const legionGatedStepView = z.object({
+  step: legionDesignStep,
+  artifactId: nonEmptyString.optional(),
+  currentVersion: z.number().int().positive().optional(),
+  approvedVersion: z.number().int().positive().nullable(),
+  status: z.enum(["unregistered", "waiting", "approved", "changes_requested"]),
+  changesReason: nonEmptyString.optional(),
 });
 
 /** `api.SlotView` — the admission slot the issue occupies and when it took it. */
@@ -309,7 +360,12 @@ const legionPendingStatusWrite = z.object({
 /** `api.StrandedClaim` — one claim nothing will wake (`workflow.Stranded`): a worker of its issue's
  * phase, or its tree's architect, in a tree that runs, named by its issue, its role and its state;
  * the issue's entry under `issues` carries the rest. Its state, role and suspension say the move
- * that brings it back (`api.StrandedClaim.Move`).
+ * that brings it back (`api.StrandedClaim.Move`). A `retired` entry is a claim a close or a stop
+ * retired while its tree runs: only a start of the phase it owns relaunches it, and no rule the
+ * daemon runs queues that start, so nothing will wake it either. That state arrived with contract
+ * 56, and a pod whose claims record a contract below it is served this report without its retired
+ * entries (`api`'s `stateFor`, `withoutRetiredStranded`) rather than being made to refuse the
+ * whole state over a third value its enum does not name.
  *
  * Who suspended a suspended one is not here and must never be added: a session parses this body
  * with the schema of the contract its plugin was built at, and a Kubernetes deployment relaunches
@@ -320,7 +376,7 @@ const legionPendingStatusWrite = z.object({
 const legionStrandedClaim = z.object({
   issue: issueKey,
   role: z.enum(LEGION_ROLES),
-  state: z.enum(["suspended", "failed"]),
+  state: z.enum(["suspended", "failed", "retired"]),
 });
 
 /** `api.HeldOutboxRow` — one due lifecycle outbox row its issue's lifecycle lane cannot run yet,
@@ -382,6 +438,13 @@ const legionIssue = z.object({
   workers: z.partialRecord(z.string(), legionPhaseView),
   pullRequest: legionPullRequestView.optional(),
   designGate: legionGateView.optional(),
+  /** The deployment's design gate as this issue stands in it, one entry for each step the
+   * deployment gates, in the order it gates them (contract 55). This daemon always writes it, and
+   * it is empty for an issue that is not its tree's root, for a deployment that gates no step and
+   * for an issue the workflow does not record; a daemon before contract 55 writes none, which is
+   * why a reader takes it as absent rather than as an empty list. `designGate` above is unchanged
+   * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
+  gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
@@ -424,9 +487,8 @@ const legionBlockedIssue = z.object({
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose
- * claims record a contract below 51, and for a caller in a pod whose claims it cannot read at
- * all, which may be a pod at this contract (`api.stateFor`, `withoutTrees`). A reader that finds
- * it absent has been served that stripped body and learns nothing about which trees run; it is
+ * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
+ * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
  * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
  * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
@@ -776,11 +838,13 @@ export const LegionControllerRegisterResponse = z.object({
 export type LegionControllerRegistration = z.output<typeof LegionControllerRegisterResponse>;
 
 /** `api.ControllerSecretResponse`, the body of `POST /legion/v1/controller/secret`: the controller
- * capability the operator's bearer bought, and the project's `gates.design`, which
- * `legion controller start` tells the controller. The CLI reads it; the plugin never does. */
+ * capability the operator's bearer bought, and the design-gate steps the project gates
+ * (`gates.design`), in the order it gates them, which `legion controller start` tells the
+ * controller (contract 55). The list is empty for a deployment that gates no step and is never
+ * absent. The CLI reads it; the plugin never does. */
 export const LegionControllerSecretResponse = z.object({
   secret: nonEmptyString,
-  designGate: z.enum(["root-issues", "off"]),
+  designGateSteps: z.array(legionDesignStep),
 });
 
 /** `api.ControllerCredentialResponse`, the answer of `POST /legion/v1/controller/github-credential`:
@@ -825,6 +889,16 @@ const legionDeliveryView = z.object({
   deliveredAt: timestamp.optional(),
   confirmedAt: timestamp.optional(),
   interrupted: z.literal(true).optional(),
+  /** How many sends of this task came back without reaching a turn, when the last of them failed
+   * and the error it failed with. The three are a diagnosis record, not a budget: the budget is
+   * `budgets.promptFailures` and `budgets.promptRetires`, which only a charged failure spends,
+   * while these count every send that failed that way, charged or not — a send lost to the
+   * transport costs nothing and is retried for ever, which is the stall they exist to name. A
+   * prompt the agent acknowledged and then refused is charged and read in the budget instead. A
+   * send that reaches a turn clears all three, so a task no send has failed for carries none. */
+  sendFailures: z.number().int().nonnegative().optional(),
+  lastSendFailureAt: timestamp.optional(),
+  lastSendError: nonEmptyString.optional(),
 });
 
 /** `api.OperatorClaim`, the body of the operator routes that act on one claim (`POST
@@ -869,6 +943,11 @@ export const LegionOperatorClaimResponse = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
+   * begun a turn nor made a call the daemon saw. These routes are the only surface a
+   * controller's record reaches: the state puts the controller's claim on no issue, so no claim
+   * view of it carries one. */
+  step: legionStepView.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;
@@ -981,12 +1060,16 @@ export const LegionIssueStatusRequest = z.strictObject({
   status: z.enum(["todo", "backlog", "icebox"]),
 });
 
-/** `api.GateRegisterRequest`, the architect's current Dispatch document approval target. */
+/** `api.GateRegisterRequest`, the architect's current Dispatch document approval target, for one
+ * step of the deployment's design gate. `step` is the step the document is for; a deployment
+ * that gates one step alone takes a request that leaves it out, and one that gates several
+ * refuses it (`GATE_STEP_REQUIRED`). */
 export const LegionGateRegisterRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,
   artifactId: z.uuid(),
   version: z.number().int().positive(),
+  step: legionDesignStep.optional(),
 });
 
 /** `api.WaveReleaseRequest`, the architect's selected child issues. */

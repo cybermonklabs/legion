@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -138,6 +139,95 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 	}
 
 	sameClaim(t, onlyClaim(t, store), want)
+}
+
+// The record of this task's sends that never reached a turn round-trips with the delivery: how
+// many failed, when the last of them failed and the error it failed with. A restart rebuilds
+// every claim from this table, so a record lost here is a claim that has waited days on a send
+// which never lands and says nothing of it after the next restart (INFRA-1480). The last
+// failure's time is compared as an instant: Postgres hands a timestamptz back in the session's
+// zone, not the one it was written in.
+func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	failing := supervise.Delivery{
+		ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, Generation: 4, QueuedAt: at(1),
+		SendFailures: 4, LastSendFailureAt: at(5),
+		LastSendError: "worker-stream: legion-LEGION-209-implementer refused adopt-working-copy: " +
+			"the git lock /legion/workspaces/acme/widgets/legion-209/.git/index.lock was last written 31m ago",
+	}
+	if err := store.PutDelivery(ctx, c.Token, failing); err != nil {
+		t.Fatalf("put the failing delivery: %v", err)
+	}
+
+	got := onlyClaim(t, store).Pending
+	if got == nil {
+		t.Fatal("the restarted daemon read no pending delivery")
+	}
+	if got.SendFailures != failing.SendFailures || !got.LastSendFailureAt.Equal(failing.LastSendFailureAt) ||
+		got.LastSendError != failing.LastSendError {
+		t.Fatalf("delivery read back = %+v, want %d failed sends, the last at %v, with its error",
+			got, failing.SendFailures, failing.LastSendFailureAt)
+	}
+
+	// The send that reached a turn clears all three (supervise's confirm), through the same
+	// upsert: a delivery read back still counting failures an earlier turn got past would name a
+	// stall that is over.
+	confirmed := failing
+	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = at(6), failing.ID, at(7)
+	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
+	if err := store.PutDelivery(ctx, c.Token, confirmed); err != nil {
+		t.Fatalf("put the confirmed delivery: %v", err)
+	}
+
+	if got := onlyClaim(t, store).Pending; got == nil || got.SendFailures != 0 ||
+		!got.LastSendFailureAt.IsZero() || got.LastSendError != "" {
+		t.Fatalf("delivery read back = %+v, want its failure record cleared", got)
+	}
+}
+
+// The text of a failed send is the far side's own: the wedged command's stderr, relayed by the
+// shim, or Oh My Pi's `error` decoded from JSON, where a `\u0000` becomes a NUL byte. This column
+// takes only what its server encoding can read, so supervise scrubs the text before it is stored
+// (scrubSendError) and the rule it holds is valid UTF-8 with no NUL.
+//
+// Both halves of that are pinned here, against the real server. The raw text is refused outright,
+// which is what made the record's write fail; that failure used to return before the refused
+// adoption was charged, so the send was re-sent with no bound (INFRA-1480). The same words
+// without the NUL — the text the daemon stores — round-trip whole, so the diagnosis an operator
+// reads survives a restart.
+func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	const raw = "worker-stream: legion-LEGION-209-implementer refused adopt-working-copy: " +
+		"Command failed (exit 1): jj metaedit: the git lock " +
+		"/legion/workspaces/acme/widgets/legion-209/.git/index.lock\x00 was last written 31m ago"
+	scrubbed := strings.ReplaceAll(raw, "\x00", "")
+	d := supervise.Delivery{
+		ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, Generation: 4, QueuedAt: at(1),
+		SendFailures: 1, LastSendFailureAt: at(5), LastSendError: raw,
+	}
+
+	if err := store.PutDelivery(ctx, c.Token, d); err == nil {
+		t.Fatal("the store took a send error holding a NUL; this test needs the write the server refuses")
+	}
+
+	d.LastSendError = scrubbed
+	if err := store.PutDelivery(ctx, c.Token, d); err != nil {
+		t.Fatalf("put the scrubbed delivery: %v", err)
+	}
+	got := onlyClaim(t, store).Pending
+	if got == nil || got.LastSendError != scrubbed {
+		t.Fatalf("delivery read back = %+v, want the scrubbed text whole", got)
+	}
 }
 
 // A task is queued uninterrupted, and a death marks it interrupted — and, when its pod ran out of
@@ -397,6 +487,57 @@ func TestRetireDeliveryRefusesADeliveryTheClaimDoesNotHold(t *testing.T) {
 		t.Errorf("refusal does not name the delivery it refused: %v", err)
 	}
 	c.Pending = &delivery
+	sameClaim(t, onlyClaim(t, store), c)
+}
+
+// A delete that removes no row says one of two things, because pending_task_deliveries is keyed
+// on the claim rather than on the delivery, and the daemon answers them in opposite ways. The
+// row holds no delivery at all: the retirement this caller already committed, whose answer a
+// broken connection lost, which supervise reads as its own write made good. Or the row holds a
+// delivery under another id: a write that rotated the id committed after its answer was cut
+// off, which is no retirement of anything and fails the decision. Only the row can tell them
+// apart, so the store does, in the transaction the delete found nothing in, and the second
+// refusal names both ids — the one asked for and the one the row holds — since an operator
+// reading it has no other way to learn which delivery is stranded.
+func TestRetireDeliveryTellsARetirementAlreadyMadeFromARetirementUnderAnotherId(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-reviewer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	err := store.RetireDelivery(ctx, c, "delivery-retired")
+	if !errors.Is(err, supervise.ErrNoSuchDelivery) {
+		t.Fatalf("retiring against a row with no delivery = %v, want supervise.ErrNoSuchDelivery", err)
+	}
+	if errors.Is(err, supervise.ErrOtherDelivery) {
+		t.Fatalf("the refusal of a row holding nothing also reads as one holding another delivery: %v", err)
+	}
+
+	// The rotation committed after its answer was cut off: the row holds the new delivery while
+	// the caller is retiring the old one.
+	rotated := supervise.Delivery{ID: "delivery-rotated", Task: "review it again", QueuedAt: at(8)}
+	if err := store.PutDelivery(ctx, c.Token, rotated); err != nil {
+		t.Fatalf("put the rotated delivery: %v", err)
+	}
+
+	err = store.RetireDelivery(ctx, c, "delivery-old")
+	if !errors.Is(err, supervise.ErrOtherDelivery) {
+		t.Fatalf("retiring against a row holding another delivery = %v, want supervise.ErrOtherDelivery", err)
+	}
+	if errors.Is(err, supervise.ErrNoSuchDelivery) {
+		t.Fatalf("the refusal reads as a retirement already made, which would drop the delivery its caller holds: %v", err)
+	}
+	for _, want := range []string{"delivery-old", rotated.ID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+
+	// Neither refusal wrote anything: the claim it carried went back with the delete, and the
+	// delivery the row holds is where it was.
+	c.Pending = &rotated
 	sameClaim(t, onlyClaim(t, store), c)
 }
 
@@ -764,5 +905,264 @@ func TestAnActivityReportOfAnUnknownClaimIsNotRecorded(t *testing.T) {
 	}
 	if known {
 		t.Fatal("a report for a claim the store does not hold was recorded")
+	}
+}
+
+// storedStep is the eight step columns of token's claim row, read from the row itself: a claim
+// read carries the same record back, and the tests below compare the two.
+func storedStep(t *testing.T, store *Store, token claim.Token) supervise.StepRecord {
+	t.Helper()
+	var step supervise.StepRecord
+	var stepAt, turn, started, ended *time.Time
+	if err := store.Pool().QueryRow(context.Background(),
+		`select step_at, turn_started_at, step_tool, step_call_id, step_args_bytes, step_args_hash,
+			step_started_at, step_ended_at from claims where token = $1`, string(token)).
+		Scan(&stepAt, &turn, &step.Tool, &step.CallID, &step.ArgsBytes, &step.ArgsHash, &started, &ended); err != nil {
+		t.Fatalf("read the step record of %s: %v", token, err)
+	}
+	step.At, step.TurnStartedAt = orZero(stepAt), orZero(turn)
+	step.StartedAt, step.EndedAt = orZero(started), orZero(ended)
+	return step
+}
+
+// sameStep compares two records, the times as instants: Postgres hands a timestamptz back in the
+// session's zone, not the one it was written in.
+func sameStep(t *testing.T, got, want supervise.StepRecord, what string) {
+	t.Helper()
+	if got.Tool != want.Tool || got.CallID != want.CallID ||
+		got.ArgsBytes != want.ArgsBytes || got.ArgsHash != want.ArgsHash {
+		t.Errorf("%s names the call %q/%q of %d bytes, hash %q; want %q/%q of %d bytes, hash %q",
+			what, got.Tool, got.CallID, got.ArgsBytes, got.ArgsHash,
+			want.Tool, want.CallID, want.ArgsBytes, want.ArgsHash)
+	}
+	for _, field := range []struct {
+		name      string
+		got, want time.Time
+	}{
+		{"At", got.At, want.At},
+		{"TurnStartedAt", got.TurnStartedAt, want.TurnStartedAt},
+		{"StartedAt", got.StartedAt, want.StartedAt},
+		{"EndedAt", got.EndedAt, want.EndedAt},
+	} {
+		if !field.got.Equal(field.want) {
+			t.Errorf("%s %s = %v, want %v", what, field.name, field.got, field.want)
+		}
+	}
+}
+
+// A bash call of a worker, as the stream's two frames leave it on the claim: the turn's start
+// first, then the call, with the length and the hash of its arguments and no text of them.
+func aBashStep() supervise.StepRecord {
+	return supervise.StepRecord{
+		At:        at(3),
+		Tool:      "bash",
+		CallID:    "toolu_turn1_0",
+		ArgsBytes: 142,
+		ArgsHash:  "9f2b7c1d4e5a6b8c",
+		StartedAt: at(2),
+		EndedAt:   at(3),
+	}
+}
+
+// The backstop that ends a hung turn reads this record and nothing else, and it runs in whatever
+// daemon is up at the time: a daemon that restarted mid-turn has only what the row holds, so the
+// whole record has to survive the restart. A reopened store is that restart (reopenStore).
+func TestAStepRecordRoundTripsThroughAReopenedStore(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	if known, err := store.PutClaimStep(ctx, c.Token, supervise.StepRecord{TurnStartedAt: at(1)}); err != nil || !known {
+		t.Fatalf("PutClaimStep of the turn's start = %t, %v", known, err)
+	}
+	step := aBashStep()
+	if known, err := store.PutClaimStep(ctx, c.Token, step); err != nil || !known {
+		t.Fatalf("PutClaimStep of the call = %t, %v", known, err)
+	}
+
+	want := step
+	want.TurnStartedAt = at(1)
+	sameStep(t, storedStep(t, store, c.Token), want, "the row's step record")
+
+	reopened := reopenStore(t, store)
+	claims, err := reopened.Claims(ctx)
+	if err != nil {
+		t.Fatalf("claims of the reopened store: %v", err)
+	}
+	if len(claims) != 1 {
+		t.Fatalf("claims = %d rows, want 1: %+v", len(claims), claims)
+	}
+	sameStep(t, claims[0].Step, want, "the step record a reopened store reads back")
+}
+
+// The record arrives between the machine's writes and the machine's in-memory claim does not
+// carry it, so a machine that persists its next state must leave it standing: a claim written
+// whole would erase every step the stream reported since that machine read its claim, and the
+// backstop would read a worker mid-call as one that has never stepped.
+func TestPutClaimLeavesTheStepRecordAlone(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-210-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	step := aBashStep()
+	step.TurnStartedAt = at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, step); err != nil || !known {
+		t.Fatalf("PutClaimStep = %t, %v", known, err)
+	}
+
+	// The machine, which never read the record, persists its next state.
+	c.State = supervise.StateWorking
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put the claim again: %v", err)
+	}
+
+	sameStep(t, storedStep(t, store, c.Token), step, "the step record after the machine's write")
+	sameStep(t, onlyClaim(t, store).Step, step, "the step record a claim read carries")
+}
+
+// A connection that dies with frames unflushed hands them to the next one, so an earlier step can
+// reach the daemon after a later one. The earlier one must not win: the backstop would read a
+// worker that has been silent for an hour as one that stepped a moment ago, which is the stall
+// this record exists to find.
+func TestAStepOlderThanTheRecordedStepDoesNotMoveItBack(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-211-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	newest := aBashStep()
+	newest.At = at(10)
+	if known, err := store.PutClaimStep(ctx, c.Token, newest); err != nil || !known {
+		t.Fatalf("PutClaimStep of the newest step = %t, %v", known, err)
+	}
+
+	older := supervise.StepRecord{At: at(9), Tool: "eval", CallID: "toolu_turn0_3",
+		ArgsBytes: 31, ArgsHash: "0011223344556677", StartedAt: at(8), EndedAt: at(9)}
+	if known, err := store.PutClaimStep(ctx, c.Token, older); err != nil || !known {
+		t.Fatalf("PutClaimStep of the older step = %t, %v", known, err)
+	}
+	sameStep(t, storedStep(t, store, c.Token), newest, "the step record after the older step")
+
+	// A step of the same instant is the same frame sent twice, and is written: a retry must not
+	// be refused.
+	same := supervise.StepRecord{At: at(10), Tool: "read", CallID: "toolu_turn1_1",
+		ArgsBytes: 64, ArgsHash: "aabbccddeeff0011", StartedAt: at(10)}
+	if known, err := store.PutClaimStep(ctx, c.Token, same); err != nil || !known {
+		t.Fatalf("PutClaimStep of the repeated step = %t, %v", known, err)
+	}
+	sameStep(t, storedStep(t, store, c.Token), same, "the step record after the repeated step")
+
+	// A newer one is written whole, the call it names replacing the one before it.
+	newer := supervise.StepRecord{At: at(11), Tool: "write", CallID: "toolu_turn1_2",
+		ArgsBytes: 900, ArgsHash: "2233445566778899", StartedAt: at(11)}
+	if known, err := store.PutClaimStep(ctx, c.Token, newer); err != nil || !known {
+		t.Fatalf("PutClaimStep of the newer step = %t, %v", known, err)
+	}
+	sameStep(t, storedStep(t, store, c.Token), newer, "the step record after the newer step")
+}
+
+// The fence a frame of a replaced process needs. Such a frame — one that arrived on a connection
+// the claim no longer has, or on one older than the connection it has now (supervise's
+// staleStep) — is stamped by the daemon on receipt like any other, so a burst of them would give
+// a hung worker a fresh clock. Such a step carries no time of its own: it records the call it
+// names, which is evidence of what the agent was doing, and leaves the claim's last-step time
+// and its turn's start where they are.
+func TestAStepWithNoTimeOfItsOwnRecordsItsCallAndLeavesTheLastStep(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-212-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	live := aBashStep()
+	live.At, live.TurnStartedAt = at(10), at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, live); err != nil || !known {
+		t.Fatalf("PutClaimStep of the live step = %t, %v", known, err)
+	}
+
+	stale := supervise.StepRecord{Tool: "eval", CallID: "toolu_turn0_7",
+		ArgsBytes: 2048, ArgsHash: "cafebabecafebabe", StartedAt: at(4)}
+	if known, err := store.PutClaimStep(ctx, c.Token, stale); err != nil || !known {
+		t.Fatalf("PutClaimStep of the stale step = %t, %v", known, err)
+	}
+
+	want := stale
+	want.At, want.TurnStartedAt = at(10), at(1)
+	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the stale frame")
+}
+
+// A turn's start is written through the same narrow call and carries no call of its own. It
+// moves no last-step time, and it leaves the call the record names standing: the recovery this
+// record exists for ends the hung process, relaunches the claim on the same session and starts a
+// turn on the replacement, and a turn's start that cleared the call would erase the one fact
+// anybody is looking for — which call was open when the agent stopped.
+func TestATurnsStartMovesTheTurnAndKeepsTheCallTheRecordNames(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-213-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	hung := aBashStep()
+	hung.At, hung.TurnStartedAt = at(10), at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, hung); err != nil || !known {
+		t.Fatalf("PutClaimStep of the call that hung = %t, %v", known, err)
+	}
+
+	// The daemon ended the process and relaunched the claim; the replacement starts a turn.
+	if known, err := store.PutClaimStep(ctx, c.Token, supervise.StepRecord{TurnStartedAt: at(20)}); err != nil || !known {
+		t.Fatalf("PutClaimStep of the recovered turn's start = %t, %v", known, err)
+	}
+
+	want := hung
+	want.TurnStartedAt = at(20)
+	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the recovered turn's start")
+	sameStep(t, onlyClaim(t, store).Step, want, "the step record a claim read carries after the recovery")
+}
+
+// The next call replaces the last one whole, every field of it: no field of one call is ever
+// read beside a field of another, which is what a record built field by field would allow.
+func TestALaterCallOverwritesEveryFieldOfTheStepRecord(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-214-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	first := aBashStep()
+	first.At, first.TurnStartedAt = at(10), at(1)
+	if known, err := store.PutClaimStep(ctx, c.Token, first); err != nil || !known {
+		t.Fatalf("PutClaimStep of the first call = %t, %v", known, err)
+	}
+
+	// Every field differs from the first call's, the still-open end among them.
+	next := supervise.StepRecord{At: at(12), Tool: "eval", CallID: "toolu_turn2_5",
+		ArgsBytes: 7, ArgsHash: "1314151617181920", StartedAt: at(12)}
+	if known, err := store.PutClaimStep(ctx, c.Token, next); err != nil || !known {
+		t.Fatalf("PutClaimStep of the next call = %t, %v", known, err)
+	}
+
+	want := next
+	want.TurnStartedAt = at(1)
+	sameStep(t, storedStep(t, store, c.Token), want, "the step record after the next call")
+}
+
+// A step of a claim the daemon has forgotten is nothing to record, and says so, as a session's
+// activity report of one does. A step the ordering guard drops is not that: the claim is there.
+func TestAStepOfAnUnknownClaimIsNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	known, err := store.PutClaimStep(ctx, "legion-LEGION-999-implementer", aBashStep())
+	if err != nil {
+		t.Fatalf("PutClaimStep: %v", err)
+	}
+	if known {
+		t.Fatal("a step of a claim the store does not hold was recorded")
 	}
 }

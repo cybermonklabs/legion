@@ -36,6 +36,11 @@ type Supervisor interface {
 	Create(ctx context.Context, c supervise.Claim, rolePrompt string) (*supervise.Machine, bool, error)
 	// Claims is every claim the daemon supervises, as its store holds them.
 	Claims(ctx context.Context) ([]supervise.Claim, error)
+	// Step is one claim's step record as the store holds it: what the daemon last saw that
+	// claim's agent do. It is no part of a machine's state (supervise's putStep), so every
+	// operator answer about one claim reads it here (operatorAnswer), as the listing of them all
+	// reads it with the claims. A claim the store no longer holds has the zero record.
+	Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error)
 }
 
 // register is the agent's first call: its pane's boot token, and the session it became. The token
@@ -57,7 +62,7 @@ func (s *server) register(w http.ResponseWriter, r *http.Request) {
 	}
 	launch, known, err := s.bootTokens.Resolve(r.Context(), req.BootToken)
 	if err != nil {
-		s.log.Error("api: resolve a registration's boot token", "error", err)
+		s.logRequestFailure(r, err, "api: resolve a registration's boot token")
 		writeJSON(w, http.StatusInternalServerError, errorBody("register failed: the daemon could not resolve the boot token"))
 		return
 	}
@@ -260,8 +265,8 @@ func (s *server) activity(w http.ResponseWriter, r *http.Request) {
 	}
 	known, err := s.claimActivity.PutClaimActivity(r.Context(), req.ClaimToken, req.Activity)
 	if err != nil {
-		s.log.Error("api: a session's activity report was not recorded", "claim", req.ClaimToken,
-			"session", req.SessionID, "error", err)
+		s.logRequestFailure(r, err, "api: a session's activity report was not recorded", "claim", req.ClaimToken,
+			"session", req.SessionID)
 		writeJSON(w, http.StatusInternalServerError, errorBody("record session activity: "+err.Error()))
 		return
 	}
@@ -376,7 +381,7 @@ func (s *server) releaseRecords(w http.ResponseWriter, r *http.Request) {
 	}
 	records, err := s.releaseRecordStore.PodReleaseRecords(r.Context(), s.project, from.UTC())
 	if err != nil {
-		s.log.Error("api: the release records could not be read", "claim", token, "error", err)
+		s.logRequestFailure(r, err, "api: the release records could not be read", "claim", token)
 		writeJSON(w, http.StatusInternalServerError, errorBody("read the release records: "+err.Error()))
 		return
 	}

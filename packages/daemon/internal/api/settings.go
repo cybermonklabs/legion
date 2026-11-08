@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
 // Settings is the daemon's resolved legion.yaml as `GET /legion/v1/state` carries it (contract
@@ -98,6 +99,13 @@ type Settings struct {
 	// RoleConfigFiles is `role_config_files`, the Oh My Pi overlays one role names and no other
 	// does, by role, `{}` while the file names none.
 	RoleConfigFiles map[string][]string `json:"role_config_files"`
+	// WorkerStallBackstopHours is `worker_stall_backstop_hours`, how long after a role's last
+	// recorded step the daemon ends that turn itself, by role, in hours as the file names them,
+	// 0 being the backstop off for that role. It is absent while the file names no role's
+	// bound, as `github_apps` is absent while the file configures no App: a deployment that
+	// names none runs every role on its own stall ladder's length, which is no number of this
+	// file's.
+	WorkerStallBackstopHours map[string]float64 `json:"worker_stall_backstop_hours,omitempty"`
 	// RepositoryRenames is `repository_renames`, the pairs this deployment treats as one
 	// repository wherever a name is compared, in configured order, `[]` while the file
 	// configures none.
@@ -235,6 +243,13 @@ type ProjectSettings struct {
 	// for the project that opens none (config.Project.ProductionCheckWord), never the empty string
 	// the role takes for off.
 	ProductionCheck string `json:"production_check"`
+	// Deploys is `projects.<KEY>.deploys`, reported while the loader still accepts the key and
+	// reads nothing from it (config's readProject, which warns a project that sets it): no
+	// deploy run wakes a production check any more. It is the deprecated key's resolved value,
+	// so it is always `[]` — the daemon holds no deploy whatever the file writes — and the
+	// settings body names every key a file may set, which is what an operator reads it for. It
+	// goes when the loader stops accepting the key.
+	Deploys []DeploySettings `json:"deploys"`
 }
 
 // MemorySettings is a project's `memory` block as the file writes it: the mode each new tree is
@@ -249,6 +264,16 @@ type MemorySettings struct {
 	Instructions string            `json:"instructions,omitempty"`
 }
 
+// DeploySettings is the shape one `projects.<KEY>.deploys` entry had while the daemon read the
+// key: the repository as `<owner>/<name>`, the workflow's path and the step whose success was a
+// deploy. Nothing fills it any more — the loader keeps no entry — so the list is always empty;
+// the type is here so the key keeps the shape every reader of the settings knows until it goes.
+type DeploySettings struct {
+	Repo     string `json:"repo"`
+	Workflow string `json:"workflow"`
+	Step     string `json:"step"`
+}
+
 // RepositoryRenameSettings is one `repository_renames` entry as the file writes it: the
 // repository as it was and the one it moved to, each `<owner>/<name>`.
 type RepositoryRenameSettings struct {
@@ -261,9 +286,10 @@ type MergeSettings struct {
 	ByHand []string `json:"by_hand"`
 }
 
-// GatesSettings is `gates`.
+// GatesSettings is `gates`. Design is the design-gate steps the deployment gates, in the order
+// `gates.design` named them, and `[]` for a deployment that gates none.
 type GatesSettings struct {
-	Design config.DesignGate `json:"design"`
+	Design []record.DesignStep `json:"design"`
 }
 
 // GitHubAppsSettings is `github_apps`, each App its id and installations alone: never a private
@@ -324,7 +350,7 @@ func SettingsOf(cfg config.Config) Settings {
 		NatsURLs:                                make([]string, len(cfg.NatsURLs)),
 		DispatchURL:                             endpointOf(cfg.DispatchURL),
 		Projects:                                make(map[string]ProjectSettings, len(cfg.Projects)),
-		Gates:                                   GatesSettings{Design: cfg.Gates.Design},
+		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
 		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
 		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
@@ -356,6 +382,7 @@ func SettingsOf(cfg config.Config) Settings {
 				Instructions: project.Memory.InstructionsPath,
 			},
 			ProductionCheck: project.ProductionCheckWord(),
+			Deploys:         []DeploySettings{},
 		}
 		for i, pattern := range project.Merge.ByHand {
 			entry.Merge.ByHand[i] = pattern.Expression
@@ -373,6 +400,12 @@ func SettingsOf(cfg config.Config) Settings {
 	}
 	for role, files := range cfg.RoleConfigFiles {
 		settings.RoleConfigFiles[string(role)] = stringsOf(files)
+	}
+	for role, bound := range cfg.WorkerStallBackstops {
+		if settings.WorkerStallBackstopHours == nil {
+			settings.WorkerStallBackstopHours = make(map[string]float64, len(cfg.WorkerStallBackstops))
+		}
+		settings.WorkerStallBackstopHours[string(role)] = bound.Hours()
 	}
 	return settings
 }

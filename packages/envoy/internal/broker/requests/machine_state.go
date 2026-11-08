@@ -4,6 +4,10 @@
 // secret it reads, the allowed approver, the policy version and the lifetime its request object
 // signed, else the 12-hour default (defaultLifetime): a grant lasts that long, or until its session
 // ends when the request names none and every name is tagged default-grant=session.
+// Each name's airlock fingerprint is written with the decision rather than with the row: at
+// creation for a request the policy answers at once, and again when an approval grants one that
+// waited for a person (decidedUnder), so a grant approved after a rules roll is released under
+// the entry it was decided under.
 // Its only transitions are pending -> granted | denied | cancelled | expired; each is an UPDATE
 // guarded by state='pending' inside one transaction that also writes the audit row, so a duplicate
 // or late decision changes nothing. A request that needs approval also freezes an append-only
@@ -43,6 +47,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -80,6 +85,12 @@ var (
 	// github-app secret of the grant does not list in its github-owners tag; it releases nothing,
 	// and no minter runs, since the caller's input, not the App, is at fault.
 	ErrNarrowingOwnerNotListed = errors.New("the narrowing names an account a github-app secret of this grant does not serve")
+	// ErrNarrowingBehindAirlock: a release asked to narrow a GitHub App token while the airlock
+	// holds back one of the grant's names. It releases nothing, and no minter runs. The broker
+	// cannot apply such a narrowing and say so truthfully: the names behind the airlock are
+	// spent through the proxy, which mints its own values once per grant per pod and would go
+	// on swapping in the owner-wide token. Its returned error names the name the airlock holds.
+	ErrNarrowingBehindAirlock = errors.New("this grant holds a name behind the airlock, which takes no narrowing")
 	// ErrRequestPending means this session already has a person deciding one of the requested
 	// names. Its returned error names that pending request.
 	ErrRequestPending = errors.New("a request for one or more of these secrets is already pending")
@@ -89,6 +100,31 @@ var (
 	// forwarded to Envoy's wake (LEGION-587).
 	ErrSessionIDInvalid = errors.New("session id must be at most 128 characters with no whitespace or control character")
 )
+
+// refusals is every sentinel this package refuses a request or a grant with: the ones above and
+// the two of airlock.go. A sentinel added to this package belongs in it, which is why it sits
+// beside them rather than in a caller that reads them.
+var refusals = []error{
+	ErrNotYours, ErrNotApprover, ErrTerminal, ErrExpired, ErrGrantNotLive, ErrGrantChainInvalid,
+	ErrSecretNotInStore, ErrMixedApprovers, ErrGrantRequiresLifetime, ErrMintFailed,
+	ErrNarrowingNotApplicable, ErrNarrowingOwnerNotListed, ErrNarrowingBehindAirlock,
+	ErrRequestPending, ErrSessionIDInvalid, ErrAirlockNoNames, ErrAirlockValueShape,
+}
+
+// IsRefusal reports whether err is one of this package's own refusals, as against a read that
+// did not answer at all. The broker's proxy port answers a refusal of a grant in the error's own
+// words, since they are the broker's answer about that grant and no retry clears them, and
+// answers every other error in words of its own, because a Postgres connect error carries the
+// database's user, its name and its address and because a read that failed is no proof that a
+// grant ended (airlockproxy's grantRefusal, the one caller).
+func IsRefusal(err error) bool {
+	for _, refusal := range refusals {
+		if errors.Is(err, refusal) {
+			return true
+		}
+	}
+	return false
+}
 
 // maxSessionIDLength bounds the request body's session_id override; see ErrSessionIDInvalid.
 const maxSessionIDLength = 128
@@ -126,6 +162,10 @@ type SecretDecision struct {
 	// "automatic", "approval" or "deny".
 	Decision string `json:"decision"`
 	Source   string `json:"-"`
+	// AirlockDigest is the fingerprint of the name's airlock entry as the policy held it when
+	// the request was decided, "" for a name the rules do not name. The request records it, and
+	// a release ends the grant once it differs from the one the policy holds then.
+	AirlockDigest string `json:"-"`
 }
 
 // Request is one agent_secret request as Create and Get answer it. Approver is the approver its
@@ -163,9 +203,9 @@ type Decision struct {
 }
 
 // Minter makes one release of a kind secret from its stored value and the policy's facts about it
-// (secrets.GitHubApp.Mint, secrets.GoogleLogin.Mint). Its error never holds the stored value or a
-// token.
-type Minter func(ctx context.Context, req secrets.MintRequest) (string, error)
+// (secrets.GitHubApp.Mint, secrets.GoogleLogin.Mint): the token, and when it stops working. Its
+// error never holds the stored value or a token.
+type Minter func(ctx context.Context, req secrets.MintRequest) (secrets.Minted, error)
 
 type Machine struct {
 	Store      *store.Store
@@ -197,6 +237,17 @@ type Machine struct {
 	// Minters maps each policy kind (policy.Kinds) to its Minter. A release never returns the
 	// stored value of a kind secret.
 	Minters map[string]Minter
+	// Airlock is the airlock's rules as the broker read them at boot
+	// (BROKER_AIRLOCK_RULES_FILE), and the zero value for a deployment with no rules file. A
+	// granted name the rules name is released as placeholders rather than as its value
+	// (Values), and the proxy port puts the real value back into the requests the entry allows.
+	Airlock airlock.Rules
+	// AirlockProxyURL is BROKER_AIRLOCK_PROXY_URL, the URL a command reaches that port at, and
+	// AirlockCACertificate the PEM certificate of its certificate authority
+	// (BROKER_AIRLOCK_CA_CERT_FILE, read at boot). Every release that holds a name back carries
+	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
+	AirlockProxyURL      string
+	AirlockCACertificate string
 	// missRereads is MissRereads' per-enrollment buckets, built on first use (missRereadLimiter).
 	missRereads     *ratelimit.Keyed
 	missRereadsOnce sync.Once
@@ -361,7 +412,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
-	e, err := evaluate(set, names, requester)
+	e, err := evaluate(set, names, requester, obj.Reason)
 	if err != nil {
 		return Request{}, err
 	}
@@ -385,7 +436,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	r := newRequest{
 		id: uuid.NewString(), enrollmentID: enrollmentID, reason: obj.Reason, state: e.state,
 		approver: e.approver, rulesVersion: set.Version, sessionID: sessionID, lifetime: lifetime, decisions: e.decisions,
-		requester: requester, denials: e.denials,
+		requester: requester, denials: e.denials, unexplained: e.unexplained,
 	}
 	// Both branches end the same way — commit, then the one grant-log line for the request.created
 	// audit row insertRequest wrote — so only how req is produced differs between them.
@@ -518,24 +569,33 @@ func formatGrantDuration(duration time.Duration) string {
 
 // evaluation is one pass of the policy over a request's names. approver is set when a name needs
 // approval, and then names the one approver every such name has. denials are the denied names
-// the policy named a reason for, in the request's own name order: the request row records them
+// a reason was named for, in the request's own name order: the request row records them
 // as its decision_detail (newRequest.decisionDetail), so a refused session is told which secret
-// refused it and why instead of only that something did.
+// refused it and why instead of only that something did. A name the policy would have put to an
+// approver is a denial here, policy.ReasonNoReason, when the request carries no reason.
+// unexplained is set when some name was denied with no reason to name, which decisionDetail has
+// its own fixed sentence for.
 type evaluation struct {
-	decisions []SecretDecision
-	denials   []denial
-	state     string // granted, denied or pending
-	approver  string
+	decisions   []SecretDecision
+	denials     []denial
+	state       string // granted, denied or pending
+	approver    string
+	unexplained bool
 }
 
-// denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason).
+// denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason,
+// or policy.ReasonNoReason for a name this pass denied for want of a reason).
 // A deny the policy cannot name a reason for makes no denial at all, since there is nothing to
-// tell the session beyond the refusal itself.
+// tell the session beyond the refusal itself; it sets evaluation.unexplained instead.
 type denial struct{ name, reason string }
 
-// evaluate is the policy's answer for each of names to requester.
-func evaluate(set *policy.Set, names []string, requester policy.Requester) (evaluation, error) {
+// evaluate is the policy's answer for each of names to requester, read against the request's own
+// reason. A name whose outcome would be an approval is denied instead, policy.ReasonNoReason,
+// when reason is empty once trimmed: nobody is asked to approve work the record does not
+// describe.
+func evaluate(set *policy.Set, names []string, requester policy.Requester, reason string) (evaluation, error) {
 	e := evaluation{decisions: make([]SecretDecision, 0, len(names)), state: "granted"}
+	reasonless := strings.TrimSpace(reason) == ""
 	denied := false
 	for _, name := range names {
 		d, err := set.Evaluate(name, requester)
@@ -547,14 +607,20 @@ func evaluate(set *policy.Set, names []string, requester policy.Requester) (eval
 			denied = true
 			if d.Reason != "" {
 				e.denials = append(e.denials, denial{name: name, reason: d.Reason})
+			} else {
+				e.unexplained = true
 			}
+		case d.Outcome == policy.Approval && reasonless:
+			denied = true
+			d.Outcome = policy.Deny
+			e.denials = append(e.denials, denial{name: name, reason: policy.ReasonNoReason})
 		case d.Outcome == policy.Approval:
 			if e.approver != "" && e.approver != d.Approver {
 				return evaluation{}, ErrMixedApprovers
 			}
 			e.approver = d.Approver
 		}
-		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source})
+		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, AirlockDigest: set.Secrets[name].AirlockDigest})
 	}
 	switch {
 	case denied:
@@ -571,9 +637,11 @@ type newRequest struct {
 	id, enrollmentID, reason, state, approver, rulesVersion, sessionID, recordID string
 	lifetime                                                                     *int
 	decisions                                                                    []SecretDecision
-	// denials are the denied names the policy named a reason for (evaluation.denials), which
-	// decisionDetail turns into the row's decision_detail.
-	denials []denial
+	// denials are the denied names a reason was named for (evaluation.denials), which
+	// decisionDetail turns into the row's decision_detail, as it does unexplained: whether some
+	// other name was denied with no reason to name.
+	denials     []denial
+	unexplained bool
 	// requester is the session as the policy saw it when this very request was decided
 	// (Machine.requester), so the request.created audit row names the person and the service the
 	// decision was made under rather than whoever a second read would answer later.
@@ -592,20 +660,22 @@ func (r newRequest) names() []string {
 }
 
 // decisionDetail is the row's decision_detail, which Create also answers as the request's own
-// Detail: for a denied request, each denied name the policy named a reason for as
+// Detail: for a denied request, each denied name a reason was named for as
 // "<NAME>: <reason>", several joined with "; " in the request's own name order, and the fixed
-// text of every deny the policy cannot name when it named none, so such a refusal reads as it
-// always has. Every other state records none: only a denial has something to explain.
+// text of every deny the policy cannot name whenever one occurred, last, so such a refusal reads
+// as it always has and a session told to ask again with a reason is not left to find that its
+// second ask is refused too. Every other state records none: only a denial has something to
+// explain.
 func (r newRequest) decisionDetail() string {
 	if r.state != "denied" {
 		return ""
 	}
-	if len(r.denials) == 0 {
-		return "policy denies at least one requested secret"
+	parts := make([]string, 0, len(r.denials)+1)
+	for _, d := range r.denials {
+		parts = append(parts, d.name+": "+d.reason)
 	}
-	parts := make([]string, len(r.denials))
-	for i, d := range r.denials {
-		parts[i] = d.name + ": " + d.reason
+	if r.unexplained || len(parts) == 0 {
+		parts = append(parts, "policy denies at least one requested secret")
 	}
 	return strings.Join(parts, "; ")
 }
@@ -669,7 +739,7 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 		return err
 	}
 	for _, d := range r.decisions {
-		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source) values ($1,$2,$3,$4)`, r.id, d.Name, d.Decision, d.Source); err != nil {
+		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest) values ($1,$2,$3,$4,$5)`, r.id, d.Name, d.Decision, d.Source, d.AirlockDigest); err != nil {
 			return err
 		}
 	}
@@ -938,20 +1008,32 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	if err != nil {
 		return Decision{}, false, err
 	}
+	// One policy snapshot answers this decision: the default lifetime, the re-evaluation below,
+	// and each name's airlock fingerprint, which the request records as what it was decided
+	// under (decidedUnder). One snapshot rather than a read apiece, so a reload landing in the
+	// middle of the decision cannot leave the row recording a policy no part of that decision
+	// was made against.
+	set := m.Policy.Get()
+	// The request's names, read once rather than three times: the default lifetime below,
+	// currentPolicyAdmits and decidedUnder all want them, and the requests row is locked
+	// `for update` from the read above until this transaction ends, so three reads of them
+	// could only ever answer the same rows.
+	var requested []requestedSecret
+	if approve {
+		if requested, err = requestedSecrets(ctx, tx, requestID); err != nil {
+			return Decision{}, false, err
+		}
+	}
 	// A record that names no lifetime gets the default the current policy gives its names: a
 	// request pending from before the 12-hour default, or one whose names were all
 	// default-grant=session when it was made, is held to the policy as it stands at approval.
 	lifetime := parsed.LifetimeSeconds
 	if approve && lifetime == nil {
-		requested, err := requestedSecrets(ctx, tx, requestID)
-		if err != nil {
-			return Decision{}, false, err
-		}
 		names := make([]string, len(requested))
 		for i, g := range requested {
 			names[i] = g.name
 		}
-		lifetime = defaultLifetime(m.Policy.Get(), names, nil)
+		lifetime = defaultLifetime(set, names, nil)
 	}
 	// denied is set when the current policy denies one of the names because the secret's
 	// requesters tag no longer lists this session: the approval is recorded as the request's own
@@ -962,7 +1044,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		if err != nil {
 			return Decision{}, false, err
 		}
-		if err := m.currentPolicyAdmits(ctx, tx, requestID, requester, login, lifetime); err != nil && !errors.As(err, &denied) {
+		if err := currentPolicyAdmits(requested, set, requester, login, lifetime); err != nil && !errors.As(err, &denied) {
 			return Decision{}, false, err
 		}
 	}
@@ -1009,6 +1091,9 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	}
 	var grantID string
 	if next == "granted" {
+		if err := decidedUnder(ctx, tx, requestID, requested, set); err != nil {
+			return Decision{}, false, err
+		}
 		// The grant lasts the lifetime the approved record names, or the default above.
 		if grantID, err = insertGrant(ctx, tx, requestID, enr.ID, login, lifetime); err != nil {
 			return Decision{}, false, err
@@ -1042,6 +1127,36 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	return Decision{RequestID: requestID, State: next, GrantID: grantID, Detail: detail}, false, nil
 }
 
+// decidedUnder records, for each name of a request an approval is granting, the fingerprint of
+// that name's airlock entry in set, the policy snapshot the approval was made against. A request
+// freezes each name's fingerprint when it is created (insertRequest), which is the whole of it
+// for a request the policy grants or denies at once; one that waits for a person — up to
+// PendingTTL, half a day — can be approved across a rules roll, and what a release compares
+// against must be the entry the approval was given under, else the grant the person just made
+// ends on its first release with a reason that is not true (checkRelease's per-name comparison).
+//
+// The requests row's rules_version is left as the request was written under, and is not moved
+// to this snapshot: it is what makes a release re-check the whole grant (checkRelease), and the
+// approval of a name the current policy denies or no longer serves is admitted here on purpose
+// — no login could put such a name back — for that very re-check to refuse at the first read.
+// Moving it would skip the re-check for exactly those approvals. A version left behind only
+// makes the re-check run more often than it must, and the fingerprint it compares is this one.
+//
+// One statement over every name of the request, by name, since every row's digest is read from
+// the one snapshot: a name the rules do not name records "", as it does at creation. granted is
+// the request's names, read once by the approve path that calls this.
+func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []requestedSecret, set *policy.Set) error {
+	names := make([]string, len(granted))
+	digests := make([]string, len(granted))
+	for i, g := range granted {
+		names[i], digests[i] = g.name, set.Secrets[g.name].AirlockDigest
+	}
+	_, err := tx.Exec(ctx, `update request_secrets s set airlock_digest = v.digest
+		from unnest($2::text[], $3::text[]) as v(name, digest)
+		where s.request_id = $1 and s.name = v.name`, requestID, names, digests)
+	return err
+}
+
 // policyDenial is currentPolicyAdmits' answer for a name the current policy denies because the
 // secret's requesters tag no longer lists this session's person or its pod's service. It is
 // deliberately not a record.ErrNotApprover: no login could approve such a name, so leaving the
@@ -1059,7 +1174,7 @@ func (e *policyDenial) Error() string {
 // the approver's own login beside it, so the trail still names who pressed approve.
 const PolicyDeniedActor = "broker:policy"
 
-// currentPolicyAdmits refuses login an approval of request requestID when the current policy wants
+// currentPolicyAdmits refuses login an approval of a request when the current policy wants
 // one of its names approved by someone else (record.MayDecide), since a change of owner since the
 // request was made moves who may approve it: a request waiting on anyone for a secret that is now
 // a person's is that person's alone to approve, and one waiting on a person for a secret another
@@ -1088,13 +1203,12 @@ const PolicyDeniedActor = "broker:policy"
 // (stillAllowed) only when the version has moved. A secret whose max-grant the current policy sets
 // below the request's lifetime, or that now has one the request names none for, is no one's to
 // approve now, as with a withheld name: the session asks again within it.
-func (m *Machine) currentPolicyAdmits(ctx context.Context, tx pgx.Tx, requestID string, requester policy.Requester, login string, lifetime *int) error {
-	names, err := requestedSecrets(ctx, tx, requestID)
-	if err != nil {
-		return err
-	}
-	set := m.Policy.Get()
-	for _, g := range names {
+//
+// set is the one snapshot the whole decision is made against, the one whose airlock fingerprints
+// the request then records as what it was decided under (decidedUnder), and requested the
+// request's names, read once by the approve path that calls this.
+func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester policy.Requester, login string, lifetime *int) error {
+	for _, g := range requested {
 		d, err := set.Evaluate(g.name, requester)
 		if errors.Is(err, policy.ErrUnknownSecret) {
 			continue
@@ -1106,7 +1220,7 @@ func (m *Machine) currentPolicyAdmits(ctx context.Context, tx pgx.Tx, requestID 
 			return &policyDenial{name: g.name}
 		}
 	}
-	for _, g := range names {
+	for _, g := range requested {
 		d, err := set.Evaluate(g.name, requester)
 		if errors.Is(err, policy.ErrUnknownSecret) {
 			if slices.Contains(requester.Withheld, g.name) {
@@ -1124,7 +1238,7 @@ func (m *Machine) currentPolicyAdmits(ctx context.Context, tx pgx.Tx, requestID 
 			return fmt.Errorf("%w: the current policy has %s approve %s", record.ErrNotApprover, d.Approver, g.name)
 		}
 	}
-	for _, g := range names {
+	for _, g := range requested {
 		if limit, over := overMaxGrant(set, g.name, lifetime); over {
 			return fmt.Errorf("%w: %w: %s now allows grants of at most %s, shorter than this request asks, so no one may approve it now; its session asks again within that bound", record.ErrNotApprover, ErrGrantRequiresLifetime, g.name, limit)
 		}

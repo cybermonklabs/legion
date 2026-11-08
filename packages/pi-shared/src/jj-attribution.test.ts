@@ -355,13 +355,16 @@ describe("resolvedWorkspace", () => {
 
 describe("userConfigChain", () => {
   const dirs: string[] = [];
-  /** An environment whose PATH finds a `jj` running `body` first. */
+  /**
+   * A closed environment whose PATH finds a `jj` running `body` first: PATH and a home of the
+   * test's own, so nothing the developer's environment holds reaches the stub.
+   */
   async function withJj(body: string): Promise<NodeJS.ProcessEnv> {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-bin-"));
     dirs.push(dir);
     await Bun.write(path.join(dir, "jj"), `#!/bin/sh\n${body}\n`);
     await chmod(path.join(dir, "jj"), 0o755);
-    return { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` };
+    return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
   // The same hang guard the rows below carry, for the same reason: removing a handful of
   // temporary directories is not work this suite measures, but it runs at bun's implicit 5 s

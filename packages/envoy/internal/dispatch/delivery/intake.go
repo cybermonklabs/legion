@@ -1,10 +1,13 @@
 // Intake (LEGION-567): a Dispatch server consumer of the GitHub events Envoy already relays over
 // NATS (`notifications.github.>`), for live updates between the five-minute reconcile's passes.
 // Every write here goes through the same upsert functions reconcile uses (store.go), so a NATS
-// redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate -- and intake
-// never relies on NATS redelivery for correctness: a GitHub call that fails here is logged and
-// the message is still acked, because the reconcile that runs every five minutes is the actual
-// catch-up mechanism ("a missed event appears by the next five-minute reconcile", LEGION-567).
+// redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate. A GitHub call
+// that fails here is logged and the message is still acked, because the reconcile that runs
+// every five minutes is the actual catch-up mechanism ("a missed event appears by the next
+// five-minute reconcile", LEGION-567). The one failure that mechanism does not cover is a pull
+// request's head row that was never written, which no pass can offer because the passes read
+// the rows that exist: that envelope is handed back to NATS for a bounded number of
+// redeliveries instead (ErrHeadNotStored, Intake.deliver, headWriteMaxDeliveries).
 package delivery
 
 import (
@@ -51,7 +54,8 @@ type Intake struct {
 	// (StartIntakes).
 	settings *SettingsCache
 	// leases is the pool bind takes this durable's consumer lease on (consumerLease), so that one
-	// process at a time reconciles this durable's configuration (bindDurableConsumer).
+	// process at a time reconciles this durable's configuration and subscribes to it
+	// (bindDurableConsumer).
 	leases duty.Leases
 	// throttle is this intake's own bind-poll state: how recently it reconciled its durable and
 	// how recently it said it was standing by for it (bindThrottle).
@@ -75,17 +79,29 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, git
 // delivering (StopDelivering) under intakeStopBudget from ctx's end before it returns. Idle until
 // the settings cache holds settings.
 //
-// The durable carries one filter subject, githubIntakeSubject, which no setting changes, so it is
-// bound once and never rebound. Each message is routed by the settings the cache holds when its
+// The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
+// settings change rebinds it. Each message is routed by the settings the cache holds when its
 // handler runs, so a settings change -- a different deploy repository or workflow path -- takes
 // effect as soon as the cache has read it, with no restart and no rebind. route does all the
 // filtering, from those settings.
 //
-// Two things wake an unbound intake: the cache storing settings, since an intake with none has
-// nothing to route by, and, once it has settings, durableBindInterval's ticker. The durable admits
-// one subscriber, so a second envoy-dispatch process stands by on that ticker -- for the life of
-// the process, with no deadline -- and takes the durable over within seconds of the process
-// holding it going away. The bind poll stops once this process is bound.
+// Three things wake an unbound intake: the cache storing settings, since an intake with none has
+// nothing to route by, a connection event on its client, since a bind with no connection is a
+// ConsumerInfo that blocks for the client's whole JetStream request timeout (10 s) and is then
+// logged at ERROR, every durableBindInterval, and, once it has both, durableBindInterval's
+// ticker. The durable admits one subscriber, so a second envoy-dispatch process stands by on that
+// ticker -- for the life of the process, with no deadline -- and takes the durable over within
+// seconds of the process holding it going away.
+//
+// A bound intake waits on ctx and on the next connection event, which is what takes the durable
+// away from this process: nats.go re-sends a subscription inside its own reconnect, and the
+// client binds its registration again on a connection it dialled to replace a closed one
+// (internal/bus/recovery.go), neither of them asking whether the durable is still this process's
+// to deliver. A process back from an outage would then deliver every message of it beside the
+// process that took the durable over while it was away (INFRA-1551). So the subscription is given
+// up at the event (giveUpOnConnectionChange) -- at the disconnect, the first connection event of
+// an outage, before nats.go can re-send it -- and the intake goes back to the bind poll, which
+// takes the durable again only while it is free.
 //
 // The PR-checks workflow path is live-reachable only for a fork-originated pull request: Envoy's
 // own webhook normalizer (internal/contracts/normalize.go, untouched by this package) drops a
@@ -101,14 +117,31 @@ func (in *Intake) Run(ctx context.Context) {
 	defer release()
 	binds := time.NewTicker(durableBindInterval)
 	defer binds.Stop()
-	// changed is taken before each Load, so settings stored after that Load wake the loop.
-	for changed := in.settings.Changed(); ; {
-		// poll stays nil, and so never ready, while the cache holds no settings: a tick then has
-		// nothing to bind by, and the cache's Changed signal wakes the first bind.
+	for {
+		// Both signals are taken before the state they report is read, as ConnectionChanged's own
+		// contract asks, so settings stored or a connection installed during the bind wake the
+		// loop rather than being missed by it.
+		changed, connection := in.settings.Changed(), in.nats.ConnectionChanged()
+		// poll stays nil, and so never ready, while the cache holds no settings or the client has
+		// no connection: a tick then has nothing to route by or nothing to ask the server over,
+		// and what the loop waits on instead is the signal that ends that.
 		var poll <-chan time.Time
-		if in.settings.Load() != nil {
+		if in.settings.Load() != nil && in.nats.Connected() {
 			if in.bind(ctx, stopping) == bindBound {
-				break
+				// Nothing polls while this process holds the durable, so the ticker stops here
+				// rather than waking every two seconds; a give-up starts it again, a full
+				// durableBindInterval from the Reset, since a tick prepared before a Stop or a
+				// Reset is never received after it (Go 1.23's timer channels).
+				binds.Stop()
+				select {
+				case <-ctx.Done():
+					in.StopDelivering(stopping)
+					return
+				case <-connection:
+					in.giveUpOnConnectionChange(ctx)
+					binds.Reset(durableBindInterval)
+					continue
+				}
 			}
 			poll = binds.C
 		}
@@ -116,14 +149,30 @@ func (in *Intake) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-changed:
-			changed = in.settings.Changed()
+		case <-connection:
 		case <-poll:
 		}
 	}
-	// Nothing rebinds a bound intake, so the poll stops here rather than waking every two seconds
-	// for the life of the process.
-	binds.Stop()
-	<-ctx.Done()
+}
+
+// giveUpOnConnectionChange gives this process's delivery subscription up because its client's
+// connection changed under it, which for an outage is the disconnect: the stop drains the
+// subscription and gives up the registration the client kept of it, and while the link is down
+// that is an unsubscribe, so nats.go's own reconnect finds nothing left to re-send
+// (bus.Client.DrainSubscription). What the intake had in flight is handed back to the process
+// that keeps the durable, and the bind poll it returns to takes the durable again only while it
+// is free.
+//
+// The stop runs under a budget of its own -- intakeStopBudget from the event, on a context Run's
+// ctx ending does not cut short -- rather than under Run's stop deadline: one handler that will
+// not return must not keep the intake out of its poll for the life of the process, and a ctx that
+// ends in the middle of the give-up must not cut the hand-back shorter than the budget that
+// bounds it. A handler still running at the bound is given up as a stop gives it up, its message
+// handed back with the rest (StopDelivering).
+func (in *Intake) giveUpOnConnectionChange(ctx context.Context) {
+	slog.Info(intakeConnectionChangedMessage, "name", bus.DispatchDeliveryDurable)
+	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), intakeStopBudget)
+	defer cancel()
 	in.StopDelivering(stopping)
 }
 
@@ -255,8 +304,12 @@ const githubIntakeSubject = "notifications.github.>"
 // intakeMessageTimeout bounds how long one envelope's own handling may take -- its GitHub calls
 // (a pull request plus its commit pages, or a workflow run plus its jobs pages, each with this
 // package's own bounded page retries) and its Postgres writes. A handler that runs past it is
-// cancelled, logged and acked: the five-minute reconcile is this package's catch-up mechanism,
-// so one slow envelope must not hold the consumer. A var so a test can shrink it.
+// cancelled and logged, and acked for every failure but one: the five-minute reconcile is this
+// package's catch-up mechanism, so one slow envelope must not hold the consumer. The one
+// failure it does not cover is a deadline that falls on a pull request's head write, or on
+// either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
+// that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
+// A var so a test can shrink it.
 var intakeMessageTimeout = time.Minute
 
 // intakeMaxAckPending bounds how many messages NATS may have outstanding with this consumer at
@@ -311,10 +364,75 @@ const durableBindInterval = 2 * time.Second
 // unthrottled line would be 1,800 an hour per durable, each saying exactly what the first said.
 const standbyLogEvery = 30 * time.Second
 
-// consumerLease names the lease one durable's consumer reconciliation runs under: one process at
-// a time reads that durable's configuration and corrects it. Two processes -- two builds during a
-// rolling update, each re-running the reconciliation on every bind poll -- would otherwise
-// reconcile one durable against each other, the second undoing what the first had just done.
+// standbyConsumerHeldMessage is what a poll says when the server reports the durable bound to a
+// subscriber: another process holds it, and this one stands by.
+const standbyConsumerHeldMessage = "dispatch delivery: NATS consumer held by another process; standing by"
+
+// standbyConsumerMissingMessage is what a poll says when the server has no such durable yet: the
+// leased pass that creates it has not landed, and this one stands by.
+const standbyConsumerMissingMessage = "dispatch delivery: NATS consumer not created yet; standing by"
+
+// standbyLeaseHeldMessage is what a poll says when it could not take the durable's consumer
+// lease: another process is inside this durable's bind pass, and this one stands by. A take that
+// Postgres refused ends the same way, after duty.Exclusive has logged the refusal at ERROR
+// ("dispatch duty: take the lease"), since Exclusive does not tell its caller which of the two
+// it was.
+//
+// All three are declared here, and in one place, because bindThrottle.reportStandby throttles on
+// message equality: two copies of one sentence that drift by a character are two throttled lines
+// rather than one, at twice the INFO rate the throttle is for.
+const standbyLeaseHeldMessage = "dispatch delivery: NATS consumer lease held by another process; standing by"
+
+// intakeConnectionChangedMessage is what either intake says when a connection event takes its
+// subscription away from it: it gave its durable up and is back in its bind poll, so a process
+// that took that durable over while this one was away keeps it. Both log it with the durable's
+// name, which is what tells the delivery intake's line from the job intake's. Declared here with
+// the three standby messages, and in one place, because one sentence serving both intakes is one
+// sentence rather than two copies that drift from each other by a character.
+const intakeConnectionChangedMessage = "dispatch delivery: NATS connection changed; durable given up; standing by"
+
+// consumerBindConfirmTimeout is how long a bind waits, still holding the durable's consumer
+// lease, for the server to report the durable push-bound after its own subscribe returned. That
+// wait is what makes PushBound truthful before the lease is given back, so the lease -- and not
+// the client's own refusal of a bind -- is what keeps a second process out of the durable.
+//
+// Five seconds because the wait it bounds is milliseconds: 50 binds measured in one two-CPU pod
+// against the in-process test server took 2.48 ms at their fastest, 4.26 ms at p50, 8.66 ms at
+// p90 and 35.75 ms at their slowest from subscribe returning to the server reporting PushBound,
+// and every one of the 50 was confirmed on its second ConsumerInfo read. Five seconds is about
+// 140 times the slowest of them, so the bound is a hang guard and not a race: no ordinary bind
+// comes near it, and one that reaches it has something wrong with it rather than something slow.
+// It is half the client's JetStream request timeout (10 s, nats.MaxWait, internal/bus/nats.go:506)
+// so that a read which hangs is cut by this bound -- the subscription given up and the poll made
+// again a durableBindInterval later -- rather than by that one.
+const consumerBindConfirmTimeout = 5 * time.Second
+
+// consumerBindConfirmInterval is how often that confirmation reads ConsumerInfo. Every one of the
+// 50 binds measured above was confirmed on its second read, so this interval, not the timeout, is
+// what an ordinary bind adds to the time the lease is held: 10 ms is about the p90 of the wait
+// itself (8.66 ms), so an ordinary bind holds the lease for roughly one extra read, while the
+// interval leaves at most 500 reads in the worst case consumerBindConfirmTimeout allows.
+const consumerBindConfirmInterval = 10 * time.Millisecond
+
+// durablePushBound reports whether the server has a subscriber on the durable's deliver subject.
+// It is the one question bindDurableConsumer asks before it takes a durable and after it has
+// subscribed to one, asked of the server rather than of the client, because the client's own
+// refusal of a second binder is itself derived from this flag and lags the SUB that sets it. A
+// var so a test can drive the confirm to its bound
+// (TestABindTheServerNeverConfirmsIsUnsubscribedAndFails).
+var durablePushBound = func(ctx context.Context, js natsgo.JetStreamContext, name string) (bool, error) {
+	info, err := js.ConsumerInfo(bus.Stream, name, natsgo.Context(ctx))
+	if err != nil {
+		return false, err
+	}
+	return info.PushBound, nil
+}
+
+// consumerLease names the lease one durable's bind attempt runs under (bindDurableConsumer): one
+// process at a time reads that durable's configuration, corrects it and subscribes to it. Two
+// processes -- two builds during a rolling update, each re-running the reconciliation on every
+// bind poll -- would otherwise reconcile one durable against each other, the second undoing what
+// the first had just done, and two polling at once would both take its push binding.
 //
 // The name carries the durable because that, and only that, is what the exclusion is about: two
 // processes over one durable. One name over both delivery durables coupled two independent
@@ -324,7 +442,7 @@ const standbyLogEvery = 30 * time.Second
 // the delivery consumer create Dispatch leaves only that intake unbound"). A denied AddConsumer
 // draws no reply at all, so the create blocks for the client's whole JetStream MaxWait -- 10 s
 // (internal/bus/nats.go, nats.MaxWait) -- and the lease is held for every second of it. A pass
-// that failed is deliberately left unthrottled (bindDurableConsumer records no pass then), so the
+// that failed is deliberately left unthrottled (bindLeasedDurable records no pass then), so the
 // events intake took the lease again on its next durableBindInterval poll and held it for another
 // 10 s, round after round:
 //
@@ -346,15 +464,18 @@ type bindOutcome int
 const (
 	// bindFailed is an attempt that got nowhere and says nothing about who holds the durable: the
 	// lookup, the create, the update or the subscribe failed, and the failure is logged at ERROR;
+	// or the server never reported the subscription bound, which is logged at WARN and given up;
 	// or ctx ended before the subscribe, which a stopping process does not make, and which says
 	// nothing. The zero value, so an outcome nothing set is never read as a bind.
 	bindFailed bindOutcome = iota
 	// bindBound is this process holding the durable's push binding, with its subscription live.
 	bindBound
-	// bindStandby is NATS refusing the bind for a reason that is about the durable rather than
-	// about this process: another process is bound to it (consumerHeldElsewhere), or it does not
-	// exist yet (natsgo.ErrConsumerNotFound, the leased reconciliation not having created it).
-	// Neither is an error: the caller polls on, and binds once the durable is free and there.
+	// bindStandby is the durable not being this process's to bind on this poll, for a reason
+	// that is about the durable rather than about this process: another process is bound to it
+	// (the server reports it PushBound, or NATS refuses the bind, consumerHeldElsewhere), it does
+	// not exist yet (natsgo.ErrConsumerNotFound, the leased reconciliation not having created
+	// it), or another process is inside its bind pass (standbyLeaseHeldMessage). None is an
+	// error: the caller polls on, and binds once the durable is free and there.
 	bindStandby
 )
 
@@ -432,13 +553,21 @@ func (t *bindThrottle) reportStandby(name, message string) {
 // (subscribe, at the deliver subject the durable carries), throttling its own reconciliation and
 // standby line on this intake's own bindThrottle. stopping is Run's stop deadline
 // (bindDurableConsumer).
+//
+// The undo it hands back is StopDelivering and not a bare Unsubscribe: a bind the server never
+// confirms is given up whole, which for this intake means draining the subscription, giving up
+// the client registration a reconnect would otherwise bind again, and stopping the keyed runner
+// whose goroutines are handling what the subscription was already handed.
 func (in *Intake) bind(ctx, stopping context.Context) bindOutcome {
-	_, outcome := bindDurableConsumer(ctx, stopping, in.nats, in.leases, in.throttle, deliveryConsumerConfig(), func() (*natsgo.Subscription, error) {
+	_, outcome := bindDurableConsumer(ctx, stopping, in.nats, in.leases, in.throttle, deliveryConsumerConfig(), func() (*natsgo.Subscription, func(), error) {
 		sub, err := in.subscribe("")
-		if err == nil && in.boundHook != nil {
+		if err != nil {
+			return nil, nil, err
+		}
+		if in.boundHook != nil {
 			in.boundHook()
 		}
-		return sub, err
+		return sub, func() { in.StopDelivering(stopping) }, nil
 	})
 	return outcome
 }
@@ -447,89 +576,227 @@ func (in *Intake) bind(ctx, stopping context.Context) bindOutcome {
 // it through subscribe, and reports which of three things happened: this process bound it, another
 // process holds it (bindStandby), or the attempt failed (bindFailed).
 //
-// The configuration reconciliation -- the ConsumerInfo lookup and every create, update and delete
-// it leads to -- runs under this durable's own consumer lease (consumerLease,
-// reconcileDurableConsumer), so one process at a time reconciles a durable -- and a durable whose
-// reconciliation is stuck blocks no other durable's. A process that does not take the lease skips
-// the reconciliation altogether and goes straight to the subscribe: the process holding the lease
-// is doing that work, and this one's job is only to bind the durable or stand by for it. So does
-// a process that reconciled this durable within the last consumerReconcileInterval (throttle, the
-// caller's own bindThrottle), which is what keeps a two-second bind poll from leasing and logging
-// a pass it has just made.
+// The invariant: one process subscribes to a delivery durable at a time, and no process subscribes
+// to one the server already reports bound. What excludes the second subscriber is this durable's
+// own consumer lease (consumerLease), which pg_try_advisory_lock makes exclusive, and not NATS.
+// It holds among processes of this release: a process of an earlier release running beside it
+// during a rolling deploy still subscribes outside the lease. A holder whose NATS connection drops
+// would come back subscribed outside this function -- by nats.go re-sending the subscription
+// inside its own reconnect, or by the client binding its registration again on a replacement
+// connection (internal/bus/recovery.go) -- so it gives that subscription up at the connection
+// event instead (Intake.Run, giveUpOnConnectionChange) and takes the durable again only through
+// this function, under the lease, or not at all.
+// The "consumer is already bound" refusal (consumerHeldElsewhere) is the client's own, made only
+// once ConsumerInfo reports PushBound, and the server sets PushBound a goroutine hop after the
+// first subscriber's SUB lands: a bind that gave the lease back before it subscribed left that hop
+// open, and two processes polling one durable at once both took the binding and both delivered
+// every message of it (TestTwoProcessesPollingOneDurableNeverBothBindIt). So the whole bind
+// attempt runs under the lease -- the reconciliation, the read of whether the durable is free, the
+// subscribe, and the confirmation that the server now reports the durable bound
+// (consumerBindConfirmTimeout) -- and PushBound is made truthful before the lease goes back. A
+// binding the confirmation does not get is given up through the unbind that subscribe handed back,
+// which is why a subscriber hands one back at all: a bind is all of itself or none of itself, and
+// only the caller knows how its own subscription is given up.
 //
-// The durable admits one subscriber, which is how exactly one process does this durable's work
-// and how that process dying hands the work on: NATS refuses a second binder with "consumer is
-// already bound" and releases the binding once the holder's interest goes away, so a caller that
-// keeps polling (durableBindInterval) takes it over. It subscribes through client.Subscribe
-// (subscribeDurable), which refuses a second durable on one bus.Client (bus.ErrSubscriptionHeld),
-// so each durable bound here takes a client of its own.
+// The lease covers one bind attempt and not the life of the binding: it is given back as this
+// function returns, bound or not. Nothing a process holds afterwards depends on Postgres, and a
+// holder that dies leaves no lease for anyone to wait out. What a standby waits on then is the
+// server releasing the dead holder's interest in the durable, which it finds on its next
+// durableBindInterval poll -- the hand-over is as fast as it was, the server's own speed plus one
+// poll (TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates).
+//
+// A poll with no reconciliation owed -- fourteen of a standby's fifteen, durableBindInterval
+// against consumerReconcileInterval (throttle, the caller's own bindThrottle) -- asks the server
+// that one question before it takes any lease, and stands by on it: a durable another process is
+// bound to, or one that does not exist yet, costs one NATS round trip, no Postgres and no
+// subscribe. That read is the lookup the subscribe itself used to make on every poll, so a
+// standby's steady-state NATS cost is one round trip per durableBindInterval, exactly what it was,
+// while its Postgres cost stays where it was: one lease per consumerReconcileInterval, which is
+// the only window the lease was ever taken in, plus one on each poll that gets past this read
+// with the durable there and free -- the whole hand-over window after a holder dies. Only such a
+// poll goes on to the leased pass, which reads the durable again: the state can have changed
+// between this read and the take, and a process that held the lease until a moment ago is the
+// likeliest one to have bound it.
+//
+// The configuration reconciliation (reconcileDurableConsumer) runs in that same leased pass, so
+// one process at a time reconciles a durable -- two builds during a rolling update do not
+// reconcile one durable against each other -- and a durable whose reconciliation is stuck blocks
+// no other durable's. A standby makes that pass as much as a holder does: it takes the lease every
+// consumerReconcileInterval whether the durable is free or not, so the in-place correction of a
+// durable another process holds (the UpdateConsumer branch: an earlier release's filter or flow
+// control) still happens during a rolling deploy, from the process that is standing by.
 //
 // A durable that does not exist yet is the other refusal a caller waits out rather than fails on
 // (natsgo.ErrConsumerNotFound): the reconciliation that creates it is leased, so on a fresh bus
-// exactly one process creates the durable and every other one skips the reconciliation the
-// holder is doing and asks the server for a durable whose creation has not landed yet. That is a
-// "not yet", like the standby above, not a fault in this process -- so it polls on at
-// durableBindInterval and binds the durable as soon as it is there.
+// exactly one process creates the durable and another polling meanwhile asks the server for a
+// durable whose creation has not landed yet. That is a "not yet", like the standby above, not a
+// fault in this process -- so it polls on at durableBindInterval and binds the durable as soon as
+// it is there. It subscribes through client.Subscribe (subscribeDurable), which refuses a second
+// durable on one bus.Client (bus.ErrSubscriptionHeld), so each durable bound here takes a client
+// of its own.
 //
-// A bind under way when ctx ends -- the caller stopping -- ends by stopping's end, its caller's stop
-// deadline (stopContext): the reconciliation's JetStream calls run under stopping, each within its
-// own request timeout (10 s) until then, and no subscribe starts once ctx has ended. A subscribe
-// already under way waits on its one JetStream lookup of the durable, whose request timeout is well
-// inside intakeStopBudget, so a bind does not hold its caller's stop past that deadline.
-func bindDurableConsumer(ctx, stopping context.Context, client *bus.Client, leases duty.Leases, throttle *bindThrottle, wanted natsgo.ConsumerConfig, subscribe func() (*natsgo.Subscription, error)) (*natsgo.Subscription, bindOutcome) {
-	name, subject := wanted.Durable, wanted.FilterSubject
-	if throttle.reconcileDue() {
-		// reconciled is true when the pass does not run -- the lease is held elsewhere, or could
-		// not be taken: a reconciliation that never ran failed nothing, and the subscribe below
-		// says what this process's own state is.
-		//
-		// No period (0): this is not a periodic loop but a step of every bind poll, and what
-		// keeps it from running on each of them is the throttle below, which is this process's
-		// own and deliberately so -- a durable each process binds for itself. So the lease is
-		// asked for mutual exclusion and nothing else, and no tick is due (the zero time).
-		reconciled := true
-		ran := duty.Exclusive(ctx, leases, consumerLease(wanted.Durable), time.Time{}, 0, func(context.Context) {
-			reconciled = reconcileDurableConsumer(stopping, client.JS(), wanted)
-		})
-		if !reconciled {
-			return nil, bindFailed
-		}
-		// Recorded for a pass that ran and succeeded alone: one the lease refused reconciled
-		// nothing, and the window is how long this durable's configuration is taken as settled.
-		// Recording a skip would hold this process off a durable for consumerReconcileInterval after a
-		// pass it never made: the process that did not take the lease would wait out that window
-		// before it could create a durable the holder's pass did not create -- a pass of the
-		// holder's that failed, or a holder that stopped between taking the lease and creating it
-		// -- standing by meanwhile for a durable nobody is making. A pass that ran and failed is
-		// made again on the next poll rather than skipped for the window. A pass shutdown cut
-		// short reports false too (duty.Exclusive), so the window does not start then either:
-		// this is the one caller that reads that answer, and at shutdown the process is going
-		// anyway.
-		if ran {
-			throttle.recordReconcile()
-		}
-	}
+// A bind under way when ctx ends -- the caller stopping -- ends by stopping's end, its caller's
+// stop deadline (stopContext): the reconciliation's JetStream calls and the confirmation run under
+// stopping, each within its own request timeout until then, and no subscribe starts once ctx has
+// ended. The confirmation's own bound, consumerBindConfirmTimeout, is well inside
+// intakeStopBudget, so a bind does not hold its caller's stop past that deadline.
+func bindDurableConsumer(ctx, stopping context.Context, client *bus.Client, leases duty.Leases, throttle *bindThrottle, wanted natsgo.ConsumerConfig, subscribe func() (sub *natsgo.Subscription, unbind func(), err error)) (*natsgo.Subscription, bindOutcome) {
+	name := wanted.Durable
 	// A stopping process binds nothing: the subscription would only take the durable from the
 	// process taking over, be handed messages and give them straight back.
 	if ctx.Err() != nil {
 		return nil, bindFailed
 	}
-	sub, err := subscribe()
+	if !throttle.reconcileDue() {
+		if outcome, decided := standbyForDurable(stopping, client.JS(), throttle, name); decided {
+			return nil, outcome
+		}
+	}
+	// The pass records what it did in these, because duty.Exclusive hands its pass's answer
+	// nowhere and its own answer is not that answer: it reports false for a pass that ran and
+	// ended after ctx did, which a bind its subscriber holds open until the stop is
+	// (TestABindThatReturnsAfterTheSignalStopsByTheBudgetFromTheSignal). So ran, which the pass
+	// itself sets, is what says whether the pass was made at all.
+	//
+	// No period (0): this is not a periodic loop but a step of every bind poll, and what keeps it
+	// off most of them is the throttle above. So the lease is asked for mutual exclusion and
+	// nothing else, and no tick is due (the zero time).
+	var sub *natsgo.Subscription
+	var outcome bindOutcome
+	var ran bool
+	duty.Exclusive(ctx, leases, consumerLease(name), time.Time{}, 0, func(context.Context) {
+		ran = true
+		sub, outcome = bindLeasedDurable(ctx, stopping, client, throttle, wanted, subscribe)
+	})
+	if ran {
+		return sub, outcome
+	}
+	if ctx.Err() != nil {
+		return nil, bindFailed
+	}
+	// Not the "held by another process" line above, and deliberately a different sentence: that
+	// one means the server reports the durable bound to a subscriber, while this one means only
+	// that this poll did not get the durable's lease -- another process is inside this durable's
+	// bind pass right now, or Postgres refused the take, which duty.Exclusive has logged at ERROR.
+	// Either way the durable may well still be free -- the other pass's reconciliation failed,
+	// its own subscribe was refused -- and this process binds it on its next poll.
+	throttle.reportStandby(name, standbyLeaseHeldMessage)
+	return nil, bindStandby
+}
+
+// standbyForDurable asks the server whether a durable is this process's to take and reports the
+// outcome to answer the poll with when it is not: a durable with a subscriber on it, or one that
+// does not exist yet, is a standby (reported on throttle), and a lookup that failed is a
+// bindFailed logged at ERROR. decided is false for the one answer that is not an outcome -- the
+// durable is there and free -- which is its caller's to act on.
+func standbyForDurable(ctx context.Context, js natsgo.JetStreamContext, throttle *bindThrottle, name string) (outcome bindOutcome, decided bool) {
+	bound, err := durablePushBound(ctx, js, name)
+	switch {
+	case errors.Is(err, natsgo.ErrConsumerNotFound):
+		// Matched with errors.Is rather than on the message, since nats.go exports the sentinel
+		// for a durable the server does not have.
+		throttle.reportStandby(name, standbyConsumerMissingMessage)
+		return bindStandby, true
+	case err != nil:
+		slog.Error("dispatch delivery: look up NATS consumer", "name", name, "error", err)
+		return bindFailed, true
+	case bound:
+		throttle.reportStandby(name, standbyConsumerHeldMessage)
+		return bindStandby, true
+	}
+	return bindFailed, false
+}
+
+// bindLeasedDurable is one bind attempt under this durable's consumer lease, which its caller
+// holds for every step of it: the reconciliation this process still owes, the read of whether the
+// durable is free, the subscribe, and the confirmation that the server reports the durable bound
+// before the lease goes back (bindDurableConsumer). Its caller keeps what it answers, since
+// duty.Exclusive takes no return value from its pass.
+func bindLeasedDurable(ctx, stopping context.Context, client *bus.Client, throttle *bindThrottle, wanted natsgo.ConsumerConfig, subscribe func() (*natsgo.Subscription, func(), error)) (*natsgo.Subscription, bindOutcome) {
+	name, subject := wanted.Durable, wanted.FilterSubject
+	if throttle.reconcileDue() {
+		if !reconcileDurableConsumer(stopping, client.JS(), wanted) {
+			// Nothing recorded: a pass that ran and failed is made again on the next poll rather
+			// than skipped for consumerReconcileInterval. The window is how long this durable's
+			// configuration is taken as settled, and a failed pass settled nothing -- a durable
+			// the holder's own pass did not create is then created by whichever process polls
+			// next, instead of every process standing by for a durable nobody is making.
+			return nil, bindFailed
+		}
+		throttle.recordReconcile()
+	}
+	if ctx.Err() != nil {
+		return nil, bindFailed
+	}
+	// Read again under the lease: the read in front of the lease was made before this process
+	// took it, and a process that held it until a moment ago is the likeliest one to have bound
+	// the durable meanwhile. A poll whose reconciliation was due made no such read at all.
+	if outcome, decided := standbyForDurable(stopping, client.JS(), throttle, name); decided {
+		return nil, outcome
+	}
+	sub, unbind, err := subscribe()
 	switch {
 	case consumerHeldElsewhere(err):
-		throttle.reportStandby(name, "dispatch delivery: NATS consumer held by another process; standing by")
+		throttle.reportStandby(name, standbyConsumerHeldMessage)
 		return nil, bindStandby
 	case errors.Is(err, natsgo.ErrConsumerNotFound):
 		// Matched with errors.Is rather than on the message, since nats.go exports the sentinel
 		// its own subscribe returns for a bind of a durable the server does not have.
-		throttle.reportStandby(name, "dispatch delivery: NATS consumer not created yet; standing by")
+		throttle.reportStandby(name, standbyConsumerMissingMessage)
 		return nil, bindStandby
 	case err != nil:
 		slog.Error("dispatch delivery: bind NATS consumer", "name", name, "subject", subject, "error", err)
 		return nil, bindFailed
 	}
+	bound, confirmErr := awaitDurablePushBound(stopping, client.JS(), name)
+	if !bound {
+		// The lease is about to go back, and with it the only thing keeping another process out of
+		// this durable, so a binding the server does not report is given up whole rather than left
+		// to deliver beside whichever process binds next. The next poll tries again.
+		unbind()
+		given := []any{"name", name, "subject", subject, "within", consumerBindConfirmTimeout}
+		if confirmErr != nil {
+			// Only when a read in fact failed: reads that all answered "not bound" have no cause
+			// to name, and an empty one on the line would read as though they had.
+			given = append(given, "error", confirmErr)
+		}
+		slog.Warn("dispatch delivery: the server did not report the NATS consumer bound; subscription given up", given...)
+		return nil, bindFailed
+	}
 	slog.Info("dispatch delivery: NATS consumer bound", "name", name, "subject", subject)
 	return sub, bindBound
+}
+
+// awaitDurablePushBound waits for the server to report the durable push-bound, reading it at once
+// and then every consumerBindConfirmInterval until it does, consumerBindConfirmTimeout has passed,
+// or ctx ends. A read that fails is left for the next read to settle: the only answer it acts on
+// is the true one, and a bound it never gets is its caller's to give the subscription up for.
+//
+// Beside the bool it hands back the last error a read failed with, so the caller giving the
+// subscription up can say what the reads met rather than only that they never said bound. It is
+// nil when every read answered "not bound" with no error of its own, and never the confirming
+// context's own expiry: an error read once that context is done is this function's own bound
+// arriving, not something the durable's lookup met.
+func awaitDurablePushBound(ctx context.Context, js natsgo.JetStreamContext, name string) (bool, error) {
+	confirming, cancel := context.WithTimeout(ctx, consumerBindConfirmTimeout)
+	defer cancel()
+	reads := time.NewTicker(consumerBindConfirmInterval)
+	defer reads.Stop()
+	var last error
+	for {
+		bound, err := durablePushBound(confirming, js, name)
+		switch {
+		case err == nil && bound:
+			return true, nil
+		case err != nil && confirming.Err() == nil:
+			last = err
+		}
+		select {
+		case <-confirming.Done():
+			return false, last
+		case <-reads.C:
+		}
+	}
 }
 
 // reconcileDurableConsumer brings a durable's configuration to wanted and reports whether it
@@ -543,15 +810,12 @@ func bindDurableConsumer(ctx, stopping context.Context, client *bus.Client, leas
 // Its caller runs it under that durable's consumer lease (consumerLease), so one process at a
 // time is in here for one durable.
 //
-// PushBound is read once, by the ConsumerInfo immediately before the delete, and even that read
-// leaves a window of one round trip: a process whose own reconciliation was skipped -- the lease
-// was held, or its throttle refused the pass -- goes straight to the subscribe in
-// bindDurableConsumer without passing through here, so one that binds between that read and the
-// delete has its durable deleted under it. No message is lost, since this pass creates
-// the replacement and binds it; what the loser loses is its standby, silently. Intake.Run stops
-// its bind poll as soon as it is bound ("Nothing rebinds a bound intake"), so that process
-// delivers nothing for the life of the process with "dispatch delivery: NATS consumer bound" as
-// its last word, and only its next restart clears it.
+// PushBound is read once, by the ConsumerInfo immediately before the delete, and that read
+// settles the question for the whole pass among processes of this release: each of them
+// subscribes only under this same lease (bindDurableConsumer), by a pass that reads PushBound
+// again after taking it, so none of them can bind the durable between that read and the delete.
+// The read is kept close to the delete because the pass's first read is two round trips back
+// and the holder it reported may have gone away since.
 //
 // Every JetStream call runs under ctx, each within the JetStream context's own request timeout
 // while ctx carries no deadline: bindDurableConsumer passes its caller's stop deadline.
@@ -576,9 +840,10 @@ func reconcileDurableConsumer(ctx context.Context, js natsgo.JetStreamContext, w
 		// (TestBindReplacesAPluralFilterDurableAtItsOwnAckFloor).
 		//
 		// Re-read the durable immediately before the delete: the read above is two round trips
-		// back, and a process that skipped this reconciliation binds without taking the lease,
-		// so the durable can have been bound since. The ack floor comes from this read for the
-		// same reason -- it is the last thing the durable acknowledged before the delete.
+		// back, and the holder it reported may have gone away since -- or, during a rolling
+		// deploy, a process of an earlier release, which binds without taking the lease, may have
+		// bound it. The ack floor comes from this read for the same reason -- it is the last
+		// thing the durable acknowledged before the delete.
 		//
 		// That fresh read is the only thing that decides whether another process is bound to
 		// this durable: one question, answered once, by the read closest to the delete, so the
@@ -646,29 +911,73 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under intakeMessageTimeout, and acks: a malformed envelope has nothing
-// to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
-// next reconcile pass rather than by NATS redelivery -- see the package doc comment. The deadline
-// is what makes intakeAckWait a bound rather than a hope: without it one stuck GitHub call could
-// hold an in-flight slot past the ack wait and have the message redelivered underneath it. An
-// envelope route does not handle (an empty payload, or a kind route sends to no handler) is
-// acknowledged and nothing else: no log line and no freshness write. One it handles records the
-// event's time, whatever its handler decided.
+// settings the cache holds under intakeMessageTimeout, and answers it through the delivery, which
+// acknowledges it and holds that acknowledgement for the stop only where the bus refused it
+// (acknowledgeOrHold): a malformed envelope has nothing to retry, and a route error (a failed
+// GitHub call, or that deadline passing) is caught up by the next reconcile pass rather than by
+// NATS redelivery -- see the package doc comment. One route error is not, and is the second
+// case below. The deadline is what makes intakeAckWait a
+// bound rather than a hope: without it one stuck GitHub call could hold an in-flight slot past
+// the ack wait and have the message redelivered underneath it. An envelope route does not handle
+// (an empty payload, or a kind route sends to no handler) is acknowledged and nothing else: no
+// log line and no freshness write. One it handles records the event's time, whatever its handler
+// decided.
 //
-// The one message it does not ack is one whose handling the stop gave up (handling cancelled,
-// StopDelivering): that is negatively acknowledged, so the next holder of the durable redoes it at
-// once rather than this event waiting five minutes for the reconcile. Its writes are the upserts
-// reconcile makes too, so redoing what had in fact finished just before the stop gave it up
-// writes the same facts again.
-func (in *Intake) deliver(handling context.Context, message intakeMessage) {
-	msg := message.msg
+// The one message it does not acknowledge is one whose handling the stop gave up (handling
+// cancelled, StopDelivering): that is handed back through the delivery (giveBack), so the next
+// holder of the durable redoes it at once rather than this event waiting five minutes for the
+// reconcile. Its writes are the upserts reconcile makes too, so redoing what had in fact
+// finished just before the stop gave it up writes the same facts again.
+//
+// The other message it does not acknowledge, for as many deliveries as the bound below
+// allows, is one whose pull request's head row could not be stored at all (ErrHeadNotStored,
+// handlePullRequestEnvelope): no reconcile pass catches that up, because the passes read the
+// rows that exist (ListStalePullRequestHeads), so an acknowledged envelope loses that pull
+// request's head for good and with it every `before_merge` result measured against it. It is
+// handed straight back to NATS rather than through the delivery (redeliverAfter): the hold
+// giveBack takes is for the stop, and this message wants redelivering now, to this same
+// process, which still holds the durable and still routes that key to the one goroutine it is
+// on. The delay is what keeps a failure that repeats from spinning: the write is the same
+// write each time, so asking again within the second would buy nothing. The write is
+// idempotent (both its statements are `on conflict … do update`), so a redelivery of an
+// envelope whose write had in fact landed writes the same pair again.
+//
+// It is handed back a bounded number of times and then acknowledged, with an Error naming the
+// envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a
+// delay stays in the consumer's ack-pending set for the whole of that delay, so a write that
+// fails the same way every time would hold one of the four in-flight slots
+// (intakeMaxAckPending) for ever. The count is the server's own, read off the message
+// (Msg.Metadata, NumDelivered), so it is the count of this envelope's deliveries and not of
+// this process's attempts at it. A message carrying no such metadata is not a JetStream
+// message, so no count can cap it; it is handed back rather than acknowledged, since the
+// whole argument of this path is that nothing else writes that row, and a hand-back the ack
+// wait bounds is the safer of the two answers.
+//
+// The stop's two answers go through the delivery rather than straight to NATS, and for one
+// reason: the
+// stop a connection event runs begins with the link down, where the bus refuses a publish. A
+// hand-back the delivery holds until the stop has a live connection and makes it then
+// (giveBack); an acknowledgement is made at once and held only where the bus refused it
+// (acknowledgeOrHold), since a message whose handling is done holds one of the next holder's
+// in-flight slots for the whole ack wait while it is neither acknowledged nor held, and holding
+// one the bus took protects nothing. handling is read from the delivery too, and nothing else
+// calls deliver.
+func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
+	msg, handling := message.msg, d.handling
+	// handBack is set by the one route error NATS must redeliver, which the deferred answer
+	// below reads: every other path acknowledges.
+	handBack := false
 	defer func() {
 		if handling.Err() != nil {
 			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
-			negativelyAcknowledge(msg)
+			d.giveBack(msg)
 			return
 		}
-		acknowledge(msg)
+		if handBack {
+			redeliverAfter(msg, headWriteRedeliverAfter)
+			return
+		}
+		d.acknowledgeOrHold(msg)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()
@@ -691,6 +1000,18 @@ func (in *Intake) deliver(handling context.Context, message intakeMessage) {
 	case errors.Is(err, errMalformedPayload):
 		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
+	case errors.Is(err, ErrHeadNotStored):
+		delivered, spent := headWriteDeliveriesSpent(msg)
+		if spent {
+			slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
+				"subject", msg.Subject, "deliveries", delivered, "error", err)
+			return
+		}
+		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
+			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
+			"redeliver_after", headWriteRedeliverAfter, "error", err)
+		handBack = true
+		return
 	case err != nil:
 		slog.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
 		return
@@ -702,6 +1023,80 @@ func (in *Intake) deliver(handling context.Context, message intakeMessage) {
 	}
 }
 
+// headWriteRedeliverAfter is how long NATS waits before handing back an envelope whose pull
+// request's head row could not be stored (deliver). It is not zero because the write that
+// failed is the same write each time: a plain Nak would have the server redeliver at once, and
+// a database that is refusing writes would then spin the consumer against it as fast as the
+// round trip allows.
+//
+// What the delay does not do is give the in-flight slot back. A delayed Nak leaves the message
+// in the consumer's ack-pending set — nats-server's processNak moves that pending entry's
+// timestamp and nothing else — so one such envelope holds one of the four slots
+// (intakeMaxAckPending) for every second it is waiting to come round again, and four of them
+// hold all four. Bounding that is headWriteMaxDeliveries' work, not this constant's: ten
+// seconds only sets the rate, which is short beside the five minutes of the reconcile this
+// message cannot wait for, and long enough that the cap's whole run of redeliveries is
+// measured in minutes rather than in round trips.
+const headWriteRedeliverAfter = 10 * time.Second
+
+// headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be
+// stored gets before deliver acknowledges it and logs the loss. Without it there is no bound
+// at all: the durable sets no MaxDeliver, and a delayed Nak holds the message in the
+// consumer's ack-pending set, so a write that fails the same way every time is redelivered
+// every headWriteRedeliverAfter for ever and holds an in-flight slot throughout. Four such
+// envelopes stop the intake outright, and everything behind them — every other pull request
+// and every workflow run — waits on a row nothing was ever going to write.
+//
+// Thirty is where the two costs it sits between cross. Too few, and a database away for a
+// minute loses a head row that nothing else repairs: a minute is six deliveries at
+// headWriteRedeliverAfter, and an outage is counted in minutes rather than in seconds, so a
+// cap of five or ten would throw away heads that waiting a little longer was always going to
+// write. Too many, and four envelopes hold the consumer's whole in-flight window for longer
+// than the thing that catches every other failure up. At thirty deliveries and a ten-second
+// delay, one envelope's hand-backs are 29 × 10 s = 4 min 50 s of wall clock, plus what each
+// refused attempt itself spends. A write Postgres refuses outright spends milliseconds, so
+// the window is held for about five minutes — the reconcile's own period, which is already
+// the longest any other failure of this intake waits. A database that hangs rather than
+// refusing spends up to intakeMessageTimeout on each attempt instead, which is a minute, so
+// thirty of them hold the window for about 35 minutes. That is the worst, and the cap is what
+// bounds it: without one the window is held for ever. A database away for anything up to its
+// own case's span still gets the head row written.
+//
+// A var so a test can shrink it, as intakeMessageTimeout and intakeMaxAckPending are vars for
+// the same reason: thirty deliveries of one envelope is minutes of wall clock no test should
+// spend.
+var headWriteMaxDeliveries uint64 = 30
+
+// headWriteDeliveriesSpent reports how many times the server has delivered msg and whether
+// that is every delivery headWriteMaxDeliveries allows a head write to fail in.
+//
+// A message whose metadata cannot be read is not a JetStream message at all (Msg.Metadata
+// answers an error for one with no JetStream reply subject). No count can be read from it and
+// so no cap can be applied, and the answer is "not spent": the caller hands it back, which is
+// the answer that keeps the head row's one chance of being written, and the ack wait bounds a
+// hand-back the server never takes.
+func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
+	meta, err := msg.Metadata()
+	if err != nil {
+		slog.Error("dispatch delivery: read how often the envelope whose head row was not stored has been delivered",
+			"subject", msg.Subject, "error", err)
+		return 0, false
+	}
+	return meta.NumDelivered, meta.NumDelivered >= headWriteMaxDeliveries
+}
+
+// redeliverAfter hands msg back to the server for redelivery in after — at once where after is
+// zero, which is the same message to the server, since nats.go adds a delay to the negative
+// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs a hand-back
+// the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked but
+// not never.
+func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
+	if err := msg.NakWithDelay(after); err != nil {
+		slog.Error("dispatch delivery: hand a message back for redelivery",
+			"subject", msg.Subject, "delay", after, "error", err)
+	}
+}
+
 // acknowledge acks msg. An acknowledgement that does not reach the server is never discarded: it
 // leaves the message outstanding, and intakeMaxAckPending of those stop the consumer being given
 // anything until the ack wait expires. The Nak gives the slot back at once; when it fails too (the
@@ -709,24 +1104,29 @@ func (in *Intake) deliver(handling context.Context, message intakeMessage) {
 func acknowledge(msg *natsgo.Msg) {
 	if err := msg.Ack(); err != nil {
 		slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-		negativelyAcknowledge(msg)
-	}
-}
-
-// negativelyAcknowledge hands msg back to the server for redelivery at once, logging a Nak that
-// fails: the ack wait then redelivers it.
-func negativelyAcknowledge(msg *natsgo.Msg) {
-	if err := msg.Nak(); err != nil {
-		slog.Error("dispatch delivery: negatively acknowledge message", "subject", msg.Subject, "error", err)
+		redeliverAfter(msg, 0)
 	}
 }
 
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
 // synchronize, reopened, edited and closed — records the pull request's head first
 // (recordPullRequestHead, pull_request_heads.go), for any author and any repository, since a
-// check result is measured against that head. A head write that fails is logged and the merge
-// handling goes on: the two writes are independent, and the reconcile's own pass repairs the
-// head. Only a merge (action "closed", merged "true") does anything for the delivery timeline
+// check result is measured against that head. A head write that could not be made at all is
+// the one failure this hands the envelope back for (delivery.ErrHeadNotStored): nothing else
+// repairs a head row that was never stored, since the reconcile's passes read the rows that
+// exist, and both statements behind that write are `on conflict … do update`, so the
+// redelivery writes the same pair. That covers the write itself and the two reads of Postgres
+// before it, the repository's canonical name and the attribution (recordPullRequestHead).
+// Two other failures of it are logged here and the merge handling goes on from them. A rate
+// limit the attribution hit leaves no row either, and no pass offers a row that was never
+// written, but it is acknowledged all the same: handing every rate-limited envelope back
+// would spend the whole limit over again, and the next `pull_request` event of that pull
+// request — a synchronize, a label, the merge — writes the row the limit cost this one. A
+// repository name that is not `owner/repo` is malformed in the envelope itself, so the same
+// envelope delivered again fails on the same name. A read of GitHub the App refused for any
+// other reason is no failure of this write at all: the row is written from the envelope
+// alone, incomplete and unstamped, and the reconcile's own pass reads it again.
+// Only a merge (action "closed", merged "true") does anything for the delivery timeline
 // after that; its author and excluded-repository checks run on the envelope's own fields, so a
 // merge by anyone outside the population costs no GitHub call of its own. It reports whether
 // it stored the pull request's delivery row: a head write is not one, and neither is a row it
@@ -746,6 +1146,9 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 	if headErr != nil {
 		slog.Warn("dispatch delivery: record a pull request's head",
 			"repo", repoFull, "number", number, "error", headErr)
+		if errors.Is(headErr, ErrHeadNotStored) {
+			return false, headErr
+		}
 	}
 	if payload["action"] != "closed" || payload["merged"] != "true" {
 		return false, nil

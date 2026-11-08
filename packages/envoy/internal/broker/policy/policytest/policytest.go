@@ -3,11 +3,9 @@
 package policytest
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"log"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +14,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 const (
@@ -41,16 +40,16 @@ func Secret(name, owner, tier, value string) secrets.LocalSecret {
 // canonical form ParseGitHubOwners answers.
 const FixtureGitHubOwners = "acme ada"
 
-// FixtureMaxGrant is the max-grant tag KindSecret gives a kind whose requesters bound it
-// (policy.RequesterRules refuses a listed secret without one, and one longer than an hour).
+// FixtureMaxGrant is the max-grant tag KindSecret gives a google-service-account secret
+// (policy.TagRules refuses such a secret without a cap, and one longer than an hour).
 const FixtureMaxGrant = "1h"
 
 // KindSecret is Secret with a kind tag: a secret whose release the broker mints from value. A
 // kind that needs github-owners (policy.KindNeedsGitHubOwners) also carries them
 // (FixtureGitHubOwners), without which the policy refuses it; a test of that refusal deletes the
 // tag. A google-service-account secret carries the requesters its own rules demand — its owner
-// alone — and the max-grant every listed secret must set (FixtureMaxGrant), so the fixture loads
-// for an owner who is a person; a test of those refusals edits the tags.
+// alone — and the max-grant its kind must set (FixtureMaxGrant), so the fixture loads for an owner
+// who is a person; a test of those refusals edits the tags.
 func KindSecret(name, owner, tier, kind, value string) secrets.LocalSecret {
 	secret := Secret(name, owner, tier, value)
 	secret.Tags[policy.TagKind] = kind
@@ -64,10 +63,10 @@ func KindSecret(name, owner, tier, kind, value string) secrets.LocalSecret {
 	return secret
 }
 
-// ListedSecret is Secret with a requesters tag naming requesters, beside the max-grant every
-// listed secret must set for the loader to serve it (FixtureMaxGrant): the shape
-// policy.RequesterRules demands of a secret whose list says who may ask for it. A test of a
-// refusal those rules answer edits the tags of what this returns.
+// ListedSecret is Secret with a requesters tag naming requesters, beside a max-grant of
+// FixtureMaxGrant: the shape of a secret whose list says who may ask for it, with a cap short
+// enough that the kind and admin rules which demand one (policy.TagRules) are met as well. A test
+// of a refusal those rules answer edits the tags of what this returns.
 func ListedSecret(name, owner, tier, requesters, value string) secrets.LocalSecret {
 	secret := Secret(name, owner, tier, value)
 	secret.Tags[policy.TagRequesters] = requesters
@@ -143,19 +142,4 @@ func CaptureLog(t testing.TB) fmt.Stringer {
 	return logged
 }
 
-type lockedBuffer struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.String()
-}
+type lockedBuffer = logtest.Buffer

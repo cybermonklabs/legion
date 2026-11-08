@@ -1,11 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -69,7 +72,7 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 // included: nothing compares equal to a token that is not there.
 func TestOperatorRoutesAreClosedWithoutAnOperatorToken(t *testing.T) {
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject}).Handler
+	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Steps: config.DesignGateRootIssues.Steps()}).Handler
 
 	for _, header := range []http.Header{nil, {"Authorization": {"Bearer "}}} {
 		wantRefusal(t, h.request(http.MethodGet, "/legion/v1/operator/claims", nil, header), http.StatusForbidden,
@@ -597,6 +600,7 @@ func failedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.To
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
 	}).Handler
@@ -1137,6 +1141,294 @@ func TestListShowsAClaimsDeathsAndItsInterruptedTask(t *testing.T) {
 	decodeInto(t, recorder, &got)
 	if len(got.Claims) != 1 || got.Claims[0].Budgets.Deaths != 2 || got.Claims[0].Pending == nil || !got.Claims[0].Pending.Interrupted {
 		t.Fatalf("list answered %+v, want the claim with 2 deaths and its task interrupted", got.Claims)
+	}
+}
+
+// The step record the listing shows is the store's, for a claim a machine supervises as much as
+// for one it does not. A machine's own copy of that record is the one it was built with: the
+// daemon writes every step through a narrow call of its own and never reads one back into the
+// machine's claim (supervise's putStep), so a listing served from the published view alone
+// would show an operator the call a claim was in when this daemon booted, or none at all.
+func TestListShowsTheStoredStepOfASupervisedClaim(t *testing.T) {
+	h := newHarness(t)
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	if _, supervised := h.supervisor.Machine(architectToken); !supervised {
+		t.Fatal("the spawned claim has no machine: this case is about what a supervised claim shows")
+	}
+	began := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
+	stepped := supervise.StepRecord{At: began.Add(time.Minute), TurnStartedAt: began, Tool: "bash",
+		CallID: "toolu_turn3_1", ArgsBytes: 128, ArgsHash: "9f2b7c0d1e3a4b5c", StartedAt: began.Add(time.Minute)}
+	if known, err := h.store.PutClaimStep(h.ctx, architectToken, stepped); err != nil || !known {
+		t.Fatalf("put the step of the supervised claim = %t, %v", known, err)
+	}
+
+	recorder := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
+
+	var got OperatorClaims
+	decodeInto(t, recorder, &got)
+	if len(got.Claims) != 1 {
+		t.Fatalf("list answered %+v, want the one claim", got.Claims)
+	}
+	want := StepViewOf(stepped)
+	step := got.Claims[0].Step
+	if step == nil || !reflect.DeepEqual(step, want) {
+		t.Fatalf("the listed step = %+v, want the record the store holds, %+v", step, want)
+	}
+}
+
+// Every operator answer about one claim carries the record the store holds, as the listing
+// does: the routes an operator runs on a worker that has stopped moving are these, and an
+// answer built from the machine's own copy would print `-`, or a call hours old, on the very
+// commands that ask what the worker is doing (operatorAnswer, cmd/legion's printClaim). The
+// agent steps here through its machine, as the worker stream reports it, so the record is
+// written exactly as production writes it and the machine keeps none of it (supervise's
+// putStep).
+//
+// Every route that answers through operatorAnswer is walked but one, the held-phase retry's 202
+// answer (retryClaim), which this test's retry does not reach; and each is walked over a claim
+// that takes it: the root's own stop is refused, since a tree root ends at its tree's close, so
+// stop is read over a worker of that tree, whose record is put where the stream's own call
+// would have left it. The order is the one the states allow — the claim is spawned, given a
+// task, suspended, resumed, failed, forgotten, retried, and its tree closed last, because the
+// close retires every claim of it.
+func TestEveryOperatorAnswerAboutOneClaimCarriesItsStoredStep(t *testing.T) {
+	h := newHarness(t)
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	conn := fake.NewConn()
+	h.conns.Register(architectToken, conn)
+	h.ready(architectToken, "ses_architect", 1)
+	m, supervised := h.supervisor.Machine(architectToken)
+	if !supervised {
+		t.Fatal("the spawned claim has no machine: this case is about what a supervised claim's answers show")
+	}
+	if err := m.Handle(h.ctx, supervise.StreamToolStep{Claim: architectToken, Tool: "bash",
+		CallID: "toolu_turn7_2", ArgsBytes: 128, ArgsHash: "9f2b7c0d1e3a4b5c", ConnSequence: conn.Sequence()}); err != nil {
+		t.Fatalf("the agent's tool step: %v", err)
+	}
+	stored, err := h.store.ClaimStep(h.ctx, architectToken)
+	if err != nil {
+		t.Fatalf("read the stored step: %v", err)
+	}
+	if stored.CallID != "toolu_turn7_2" {
+		t.Fatalf("the stored record = %+v, want the call the agent is in", stored)
+	}
+	if held := m.Claim().Step; held.CallID != "" {
+		t.Fatalf("the machine's own copy of the record = %+v, want it as the machine was built: this case is about the answer the routes build from the store", held)
+	}
+
+	// The worker the stop is read over, of the same tree, with a record of its own where the
+	// stream's call would have written one. Its machine keeps none of it either.
+	spawnWorker := spawnBody()
+	spawnWorker.Issue, spawnWorker.Role = "LEGION-209", claim.RoleImplementer
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnWorker)
+	workerToken, err := claim.NewToken(testProject, spawnWorker.Issue, spawnWorker.Role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	began := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
+	workerStep := supervise.StepRecord{At: began.Add(time.Minute), TurnStartedAt: began, Tool: "bash",
+		CallID: "toolu_turn2_4", ArgsBytes: 64, ArgsHash: "1a2b3c4d5e6f7a8b", StartedAt: began.Add(time.Minute)}
+	if known, err := h.store.PutClaimStep(h.ctx, workerToken, workerStep); err != nil || !known {
+		t.Fatalf("put the worker's step = %t, %v", known, err)
+	}
+
+	// The spawn route answers through operatorAnswer too, over the one claim it ever answers
+	// about: the one it creates. Every state in which it would find an existing claim refuses
+	// it — launched, uncertain, suspended, failed, retired (supervise's table) — so what its
+	// answer carries is the store's record for a claim that has not stepped, which is none, and
+	// an answer that invented one would print a call for a claim whose agent has made none.
+	fresh := spawnBody()
+	fresh.Issue, fresh.Role = "LEGION-210", claim.RoleTester
+	created := h.operator(http.MethodPost, "/legion/v1/operator/claims", fresh)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("spawn = %d, want 201; body %s", created.Code, created.Body)
+	}
+	var spawned OperatorClaim
+	decodeInto(t, created, &spawned)
+	if spawned.Step != nil {
+		t.Fatalf("spawn answered step %+v, want none: the claim it created has not stepped", spawned.Step)
+	}
+
+	// failArchitect spends the architect's launch budget, which is the state its retry and its
+	// forget-session are answered in.
+	failArchitect := func() {
+		t.Helper()
+		refused := fake.SpawnResult{Err: errors.New("the runtime refused the relaunch")}
+		h.runtime.ScriptResume(refused, refused)
+		locator := m.Claim().Locator
+		if locator == nil {
+			t.Fatalf("the architect records no process, and this step fails it through the one it runs")
+		}
+		if err := m.Handle(h.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
+			Locator: *locator, Kind: runtime.Gone}}); err == nil {
+			t.Fatal("the relaunches the runtime refused were taken, want the refusal")
+		}
+		if failed := h.stored(architectToken); failed.State != supervise.StateFailed {
+			t.Fatalf("the architect is %s, want it failed before its forget-session and its retry", failed.State)
+		}
+	}
+
+	for _, answer := range []struct {
+		route  string
+		target string
+		body   any
+		token  claim.Token
+		step   supervise.StepRecord
+		before func()
+	}{
+		{route: "deliver", target: "/legion/v1/operator/claims/" + string(architectToken) + "/deliver",
+			body: DeliverRequest{Task: "carry on"}, token: architectToken, step: stored},
+		{route: "suspend", target: "/legion/v1/operator/claims/" + string(architectToken) + "/suspend",
+			token: architectToken, step: stored},
+		{route: "resume", target: "/legion/v1/operator/claims/" + string(architectToken) + "/resume",
+			token: architectToken, step: stored},
+		{route: "forget-session", target: "/legion/v1/operator/claims/" + string(architectToken) + "/forget-session",
+			body: ForgetSessionRequest{Session: "ses_architect"}, token: architectToken, step: stored, before: failArchitect},
+		{route: "retry", target: "/legion/v1/operator/claims/" + string(architectToken) + "/retry",
+			token: architectToken, step: stored},
+		{route: "stop", target: "/legion/v1/operator/claims/" + string(workerToken) + "/stop",
+			token: workerToken, step: workerStep},
+		{route: "close", target: "/legion/v1/operator/claims/" + string(architectToken) + "/close",
+			token: architectToken, step: stored},
+	} {
+		if answer.before != nil {
+			answer.before()
+		}
+		recorder := h.operator(http.MethodPost, answer.target, answer.body)
+		if recorder.Code != http.StatusOK {
+			t.Fatalf("%s = %d, want 200; body %s", answer.route, recorder.Code, recorder.Body)
+		}
+		var got OperatorClaim
+		decodeInto(t, recorder, &got)
+		if got.Token != answer.token {
+			t.Fatalf("%s answered for %s, want %s", answer.route, got.Token, answer.token)
+		}
+		want := StepViewOf(answer.step)
+		// The times are compared by instant: the wire carries them to the fraction of a second
+		// and not in the location the store's own read built them in.
+		if got.Step == nil || got.Step.Tool != want.Tool || got.Step.CallID != want.CallID ||
+			got.Step.ArgsBytes != want.ArgsBytes || got.Step.ArgsHash != want.ArgsHash ||
+			got.Step.At == nil || !got.Step.At.Equal(*want.At) ||
+			got.Step.StartedAt == nil || !got.Step.StartedAt.Equal(*want.StartedAt) {
+			t.Fatalf("%s answered step %+v, want the record the store holds, %+v", answer.route, got.Step, want)
+		}
+	}
+}
+
+// A step read the store refuses leaves the answer without the record, and never falls back on
+// the machine's own copy of it. That copy is the record as the machine was built with it — at
+// this daemon's boot, for every claim it re-adopted — so serving it here would print the call a
+// worker was in hours ago as the call it is in now, on the very command an operator runs to ask
+// whether that worker is still moving. No record is what the listing already shows for a claim
+// in no open call, and what `legion claims` prints as `-`.
+//
+// The request itself still succeeds: the suspension has already been decided and written, and a
+// 500 over the record beside it would read to an operator as a suspend that did not happen. The
+// failed read is a Warn naming the claim and the error.
+func TestAnOperatorAnswerWhoseStepReadFailsCarriesNoRecordRatherThanTheMachinesCopy(t *testing.T) {
+	h := newHarness(t)
+	logs := &bytes.Buffer{}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
+		Log: slog.New(slog.NewJSONHandler(logs, nil)), Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
+	}).Handler
+	h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+	h.registered(h.bootToken(architectToken), "ses_architect")
+	began := time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC)
+	booted := supervise.StepRecord{At: began.Add(time.Minute), TurnStartedAt: began, Tool: "bash",
+		CallID: "toolu_turn3_1", ArgsBytes: 128, ArgsHash: "9f2b7c0d1e3a4b5c", StartedAt: began.Add(time.Minute)}
+	if known, err := h.store.PutClaimStep(h.ctx, architectToken, booted); err != nil || !known {
+		t.Fatalf("put the step the machine is built with = %t, %v", known, err)
+	}
+	// The machine re-adopted with that record held: its own copy is the one the fallback served.
+	m := h.supervisor.restart(t, architectToken)
+	if held := m.Claim().Step; held.CallID != booted.CallID {
+		t.Fatalf("the machine's own copy of the record = %+v, want the call it was built with: this case is about an answer that must not serve it", held)
+	}
+	refusal := errors.New("read the claim's step record: connection refused")
+	h.supervisor.refuseStep(refusal)
+
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/suspend", nil)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("suspend = %d, want 200: the suspension has landed and a failed read of the record beside it must not fail the request; body %s",
+			recorder.Code, recorder.Body)
+	}
+	var got OperatorClaim
+	decodeInto(t, recorder, &got)
+	if got.Step != nil {
+		t.Fatalf("the answered step = %+v, want none: the store refused the read and the machine's own copy is the boot-time one", got.Step)
+	}
+	if got.State != string(supervise.StateSuspended) {
+		t.Fatalf("the answered state = %q, want the suspension the request made", got.State)
+	}
+	logged := logs.String()
+	if !strings.Contains(logged, `"level":"WARN"`) || !strings.Contains(logged, `"claim":"`+string(architectToken)+`"`) ||
+		!strings.Contains(logged, `"error":"`+refusal.Error()+`"`) {
+		t.Fatalf("logs %s do not carry one Warn naming the claim and the read's error", logged)
+	}
+}
+
+// A claim's view carries the record of the sends of its task that never reached a turn — how
+// many failed, when the last of them failed and the error it failed with — beside the queued,
+// delivered and confirmed times. Without it, a claim that has waited days on a send which never
+// lands says so only in a log line inside its own pod (INFRA-1480). The three are omitempty, and
+// the send that reaches a turn clears them, so a task no send has failed for carries none of
+// them on the wire.
+func TestClaimViewCarriesTheSendFailures(t *testing.T) {
+	h := newHarness(t)
+	token := claim.Token("legion-legion-legion-209-implementer")
+	queued := time.Date(2026, 9, 26, 7, 0, 0, 0, time.UTC)
+	failedAt := queued.Add(30 * time.Second)
+	if err := h.store.PutClaim(h.ctx, supervise.Claim{Token: token, Project: testProject, Tree: "LEGION-208", Issue: "LEGION-209",
+		Role: claim.RoleImplementer, State: supervise.StateReady}); err != nil {
+		t.Fatalf("put the claim: %v", err)
+	}
+	failing := supervise.Delivery{ID: "delivery-1", Task: "implement the plan", QueuedAt: queued,
+		SendFailures: 4, LastSendFailureAt: failedAt,
+		LastSendError: "worker-stream: " + string(token) + " refused adopt-working-copy: " +
+			"the git lock /legion/workspaces/acme/widgets/legion-209/.git/index.lock was last written 31m ago"}
+	if err := h.store.PutDelivery(h.ctx, token, failing); err != nil {
+		t.Fatalf("put the delivery: %v", err)
+	}
+
+	var got OperatorClaims
+	decodeInto(t, h.operator(http.MethodGet, "/legion/v1/operator/claims", nil), &got)
+
+	if len(got.Claims) != 1 || got.Claims[0].Pending == nil {
+		t.Fatalf("list answered %+v, want the claim with its pending task", got.Claims)
+	}
+	pending := got.Claims[0].Pending
+	if pending.SendFailures != failing.SendFailures || pending.LastSendFailureAt == nil ||
+		!pending.LastSendFailureAt.Equal(failedAt) || pending.LastSendError != failing.LastSendError {
+		t.Fatalf("pending %+v, want %d failed sends, the last at %v, with its error", pending, failing.SendFailures, failedAt)
+	}
+	if !pending.QueuedAt.Equal(queued) || pending.DeliveredAt != nil || pending.ConfirmedAt != nil {
+		t.Fatalf("pending %+v, want the record beside the three times, of which only the queue has happened", pending)
+	}
+
+	// The send that reached a turn: the task is acknowledged and confirmed, and supervise's
+	// confirm cleared all three with the budgets.
+	confirmed := failing
+	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = failedAt.Add(time.Second), failing.ID, failedAt.Add(2*time.Second)
+	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
+	if err := h.store.PutDelivery(h.ctx, token, confirmed); err != nil {
+		t.Fatalf("put the confirmed delivery: %v", err)
+	}
+
+	recorder := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
+
+	body := recorder.Body.String()
+	for _, key := range []string{"sendFailures", "lastSendFailureAt", "lastSendError"} {
+		if strings.Contains(body, key) {
+			t.Errorf("the wire carries %q for a task no send has failed for: %s", key, body)
+		}
+	}
+	got = OperatorClaims{}
+	decodeInto(t, recorder, &got)
+	if len(got.Claims) != 1 || got.Claims[0].Pending == nil || got.Claims[0].Pending.ConfirmedAt == nil {
+		t.Fatalf("list answered %+v, want the confirmed task the cleared record belongs to", got.Claims)
 	}
 }
 

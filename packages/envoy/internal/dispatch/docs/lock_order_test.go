@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func lockOrderServiceFor(t *testing.T, database *store.Store) *Service {
@@ -35,19 +36,16 @@ func lockOrderService(t *testing.T) (*store.Store, *Service, string) {
 // the waiting operation's result if it returns first.
 func waitForLockWait(t *testing.T, ctx context.Context, database *store.Store, like string, returned <-chan error) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for time.Now().Before(deadline) {
+	if !testwait.Holds(10*time.Second, 2*time.Millisecond, func() bool {
 		select {
 		case err := <-returned:
 			t.Fatalf("the operation returned (%v) before any statement matching %s waited on a lock", err, like)
 		default:
 		}
-		if lockWaits(t, ctx, database, like) > 0 {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
+		return lockWaits(t, ctx, database, like) > 0
+	}) {
+		t.Fatalf("no statement waiting on a lock matching %s", like)
 	}
-	t.Fatalf("no statement waiting on a lock matching %s", like)
 }
 
 // lockWaits counts the sessions of the test's database waiting on a lock whose statement matches
@@ -232,7 +230,7 @@ func TestSnapshotIsNotBlockedByTheOwnerLock(t *testing.T) {
 }
 
 // The live-document path is the same cycle with the worst loser. A browser edit reaches
-// AppendRoomFlush through websocket.go - and AppendUpdateWithCredit, the append this exercises,
+// AppendRoomFlush through websocket.go - and AppendUpdatesWithCredit, the append this exercises,
 // when its room recorded no class for it - which takes the room lock on its own connection
 // and then the artifact row through doc_updates' foreign key; when the owner lock was
 // `for update` and an event append held it, Postgres killed one of them, and on this path the
@@ -247,8 +245,8 @@ func TestLiveUpdateIsNotBlockedByTheOwnerLock(t *testing.T) {
 	doc := crdt.New()
 	doc.GetXmlFragment(fragmentName)
 	awaitUnblocked(t, "a live document update", func() error {
-		_, err := service.persistence.(*PgVersioned).AppendUpdateWithCredit(
-			ctx, id, crdt.EncodeStateAsUpdateV1(doc, nil), true, nil, nil,
+		_, err := service.persistence.(*PgVersioned).AppendUpdatesWithCredit(
+			ctx, id, []BrowserUpdate{{Update: crdt.EncodeStateAsUpdateV1(doc, nil), ContentChanged: true}},
 		)
 		return err
 	})

@@ -196,7 +196,7 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 const ISSUE_UPDATE_FIELDS_RULE =
   "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
-  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes because a closed issue refuses messages, comments, and artifacts";
+  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
 const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}.`;
 
@@ -599,10 +599,13 @@ export const dispatchToolSpecs = [
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
       "(status done) requires reason, the note that says why: it is posted on the issue as a " +
-      "message, then the issue closes, because a closed issue refuses messages, comments, and " +
-      "artifacts; reason goes only with status done. Closing an issue withdraws every open ask " +
+      "message, then the issue closes, so the close carries its note; closing an issue that is " +
+      "already closed is refused (ISSUE_CLOSED) before anything is posted. Reason goes only " +
+      "with status done. Closing an issue withdraws every open ask " +
       "it holds (resolution kind withdrawn, naming the closer), and reopening it brings exactly " +
-      "those asks back. A closed issue takes only a board move " +
+      "those asks back. " +
+      "A closed issue still takes messages and comments, though not asks or artifacts; of this " +
+      "tool's fields it takes only a board move " +
       "(before, after), components, " +
       "a reopening status (any status but done), and an external_links write that adds no new " +
       "link (so a link can move to the issue that replaced it); everything else, priority " +
@@ -1051,8 +1054,9 @@ export const dispatchToolSpecs = [
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +
       "that conversation back. " +
-      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A BTW, Aside or Steer " +
-      "frame carries a reply_with command: answer with it, on that issue. On Oh My Pi an Agents-page Send or Aside " +
+      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A frame reading expects_reply: optional or " +
+      "required carries a reply_with command: answer with it, on that issue. One reading false carries none and asks for no answer; where " +
+      "you answer one anyway, its card names what to answer. On Oh My Pi an Agents-page Send or Aside " +
       "arrives as a user message: answer in the conversation, with no dispatch message. " +
       `${BODY_BLOCK_RULE} The lines images appends count toward it. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
@@ -1410,10 +1414,17 @@ export const dispatchToolSpecs = [
       "Print each check of an issue's Verification document with its latest result and whether " +
       "that result is current. A result is current when it ran at the commit the work stands at " +
       "— the head of an open pull request of the check's issue, the final head of a merged one, " +
-      "or, for an after_merge or default_branch check, a commit on the repository's default " +
-      "branch — and the check's words have not changed since; older otherwise, and unknown when " +
-      "Dispatch cannot read the repository. A push that moves the pull request's head makes a " +
-      "result older with no write of anyone's: record it again at the new head. " +
+      "for an after_merge check a commit on the branch that issue's pull request merged into or " +
+      "on the repository's default branch (which answers alone where Dispatch holds no merge of " +
+      "that issue), or for a default_branch check a commit on the repository's default branch, " +
+      "whatever branch the pull request merged into — and the check's words have not changed " +
+      "since; older otherwise, and unknown when Dispatch cannot read the repository. On an " +
+      "after_merge check's base branch a read GitHub refused — a 403 or 404, which a branch it " +
+      "no longer holds answers with — says the commit is not on that branch and leaves the " +
+      "default branch to decide; every other failure of that read, a rate limit or a 5xx " +
+      "among them, leaves the result unknown and never older. A push that moves the " +
+      "pull request's head makes a result older with no write of anyone's: record it again at " +
+      "the new head. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),
@@ -1582,8 +1593,10 @@ export const dispatchToolSpecs = [
       "the same question. Use it to check a draft before filing it. It searches by meaning and by " +
       "the text's rarest words, and says how it searched; when meaning search cannot run it " +
       "searches by keywords only and says why. When it could not search at all it says why and " +
-      "names the dispatch search to run instead. exclude_issue leaves that issue's own items out, " +
-      "as a check on that issue's own write does; keywords_only skips meaning search.",
+      "names the dispatch search to run instead. exclude_issues leaves each named issue's own " +
+      "items out of the results, at most 50 of them, so a draft under a parent can leave out " +
+      "that parent and its children without changing how rare the text's words are; " +
+      "keywords_only skips meaning search.",
     arguments: (z) => ({
       project: z.string().describe("Project key to search within, such as CORE."),
       title: z
@@ -1594,9 +1607,11 @@ export const dispatchToolSpecs = [
         .string()
         .describe("Optional text to check, such as a draft spec or a question.")
         .optional(),
-      exclude_issue: z
-        .string()
-        .describe("Optional issue key in the project whose own items are left out.")
+      exclude_issues: z
+        .array(z.string())
+        .describe(
+          "Optional issue keys in the project whose own items are left out of the results; at most 50."
+        )
         .optional(),
       keywords_only: z
         .boolean()

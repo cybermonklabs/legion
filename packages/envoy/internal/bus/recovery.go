@@ -444,7 +444,10 @@ func (c *Client) restoreSubscriptions() (pending bool, err error) {
 		// it delivers as it did. Unsubscribing it to bind again would race the server's release of
 		// the consumer's push binding, which refuses the new bind while it still sees the old one.
 		// One on a replaced connection is invalid and is bound again. A registration its caller
-		// ended (DrainSubscription) is no longer here to bind.
+		// ended (DrainSubscription) is no longer here to bind, which is how a caller that must not
+		// be re-attached says so: Dispatch's delivery intake gives its registration up at a
+		// connection event, since neither branch here can tell a holder that has lost its durable
+		// from one that should go on delivering through the outage.
 		if subscription.handler == nil || subscription.active.IsValid() {
 			continue
 		}

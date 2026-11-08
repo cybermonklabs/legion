@@ -1,7 +1,6 @@
 package intake_test
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,13 +21,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -80,22 +83,7 @@ func (c *transactions) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pg
 func (c *transactions) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // warnings keeps every log line at warn or above the consumer and the handlers write.
-type warnings struct {
-	mu  sync.Mutex
-	buf bytes.Buffer
-}
-
-func (w *warnings) Write(p []byte) (int, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.Write(p)
-}
-
-func (w *warnings) String() string {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.buf.String()
-}
+type warnings = testlog.Buffer
 
 // A repository Legion works in carries far more GitHub events than Legion's own pull requests:
 // other pull requests opened and pushed to, their reviews and CI settlements, and every workflow
@@ -113,7 +101,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	seedDrainProject(t, direct)
 
 	counter := &transactions{}
-	delayed, err := pgxpool.ParseConfig(testpg.Delayed(t, dsn, drainRoundTrip))
+	delayed, err := pgxpool.ParseConfig(testdb.Delayed(t, dsn, drainRoundTrip))
 	if err != nil {
 		t.Fatalf("parse the delayed database URL: %v", err)
 	}
@@ -130,7 +118,7 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	log := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 	repository := ghrepo.MustParse(drainRepo)
 	records := record.NewStore()
-	engine := workflow.New(records, workflow.Config{Project: drainProject, Repositories: drainRepositories{}}, log)
+	engine := workflow.New(records, workflow.Config{Project: drainProject, Repositories: drainRepositories{}, Steps: config.DesignGateRootIssues.Steps()}, log)
 	admission := admit.New(records, engine, drainRunning, drainProject, log)
 	// GitHub answers that the approver can write to the repository; the count is every review the
 	// consumer asked GitHub about.
@@ -175,19 +163,17 @@ func TestABacklogOfOtherPullRequestsDrainsAndAppliesEveryLegionEvent(t *testing.
 	})
 	defer stop()
 
-	deadline := time.Now().Add(10 * time.Minute)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-5*time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-5 * time.Second)
-	}
-	for githubWaiting(t, consumers) != 0 {
+	if !testwait.Holds(testwait.Bounded(t, 10*time.Minute, 5*time.Second), 20*time.Millisecond, func() bool {
+		if githubWaiting(t, consumers) == 0 {
+			return true
+		}
 		if begun := counter.begun.Load(); begun > drainLegion {
 			t.Fatalf("%d transactions begun with %d messages still waiting, want one for each of the %d Legion events and none for any other",
 				begun, githubWaiting(t, consumers), drainLegion)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the backlog of %d events is not drained after %s: %d still wait", len(backlog), time.Since(started).Round(time.Millisecond), githubWaiting(t, consumers))
-		}
-		time.Sleep(20 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("the backlog of %d events is not drained after %s: %d still wait", len(backlog), time.Since(started).Round(time.Millisecond), githubWaiting(t, consumers))
 	}
 	drained := time.Since(started)
 	stop()
@@ -438,7 +424,7 @@ func assertDrainedPullRequests(t *testing.T, pool *pgxpool.Pool, records record.
 
 // drainPool is the database at dsn — a clone of the package's migrated template — reached
 // directly: the seed and the assertions do not pay the delay the consumer does. It takes the URL
-// rather than making one, since the caller also needs it for testpg.Delayed.
+// rather than making one, since the caller also needs it for testdb.Delayed.
 func drainPool(t *testing.T, dsn string) *pgxpool.Pool {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), dsn)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -127,11 +128,26 @@ func TestPromptHonoursItsContextAndTheRPCTimeout(t *testing.T) {
 	}
 }
 
-// The supervisor charges a prompt the agent refused and re-sends one the transport lost at no
-// charge, telling them apart by runtime.ErrPromptRefused alone (LEGION-60). So only OMP's
-// `{success:false}` for the prompt itself is that error; a refused negotiation, a refused
-// get_state, a close, the RPC timeout, and the caller's own deadline are not.
-func TestOnlyAPromptRefusalIsErrPromptRefused(t *testing.T) {
+// The supervisor charges a prompt the agent refused and an adoption the shim refused, and
+// re-sends at no charge what the transport lost, telling them apart by runtime.ErrPromptRefused
+// and runtime.ErrAdoptRefused alone (LEGION-60, INFRA-1480). So a refusal is the sentinel of the
+// command it refused and of no other: OMP's `{success:false}` for the prompt itself is
+// ErrPromptRefused, the shim's `ok:false` for the adoption — and the refusal an older shim's
+// forwarding of that frame earns from OMP, which does not know the command — is ErrAdoptRefused,
+// and a refused negotiation, a refused get_state, a close, the RPC timeout and the caller's own
+// deadline are neither.
+func TestEachRefusalIsOnlyTheSentinelOfTheCommandItRefused(t *testing.T) {
+	// sentinels is every runtime error the supervisor splits a failed send on: a row is the one
+	// it names and none of the rest, so a match widened to every refusal fails here.
+	sentinels := []struct {
+		name string
+		err  error
+	}{
+		{"runtime.ErrPromptRefused", runtime.ErrPromptRefused},
+		{"runtime.ErrAdoptRefused", runtime.ErrAdoptRefused},
+	}
+	identity := runtime.GitIdentity{Name: "legion-bot", Email: "bot@legion.dev"}
+	const staleLock = "Command failed (exit 1): jj metaedit: git lock /w/.git/index.lock was last written 31m ago"
 	var refusal *RefusedError
 	for _, test := range []struct {
 		name       string
@@ -141,10 +157,14 @@ func TestOnlyAPromptRefusalIsErrPromptRefused(t *testing.T) {
 		drive func(h *harness, p *peer) error
 		// isCase is the failure the case exists to produce, so no row passes by producing
 		// another.
-		isCase  func(error) bool
-		refused bool
+		isCase func(error) bool
+		// sentinel is the one error of sentinels this failure is, nil for a failure that is none
+		// of them, and reason the words the far side refused with — read by the supervisor (Oh
+		// My Pi's busy answer) or carried into its log (the shim's).
+		sentinel error
+		reason   string
 	}{
-		{name: "OMP refuses the prompt", refused: true,
+		{name: "OMP refuses the prompt", sentinel: runtime.ErrPromptRefused, reason: "Agent is busy",
 			drive: func(h *harness, p *peer) error {
 				frame, result := h.prompt(p, "delivery-1", "verify #41")
 				p.send(shimwire.Response{ID: frame.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is busy"})
@@ -152,9 +172,51 @@ func TestOnlyAPromptRefusalIsErrPromptRefused(t *testing.T) {
 			},
 			isCase: func(err error) bool { return errors.As(err, &refusal) && refusal.Command == shimwire.TypePrompt },
 		},
+		{name: "the shim refuses the adoption", sentinel: runtime.ErrAdoptRefused, reason: staleLock,
+			drive: func(h *harness, p *peer) error {
+				conn := h.conn()
+				result := async(func() error {
+					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+				})
+				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
+				p.send(shimwire.AdoptWorkingCopyResult{ID: request.ID, OK: false, Error: staleLock})
+				return awaitResult(h.t, result)
+			},
+			isCase: func(err error) bool {
+				return errors.As(err, &refusal) && refusal.Command == shimwire.TypeAdoptWorkingCopy
+			},
+		},
+		{name: "an older shim forwards the adoption and OMP refuses the command it does not know",
+			sentinel: runtime.ErrAdoptRefused, reason: "Unknown command: adopt-working-copy",
+			drive: func(h *harness, p *peer) error {
+				conn := h.conn()
+				result := async(func() error {
+					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+				})
+				request := p.expect(shimwire.TypeAdoptWorkingCopy).(shimwire.AdoptWorkingCopy)
+				p.send(shimwire.Response{ID: request.ID, Command: shimwire.TypeAdoptWorkingCopy,
+					Success: false, Error: "Unknown command: adopt-working-copy"})
+				return awaitResult(h.t, result)
+			},
+			isCase: func(err error) bool {
+				return errors.As(err, &refusal) && refusal.Command == shimwire.TypeAdoptWorkingCopy
+			},
+		},
 		{name: "the connection closes before the ack",
 			drive: func(h *harness, p *peer) error {
 				_, result := h.prompt(p, "delivery-1", "verify #41")
+				p.conn.Close()
+				return awaitResult(h.t, result)
+			},
+			isCase: func(err error) bool { return errors.Is(err, ErrClosed) },
+		},
+		{name: "the connection closes under the adoption",
+			drive: func(h *harness, p *peer) error {
+				conn := h.conn()
+				result := async(func() error {
+					return conn.AdoptWorkingCopy(context.Background(), identity, time.Second)
+				})
+				p.expect(shimwire.TypeAdoptWorkingCopy)
 				p.conn.Close()
 				return awaitResult(h.t, result)
 			},
@@ -209,14 +271,18 @@ func TestOnlyAPromptRefusalIsErrPromptRefused(t *testing.T) {
 			if !test.isCase(err) {
 				t.Fatalf("the call returned %v, not the failure this case is about", err)
 			}
-			if got := errors.Is(err, runtime.ErrPromptRefused); got != test.refused {
-				t.Fatalf("errors.Is(%v, runtime.ErrPromptRefused) = %v, want %v", err, got, test.refused)
+			for _, sentinel := range sentinels {
+				want := sentinel.err == test.sentinel
+				if got := errors.Is(err, sentinel.err); got != want {
+					t.Fatalf("errors.Is(%v, %s) = %v, want %v", err, sentinel.name, got, want)
+				}
 			}
-			// The supervisor reads Oh My Pi's words to tell its busy answer — a turn of its own,
-			// charged nothing — from a refusal of the work.
-			if test.refused {
-				if reason := runtime.RefusalReason(err); reason != "Agent is busy" {
-					t.Fatalf("runtime.RefusalReason(%v) = %q, want OMP's words %q", err, reason, "Agent is busy")
+			// The far side's own words reach the supervisor: Oh My Pi's, to tell its busy answer
+			// — a turn of its own, charged nothing — from a refusal of the work, and the shim's,
+			// which name the stale lock the adoption failed on, to carry into the log.
+			if test.reason != "" {
+				if reason := runtime.RefusalReason(err); reason != test.reason {
+					t.Fatalf("runtime.RefusalReason(%v) = %q, want the far side's words %q", err, reason, test.reason)
 				}
 			}
 		})
@@ -232,8 +298,8 @@ func TestPromptRefusesAnEmptyDeliveryID(t *testing.T) {
 }
 
 // The turn facts are events, in wire order, and the ack is not one of them: an acked prompt,
-// then OMP's agent_start and agent_end, then the close, is exactly Hello, TurnStart, TurnEnd,
-// Closed (F4, B4).
+// then OMP's agent_start, the tool call it makes, and its agent_end, then the close, is exactly
+// Hello, TurnStart, ToolStep, TurnEnd, Closed (F4, B4).
 func TestEventsCarryTheTurnInWireOrderAndNoAck(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := dial(t, h.listener.Addr())
@@ -244,13 +310,19 @@ func TestEventsCarryTheTurnInWireOrderAndNoAck(t *testing.T) {
 	if err := awaitResult(t, result); err != nil {
 		t.Fatalf("Prompt: %v", err)
 	}
+	conn := h.conn()
 	p.send(shimwire.AgentStart{})
-	p.send(shimwire.Raw{Type: "tool_execution_start", JSON: json.RawMessage(`{"type":"tool_execution_start","toolName":"bash"}`)})
+	p.send(shimwire.ToolExecutionStart{ToolCallID: "toolu_turn1_0", ToolName: "bash",
+		Args: json.RawMessage(`{"command":"echo hi"}`), Intent: "Running the case's step"})
 	p.send(shimwire.AgentEnd{})
 	p.conn.Close()
 	want := []Event{
 		Hello{Claim: testClaim, Generation: testGeneration},
 		TurnStart{Claim: testClaim},
+		// The length and the fingerprint of what the frame carried, and no argument text at all:
+		// `{"command":"echo hi"}` is 21 bytes, and the first eight of its SHA-256 are this.
+		ToolStep{Claim: testClaim, Tool: "bash", CallID: "toolu_turn1_0",
+			ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: conn.Sequence()},
 		TurnEnd{Claim: testClaim},
 		Closed{Claim: testClaim},
 	}
@@ -258,8 +330,30 @@ func TestEventsCarryTheTurnInWireOrderAndNoAck(t *testing.T) {
 	for range want {
 		got = append(got, h.next())
 	}
-	if !slices.Equal(got, want) {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("events = %#v, want %#v", got, want)
+	}
+	if rest := h.stop(); len(rest) != 0 {
+		t.Fatalf("further events = %#v, want none", rest)
+	}
+}
+
+// The end of a tool call is one event too, carrying the call id its start carried and no
+// arguments: the frame repeats none, and pairing the two is the supervisor's work. A frame this
+// package still models nothing of — a message update, an error — is dropped here as before.
+func TestAToolStepEventRecordsACallsEndAndAnUnmodelledFrameIsDropped(t *testing.T) {
+	h := startListener(t, harnessOptions{})
+	p := h.connect(testToken)
+	conn := h.conn()
+	p.send(shimwire.ToolExecutionEnd{ToolCallID: "toolu_turn1_0", ToolName: "bash"})
+	p.send(shimwire.Raw{Type: "message_update", JSON: json.RawMessage(`{"type":"message_update","content":"thinking"}`)})
+	p.conn.Close()
+	want := ToolStep{Claim: testClaim, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: conn.Sequence()}
+	if got := h.next(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("event = %#v, want %#v", got, want)
+	}
+	if got := h.next(); got != (Closed{Claim: testClaim}) {
+		t.Fatalf("event after the unmodelled frame = %#v, want the close: that frame is no event", got)
 	}
 	if rest := h.stop(); len(rest) != 0 {
 		t.Fatalf("further events = %#v, want none", rest)

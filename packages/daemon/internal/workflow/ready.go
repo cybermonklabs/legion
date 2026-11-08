@@ -50,19 +50,63 @@ func (e *Engine) queueReadyMerge(ctx context.Context, tx pgx.Tx, issue string, m
 // left it, a by-hand READY, or another READY head changes nothing, and a tree that lingers holds the
 // issue where it is (transition).
 func (e *Engine) mergeFailed(ctx context.Context, tx pgx.Tx, fact intake.MergeFailed) (intake.Result, error) {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Phase != phase.AwaitingMerge {
-		return intake.Result{}, err
-	}
-	merger, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
-	if err != nil || merger.MergeNote != "" || merger.HandoffCommit != fact.Head {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil || pr == nil || pr.Number != fact.Number || pr.State != record.PullRequestOpen {
+	issue, pr, err := e.awaitingMergeOf(ctx, tx, fact.Issue, fact.Number, fact.Head)
+	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
 	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerChecksRed, "", record.PhaseRow{}, pr, fact.Reason)
+}
+
+// mergeQueueConflict sends an issue back to implementing when GitHub's merge queue reports its
+// entry for the READY's head unmergeable while the queue has built that entry on the tip of the
+// pull request's own base branch (intake.MergeQueueConflict): nothing ahead of the entry in the
+// queue can be the cause there, so the head itself conflicts with the base, which moves the issue
+// as a red head does, on the same awaiting_merge row (TriggerChecksRed). The implementer's task
+// and the architect's checks-red notice name the branch to merge forward, and the READY's
+// withdrawal is told with its disarm (withdrawReady). Only an issue still awaiting that READY, on
+// the open pull request the fact names, moves: one that has left it, a by-hand READY, or another
+// READY head changes nothing, and a tree that lingers holds the issue where it is (transition).
+//
+// The queue's answer is a judgement of the head against its base, so the record holds that head
+// conflicting before the move (record.PullRequest.ConflictingHead), as the two-minute pass's own
+// CONFLICTING read does (mergeability): the round this move counts is then a conflict round,
+// which review_round_cap does not count, and so is every further move back until the
+// implementer's forward merge moves the recorded head off it (recordRound).
+func (e *Engine) mergeQueueConflict(ctx context.Context, tx pgx.Tx, fact intake.MergeQueueConflict) (intake.Result, error) {
+	issue, pr, err := e.awaitingMergeOf(ctx, tx, fact.Issue, fact.Number, fact.Head)
+	if err != nil || issue == nil {
+		return intake.Result{}, err
+	}
+	if pr.ConflictingHead != fact.Head {
+		pr.ConflictingHead = fact.Head
+		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+			return intake.Result{}, err
+		}
+	}
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerChecksRed, "", record.PhaseRow{}, pr, fact.Reason)
+}
+
+// awaitingMergeOf is key's issue record and the pull request record it awaits the merge on, when
+// the issue still awaits the merge of head on open pull request number, and nil for both when it
+// does not: the issue is in awaiting_merge, its merger's READY is no by-hand one
+// (record.PhaseRow.MergeNote) and stands at head, and the pull request the record holds is
+// number, still open. It is the one guard the merge queue's two answers share (mergeFailed,
+// mergeQueueConflict): neither moves an issue that has left the READY, a by-hand READY or another
+// READY head. A read that fails answers its error, and nil for both.
+func (e *Engine) awaitingMergeOf(ctx context.Context, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, error) {
+	issue, err := e.store.Issue(ctx, tx, key)
+	if err != nil || issue == nil || issue.Phase != phase.AwaitingMerge {
+		return nil, nil, err
+	}
+	merger, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
+	if err != nil || merger.MergeNote != "" || merger.HandoffCommit != head {
+		return nil, nil, err
+	}
+	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || pr == nil || pr.Number != number || pr.State != record.PullRequestOpen {
+		return nil, nil, err
+	}
+	return issue, pr, nil
 }
 
 // holdReadyToItsHead holds a merger's READY to the pull request's head before anything of it is
@@ -178,9 +222,9 @@ func (e *Engine) voidMovedHeldReady(ctx context.Context, tx pgx.Tx, issue record
 		return err
 	}
 	version := 0
-	if issue.ReadyPendingVersion != nil {
-		version = *issue.ReadyPendingVersion
-		issue.ReadyPendingVersion = nil
+	if issue.ReadyPending != nil {
+		version = issue.ReadyPending.Version
+		issue.ReadyPending = nil
 		if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -264,11 +308,14 @@ func (e *Engine) tellReadyAudience(ctx context.Context, tx pgx.Tx, issue record.
 	return e.enqueue(ctx, tx, issue.Key, record.MergeQueuePublish{Role: e.cfg.MergeQueueRole, Packet: packet})
 }
 
-// advancePendingReady advances every merger in the tree whose READY was refused while the gate was
-// closed, now that a human approved the gate's current version. That version may be later than
-// the one the refusal named: the READY stands until the gate reopens, whatever the human revised
-// in between. A READY refused while the tree had no design gate at all names no version — the
-// issues table takes only a positive `ready_pending_version` — so it is found the same way a
+// advancePendingReady advances every merger in the tree whose READY was refused while a required
+// step of the design gate was closed, now that every required step is open
+// (classify.DesignGatesOpen). gates is every gate the root holds by its step. The refusal named
+// one step and one version of it (Engine.handoff), and a version of that step later than the one
+// it named releases the READY all the same: the READY stands until the gate reopens, whatever the
+// human revised in between. No second READY is asked for, however many steps were closed when the
+// first was refused. A READY refused while the tree had no design gate at all names no version —
+// the issues table takes only a positive `ready_pending_version` — so it is found the same way a
 // known-version refusal is found once there is a packet to release: the merger's phase row still
 // carries the READY completion's summary. A non-empty summary while in merging can only be a
 // refused READY's: handoff()'s READY_REQUIRED guard (engine.go:334) refuses a non-READY merger
@@ -277,8 +324,13 @@ func (e *Engine) tellReadyAudience(ctx context.Context, tx pgx.Tx, issue record.
 // mistake — even though the issue itself records no pending version for it. A held READY whose
 // head a push or a reopen moved was voided then (voidMovedHeldReady), so a packet this advances
 // names the head GitHub showed when the route accepted it.
-func (e *Engine) advancePendingReady(ctx context.Context, tx pgx.Tx, rootKey string, gate record.DesignGate) error {
-	if !classify.DesignGateOpen(gate) {
+//
+// Every caller but one acts on a fact about a gate. The other is the admission pass
+// (AdvanceOpenTrees), which is what releases a READY a step that has since left gates.design
+// refused: no gate fact is coming for that step, since an approval of its document is ignored
+// once the deployment stops gating it.
+func (e *Engine) advancePendingReady(ctx context.Context, tx pgx.Tx, rootKey string, gates map[record.DesignStep]record.DesignGate) error {
+	if !classify.DesignGatesOpen(e.cfg.Steps, gates) {
 		return nil
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, rootKey); err != nil || lingers {
@@ -292,8 +344,14 @@ func (e *Engine) advancePendingReady(ctx context.Context, tx pgx.Tx, rootKey str
 		if issue.Phase != phase.Merging {
 			continue
 		}
-		if issue.ReadyPendingVersion != nil && *issue.ReadyPendingVersion > gate.LatestVersion {
-			continue
+		// The refusal is one value, so a READY that waits on a version names the step whose
+		// document that version is of.
+		approved := 0
+		if issue.ReadyPending != nil {
+			approved = gates[issue.ReadyPending.Step].LatestVersion
+			if issue.ReadyPending.Version > approved {
+				continue
+			}
 		}
 		row, err := e.phaseRow(ctx, tx, issue.Key, claim.RoleMerger)
 		if err != nil {
@@ -303,18 +361,19 @@ func (e *Engine) advancePendingReady(ctx context.Context, tx pgx.Tx, rootKey str
 		// no refusal to release) or reported one before migration 0016 kept the packet (that READY
 		// is void: posting it would leave a message of the outbox marker alone, and a merge queue
 		// publish without a packet would fail the whole approval). A pending version distinguishes
-		// the two: only the void case names one, since it is set only when a gate exists.
+		// the two: only the void case names one, since it is set only when the step that refused
+		// the READY was registered.
 		if row.Summary == "" {
-			if issue.ReadyPendingVersion == nil {
+			if issue.ReadyPending == nil {
 				continue
 			}
-			issue.ReadyPendingVersion = nil
+			issue.ReadyPending = nil
 			if err := e.store.PutIssue(ctx, tx, issue); err != nil {
 				return err
 			}
-			if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "ready-refused", Role: claim.RoleArchitect, Version: gate.LatestVersion,
+			if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "ready-refused", Role: claim.RoleArchitect, Version: approved,
 				Reason: fmt.Sprintf("READY_PACKET_MISSING: design version %d is approved, but %s's READY was refused before the daemon kept READY packets, so it has no packet to post; that READY is void and %s stays in merging, and whether it is started over (park_child then rerun_child, for a child) or ended is your decision",
-					gate.LatestVersion, issue.Key, issue.Key)}); err != nil {
+					approved, issue.Key, issue.Key)}); err != nil {
 				return err
 			}
 			continue

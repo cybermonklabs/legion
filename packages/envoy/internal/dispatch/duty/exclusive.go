@@ -138,9 +138,11 @@ func periodBoundary(due time.Time, period time.Duration) time.Time {
 // closing its connection (FreeSessionLock, which gives every session lock's unlock this bound).
 const leaseCallTimeout = 5 * time.Second
 
-// leaseCall is the context of one statement on a session lock's own connection: a lease's, or any
-// lock FreeSessionLock gives back (leaseCallTimeout).
-func leaseCall() (context.Context, context.CancelFunc) {
+// LeaseCall is the context of one statement on a session lock's own connection: a lease's, any
+// lock FreeSessionLock gives back, and the rollback a room's batch of browser updates sends on
+// that connection before its unlock (internal/dispatch/docs, appendRoomTx), which must be bounded
+// for the same reason the unlock is (leaseCallTimeout).
+func LeaseCall() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), leaseCallTimeout)
 }
 
@@ -173,7 +175,7 @@ type ExclusiveFunc func(ctx context.Context, leases Leases, name string, due tim
 // The lease is a session-level two-key advisory lock, leaseNamespace and the name's hashtext, taken
 // on a connection of its own with pg_try_advisory_lock: a lease the database reports held elsewhere
 // is a skip and not a queue, because the other process is running that very pass and waiting for it
-// would only run the same work again, late. The lease's own statements run under leaseCall, never
+// would only run the same work again, late. The lease's own statements run under LeaseCall, never
 // ctx, so a shutdown ends no statement on that connection. A shutdown that Exclusive sees after the
 // take or after the period read starts no pass; one that comes later is the pass's own to see. The
 // pass is called on ctx, and the lease is given back when it returns, however it returns.
@@ -201,7 +203,7 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		return false
 	}
 	var held bool
-	takeCtx, cancelTake := leaseCall()
+	takeCtx, cancelTake := LeaseCall()
 	err = conn.QueryRow(takeCtx, takeLease, leaseNamespace, name).Scan(&held)
 	cancelTake()
 	if err != nil {
@@ -222,7 +224,7 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 	if ctx.Err() != nil {
 		return false
 	}
-	readCtx, cancelRead := leaseCall()
+	readCtx, cancelRead := LeaseCall()
 	boundary, served, err := periodServed(readCtx, conn, name, due, period)
 	cancelRead()
 	if err != nil {
@@ -239,9 +241,22 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		// The line a lease held elsewhere writes too, and for the same reason: this tick would be
 		// the pass some process has already made of this period, and the loops' tests count one
 		// skip either way. It carries the period as well, which the skip above cannot: that one
-		// has no lease and so no boundary read. A test reading two processes' logs can then tell
-		// a skip of this period from a skip of the next.
-		slog.Info("dispatch duty: leased pass skipped", "lease", name, servedPeriod(boundary))
+		// has no lease and so no boundary read. Those tests only count these lines and read
+		// neither the period nor the due off them (countLease, cmd/dispatch/multiprocess_test.go);
+		// the period is on the line for a person reading two processes' logs, who can then tell a
+		// skip of this period from a skip of the next.
+		//
+		// It carries the tick's own due beside the period, which the period alone cannot give:
+		// the period is periodBoundary of this very due, so it already tells a tick of one
+		// period from a tick of the next, but it says nothing about where inside that period
+		// the tick fell. Two processes ticking minutes apart inside one period write the same
+		// period, and the stagger between them is what a person comparing two processes' logs
+		// needs. The test over this attribute, TestTheLinesAboutATickNameItsDueAndItsPeriod
+		// (exclusive_test.go), holds its format rather than that need. Neither line is
+		// written at the moment its tick was due - this one after the lease and the period
+		// read, the line below after the whole pass - so the moment the line carries is not
+		// that stagger either (INFRA-1492).
+		slog.Info("dispatch duty: leased pass skipped", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 		return false
 	}
 	pass(ctx)
@@ -265,8 +280,14 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 	// leaves the next honest pass in the next period, so a reader counting passes over a whole
 	// run cannot tell two passes of one period - which the lease forbids - from one pass each of
 	// two periods, which it allows; the period here is what tells them apart
-	// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go).
-	slog.Info("dispatch duty: leased pass ran", "lease", name, servedPeriod(boundary))
+	// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go). The tick's own due is
+	// beside it for where inside that period the tick fell, which the period cannot say: two
+	// processes ticking minutes apart inside one period write the same period, and the stagger
+	// between them is what a person comparing two processes' logs needs. The test over this
+	// attribute, TestTheLinesAboutATickNameItsDueAndItsPeriod (exclusive_test.go), holds its
+	// format rather than that need. This line is written when the pass ends rather than when
+	// the tick was due, so its own moment does not say that stagger either (INFRA-1492).
+	slog.Info("dispatch duty: leased pass ran", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 	return true
 }
 
@@ -280,6 +301,19 @@ func servedPeriod(boundary time.Time) slog.Attr {
 		return slog.Attr{}
 	}
 	return slog.String("period", boundary.UTC().Format(time.RFC3339Nano))
+}
+
+// tickDue is the log attribute naming the moment a tick was due, and nothing at all for a pass
+// with no period, which is also a pass with no due: Exclusive's periodless callers pass the zero
+// time for it (duty.WokenLoop.attempt, delivery's consumer bind), so a line would read
+// due=0001-01-01T00:00:00Z and say the tick was due at the zero instant. It is judged by the
+// same boundary servedPeriod is, so the two attributes are always written together or not at
+// all, and formatted as that one is, so a reader compares them without converting a zone.
+func tickDue(due time.Time, boundary time.Time) slog.Attr {
+	if boundary.IsZero() {
+		return slog.Attr{}
+	}
+	return slog.String("due", due.UTC().Format(time.RFC3339Nano))
 }
 
 // periodServed answers the aligned start of the period this tick was due in (periodBoundary of
@@ -309,14 +343,14 @@ func periodServed(ctx context.Context, conn *pgxpool.Conn, name string, due time
 // This comment said the opposite until INFRA-66's second round: that a pass cut short by shutdown
 // still ran and still served its period, which was the behaviour and was wrong both times it was
 // written. A record that never lands only costs one early pass, which is why its failure is
-// logged and not returned - and why it runs under leaseCall, bounded as well as detached,
+// logged and not returned - and why it runs under LeaseCall, bounded as well as detached,
 // since an upsert that never answers costs this loop its goroutine and the lease behind it rather
 // than one record. A pass with no period records nothing.
 func recordPassOn(conn *pgxpool.Conn, name string, boundary time.Time, period time.Duration) {
 	if period <= 0 {
 		return
 	}
-	ctx, cancel := leaseCall()
+	ctx, cancel := LeaseCall()
 	defer cancel()
 	if _, err := conn.Exec(ctx, recordPass, name, boundary, period.Nanoseconds()); err != nil {
 		slog.Error("dispatch duty: record the pass", "lease", name, "error", err)
@@ -333,7 +367,7 @@ func recordPassOn(conn *pgxpool.Conn, name string, boundary time.Time, period ti
 // DeadlineExceeded and never Canceled - so the check below logs a deadline rather than swallowing
 // it, and the two are not to be tidied into one condition. The record, the unlock and the close log
 // their own failures directly rather than through here. The acquire runs on the pass's own context;
-// the take and the period read run under leaseCall, so neither is cancelled by shutdown.
+// the take and the period read run under LeaseCall, so neither is cancelled by shutdown.
 func reportFailure(name, message string, err error) {
 	if errors.Is(err, context.Canceled) {
 		return
@@ -343,7 +377,7 @@ func reportFailure(name, message string, err error) {
 
 // freeLeaseOn gives name's lease back on the connection that took it, and that connection back to
 // the lease pool (FreeSessionLock). It logs every failure, ErrSessionClosed included: a lease
-// connection is closed before its unlock only by a statement under leaseCall that failed, so the
+// connection is closed before its unlock only by a statement under LeaseCall that failed, so the
 // line says the lease went with its session rather than by its unlock.
 func freeLeaseOn(conn *pgxpool.Conn, name string) {
 	if err := FreeSessionLock(conn, freeLease, leaseNamespace, name); err != nil {

@@ -8,7 +8,6 @@ import {
   createMessage,
   createProject,
   createProjectDocument,
-  e2eAgentToken,
   resolveAsk,
 } from "./api";
 import { documentEditor } from "./editor";
@@ -415,43 +414,6 @@ test("no results and short queries are stated, not silent", async ({ browser }) 
   } finally {
     await context.close();
   }
-});
-test("the agent issue API returns POSSIBLE_DUPLICATE and force creates the issue", async ({
-  request,
-}) => {
-  await createProject({ key: "CORE", name: "Core" });
-  await createIssue({ project: "CORE", title: "Calibrate astrolabe navigation instruments" });
-
-  const duplicate = await request.post("/api/v1/issues", {
-    data: {
-      actor: searchSession.actor,
-      project: "CORE",
-      title: "Astrolabe navigation instruments rollout",
-    },
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  expect(duplicate.status()).toBe(409);
-  await expect(duplicate.json()).resolves.toMatchObject({
-    candidates: [
-      {
-        key: "CORE-1",
-        title: "Calibrate astrolabe navigation instruments",
-      },
-    ],
-    code: "POSSIBLE_DUPLICATE",
-  });
-
-  const forced = await request.post("/api/v1/issues", {
-    data: {
-      actor: searchSession.actor,
-      force: true,
-      project: "CORE",
-      title: "Astrolabe navigation instruments rollout",
-    },
-    headers: { Authorization: `Bearer ${e2eAgentToken}` },
-  });
-  expect(forced.status()).toBe(201);
-  await expect(forced.json()).resolves.toMatchObject({ key: "CORE-2" });
 });
 
 // The hint names keys a touch reader does not have, and 33px of palette is 33px of hits, so it

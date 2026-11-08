@@ -2,14 +2,11 @@ package daemon
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"net/url"
 	"os"
 	"reflect"
 	"slices"
@@ -23,10 +20,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -89,9 +88,9 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// not be what step 6 sees: an hour before the runtime's first tick (o.controllerFirstWake,
 	// below) and an hour between ticks mean this run applies no tick at all.
 	cfg.ControllerWakeInterval = time.Hour
-	// With the design gate off, the architect's own registration opens its tree, which is what
-	// makes starting a released child possible at all.
-	cfg.Gates.Design = config.DesignGateOff
+	// Gating no step, the architect's own registration opens its tree, which is what makes
+	// starting a released child possible at all.
+	cfg.Gates.Design = config.DesignGateOff.Steps()
 	cfg.DispatchURL = baseURL
 	if err := os.WriteFile(cfg.DispatchTokenFile, []byte(token+"\n"), 0o600); err != nil {
 		t.Fatalf("write the scratch Dispatch bearer: %v", err)
@@ -819,27 +818,23 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 // last poll read — what Legion was doing instead.
 func settled(t *testing.T, d *daemon, what string, want func(api.State) bool) (api.State, string) {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-20*time.Second).Before(deadline) {
-		deadline = testDeadline.Add(-20 * time.Second)
-	}
-	for {
-		status, body := d.request(http.MethodGet, "/legion/v1/state", nil, false)
+	var state api.State
+	var body []byte
+	if !testwait.Holds(testwait.Bounded(t, time.Minute, 20*time.Second), 20*time.Millisecond, func() bool {
+		status, read := d.request(http.MethodGet, "/legion/v1/state", nil, false)
+		body = read
 		if status != http.StatusOK {
 			t.Fatalf("GET the state = %d; body %s", status, body)
 		}
-		var state api.State
+		state = api.State{}
 		if err := json.Unmarshal(body, &state); err != nil {
 			t.Fatalf("decode the state %s: %v", body, err)
 		}
-		if want(state) {
-			return state, string(body)
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Legion did not %s; its state is %s", what, body)
-		}
-		time.Sleep(20 * time.Millisecond)
+		return want(state)
+	}) {
+		t.Fatalf("Legion did not %s; its state is %s", what, body)
 	}
+	return state, string(body)
 }
 
 // blockedOn is what the state says issue waits on, and whether it names it at all.
@@ -918,30 +913,7 @@ func registerLaunch(t *testing.T, d *daemon, launch runtime.SpawnSpec) (string, 
 // them. The admission slot index, unique across the whole database, is a second reason.
 func blockersDatabase(t *testing.T) string {
 	t.Helper()
-	base, err := url.Parse(testDSN(t))
-	if err != nil {
-		t.Fatalf("parse the test DSN: %v", err)
-	}
-	adminURL := *base
-	adminURL.Path = "/postgres"
-	admin, err := pgxpool.New(context.Background(), adminURL.String())
-	if err != nil {
-		t.Fatalf("connect the test admin database: %v", err)
-	}
-	t.Cleanup(admin.Close)
-	name := "legion_blockers_test_" + outboxSuffix(t)
-	// A file copy of template1 (docs/testing.md, "A database a Go test creates").
-	if _, err := admin.Exec(context.Background(), "create database "+name+" strategy file_copy"); err != nil {
-		t.Fatalf("create %s: %v", name, err)
-	}
-	t.Cleanup(func() {
-		if _, err := admin.Exec(context.Background(), "drop database "+name+" with (force)"); err != nil {
-			t.Errorf("drop %s: %v", name, err)
-		}
-	})
-	daemonURL := *base
-	daemonURL.Path = "/" + name
-	return daemonURL.String()
+	return testdb.Database(t, "legion_blockers_test")
 }
 
 // blockersGitHub is GitHub's REST API as this daemon's boot and its outbox call it: a repository's
@@ -952,7 +924,7 @@ func blockersDatabase(t *testing.T) string {
 func blockersGitHub(t *testing.T) string {
 	t.Helper()
 	const head = "c0ffee0123456789abcdef0123456789abcdef01"
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.SplitN(rest, "/", 3)
 		if !isRepository || len(parts) < 2 {
@@ -977,9 +949,7 @@ func blockersGitHub(t *testing.T) string {
 			t.Logf("the GitHub stand-in answered 404 to %s %s", r.Method, r.URL.Path)
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // scratchDispatchClient is the test's own client of the scratch Dispatch server; the daemon has

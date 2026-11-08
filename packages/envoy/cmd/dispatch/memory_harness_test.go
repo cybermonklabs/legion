@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -230,9 +231,9 @@ func (h *memoryHarness) readOwed(t *testing.T) owedBeforeStart {
 
 // drainBeforeStart leaves the database owing nothing the server about to start would do inside a
 // measured window. A fresh server arms the settlement of every row older than a minute at start
-// and every minute after (internal/dispatch/docs/resume.go:14,22) and indexes the blocks of every
-// document owed one, both of which read whole documents: left owed, either runs inside the next
-// window, and the peak measured there is that work's memory and not the request's.
+// and every minute after (docs.SettlementResumeInterval and settlementResumeAge) and indexes the
+// blocks of every document owed one, both of which read whole documents: left owed, either runs
+// inside the next window, and the peak measured there is that work's memory, not the request's.
 //
 // It does that work itself rather than waiting for it. Between one server's stop and the next
 // server's start no process in this test is settling anything, so a settlement a write left on a
@@ -249,7 +250,7 @@ func (h *memoryHarness) drainBeforeStart(t *testing.T, port string) {
 	}
 	// One service for both pieces of work, shut down before the server starts, so neither its
 	// compaction queue nor a lease of its own outlives this step. ServerURL is the port the test
-	// already holds, the one refs.ReindexOwedItem hands text.ExtractAt, so the index this writes
+	// already holds, the one refs.ReindexOwed hands text.ExtractAt, so the index this writes
 	// is the index the server would have written.
 	service := docs.New(docs.Deps{Store: h.database, Events: events.NewBroker(), ServerURL: "http://127.0.0.1:" + port})
 	defer service.Shutdown(context.Background())
@@ -715,20 +716,11 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 // lockedBuffer is the server's output, written by the process's copying goroutine and read by the
 // test when it fails.
 type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(data []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(data)
+	logtest.Buffer
 }
 
 func (b *lockedBuffer) tail() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	output := b.buffer.String()
+	output := b.String()
 	if len(output) > 4000 {
 		output = output[len(output)-4000:]
 	}
@@ -738,15 +730,11 @@ func (b *lockedBuffer) tail() string {
 // len is how much the server has written, and from everything it wrote past offset: what one
 // measured window logged (peakAboveIdle), which tail's last 4,000 bytes do not answer for.
 func (b *lockedBuffer) len() int {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Len()
+	return b.Len()
 }
 
 func (b *lockedBuffer) from(offset int) string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	output := b.buffer.String()
+	output := b.String()
 	if offset >= len(output) {
 		return ""
 	}

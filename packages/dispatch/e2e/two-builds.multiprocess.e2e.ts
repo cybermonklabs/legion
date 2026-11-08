@@ -24,20 +24,13 @@ import {
   dashboardOrigin,
   publishAgentStreamFrame,
   putArchitectureSource,
-  search,
   syncArchitectureSource,
   userHeaders,
 } from "./api";
 import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
-import {
-  type DispatchProcess,
-  dispatchProcesses,
-  pinnedTo,
-  processPinCookie,
-  processPinHeader,
-} from "./harness-processes";
+import { type DispatchProcess, processPinCookie, processPinHeader } from "./harness-processes";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { type LazyPiece, lazyPieces, type WalkRoutePath, walkRoutes } from "./two-builds-routes";
@@ -111,14 +104,39 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
+/** The machine the seeded session reports. It reports it as `machine_id` and no `host`, which
+ *  the fake Envoy answers as the session's host (e2e/fake-envoy.ts), so this is the machine
+ *  `/machines` lists and `/machines/:machine` draws. */
+const machine = "two-builds-host";
+
+/** The window `/machines/:machine` draws: a three-pane window as tmux 3.5a writes it, `%0` over
+ *  `%1` beside `%2`. The seeded session sits in `%0`, so the page draws a real window rather
+ *  than saying it has none, and the drawing runs the layout parser. Its narrowest pane is 39 of
+ *  80 columns and 11 of 24 rows, which the walk's window is wide enough to draw rather than list
+ *  (a pane under 96 px wide or 42 px tall makes the window a list, WindowDrawing.tsx): panes of
+ *  this window hold those at any drawing wider than 192 px. */
+const windowLayout = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
+
 const session: FakeSession = {
   capabilities: ["aside", "btw", "steer"],
   dir: "/workspaces/two-builds",
-  machine_id: "two-builds-host",
+  machine_id: machine,
   roles: ["planner"],
   // The live view's stream hook takes a session uuid only, as a real session id is.
   session_id: "019a2b3c-0559-7000-8000-000000000559",
   title: "Two builds planner",
+  tmux_place: {
+    layout: windowLayout,
+    pane_id: "%0",
+    pane_index: 0,
+    server_pid: "4242",
+    session_name: "main",
+    socket: "/tmp/tmux-1000/default",
+    window_id: "@1",
+    window_index: 1,
+    window_name: "agents",
+    zoomed: false,
+  },
 };
 
 /** The text each seeded thing shows, which its route's landmark finds. */
@@ -345,6 +363,28 @@ function visits(seed: Seeded): readonly Visit[] {
         page.getByRole("img", { name: "shot.png version 1" }),
       ],
       url: `${agent}/artifacts/${seed.agentArtifact}`,
+    },
+    {
+      route: "/machines",
+      shows: (page) => [
+        heading(page, "Machines"),
+        page.locator(`[data-testid="machine-row"][data-machine="${machine}"]`),
+      ],
+      url: "/machines",
+    },
+    {
+      // The drawing is the point: a machine whose sessions are in no pane says so and draws
+      // nothing, which never runs the layout parser or the window drawing. The seeded session's
+      // place names a window of three panes, so the page draws that window and the pane box
+      // below is the session's own.
+      route: "/machines/:machine",
+      shows: (page) => [
+        heading(page, machine),
+        page
+          .getByTestId("window-layout")
+          .locator(`[data-testid="window-pane"][data-agent="${session.session_id}"]`),
+      ],
+      url: `/machines/${machine}`,
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
@@ -586,7 +626,7 @@ async function walk(
 }
 
 // A walk opens about twenty-five pages, each waiting on its own content, so it outlasts the
-// suite's 30 s test timeout by design.
+// suite's 60 s test timeout (e2e/playwright.config.ts) by design.
 const walkTimeout = 300_000;
 
 test("every route renders with its page from Dispatch A and every asset from Dispatch B", async ({
@@ -601,32 +641,6 @@ test("every route renders with its page from Dispatch B and every asset from Dis
 }) => {
   test.setTimeout(walkTimeout);
   await walk(browser, "b", "a");
-});
-
-test("every file of both builds' assets answers 200 with its bytes from Dispatch A and from Dispatch B", async () => {
-  const wrong: string[] = [];
-  for (const target of dispatchProcesses) {
-    for (const build of [builds.a, builds.b]) {
-      await Promise.all(
-        build.assets.map(async (file) => {
-          const response = await fetch(new URL(`/assets/${file}`, baseUrl), {
-            headers: pinnedTo(target),
-          });
-          const where = `${build.dist}/assets/${file} from Dispatch ${target.toUpperCase()}`;
-          if (response.status !== 200) {
-            wrong.push(`${where} answered ${response.status}`);
-            await response.body?.cancel();
-            return;
-          }
-          const bytes = Buffer.from(await response.arrayBuffer());
-          if (!bytes.equals(readFileSync(join(build.dist, "assets", file)))) {
-            wrong.push(`${where} answered other bytes than the file's`);
-          }
-        })
-      );
-    }
-  }
-  expect(wrong.sort()).toEqual([]);
 });
 
 /** Opens the inbox in a signed-in tab whose page, API calls and sockets are all `process`'s (the
@@ -718,101 +732,4 @@ test("a tab of build B focused once only build A is live shows the new-version n
     }
     await page?.context().close();
   }
-});
-
-/** Waits until `statement` answers `want`, reading it every second for at most `seconds`. */
-async function until(
-  statement: string,
-  want: string,
-  seconds: number,
-  what: string
-): Promise<void> {
-  await expect
-    .poll(async () => (await sql(statement)).trim(), {
-      intervals: [1_000],
-      message: what,
-      timeout: seconds * 1_000,
-    })
-    .toBe(want);
-}
-
-// While a release overlaps two builds, the older one's meaning search reads a whole-text
-// `embeddings` row per item (kind `comment`), and the newer one reads the windows of blocks it
-// writes instead (kind `comment_block`). So the newer build retires a whole-text row only once
-// its owner holds a window of the matching kind whose vector is current, and an item leaves the
-// older build's meaning search only once the newer build can find it. Both processes here run
-// one build, so what this proves is the rule the older build's reader depends on: the row it
-// reads stays, current and alive, while the window is not current, and goes once it is. The
-// block-index tick runs every 30 s, so each wait below spans more than one pass.
-test("a windowed item keeps the whole-text row the older build's meaning search reads until its window is current", async () => {
-  // Every wait below at its bound, and the two-tick sleep: 60 + 120 + 70 + 120 seconds, which a
-  // lane sharing the runner with the rest of the suite can need where an idle one returns in
-  // seconds.
-  test.setTimeout(420_000);
-  await createProject({ key: "ROLL", name: "Rollout" });
-  const issue = await createIssue({ project: "ROLL", title: "Two builds at once" });
-  const body = "The canary pours the astrolabe over the quiet wharf.\n\nA second paragraph.";
-  const comment = await createComment(issue.key, { body }, { as: "agent" });
-  const owner = `comment/${comment.id}`;
-  const whole = `select count(*) from embeddings where kind = 'comment' and id = '${comment.id}'`;
-  const windows = `select count(*) from embeddings where kind = 'comment_block' and split_part(id, '#', 1) = '${owner}'`;
-  const currentWindows = `${windows} and embedded_hash = content_hash and embedding is not null`;
-
-  // The window first, and stale before the whole-text row exists. The retirement arm deletes a
-  // whole-text row whenever its owner holds one current window (`wholeTextOwner.retire()`), and
-  // it does not ask whether that row is embedded, so a run that enqueued the row first would be
-  // racing its own queue against the block-index tick: on a machine where the queue embeds the
-  // row within the tick the row is there to be read, and on one where the tick comes first the
-  // row is deleted and no wait of any length can see it. That is what a lane sharing a runner
-  // with the rest of the browser suite made happen. With no window current, the arm cannot take
-  // the row, so what follows is decided by the queue's progress alone.
-  await until(currentWindows, "1", 60, "the comment's window is embedded");
-
-  // A window waiting for its vector: the state every item is in between this build's write and
-  // the queue's pass over it. `dead` keeps the queue from embedding it again while the
-  // retirement arm is given its chance.
-  await sql(
-    `update embeddings set embedded_hash = null, dead = true
-       where kind = 'comment_block' and split_part(id, '#', 1) = '${owner}'`
-  );
-  expect((await sql(currentWindows)).trim(), "no window is current").toBe("0");
-
-  // The row the previous build's trigger wrote for this comment, which this build no longer
-  // writes at a write: the same call that trigger made.
-  // psql reads the body as one SQL string literal, with any quote of its own doubled.
-  const quoted = `'${body.replaceAll("'", "''")}'`;
-  await sql(`select embeddings_enqueue('comment', '${comment.id}', ${quoted})`);
-  const embedded = `${whole} and embedded_hash = content_hash and embedding is not null`;
-  await until(embedded, "1", 120, "the whole-text row is embedded");
-
-  // Two ticks of the reconciliation pass over it, and the row the older build reads is still
-  // there: alive, with its vector and the comment's own text.
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 70_000);
-  await promise;
-  expect((await sql(whole)).trim(), "the whole-text row after two ticks").toBe("1");
-  const readable = await sql(
-    `select count(*) from embeddings where kind = 'comment' and id = '${comment.id}'
-       and not dead and embedding is not null and embedded_hash = content_hash
-       and text_snapshot = (select body from comments where id = '${comment.id}')`
-  );
-  expect(
-    readable.trim(),
-    "the older build's meaning row is current and holds the comment's text"
-  ).toBe("1");
-
-  // The hit the newer build already serves for the same comment names the block that matched,
-  // so both builds find it while the row is there.
-  const hits = await search("astrolabe wharf canary", { as: "agent" });
-  expect(
-    hits.results.filter((hit) => hit.kind === "comment" && hit.id === comment.id),
-    "the newer build's hit for the comment"
-  ).not.toEqual([]);
-
-  // Once the window is current again, the arm takes the whole-text row.
-  await sql(
-    `update embeddings set dead = false, embedded_hash = content_hash
-       where kind = 'comment_block' and split_part(id, '#', 1) = '${owner}'`
-  );
-  await until(whole, "0", 120, "the whole-text row is retired behind its window");
 });

@@ -41,6 +41,33 @@ type StreamTurnStart struct {
 // StreamTurnEnd is the agent's turn ending.
 type StreamTurnEnd struct{ Claim claim.Token }
 
+// StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
+// the frame (stream.ToolStep): the only fact on the wire that says an agent mid-turn is still
+// moving. It is what the claim's step record is built from (toolStepped), and it is no part of
+// the machine's state: the record it writes goes through the store's own narrow call, never
+// through a claim write.
+//
+// ArgsBytes is the length of the call's arguments as the start frame carried them and ArgsHash
+// their fingerprint, both measured where the frame was read (stream.ToolStep), and both zero for
+// an end, which carries no arguments. Their text reaches no queue of the daemon's and no record
+// of it: it routinely holds a credential, and the record reaches every surface an operator reads
+// (StepRecord). CallID is what pairs an end with its start, and the only thing that does; a
+// frame that carries none is a step with no call to name (the Claude Code bridge writes one).
+//
+// ConnSequence is the registration sequence of the connection the frame arrived on
+// (runtime.Conn.Sequence), as StreamLateRefusal carries it. A frame that arrived on a connection
+// the claim has since replaced is evidence of what the agent was doing and none at all of what
+// it is doing now, so it records its call and does not move the claim's last-step time.
+type StreamToolStep struct {
+	Claim        claim.Token
+	Tool         string
+	CallID       string
+	ArgsBytes    int
+	ArgsHash     string
+	End          bool
+	ConnSequence uint64
+}
+
 // StreamPromptResult is Oh My Pi saying how one prompt's work ended (shimwire.PromptResult): the
 // one frame that names the prompt a turn belonged to, where agent_start and agent_end name none.
 // It arrives on the heels of the agent_end of the turn the prompt ran, so a turn that ends with
@@ -142,6 +169,29 @@ type Timer struct {
 type StalePlugin struct {
 	Claim   claim.Token
 	Trigger string
+}
+
+// StallBackstop is the daemon's stall backstop reaching this claim: the orphan sweep found it in
+// a turn whose recorded last step (StepRecord) is older than its role's backstop bound, and the
+// daemon ends that turn itself (internal/daemon's backstopStalledTurns, INFRA-1274's R5). The
+// sweep posts it at every tick that finds the claim still stalled, so a stop the runtime refuses
+// is tried again without a timer of its own, exactly as StalePlugin is re-posted.
+//
+// Bound is the role's bound (config.Config.StallBackstopFor), which the machine measures the
+// claim's own record against before it acts: the sweep read the claims before this decision is
+// taken, and a claim whose record moved in between is one whose agent is moving. Deadline is the
+// moment the daemon decided it would wait no longer — that record's last step plus Bound — which
+// is already past when the sweep posts. The request carries it rather than waiting for the turn
+// to end, as a suspension held for a turn does (holdSuspension): the turn this exists for is one
+// that never ends. Step is the record the sweep read, the store's own: the machine judges the
+// moment from its own two sources (backstopStalledTurn) and reports this record to the daemon
+// when it acts, because the claim a machine holds carries the record as it stood when that
+// machine was built and the owner's notice must name the call the agent is actually in.
+type StallBackstop struct {
+	Claim    claim.Token
+	Bound    time.Duration
+	Deadline time.Time
+	Step     StepRecord
 }
 
 // PodUpdateOpen opens, or keeps open, an update round over this claim: the process holding it is
@@ -433,6 +483,7 @@ func (RuntimeObservation) isEvent()   {}
 func (StreamHello) isEvent()          {}
 func (StreamTurnStart) isEvent()      {}
 func (StreamTurnEnd) isEvent()        {}
+func (StreamToolStep) isEvent()       {}
 func (StreamPromptResult) isEvent()   {}
 func (StreamClosed) isEvent()         {}
 func (StreamLateRefusal) isEvent()    {}
@@ -440,6 +491,7 @@ func (PromptAcked) isEvent()          {}
 func (PromptRefused) isEvent()        {}
 func (Timer) isEvent()                {}
 func (StalePlugin) isEvent()          {}
+func (StallBackstop) isEvent()        {}
 func (PodUpdateOpen) isEvent()        {}
 func (PodUpdateEnded) isEvent()       {}
 func (PodUpdateSignalled) isEvent()   {}
@@ -469,6 +521,7 @@ const (
 	onHello         eventKind = "stream_hello"
 	onTurnStart     eventKind = "stream_turn_start"
 	onTurnEnd       eventKind = "stream_turn_end"
+	onToolStep      eventKind = "stream_tool_step"
 	onPromptResult  eventKind = "stream_prompt_result"
 	onClosed        eventKind = "stream_closed"
 	onLateRefusal   eventKind = "stream_late_refusal"
@@ -497,7 +550,8 @@ const (
 	onDeliver       eventKind = "request_deliver"
 	onExit          eventKind = "request_exit"
 
-	onStalePlugin eventKind = "stale_plugin"
+	onStalePlugin   eventKind = "stale_plugin"
+	onStallBackstop eventKind = "stall_backstop"
 
 	onPodUpdateOpen      eventKind = "pod_update_open"
 	onPodUpdateEnded     eventKind = "pod_update_ended"
@@ -517,6 +571,8 @@ func kindOf(ev Event) eventKind {
 		return onTurnStart
 	case StreamTurnEnd:
 		return onTurnEnd
+	case StreamToolStep:
+		return onToolStep
 	case StreamPromptResult:
 		return onPromptResult
 	case StreamClosed:
@@ -531,6 +587,8 @@ func kindOf(ev Event) eventKind {
 		return timerPrefix + eventKind(ev.Kind)
 	case StalePlugin:
 		return onStalePlugin
+	case StallBackstop:
+		return onStallBackstop
 	case PodUpdateOpen:
 		return onPodUpdateOpen
 	case PodUpdateEnded:
@@ -712,6 +770,14 @@ func fillTable(t *builder) {
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a delivery is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
 
+	// The calls of a turn, which are the one thing that says an agent mid-turn is still moving.
+	// The row writes the claim's step columns through the store's own narrow call and leaves the
+	// claim exactly where it found it (toolStepped), so it is a row of every state a process of
+	// this claim can send a frame from — a tool call before the agent registers among them, since
+	// the stream is up from the shim's hello.
+	t.row(onToolStep, "the agent stepped: record the call its stream reports", toolStepped, nil, live...)
+	t.ignore(onToolStep, noProcess, processless...)
+
 	t.row(onPromptResult, "the prompt's work ended: that names the turn it ran, and ends its delivery", promptResulted,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateReady, StateIdle, StateWorking)
 	t.ignore(onPromptResult, noSend, unready...)
@@ -758,6 +824,17 @@ func fillTable(t *builder) {
 		[]ClaimState{StateLaunching, StateFailed}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.ignore(onStalePlugin, "a claim still launching is left to its registration, which decides it the moment it arrives",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
+
+	// The daemon's stall backstop over a claim whose agent stopped stepping mid-turn. It is a
+	// row of the one state a turn runs in; the machine re-reads the claim's record before it
+	// acts, so a record that moved since the sweep read it leaves the turn alone
+	// (backstopStalledTurn). A held suspension ends in a suspension rather than a relaunch
+	// (replaceProcess, endHeld), which is why suspended is among the destinations.
+	t.row(onStallBackstop, "the agent stopped stepping mid-turn: end the turn, keep the task owed, and bring the session back", backstopStall,
+		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateWorking)
+	t.ignore(onStallBackstop, "the claim is in no turn, so its record names no turn to end",
+		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateRegistered, StateReady, StateIdle)
+	t.ignore(onStallBackstop, noProcess, gone...)
 
 	// The update round over the process holding this claim: opened and kept open by the daemon's
 	// sweep, and ended once the replacement it waited for has been made. inRound is every state a
@@ -1066,30 +1143,81 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 	return nil
 }
 
-// refused is a prompt that did not reach a turn from its own send: the agent refused it
-// (runtime.ErrPromptRefused), or the transport lost it. Either way a turn that confirmed the send
-// meanwhile was not the delivery's, and the delivery keeps its id — the shim drops a refused
+// refused is a send that did not reach a turn from its own goroutine: the agent refused the prompt
+// (runtime.ErrPromptRefused), the shim refused to adopt the working copy ahead of it
+// (runtime.ErrAdoptRefused), or the transport lost the send. Either way a turn that confirmed the
+// send meanwhile was not the delivery's, and the delivery keeps its id — the shim drops a refused
 // delivery's record, and answers a lost one it did see without a second turn.
 //
+// Which failures cost budget is decided here, and this doc is where the split is stated.
+// Charged are the two answers the far side gave about this very workspace: a refused prompt and a
+// refused adoption. Uncharged are the failures that are no answer at all — no reply within the RPC
+// timeout, a closed connection, a frame lost on the way, and a failure to mint the role's App
+// identity, which never leaves the daemon and is an outage of the GitHub App rather than a fault of
+// this workspace. Nothing is ever re-sent on the spot: every retry waits for the next sweep, hello,
+// turn end, or ready.
+//
 // A refusal is the agent's answer and is charged like a prompt that started no turn (LEGION-60:
-// an agent that refused every prompt would otherwise be retried forever); it is retried by the next
-// sweep, hello, turn end, or ready, never on the spot. Oh My Pi's busy answer (agentBusy) is the
-// exception, as it is for a late refusal (lateRefused): the agent is in a turn of its own — an
-// Envoy notice's, which a tree publishes freely while its worker boots — so it is working, not
-// refusing to work, and charging it would spend the budget of the very turn doing the work, three
-// such collisions retiring the agent mid-turn. The task waits unread, charged nothing, and that
-// turn's end sends it (the next sweep does, when the turn's start was not seen). A prompt lost to
-// the transport is not charged and waits for the shim's next hello — which may already have come
-// while the send was out.
+// an agent that refused every prompt would otherwise be retried forever). Oh My Pi's busy answer
+// (agentBusy) is the exception, as it is for a late refusal (lateRefused): the agent is in a turn
+// of its own — an Envoy notice's, which a tree publishes freely while its worker boots — so it is
+// working, not refusing to work, and charging it would spend the budget of the very turn doing the
+// work, three such collisions retiring the agent mid-turn. The task waits unread, charged nothing,
+// and that turn's end sends it (the next sweep does, when the turn's start was not seen).
+//
+// A refused adoption is charged the same way, and the busy exemption is not read for it: those are
+// the reasons Oh My Pi gives about a turn of its own, while this is the shim's own answer about a
+// working copy. Every `ok: false` the shim gives the adoption counts, its own command timeout
+// included — a jj wedged on a stale lock reports as exactly that — and the refusal's text is never
+// read to classify it, only carried into the log, where the shim's words already name the stale
+// lock's path and its age (INFRA-1480: unbounded re-sends of a refused adoption held two planning
+// tasks 31 and 33 hours, logged at warning level and charged nothing). With the shipped budgets
+// (prompt_failure_limit 3, prompt_retire_limit 2) the sixth consecutive charge fails the claim,
+// which workflow.Stranded and `legion state` report.
+//
+// A send lost to the transport is not charged and waits for the shim's next hello — which may
+// already have come while the send was out. So does an identity the daemon could not mint
+// (runtime.ErrIdentityUnavailable), which is uncharged for the same reason and logged under a
+// name of its own: it is raised before any frame leaves, and an operator told the transport lost
+// the prompt would look at the network while the GitHub App is the thing that is down.
+//
+// Every failure here, charged or not, is recorded on the pending delivery before the split is
+// read: how many sends of this task have failed, when this one failed and the error it failed
+// with (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
+// second budget, and the uncharged failures are exactly the ones it exists for: a transport loss
+// costs nothing and is retried for ever, so without it the only trace of a claim waiting days on
+// a send that never lands is a log line inside its pod. It rides out on the write this already
+// makes of the delivery, so one persist covers the taken-back confirmation and the record alike;
+// that write is unconditional because the record changes on every failed send, where the
+// confirmation it takes back is there to clear only on some.
+//
+// Two things keep that record from deciding anything about the charge, because the charge is
+// what bounds the re-sends and the record is only a diagnosis.
+//
+// The text is the far side's own, so it is scrubbed and bounded before it is stored
+// (scrubSendError): a refused adoption carries the wedged command's whole stderr and a refused
+// prompt Oh My Pi's decoded `error`, neither of which the store is obliged to take. The log
+// lines below carry the whole text as it arrived.
+//
+// The write may still fail — the store has its own weather — and a failed write is logged and
+// carried past rather than returned, so the split below is always read. A return there would
+// charge a refused adoption nothing and re-send it with no bound, which is the stall this split
+// exists to end. Nothing of the delivery is lost by carrying on: the failed write left it
+// unsaved (saved), and settle writes the claim and the delivery together before the next
+// decision, so the taken-back confirmation and this record reach the store on the first write
+// the store takes.
 func refused(m *Machine, ctx context.Context, ev Event) error {
 	r := ev.(PromptRefused)
 	resend := m.helloDuringSend
 	m.helloDuringSend = false
-	if p := m.claim.Pending; !p.ConfirmedAt.IsZero() {
-		p.ConfirmedAt = time.Time{}
-		if err := m.putPending(ctx); err != nil {
-			return err
-		}
+	p := m.claim.Pending
+	p.ConfirmedAt = time.Time{}
+	p.SendFailures++
+	p.LastSendFailureAt = m.deps.Clock.Now()
+	p.LastSendError = scrubSendError(r.Err.Error())
+	if err := m.putPending(ctx); err != nil {
+		m.log.Warn("supervise: the failed send was not recorded on the delivery; settle writes it again and the charge goes on",
+			"delivery", r.DeliveryID, "error", err)
 	}
 	if errors.Is(r.Err, runtime.ErrPromptRefused) {
 		if agentBusy(runtime.RefusalReason(r.Err)) {
@@ -1100,7 +1228,17 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		m.log.Warn("supervise: the agent refused the prompt", "delivery", r.DeliveryID, "error", r.Err)
 		return m.chargePrompt(ctx, "refused: "+r.Err.Error())
 	}
-	m.log.Warn("supervise: the prompt was lost to the transport; the delivery waits", "delivery", r.DeliveryID, "error", r.Err)
+	if errors.Is(r.Err, runtime.ErrAdoptRefused) {
+		m.log.Warn("supervise: the shim refused to adopt the working copy; the prompt was never sent",
+			"delivery", r.DeliveryID, "error", r.Err)
+		return m.chargePrompt(ctx, "the working copy was not adopted: "+r.Err.Error())
+	}
+	if errors.Is(r.Err, runtime.ErrIdentityUnavailable) {
+		m.log.Warn("supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits",
+			"delivery", r.DeliveryID, "error", r.Err)
+	} else {
+		m.log.Warn("supervise: the prompt was lost to the transport; the delivery waits", "delivery", r.DeliveryID, "error", r.Err)
+	}
 	if resend {
 		return m.sendPending(ctx)
 	}
@@ -1246,15 +1384,89 @@ func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 	// process was already in. Every other start is one this daemon read (Machine.unseenTurn).
 	m.unseenTurn = own && start.DeliveryID == "" && m.send == nil && !awaiting
 	m.takeBackSignal(own && !m.unseenTurn)
-	persist := m.persist
+	// The write is the confirmation where this start is the pending delivery's turn, and the
+	// claim alone where it is a foreign one; the delivery is named in the start's line for the
+	// same reason, so both are decided in the one place that asks the question.
+	persist, task := m.persist, ""
 	if own {
-		persist = m.confirm
+		persist, task = m.confirm, p.ID
 	}
-	if err := persist(ctx); err != nil {
+	// The start is logged before the write, never after it: the decision this line exists for is
+	// a turn start whose claim write failed, and a line written after the write would leave
+	// exactly that decision silent again. The delivery is named only where this start is that
+	// delivery's turn; a foreign turn is no task's and carries none.
+	m.startTurn(task)
+	if err := m.durableWrite(ctx, StateWorking, persist); err != nil {
 		return err
 	}
-	m.durableState(StateWorking)
-	return nil
+	// The turn's own start, through the store's narrow call, written only once that durable write
+	// has landed: a write the store did not take returns its error above, so no step records the
+	// start of a turn whose claim never reached working. A claim whose agent sends no tool frame
+	// at all is judged from this, so a turn that hangs before its first call reads as the turn it
+	// is rather than as a claim that has never stepped. It carries no call, which leaves the call
+	// the record names exactly as it stands — the one the agent was in when it stopped, which a
+	// recovery's own turn must not erase (Store.PutClaimStep).
+	return m.putStep(ctx, StepRecord{TurnStartedAt: m.deps.Clock.Now()})
+}
+
+// toolStepped records what the agent is doing: the call its stream just reported starting or
+// ending, stamped on receipt, because no frame carries a time of its own. It writes the claim's
+// step columns alone (Store.PutClaimStep) and touches no other field of the claim — the record
+// is built from frames that arrive between a machine's writes, and a claim write would erase
+// every step seen since that machine read it.
+//
+// The arguments were measured and hashed where the frame was read (stream.ToolStep) and their
+// text reaches neither this handler nor anything it writes: a shell command routinely holds a
+// credential, and this record reaches every surface an operator reads. The end frame repeats
+// neither the arguments nor the intent, so what is written beside an end is what its start left
+// (Machine.openCalls); an end whose start this daemon never read — a frame the shim's backlog
+// dropped, or a call open across a restart — names the call with no arguments measured, which is
+// what the daemon actually knows.
+//
+// A frame that arrived on a connection the claim has since replaced does not move the claim's
+// last-step time (staleStep). It still records its call: that is what the agent was doing, and
+// the record exists to say so after the process that was doing it is gone.
+func toolStepped(m *Machine, ctx context.Context, ev Event) error {
+	s := ev.(StreamToolStep)
+	now := m.deps.Clock.Now()
+	step := StepRecord{At: now}
+	if m.staleStep(s) {
+		step.At = time.Time{}
+	}
+	switch {
+	case s.CallID == "":
+		// A frame with no call id names no call to pair or to overwrite — the Claude Code
+		// bridge's start is one — so all it says is that the agent stepped. An empty call id
+		// is what tells the store to leave the six call columns as they stand.
+	case s.End:
+		open, held := m.takeOpenCall(s.CallID)
+		if !held {
+			m.log.Info("supervise: a tool call ended whose start this daemon never read; its arguments are unmeasured",
+				"tool", s.Tool, "call", s.CallID)
+		}
+		step.Tool, step.CallID = s.Tool, s.CallID
+		step.ArgsBytes, step.ArgsHash, step.StartedAt = open.argsBytes, open.argsHash, open.startedAt
+		step.EndedAt = now
+	default:
+		open := openCall{argsBytes: s.ArgsBytes, argsHash: s.ArgsHash, startedAt: now}
+		m.holdOpenCall(s.CallID, open)
+		step.Tool, step.CallID = s.Tool, s.CallID
+		step.ArgsBytes, step.ArgsHash, step.StartedAt = open.argsBytes, open.argsHash, open.startedAt
+	}
+	return m.putStep(ctx, step)
+}
+
+// staleStep is whether a tool frame arrived on a connection that is no longer the claim's: the
+// claim has none, or the one it has was registered after the frame's. Both are frames of a
+// replaced incarnation: the stream's own queue can hand a machine a frame of a connection that
+// was replaced while the frame waited. The shim's replay of the frames it held while no daemon
+// was attached is not one of them — it arrives on the next connection, which is the claim's live
+// one, so those frames are stamped at receipt (store's PutClaimStep). Connections are compared
+// by the order they were registered in, as a replayed refusal is (takesBackConfirmed): the order
+// the machine handles their events in says nothing.
+func (m *Machine) staleStep(s StreamToolStep) bool {
+	conn, connected := m.deps.Conns.Conn(m.claim.Token)
+	return !connected || s.ConnSequence < conn.Sequence()
 }
 
 // takeBackSignal takes back this claim's answer to its open round when the turn starting is not
@@ -1342,8 +1554,38 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // there would wait for an event nobody is going to post. A relaunch that did run leaves the claim
 // launching, which sendPending hands nothing (delivery.go), so the send costs that case nothing.
 //
+// The turn's end is logged here (turnEndedLine), and this is the only exit from working that
+// writes that line. The line names what this turn's own start line named (startTurn, endTurn),
+// because no reading of the claim can answer what the ending turn was: the window this same
+// function's resultPending branch leaves is one where the claim holds a task confirmed — its
+// turn ended before Oh My Pi said which turn the prompt's was, so settle retired nothing and the
+// task is still in the worker's hands — while the turn now ending is a turn of the agent's own,
+// which started naming no delivery. Every other way out of a turn writes a line of its own
+// instead, which is what a reader who found a start and no end looks for:
+//
+//   - a death of the process (died): "supervise: process died";
+//   - a held suspension whose deadline runs out (suspendAtTimeout): "supervise: the agent's turn
+//     has not ended; suspending it mid-turn";
+//   - a failure of the claim (fail): "supervise: claim failed";
+//   - a retirement (retire), which writes no line of its own: the agent's own exit says
+//     "supervise: the agent reported its exit" before it, and a stop or the workflow's close of
+//     the issue or the tree retires the claim with no line at all;
+//   - a stale-plugin relaunch of a claim whose turn is not waited out (relaunchStale):
+//     "supervise: the process speaks another plugin contract; relaunching it onto the current
+//     plugin" — one that is waited out says "supervise: the process speaks another plugin
+//     contract; its relaunch waits for the agent's turn to end" and comes back through here;
+//   - the end of an update round (endPodUpdate): "supervise: the update round is over for this
+//     claim" — a plugin round whose claim is in a turn does not end at all, and says "supervise:
+//     this claim's plugin round is not ready to end; its process is left as it is and the next
+//     sweep posts the end again".
+//
+// Widening the turn line to every one of those exits is not this change: each of them already
+// says in its own words what became of the turn, and the pair of turn lines is the turn the
+// worker ran.
+//
 // answerByTurnEnd runs first of all, before the marks it reads are cleared (askFirst, unseenTurn).
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
+	m.endTurn()
 	m.answerByTurnEnd()
 	m.askFirst, m.unseenTurn = false, false
 	if m.held != nil {
@@ -1633,10 +1875,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 // finishReady persists the current claim before publishing ready or delivering work. reready may
 // reach it while the claim is idle or working, so it must not rewrite the state to ready.
 func finishReady(m *Machine, ctx context.Context) error {
-	if err := m.persist(ctx); err != nil {
+	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
 		return err
 	}
-	m.durableState(StateReady)
 	return m.sendPending(ctx)
 }
 

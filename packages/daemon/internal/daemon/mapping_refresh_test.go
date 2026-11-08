@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -99,7 +99,7 @@ func mappingRigJS(t *testing.T, installs *installations, opts ...func(*workflowR
 	w := &workflowRuntime{pool: isolatedOutboxPool(t), records: record.NewStore(), dispatch: client, dispatchProject: "LEGION", installs: installs,
 		repositories: newRepositories("LEGION", ghrepo.Renames{}), defaultBranches: newDefaultBranches(roleTokens{}, nil, github.url, defaultBranchTTL, time.Now), log: quietLogger(),
 		mappingChanged: make(chan struct{}, 1)}
-	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, DesignGate: config.DesignGateOff}, quietLogger())
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, NoteUnread: w.noteUnread, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	w.engine, w.admission = engine, admit.New(w.records, engine, 3, "LEGION", quietLogger())
 	w.handlers = []intake.Handler{w.engine, w.admission}
 	for _, opt := range opts {
@@ -137,15 +137,14 @@ func rigHandlers(w *workflowRuntime) (*workflow.Engine, *admit.Admission) {
 // held-back preparation (intake.RetryLater) until it is prepared or fails.
 func prepareAsDelivered(t *testing.T, w *workflowRuntime, fact intake.DispatchIssue) (intake.DispatchIssue, error) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
-		prepared, err := w.prepareRepository(context.Background(), fact)
+	var prepared intake.DispatchIssue
+	var err error
+	testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+		prepared, err = w.prepareRepository(context.Background(), fact)
 		var later *intake.RetryLater
-		if !errors.As(err, &later) || time.Now().After(deadline) {
-			return prepared, err
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return !errors.As(err, &later)
+	})
+	return prepared, err
 }
 
 func githubFilterSubjects(t *testing.T, stream jetstream.Stream) []string {
@@ -207,7 +206,7 @@ func TestAFailedRefreshServesNothingUntilARetrySubscribesIt(t *testing.T) {
 			if _, err := prepareAsDelivered(t, w, fact); err != nil {
 				t.Fatal(err)
 			}
-			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			if _, err := intake.ApplyFact(ctx, w.pool, "test", "admission", fact, engine, admission); err != nil {
 				t.Fatal(err)
@@ -243,7 +242,7 @@ func TestARefreshThatUnmapsARepositoryKeepsHearingAnIssueAdmittedOnIt(t *testing
 	}
 	store := &faultyStore{Store: w.records, pauseKey: "LEGION-301", reached: make(chan struct{}), release: make(chan struct{})}
 	w.records = store
-	engine := workflow.New(store, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+	engine := workflow.New(store, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	child := intake.DispatchIssue{Key: "LEGION-301", Parent: "LEGION-300", Seq: 1, Status: "todo", Title: "child", Rank: "A", ResolvedRepo: "zeta/tools"}
 	if _, err := w.prepareRepository(ctx, child); err != nil {
 		t.Fatal(err)
@@ -313,7 +312,7 @@ func TestAClosedTreesRepositoryStaysHeardAfterItIsUnmapped(t *testing.T) {
 	if reopened, err = w.prepareRepository(ctx, reopened); err != nil {
 		t.Fatal(err)
 	}
-	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 	if _, err := intake.ApplyFact(ctx, w.pool, "test", "reopen", reopened, engine, admission); err != nil {
 		t.Fatal(err)
@@ -374,7 +373,7 @@ func TestAProjectServingNoRepositoryStartsServingOnceItsAppIsInstalled(t *testin
 	if filters := githubFilterSubjects(t, stream); !slices.Equal(filters, []string{"notifications.github.-.-"}) {
 		t.Fatalf("GitHub filters = %v, want the one no repository publishes on", filters)
 	}
-	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 	handOver := func(seq int64) {
 		t.Helper()
@@ -452,7 +451,7 @@ func TestAnIssueOnARepositoryMappedJustBeforeIsAdmittedOnIt(t *testing.T) {
 			if len(w.awaiting) != 0 {
 				t.Fatalf("held %v after the event was prepared, want none", w.awaiting)
 			}
-			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			if _, err := intake.ApplyFact(ctx, w.pool, "test", "handover", prepared, engine, admission); err != nil {
 				t.Fatal(err)
@@ -525,7 +524,7 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 			if err != nil {
 				t.Fatal(err)
 			}
-			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			if _, err := intake.ApplyFact(ctx, w.pool, "test", "handover", prepared, engine, admission); err != nil {
 				t.Fatal(err)
@@ -547,7 +546,7 @@ func TestAnAdmissionWhosePreparationFailedIsPreparedAsDispatchNowShowsIt(t *test
 func TestALateFirstDeliveryOfAnAdmissionEventIsPreparedAsDispatchNowShowsIt(t *testing.T) {
 	ctx := context.Background()
 	w, client, _, _ := mappingRig(t, map[string]bool{})
-	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+	engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 	admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 	client.issue = dispatch.Issue{Key: "LEGION-307", Status: "backlog", Title: "new", Rank: "A", ResolvedRepo: "acme/widgets", LastSeq: 2}
 	withdrawal := intake.DispatchIssue{Key: "LEGION-307", Seq: 2, Status: "backlog", Title: "new", Rank: "A", ResolvedRepo: "acme/widgets"}
@@ -586,7 +585,7 @@ func TestAViewPreparedBeforeTheIssueWasRecordedNeverAppliesToItsRecord(t *testin
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			w, client, _, _ := mappingRig(t, map[string]bool{})
-			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, DesignGate: config.DesignGateOff}, quietLogger())
+			engine := workflow.New(w.records, workflow.Config{Project: "LEGION", Repositories: w, Steps: config.DesignGateOff.Steps()}, quietLogger())
 			admission := admit.New(w.records, engine, 1, "LEGION", quietLogger())
 			apply := func(id string, fact intake.DispatchIssue) {
 				t.Helper()
@@ -684,7 +683,7 @@ type failingGitHub struct {
 func (g *failingGitHub) start(t *testing.T) string {
 	t.Helper()
 	named := newNamedGitHub(t, g.named)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if g.fail.Load() && (g.only == "" || strings.Contains(r.URL.Path, g.only)) {
 			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 			return
@@ -697,9 +696,7 @@ func (g *failingGitHub) start(t *testing.T) string {
 		defer proxied.Body.Close()
 		w.WriteHeader(proxied.StatusCode)
 		_, _ = io.Copy(w, proxied.Body)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // quickInstallReads shortens installReadRetry for a test, restoring it once the rig the test
@@ -883,12 +880,7 @@ func TestABootListingsRootOnARepositoryWhoseReadFailedIsAdmittedOnceItIsServed(t
 // within is whether condition holds within bound, polled every 10 ms: a bounded wait for a test
 // whose old behaviour never meets the condition.
 func within(bound time.Duration, condition func() bool) bool {
-	for deadline := time.Now().Add(bound); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-		if condition() {
-			return true
-		}
-	}
-	return condition()
+	return testwait.Holds(bound, testwait.Poll, condition)
 }
 
 // A live admission event of an issue on a repository whose installation read failed is

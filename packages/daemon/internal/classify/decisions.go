@@ -1203,6 +1203,19 @@ func ConflictWithdrawsReady(pr record.PullRequest) bool {
 	return pr.State == record.PullRequestOpen && pr.Mergeability == record.MergeabilityConflicting
 }
 
+// ConflictRound says whether a backward move made now is a round a conflict with the base caused:
+// the record holds the pull request's own recorded head as conflicting
+// (record.PullRequest.ConflictingHead), whichever read judged it so and whatever fact is making
+// the move. The exemption keys on that mark rather than on the cause, because every way back out
+// of a conflicting head is the same round of work - the return the merge queue's own state makes,
+// the conflict the two-minute pass finds, a reviewer's request for changes, a worker's backward
+// move, a tester's fail - and the implementer answers each of them with one forward merge. That
+// merge moves the recorded head, the mark no longer equals it, and the next rejection counts,
+// which is how the exemption ends without a write of its own.
+func ConflictRound(pr record.PullRequest) bool {
+	return pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
+}
+
 // FixAttemptCapHolds says whether the red verdict standing for the head is one the fix-attempt cap
 // holds: the pull request's fix attempts are at cap, and the head belongs to the attempt the count
 // last counted (HeadCounted): the counted head itself, or a head pushed on top of it before any
@@ -1348,9 +1361,78 @@ func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark)
 	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
 }
 
-// DesignGateOpen reports whether a human approved the gate's current document version. It is
+// DesignGateOpen reports whether a human approved the gate's current document version. It
+// answers one step's question; the deployment's whole list is DesignGatesOpen. It is
 // record.GateOpen, where the rule lives because the record package needs it too and may not read
 // this one, and it keeps its name here because every decision in this file is named this way.
 func DesignGateOpen(gate record.DesignGate) bool {
 	return record.GateOpen(gate)
+}
+
+// RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
+// the deployment gates, in the order it names them, or the single step spec when it gates none.
+// It is record.RequiredSteps, where the rule lives because the record package needs it too and
+// may not read this one, and it keeps its name here because every reader of a step list in this
+// file reads it through this name.
+func RequiredSteps(configured []record.DesignStep) []record.DesignStep {
+	return record.RequiredSteps(configured)
+}
+
+// DesignGatesOpen reports whether gates, every design gate an issue holds by its step, lets the
+// tree's work run: no required step (RequiredSteps) holds the work. A required step with no row
+// holds the work, as an unregistered gate always has, and since a root always requires at least
+// one step, an issue holding no row at all is held too. A row of a step the deployment does not
+// require is read by nothing here: it is kept as the record of a step gated before, and holds
+// nothing.
+//
+// It is record.TreeGate.Open over the same steps and rows, where the rule lives because the
+// record package needs it too and may not read this one, and it keeps its name here because
+// every decision in this file is named this way. The same answer read the other way round is
+// FirstClosedStep finding no closed step.
+func DesignGatesOpen(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) bool {
+	return record.TreeGate{Steps: configured, Rows: gates}.Open()
+}
+
+// FirstClosedStep is the first required step (RequiredSteps) whose gate is not open, in the
+// configured order, with the row it holds — the zero row when it holds none, which is the step
+// nobody has registered. ok is false when every required step is open, which is DesignGatesOpen.
+//
+// It answers which step holds the work now, and so which step a refusal or a hold is about: a
+// step nobody has registered holds it, because nobody has said the document exists. Which step a
+// person is being asked about is another question, since nobody can be asked about a document
+// the record does not know, and the wait reads its own rule for it (StandingGate).
+func FirstClosedStep(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, record.DesignGate, bool) {
+	for _, step := range RequiredSteps(configured) {
+		if gate, ok := gates[step]; !ok || !DesignGateOpen(gate) {
+			return step, gate, true
+		}
+	}
+	return "", record.DesignGate{}, false
+}
+
+// StandingGate is the gate a person is being asked about: the row of the first required step
+// (RequiredSteps), in the configured order, that is closed and has a row. That is a different
+// question from which step holds the tree's work (FirstClosedStep), which a step nobody has
+// registered also holds: such a step names no document, so nobody can be asked about it, and the
+// wait it raised would be a wait on nothing. So the wait skips it and names the first registered
+// unapproved step after it, while the work stays held. ok is false when no required step holds a
+// closed row, which is every required step open or every closed one unregistered.
+//
+// A deployment that gates no step asks no person about anything, so the empty list stands on no
+// gate: ok is false whatever rows the root holds. The empty list still holds the tree's work
+// until the spec step is registered, which is FirstClosedStep's answer, not this one.
+//
+// Everything a root's wait is built from reads this one rule: the document its approval requests
+// are counted on (workflow's gateRequestArtifact), the wait it records (waitSubject) and the step
+// its resume speaks of (gateInQuestion).
+func StandingGate(configured []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignGate, bool) {
+	if len(configured) == 0 {
+		return record.DesignGate{}, false
+	}
+	for _, step := range RequiredSteps(configured) {
+		if gate, ok := gates[step]; ok && !DesignGateOpen(gate) {
+			return gate, true
+		}
+	}
+	return record.DesignGate{}, false
 }

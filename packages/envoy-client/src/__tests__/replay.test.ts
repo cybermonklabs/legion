@@ -521,6 +521,22 @@ describe("replay sweep", () => {
     expect(engine.state().subjects[AGENT]?.after).toBe(2);
   });
 
+  // A frame an agent sent before the literal false replaced the word spells no reply "none", and
+  // the stream holds it for the whole duplicate window: it is shown, in the one vocabulary the
+  // host reads, rather than passed over as not an envelope.
+  test('a stored frame spelling no reply "none" is shown as expects_reply false', async () => {
+    const { stream, host, engine } = setup();
+    await engine.sweep();
+    const stored = envelope();
+    stream.publish(AGENT, JSON.stringify({ ...stored, expects_reply: "none" }));
+
+    await engine.sweep();
+
+    expect(ids(host.shown)).toEqual([stored.event_id]);
+    expect(host.shown[0]?.envelope.expects_reply).toBe(false);
+    expect(host.logs.some((line) => line.includes("not an Envoy envelope"))).toBe(false);
+  });
+
   test("a copy the renderer suppresses does not stop an eligible copy on another subject", async () => {
     const { stream, host, engine } = setup([AGENT, ISSUE]);
     await engine.sweep();
@@ -1642,6 +1658,11 @@ describe("the ledger", () => {
     expect(resumed.delivered({ ...refused, event_id: "evt-retry" })).toBe(false);
   });
 
+  // The 30 s limit is a hang guard, not a budget: the row records one frame more than
+  // REPLAY_LEDGER_LIMIT, the boundary it exists to prove, and bun's unwritten 5,000 ms per-test
+  // default is a limit on that work rather than on a hang. Measured in a 2-CPU pod: 1.00 s idle;
+  // under 16 busy loops (8 x nproc), 3.79 s at most in a whole-suite run and 2.87 s with this file
+  // alone. It fires only if a record stops returning.
   test("past its limit the ledger forgets the oldest entry first", async () => {
     const { engine } = setup();
     const frames = Array.from({ length: REPLAY_LEDGER_LIMIT + 1 }, (_, index) => ({
@@ -1652,7 +1673,7 @@ describe("the ledger", () => {
     expect(engine.delivered(frames[0] as { event_id: string })).toBe(false);
     expect(engine.delivered(frames[1] as { event_id: string })).toBe(true);
     expect(engine.delivered(frames.at(-1) as { event_id: string })).toBe(true);
-  });
+  }, 30_000);
 
   test("a restore drops entries past 72 hours but keeps a state of any age", async () => {
     const { clock, stream, host, engine } = setup();

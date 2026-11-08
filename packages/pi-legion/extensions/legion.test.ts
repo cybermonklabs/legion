@@ -7,9 +7,11 @@ import {
   expect,
   jest,
   mock,
+  setSystemTime,
   spyOn,
   test,
 } from "bun:test";
+import { readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -45,8 +47,24 @@ import type {
   ZodNumberProperty,
 } from "@legion/pi-shared/pi-types";
 import { DEFAULT_STALL_LIMITS } from "@legion/pi-shared/stall-limits";
+import {
+  STALL_EXIT_CODE,
+  type StallCall,
+  type StallProcessTree,
+  type StallWatchdogProcesses,
+} from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
+import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
+import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { ConnectionOptions, NatsConnection } from "nats";
+import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
+import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
 import pkg from "../package.json";
 import {
   type CapabilityHost,
@@ -60,6 +78,22 @@ import {
   CAPABILITY_RETRY_TICKS,
 } from "../src/capability-schedule";
 import { classifySession } from "../src/classify";
+import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
+import {
+  STALL_WATCH_ENTRY,
+  type StallEvidenceRecord,
+  type StallStepTranscript,
+  type StallWatchRecord,
+} from "../src/stall-evidence";
+import { stallExitsFile } from "../src/stall-exits";
+import type legionEntryDefault from "./legion";
+import type {
+  setLegionBootstrapExitForTests as SetLegionBootstrapExitForTests,
+  setLegionCapabilityBudgetsForTests as SetLegionCapabilityBudgetsForTests,
+  setLegionCapabilityHostForTests as SetLegionCapabilityHostForTests,
+  setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
+  setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
+} from "./legion";
 
 const natsConnections: {
   readonly name: string;
@@ -89,81 +123,205 @@ const widgetCalls: { readonly key: string; readonly lines: string[] | undefined 
 function recordWidget(key: string, lines: string[] | undefined): void {
   widgetCalls.push({ key, lines });
 }
-// @legion/envoy-client/nats-connection resolves the NATS credential with the real nkey exports.
-const { nkeyAuthenticator, nkeys } = await import("nats");
-mock.module("nats", () => ({
-  nkeyAuthenticator,
-  nkeys,
-  connect: async (options: { readonly name: string }) => {
-    await natsConnectGates.get(options.name)?.();
-    const endings: (() => void)[] = [];
-    const connection = {
-      name: options.name,
-      subjects: [] as string[],
-      unsubscribed: [] as string[],
-      closed: false,
-      drop: () => {
-        connection.closed = true;
-        for (const end of endings.splice(0)) end();
-      },
-    };
-    natsConnections.push(connection);
-    return {
-      close: async () => undefined,
-      drain: async () => undefined,
-      isClosed: () => connection.closed,
-      flush: async () => undefined,
-      publish: () => undefined,
-      subscribe: (subject: string) => {
-        natsSubscribeObserver?.(subject);
-        connection.subjects.push(subject);
-        const ended = Promise.withResolvers<void>();
-        endings.push(ended.resolve);
-        return {
-          unsubscribe: () => {
-            connection.unsubscribed.push(subject);
+// The dial the Envoy entry opens NATS with, handed to it through `setNatsConnectForTests` once
+// that entry is loaded below. The `nats` module itself stays as it is, so
+// `@legion/envoy-client/nats-connection` resolves the NATS credential with the real nkey exports,
+// and every other file in this `bun test` process reads the real module. The dial is not the
+// module: the setter writes a slot of the process, not of one entry instance, so the cleanup
+// below puts that slot back with `resetNatsConnectForTests` and no later file dials this
+// stand-in.
+const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<NatsConnection> => {
+  const name = options.name ?? "";
+  await natsConnectGates.get(name)?.();
+  const endings: (() => void)[] = [];
+  const connection = {
+    name,
+    subjects: [] as string[],
+    unsubscribed: [] as string[],
+    closed: false,
+    drop: () => {
+      connection.closed = true;
+      for (const end of endings.splice(0)) end();
+    },
+  };
+  natsConnections.push(connection);
+  // The stand-in answers the members the entry calls, not the whole `NatsConnection`.
+  return {
+    close: async () => undefined,
+    drain: async () => undefined,
+    isClosed: () => connection.closed,
+    flush: async () => undefined,
+    publish: () => undefined,
+    subscribe: (subject: string) => {
+      natsSubscribeObserver?.(subject);
+      connection.subjects.push(subject);
+      const ended = Promise.withResolvers<void>();
+      endings.push(ended.resolve);
+      return {
+        unsubscribe: () => {
+          connection.unsubscribed.push(subject);
+        },
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            await ended.promise;
+            return { done: true, value: undefined };
           },
-          [Symbol.asyncIterator]: () => ({
-            next: async () => {
-              await ended.promise;
-              return { done: true, value: undefined };
-            },
-          }),
-        };
-      },
-    };
-  },
-  StringCodec: () => ({
-    decode: (data: Uint8Array) => new TextDecoder().decode(data),
-    encode: (text: string) => new TextEncoder().encode(text),
-  }),
-}));
+        }),
+      };
+    },
+  } as unknown as NatsConnection;
+};
 
 mock.module("@oh-my-pi/pi-coding-agent", () => ({
   copyToClipboard: async () => undefined,
   ...hostAgentRegistryMock,
 }));
 
+// Every name a test in this file sets or deletes. They are captured here, above the lines that
+// set ENVOY_CONFIG_FILE and delete OMP_PROFILE and PI_CODING_AGENT_DIR, so what the caller's own
+// process holds — a worker pane's live LEGION_* and DISPATCH_* among them — goes back after each
+// test and once more when this file ends: `bun test` runs every file of a package in one process,
+// and the next file reads the environment this one leaves.
+const environmentKeys = [
+  "ENVOY_NATS_URL",
+  "ENVOY_URL",
+  "LEGION_CONTROLLER",
+  "LEGION_CONTROLLER_START_MESSAGE",
+  "LEGION_CONTROLLER_SECRET",
+  "LEGION_DAEMON_URL",
+  "LEGION_BOOT_TOKEN",
+  "LEGION_TREE",
+  "LEGION_PROJECT",
+  "LEGION_ROLE",
+  "LEGION_ISSUE",
+  "LEGION_WORKSPACE",
+  "LEGION_STATE_DIR",
+  "LEGION_SLACK_CHANNELS",
+  "LEGION_STALL_REMINDER_MS",
+  "LEGION_STALL_WAITING_MS",
+  "LEGION_STALL_RESUME_MS",
+  "LEGION_STALL_ARCHITECT_AFTER",
+  "LEGION_STALL_CALL_GRACE_MS",
+  "LEGION_STALL_CALL_BOUND_MS",
+  "LEGION_STALL_STEP_MS",
+  "HOME",
+  "DISPATCH_URL",
+  "DISPATCH_TOKEN",
+  "LEGION_BOOT_TOKEN_FILE",
+  "LEGION_CONTROLLER_SECRET_FILE",
+  "DISPATCH_TOKEN_FILE",
+  "LEGION_WORKSPACE_RECREATED",
+  "DISPATCH_STATE_DIR",
+  "ENVOY_CONFIG_FILE",
+  "OMP_PROFILE",
+  "PI_CODING_AGENT_DIR",
+] as const;
+
+/** The names the Envoy entry writes for a pane this file starts, rather than a test: `PATH`,
+ *  which it puts its own `bin/` first on when it loads, and the two a session's `dispatch`
+ *  command reads (packages/pi-envoy/AGENTS.md). They go back with the keys above and are never
+ *  deleted with them: the baseline below is "not a Legion pane", and a process with no `PATH`
+ *  finds none of the programs these tests run. */
+const entryEnvironmentKeys = ["PATH", "DISPATCH_HOST", "DISPATCH_SESSION_ID"] as const;
+restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
+
+// The probe for the defect the restore above fixes: when this file ends, every name this Bun
+// process started with holds the value it started with. `/proc/self/environ` is the kernel's copy
+// of the process's own envp, which no `setenv` rewrites, so it says what the caller handed this
+// process however many names a test has set since — a pod's live LEGION_* and DISPATCH_* among
+// them. It is read rather than `process.env` because the two are the same thing only until the
+// first test runs, and a list of names that forgot one would compare that name with itself.
+//
+// `bun test` runs a package's files in one process and `afterAll` hooks run in the order they
+// were registered, so the hook below is registered under this file's cleanup hook: it still runs
+// after the restore above and sees what the next file would read, and Bun stops at the first
+// `afterAll` that throws, so a hook registered above the cleanup would leak this file's
+// temporary directories on the one run the probe exists to report. The probe is in this file,
+// and not in a file of its own, because Bun runs a directory's test files in the order the
+// filesystem lists them, which no file name decides: in packages/pi-legion/extensions, eight
+// files named a- to h- ran in the order e, d, c, h, a, f, b, g, which is what `readdirSync`
+// returns there.
+const startingEnvironment = readStartingEnvironment();
+if (startingEnvironment === undefined) {
+  console.warn(
+    `Skipped the environment probe in ${import.meta.path}. This host has no /proc/self/environ, ` +
+      "which is the one record of what this process started with. Run the tests on Linux for it."
+  );
+}
+
+/** Each name this process started with and its value, or undefined where the host keeps no such
+ *  record. An entry with no `=`, and the empty entry a trailing separator leaves, are no name. */
+function readStartingEnvironment(): Map<string, string> | undefined {
+  let environ: string;
+  try {
+    environ = readFileSync("/proc/self/environ", "utf8");
+  } catch {
+    return undefined;
+  }
+  const started = new Map<string, string>();
+  for (const entry of environ.split("\0")) {
+    const equals = entry.indexOf("=");
+    if (equals > 0) started.set(entry.slice(0, equals), entry.slice(equals + 1));
+  }
+  return started;
+}
+
 // The Envoy entry picks its envoy.json when its module loads: a file that holds no section, so
 // these panes take Dispatch and Envoy from the variables each test sets, never from the caller's
 // own envoy.json or Oh My Pi profile. `beforeEach` hands the same file on again.
-const envoyConfigDirectory = await mkdtemp(path.join(os.tmpdir(), "legion-envoy-config-"));
+//
+// The path is reserved here; the directory is made, the file written, the environment put into
+// its baseline and both entries loaded in the `beforeAll` below. Everything that hook does is
+// undone by a hook — the directory by the fixture's own `afterAll`, the environment by the
+// `restoreEnvironment` above and the `resetNatsConnectForTests` below — and a `bun test -t
+// <pattern>` that selects no row of this file runs none of them: a module body that made the
+// directory, deleted the names or handed over the NATS dial would leave all three to the next
+// file of the same process.
+const envoyConfigDirectory = temporaryDirectory("legion-envoy-config");
 const envoyConfigFile = path.join(envoyConfigDirectory, "envoy.json");
-await writeFile(envoyConfigFile, "{}\n");
-process.env.ENVOY_CONFIG_FILE = envoyConfigFile;
-delete process.env.OMP_PROFILE;
-delete process.env.PI_CODING_AGENT_DIR;
 
-// The extension modules must load after their OMP and NATS host dependencies are mocked. The
-// Envoy entry is the sibling plugin's, reached by path: these panes run both, as a Legion pane does.
-const { default: envoyExtension } = await import("../../pi-envoy/extensions/envoy");
-const {
-  default: legionExtension,
-  setLegionBootstrapExitForTests,
-  setLegionCapabilityBudgetsForTests,
-  setLegionCapabilityHostForTests,
-  setLegionCapabilitySendTimeoutForTests,
-} = await import("./legion");
+/** The two entries, loaded by the `beforeAll` below once the environment is in place. Every row
+ *  reads them from its own body: no pane starts before that hook. */
+let envoyExtension: typeof envoyEntryDefault;
+let legionExtension: typeof legionEntryDefault;
+let resetNatsConnectForTests: typeof ResetNatsConnectForTests | undefined;
+let setLegionBootstrapExitForTests: typeof SetLegionBootstrapExitForTests;
+let setLegionCapabilityBudgetsForTests: typeof SetLegionCapabilityBudgetsForTests;
+let setLegionCapabilityHostForTests: typeof SetLegionCapabilityHostForTests;
+let setLegionCapabilitySendTimeoutForTests: typeof SetLegionCapabilitySendTimeoutForTests;
+let setLegionStallProcessesForTests: typeof SetLegionStallProcessesForTests;
+
+beforeAll(async () => {
+  await writeFile(envoyConfigFile, "{}\n");
+  process.env.ENVOY_CONFIG_FILE = envoyConfigFile;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_CODING_AGENT_DIR;
+  // The extension modules must load after their OMP host dependencies are mocked. The Envoy entry
+  // is the sibling plugin's, reached by path: these panes run both, as a Legion pane does. Its
+  // NATS dial is the stand-in above, handed over as soon as the entry is loaded and before any
+  // pane here starts a session; the slot it goes in is the process's, so the `afterAll` below
+  // puts it back and the two run together or not at all.
+  const envoyEntry = await import("../../pi-envoy/extensions/envoy");
+  envoyExtension = envoyEntry.default;
+  resetNatsConnectForTests = envoyEntry.resetNatsConnectForTests;
+  envoyEntry.setNatsConnectForTests(natsStandInConnect);
+  const legionEntry = await import("./legion");
+  legionExtension = legionEntry.default;
+  setLegionBootstrapExitForTests = legionEntry.setLegionBootstrapExitForTests;
+  setLegionCapabilityBudgetsForTests = legionEntry.setLegionCapabilityBudgetsForTests;
+  setLegionCapabilityHostForTests = legionEntry.setLegionCapabilityHostForTests;
+  setLegionCapabilitySendTimeoutForTests = legionEntry.setLegionCapabilitySendTimeoutForTests;
+  setLegionStallProcessesForTests = legionEntry.setLegionStallProcessesForTests;
+  // The suite's baseline is "not a Legion pane": every key above except HOME starts unset, and
+  // `beforeEach` deletes them again before each test and hands on the Envoy entry's file as
+  // ENVOY_CONFIG_FILE. Run from inside a worker pane — whose LEGION_BOOT_TOKEN_FILE,
+  // DISPATCH_URL, and friends are live — the suite would otherwise boot fixtures with the pane's
+  // own boot token and see a different environment from CI. The `restoreEnvironment` above puts
+  // the pane's own values back. It runs below the two entry loads, which read ENVOY_CONFIG_FILE.
+  for (const key of environmentKeys) {
+    if (key !== "HOME") delete process.env[key];
+  }
+});
 
 type RegisteredCommand = {
   readonly name: string;
@@ -195,61 +353,43 @@ type TestPi = {
 
 type Handler = (event: unknown, context: SessionContext) => Promise<unknown> | unknown;
 
+/** One fixture's handler for a host event, by name: a hook a test drives must be registered. */
+const hook = (handlers: Map<string, Handler>, name: string): Handler => {
+  const found = handlers.get(name);
+  if (found === undefined) throw new Error(`the ${name} handler was not registered`);
+  return found;
+};
+
 const originalFetch = globalThis.fetch;
-const environmentKeys = [
-  "ENVOY_NATS_URL",
-  "ENVOY_URL",
-  "LEGION_CONTROLLER",
-  "LEGION_CONTROLLER_START_MESSAGE",
-  "LEGION_CONTROLLER_SECRET",
-  "LEGION_DAEMON_URL",
-  "LEGION_BOOT_TOKEN",
-  "LEGION_TREE",
-  "LEGION_PROJECT",
-  "LEGION_ROLE",
-  "LEGION_ISSUE",
-  "LEGION_WORKSPACE",
-  "LEGION_STATE_DIR",
-  "LEGION_SLACK_CHANNELS",
-  "LEGION_STALL_REMINDER_MS",
-  "LEGION_STALL_WAITING_MS",
-  "LEGION_STALL_RESUME_MS",
-  "LEGION_STALL_ARCHITECT_AFTER",
-  "HOME",
-  "DISPATCH_URL",
-  "DISPATCH_TOKEN",
-  "LEGION_BOOT_TOKEN_FILE",
-  "LEGION_CONTROLLER_SECRET_FILE",
-  "DISPATCH_TOKEN_FILE",
-  "LEGION_WORKSPACE_RECREATED",
-  "DISPATCH_STATE_DIR",
-  "ENVOY_CONFIG_FILE",
-  "OMP_PROFILE",
-  "PI_CODING_AGENT_DIR",
-] as const;
-// The suite's baseline is "not a Legion pane": every key above except HOME starts unset and is
-// reset to unset after each test, and `beforeEach` hands on the Envoy entry's file again as
-// ENVOY_CONFIG_FILE. Run from inside a worker pane — whose LEGION_BOOT_TOKEN_FILE, DISPATCH_URL,
-// and friends are live — the suite would otherwise boot fixtures with the pane's own boot token
-// and see a different environment from CI.
-const baselineEnvironment: Record<(typeof environmentKeys)[number], string | undefined> =
-  Object.fromEntries(
-    environmentKeys.map((key) => [key, key === "HOME" ? process.env.HOME : undefined])
-  ) as Record<(typeof environmentKeys)[number], string | undefined>;
-for (const key of environmentKeys) {
-  if (key !== "HOME") delete process.env[key];
-}
 
 const temporaryPaths: string[] = [];
+const paneStateDirectory = temporaryDirectories("legion-pane-state");
+const controllerStateDirectory = temporaryDirectories("legion-controller");
+
+/** The home the suite's one `jj git init` runs under, so no configuration of the developer's
+ * decides what the template holds. */
+const jjHomeDirectory = temporaryDirectory("legion-jj-home");
 
 /** The repository every workspace in this file is a copy of: one `jj git init` before the tests.
  * A copy spawns no process, so a test's workspace costs none of bun's 5 s test timeout, which a
  * `jj` process, whose run time is the machine's load, would otherwise spend. */
 let jjTemplate = "";
 
+// The template the beforeAll below builds is `jj git init`'s, and every workspace a row here runs
+// in is a copy of it, so a host with no jj builds nothing and runs none of them. Read once, at
+// module scope: a call per row would print the warning per row. The environment probe's hook,
+// registered below the cleanup, still runs when the rows do not: this gate skips tests, never a
+// hook.
+const skip = skipWithout("jj");
+
 beforeAll(async () => {
+  if (skip) return;
   jjTemplate = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-template-"));
-  const child = Bun.spawn(["jj", "git", "init", jjTemplate], { stdout: "ignore", stderr: "pipe" });
+  const child = Bun.spawn(["jj", "git", "init", jjTemplate], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
+  });
   const exitCode = await child.exited;
   if (exitCode !== 0) {
     // A spawn killed under the runner exits non-zero with nothing on stderr, so name the code and
@@ -263,8 +403,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await rm(jjTemplate, { force: true, recursive: true });
-  await rm(envoyConfigDirectory, { force: true, recursive: true });
+  // The template was never built when the file skipped, and there is nothing to remove.
+  if (jjTemplate !== "") await rm(jjTemplate, { force: true, recursive: true });
+  // The stand-in dial is the process's, not this file's: the next file of this `bun test` run
+  // gets nats.js's own `connect` back. It is undefined when the `beforeAll` above never ran.
+  resetNatsConnectForTests?.();
+});
+
+// The environment probe's hook; what it compares is read at the top of this file, where the
+// comment says why it is registered here and not there.
+afterAll(() => {
+  if (startingEnvironment === undefined) return;
+  const changed = [...startingEnvironment]
+    .filter(([name, value]) => process.env[name] !== value)
+    .map(
+      ([name, value]) =>
+        `${name} started as ${JSON.stringify(value)} and now holds ${JSON.stringify(process.env[name])}`
+    );
+  expect(changed).toEqual([]);
 });
 
 beforeEach(async () => {
@@ -297,13 +453,11 @@ afterEach(async () => {
   setLegionCapabilityBudgetsForTests(undefined);
   // The same for the bound on one `claims/ready` the schedule sends: back to the real 10 s.
   setLegionCapabilitySendTimeoutForTests(undefined);
+  // And the stall watch's process half: back to the real `/proc` reader and `process.kill`, which
+  // no test may be left pointing at.
+  setLegionStallProcessesForTests(undefined);
   delete (globalThis as Record<symbol, unknown>)[LEGACY_LEGION_LOADED_KEY];
   testAgentRoster().splice(0);
-  for (const key of environmentKeys) {
-    const value = baselineEnvironment[key];
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
   await Promise.all(
     temporaryPaths.splice(0).map((directory) => rm(directory, { force: true, recursive: true }))
   );
@@ -333,6 +487,10 @@ function createPi(
 ): {
   readonly commands: RegisteredCommand[];
   readonly handlers: Map<string, Handler>;
+  /** The handlers each bound extension registered for one event, in the order they bound: the
+   * last is legion.ts's, which every fixture here binds after the Envoy entry. `handlers` runs
+   * them all in turn, as the host does; this is how a test drives one entry's own. */
+  readonly handlersFor: (event: string) => readonly Handler[];
   readonly tools: RegisteredTool[];
   readonly sentMessages: SentMessage[];
   /** Every `sendMessage` call's options, in the order of sentMessages. */
@@ -440,6 +598,7 @@ function createPi(
   return {
     commands,
     handlers,
+    handlersFor: (event) => registeredHandlers.get(event) ?? [],
     tools,
     sentMessages,
     sentMessageOptions,
@@ -624,6 +783,9 @@ function recordingCapabilityHost(
 
 interface ClaimPane {
   readonly claimToken: string;
+  /** `LEGION_STATE_DIR`, the pane's own state directory: where the stall watch counts its
+   * exits. */
+  readonly stateDir: string;
   /** The daemon's `claims/register` answer: the claim it issued this pane. */
   readonly registration: {
     readonly claimToken: string;
@@ -656,6 +818,9 @@ interface ClaimPane {
   readonly sentMessageOptions: unknown[];
   readonly title: HostTitle;
   readonly handlers: Map<string, Handler>;
+  /** The handlers one extension of this pane registered for an event, in bind order
+   * (`createPi`'s `handlersFor`): the last is legion.ts's own. */
+  readonly handlersFor: (event: string) => readonly Handler[];
   readonly context: SessionContext;
   /** Runs `session_start` for the pane's session, as Oh My Pi does when the process starts. */
   readonly start: () => Promise<unknown>;
@@ -689,6 +854,9 @@ async function claimPane(options: {
   /** The host's live idle answer (`ctx.isIdle()`), read afresh at every reading. Absent leaves
    * the context without the member, as a host that answers nothing about its idleness is. */
   readonly idle?: () => boolean;
+  /** The host's `ctx.abort()`, which the stall ladder's second step ends the turn with. Absent
+   * leaves the context without the member, as a host that predates it is. */
+  readonly abort?: () => void | Promise<void>;
   readonly register?: () => Response | Promise<Response>;
   readonly ready?: (attempt: number) => Response | Promise<Response>;
   readonly readyPosted?: () => void;
@@ -726,10 +894,9 @@ async function claimPane(options: {
     promptAgents: options.promptAgents ?? [],
   };
   const bootToken = `boot-${sessionId}`;
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "legion-pane-state-"));
+  const stateDir = paneStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
-  temporaryPaths.push(stateDir);
   const bootTokenFile = path.join(secretsDir, claimToken);
   await writeFile(bootTokenFile, `${bootToken}\n`, { mode: 0o600 });
   process.env.ENVOY_URL = "http://envoy.test";
@@ -818,6 +985,7 @@ async function claimPane(options: {
     },
     ...(options.asyncJobs === undefined ? {} : { getAsyncJobSnapshot: options.asyncJobs }),
     ...(options.idle === undefined ? {} : { isIdle: options.idle }),
+    ...(options.abort === undefined ? {} : { abort: options.abort }),
     // The reminder's own timer: the host's `setTimeout` cannot be cancelled, so the pane keeps
     // every one armed and a test fires the one it means to.
     setTimeout: (callback, delayMs) => {
@@ -827,6 +995,7 @@ async function claimPane(options: {
   const errors: string[] = [];
   return {
     claimToken,
+    stateDir,
     registration,
     bootToken,
     requests,
@@ -842,6 +1011,7 @@ async function claimPane(options: {
     sentMessageOptions: fixture.sentMessageOptions,
     title: fixture.title,
     handlers: fixture.handlers,
+    handlersFor: fixture.handlersFor,
     context,
     start: async () => {
       const errorLog = spyOn(console, "error").mockImplementation((...args: unknown[]) => {
@@ -865,7 +1035,33 @@ async function bootPane(options: Parameters<typeof claimPane>[0]): Promise<Claim
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
   requests.filter((request) => request.path.startsWith("/legion/"));
 
-describe("Legion OMP extension", () => {
+/** The Envoy client instance a recorded request list registered `sessionID` under: the
+ * `client_instance_id` the latest `/v1/interests/subscribe` for that session carried. pi-envoy
+ * mints one such id per extension instance and sends it on every registration, and a role claim
+ * now carries it too. A claim's process is pinned to the registration's rather than to a literal
+ * id, because a literal would pass while the session claimed its role under some other process —
+ * the very thing the claim's `client_instance_id` exists to stop. */
+function registeredClientInstance(requests: readonly DaemonRequest[], sessionID: string): string {
+  const registration = requests.findLast(
+    (request) =>
+      request.path === "/v1/interests/subscribe" &&
+      typeof request.body === "object" &&
+      request.body !== null &&
+      "session_id" in request.body &&
+      request.body.session_id === sessionID
+  );
+  const body = registration?.body;
+  const clientInstance =
+    typeof body === "object" && body !== null && "client_instance_id" in body
+      ? body.client_instance_id
+      : undefined;
+  if (typeof clientInstance !== "string") {
+    throw new Error(`no registration of ${sessionID} carrying a client instance id`);
+  }
+  return clientInstance;
+}
+
+describe.skipIf(skip)("Legion OMP extension", () => {
   test("classifies controllers, root architects, sub-architects, phase workers, and ordinary sessions", () => {
     // The root architect's own issue key equals the tree's.
     expect(
@@ -1177,12 +1373,19 @@ describe("Legion OMP extension", () => {
       },
     ]);
     // The Envoy role is the claim token, claimed after the registration issued it and before ready.
+    // The claim names the process making it: the client instance the pane's own registration
+    // carried, never a literal id, so a claim another process made under this session id would
+    // not match.
     const paths = pane.requests.map((request) => request.path);
+    const roleClaimBody = {
+      session_id: "ses_worker",
+      role: pane.claimToken,
+      client_instance_id: registeredClientInstance(pane.requests, "ses_worker"),
+    };
     const roleClaim = pane.requests.findIndex(
       (request) =>
         request.path === "/v1/roles/set" &&
-        JSON.stringify(request.body) ===
-          JSON.stringify({ session_id: "ses_worker", role: pane.claimToken })
+        JSON.stringify(request.body) === JSON.stringify(roleClaimBody)
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
     expect(roleClaim).toBeLessThan(paths.indexOf("/legion/v1/claims/ready"));
@@ -1310,11 +1513,6 @@ describe("Legion OMP extension", () => {
       );
     }
     return outcomes;
-  };
-  const hook = (handlers: Map<string, Handler>, name: string): Handler => {
-    const found = handlers.get(name);
-    if (found === undefined) throw new Error(`the ${name} handler was not registered`);
-    return found;
   };
   test("a subagent whose first transcript publish loses the session lock is still recognised at the next hook", async () => {
     const { childFile } = await createSubagentTranscriptPaths();
@@ -1470,24 +1668,30 @@ describe("Legion OMP extension", () => {
     expect(await jjRepoConfig(workspace, "user.name")).toBe('user.name = "Sentinel Before Boot"');
     expect(await jjRepoConfig(workspace, "user.email")).toBe("");
   });
-  test("registers no tool_call hook: nothing a pane runs is refused or minted for, in any role", async () => {
+  test("its tool_call hook refuses nothing and mints nothing for a call, in any role", async () => {
     // No pane rule and no grant mint (LEGION-631): the `legion` tool's own operations mint their
-    // grants in-process, and the role prompts alone say who runs what. legion.ts is loaded alone
-    // (`bindEnvoy: false`): envoy.ts registers a `tool_call` hook of its own, which writes the
-    // session's title for the `dispatch` command, and the fixture's handlers are shared.
-    const worker = await claimPane({
-      role: "implementer",
-      sessionId: "ses_implementer_no_hook",
-      bindEnvoy: false,
-    });
-    expect(worker.handlers.get("tool_call")).toBeUndefined();
-    const root = await claimPane({
+    // grants in-process, and the role prompts alone say who runs what. The hook this entry does
+    // register (INFRA-1274) records the call's arguments for the stall watch and answers nothing,
+    // so it blocks no call and revises no arguments. The pane runs both extensions, as a Legion
+    // pane does, and the fixture's handlers are shared: envoy.ts registers a `tool_call` hook of
+    // its own, which writes the session's title for the `dispatch` command and answers nothing
+    // either, so what the host is handed for this call is nothing at all.
+    const call = {
+      toolName: "bash",
+      toolCallId: "toolu_pane",
+      input: { command: "jj undo", timeout: 120 },
+    };
+    const worker = await bootPane({ role: "implementer", sessionId: "ses_implementer_hook" });
+    expect(await hook(worker.handlers, "tool_call")(call, worker.context)).toBeUndefined();
+    const root = await bootPane({
       role: "architect",
       issue: "REPO-42",
-      sessionId: "ses_root_no_hook",
-      bindEnvoy: false,
+      sessionId: "ses_root_hook",
     });
-    expect(root.handlers.get("tool_call")).toBeUndefined();
+    expect(await hook(root.handlers, "tool_call")(call, root.context)).toBeUndefined();
+    expect(daemonRequests(root.requests).map((request) => request.path)).not.toContain(
+      "/legion/v1/grants"
+    );
   });
   test("materializes the session transcript before the boot handshake", async () => {
     const order: string[] = [];
@@ -1550,7 +1754,7 @@ describe("Legion OMP extension", () => {
       signal,
     });
     /** An assistant message that ran a real tool call, as Oh My Pi hands it to `message_end`: its
-     * tool-call block is `toolCall` (`packages/pi-envoy/src/agent-stream.ts` reads the same
+     * tool-call block is `toolCall` (`packages/pi-shared/src/agent-stream.ts` reads the same
      * shape), not Claude Code's `tool_use`. */
     const ranTool = {
       message: {
@@ -3508,6 +3712,8 @@ interface LaunchedController {
   readonly sentMessageOptions: unknown[];
   /** Every `sendUserMessage` call's options, in the order of sentUserMessages. */
   readonly sentUserMessageOptions: unknown[];
+  /** Every `pi.appendEntry` the controller's process made, in order. */
+  readonly entries: AppendedEntry[];
   readonly exits: number[];
   readonly tools: RegisteredTool[];
   readonly commands: RegisteredCommand[];
@@ -3564,10 +3770,9 @@ async function launchedController(options: {
     generation: 2,
     secret: `controller-secret-${options.sessionId}`,
   };
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "legion-controller-"));
+  const stateDir = controllerStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
-  temporaryPaths.push(stateDir);
   const capabilityFile = path.join(secretsDir, token);
   await writeFile(capabilityFile, "controller-capability\n", { mode: 0o600 });
   process.env.LEGION_CONTROLLER = "1";
@@ -3689,6 +3894,7 @@ async function launchedController(options: {
     sentMessages: fixture.sentMessages,
     sentMessageOptions: fixture.sentMessageOptions,
     sentUserMessageOptions: fixture.sentUserMessageOptions,
+    entries: fixture.entries,
     exits,
     tools: fixture.tools,
     commands: fixture.commands,
@@ -3825,7 +4031,7 @@ async function startRefusedController(
   return { notices: value, errors };
 }
 
-describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
+describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
   // Oh My Pi holds every send a session_start handler makes and drains them at the end of its
   // startup, and an Envoy card starts its own turn, so a role claim made there would let a card
   // take the first turn: the operator's controller claims nothing until its start command runs.
@@ -3856,11 +4062,18 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
       },
     ]);
     const paths = controller.requests.map((request) => request.path);
+    // The claim names the process making it: the client instance this controller registered
+    // under, never a literal id, so a claim another process made under this session id would not
+    // match.
+    const roleClaimBody = {
+      session_id: "ses_controller",
+      role: controller.token,
+      client_instance_id: registeredClientInstance(controller.requests, "ses_controller"),
+    };
     const roleClaim = controller.requests.findIndex(
       (request) =>
         request.path === "/v1/roles/set" &&
-        JSON.stringify(request.body) ===
-          JSON.stringify({ session_id: "ses_controller", role: controller.token })
+        JSON.stringify(request.body) === JSON.stringify(roleClaimBody)
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
     expect(controller.exits).toEqual([]);
@@ -5108,14 +5321,16 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
       // runs no heartbeat that could see the pane's new id as drift.
       expect(subagentTicks).toHaveLength(0);
 
-      // The listener later loses sight of the pane (a reaped claim, a listener restart). Only
-      // the pane's own heartbeat is registered here, and only a topic its instance holds is
-      // re-asserted — so the claim must have reached the pane's instance: it soft-claims for the
-      // session the pane holds now.
+      // The listener later loses sight of the pane (a reaped claim, a listener restart). The pane
+      // armed two managed intervals — its own Envoy heartbeat, and the stall watch's sweep
+      // (INFRA-1274) — and the subagent none, so only a topic the pane's instance holds is
+      // re-asserted: the claim must have reached the pane's instance, and it soft-claims for the
+      // session the pane holds now. Both are fired, since which was armed first is the bind order
+      // this case varies.
       controller.listener.lost = true;
-      expect(paneTicks).toHaveLength(1);
+      expect(paneTicks).toHaveLength(2);
       const reasserted = controller.nextSoftClaim();
-      paneTicks[0]?.();
+      for (const tick of paneTicks) tick();
       await reasserted;
       const softClaims = controller.requests.filter(
         (request) =>
@@ -5124,9 +5339,17 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
           request.body !== null &&
           "soft" in request.body
       );
+      // The re-assertion names the process making it: the client instance the pane registered its
+      // new session under, never a literal id — a claim the subagent's instance made would carry
+      // its own.
       expect(softClaims.at(-1)).toEqual({
         path: "/v1/roles/set",
-        body: { session_id: "ses_pane_second", role: controller.token, soft: true },
+        body: {
+          session_id: "ses_pane_second",
+          role: controller.token,
+          soft: true,
+          client_instance_id: registeredClientInstance(controller.requests, "ses_pane_second"),
+        },
       });
       expect(softClaims.map((request) => JSON.stringify(request.body))).not.toContainEqual(
         expect.stringContaining('"session_id":"ses_subagent"')
@@ -5284,12 +5507,20 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
       claimRefused("POST /legion/v1/claims/register failed with 403: Invalid boot token"),
     ]);
 
+    // One soft claim, and it names the process that made it: the client instance the resumed
+    // process registered this session id under, never a literal id — the claim the first process
+    // made under that same id carries its own.
     expect(
       first.requests.filter(
         (request) =>
           request.path === "/v1/roles/set" &&
           JSON.stringify(request.body) ===
-            JSON.stringify({ session_id: "ses_controller_first", role: first.token, soft: true })
+            JSON.stringify({
+              session_id: "ses_controller_first",
+              role: first.token,
+              soft: true,
+              client_instance_id: registeredClientInstance(first.requests, "ses_controller_first"),
+            })
       )
     ).toHaveLength(1);
     const resumedConnections = natsConnections.slice(connectionsBeforeResume);
@@ -5945,7 +6176,7 @@ function registrationBeforeClaim(
   return registration.body;
 }
 
-describe("a Legion session's title", () => {
+describe.skipIf(skip)("a Legion session's title", () => {
   test("a phase worker is titled by its role and issue before its role claim registers it with Envoy", async () => {
     const worker = await bootPane({ role: "implementer" });
 
@@ -6042,7 +6273,7 @@ describe("a Legion session's title", () => {
   });
 });
 
-describe("the recreated-workspace notice", () => {
+describe.skipIf(skip)("the recreated-workspace notice", () => {
   const notices = (pane: ClaimPane) =>
     pane.sentMessages.flatMap((message, i) =>
       "customType" in message && message.customType === "legion-workspace-recreated"
@@ -6210,5 +6441,723 @@ describe("the recreated-workspace notice", () => {
     expect(
       await requestOf({ messages: [copy(earlier), copy(id), task, copy(id)] }, context)
     ).toEqual({ messages: [copy(earlier), copy(id), task] });
+  });
+});
+
+/**
+ * The worker's watch on its own tool calls (INFRA-1274), as the entry wires it: which sessions
+ * arm its sweep, what its `tool_call` handler does, and the whole ladder driven from the entry
+ * against this faked host. The detector's own rules are `stall-watchdog.test.ts`'s, and each
+ * collaborator's are its own test's; what is proven here is the wiring.
+ */
+describe("the stall watch the plugin's entry arms", () => {
+  /** A call of a tool no deadline judges (`eval`, whose deadline the host may pause), as the
+   * measured architect stall was. */
+  const CODE = "while True:\n    pass\n";
+  const stuckCall = {
+    toolName: "eval",
+    toolCallId: "toolu_stuck",
+    input: { code: CODE },
+  };
+
+  /** The three numbers the watch runs on, set before an entry loads, since the entry reads them
+   * once: a call no deadline judges is overdue 1 ms after its execution started, and each sweep
+   * carries an overdue call one more step with no gap to wait out. */
+  const shortLimits = (): void => {
+    process.env.LEGION_STALL_CALL_BOUND_MS = "1";
+    process.env.LEGION_STALL_CALL_GRACE_MS = "0";
+    process.env.LEGION_STALL_STEP_MS = "0";
+  };
+
+  /** The agent's tree as the reader would report it: the agent itself and one child of the stuck
+   * call. */
+  const tree: StallProcessTree = {
+    read: true,
+    processes: [
+      { pid: 11, command: "omp --mode rpc", startedAt: 1, state: "S", cpuMs: 10 },
+      {
+        pid: 12,
+        command: "/usr/bin/python3 -u /tmp/omp-python-runner-1.py",
+        startedAt: 2,
+        state: "R",
+        cpuMs: 20,
+        toolCallId: stuckCall.toolCallId,
+      },
+    ],
+  };
+
+  /** The stall watch's process half, faked: the production one reads this machine's own `/proc`
+   * and ends what it finds there, which no test may do. Each call it was asked to end goes to
+   * `ended`. */
+  const fakeProcesses = (ended: StallCall[]): StallWatchdogProcesses => ({
+    tree: () => tree,
+    endCall: (call) => {
+      ended.push(call);
+      return 1;
+    },
+  });
+
+  /** The records the watch wrote to the session's transcript, in order. */
+  const records = (entries: readonly AppendedEntry[]): StallWatchRecord[] =>
+    entries
+      .filter((entry) => entry.customType === STALL_WATCH_ENTRY)
+      .map((entry) => entry.data as StallWatchRecord);
+
+  /** Runs every interval callback a session armed, as the host does when its five seconds are up,
+   * and waits for the sweep it started to have written `wanted` records in all. The host arms the
+   * sweep with `void` and never awaits it — a step of the ladder can outlast the tick that armed
+   * it — so there is no promise or event here to await, and each step crosses the teller's
+   * publish before its record is written. The loop ends at the record rather than at a duration,
+   * and the deadline is the failure message. */
+  const sweeps = async (
+    intervals: readonly (() => void)[],
+    entries: readonly AppendedEntry[],
+    wanted: number
+  ): Promise<StallWatchRecord[]> => {
+    if (intervals.length === 0) throw new Error("this session armed no interval to sweep on");
+    for (const tick of intervals) tick();
+    const deadline = Date.now() + 2_000;
+    while (records(entries).length < wanted) {
+      if (Date.now() > deadline) {
+        throw new Error(
+          `the stall watch wrote ${records(entries).length} records, not ${wanted}: ${JSON.stringify(records(entries))}`
+        );
+      }
+      await Bun.sleep(5);
+    }
+    return records(entries);
+  };
+
+  /** The clock the watch judges a call by is the machine's own (`Date.now` in the entry), so a
+   * call is made overdue by moving the clock rather than by waiting: `afterEach` hands it back.
+   * An hour is past every number this suite sets and past every default. */
+  const anHourPasses = (): void => {
+    setSystemTime(new Date(Date.now() + 3_600_000));
+  };
+  afterEach(() => {
+    setSystemTime();
+  });
+
+  /** Hands the entry one call that starts and never returns, and then moves the clock past the
+   * bound that judges it. */
+  const callStarts = async (pane: ClaimPane, context = pane.context): Promise<void> => {
+    await hook(pane.handlers, "tool_call")(stuckCall, context);
+    await hook(pane.handlers, "tool_execution_start")(stuckCall, context);
+    anHourPasses();
+  };
+
+  test("the tool_call handler records the call's arguments and returns at once: it awaits nothing, blocks nothing and revises nothing", async () => {
+    shortLimits();
+    setLegionStallProcessesForTests(() => fakeProcesses([]));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_tool_call",
+    });
+
+    // legion.ts's own handler, not the pane's two run in turn: what is proven here is that this
+    // one records before it returns, which the Envoy entry's handler ahead of it would otherwise
+    // hide behind its own await.
+    const toolCall = pane.handlersFor("tool_call").at(-1);
+    if (toolCall === undefined) throw new Error("the entry registered no tool_call handler");
+    const answer = toolCall(stuckCall, pane.context);
+    // Still unawaited: the arguments are recorded already, so the execution start that follows in
+    // this same tick finds that call and starts its clock rather than recording a second one from
+    // its own, empty arguments — a handler that awaited anything first would lose both, and this
+    // call would never be judged at all.
+    await hook(pane.handlers, "tool_execution_start")(
+      { toolName: "eval", toolCallId: stuckCall.toolCallId, input: {} },
+      pane.context
+    );
+    // Nothing is blocked and no arguments are revised: the handler answers the host nothing.
+    expect(await answer).toBeUndefined();
+    anHourPasses();
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 1));
+    const evidence = written[0] as StallEvidenceRecord;
+    expect(evidence.kind).toBe("evidence");
+    expect(evidence.tool).toBe("eval");
+    // The digest the teller takes of those arguments, whitespace collapsed and bounded.
+    expect(evidence.arguments).toContain('code="while True:');
+  });
+
+  test("a worker's session carries a stuck call up the whole ladder: the evidence, its own processes, the turn, then this process", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    let aborts = 0;
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_ladder",
+      abort: () => {
+        aborts += 1;
+      },
+    });
+    await callStarts(pane);
+
+    const { value: ladder } = await loggedWarnings(async () => {
+      // The owner is told once, before any step, and the first step ends the call's own
+      // processes; the turn, the process and the session go on.
+      const first = await sweeps(pane.intervals, pane.entries, 2);
+      expect(first.map((record) => record.kind)).toEqual(["evidence", "step"]);
+      expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+      // The call is still open at the next sweep, so the second step ends the turn and sends the
+      // session the message that starts the work again.
+      await sweeps(pane.intervals, pane.entries, 3);
+      expect(aborts).toBe(1);
+      // And only then, the third: this process ends, which the daemon reads as a death.
+      return sweeps(pane.intervals, pane.entries, 4);
+    });
+
+    expect(ladder.slice(1).map((record) => (record as StallStepTranscript).step)).toEqual([
+      "end-processes",
+      "abort-turn",
+      "exit-process",
+    ]);
+    const restart = pane.sentMessages.filter(
+      (message) => "customType" in message && message.customType === STALL_RESTART_MESSAGE
+    );
+    expect(restart).toHaveLength(1);
+    expect(restart[0]).toMatchObject({ content: expect.stringContaining(stuckCall.toolCallId) });
+    expect(pane.exits).toEqual([STALL_EXIT_CODE]);
+    expect(
+      JSON.parse(
+        await readFile(stallExitsFile(pane.stateDir, classifySession(process.env)), "utf8")
+      )
+      // The file is named and stamped for this claim alone, so one worker's exits never spend
+      // another's budget in a state directory several panes share.
+    ).toMatchObject({ exits: 1, who: "repo-43-implementer" });
+  });
+
+  test("a root architect's session sweeps on the same interval", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "architect",
+      issue: "REPO-42",
+      sessionId: "ses_stall_architect",
+    });
+    await callStarts(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => record.kind)).toEqual(["evidence", "step"]);
+    expect((written[0] as StallEvidenceRecord).session).toBe("root-architect");
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
+  test("the controller's session arms a sweep of its own, which it has none of to report activity on", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const controller = await launchedController({ sessionId: "ses_stall_controller" });
+    const intervals: (() => void)[] = [];
+    const context: SessionContext = {
+      ...controller.context("ses_stall_controller"),
+      setInterval: (callback) => {
+        intervals.push(callback);
+      },
+    };
+    await hook(controller.handlers, "session_start")({}, context);
+    // Its `session_start` had no interval of its own before this change — the one the activity
+    // report rides is armed in the non-controller branch — so a sweep here is this entry's, and
+    // the records below are the proof that it runs.
+    expect(intervals.length).toBeGreaterThan(0);
+
+    await hook(controller.handlers, "tool_call")(stuckCall, context);
+    await hook(controller.handlers, "tool_execution_start")(stuckCall, context);
+    anHourPasses();
+    const { value: written } = await loggedWarnings(() => sweeps(intervals, controller.entries, 2));
+
+    // Its evidence is its own transcript and its log: the controller tells nobody, since the
+    // role it would tell is the one its own session holds.
+    expect(written.map((record) => record.kind)).toEqual(["evidence", "step"]);
+    expect((written[0] as StallEvidenceRecord).session).toBe("controller");
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
+  test("a `task` subagent's session arms no sweep and records nothing: its last step would end the worker with it", async () => {
+    shortLimits();
+    setLegionStallProcessesForTests(() => fakeProcesses([]));
+    const { childFile } = await createSubagentTranscriptPaths();
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_subagent",
+      sessionFile: childFile,
+    });
+
+    await callStarts(pane);
+
+    expect(pane.intervals).toEqual([]);
+    expect(records(pane.entries)).toEqual([]);
+  });
+
+  test("a subagent's own call never reaches the worker's watch, whichever instance the host hands it to", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_parent" });
+    // The host names the runner an event belongs to on the context it hands the handler. A
+    // subagent's call recorded here would carry the worker to a step that ends the worker.
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+
+    await callStarts(pane, subagent);
+    for (const tick of pane.intervals) tick();
+    expect(records(pane.entries)).toEqual([]);
+
+    // And a subagent's turn ending closes none of the worker's calls — the `task` call running
+    // that subagent least of all, which is the one call a worker holds open the longest.
+    await hook(pane.handlers, "tool_call")(
+      { toolName: "task", toolCallId: "toolu_task", input: { prompt: "do the work" } },
+      pane.context
+    );
+    await hook(pane.handlers, "tool_execution_start")(
+      { toolName: "task", toolCallId: "toolu_task", input: {} },
+      pane.context
+    );
+    await hook(pane.handlers, "turn_end")(
+      { message: { role: "assistant", stopReason: "stop" } },
+      subagent
+    );
+    anHourPasses();
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => record.kind)).toEqual(["evidence", "step"]);
+    expect((written[0] as StallEvidenceRecord).tool).toBe("task");
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_task"]);
+  });
+
+  test("a subagent's run settling closes none of the worker's calls, so its stuck one is still judged", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_sub_agent_end" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    await callStarts(pane);
+
+    // The second road a turn is closed by (the entry's `agent_end` handler): a run that
+    // settled, which is what closes one that ended with no turn end of its own. A subagent's
+    // run settles inside the worker's turn — the `task` call running it is still open — and
+    // settling is the ordinary end of every subagent, so this arrives in every run that
+    // delegates at all.
+    await hook(pane.handlers, "agent_end")(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      subagent
+    );
+
+    // The worker's own stuck call is untouched by it: the next sweep tells its owner and steps.
+    // Were that run's end taken for this session's, the call would be closed here and the sweep
+    // would write nothing at all, which is the stall this change exists to end.
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", stuckCall.toolCallId],
+      ["step", stuckCall.toolCallId],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
+  test("a subagent's run cancelled on its own closes none of the worker's calls, so its stuck one is still judged", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_sub_message_end" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    await callStarts(pane);
+
+    // The third road, and the one that needs no id of the worker's to match: an assistant
+    // message that ended aborted closes every call the watch holds and the turn's one abort
+    // with them (`assistantMessage` in `pi-shared/src/stall-watchdog.ts`, through `closeAll`),
+    // since an aborted turn is readable nowhere else. A subagent the host cancelled on its own
+    // settles with exactly that message, inside the worker's turn, so unguarded it would carry
+    // off every call the worker holds open — the `task` call running that subagent among them,
+    // which would leave the worker's stuck call judged by nobody and its turn free to be
+    // aborted a second time. It is the failure the `agent_end` case above pins, by the other
+    // road.
+    await hook(pane.handlers, "message_end")(
+      { message: { role: "assistant", stopReason: "aborted" } },
+      subagent
+    );
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", stuckCall.toolCallId],
+      ["step", stuckCall.toolCallId],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
+  test("a subagent's `tool_call` is kept out of the worker's open calls, which the first rung counts", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    // The list this host is built with is the one the entry hands the first rung
+    // (the `openCalls` the entry hands its process host), which is where `stallCallProcesses`
+    // in `src/stall-recovery.ts` counts the open calls of a tool: what is read here is what
+    // that rule would read.
+    let openCalls: () => readonly StallCall[] = () => {
+      throw new Error("the entry armed no watch, so it built no process host");
+    };
+    setLegionStallProcessesForTests((deps) => {
+      openCalls = deps.openCalls;
+      return fakeProcesses(ended);
+    });
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_open_calls" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    const openIds = (): string[] => openCalls().map((call) => call.toolCallId);
+
+    await callStarts(pane);
+    expect(openIds()).toEqual([stuckCall.toolCallId]);
+
+    // The subagent makes a call of the same tool. `tool_call` is the one event that writes a
+    // call down from its arguments alone, before any clock of its own starts
+    // (`callRequested` in `pi-shared/src/stall-watchdog.ts`), so it is the one that would put a
+    // call the worker never made among the worker's own.
+    const subagentCall = { toolName: "eval", toolCallId: "toolu_sub", input: { code: "1 + 1" } };
+    await hook(pane.handlers, "tool_call")(subagentCall, subagent);
+    expect(openIds()).toEqual([stuckCall.toolCallId]);
+
+    // And it would never leave: the two events that close a call are guarded in the same way, so
+    // a call written down there would be a second open `eval` for the rest of the session, and
+    // the rung that ends a stuck `eval`'s runner declines while two are open.
+    await hook(pane.handlers, "tool_execution_start")(subagentCall, subagent);
+    await hook(pane.handlers, "tool_execution_end")({ toolCallId: "toolu_sub" }, subagent);
+    await hook(pane.handlers, "tool_result")(
+      { toolName: "eval", toolCallId: "toolu_sub", input: {}, details: {}, isError: false },
+      subagent
+    );
+    expect(openIds()).toEqual([stuckCall.toolCallId]);
+
+    // Those two closing guards are load-bearing, and the case below is theirs: a subagent's
+    // call id can equal one the worker holds open. The id is the provider's, which pi-ai hands
+    // on unchanged (`id: toolCall.id || ""` in `providers/openai-completions.ts`), and a
+    // provider is free to make it a function of the call alone rather than of the request —
+    // Kimi-K2 documents its tool-call id as `functions.<name>:<idx>` — so a worker and the
+    // subagent it delegated to, each on their first call of the same tool, carry the same id.
+    // With that collision and either guard gone, the subagent's `tool_execution_end` or
+    // `tool_result` deletes the worker's record (`close` in
+    // `pi-shared/src/stall-watchdog.ts`), and the worker's own stuck call is judged by nothing.
+  });
+
+  test("a subagent's call ending closes none of the worker's, though a provider can give the two the same id", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_sub_close" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    await callStarts(pane);
+
+    // The two events that close a call close it by id alone, and the id is the provider's own:
+    // the subagent's call carries the worker's here, which is what a provider numbering its
+    // calls per request hands out. Unguarded, either of these would take the worker's record
+    // with it.
+    await hook(pane.handlers, "tool_execution_end")({ toolCallId: stuckCall.toolCallId }, subagent);
+    await hook(pane.handlers, "tool_result")(
+      { ...stuckCall, input: {}, details: {}, isError: false },
+      subagent
+    );
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", stuckCall.toolCallId],
+      ["step", stuckCall.toolCallId],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
+  test("no step runs while the host reports the session idle, and a call that ended before the sweep is left alone", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const idle = { answer: true };
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_quiet",
+      idle: () => idle.answer,
+    });
+    await callStarts(pane);
+
+    // Idle: the host runs no turn, so nothing of this call is touched. The sweep decides to do
+    // nothing before its first await — on the host's idle answer, and on there being no open call
+    // at all — so a record absent when the tick returns is a record never written.
+    for (const tick of pane.intervals) tick();
+    expect(records(pane.entries)).toEqual([]);
+
+    // Running again, with the call now closed by its own execution end: its record went with it,
+    // so there is nothing to judge.
+    idle.answer = false;
+    await hook(pane.handlers, "tool_execution_end")(
+      { toolCallId: stuckCall.toolCallId },
+      pane.context
+    );
+    for (const tick of pane.intervals) tick();
+    expect(records(pane.entries)).toEqual([]);
+    expect(ended).toEqual([]);
+  });
+
+  test("the turn's end closes every call it held open, so a later sweep judges none of them", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_turn_end",
+    });
+    await callStarts(pane);
+
+    await hook(pane.handlers, "turn_end")(
+      { message: { role: "assistant", stopReason: "aborted" } },
+      pane.context
+    );
+    // As above, a sweep with no open call left decides that before its first await.
+    for (const tick of pane.intervals) tick();
+
+    expect(records(pane.entries)).toEqual([]);
+    expect(ended).toEqual([]);
+  });
+
+  /** A call of this session left open and overdue, so a sweep has a record to write and there
+   * is something to wait on: a bare tick returns before a sweep that writes has written, so it
+   * cannot tell a sweep that wrote nothing from one that has not written yet. */
+  const openCallWaitingToBeSwept = async (pane: ClaimPane): Promise<void> => {
+    const open = { toolName: "eval", toolCallId: "toolu_open", input: { code: CODE } };
+    await hook(pane.handlers, "tool_call")(open, pane.context);
+    await hook(pane.handlers, "tool_execution_start")(open, pane.context);
+    anHourPasses();
+  };
+
+  test("a turn that merely ended closes the calls it held open, so the next sweep judges none of them", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_turn_stop",
+    });
+    await callStarts(pane);
+
+    // A turn that ended the ordinary way carries `stopReason: "stop"`, which the assistant
+    // message reads as nothing at all (`assistantMessage` in
+    // `pi-shared/src/stall-watchdog.ts`), unlike the `aborted` of the case above: the end of
+    // the turn itself is all that closes this call.
+    await hook(pane.handlers, "turn_end")(
+      { message: { role: "assistant", stopReason: "stop" } },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    // The call of the ended turn is judged by nothing, though it is an hour overdue: the sweep
+    // carries the open one alone, and its processes are the only ones the first rung ended.
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a run that settled with no turn end of its own closes them at `agent_end`", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_agent_end",
+    });
+    await callStarts(pane);
+
+    // No `turn_end` at all, and a last message that says the run settled: `agent_end` is the
+    // only thing here that closes this call.
+    await hook(pane.handlers, "agent_end")(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a run that ends with the host going on closes them too, so no step is taken against the turn after it", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_run_continues",
+    });
+    await callStarts(pane);
+
+    // The other road of the same handler: a run of this session that is not the last, because
+    // the host has something to go on with — a background job's follow-up, which arrives with
+    // `willContinue` and `awaitingAsyncWork` set, or a steering delivery it took while the turn
+    // ran, at whose end `ctx.hasPendingMessages()` is true. The entry reads neither and closes
+    // the run's calls at either end, which is what this case holds. That is a choice and not
+    // the host's doing: it is right because the host writes every call's `tool_execution_end`
+    // before a run's `turn_end` and `agent_end`, so no call of the run is open at this point,
+    // and because the turn after it is a turn of its own — a ladder still judging the ended
+    // run's calls would end the processes of a call nobody waits on and abort the turn the host
+    // is running now.
+    await hook(pane.handlers, "agent_end")(
+      { willContinue: true, messages: [{ role: "assistant", stopReason: "stop" }] },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a call that ends while its turn goes on leaves the book at its execution's end, so the sweep that follows judges it not at all", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_execution_end",
+    });
+    await callStarts(pane);
+
+    // The ordinary end of an ordinary call, and the one the live proof cannot hold alone: there
+    // the host ends the turn a breath after the call, so the turn's own close takes the record
+    // whatever this handler did (`legion-stall-watchdog-omp.test.ts`, the backgrounded call).
+    // Here nothing else happens, so this close is the only one there is. It is what keeps a
+    // finished call out of the ladder's way — most calls of a multi-call turn end while the turn
+    // goes on — and without it a call nobody waits on would be judged an hour later, its
+    // processes ended and the turn working on it aborted.
+    await hook(pane.handlers, "tool_execution_end")(
+      { toolCallId: stuckCall.toolCallId },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a call whose result is delivered without an execution end leaves the book at that result", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_tool_result",
+    });
+    await callStarts(pane);
+
+    // The second road of the same close, held by a case of its own because each handler is the
+    // only one of the two that runs for some call: a result delivered for a call whose execution
+    // end this session never saw closes it here and nowhere else.
+    await hook(pane.handlers, "tool_result")(
+      { ...stuckCall, input: {}, details: {}, isError: false },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("an assistant message that ended aborted closes the calls of the turn it ended", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_aborted_message",
+    });
+    await callStarts(pane);
+
+    // Where an aborted turn is readable at all: `agent_end` carries no `stopReason`, so the
+    // last assistant message is the one thing that says a turn was interrupted — the ladder's
+    // own abort among the things that interrupt it. On this host a `turn_end` follows about 3 ms
+    // later and would close the same calls, so this is the one road that is held here rather
+    // than on the real binary, and it is the road the subagent guard on `message_end` is about.
+    await hook(pane.handlers, "message_end")(
+      { message: { role: "assistant", stopReason: "aborted" } },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("the session's shutdown closes the calls it had open, so nothing of it is judged after it", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_shutdown",
+    });
+    await callStarts(pane);
+
+    // Whatever the session had open is not this watch's business once the session is going
+    // down: requirement R2 names a session's end among the things that close a call, and this
+    // is where the entry wires it.
+    await hook(pane.handlers, "session_shutdown")({}, pane.context);
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a session switch closes the calls the session it left had open", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_switch",
+    });
+    await callStarts(pane);
+
+    // The pane is left on another session — a switch, a branch or a tree navigation, which this
+    // entry answers alike — and the calls of the session it left are gone with it, so a call
+    // stuck there is judged by nobody and a later stuck call starts the ladder at its first
+    // step.
+    await hook(pane.handlers, "session_switch")({}, pane.context);
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
   });
 });

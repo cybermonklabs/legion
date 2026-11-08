@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-// The agents the plugin ships (package.json `files`), each dispatched by a Legion prompt.
+// The agents the plugin ships (package.json `files`), each dispatched by a Legion prompt or skill.
 const agentsDir = join(import.meta.dir, "..", "agents");
 const agents = readdirSync(agentsDir).filter((name) => name.endsWith(".md"));
 
@@ -71,13 +71,14 @@ test.each(agents)("%s declares no blocking field", (file) => {
   expect(definition(file).fields, `${file}'s frontmatter`).not.toHaveProperty("blocking");
 });
 
-// The planner's and the architect's two checks: each runs on the deployment's model role for its
-// job. They change no file: no edit or write tool. They carry bash to check live state themselves,
-// and Oh My Pi has no per-agent command limit, so each prompt holds the agent to commands that
-// read.
+// The planner's and the architect's two checks and the architect's red team: each runs on the
+// deployment's model role for its job. They change no file: no edit or write tool. They carry
+// bash to check live state themselves, and Oh My Pi has no per-agent command limit, so each
+// prompt holds the agent to commands that read.
 test.each([
   ["plan-gap-analyst.md", "@oracle"],
   ["plan-reviewer.md", "@review"],
+  ["goal-red-team.md", "@review"],
 ])("%s checks on %s, edits no file and runs only read-only commands", (file, model) => {
   const { fields, body } = definition(file);
   expect(fields.model).toEqual([model]);

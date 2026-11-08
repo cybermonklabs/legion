@@ -115,19 +115,48 @@ projects:
 #                                      # no record is rewritten, and a tree keeps the name it was
 #                                      # recorded under for its whole life, so keep the pair here
 #                                      # for as long as any record names the old repository.
+#                                      # A recorded name is called on GitHub under the name it
+#                                      # moved to exactly when it is the pair's from, this
+#                                      # project serves the pair's to, and this project does not
+#                                      # serve the pair's from; every other recorded name, the to
+#                                      # among them, is used as it stands. The rule asks whether
+#                                      # this project serves each of the pair's two repositories,
+#                                      # one at a time, and never which owners its repositories
+#                                      # have, so mapping another repository of either owner to
+#                                      # this project leaves the pair resolving as it did. A
+#                                      # role's gh bundle still holds one directory per owner,
+#                                      # named for the owner the record keeps; the token in the
+#                                      # directory a role writes through is minted for the owner
+#                                      # whose installation holds that repository now.
 #                                      # Refused: a pair whose two names are one repository, a
 #                                      # repository renamed twice, a chain (acme/a -> acme/b
 #                                      # with acme/b -> acme/c), and one owner's repositories
 #                                      # moved to two owners (acme/a -> b/a with acme/c -> d/c),
-#                                      # since a gh directory is keyed by an owner and holds one
-#                                      # installation's token; several repositories of one owner
+#                                      # since the daemon keys the owner a pair moved a
+#                                      # repository away from to the owner it moved to, one key
+#                                      # per owner, so the second pair would overwrite the first
+#                                      # with nothing said; several repositories of one owner
 #                                      # may move to one owner, and a rename inside the owner
 #                                      # (acme/a -> acme/b) counts as a move to that owner, so it
 #                                      # refuses acme/a -> acme/b beside acme/c -> d/c.
 #                                      # --check-config prints one line
 #                                      # per pair, to read the equivalence back before a transfer.
 gates:
-  design: root-issues                  # a person approves each root's spec (the default); or off
+  design: [spec]                       # the design gate steps, in the order a person approves
+                                       # them: decisions (the root issue's decisions document),
+                                       # criteria (its Verification document), spec (its primary
+                                       # document). The daemon keeps one gate record per step,
+                                       # and the tree's phases, each released child and the
+                                       # merger's READY wait until a person has approved the
+                                       # document of every step listed here.
+                                       # [spec] is the default, and the word root-issues means
+                                       # it. [] gates nothing, and the word off means that: each
+                                       # registration opens its record at once and no person is
+                                       # asked. Any other word, a value that is neither a word
+                                       # nor a list, and a list naming one step twice are
+                                       # refused at load. --check-config prints the resolved
+                                       # list, design-gate-steps=decisions,criteria, or
+                                       # design-gate-steps=none when the list is empty.
 github_apps:
   implement:
     app_id: "100001"
@@ -159,6 +188,33 @@ github_apps:
 #                                      # without fallback keep the capability report's model-fallback row
 #                                      # open; record that with capabilities.decided.model-fallback
 #                                      # (docs/kubernetes.md, Operator configuration).
+# worker_stall_backstop_hours:         # the daemon's own backstop under a worker whose turn has
+#   implementer: 6                     # stopped: how long after that role's last recorded step the
+#   controller: 1.5                    # daemon ends the turn that step belongs to, so the task that
+#                                      # turn was serving goes back to waiting and the session comes
+#                                      # back and is sent it again, with nothing charged to the
+#                                      # claim. Keys: an issue role (architect, planner, implementer,
+#                                      # tester, reviewer, merger), or controller; values: a decimal
+#                                      # number of hours, and 0 the backstop off for that role, which
+#                                      # nothing else does. A role left out runs on twice the bound
+#                                      # that worker's plugin holds a tool call no deadline judges
+#                                      # to — 8 hours for an implementer and a reviewer, 2 for every
+#                                      # other role and the controller — so the worker's own
+#                                      # recovery always acts first. The
+#                                      # floor under any bound you set is that worker's whole stall
+#                                      # ladder: the longer of that bound and the hour the host
+#                                      # clamps a call's own declared deadline to, plus the grace
+#                                      # over a declared deadline, plus the two gaps between the
+#                                      # ladder's three recovery steps. The loader refuses a bound
+#                                      # below it, naming the role and that arithmetic, because the
+#                                      # daemon cannot see that ladder running. Where a deployment
+#                                      # switches the worker's own watch off with
+#                                      # LEGION_STALL_CALL_BOUND_MS=0, both numbers are reckoned
+#                                      # from that role's default bound instead, since a worker that
+#                                      # has been told to stop acting is no reason for the daemon to
+#                                      # start ending healthy turns. The issue's architect is told
+#                                      # what the record held, and a tree architect's own stall
+#                                      # reaches the controller too.
 # Under runtime: tmux — the daemon and every pane on one host, as one Unix user — the runtime block
 # is instead (docs/deployment.md, "The runtime.tmux block"):
 # runtime:

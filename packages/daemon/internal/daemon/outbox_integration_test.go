@@ -207,8 +207,8 @@ func outboxRows(t *testing.T, pool *pgxpool.Pool) int {
 }
 
 // isolatedOutboxPool is a pool on a database carrying every migration, cloned from the package's
-// template (testpg.ClonePool). The rigs' own stores share the server's database instead
-// (testDSN): only the tests that need rows of their own come here.
+// template (testpg.ClonePool). The rigs' own stores share the package's run database instead
+// (testDSN, testdb.RunDatabaseFor): only the tests that need rows of their own come here.
 func isolatedOutboxPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	return testpg.ClonePool(t, "legion_outbox_test")
@@ -254,6 +254,9 @@ func (d *blockingDispatch) SetStatus(context.Context, string, string) (dispatch.
 func (d *blockingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("blockingDispatch takes no hand-over")
 }
+func (d *blockingDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("blockingDispatch releases no claim")
+}
 func (d *blockingDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *blockingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
@@ -272,6 +275,9 @@ func (d *blockingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoPro
 }
 func (d *blockingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
+}
+func (d *blockingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
 }
 func (d *blockingDispatch) count() int {
 	d.mu.Lock()
@@ -428,6 +434,9 @@ func (d *refusingDispatch) SetStatus(_ context.Context, _ string, status string)
 func (d *refusingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("refusingDispatch takes no hand-over")
 }
+func (d *refusingDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("refusingDispatch releases no claim")
+}
 func (d *refusingDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *refusingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
@@ -446,6 +455,9 @@ func (d *refusingDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoPro
 }
 func (d *refusingDispatch) WebhookAppInstalled(context.Context, string) (bool, error) {
 	return true, nil
+}
+func (d *refusingDispatch) PutGatedSteps(context.Context, string, []string) error {
+	return nil
 }
 
 // boardDispatch is one issue's Dispatch board: it fails the first failures writes, then applies.
@@ -471,6 +483,9 @@ func (d *boardDispatch) SetStatus(_ context.Context, _ string, status string) (d
 func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("boardDispatch takes no hand-over")
 }
+func (d *boardDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("boardDispatch releases no claim")
+}
 func (d *boardDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
@@ -488,6 +503,7 @@ func (d *boardDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProjec
 	return nil, nil
 }
 func (d *boardDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *boardDispatch) PutGatedSteps(context.Context, string, []string) error     { return nil }
 
 // A failed transaction is one row's failure, never the runner's end: a Postgres restart drops the
 // pool's connections, and the outbox has to keep draining once they are back. A claim that fails

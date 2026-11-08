@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
@@ -717,20 +718,11 @@ func TestEveryRolesGitStartsNoPlantedFsmonitorOrHook(t *testing.T) {
 		"GIT_AUTHOR_NAME=a", "GIT_AUTHOR_EMAIL=a@example.invalid", "GIT_COMMITTER_NAME=a", "GIT_COMMITTER_EMAIL=a@example.invalid"}
 	run := func(env []string, args ...string) {
 		t.Helper()
-		cmd := exec.Command(git, args...)
-		cmd.Dir, cmd.Env = clone, env
-		if output, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, output)
-		}
+		fixturegit.Runner{TB: t, Env: env}.Run(clone, append([]string{git}, args...)...)
 	}
-	initialise := exec.Command(git, "init", "--quiet", clone)
 	// The init creates the clone, so it runs in the directory holding it rather than in the one
 	// the test process happens to have; every later command runs in the clone itself.
-	initialise.Dir = dir
-	initialise.Env = fixtureenv.Isolated(home)
-	if output, err := initialise.CombinedOutput(); err != nil {
-		t.Fatalf("git init: %v\n%s", err, output)
-	}
+	fixturegit.Isolated(t, home).Run(dir, append([]string{git}, fixturegit.InitWorkTree(clone, "")[1:]...)...)
 	if err := os.WriteFile(filepath.Join(clone, ".git", "config"), append(mustRead(t, filepath.Join(clone, ".git", "config")), planted...), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1468,29 +1460,36 @@ func TestAPodIsToldTheIssueKeyItStampsItsCommitsWith(t *testing.T) {
 	}
 }
 
-// The four stall limits a phase worker's reminder runs on reach a pod as ordinary entries of the
+// The seven stall limits a Legion session's turn runs on reach a pod as ordinary entries of the
 // worker process's environment: the daemon merges the ones it holds into the spec's Env (the
-// daemon package's workerSpawnSpec), and Env travels verbatim as plain pairs of the generation's
-// start command (launchEnvironment), so nothing of them is this runtime's own — they are no part
-// of runtimeOwned, which a spec may not set.
+// daemon package's SpawnSpec, after its fork), and Env travels verbatim as plain pairs of the
+// generation's start command (launchEnvironment), so nothing of them is this runtime's own — they
+// are no part of runtimeOwned, which a spec may not set — and the controller's pod is told them
+// exactly as a phase worker's is.
 func TestTheWorkerContainersEnvCarriesTheStallLimits(t *testing.T) {
 	r, err := configure(testOptions())
 	if err != nil {
 		t.Fatal(err)
 	}
 	limits := map[string]string{
-		"LEGION_STALL_REMINDER_MS":     "45000",
-		"LEGION_STALL_WAITING_MS":      "900000",
-		"LEGION_STALL_RESUME_MS":       "15000",
 		"LEGION_STALL_ARCHITECT_AFTER": "3",
+		"LEGION_STALL_CALL_BOUND_MS":   "3600000",
+		"LEGION_STALL_CALL_GRACE_MS":   "300000",
+		"LEGION_STALL_REMINDER_MS":     "45000",
+		"LEGION_STALL_RESUME_MS":       "15000",
+		"LEGION_STALL_STEP_MS":         "120000",
+		"LEGION_STALL_WAITING_MS":      "900000",
 	}
-	spec := workerSpec(t)
-	maps.Copy(spec.Env, limits)
-	env := envOf(workerOf(t, r, spec))
-	for name, want := range limits {
-		if env[name] != want {
-			t.Errorf("the worker container's %s = %q, want %q", name, env[name], want)
-		}
+	for kind, spec := range map[string]runtime.SpawnSpec{"a phase worker": workerSpec(t), "the controller": controllerSpec(t)} {
+		t.Run(kind, func(t *testing.T) {
+			maps.Copy(spec.Env, limits)
+			env := envOf(workerOf(t, r, spec))
+			for name, want := range limits {
+				if env[name] != want {
+					t.Errorf("%s's container is told %s=%q, want %q", kind, name, env[name], want)
+				}
+			}
+		})
 	}
 }
 
@@ -2310,6 +2309,7 @@ func TestAClaudePodsAgentCommandIsClaudeCodeUnderTheBridge(t *testing.T) {
 		"/opt/legion/bin/legion", "claude-bridge", "--", claude(spec.Generation),
 		"-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose",
 		"--replay-user-messages",
+		"--thinking-display", "summarized",
 		"--permission-mode", "bypassPermissions",
 		"--strict-mcp-config", "--mcp-config", generationDir(spec.Generation) + "/claude-mcp.json",
 		"--plugin-dir", "/opt/legion/claude-envoy",
@@ -2440,5 +2440,43 @@ func TestARecordedSessionIsHeldToItsHarnesssRule(t *testing.T) {
 	if _, err := resuming(named); err == nil ||
 		!strings.Contains(err.Error(), "not named for a Claude Code session id") {
 		t.Errorf("prepare of a Claude claim resuming %s = %v, want it refused as no session id", named, err)
+	}
+}
+
+// Every Oh My Pi launch names the model the pod's overlay puts on the `default` role, resuming or
+// not: @default is Oh My Pi's own name for that role, and without the flag a resumed session runs
+// the model its first launch saved for ever. The flag rides the launch that starts a session too,
+// because a launch under it records no model of its own: the session file keeps the pin its first
+// launch wrote, so a later launch without the flag would read that pin again
+// (TestTheResumedAgentRunsTheConfiguredModel measures both on the real binary). Its place in the
+// argv is fixed here, after the two extension roots and before `--resume`. A Claude role's command
+// is claudelaunch's and names no model at all.
+func TestAgentArgvCarriesTheConfiguredModel(t *testing.T) {
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := launchOf(t, r, workerSpec(t))
+	resuming := workerSpec(t)
+	resuming.Generation, resuming.BootToken, resuming.ResumeSessionFile = 2, "boot-g2", resumeSession
+	resumed := launchOf(t, r, resuming)
+	for _, tc := range []struct {
+		name string
+		l    launch
+		want []string
+	}{
+		{"a launch that starts a session", fresh, append(slices.Clone(r.agent),
+			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
+			"--mode", "rpc", "--append-system-prompt", fresh.prompt)},
+		{"a launch that resumes one", resumed, append(slices.Clone(r.agent),
+			"--extension", envoyPlugin, "--extension", legionPlugin, "--model", "@default",
+			"--resume="+resumeSession, "--mode", "rpc", "--append-system-prompt", resumed.prompt)},
+	} {
+		if got := tc.l.agentArgv(r.agent); !slices.Equal(got, tc.want) {
+			t.Errorf("%s runs %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if claude := launchOf(t, r, claudeWorkerSpec(t)).agentArgv(r.agent); slices.Contains(claude, "--model") {
+		t.Errorf("the Claude pod's command %q names a model, want claudelaunch's own command", claude)
 	}
 }

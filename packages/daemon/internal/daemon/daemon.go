@@ -591,7 +591,10 @@ type plan struct {
 	// missing or not checked out (workflowRuntime.ensureWorkspace); nil without a workflow.
 	ensureWorkspace func(ctx context.Context, issue string, repo ghrepo.Repository, defaultBranch string) error
 	// repositories is the project's repository mapping as the workflow serves it, empty until the
-	// workflow reads it at boot: every role's gh bundle holds a directory for each of its owners.
+	// workflow reads it at boot: the set every role's gh bundle is built over, a directory per
+	// owner of it and one per repository the pod's own owner serves beside the one it writes to
+	// (appauth.GitHubCredential), and, under the Kubernetes runtime, the mapping a provisioning
+	// mint reads the rename rule from (sandboxRuntime, repositories.serving).
 	repositories *repositories
 	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
 	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
@@ -684,7 +687,9 @@ type plan struct {
 // workflow's App tokens and repository the workflow's repository of an issue (issueRepository;
 // both nil without a workflow), st the store the runtime reads, and mapped the repositories
 // Dispatch's mapping names now (plan.repositories, which the workflow fills; none without a
-// workflow), which the Sandbox runtime's repository caches follow. openSupervision hands it the
+// workflow): the set every role's gh bundle is built over, and the set a configured rename is
+// resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
+// runtime's repository caches follow too. openSupervision hands it the
 // plan the workflow completed, so no factory reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
 	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error)
@@ -1127,6 +1132,14 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
+	// the store has refused, by claim, waiting for the next sweep to write them
+	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
+	// one and the sweep writes it. Nothing of it goes in the store, as the pod-update sweep's
+	// own pace does not (podUpdateOpenings), and one claim owes at most one: a later stall of
+	// the same claim carries the record its owner wants.
+	backstopMu   sync.Mutex
+	backstopOwed map[claim.Token]stallNoticeOwed
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1288,7 +1301,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 			stateDir: cfg.StateDir, project: p.project, instructions: p.instructions, secrets: p.secrets, prompts: p.prompts,
 			identity: p.identity, repository: p.repository,
 			repositories: func() api.RepositoriesView { return p.repositories.view(nil) },
-			designGate:   cfg.Gates.Design, slackChannels: cfg.Projects[cfg.Project].SlackChannels,
+			designSteps:  cfg.Gates.Steps(), slackChannels: cfg.Projects[cfg.Project].SlackChannels,
 			mergeRules: cfg.Projects[cfg.Project].Merge, runtimeName: cfg.Runtime.Name, plugins: p.plugins,
 			commitIssueTrailerRepos: cfg.Projects[cfg.Project].CommitIssueTrailerRepos, same: p.repositories.same,
 			backend: cfg.BackendFor, hostWorkspaces: !rt.ProvisionsWorkspaces(), ensureWorkspace: p.ensureWorkspace,
@@ -1328,12 +1341,17 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PodUpdateRetask:    cfg.PodUpdateRetask,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
-	return &supervision{
+	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
-	}, nil
+	}
+	// The machines' report of a stalled turn they ended goes to supervision, which is built
+	// after their deps: the one callback whose receiver is supervision itself, set here before
+	// any machine exists, as the workflow sets enqueue where it attaches.
+	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	return supervisionOf, nil
 }
 
 // cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone
@@ -1711,9 +1729,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 // reconcileOrphans ends, every sweep interval, whatever the runtime holds that belongs to none of
 // the claims the daemon has not retired, once it has idled past the grace, re-posts StalePlugin
 // for every live claim whose contract still differs — the retry a relaunch the boot pass
-// (refreshStalePlugins) could not complete needs — and carries every update round a step
-// (reconcilePodUpdates). Both ride the sweep because it is the one periodic pass that already
-// reads every claim, rather than running a timer of their own.
+// (refreshStalePlugins) could not complete needs — carries every update round a step
+// (reconcilePodUpdates), and ends the turn of every claim whose agent has stopped stepping
+// (backstopStalledTurns). All three ride the sweep because it is the one periodic pass that
+// already reads every claim, rather than running a timer of their own; its minute is far below
+// the smallest backstop bound a configuration can hold.
 func (s *supervision) reconcileOrphans(ctx context.Context) {
 	ticker := time.NewTicker(s.plan.orphanSweep)
 	defer ticker.Stop()
@@ -1735,6 +1755,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		}
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
+		s.backstopStalledTurns(ctx, claims)
 	}
 }
 
@@ -1853,6 +1874,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 			wakes:        s.waitingWakes,
 			repositories: p.repositories,
 			caches:       repositoryCachesOf(s.runtime),
+			gatedSteps:   cfg.Gates.Steps(),
 			settings:     api.SettingsOf(cfg),
 		},
 		StateTransactions:  st,
@@ -1865,7 +1887,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		DispatchProject:    cfg.Project,
 		OperatorToken:      p.operatorToken,
 		Controller:         st,
-		DesignGate:         cfg.Gates.Design,
+		Steps:              cfg.Gates.Steps(),
 		ControllerLaunched: keeper != nil,
 		PluginRelaunchable: p.pluginRelaunchable,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(cfg, c) },
@@ -1918,7 +1940,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		}
 		report, cancel := context.WithTimeout(serving, strandedReportTimeout)
 		defer cancel()
-		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, s.log)
+		reportStranded(report, st, projectRecords{Store: record.NewStore(), project: cfg.Project}, cfg.Project, p.project, cfg.Gates.Steps(), s.log)
 		if p.strandedReported != nil {
 			p.strandedReported()
 		}
@@ -1991,6 +2013,9 @@ type source struct {
 	// caches is the Kubernetes runtime's repository caches with their last health reads
 	// (sandbox.Runtime.RepositoryCaches); nil under a runtime that keeps none.
 	caches func() []sandbox.CacheStatus
+	// gatedSteps are the design-gate steps the deployment gates (config.Gates.Steps), which every
+	// root of the state answers its own state of; the empty list gates none.
+	gatedSteps []record.DesignStep
 	// settings is the resolved configuration as the state shows it, built once here: Load reads
 	// legion.yaml once and an edit to it restarts the daemon, so once-at-boot is live.
 	settings api.Settings
@@ -2111,33 +2136,36 @@ func (s projectRecords) wakeOnCommit(ctx context.Context, row record.OutboxRow) 
 	s.wake(row.Issue, row.Kind)
 }
 
-func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
+// State is the project's state through tx, and the project's claims it read through tx to build
+// it (api.StateSource): the route reads the caller's plugin contract from those claims, so the
+// body and the contract it is cut to come from one snapshot.
+func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.Claim, error) {
 	version, err := s.store.SchemaVersionTx(ctx, tx)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	boots, firstBootAt, err := s.store.BootsTx(ctx, tx, s.project)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	claims, err := s.store.ClaimsTx(ctx, tx)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	claims = ofProject(claims, s.projectToken)
 	records := projectRecords{Store: s.records, project: s.project}
 	now := time.Now().UTC()
-	state, err := projection.Project(ctx, tx, records, s.project, claims, s.reports(), now)
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, s.reports(), now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	resumes, err := strandedReleaseWakes(ctx, s.store, s.projectToken, claims, now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
-	stranded, err := workflow.Stranded(ctx, tx, records, s.project, claims, resumes, now)
+	stranded, err := workflow.Stranded(ctx, tx, records, s.project, s.gatedSteps, claims, resumes, now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	state.StrandedClaims = api.StrandedClaimsOf(stranded)
 	// A wake waits in one of two places, and the state names both as one list (api.WakesWaitingOf):
@@ -2146,7 +2174,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
 	// outbox row, read here in the snapshot every other durable fact of this state is read from.
 	paced, err := pacedCatchUps(ctx, tx, records, s.projectToken, s.project, now)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	var held []supervise.WaitingWake
 	if s.wakes != nil {
@@ -2164,7 +2192,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
 	state.Admission.Cap = s.admissionCap
 	controller, _, err := s.store.ControllerTx(ctx, tx, s.projectToken)
 	if err != nil {
-		return api.State{}, err
+		return api.State{}, nil, err
 	}
 	state.ControllerLocator = api.ControllerLocatorOf(s.runtime, controller)
 	if s.secretsLogin != nil {
@@ -2178,7 +2206,7 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, error) {
 		}
 		state.Repositories = s.repositories.view(caches)
 	}
-	return state, nil
+	return state, claims, nil
 }
 
 // adoptIdentity is the supervisor's identity for a working copy's adoption (supervise.Deps.Identity)

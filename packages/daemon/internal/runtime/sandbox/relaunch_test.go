@@ -1255,13 +1255,23 @@ func TestAFailedStepOfAnIssuePodsProvisioningReleasesThePodsTurn(t *testing.T) {
 // test's failure, so a launch that panics fails its own subtest by name rather than the binary.
 func failedLaunch(t *testing.T, g *rig, spec runtime.SpawnSpec) error {
 	t.Helper()
+	launching, cancel := context.WithTimeout(g.ctx, time.Second)
+	defer cancel()
+	return failedLaunchOn(t, g, launching, spec)
+}
+
+// failedLaunchOn is failedLaunch for a row whose launch no wall clock bounds: it runs on
+// launching, the context the row cancels once what it waits on has happened, and turns a panic
+// into the test's failure the same way. A launch whose failure lies past the waits of a replacing
+// try — a suspend, a wait for the previous pod, provision, the wait for the new pod — takes a
+// loaded machine longer than failedLaunch's second, and is this helper's rather than its.
+func failedLaunchOn(t *testing.T, g *rig, launching context.Context, spec runtime.SpawnSpec) error {
+	t.Helper()
 	defer func() {
 		if p := recover(); p != nil {
 			t.Fatalf("Spawn panicked: %v", p)
 		}
 	}()
-	launching, cancel := context.WithTimeout(g.ctx, time.Second)
-	defer cancel()
 	_, err := g.r.Spawn(launching, spec)
 	return err
 }
@@ -1947,6 +1957,16 @@ func (s *supervisedSandboxStore) PutClaimAndDelivery(_ context.Context, c superv
 func (s *supervisedSandboxStore) RetireDelivery(_ context.Context, c supervise.Claim, _ string) error {
 	s.claim = c
 	return nil
+}
+
+// PutClaimStep records the step columns alone, as the store's own narrow write does; these
+// tests read none of them.
+func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
+	if s.claim.Token != token {
+		return false, nil
+	}
+	s.claim.Step = step
+	return true, nil
 }
 
 // A Running patch the server applied but whose answer never arrived (a client timeout) is as

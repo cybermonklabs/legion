@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 var updateGolden = flag.Bool("update", false, "rewrite the golden fixtures this package pins")
@@ -196,9 +197,32 @@ func minimalSettingsConfig(t *testing.T) config.Config {
 // rather than Stage 1's empty record.
 func populatedState(t *testing.T) State {
 	t.Helper()
-	approvedVersion := 6
+	approvedVersion, mergedApproval := 6, 4
 	waitedSince := time.Date(2026, 9, 22, 8, 5, 0, 0, time.UTC)
 	answeredAt := time.Date(2026, 9, 22, 9, 21, 0, 0, time.UTC)
+	// What the daemon last saw two of the fixture's agents do (supervise.StepRecord): the
+	// architect's last call ended, so it is in none, and the implementer's `bash` call has a
+	// start and no end, which is the shape a stalled turn leaves behind. Neither carries the
+	// arguments' text, only their length and the eight-byte fingerprint the daemon keeps.
+	architectStep := supervise.StepRecord{
+		At:            time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC),
+		TurnStartedAt: time.Date(2026, 9, 22, 9, 16, 40, 0, time.UTC),
+		Tool:          "read",
+		CallID:        "toolu_arch_3",
+		ArgsBytes:     74,
+		ArgsHash:      "3f7c1a9d62b40e58",
+		StartedAt:     time.Date(2026, 9, 22, 9, 16, 55, 0, time.UTC),
+		EndedAt:       time.Date(2026, 9, 22, 9, 16, 58, 0, time.UTC),
+	}
+	implementerStep := supervise.StepRecord{
+		At:            time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
+		TurnStartedAt: time.Date(2026, 9, 22, 9, 16, 30, 0, time.UTC),
+		Tool:          "bash",
+		CallID:        "toolu_impl_11",
+		ArgsBytes:     128,
+		ArgsHash:      "9b2e45c0d1f8a673",
+		StartedAt:     time.Date(2026, 9, 22, 9, 17, 12, 0, time.UTC),
+	}
 	state := State{
 		Daemon: DaemonInfo{
 			Project:       "legion",
@@ -241,6 +265,7 @@ func populatedState(t *testing.T) State {
 						Incarnation: "31881:9442101",
 						Tmux:        &runtime.TmuxLocator{Window: "@4", Pane: "%12"},
 					},
+					Step: StepViewOf(architectStep),
 				},
 				Workers: map[claim.Role]PhaseView{
 					claim.RolePlanner: {
@@ -289,6 +314,9 @@ func populatedState(t *testing.T) State {
 							// The same round, on the worker that has not answered it yet: no head is
 							// reported until a worker answers.
 							UpdateRound: "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
+							// The call this worker is in: a start the daemon received and no end,
+							// which is what a turn that has stopped moving leaves behind.
+							Step: StepViewOf(implementerStep),
 						},
 						HandoffCommit: "",
 						Rounds:        2,
@@ -308,6 +336,16 @@ func populatedState(t *testing.T) State {
 					CurrentVersion:  7,
 					ApprovedVersion: &approvedVersion,
 				},
+				// The fixture's deployment gates `root-issues`, which resolves to the one step
+				// spec, so each root carries one entry: this one's document stands a version above
+				// the version its person approved, which is the `waiting` status.
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093",
+					CurrentVersion:  7,
+					ApprovedVersion: &approvedVersion,
+					Status:          GatedStepWaiting,
+				}},
 				Slot: &SlotView{
 					Index:      0,
 					AdmittedAt: time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC),
@@ -325,6 +363,9 @@ func populatedState(t *testing.T) State {
 				Workers: map[claim.Role]PhaseView{
 					claim.RoleImplementer: {Claim: ClaimView{Session: "ses_implementer_210", State: "failed"}, Rounds: 1},
 				},
+				// Nobody has registered this root's spec, so its one gated step carries no
+				// document, no version and no approval, and holds the tree's work.
+				GatedSteps: []GatedStepView{{Step: record.DesignStepSpec, Status: GatedStepUnregistered}},
 			},
 			// LEGION-212's architect asked a person a question and handed the turn back, which gave
 			// its slot up; the person has answered the question.
@@ -344,6 +385,15 @@ func populatedState(t *testing.T) State {
 					AnsweredAt: &answeredAt,
 					AnsweredBy: record.AnsweredByAsk,
 				},
+				// Its spec's reviewer asked for changes at the version Dispatch holds, which the
+				// architect was told of: the one status that carries the reviewer's reason.
+				GatedSteps: []GatedStepView{{
+					Step:           record.DesignStepSpec,
+					ArtifactID:     "b71f0a94-6c3e-4d28-85af-19c7d0e3b462",
+					CurrentVersion: 2,
+					Status:         GatedStepChangesRequested,
+					ChangesReason:  "name the rollback path for the schema change",
+				}},
 			},
 			// LEGION-207 merged and closed; its production check opened before this release, so the
 			// migration left the implementer on it (20261105231916_production_check_role_and_wake),
@@ -382,6 +432,15 @@ func populatedState(t *testing.T) State {
 					LastWake:    &CheckWakeView{Kind: "issue.deployed", Detail: "run 38230245571 completed 2026-09-22T09:10:44Z", At: time.Date(2026, 9, 22, 9, 10, 51, 0, time.UTC)},
 					NextWakeAt:  time.Date(2026, 10, 6, 8, 40, 12, 0, time.UTC),
 				},
+				// A root whose spec a person approved at the version Dispatch holds: the status
+				// that lets the tree's work past the step.
+				GatedSteps: []GatedStepView{{
+					Step:            record.DesignStepSpec,
+					ArtifactID:      "0c7e5a31-9d84-4b26-a0f3-5e81c2d47b90",
+					CurrentVersion:  4,
+					ApprovedVersion: &mergedApproval,
+					Status:          GatedStepApproved,
+				}},
 			},
 		},
 		// LEGION-208's lifecycle lane is running row 801; the supervise row queued after it came due
@@ -392,10 +451,13 @@ func populatedState(t *testing.T) State {
 		// implementer is the other kind, a released pod whose wake never brought it back: who
 		// suspended it is read on the operator claim routes, and the entry here carries the same
 		// three keys as every other, which is what a session on the contract before this one
-		// parses.
+		// parses. LEGION-212's tester is the third, a worker that retired while its issue stood in
+		// its phase: only a start of that phase brings it back, so it is a claim nothing will wake
+		// until its architect's retry_or_escalate or a transition queues one.
 		StrandedClaims: []StrandedClaim{
 			{Issue: "LEGION-210", Role: claim.RoleImplementer, State: "failed"},
 			{Issue: "LEGION-211", Role: claim.RoleImplementer, State: "suspended"},
+			{Issue: "LEGION-212", Role: claim.RoleTester, State: "retired"},
 		},
 		// A wave going out at the pace its operator set, with one wake of each lane still held:
 		// LEGION-207's implementer, working its production check in the pod the daemon keeps, waits
@@ -776,9 +838,13 @@ func TestControllerRegisterResponseGolden(t *testing.T) {
 	})
 }
 
-// What `legion controller start` fetches with the operator's bearer.
+// What `legion controller start` fetches with the operator's bearer: the capability and the
+// design-gate steps the deployment gates, in the order it gates them.
 func TestControllerSecretResponseGolden(t *testing.T) {
-	golden(t, "controller-secret.json", ControllerSecretResponse{Secret: "Q2FwYWJpbGl0eUZvclRoZUNvbnRyb2xsZXI", DesignGate: config.DesignGateRootIssues})
+	golden(t, "controller-secret.json", ControllerSecretResponse{
+		Secret:          "Q2FwYWJpbGl0eUZvclRoZUNvbnRyb2xsZXI",
+		DesignGateSteps: []record.DesignStep{record.DesignStepCriteria, record.DesignStepSpec},
+	})
 }
 
 // What `legion controller start` fetches for the review App's read-only tokens, one per owner,
@@ -806,6 +872,7 @@ func TestErrorResponseGolden(t *testing.T) {
 // operatorClaim carries every optional an operator's view of a claim has.
 func operatorClaim() OperatorClaim {
 	delivered := time.Date(2026, 9, 22, 9, 31, 4, 0, time.UTC)
+	lastSendFailure := time.Date(2026, 9, 22, 9, 31, 2, 0, time.UTC)
 	return OperatorClaim{
 		Token:       "legion-legion-legion-209-implementer",
 		Tree:        "LEGION-208",
@@ -830,12 +897,30 @@ func operatorClaim() OperatorClaim {
 			DeliveredAt: &delivered,
 			ConfirmedAt: &delivered,
 			Interrupted: true,
+			// The record of the sends that failed, carried here beside the confirmation the way
+			// this fixture carries every other optional at once. A live delivery shows one or
+			// the other: the send that confirms a task clears all three (supervise's confirm).
+			SendFailures:      2,
+			LastSendFailureAt: &lastSendFailure,
+			LastSendError:     "prompt the agent: context deadline exceeded",
 		},
 		SuspensionHeld: true,
 		// The claim's own plugin round: its process speaks a plugin contract this daemon does not,
 		// and it is replaced only once its worker has pushed its work and answered, which it has.
 		UpdateRound: "plugin:43",
 		UpdateHead:  "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
+		// What the daemon last saw this agent do: an `eval` call whose start it received and
+		// whose end it has not, which is the shape a turn that stopped moving leaves behind. The
+		// arguments are measured and fingerprinted, never kept (supervise.StepRecord).
+		Step: StepViewOf(supervise.StepRecord{
+			At:            time.Date(2026, 9, 22, 9, 31, 22, 0, time.UTC),
+			TurnStartedAt: time.Date(2026, 9, 22, 9, 31, 6, 0, time.UTC),
+			Tool:          "eval",
+			CallID:        "toolu_impl_209_4",
+			ArgsBytes:     412,
+			ArgsHash:      "c40d9e1b7a52f368",
+			StartedAt:     time.Date(2026, 9, 22, 9, 31, 22, 0, time.UTC),
+		}),
 	}
 }
 

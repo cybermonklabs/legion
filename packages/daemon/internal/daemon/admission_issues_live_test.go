@@ -29,7 +29,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,6 +40,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -136,7 +136,7 @@ func newAdmissionIssuesLive(t *testing.T) *admissionIssuesLive {
 // armed to take back. Nothing else is answered, and nothing reaches github.com.
 func admissionIssuesGitHub(t *testing.T) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		rest, isRepository := strings.CutPrefix(r.URL.Path, "/repos/")
 		parts := strings.Split(rest, "/")
 		switch {
@@ -153,9 +153,7 @@ func admissionIssuesGitHub(t *testing.T) string {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"message":"Not Found"}`)
 		}
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // seedTrees records the two trees as the daemon would hold them at the moment this proof begins,
@@ -475,9 +473,12 @@ func (r *admissionIssuesLive) redHeadReturnsAWaitingIssue() {
 	if !slices.Equal(holders(state), []string{r.childOne, r.childTwo}) {
 		t.Fatalf("admission.active = %v, want the two children still holding the cap", holders(state))
 	}
-	if !r.board.wrote(r.accepting, "in_progress") {
-		t.Fatalf("the Dispatch stand-in took no in_progress write for %s: the transition must apply whatever the cap says", r.accepting)
-	}
+	// The transition writes the status through the daemon's outbox, which delivers it to Dispatch
+	// after the record the state above is read from. So the write is waited for, under the shared
+	// hang guard, rather than read once: reading it once fails whenever the delivery has not
+	// landed in the moment between the two, which is what made this row red in CI.
+	testwait.Eventually(t, fmt.Sprintf("the Dispatch stand-in's in_progress write for %s, which the transition must apply whatever the cap says", r.accepting),
+		func() bool { return r.board.wrote(r.accepting, "in_progress") })
 	for _, stranded := range state.StrandedClaims {
 		if stranded.Issue == r.accepting {
 			t.Fatalf("%s's %s is reported as a claim nothing will wake: a worker whose start waits for a slot is not stranded", r.accepting, stranded.Role)

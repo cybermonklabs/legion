@@ -32,7 +32,7 @@ import (
 // tester, the reviewer whether or not its round is completed, the merger, and the implementer
 // itself in retro - keeps its turn, its jobs, its process and its session, and is told its phase
 // ended by a message on its own topic. Leaving merging also voids a READY the design
-// gate refused there (ReadyPendingVersion).
+// gate refused there (ReadyPending).
 //
 // The CI rule reads nothing of the review round: a round whose request for changes is already in
 // is sent back by the red all the same, with the red named rather than the reviewer's body. A
@@ -77,8 +77,7 @@ func TestARedVerdictSendsTheTreeBackToImplementing(t *testing.T) {
 			issue := record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 				Phase: tc.from, Generation: 1, Status: tc.status, Rank: "U"}
 			if tc.readyPending {
-				pending := 4
-				issue.ReadyPendingVersion = &pending
+				issue.ReadyPending = &record.ReadyPending{Step: record.DesignStepSpec, Version: 4}
 			}
 			seedIssue(t, pool, issue)
 			pr := record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
@@ -494,8 +493,11 @@ func TestAConflictingMergeabilityInAwaitingMergeSendsTheTreeBackToImplementing(t
 			if task := implementerTask(t, pool); !strings.Contains(task, want) || !strings.Contains(reason, want) || from != phase.AwaitingMerge || status != "in_progress" {
 				t.Fatalf("task %q, notice %q from %q, status %q; want both to say %q, from awaiting_merge, and the issue in_progress", task, reason, from, status, want)
 			}
-			if rounds := implementerRounds(t, pool); rounds != 1 {
-				t.Fatalf("rounds = %d, want the return to implementing counted", rounds)
+			// The round the conflict opened keeps its number, since a completion's key is built
+			// from it, and the cap counts rounds less the conflict rounds, so this one costs the
+			// implementer nothing against review_round_cap.
+			if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 1 || conflicts != 1 {
+				t.Fatalf("rounds = %d, conflict rounds = %d; want the return to implementing counted as a round the cap does not count", rounds, conflicts)
 			}
 			if len(published) != 1 || published[0].Role != "merge-queue" || !strings.Contains(published[0].Packet, "READY withdrawn") || !strings.Contains(published[0].Packet, want) {
 				t.Fatalf("merge queue publishes %v, want one to merge-queue withdrawing the READY and saying %q", published, want)
@@ -1014,7 +1016,7 @@ func TestAHeadTheBranchReturnsToIsHeldAndDecidedAgain(t *testing.T) {
 			var logged bytes.Buffer
 			at := func(d time.Duration) *Engine {
 				return New(record.NewStore(), Config{
-					Project: "LEGION", DesignGate: config.DesignGateRootIssues, MergeQueueRole: "merge-queue", Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
+					Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), MergeQueueRole: "merge-queue", Linger: time.Hour, ProductionCheckRole: claim.RoleTester, ReviewAppLogin: testReviewApp, Repositories: testRepositories,
 					Clock: func() time.Time { return start.Add(d) },
 				}, slog.New(slog.NewTextHandler(&logged, nil)))
 			}
