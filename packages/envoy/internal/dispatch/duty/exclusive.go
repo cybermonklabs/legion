@@ -241,15 +241,18 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		// The line a lease held elsewhere writes too, and for the same reason: this tick would be
 		// the pass some process has already made of this period, and the loops' tests count one
 		// skip either way. It carries the period as well, which the skip above cannot: that one
-		// has no lease and so no boundary read. A test reading two processes' logs can then tell
-		// a skip of this period from a skip of the next.
+		// has no lease and so no boundary read. Those tests only count these lines and parse
+		// nothing on them (countLease, cmd/dispatch/multiprocess_test.go); the period is on the
+		// line for a person reading two processes' logs, who can then tell a skip of this period
+		// from a skip of the next.
 		//
 		// It carries the tick's own due beside the period, which the period alone cannot give:
 		// the period is periodBoundary of this very due, so it already tells a tick of one
 		// period from a tick of the next, but it says nothing about where inside that period
 		// the tick fell. Two processes ticking minutes apart inside one period write the same
-		// period, and the stagger between them is what a reader of two processes' logs needs
-		// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go). Neither line is
+		// period, and the stagger between them is what a person comparing two processes' logs
+		// needs. The test over this attribute, TestTheLinesAboutATickNameItsDueAndItsPeriod
+		// (exclusive_test.go), holds its format rather than that need. Neither line is
 		// written at the moment its tick was due - this one after the lease and the period
 		// read, the line below after the whole pass - so the moment the line carries is not
 		// that stagger either (INFRA-1492).
@@ -279,9 +282,11 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 	// two periods, which it allows; the period here is what tells them apart
 	// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go). The tick's own due is
 	// beside it for where inside that period the tick fell, which the period cannot say: two
-	// processes ticking minutes apart inside one period write the same period, and this line is
-	// written when the pass ends rather than when the tick was due, so its own moment does not
-	// say it either (INFRA-1492).
+	// processes ticking minutes apart inside one period write the same period, and the stagger
+	// between them is what a person comparing two processes' logs needs. The test over this
+	// attribute, TestTheLinesAboutATickNameItsDueAndItsPeriod (exclusive_test.go), holds its
+	// format rather than that need. This line is written when the pass ends rather than when
+	// the tick was due, so its own moment does not say that stagger either (INFRA-1492).
 	slog.Info("dispatch duty: leased pass ran", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 	return true
 }
