@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  An operator may name one Kubernetes ServiceAccount in both `BROKER_SERVICES` and
+  `BROKER_SERVICE_LOGINS`, and the broker starts: that pair is a pod of the service's own
+  account logging the service in with its own projected token and enrolling itself
+  (`agent-secrets enroll --pod`). `BROKER_SERVICE_LOGINS` refused such an account before,
+  because every pod of it holds a token for it. What holds the narrowing is the enrolment rule
+  rather than the setting: such a login enrols the one pod whose token made it, any other pod
+  UID is `403 POD_SELF_ENROLL_ONLY`, and it ends that pod's enrollment and no other pod's of
+  the account. A launcher that enrols pods of another account is unchanged: a replaced pod
+  still ends the enrollments its predecessor made.
+time: 2026-11-08T21:53:57.588549598Z
+custom:
+    Issue: pr3123
