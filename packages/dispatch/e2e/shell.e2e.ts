@@ -174,13 +174,20 @@ test("a page chunk that fails on every load reloads three times and then shows t
   // Every download of the issue page's code fails, the way a request does when the network
   // changes under it (a VPN reconnect, a Wi-Fi switch).
   await page.route(/\/assets\/IssuePage-[^/]+\.js$/u, (route) => route.abort());
-  // Navigations, not `load` events: the page preloads that chunk from its body
-  // (`web/index.html`), so the failure can reach the recovery script before the document has
-  // finished loading, and a reload it starts there fires no `load` of its own. Each navigation
-  // is one of the page's four lives here.
+  // Navigation requests, not `load` events and not `framenavigated`. The page preloads that
+  // chunk from its body (`web/index.html`), so the failure can reach the recovery script
+  // before the document has finished loading, and a reload it starts there fires no `load` of
+  // its own. `framenavigated` fires for a same-document navigation too, and the page makes one
+  // on its first life: react-router's `BrowserRouter` stamps a history index into
+  // `history.state` with `replaceState` the first time it renders, where the state the page
+  // was opened with carries none, and a reload keeps what it wrote - so that stamp read as a
+  // fifth life. A document's own request is out before any asset of it, which is the shape
+  // `missEntryChunk` counts a load by; that helper also answers the entry chunk 404, which
+  // this page must download, so the counting is written out here rather than taken from it.
+  // Each request is one of the page's four lives.
   let loads = 0;
-  page.on("framenavigated", (frame) => {
-    if (frame === page.mainFrame()) loads += 1;
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) loads += 1;
   });
 
   try {
