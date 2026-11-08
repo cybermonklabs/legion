@@ -2268,8 +2268,12 @@ has answered. Every other finding is fixed in `web/src`, in the change that foun
 `e2e/visual.e2e.ts` and `e2e/visual-phone.e2e.ts` compare the same table's shot set against
 committed baselines, in light and in dark, at the 1280x800 desktop width and, for the pages a
 phone width draws differently (`phoneShotNames`), again on an iPhone 13. Which pages are shot
-and which are excluded is `e2e/review-routes.ts` and nowhere else - each excluded entry carries
-the reason it is not reviewed, a redirect, a live socket, a layout the seed cannot make still -
+and which are excluded is `e2e/review-routes.ts` and nowhere else. An entry's `layers` says
+which of the two reads it: a page whose pixels cannot be held still is scanned and not shot,
+which is where `/machines`, `/machines/:machine` and `/credentials/machine` are - a registry's
+freshness, a tmux layout the seed carries none of and a capability probe that blinks each make
+a comparison flake and none of them touches a scan, which reads the DOM. An excluded entry is
+read by neither and carries the reason, a redirect, a live socket, a page another entry draws -
 and `e2e/__tests__/review-routes.test.ts` is what keeps that list honest: it holds every entry
 to a route of the router through `e2e/two-builds-routes.ts` and refuses a router route that no
 entry reviews or excludes with a reason, so a page `web/src/app.tsx` adds is reviewed or

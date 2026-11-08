@@ -15,7 +15,7 @@ import {
 } from "./delivery-seed";
 import { blockId } from "./editor";
 import type { ReviewSeed } from "./review-routes";
-import { seedWorkspace } from "./workspace";
+import { seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
  *  and the Spec tab draws beside the block it shaped. */
@@ -38,6 +38,18 @@ Every route of the router is reviewed, or excluded with a reason.
 A page is read once it is drawn, never as a loading skeleton.
 :::
 `;
+
+/** The machine `/machines/:machine` is opened on: the one the first seeded session reports.
+ *  Read from the registry rather than written here, so a rename in `e2e/workspace.ts` moves
+ *  that page's URL with it, and a registry that carries none fails by name rather than opening
+ *  `/machines/undefined`, which draws a page saying it knows no such machine. */
+function firstMachine(): string {
+  const machine = workspaceSessions[0]?.machine_id;
+  if (machine === undefined) {
+    throw new Error("seedReviewRoutes: no seeded session names a machine");
+  }
+  return machine;
+}
 
 /** Seeds the review corpus into an empty database; the caller resets first. */
 export async function seedReviewRoutes(): Promise<ReviewSeed> {
@@ -109,6 +121,9 @@ Each page is read once it is drawn.
     deliveryQuery: TIMELINE_FIXTURE_QUERY,
     issue,
     issueArtifactSlug: requirements.artifact.slug,
+    // The machine of the first seeded session, read from the registry this seed wrote rather
+    // than named again here, so a rename in e2e/workspace.ts moves this page's URL with it.
+    machine: firstMachine(),
     pipelineAt: PIPELINE_AT,
     project: "CORE",
     projectDocumentSlug: runbook.slug,

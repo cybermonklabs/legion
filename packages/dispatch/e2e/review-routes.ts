@@ -18,6 +18,8 @@ import type { WalkRoutePath } from "./two-builds-routes";
 export interface ReviewSeed {
   readonly issue: string;
   readonly project: string;
+  /** A machine of the seeded registry, which `/machines/:machine` is opened on. */
+  readonly machine: string;
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
   readonly issueArtifactSlug: string;
@@ -263,21 +265,30 @@ export const reviewRoutes: readonly ReviewRoute[] = [
       "It draws the same ArtifactHeader chrome the issue-artifact and project-document entries " +
       "already review, over an uploaded picture.",
   },
+  // The three pages below are scanned and not shot. Each was excluded whole until the first run
+  // of the two layers, and each of its reasons argues only against the shot: a scan reads the
+  // DOM, which none of registry freshness, a tmux layout or a blinking probe changes. So they
+  // carry `layers: ["scan"]`, which is what that field is for, and the reason each is not shot
+  // stays beside it.
   {
-    kind: "excluded",
+    kind: "reviewed",
+    // Not shot: its rows are built from the live registry's freshness, which moves between runs
+    // (e2e/workspace.ts's note on which sessions age).
+    layers: ["scan"],
     name: "machines",
+    path: () => "/machines",
     pattern: "/machines",
-    reason:
-      "Its rows are built from the live registry's freshness, which moves between runs " +
-      "(e2e/workspace.ts).",
+    ready: (page) => page.getByTestId("machines-page"),
   },
   {
-    kind: "excluded",
+    kind: "reviewed",
+    // Not shot: the page draws a pixel layout computed from a tmux layout string, and the seed
+    // carries none, so what it draws is the line that says so (e2e/machines.e2e.ts).
+    layers: ["scan"],
     name: "machine",
+    path: (seed) => `/machines/${encodeURIComponent(seed.machine)}`,
     pattern: "/machines/:machine",
-    reason:
-      "It draws a pixel layout computed from a tmux layout string, which the seed carries none " +
-      "of (e2e/machines.e2e.ts).",
+    ready: (page) => page.getByRole("heading", { level: 1 }),
   },
   {
     kind: "excluded",
@@ -286,12 +297,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     reason: "It draws InboxPage, the same component as / (web/src/app.tsx).",
   },
   {
-    kind: "excluded",
+    kind: "reviewed",
+    // Not shot: its one non-trivial state is a capability probe that is briefly out, which is
+    // what a comparison would flake on (e2e/machine-login.e2e.ts).
+    layers: ["scan"],
     name: "credentials-machine",
+    path: () => "/credentials/machine",
     pattern: "/credentials/machine",
-    reason:
-      "It is a one-field form whose only non-trivial state is a capability probe that is " +
-      "briefly out, which is what a shot would flake on (e2e/machine-login.e2e.ts).",
+    ready: (page) => page.getByLabel("Code shown on the machine"),
   },
 ];
 
