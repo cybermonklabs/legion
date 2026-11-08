@@ -79,7 +79,7 @@ test.beforeEach(async () => {
 });
 
 // THE ONE COMPUTED-COLOUR ROW OF THIS SUITE, and why one is kept while a whole visual layer
-// exists. That layer compares 19 pages against committed baselines in both schemes
+// exists. That layer compares 18 pages against committed baselines in both schemes
 // (e2e/visual.e2e.ts, e2e/visual-phone.e2e.ts), which is a wider claim about appearance than
 // this row makes and a different one: a baseline is generated from the code under test, so a
 // changed palette becomes the new baseline and passes. It detects a change against a file
