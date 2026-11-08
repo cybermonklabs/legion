@@ -39,13 +39,12 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-# Four of the twelve workspaces the lockfile resolves, because the SPA build and the contract
-# codegen that follow read no more: packages/dispatch, packages/contracts,
-# packages/proof-editor, and the root workspace, which supplies what
-# scripts/third-party-notices.ts imports (that script is imported by
+# What this stage installs, because the SPA build and the contract codegen that follow read no
+# more: packages/dispatch, packages/contracts, packages/proof-editor, and the root workspace,
+# which supplies what scripts/third-party-notices.ts imports (that script is imported by
 # packages/dispatch/web/vite.config.ts). Every manifest is still copied above: the lockfile
 # resolves against all of them. Each pattern begins with ./ because Bun reads a pattern
-# without one as a package name, and these workspaces are named @sjawhar/dispatch,
+# without one as a package name, and the three packages are named @sjawhar/dispatch,
 # @legion/contracts and @legion/proof-editor. Remove `--filter './'` and `bun run build:web`
 # below fails with `Cannot find package 'spdx-expression-parse'`.
 # --frozen-lockfile stays immediately after install:
