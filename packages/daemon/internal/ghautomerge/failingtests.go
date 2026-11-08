@@ -85,12 +85,27 @@ const jobLogReads = 8
 // itself whether the removal is told at all: the daemon retries the row after its own stop
 // rather than telling anyone these lines (its readyMerge).
 //
+// The rule this line is held to, rather than a bound on each string in turn: every string it
+// carries that came out of GitHub passes through cutLine exactly once, at one place each, and a
+// branch that comes to carry a new one passes it through one of those places too. There are two.
+// Why a read failed goes through the unread closure, which cuts whatever it is given, so the one
+// reason with no length of its own — the error a failed fetch carries, which holds the body
+// GitHub's answer had, up to githubrest's jobLogRefusalBody of it, 64 KiB, or twice the whole
+// block a Dispatch post is held to — is cut by the same line as the fixed sentences beside it.
+// The names and the first failure line go through failingTests, which cuts each name and the
+// line as it reads them, and the branch stating them is not cut again: see it below.
+//
 // At most failingTestsNamed names are stated, with the rest counted after them ("and 12 more"),
 // each cut to failureLineUnits (cutLine) and quoted where it is not plain text (quoteName),
 // since a name is a log's own bytes on their way into an implementer's prompt and an issue's
 // markdown, and one generated name can be as long as a log line.
 func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
-	unread := func(why string) string { return ": the daemon could not read its failing tests, " + why }
+	// unread cuts every why it is handed, so no branch below carries a bound of its own: each
+	// fixed sentence is far inside failureLineUnits already and is left as it reads, and the one
+	// reason that is unbounded in itself is held here rather than where it is written.
+	unread := func(why string) string {
+		return ": the daemon could not read its failing tests, " + cutLine(why)
+	}
 	tail, err := logs.JobLog(ctx, id)
 	switch {
 	case errors.Is(err, githubrest.ErrJobLogForbidden):
@@ -116,6 +131,9 @@ func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
 	if more > 0 {
 		named += fmt.Sprintf(" and %d more", more)
 	}
+	// This one is deliberately not cut: it is bounded in itself, by at most failingTestsNamed
+	// names each already cut and a first failure line already cut (failingTests), and cutting
+	// the joined text again would throw away nine of the ten names it just named.
 	return fmt.Sprintf(": its log names %s as failing, its first failure line %q", named, first)
 }
 
@@ -159,21 +177,28 @@ const (
 )
 
 // failingTestsNamed is how many names one job's line carries, the rest counted after them ("and
-// 12 more"), and failureLineUnits how much of the first failure line it quotes and how much of
-// each name (cutLine): a name is one word of a log line, and a table-driven subtest named for
-// the sentence its case is runs as long as the line it is printed on.
+// 12 more"), and failureLineUnits how long any one string out of GitHub stays in that line —
+// each name, the first failure line it quotes, and the reason a read it could not make gives
+// (cutLine): a name is one word of a log line, and a table-driven subtest named for the
+// sentence its case is runs as long as the line it is printed on.
 //
-// All three are read off the bound the whole line has to fit under. Every line this package
-// writes is rendered into one block of a Dispatch post — the implementer's task and the
-// architect's checks-red notice a failed merge sends, the READY withdrawal's post, the
-// re-submission's, and merge-removed — and Dispatch refuses a block over DISPATCH_BLOCK_UNITS,
-// 32,000 UTF-16 units (packages/contracts), naming it; the daemon then tells the architect its
-// message was refused, which is the failure this read exists to spare it. A mass failure states
-// hundreds of names, so a read that kept them all would write hundreds of kilobytes into that
-// one block. Ten names of the longest shape measured here (the browser row of 141 characters
-// browserLog carries) and a first failure line cut to 200 hold one job's line under 1,800
-// units, and ten cut names and a cut line hold the worst of them under 2,400. How many such
-// lines one removal names is bounded in its turn (failingRunsUnits).
+// Both are read off the bound the whole line has to fit under. Every line this package writes
+// is rendered into one block of a Dispatch post — the implementer's task and the architect's
+// checks-red notice a failed merge sends, the READY withdrawal's post, the re-submission's, and
+// merge-removed — and Dispatch refuses a block over DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units
+// (packages/contracts), naming it; the daemon then tells the architect its message was refused,
+// which is the failure this read exists to spare it. A mass failure states hundreds of names,
+// so a read that kept them all would write hundreds of kilobytes into that one block.
+//
+// What holds one job's line under some 2,400 units is not the shapes it happens to carry but
+// the rule it is written to: every string of GitHub's in it passes through cutLine exactly once
+// (jobFailures). A line that names tests is then at most failingTestsNamed names of
+// failureLineUnits runes, one first failure line of failureLineUnits, and the fixed prose
+// holding them; a line that could not read the log is one cut reason and one fixed sentence,
+// whatever GitHub answered the read with. The longest shape measured here, the browser row of
+// 141 characters browserLog carries, is well inside the first of those: ten of it and a first
+// failure line cut to 200 hold one job's line under 1,800 units. How many such lines one
+// removal names is bounded in its turn (failingRunsUnits).
 const (
 	failingTestsNamed = 10
 	failureLineUnits  = 200

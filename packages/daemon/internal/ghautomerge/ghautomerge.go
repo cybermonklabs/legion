@@ -155,8 +155,15 @@ type FailingRun struct {
 
 // String is the one line a removal names this run with: the check, how it ended and the run it
 // failed in, with what its log said after them where it has been read.
+//
+// Name and Result come out of GitHub's own check list, and this is the one place either is
+// written, so both pass through cutLine here: that is the rule every string of GitHub's this
+// package renders is held to, one cut each at one place (jobFailures). Log arrives cut, by the
+// read that wrote it. URL is deliberately left whole: it is GitHub's own run URL, of a fixed
+// shape and some seventy characters, so a cut of it would buy nothing and leave a broken link
+// where the one thing every line of a run carries is the link to read the rest at.
 func (f FailingRun) String() string {
-	return fmt.Sprintf("%s (%s, %s)%s", f.Name, f.Result, f.URL, f.Log)
+	return fmt.Sprintf("%s (%s, %s)%s", cutLine(f.Name), cutLine(f.Result), f.URL, f.Log)
 }
 
 // failingRunsUnits is how long the runs of one removal are named for before the rest are

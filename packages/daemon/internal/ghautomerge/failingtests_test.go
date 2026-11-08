@@ -182,7 +182,8 @@ func TestTheEndOfAJobsLogSaysWhichTestsFailed(t *testing.T) {
 }
 
 // heldJobLog is what a fake GitHub answers a read of one job's log with: the log itself, or the
-// status it refuses every read with, the redirect it answers instead (the pre-signed blob URL
+// status it refuses every read with and the body it refuses it with (refusal, GitHub's own JSON
+// where the row asks for no other), the redirect it answers instead (the pre-signed blob URL
 // GitHub answers a real read with), how many bytes of filler it writes before the log, which is
 // how a log past githubrest.JobLogBound is made, and how long it holds the answer open, which is
 // how a read past a time bound is made. arrived is closed as the read reaches it, for a test
@@ -190,6 +191,7 @@ func TestTheEndOfAJobsLogSaysWhichTestsFailed(t *testing.T) {
 type heldJobLog struct {
 	log      string
 	status   int
+	refusal  string
 	redirect string
 	fill     int
 	delay    time.Duration
@@ -212,7 +214,11 @@ func jobLogsOf(t *testing.T, held heldJobLog) githubrest.Client {
 			t.Errorf("unexpected job log request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusBadRequest)
 		case held.status != 0:
-			http.Error(w, `{"message":"Resource not accessible by integration"}`, held.status)
+			refusal := held.refusal
+			if refusal == "" {
+				refusal = `{"message":"Resource not accessible by integration"}`
+			}
+			http.Error(w, refusal, held.status)
 		case held.redirect != "":
 			http.Redirect(w, r, held.redirect, http.StatusFound)
 		default:
@@ -252,6 +258,19 @@ const (
 	signedBlob    = "http://127.0.0.1:1/legion-logs/128479266994?se=2026-11-08T19%3A00%3A00Z&sp=r&sig=" + blobSignature
 )
 
+// proxyErrorPage is the body an answer a job-log read never reached GitHub for carries: a proxy
+// between the daemon and GitHub refuses the read with an HTML error page of its own rather than
+// GitHub's JSON, and such a page runs as long as whatever wrote it made it. This one is over
+// 32,000 bytes, the whole block a Dispatch post is held to, and githubrest keeps up to
+// jobLogRefusalBody of a refused answer's body (64 KiB), so a line quoting it whole would be
+// refused by Dispatch on its own. proxyErrorPageEnd is the end of the page, the text the line
+// may not reach.
+const proxyErrorPageEnd = "the last word of the proxy's own error page"
+
+var proxyErrorPage = "<html><head><title>502 Bad Gateway</title></head><body>\n" +
+	strings.Repeat("<p>The gateway could not reach the upstream server.</p>\n", 700) +
+	"<p>" + proxyErrorPageEnd + "</p>\n</body></html>\n"
+
 // The end of a failing run's line is what the log of the Actions job it ran as says failed: the
 // tests its end states as failed, with the first line stating one, or which way the daemon could
 // not read them — the end states no test name, the body passed githubrest.JobLogBound, the read
@@ -259,7 +278,9 @@ const (
 // daemon stopped, the fetch failed, or GitHub refused the read because this deployment's App was
 // never granted GitHub's optional Actions read. A fetch that failed on the URL GitHub redirects
 // the read to says no URL of its own: that one is pre-signed, and a signature belongs in no
-// message. A name is quoted where it carries markdown's own punctuation, since the line is
+// message, and the body an answer refusing the read carried is cut like every other string of
+// GitHub's this line renders, so a proxy's error page of its own reaches the line cut rather
+// than whole. A name is quoted where it carries markdown's own punctuation, since the line is
 // rendered into an implementer's prompt and an issue's markdown (INFRA-1442).
 // The name is the one the issue's check k4 runs (`go test ./internal/ghautomerge/ -run
 // TestTheFailingRuns`), since this is the table of the five logs that check names: a `-run`
@@ -276,6 +297,11 @@ func TestTheFailingRunsLineSaysWhatEachJobsLogStatesFailed(t *testing.T) {
 		stop          bool
 		// wants is what the line must say, and absent what it must not.
 		wants, absent []string
+		// units is how far the whole line may run, in bytes, for a row whose own length is what
+		// it proves: the body GitHub's answer carried has no length of its own, and the cut this
+		// path holds every string of GitHub's to is what keeps the line far inside the one block
+		// a Dispatch post is held to. Zero leaves the length unread.
+		units int
 	}{
 		{name: "a Go log naming the tests that failed", held: heldJobLog{log: goLog},
 			wants: []string{"its log names TestTheQueueTakesTheEntryOut, TestTheNoticeNamesTheRun/a_run_that_failed as failing",
@@ -295,6 +321,17 @@ func TestTheFailingRunsLineSaysWhatEachJobsLogStatesFailed(t *testing.T) {
 			absent: []string{"as failing"}},
 		{name: "a fetch that failed", held: heldJobLog{status: http.StatusBadGateway},
 			wants: []string{"could not read its failing tests", "the fetch of its log failed", "502"}},
+		// A read that never reached GitHub is refused by whatever answered in its place, and a
+		// proxy answers a 5xx with an HTML error page of its own: githubrest keeps up to 64 KiB
+		// of that body for the message the refusal carries (its jobLogRefusalBody), twice the
+		// block Dispatch holds a post to, and this page is over that block on its own. The line
+		// says what the read was refused with, cut, so the page opens in it and never ends.
+		{name: "a fetch refused with a page of its own far past the line's bound",
+			held: heldJobLog{status: http.StatusBadGateway, refusal: proxyErrorPage},
+			wants: []string{"could not read its failing tests", "the fetch of its log failed", "502",
+				"<title>502 Bad Gateway", "…"},
+			absent: []string{"as failing", proxyErrorPageEnd, "</body></html>"},
+			units:  2 * failureLineUnits},
 		{name: "a fetch refused for want of the Actions read", held: heldJobLog{status: http.StatusForbidden},
 			wants: []string{"could not read its failing tests", "GitHub refused the log",
 				"never granted GitHub's optional Actions read"}},
@@ -350,6 +387,12 @@ func TestTheFailingRunsLineSaysWhatEachJobsLogStatesFailed(t *testing.T) {
 					t.Fatalf("the failing job's line %q says %q, want it left out", line, absent)
 				}
 			}
+			// A row naming units reads the whole line's length too, in bytes, which are never
+			// fewer than the UTF-16 units Dispatch counts a block in.
+			if tc.units > 0 && len(line) > tc.units {
+				t.Fatalf("the failing job's line runs to %d bytes, want it held under %d and so far inside the 32,000 units one Dispatch block takes: %q",
+					len(line), tc.units, line)
+			}
 		})
 	}
 }
@@ -392,8 +435,15 @@ func TestARemovalNamesItsRunsUpToABoundAndCountsTheRest(t *testing.T) {
 	if joined := FailingRuns(few); joined != few[0].String()+"; "+few[1].String() {
 		t.Fatalf("two runs are named %q, want both of them, \"; \" between", joined)
 	}
-	if one := FailingRuns([]FailingRun{line(0), line(1)}[:1]); !strings.Contains(one, "integration-00") || strings.Contains(one, "more runs") {
-		t.Fatalf("one run of a line past the bound is named %q, want the run itself and nothing counted", one)
+	// The first run is named whole however long its own line is (FailingRuns), which is the one
+	// promise the bound on the rest has to give way to. No line a job's log writes reaches that
+	// far — ten cut names and a cut first failure line come to some 2,400 units — so the run
+	// this reads it with is built past failingRunsUnits on purpose.
+	huge := FailingRun{Name: "integration-00", Result: "failure", URL: failedRun,
+		Log: ": its log names " + strings.Repeat("x", failingRunsUnits) + " as failing"}
+	if one := FailingRuns([]FailingRun{huge}); one != huge.String() {
+		t.Fatalf("a removal of one run whose own line runs to %d units, past the bound of %d, names %d of them ending %q, want its whole line and nothing counted",
+			len(huge.String()), failingRunsUnits, len(one), one[max(0, len(one)-80):])
 	}
 }
 
