@@ -141,8 +141,9 @@ Without the grant line the status is the client's own:
   `AGENT_SECRETS_URL`, no `--`, no `NAME`, or a flag value the client refuses.
 - **75** — the request still waits for a person. The message names who decides it, where, and the
   `agent-secrets status <request_id>` that reads it.
-- **77** — the request was denied. The approver denied it, a name is a service's secret, or the
-  request named a secret a person must approve and carried no reason, which the detail reads
+- **77** — the request was denied. The approver denied it, the policy refused a name (a
+  service's secret, or one whose requesters list does not name this session), or the request
+  named a secret a person must approve and carried no reason, which the detail reads
   `<NAME>: a reason is necessary; ask again with --reason`.
 
 The other statuses come from forms this skill does not use: 76 from `agent-secrets renew`, a
