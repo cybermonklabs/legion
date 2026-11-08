@@ -565,11 +565,20 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	// decisions the person who decided and the reference, and no other kind carries any of those.
 	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
 	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
+	//
+	// A field every row leaves at zero is compared zero to zero, and proves nothing of the field:
+	// the comparison below would pass on a publish that dropped it. So the pr-blocked row carries
+	// a Resends of 1, a count below the re-hold cap (the daemon's noticeReholdDelays holds three
+	// delays), and that field stays in the comparison rather than beside the three set aside. The
+	// daemon reads this count off the published payload and nowhere else: it is what stops the
+	// re-holds at the cap, and what picks the next copy's delay (the daemon's reholdNotice,
+	// notice_exceptions.go). A Published that zeroed it would re-hold every architect notice for
+	// ever, and every check above would stay green.
 	every := []Notice{
 		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass"},
 		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
-		{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "pull request #42 is blocked: ci is red at head"},
+		{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "pull request #42 is blocked: ci is red at head", Resends: 1},
 		{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: "pull request #42 merged at c0de"},
 		{Kind: "pr-closed-unmerged", Role: claim.RoleArchitect, Reason: "pull request #42 was closed without a merge"},
 		{Kind: "pull-request-missing", Role: claim.RoleArchitect, Reason: "the record holds no pull request for LEGION-208"},
@@ -653,7 +662,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			}
 			// Set aside on both sides are the three the publish is meant to change, the daemon's
 			// own bookkeeping of the row, and nothing else: everything a kind carries is the
-			// architect's and must cross the publish untouched.
+			// architect's and must cross the publish untouched. Resends is bookkeeping too and is
+			// not among them, because the re-hold reads it back off the publish: the pr-blocked
+			// row above carries one, so the publish is held to carrying it on.
 			want := notice
 			want.PacedAt, want.PacedFrom, want.ResendOf = time.Time{}, time.Time{}, 0
 			back.PacedAt, back.PacedFrom, back.ResendOf = time.Time{}, time.Time{}, 0

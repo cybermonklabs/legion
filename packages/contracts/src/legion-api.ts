@@ -300,7 +300,7 @@ export const LEGION_WAIT_ANSWERS = [
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
  * (`answeredBy` names how, not always by a person), when the root waits in admission's waiting
  * line for its slot,
- * among the issues whose work came back, oldest first, and not at the front of the whole line. */
+ * among the issues whose work came back, oldest first, and never first in the whole line. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),

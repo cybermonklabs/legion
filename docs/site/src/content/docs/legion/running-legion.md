@@ -1018,7 +1018,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
   `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
-  `waitingLine` (`place`, 1 at the front of the line, and `length`, the line's length at this
+  `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
   read; a daemon below contract 57 serves none) and, for a closed
   issue whose
   production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —

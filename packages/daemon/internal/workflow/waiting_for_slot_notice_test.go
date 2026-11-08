@@ -100,10 +100,32 @@ func TestTheOutboxTakesAWaitingForSlotNotice(t *testing.T) {
 // own comment is where the next reader of this path looks. This loop reads presence and nothing
 // else: that each file names the notice and the field, so no shipped text forgot the new words.
 // Whether the sentence around a name is true is a reader's to judge, never this loop's: green
-// here is coverage, never correctness. The thirteen
-// below them carry the fourteen texts that state where the line puts an answered root — admit.go
-// carries two of them — and each had said it stands at the front of the line, which record.Waiting
-// does not do: it stands in the line's first part, oldest first. (INFRA-1100.)
+// here is coverage, never correctness. The thirteen below them carry the fourteen texts that
+// state where the line puts an answered root — admit.go carries two of them — and each had said
+// such a root goes first, which record.Waiting does not do: it stands in the line's first part,
+// oldest first. (INFRA-1100.)
+//
+// The third loop is the ban those corrections needed, over every file either list names. Presence
+// alone let a false sentence through: AGENTS.md carried record.WaitingLineBand word for word in a
+// sentence about a root's own first phase, two lines below a sentence that said an answered root
+// went before every issue whose first phase had yet to start, which record/project.go's Waiting
+// does not do — it puts an answered root and a root's own first phase in the same part of the
+// line, each timed and sorted oldest first — and the presence check passed on the neighbouring
+// sentence's words.
+//
+// What the ban proves: no file of either list carries the wording that puts an issue first for
+// having its work come back. What it does not prove: whether what a file says instead is true,
+// which stays a reader's to judge; a wrong wording nobody has written yet, since the list holds
+// the phrases these texts used and no more; and a banned phrase wrapped across a line break,
+// since each line is read on its own.
+//
+// It bans rather than judges because the judgement is fuzzy and a plain substring is not.
+// Whether a sentence denies the line's order or merely defines the ordinal 1 is a reading, and
+// the program that tried it here was a sentence parser with two escape hatches — about 170 lines
+// of guesswork — which this repository does not keep: a programmatic gate checks what a program
+// checks easily and leaves the fuzzy reading to the agent who writes the text. The ban needs no
+// escape hatch because the five honest sentences that defined the ordinal now say `1 being first
+// in the line` and the like instead.
 func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 	body := func(file string) string {
@@ -114,7 +136,7 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 		}
 		return string(text)
 	}
-	for _, file := range []string{
+	naming := []string{
 		"packages/daemon/internal/prompts/roles/architect-root.md",
 		"skills/legion-architect/SKILL.md",
 		"skills/legion-architect/references/wake-routing.md",
@@ -124,16 +146,8 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 		"docs/site/src/content/docs/legion/troubleshooting.md",
 		"docs/site/src/content/docs/legion/concepts.md",
 		"packages/daemon/internal/workflow/gate.go",
-	} {
-		text := body(file)
-		if !strings.Contains(text, string(WaitingForSlotNoticeKind)) {
-			t.Errorf("%s does not name the notice a root waiting for a slot gets (%q)", file, WaitingForSlotNoticeKind)
-		}
-		if !strings.Contains(text, api.WaitingLineField) {
-			t.Errorf("%s does not name the %q the root's record carries while it waits", file, api.WaitingLineField)
-		}
 	}
-	for _, file := range []string{
+	band := []string{
 		"AGENTS.md",
 		"packages/daemon/internal/admit/admit.go",
 		"docs/site/src/content/docs/legion/running-legion.md",
@@ -147,10 +161,54 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 		"packages/daemon/internal/phase/phase.go",
 		"packages/daemon/internal/workflow/awaiting_person.go",
 		"skills/legion-controller/references/admission.md",
-	} {
+	}
+	for _, file := range naming {
+		text := body(file)
+		if !strings.Contains(text, string(WaitingForSlotNoticeKind)) {
+			t.Errorf("%s does not name the notice a root waiting for a slot gets (%q)", file, WaitingForSlotNoticeKind)
+		}
+		if !strings.Contains(text, api.WaitingLineField) {
+			t.Errorf("%s does not name the %q the root's record carries while it waits", file, api.WaitingLineField)
+		}
+	}
+	for _, file := range band {
 		if !strings.Contains(body(file), record.WaitingLineBand) {
 			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
 				file, record.WaitingLineBand)
+		}
+	}
+	// Lower case, since the line is lower-cased before the comparison: a sentence that opens on
+	// one of these is banned as the one that carries it mid-sentence is.
+	banned := []string{
+		"front of the waiting line",
+		"front of the line",
+		"front of the whole line",
+		"ahead of every issue",
+	}
+	read := make(map[string]bool, len(naming)+len(band))
+	for _, list := range [][]string{naming, band} {
+		for _, file := range list {
+			if read[file] {
+				continue
+			}
+			read[file] = true
+			for number, line := range strings.Split(body(file), "\n") {
+				lower := strings.ToLower(line)
+				for _, phrase := range banned {
+					if !strings.Contains(lower, phrase) {
+						continue
+					}
+					t.Errorf("%s:%d says %q, which no file this test lists may say: no issue stands at the "+
+						"front of this line for having its work come back. An answered root stands %q, by the "+
+						"later of its answer and its tree's gate opening, in the same part of the line as a "+
+						"root's own first phase, and that part is sorted oldest first (record.Waiting, "+
+						"record/project.go). This bans the wording in the files above and nowhere else: a true "+
+						"sentence about an issue reaching the front — workflow/effects.go's ChildStartedNotice "+
+						"says `it reached the front of the waiting line and took an admission slot` of a child "+
+						"the line has just promoted — belongs in a file neither list names.",
+						file, number+1, phrase, record.WaitingLineBand)
+				}
+			}
 		}
 	}
 }

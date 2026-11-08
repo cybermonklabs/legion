@@ -449,7 +449,7 @@ type Issue struct {
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the wait;
 // the root then waits in admission's waiting line for its slot,
-// among the issues whose work came back, oldest first, and not at the front of the whole line.
+// among the issues whose work came back, oldest first, and never first in the whole line.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`
@@ -661,7 +661,7 @@ type SlotView struct {
 // looks for the field rather than repeating the string.
 const WaitingLineField = "waitingLine"
 
-// WaitingLineView is the issue's place in `admission.waiting`, where 1 is the front of the line,
+// WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
 // and the length of that list at this read. It says where the issue stands, not what holds it:
 // `admission.blocked` names what holds it.
 type WaitingLineView struct {
