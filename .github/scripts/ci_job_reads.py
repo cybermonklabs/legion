@@ -7,9 +7,10 @@ header says what is proved).
             `step=` a step of the job whose run: holds `text`, or `source=` a script that holds it.
             A step whose go commands are not in the simple form is an `exact=` entry instead
             (pinned_step): its whole run: script and directory, and the Runs that stand for what
-            it compiles. The check fails when a run: step of a ci.yaml job starts a go command no
-            Run or exact entry claims, and when a pin's text is gone, so the table cannot drift
-            from ci.yaml silently. A claimed command the check does not reduce (check-ci-filters.sh's
+            it compiles. The check fails when a run: step of a ci.yaml job - or of a job of a
+            local workflow that job calls, whose steps it reads the same way - starts a go
+            command no Run or exact entry claims, and when a pin's text is gone, so the table
+            cannot drift from ci.yaml silently. A claimed command the check does not reduce (check-ci-filters.sh's
             header says which it does), and every Run of an exact entry whose step no longer holds
             its script, counts as reading every Go file of the repository and every file under a
             Go module's directory; a script's pin is its whole line.
@@ -58,6 +59,8 @@ NOTICES = "scripts/go-third-party-notices.sh"
 NOTICES_LOOPS = ".github/scripts/go-release-notices.sh"
 CI = ".github/workflows/ci.yaml"
 DOCS_SITE = ".github/workflows/docs-site.yaml"
+BROWSER_SITE = ".github/workflows/dispatch-browser.yaml"
+BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
 
 
 def targets(path: str, key: str) -> list:
@@ -74,11 +77,13 @@ def script_run(source, text, started_by, workdir, pkgs, **options):
     return run(workdir, pkgs, f"{source} ({started_by}): {text}", source=source, text=text, **options)
 
 
-def pinned_step(job, step, workdir, script, runs):
-    """A ci.yaml step pinned to its whole run: script and the directory it runs in (an Exact
-    entry). Each of `runs`, (workdir, packages, what the script compiles there, run options),
-    stands for a go command of the script; together they must name all it compiles."""
-    return exact(step, workdir, script, [run(where, pkgs, f"{at(job, step)} (its pinned script): {what}", **options)
+def pinned_step(job, step, workdir, script, runs, workflow=CI):
+    """A step pinned to its whole run: script and the directory it runs in (an Exact entry). Each
+    of `runs`, (workdir, packages, what the script compiles there, run options), stands for a go
+    command of the script; together they must name all it compiles. `job` and `workflow` are the
+    job and the file the citation names: the step of a gate whose ci.yaml job calls a workflow is
+    in that workflow, under a job of its own, while the entry stays on the gate."""
+    return exact(step, workdir, script, [run(where, pkgs, f"{at(job, step, workflow)} (its pinned script): {what}", **options)
                                          for where, pkgs, what, options in runs])
 
 
@@ -159,6 +164,19 @@ DOCS_SITE_SELF = reads((DOCS_SITE, "the docs build reads the definition of the s
 
 def at_docs(step):
     return at(DOCS_JOB, step, DOCS_SITE)
+
+
+# ci.yaml's dispatch-browser job and dispatch-browser-nightly.yaml's own job both call
+# dispatch-browser.yaml, which holds the steps. The gate stays on ci.yaml's dispatch-browser
+# job, whose if: the dispatch_browser filter gates, and every step citation names the job of
+# dispatch-browser.yaml that holds the step.
+BROWSER_JOB = "dispatch-browser"
+BROWSER_SHARD, BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "shard", "alone", "multiprocess", "merge"
+BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
+
+
+def at_browser(step, job=BROWSER_SHARD):
+    return at(job, step, BROWSER_SITE)
 
 
 CONTRACTS_SRC = "packages/contracts/src/**"
@@ -706,9 +724,16 @@ RUN_BROKER = "packages/dispatch/e2e/run-broker.sh"
 BROKER_BUILD = 'flock "$bin/.build.lock" go build -o "$bin/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed'
 BROKER_PKGS = ["./cmd/broker", "./cmd/dev-oidc-issuer", "./internal/broker/brokertest/requestseed"]
 SIGNIN_ISSUER = "packages/dispatch/e2e/run-signin-issuer.sh"
-BROWSER_MP = "dispatch-browser-multiprocess"
+# The steps of .github/workflows/dispatch-browser.yaml this table cites by name.
+BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)"
+BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
+BROWSER_MP_BUILD = "Build the Dispatch server"
+BROWSER_INSTALL = "Install the lane's Playwright browsers"
+BROWSER_APT_KEY = "Compute the apt archive cache key"
+BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
+BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
@@ -820,8 +845,8 @@ GATES = [
     ], reads=reads(
         ("docs/site/**", f"{at_docs('Lint the docs site')}, typecheck, screenshots (docs/site/media/shots.ts) and build (generate.ts + astro build) in docs/site"),
         ("packages/dispatch/**", f"{at_docs('Build the Dispatch dashboard the screenshots show')}; docs/site/media/harness.ts:21,98 boots packages/dispatch/e2e/harness-start.ts"),
-        ("packages/proof-editor/src/**", "packages/dispatch/web/vite.config.ts:104-123 aliases (build:web)"),
-        (CONTRACTS_SRC, "packages/dispatch/web/vite.config.ts:94-103; docs/site/generators/dispatch-tools.ts:7"),
+        ("packages/proof-editor/src/**", "packages/dispatch/web/vite.config.ts:127-147 aliases (build:web)"),
+        (CONTRACTS_SRC, "packages/dispatch/web/vite.config.ts:117-126; docs/site/generators/dispatch-tools.ts:7"),
         # This gate is the one reader of envoy-client's sources that does not compile
         # broker-client with them: every generator entry resolves to src/dispatch-command.ts,
         # whose program holds no broker-client source (`bunx tsc --listFilesOnly`, 0 of 7), so
@@ -961,43 +986,12 @@ GATES = [
       + install_jj("pi-legion") + install_omp("pi-legion") + setup_go("pi-legion", f"{DAEMON}/go.mod")
       + biome(at("pi-legion", "Lint pi-legion")) + bun_job("pi-legion") + CI_SELF),
 
-    gate("dispatch", "dispatch", runs=[
-        script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, f"started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer, which e2e/run.ts starts in "
-                   f"{at('dispatch', 'Browser-test dispatch dashboard')}", ENVOY, ["./cmd/dispatch"], mode="build"),
-        script_run(RUN_BROKER, BROKER_BUILD, f"started by packages/dispatch/e2e/harness-listeners.ts's realBrokerListeners, which e2e/run.ts "
-                   f"starts in {at('dispatch', 'Browser-test dispatch dashboard')} for e2e/broker-approval.e2e.ts (a one-process run on the "
-                   "fake broker, e2e/harness-real-broker.ts)", ENVOY, BROKER_PKGS, mode="build"),
-    ], reads=reads(
-        ("packages/dispatch/**", f"{at('dispatch', 'Build the dashboard the lanes serve')} (build:web) and "
-                                 f"{at('dispatch', 'Browser-test dispatch dashboard')} (the harness and Playwright) in packages/dispatch"),
-        ("packages/proof-editor/**", f"packages/dispatch/web/vite.config.ts:104-123, read by the build:web of {at('dispatch', 'Build the dashboard the lanes serve')}"),
-        (CONTRACTS_SRC, f"{at('dispatch', 'Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:94-103 aliases"),
-        ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/cli-body-cap.e2e.ts:17 runs it through e2e/dispatch-cli.ts:8"),
-        # envoy-client's sources, and broker-client's with them, are the shared read below.
-        (ENVOY_CLIENT_SRC, "imported by packages/envoy-client/bin/dispatch.ts, which cli-body-cap.e2e.ts:17 runs"),
-        (TEST_FIXTURES_SRC, "packages/dispatch's web, e2e and server-side tests import @legion/test-fixtures"),
-        ("packages/envoy-client/test/fake-dispatch.ts", "packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:2-5 import @legion/envoy-client/test/fake-dispatch"),
-        (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/web/src/__tests__/setup.ts:7, features/refs/markdown-engine.test.ts:3, e2e/engine-reading.ts:10"),
-        (f"{ENVOY}/internal/tests3/seaweedfs.go", f"{at('dispatch', 'Pull the file store image')} names it to the action, and "
-         f"{at('dispatch', 'Start an S3-compatible server for uploaded files')} reads const Image; "
-         f"{at('dispatch', 'Wait for the S3-compatible server')} waits for the container it started"),
-        (".github/actions/pull-test-images/**", at("dispatch", "Pull the file store image")),
-        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each lane's server port through it"),
-        ("bun.lock", f"{at('dispatch', 'playwright-cache')} keys the browser cache on hashFiles('bun.lock'), "
-         f"which pins the Playwright version whose browsers {at('dispatch', 'Install Playwright Chromium, WebKit and Firefox')} downloads"),
-        (".github/scripts/playwright-deps-current.sh", at("dispatch", "Install Playwright Chromium, WebKit and Firefox")),
-        (".github/playwright-apt-packages.txt", at("dispatch", "Install Playwright Chromium, WebKit and Firefox")),
-        (".github/scripts/apt-archive-cache-key.sh", at("dispatch", "Compute the apt archive cache key")),
-        ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-    ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which cli-body-cap.e2e.ts:17 runs")
-      + setup_go("dispatch", f"{ENVOY}/go.mod") + bun_job("dispatch") + CI_SELF),
-
-    # The dashboard's and the proof editor's fast checks, split out of the dispatch job above
-    # (ci.yaml's comment on dispatch-ui says why). No go command runs here.
+    # The dashboard's and the proof editor's fast checks (ci.yaml's comment on dispatch-ui says
+    # what they are). No go command runs here.
     gate("dispatch_ui", "dispatch-ui", reads=reads(
         ("packages/dispatch/**", f"{at('dispatch-ui', 'Lint dispatch dashboard')}, typecheck, test, build, check:classes and check:asset-sizes in packages/dispatch"),
-        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:104-123"),
-        (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:94-103 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
+        ("packages/proof-editor/**", f"{at('dispatch-ui', 'Lint proof editor')}, typecheck and test; packages/dispatch/web/vite.config.ts:127-147"),
+        (CONTRACTS_SRC, 'packages/dispatch/web/vite.config.ts:117-126 aliases; tsc and bun read @legion/contracts through its "bun" export condition (src/)'),
         (f"{FIX}/live/**", "packages/dispatch/web/src/features/delivery/lib/applyDelta.test.ts:2-4, e2e/__tests__/delivery-live-probe.test.ts:8-12"),
         (f"{FIX}/decision-blocks/**", "packages/dispatch/web/src/features/doc/decision-blocks.test.ts:10, features/inbox/AskCard.test.tsx:411"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/__tests__/setup.ts:7 and features/refs/markdown-engine.test.ts:3 read blocks.json; packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275 reads block-node-types.json of the same directory"),
@@ -1005,28 +999,75 @@ GATES = [
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:111-112"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:2-5 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
+        (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them"),
     ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF),
 
-    # Its "Build the Dispatch server" step names an output (-o), which the simple form does not
-    # reduce, so the step is pinned whole.
-    gate("dispatch_browser_multiprocess", BROWSER_MP, runs=[
-        script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, f"started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer, which e2e/run.ts starts in "
-                   f"{at(BROWSER_MP, BROWSER_MP_SPECS)} and {at(BROWSER_MP, BROWSER_MP_SIGNIN)}", ENVOY, ["./cmd/dispatch"], mode="build"),
+    # The browser suite, every row of it: the shard legs, the three `-alone` projects, the
+    # two-process job and the merge job, all in dispatch-browser.yaml, which ci.yaml's
+    # dispatch-browser job and the nightly both call (at_browser cites their steps).
+    #
+    # ci_filter_coverage.py's check_table reads a gate whose ci.yaml job calls a local workflow
+    # over the jobs of that workflow, so dispatch-browser.yaml's go commands, `env:` blocks and
+    # `shell:` keys are held here exactly as a job's own steps are: the multiprocess job's build
+    # step is the exact entry below, and a name outside ENV_ALLOWED, or a `shell:`, anywhere in
+    # that file drops the script Runs below out of the check's reduction, which then counts each
+    # as reading every Go file of the repository.
+    gate("dispatch_browser", BROWSER_JOB, runs=[
+        script_run(RUN_SERVER, DISPATCH_SERVER_BUILD, "started by packages/dispatch/e2e/harness-listeners.ts's dispatchServer, which e2e/run.ts starts in "
+                   f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
+                   f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}",
+                   ENVOY, ["./cmd/dispatch"], mode="build"),
+        script_run(RUN_BROKER, BROKER_BUILD, "started by packages/dispatch/e2e/harness-listeners.ts's realBrokerListeners, which e2e/run.ts starts in "
+                   f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} for "
+                   "e2e/broker-approval.e2e.ts (a one-process run on the fake broker, e2e/harness-real-broker.ts)",
+                   ENVOY, BROKER_PKGS, mode="build"),
         script_run(SIGNIN_ISSUER, "flock ./.dev-oidc-issuer-e2e.lock go build -o ./dev-oidc-issuer-e2e ./cmd/dev-oidc-issuer",
-                   f"started by packages/dispatch/e2e/harness-listeners.ts's signInIssuerListeners under DISPATCH_E2E_SIGNIN=oidc, in {at(BROWSER_MP, BROWSER_MP_SIGNIN)}",
-                   ENVOY, ["./cmd/dev-oidc-issuer"], mode="build"),
+                   "started by packages/dispatch/e2e/harness-listeners.ts's signInIssuerListeners under DISPATCH_E2E_SIGNIN=oidc, in "
+                   f"{at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}", ENVOY, ["./cmd/dev-oidc-issuer"], mode="build"),
     ], exact=[
-        pinned_step(BROWSER_MP, "Build the Dispatch server", ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+        # The multiprocess job builds the server once, so its two processes find it current and
+        # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
+        # The line has an `-o`, which is no form this check reduces, so the entry pins the whole
+        # script and names the one package it compiles - the closure the run-server.sh Run above
+        # checks as well.
+        pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
-        ]),
+        ], workflow=BROWSER_SITE),
     ], reads=reads(
-        ("packages/dispatch/**", f"{at(BROWSER_MP, BROWSER_MP_SPECS)} (build:web twice and Playwright) and {at(BROWSER_MP, BROWSER_MP_SIGNIN)} in packages/dispatch"),
-        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:104-123 (build:web)"),
-        (CONTRACTS_SRC, f"{at(BROWSER_MP, 'Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:94-103 aliases"),
+        ("packages/dispatch/**", f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
+         f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} run the suite, "
+         f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
+         f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
+        ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
+        (CONTRACTS_SRC, f"{at_browser('Build contracts for dispatch e2e')}; packages/dispatch/web/vite.config.ts:117-126 aliases"),
+        ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/cli-body-cap.e2e.ts:52,57,65 run it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:10"),
-        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds the server's port through it"),
+        (f"{ENVOY}/internal/tests3/seaweedfs.go", f"{at_browser('Pull the file store image')} names it to the action, and "
+         f"{at_browser('Start an S3-compatible server for uploaded files')} reads const Image; "
+         f"{at_browser('Wait for the S3-compatible server')} waits for the container it started"),
+        (".github/actions/pull-test-images/**", at_browser("Pull the file store image")),
+        ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each lane's server port through it"),
+        ("bun.lock", f"{at_browser('playwright-cache')} keys the browser cache on hashFiles('bun.lock'), "
+         f"which pins the Playwright version whose browsers {at_browser(BROWSER_INSTALL)} downloads; "
+         f"{at_browser(BROWSER_APT_KEY)} and {at_browser(BROWSER_APT_KEY, BROWSER_ALONE)} both run "
+         ".github/scripts/apt-archive-cache-key.sh, which reads the same version out of it for the apt "
+         "archive cache's key"),
+        (".github/scripts/playwright-install.sh", at_browser(BROWSER_INSTALL)),
+        (".github/scripts/apt-archive-cache-key.sh",
+         f"{at_browser(BROWSER_APT_KEY)} and {at_browser(BROWSER_APT_KEY, BROWSER_ALONE)} run it for the key "
+         "their apt archive cache restore steps read"),
+        (".github/scripts/dispatch-browser-samples.sh",
+         f"{at_browser(BROWSER_SHARD_SPECS)} and {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)} "
+         "start it and read its two summaries"),
+        (".github/scripts/playwright-deps-current.sh", at_browser(BROWSER_INSTALL)),
+        (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
+        (".github/playwright-apt-packages.txt", f"{at_browser(BROWSER_INSTALL)} and the alone job's step of "
+         "that name both run .github/scripts/playwright-install.sh, which reads it as the apt list it installs"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
-    ) + setup_go(BROWSER_MP, f"{ENVOY}/go.mod") + bun_job(BROWSER_MP) + CI_SELF),
+    ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
+                         "packages/dispatch/e2e/cli-body-cap.e2e.ts:52,57,65 run")
+      + setup_go(BROWSER_SHARD, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
+      + CI_SELF + BROWSER_SITE_SELF),
 
     gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_BUILD + reads(
         (TEST_FIXTURES_SRC, "packages/claude-envoy/tests import @legion/test-fixtures"),
@@ -1261,6 +1302,9 @@ GATES = [
         (CLIENT_TARGETS, "ci_job_reads.py expands the notices runs over it"),
         (INFRA_TARGETS, "ci_job_reads.py expands the notices runs over it"),
         (DOCS_SITE, "ci_filter_coverage.py looks the docs gate's step citations up in it"),
+        (BROWSER_SITE, "ci_filter_coverage.py looks the dispatch_browser gate's step citations up in it"),
+        (BROWSER_NIGHTLY, "dispatch-browser.yaml's other caller: a change to either must re-run this check, which "
+                          "holds the dispatch_browser filter to that gate"),
         (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to ci.yaml's restores"),
         (".github/workflows/**", "ci_workflow_rules.check_one_merge_group_workflow reads every workflow of the "
                                  "directory, and a rule that refuses a new one has to run on the change that adds it"),
