@@ -126,7 +126,9 @@ func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, pay
 // A removal the row tells of names what the log of each of its failing jobs says failed: those
 // reads are made once the removal is decided and only on the paths that tell of it
 // (readFailures, ghautomerge.ReadFailingTests), never while GitHub's own answer is judged and
-// never for a row that only waits.
+// never for a row that only waits. readFailures hands the budget everything the row does after
+// those reads runs on back with them, since the reads can spend the whole of the context this
+// run opened with.
 func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge) error {
 	lane := ctx
 	ctx, cancel := context.WithTimeout(ctx, autoMergeTimeout)
@@ -151,12 +153,11 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep)
 	}
 	// logs is the repository's REST base, where a failing job's log lives, under this row's own
-	// token (readFailures); told is the budget everything the row does after those reads runs
-	// on. The reads take up to removalLogReads, so the context this run opened with can be long
-	// spent by the time they answer, and a write on it would fail after a submission that
-	// succeeded.
+	// token (readFailures). The budget everything the row does after those reads runs on comes
+	// back from readFailures with them: the reads take up to removalLogReads, so the context this
+	// run opened with can be long spent by the time they answer, and a write on it would fail
+	// after a submission that succeeded.
 	logs := githubrest.Client{Token: github.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}
-	told := func() (context.Context, context.CancelFunc) { return context.WithTimeout(lane, autoMergeTimeout) }
 	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep)
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
@@ -177,13 +178,13 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 			// The message names what failed on the commit the queue built, so those logs are read
 			// once the decision to submit again is made and before the message is written. What
 			// the further submission then answers is handled by the arms below, which write the
-			// row's payload: they run on the budget opened here, never on the one the reads
-			// spent.
-			if read := r.readFailures(lane, logs, conflicted.Removal.Runs); read != nil {
+			// row's payload: they run on the budget the reads hand back, never on the one the
+			// reads spent.
+			fresh, cancel, read := r.readFailures(lane, logs, conflicted.Removal.Runs)
+			defer cancel()
+			if read != nil {
 				return read
 			}
-			fresh, cancel := told()
-			defer cancel()
 			ctx = fresh
 			outcome, err = r.resubmitAfterConflict(ctx, row, &payload, conflicted, resubmit)
 		}
@@ -220,11 +221,12 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 				"row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "reason", failed.Error())
 			return nil
 		}
-		if read := r.readFailures(lane, logs, failed.Runs); read != nil {
+		fresh, cancel, read := r.readFailures(lane, logs, failed.Runs)
+		defer cancel()
+		if read != nil {
 			return read
 		}
-		ctx, cancel := told()
-		defer cancel()
+		ctx = fresh
 		fact := intake.MergeFailed{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Reason: failed.Error()}
 		sent, applyErr := intake.ApplyFact(ctx, r.pool, "outbox", key, fact, r.handlers...)
 		if applyErr != nil {
@@ -244,11 +246,11 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		// other answer — a wait, a refusal, a read of GitHub that failed — names none and reads
 		// none.
 		if errors.As(err, &removed) {
-			if read := r.readFailures(lane, logs, removed.Runs); read != nil {
+			fresh, cancel, read := r.readFailures(lane, logs, removed.Runs)
+			defer cancel()
+			if read != nil {
 				return read
 			}
-			fresh, cancel := told()
-			defer cancel()
 			ctx = fresh
 		}
 		if remembered := r.rememberWait(ctx, row, payload, false, err); remembered != nil {
@@ -426,12 +428,20 @@ func (r *outbox) resubmitAfterConflict(ctx context.Context, row record.OutboxRow
 }
 
 // readFailures fills in what the log of each of a removal's failing jobs says failed
-// (ghautomerge.ReadFailingTests), and answers the one failure of that reading the row acts on:
-// the lane cancelled under it. It is called once a removal is decided and only where the row is
-// about to tell of it — the fact that sends the issue back, the notice that ends the row, the
-// message its further submission is posted with — so a run that waits reads no log at all, a
-// decision already applied is never read for again, and a refusal or a read of GitHub that
-// failed names no job to read.
+// (ghautomerge.ReadFailingTests), and hands back, with the one failure of that reading the row
+// acts on — the lane cancelled under it — the budget everything the row does after those reads
+// runs on. It is called once a removal is decided and only where the row is about to tell of
+// it — the fact that sends the issue back, the notice that ends the row, the message its further
+// submission is posted with — so a run that waits reads no log at all, a decision already
+// applied is never read for again, and a refusal or a read of GitHub that failed names no job to
+// read.
+//
+// The budget comes back with the reads because no caller may have the one without the other: the
+// reads take up to removalLogReads, so the context the run opened with can be long spent by the
+// time they answer, and a write on it would fail after a submission that succeeded. It is opened
+// once the reads are done and off the lane, never off that spent context, and it is never nil,
+// the error return included, so every caller can defer its cancel before it reads the error and
+// leak nothing.
 //
 // The reads run off the row's own 30 seconds, on the lane's context: a read the row's budget
 // cut short reports "could not read" for exactly the logs this reads — job 128558893568 of this
@@ -448,14 +458,15 @@ func (r *outbox) resubmitAfterConflict(ctx context.Context, row record.OutboxRow
 // its one telling on them: a *Removed ends its row, and merge-removed is written once and never
 // again. So the row fails here instead, with an error nobody is told of and no mark behind it.
 // The row is due again when the daemon comes back, and reads the same removal from GitHub.
-func (r *outbox) readFailures(lane context.Context, logs githubrest.Client, runs []ghautomerge.FailingRun) error {
+func (r *outbox) readFailures(lane context.Context, logs githubrest.Client, runs []ghautomerge.FailingRun) (context.Context, context.CancelFunc, error) {
 	reads, stopReads := context.WithTimeout(lane, removalLogReads)
 	defer stopReads()
 	ghautomerge.ReadFailingTests(reads, logs, runs)
+	budget, cancel := context.WithTimeout(lane, autoMergeTimeout)
 	if lane.Err() != nil {
-		return fmt.Errorf("read what the logs of the jobs the merge queue's commit failed say failed: %w", lane.Err())
+		return budget, cancel, fmt.Errorf("read what the logs of the jobs the merge queue's commit failed say failed: %w", lane.Err())
 	}
-	return nil
+	return budget, cancel, nil
 }
 
 // replacePayload writes payload back to row under the row's lease, with told enqueued in the same

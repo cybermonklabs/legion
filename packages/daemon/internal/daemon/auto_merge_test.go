@@ -1044,10 +1044,11 @@ func TestAMergeTheQueueFailedHasItsJobLogsReadOnceForOneDecision(t *testing.T) {
 // another base starts the clock again. What GitHub answers for the pull request's own mergeability
 // changes none of it. An entry the row has not decided also leaves the record where it was and
 // sends no mutation at all: it neither submits the head again nor takes the entry out of the
-// queue, which only a withdrawal's disarm does. One state the row reads no conflict from stands
-// here on the database, and that branch of the row stands on its own below
-// (TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone); which states those are is read off the
-// entry alone, in ghautomerge, since each is this one branch of the row.
+// queue, which only a withdrawal's disarm does. The entries the row reads no conflict from —
+// one in another state than UNMERGEABLE, one built on another entry's commit, one the queue has
+// built nothing for — stand here on the database too, and that branch of the row stands on its
+// own below (TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone); which states those are is read
+// off the entry alone, in ghautomerge, since each is this one branch of the row.
 func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
