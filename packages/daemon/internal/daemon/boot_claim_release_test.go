@@ -293,6 +293,7 @@ func (r *bootClaimRig) drain() {
 // row still waits on its holder queues a second one, and that the repository recovery starts no
 // pass at all.
 func TestBootReleasesParkedClaims(t *testing.T) {
+	t.Parallel()
 	t.Run("one boot over the board", testBootQueuesTheParkedClaims)
 	t.Run("a second boot while the first row waits", testASecondBootQueuesASecondRelease)
 	t.Run("the repository recovery", testTheRecoveryStartsNoClaimReleasePass)

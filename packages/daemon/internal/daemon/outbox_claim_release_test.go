@@ -267,6 +267,7 @@ func seedControllerClaim(t *testing.T, pool *pgxpool.Pool, project, session stri
 // Dispatch's answers, and that an issue's release row waiting on its holder holds nothing else of
 // that issue back.
 func TestReleaseClaimRow(t *testing.T) {
+	t.Parallel()
 	t.Run("holders", testReleaseClaimHolders)
 	t.Run("the record", testReleaseClaimRecord)
 	t.Run("answers", testReleaseClaimAnswers)

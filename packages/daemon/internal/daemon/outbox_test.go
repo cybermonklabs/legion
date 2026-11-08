@@ -3095,6 +3095,7 @@ func TestHowLongARetriedRowWaits(t *testing.T) {
 // (stoppedWithTree), and each notice is finished undelivered with its own line rather than
 // published. So a closed issue costs the outbox one attempt per row and leaves it empty.
 func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

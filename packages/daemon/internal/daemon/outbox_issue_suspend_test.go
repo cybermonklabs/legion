@@ -546,6 +546,7 @@ func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 // itself (record.OutOfWorkflow) rather than a list of its own, so every status that takes an issue
 // out of the workflow declines the start while a status the workflow runs in still starts it.
 func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
+	t.Parallel()
 	// departed reads what a declined start leaves behind: nothing launched — the fixture seeds the
 	// child's Sandbox, so a Sandbox created here is a relaunch and nothing else — no start recorded
 	// against the claim, a claim with no process and no locator, and the issue's Sandbox given back
@@ -680,6 +681,7 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 // came back, and the second over the stand-in runtime, because what it must show is which rows the
 // re-admission wrote and which claim each brought back.
 func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
+	t.Parallel()
 	// Door one. The rig is newFenceRig's, the one
 	// TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads the fence in, cut to the single
 	// park this door needs: a running root holding its admission slot, the tree's one child under
@@ -990,6 +992,7 @@ func startRequestsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.Su
 // the claim records the row as its newest start, and the issue is still done when the look is
 // running: a look runs behind the close rather than reopening the issue.
 func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
+	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
