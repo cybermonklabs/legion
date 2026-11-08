@@ -952,6 +952,85 @@ func TestAMergeFailureAlreadyAppliedIsNotLoggedAsSendingTheIssueBack(t *testing.
 	}
 }
 
+// The failure the issue goes back to implementing on names what each failing job's log says
+// failed (INFRA-1442), and the row reads those logs where it is about to tell of the removal:
+// after the decision, never while it is made. So the implementer's task and the architect's
+// checks-red carry the tests the log states failed, and a run that meets a failure already
+// applied — an apply that failed after its mark stood, a worker whose settle was lost, the row
+// run again at the same head — reads no log a second time for a decision already made, and
+// tells nobody twice.
+func TestAMergeTheQueueFailedHasItsJobLogsReadOnceForOneDecision(t *testing.T) {
+	github := newQueueGitHub(t, "CLEAN")
+	github.set(func(g *armableGitHub) { g.jobLogs = map[int64]string{failedMergeGroupJob: failedMergeGroupLog} })
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	clock := time.Now().UTC()
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head"}, clock))
+	runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return clock })
+	runner.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps()}, quietLogger())}
+	run := func(step string) {
+		t.Helper()
+		if err := runner.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce %s: %v", step, err)
+		}
+		clock = clock.Add(time.Minute)
+	}
+	logReads := func() int {
+		github.mu.Lock()
+		defer github.mu.Unlock()
+		return github.logReads
+	}
+	run("READY's submission")
+	if reads := logReads(); reads != 0 {
+		t.Fatalf("job logs read %d while READY's head was submitted, want none: nothing has failed", reads)
+	}
+	github.remove(dequeuedEvent("failed_checks", "github-merge-queue", failedMergeGroupWithJob))
+	run("the retry after the merge queue failed the merge")
+	if reads := logReads(); reads != 1 {
+		t.Fatalf("job logs read %d for the removal, want the one failing job's", reads)
+	}
+	var task string
+	if err := pool.QueryRow(context.Background(), `select payload->>'task' from outbox where kind = 'supervise'
+		and payload->>'op' = 'start' and payload->>'role' = 'implementer' and coalesce(payload->>'task', '') <> ''`).Scan(&task); err != nil {
+		t.Fatalf("read the implementer's start: %v", err)
+	}
+	var reason string
+	if err := pool.QueryRow(context.Background(), `select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'checks-red'`).Scan(&reason); err != nil {
+		t.Fatalf("read the architect's checks-red notice: %v", err)
+	}
+	for _, want := range []string{"integration", "its log names TestTheQueueTakesTheEntryOut as failing",
+		`its first failure line "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"`} {
+		if !strings.Contains(task, want) {
+			t.Fatalf("the implementer's task %q, want it to name %q", task, want)
+		}
+		if !strings.Contains(reason, want) {
+			t.Fatalf("the architect's checks-red notice %q, want it to name %q", reason, want)
+		}
+	}
+	// The record awaits that READY again and the row runs once more against the removal it
+	// already applied: the fact is the same event's, so nothing moves and nothing is read.
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Armed: true}, clock))
+	run("the row run again against a failure already applied")
+	if reads := logReads(); reads != 1 {
+		t.Fatalf("job logs read %d once the row met a failure already applied, want the first run's one", reads)
+	}
+	var starts, notices int
+	if err := pool.QueryRow(context.Background(), `select
+		(select count(*) from outbox where kind = 'supervise' and payload->>'op' = 'start' and payload->>'role' = 'implementer' and coalesce(payload->>'task', '') <> ''),
+		(select count(*) from outbox where kind = 'notice')`).Scan(&starts, &notices); err != nil {
+		t.Fatalf("count what the second run told: %v", err)
+	}
+	if starts != 1 || notices != 1 {
+		t.Fatalf("implementer starts %d and notices %d, want the one apply's: a failure already applied tells nobody again", starts, notices)
+	}
+	var at string
+	if err := pool.QueryRow(context.Background(), "select phase from issues where key = 'LEGION-208'").Scan(&at); err != nil || at != string(phase.AwaitingMerge) {
+		t.Fatalf("LEGION-208 in %q (%v), want awaiting_merge: the fact was already applied", at, err)
+	}
+}
+
 // A queued pull request whose merge GitHub's merge queue cannot make goes back to implementing
 // (INFRA-1442), and the entry's own state is what says so: while an entry is queued GitHub answers
 // the pull request's mergeable UNKNOWN, so a daemon reading that field alone leaves a conflicting
@@ -1474,7 +1553,10 @@ func TestAREADYMergeRowWaitingOnAnArmEndsOnceTheMergeMovesTheRecord(t *testing.T
 // enqueues it on a merge-queue base GitHub reports mergeable now and arms auto-merge otherwise,
 // as GitHub does, and a disablePullRequestAutoMerge turns auto-merge off; each lands on
 // the timeline as the implement App's (implementApp), and both are counted (arms counts every
-// enable). A removal outside the daemon is remove's.
+// enable). A removal outside the daemon is remove's. jobLogs is the log of each Actions job of
+// a merge group by its id, as GET /actions/jobs/{id}/logs answers it — a job it holds none for
+// is GitHub's 404, as a check run no Actions job backs would answer — and logReads counts the
+// reads of them the daemon made.
 type armableGitHub struct {
 	url                   string
 	mu                    sync.Mutex
@@ -1486,6 +1568,8 @@ type armableGitHub struct {
 	baseName, baseTip     string
 	timeline              []string
 	disables, arms        int
+	jobLogs               map[int64]string
+	logReads              int
 }
 
 // queueBaseBranch is the branch acme/widgets#42 merges into and queueBaseTip the commit that
@@ -1520,6 +1604,23 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		// A job's log is the one read a merge row makes outside GraphQL: GET
+		// /actions/jobs/{id}/logs under the repository's REST base (githubrest.RepositoryAPI).
+		if job, found := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/actions/jobs/"); found {
+			g.logReads++
+			id, err := strconv.ParseInt(strings.TrimSuffix(job, "/logs"), 10, 64)
+			log, held := g.jobLogs[id]
+			switch {
+			case r.Method != http.MethodGet || !strings.HasSuffix(job, "/logs") || err != nil:
+				t.Errorf("unexpected job log request %s %s", r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusBadRequest)
+			case !held:
+				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
+			default:
+				_, _ = io.WriteString(w, log)
+			}
+			return
+		}
 		switch {
 		case strings.Contains(string(body), "disablePullRequestAutoMerge"):
 			g.disables++
@@ -1630,6 +1731,22 @@ const failedMergeGroupRun = "https://github.com/acme/widgets/actions/runs/7"
 const failedMergeGroup = `{"oid":"group-sha","statusCheckRollup":{"contexts":{"nodes":[` +
 	`{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"` + failedMergeGroupRun + `/job/1","checkSuite":{"workflowRun":{"url":"` + failedMergeGroupRun + `"}}},` +
 	`{"__typename":"CheckRun","name":"integration","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"` + failedMergeGroupRun + `/job/2","checkSuite":{"workflowRun":{"url":"` + failedMergeGroupRun + `"}}}]}}}`
+
+// failedMergeGroupJob is the Actions job the integration check run of failedMergeGroupWithJob
+// ran as, GitHub's databaseId for that check run and the id its log is read by, and
+// failedMergeGroupLog that job's log as GitHub's job-log route carries it, a Go test binary's
+// end with one failure in it.
+const (
+	failedMergeGroupJob = 128479266994
+	failedMergeGroupLog = "2026-11-07T18:04:23.8502586Z --- FAIL: TestTheQueueTakesTheEntryOut (0.01s)\n" +
+		"2026-11-07T18:04:24.8502586Z FAIL\n"
+)
+
+// failedMergeGroupWithJob is failedMergeGroup with the Actions job GitHub names the failing
+// check run's: the merge group whose failing job has a log to read.
+const failedMergeGroupWithJob = `{"oid":"group-sha","statusCheckRollup":{"contexts":{"nodes":[` +
+	`{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"` + failedMergeGroupRun + `/job/1","databaseId":1,"checkSuite":{"workflowRun":{"url":"` + failedMergeGroupRun + `"}}},` +
+	`{"__typename":"CheckRun","name":"integration","status":"COMPLETED","conclusion":"FAILURE","detailsUrl":"` + failedMergeGroupRun + `/job/2","databaseId":128479266994,"checkSuite":{"workflowRun":{"url":"` + failedMergeGroupRun + `"}}}]}}}`
 
 // A reopen at READY's head that lands while a worker is recording GitHub's permanent refusal takes
 // the row from that worker: the worker's notice rolls back with its finish, and the run that holds

@@ -45,10 +45,11 @@ import (
 // reads, and failPages answers every one with GitHub's server error.
 // jobLogs is the log of each Actions job by its id, as GET /actions/jobs/{id}/logs answers it,
 // and logStatus answers every such read with that HTTP status instead (403 is the Actions read a
-// deployment's App may never have been granted). logFill answers the read with that many bytes
-// before the log, which a log past githubrest.JobLogBound is made of, and logDelay holds the
-// answer open for that long, which a read past the log client's time bound waits out. logReads
-// counts the job logs read.
+// deployment's App may never have been granted). logRedirect answers it with GitHub's own
+// redirect to that URL instead, the pre-signed blob URL a real read follows. logFill answers the
+// read with that many bytes before the log, which a log past githubrest.JobLogBound is made of,
+// and logDelay holds the answer open for that long, which a read past the log client's time
+// bound waits out. logReads counts the job logs read.
 type github struct {
 	mu                             sync.Mutex
 	notFound                       string
@@ -73,6 +74,7 @@ type github struct {
 	failPages                      bool
 	jobLogs                        map[int64]string
 	logStatus                      int
+	logRedirect                    string
 	logFill                        int
 	logDelay                       time.Duration
 	logReads                       int
@@ -222,10 +224,11 @@ const (
 )
 
 // serveJobLog answers the log of the Actions job job names ("{id}/logs") as GitHub does: the
-// status the fake refuses every log read with, else the log it holds for that job, written after
-// logFill bytes of filler and logDelay of waiting, which is how a log past githubrest.JobLogBound
-// and a read past the log client's time bound are made. A job the fake holds no log for is
-// GitHub's 404, as a check run no Actions job backs would answer.
+// status the fake refuses every log read with, the redirect to a pre-signed blob URL it answers
+// instead (logRedirect, which GitHub answers every read of a log with), else the log it holds
+// for that job, written after logFill bytes of filler and logDelay of waiting, which is how a
+// log past githubrest.JobLogBound and a read past the log client's time bound are made. A job
+// the fake holds no log for is GitHub's 404, as a check run no Actions job backs would answer.
 func (g *github) serveJobLog(t *testing.T, w http.ResponseWriter, r *http.Request, job string) {
 	t.Helper()
 	id, err := strconv.ParseInt(strings.TrimSuffix(job, "/logs"), 10, 64)
@@ -236,6 +239,10 @@ func (g *github) serveJobLog(t *testing.T, w http.ResponseWriter, r *http.Reques
 	}
 	if g.logStatus != 0 {
 		http.Error(w, `{"message":"Resource not accessible by integration"}`, g.logStatus)
+		return
+	}
+	if g.logRedirect != "" {
+		http.Redirect(w, r, g.logRedirect, http.StatusFound)
 		return
 	}
 	log, held := g.jobLogs[id]
@@ -420,15 +427,15 @@ func (g *github) serve(t *testing.T) string {
 }
 
 // clients are the two the merge path calls the fake with: GitHub's GraphQL route, which the pull
-// request is read and changed on, and the REST base of acme/widgets with the context its reads
-// run under (Logs), which a failing job's log is read with. One server answers both, as GitHub's
-// one API root does. The test's own context is the reads' here, where the daemon gives them one
-// off its merge row's deadline (the daemon's readyMerge).
-func clients(t *testing.T, g *github) (githubrest.Client, Logs) {
+// request is read and changed on and which deciding a submission is the whole of, and the REST
+// base of acme/widgets, which a failing job's log is read under once a removal is decided
+// (ReadFailingTests). One server answers both, as GitHub's one API root does. The daemon builds
+// the second where it reads, from the first's own token (its readyMerge).
+func clients(t *testing.T, g *github) (client, logs githubrest.Client) {
 	t.Helper()
 	root := g.serve(t)
 	return githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(root)},
-		Logs{Ctx: t.Context(), Client: githubrest.Client{Token: "token", API: githubrest.RepositoryAPI(root, ghrepo.MustParse("acme/widgets"))}}
+		githubrest.Client{Token: "token", API: githubrest.RepositoryAPI(root, ghrepo.MustParse("acme/widgets"))}
 }
 
 // The fake answers a document that declares a variable it never uses, or uses one it never
@@ -644,8 +651,8 @@ func TestSubmitUsesGitHubsAnswerForTheREADYHead(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := &github{state: tc.state, head: tc.head, mergeState: tc.mergeState, queueRequired: tc.queueRequired,
 				autoMergeOK: tc.autoMergeOK, armed: tc.armed, queued: tc.queued}
-			client, logs := clients(t, g)
-			got, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping(tc.keep))
+			client, _ := clients(t, g)
+			got, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping(tc.keep))
 			var lagging *Lagging
 			var unmergeable *Unmergeable
 			var armed *Armed
@@ -834,8 +841,8 @@ func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
 			}
 			g := &github{head: "head", mergeState: mergeState, queueRequired: tc.queue, autoMergeOK: true, timeline: tc.timeline,
 				contextPages: map[string]string{"after-100": secondChecksPage}, failPages: tc.failPages}
-			client, logs := clients(t, g)
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			client, _ := clients(t, g)
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 			var failed *MergeFailed
 			var removed *Removed
 			var conflict *ConflictRemoval
@@ -970,8 +977,8 @@ func TestARemovalAtAnUnchangedHeadIsReadByItsReasonAndMergeState(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := &github{head: "head", mergeState: tc.mergeState, queueRequired: tc.queue, autoMergeOK: true, timeline: tc.timeline}
-			client, logs := clients(t, g)
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			client, _ := clients(t, g)
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 			var conflict *ConflictRemoval
 			var failed *MergeFailed
 			var removed *Removed
@@ -1030,8 +1037,8 @@ func TestSubmitRetriesAQueueRemovalWhoseChecksGitHubFailsToRead(t *testing.T) {
 			g := &github{head: "head", mergeState: "CLEAN", queueRequired: true, autoMergeOK: true,
 				timeline:     []string{enqueued, dequeued(reason, "github-merge-queue", pagedChecks)},
 				contextPages: map[string]string{"after-100": secondChecksPage}, failPages: true}
-			client, logs := clients(t, g)
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			client, _ := clients(t, g)
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 			var failed *MergeFailed
 			var removed *Removed
 			var refused *Refused
@@ -1042,7 +1049,7 @@ func TestSubmitRetriesAQueueRemovalWhoseChecksGitHubFailsToRead(t *testing.T) {
 			g.mu.Lock()
 			g.failPages = false
 			g.mu.Unlock()
-			_, err = Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			_, err = Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 			if !errors.As(err, &failed) || !strings.Contains(err.Error(), "integration (failure, "+failedRun+")") {
 				t.Fatalf("the retry once GitHub answers the page = %v (%T), want MergeFailed naming the failure on it", err, err)
 			}
@@ -1108,31 +1115,50 @@ func stamped(log string) string {
 // out would cost every run of this suite that minute, for a value that is not what the row proves.
 const logBound = 50 * time.Millisecond
 
+// signedBlob is the pre-signed URL GitHub redirects a read of a job's log to, as the row proving
+// a failed fetch names no URL answers one: the shape GitHub's store answers (a blob path with
+// GitHub's se=, sp= and sig= query, whose sig is the signature that stands for the token) on a
+// host nothing listens on, so the GET that follows the redirect fails and Go's client answers a
+// *url.Error carrying this whole URL. Port 1 is privileged and bound by nothing, so the connect
+// is refused at once rather than waited out. blobSignature is that signature, the one string no
+// line the daemon renders may carry.
+const (
+	blobSignature = "S3CR3T-signature-of-the-read"
+	signedBlob    = "http://127.0.0.1:1/legion-logs/128479266994?se=2026-11-08T19%3A00%3A00Z&sp=r&sig=" + blobSignature
+)
+
 // The runs a removal names say what failed in each of them: the daemon reads the end of each
 // failing job's log and names the tests it states failed with the first line stating one, so the
 // tree the merge queue ejected reads the cause instead of fetching and grepping a merge-group log
-// (INFRA-1442). Go's "--- FAIL:" lines and a browser runner's summary block are the two shapes
+// (INFRA-1442). Deciding the removal reads no log at all — Submit answers each failing run with
+// the Actions job it ran as — and the reads are made afterwards, as the daemon's row makes them
+// once it is about to tell of the removal (ReadFailingTests, its readyMerge). Go's "--- FAIL:"
+// lines and a browser runner's summary block are the two shapes
 // read; the "✘" rows that runner prints as it goes are not, since they stand in the middle of a
 // stream this read only reaches the end of. A log the daemon could not read says so and which way
 // it could not — the end states no test name, the body passed githubrest.JobLogBound, the read
 // passed the log client's time bound, the fetch failed, or GitHub refused the read because this
 // deployment's App was never granted GitHub's optional Actions read — and keeps the run link the
-// notice carries today. No read of a log holds a removal up or fails the row: every case here is
+// notice carries today. A fetch that failed on the URL GitHub redirects the read to says no URL
+// of its own: that one is pre-signed, and a signature belongs in no message. No read of a log
+// holds a removal up or fails the row: every case here is
 // still the removal it was. The log of a check that passed is never read, and the names reach the
 // merge queue's conflict removal too, which the daemon posts on the issue.
 func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// log is what the fake answers for the failing job, status the HTTP status it refuses
-		// every log read with, fill how many bytes it writes before the log, and delay how long
+		// every log read with, redirect the pre-signed URL it redirects the read to instead,
+		// fill how many bytes it writes before the log, and delay how long
 		// it holds the answer open. bound is the time bound the row's own log client is built
 		// with, so a read that has to pass that bound waits a moment rather than the minute
 		// production allows.
-		log    string
-		status int
-		fill   int
-		delay  time.Duration
-		bound  time.Duration
+		log      string
+		status   int
+		redirect string
+		fill     int
+		delay    time.Duration
+		bound    time.Duration
 		// conflict reads the removal as the queue's conflict, which the daemon submits once
 		// more, rather than as the failed merge every other case is.
 		conflict bool
@@ -1176,6 +1202,10 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 			absent: []string{"as failing"}},
 		{name: "a conflict removal whose commit carries a failing run", log: goLog, conflict: true,
 			wants: []string{"integration (failure, " + failedRun + ")", "its log names TestTheQueueTakesTheEntryOut"}},
+		{name: "a fetch that failed on the pre-signed URL GitHub redirects it to", redirect: signedBlob,
+			wants: []string{"integration (failure, " + failedRun + ")", "could not read its failing tests",
+				"the fetch of its log failed"},
+			absent: []string{"as failing", "sig=", blobSignature, "legion-logs"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reason := "failed_checks"
@@ -1183,13 +1213,14 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 				reason = "merge_conflict"
 			}
 			g := &github{head: "head", mergeState: "CLEAN", queueRequired: true, autoMergeOK: true,
-				timeline:  []string{enqueued, dequeued(reason, "github-merge-queue", failedGroupWithJob)},
-				jobLogs:   map[int64]string{failingJob: tc.log},
-				logStatus: tc.status, logFill: tc.fill, logDelay: tc.delay}
+				timeline:    []string{enqueued, dequeued(reason, "github-merge-queue", failedGroupWithJob)},
+				jobLogs:     map[int64]string{failingJob: tc.log},
+				logStatus:   tc.status,
+				logRedirect: tc.redirect, logFill: tc.fill, logDelay: tc.delay}
 			client, logs := clients(t, g)
-			logs.Client.JobLogTimeout = tc.bound
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
-			var runs []string
+			logs.JobLogTimeout = tc.bound
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			var runs []FailingRun
 			var failed *MergeFailed
 			var conflict *ConflictRemoval
 			switch {
@@ -1197,28 +1228,33 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 				if !errors.As(err, &conflict) {
 					t.Fatalf("Submit = %v (%T), want the queue's ConflictRemoval", err, err)
 				}
+				// A ConflictRemoval is no *Removed, so what the daemon hands the read is the
+				// removal it carries, where it decides to tell of it (its conflictRemoval).
+				ReadFailingTests(context.Background(), logs, &conflict.Removal)
 				runs = conflict.Removal.Runs
 			default:
 				if !errors.As(err, &failed) {
 					t.Fatalf("Submit = %v (%T), want MergeFailed: no read of a log fails the row", err, err)
 				}
+				ReadFailingTests(context.Background(), logs, err)
 				runs = failed.Runs
 			}
 			if len(runs) != 1 {
 				t.Fatalf("the removal names %v, want the one run that failed", runs)
 			}
+			line := runs[0].String()
 			for _, want := range tc.wants {
-				if !strings.Contains(runs[0], want) {
-					t.Fatalf("the failing run's line %q, want it to say %q", runs[0], want)
+				if !strings.Contains(line, want) {
+					t.Fatalf("the failing run's line %q, want it to say %q", line, want)
 				}
 			}
 			for _, absent := range tc.absent {
-				if strings.Contains(runs[0], absent) {
-					t.Fatalf("the failing run's line %q says %q, want it left out", runs[0], absent)
+				if strings.Contains(line, absent) {
+					t.Fatalf("the failing run's line %q says %q, want it left out", line, absent)
 				}
 			}
-			if !strings.Contains(err.Error(), runs[0]) {
-				t.Fatalf("the removal %q, want it to carry the failing run's line %q", err, runs[0])
+			if !strings.Contains(err.Error(), line) {
+				t.Fatalf("the removal %q, want it to carry the failing run's line %q", err, line)
 			}
 			g.mu.Lock()
 			defer g.mu.Unlock()
@@ -1229,12 +1265,84 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 	}
 }
 
+// Deciding a removal reads no log: Submit answers the failing runs with the Actions job each
+// ran as and nothing of their logs, so the submission a row retries — an UNKNOWN merge state it
+// waits on, a fact whose apply failed — costs GitHub no read it has already made, and the
+// classifier does no network I/O of its own beyond the pull request (INFRA-1442). The caller
+// reads the logs afterwards, once, where it tells of the removal (ReadFailingTests, the
+// daemon's readyMerge), and the removal's own sentence names the runs with the tests only then.
+func TestSubmitNamesTheFailingJobsWithoutReadingOneLog(t *testing.T) {
+	g := &github{head: "head", mergeState: "CLEAN", queueRequired: true, autoMergeOK: true,
+		timeline: []string{enqueued, dequeued("failed_checks", "github-merge-queue", failedGroupWithJob)},
+		jobLogs:  map[int64]string{failingJob: goLog}}
+	client, logs := clients(t, g)
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+	var failed *MergeFailed
+	if !errors.As(err, &failed) {
+		t.Fatalf("Submit = %v (%T), want MergeFailed", err, err)
+	}
+	want := []FailingRun{{Name: "integration", Result: "failure", URL: failedRun, JobID: failingJob}}
+	if !slices.Equal(failed.Runs, want) {
+		t.Fatalf("the removal names %+v, want %+v: the job to read and nothing read yet", failed.Runs, want)
+	}
+	if text := err.Error(); !strings.Contains(text, "integration (failure, "+failedRun+")") || strings.Contains(text, "its log names") {
+		t.Fatalf("the removal %q, want it to name the run and say nothing of its log", text)
+	}
+	g.mu.Lock()
+	reads := g.logReads
+	g.mu.Unlock()
+	if reads != 0 {
+		t.Fatalf("job logs read %d while the removal was decided, want none", reads)
+	}
+	ReadFailingTests(context.Background(), logs, err)
+	if !strings.Contains(err.Error(), "its log names TestTheQueueTakesTheEntryOut") {
+		t.Fatalf("the removal after its logs were read %q, want it to name the tests the log states failed", err)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.logReads != 1 {
+		t.Fatalf("job logs read %d once the caller read them, want the one failing job's", g.logReads)
+	}
+}
+
+// A check run GitHub names no workflow run for is a third-party App's, which is no Actions job
+// however GitHub numbers it: its log route answers 404, and reading it would add "the fetch of
+// its log failed" to a removal that nothing is wrong with. The removal names it by its details
+// URL, as it always did, and reads nothing (INFRA-1442).
+func TestACheckRunWithNoWorkflowRunIsNamedWithoutAReadOfAnyLog(t *testing.T) {
+	const appCheck = `{"oid":"group-sha","statusCheckRollup":{"contexts":{"nodes":[` +
+		`{"__typename":"CheckRun","name":"licence-scan","status":"COMPLETED","conclusion":"FAILURE",` +
+		`"detailsUrl":"https://scanner.example/checks/9","databaseId":128479266994,"checkSuite":{"workflowRun":null}}]}}}`
+	g := &github{head: "head", mergeState: "CLEAN", queueRequired: true, autoMergeOK: true,
+		timeline: []string{enqueued, dequeued("failed_checks", "github-merge-queue", appCheck)},
+		jobLogs:  map[int64]string{failingJob: goLog}}
+	client, logs := clients(t, g)
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+	var failed *MergeFailed
+	if !errors.As(err, &failed) {
+		t.Fatalf("Submit = %v (%T), want MergeFailed", err, err)
+	}
+	ReadFailingTests(context.Background(), logs, err)
+	want := []FailingRun{{Name: "licence-scan", Result: "failure", URL: "https://scanner.example/checks/9"}}
+	if !slices.Equal(failed.Runs, want) {
+		t.Fatalf("the removal names %+v, want %+v: no Actions job and no log of one", failed.Runs, want)
+	}
+	if text := err.Error(); !strings.Contains(text, "licence-scan (failure, https://scanner.example/checks/9)") || strings.Contains(text, "could not read") {
+		t.Fatalf("the removal %q, want it to name the check and claim no log it could not read", text)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.logReads != 0 {
+		t.Fatalf("job logs read %d for a check run that is no Actions job, want none", g.logReads)
+	}
+}
+
 // A row that has seen READY's head armed reads no timeline while the arm or entry stands: it waits
 // on it (Armed) as before.
 func TestSubmitWaitsOnAStandingArmWithoutReadingTheTimeline(t *testing.T) {
 	g := &github{head: "head", mergeState: "CLEAN", queueRequired: true, queued: true}
-	client, logs := clients(t, g)
-	_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+	client, _ := clients(t, g)
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 	var armed *Armed
 	if !errors.As(err, &armed) || !armed.Routine() {
 		t.Fatalf("Submit while queued = %v, want a routine Armed wait", err)
@@ -1266,8 +1374,8 @@ func TestAnArmedWaitCarriesTheMergeQueueEntryAndBaseOfItsRead(t *testing.T) {
 			want: Armed{BaseName: baseBranch, BaseTip: baseOid}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client, logs := clients(t, tc.g)
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", tc.seen, keeping("head"))
+			client, _ := clients(t, tc.g)
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", tc.seen, keeping("head"))
 			var armed *Armed
 			if !errors.As(err, &armed) {
 				t.Fatalf("Submit = %v, want an Armed wait", err)
@@ -1305,8 +1413,8 @@ func TestAnUnmergeableEntryIsAWaitCarryingTheQueuesOwnState(t *testing.T) {
 			want: Armed{QueueState: "UNMERGEABLE", QueueBase: "release-tip", BaseName: "release", BaseTip: "release-tip"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client, logs := clients(t, tc.g)
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
+			client, _ := clients(t, tc.g)
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 			var armed *Armed
 			if !errors.As(err, &armed) || !errors.Is(err, wait.ErrWaiting) {
 				t.Fatalf("Submit on an unmergeable entry = %v, want an Armed wait", err)
@@ -1330,8 +1438,8 @@ func TestAnUnmergeableEntryIsAWaitCarryingTheQueuesOwnState(t *testing.T) {
 // disagreement GitHub made a moment ago is a webhook still on its way.
 func TestALaggingSubmissionStallsOnlyOnGitHubsOwnClock(t *testing.T) {
 	g := &github{state: "CLOSED", head: "head", mergeState: "UNKNOWN"}
-	client, logs := clients(t, g)
-	_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+	client, _ := clients(t, g)
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
 	var lagging *Lagging
 	if !errors.As(err, &lagging) {
 		t.Fatalf("Submit = %v, want Lagging", err)
@@ -1349,8 +1457,8 @@ func TestALaggingSubmissionStallsOnlyOnGitHubsOwnClock(t *testing.T) {
 // Submit fails it loudly rather than judging a disagreement against no clock at all.
 func TestSubmitFailsAReadWithoutUpdatedAt(t *testing.T) {
 	g := &github{state: "CLOSED", head: "head", mergeState: "UNKNOWN", updated: "null"}
-	client, logs := clients(t, g)
-	_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+	client, _ := clients(t, g)
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
 	var lagging *Lagging
 	if err == nil || errors.Is(err, wait.ErrWaiting) || errors.As(err, &lagging) || !strings.Contains(err.Error(), "updatedAt") {
 		t.Fatalf("Submit without updatedAt = %v, want a failure naming updatedAt", err)
@@ -1366,8 +1474,8 @@ func TestOnlyABlockedOrComputingMergeStateIsARoutineWait(t *testing.T) {
 	for state, routine := range map[string]bool{"BLOCKED": true, "UNKNOWN": true, "BEHIND": false, "DRAFT": false, "DIRTY": false} {
 		for _, queue := range []bool{false, true} {
 			g := &github{head: "head", mergeState: state, queueRequired: queue, autoMergeOK: queue}
-			client, logs := clients(t, g)
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+			client, _ := clients(t, g)
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
 			var unmergeable *Unmergeable
 			if !errors.As(err, &unmergeable) || !errors.Is(err, wait.ErrWaiting) || unmergeable.Routine() != routine || unmergeable.Queue != queue {
 				t.Fatalf("Submit while %s on a merge-queue base %t = %v; want an Unmergeable wait, routine %t", state, queue, err, routine)
@@ -1398,8 +1506,8 @@ func TestSubmitTellsAPermanentRefusalFromATransientOne(t *testing.T) {
 		{"GitHub answers the merge with a server error", &github{head: "head", mergeState: "CLEAN", submitStatus: http.StatusBadGateway}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			client, logs := clients(t, tc.g)
-			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+			client, _ := clients(t, tc.g)
+			_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
 			var refused *Refused
 			if err == nil || errors.Is(err, wait.ErrWaiting) {
 				t.Fatalf("Submit = %v, want GitHub's failure", err)
@@ -1420,8 +1528,8 @@ func TestSubmitTellsAPermanentRefusalFromATransientOne(t *testing.T) {
 func TestSubmitKeepsTheRateLimitOfItsConfirmationRead(t *testing.T) {
 	const squash = "Squash merges are not allowed on this repository."
 	g := &github{head: "head", mergeState: "CLEAN", refuseSubmit: squash, limitAfterRefusal: true}
-	client, logs := clients(t, g)
-	_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
+	client, _ := clients(t, g)
+	_, err := Submit(context.Background(), client, ghrepo.MustParse("acme/widgets"), 42, "head", false, keeping("head"))
 	var refused *Refused
 	if err == nil || errors.As(err, &refused) || errors.Is(err, wait.ErrWaiting) {
 		t.Fatalf("Submit = %v, want a failure to retry", err)

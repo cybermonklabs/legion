@@ -297,19 +297,24 @@ func TestARemovalTellsTheImplementerAndTheArchitectWhichTestsFailed(t *testing.T
 	const run = "https://github.com/sjawhar/legion/actions/runs/7"
 	for _, tc := range []struct {
 		name string
-		// runs is what the merge row read of each failing job, and names what the task and the
-		// notice must both carry.
-		runs, names []string
+		// runs is what the merge row read of each failing job, each as the removal carries it
+		// (ghautomerge.FailingRun: the check, how it ended, its run and what its log said), and
+		// names what the task and the notice must both carry.
+		runs  []ghautomerge.FailingRun
+		names []string
 	}{
 		{name: "a Go job naming the tests that failed",
-			runs:  []string{`unit (failure, ` + run + `): its log names TestTheQueueTakesTheEntryOut, TestTheRowRetries as failing, its first failure line "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"`},
+			runs: []ghautomerge.FailingRun{{Name: "unit", Result: "failure", URL: run,
+				Log: `: its log names TestTheQueueTakesTheEntryOut, TestTheRowRetries as failing, its first failure line "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"`}},
 			names: []string{"TestTheQueueTakesTheEntryOut", "TestTheRowRetries", "--- FAIL: TestTheQueueTakesTheEntryOut (0.01s)"}},
 		{name: "a browser job naming the test that failed",
-			runs: []string{`dispatch (failure, ` + run + `): its log names e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step fits every width @phone as failing, ` +
-				`its first failure line "[chromium] › e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step fits every width @phone"`},
+			runs: []ghautomerge.FailingRun{{Name: "dispatch", Result: "failure", URL: run,
+				Log: `: its log names e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step fits every width @phone as failing, ` +
+					`its first failure line "[chromium] › e2e/gated-step-approvals.e2e.ts:386:1 › a gate with no step fits every width @phone"`}},
 			names: []string{"e2e/gated-step-approvals.e2e.ts:386:1", "[chromium] ›", "a gate with no step fits every width @phone"}},
 		{name: "a job whose log the daemon could not read",
-			runs:  []string{`dispatch (failure, ` + run + `): the daemon could not read its failing tests, since the end of its log states no test name`},
+			runs: []ghautomerge.FailingRun{{Name: "dispatch", Result: "failure", URL: run,
+				Log: ": the daemon could not read its failing tests, since the end of its log states no test name"}},
 			names: []string{"could not read its failing tests", "the end of its log states no test name", run}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

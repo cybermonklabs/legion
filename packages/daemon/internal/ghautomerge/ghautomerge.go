@@ -135,17 +135,38 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 		number, repo, after.AutoMergeRequest != nil, after.MergeQueueEntry != nil)
 }
 
-// Logs is how the log of a job that failed in the merge queue is read (removal): Client is the
-// installation's repository REST base (githubrest.RepositoryAPI), the one route a job's log
-// lives on, and Ctx the context those reads run under, which is deliberately not the context the
-// submission's own GraphQL calls use. The caller gives the reads a budget of their own, since
-// they are the one call here that can outlast a merge row's: the daemon's row bounds its calls at
-// 30 seconds, and no read of a 54 MB log finishes inside them (the daemon's readyMerge). Ctx is
-// required; a Logs without one fails every read it makes, which a removal reports in the run's
-// own line and nowhere else (jobFailures).
-type Logs struct {
-	Ctx    context.Context
-	Client githubrest.Client
+// FailingRun is one check that failed on the commit the merge queue built for a pull request its
+// merge queue took out: its Name, how it ended (Result: a check run's conclusion as Legion's rule
+// for one reads it, classify.RunResult, or a commit status's state), and URL, the run it failed
+// in. JobID is the Actions job the check ran as, GitHub's databaseId for a check run its workflow
+// run is named with, and zero for everything that is no Actions job — a third-party App's check
+// run and a commit status among them — neither of which has an Actions log to read.
+//
+// Log is what the log of that job said, read after the removal is decided and only where the row
+// is about to tell of it (ReadFailingTests, the daemon's readyMerge): the tests its end states
+// failed with the first line stating one, or which way the daemon could not read them, written as
+// the end of this run's own line. A run whose log has not been read carries none, and its line is
+// what it would have been before any log was read: deciding a removal reads no log at all.
+type FailingRun struct {
+	Name, Result, URL string
+	JobID             int64
+	Log               string
+}
+
+// String is the one line a removal names this run with: the check, how it ended and the run it
+// failed in, with what its log said after them where it has been read.
+func (f FailingRun) String() string {
+	return fmt.Sprintf("%s (%s, %s)%s", f.Name, f.Result, f.URL, f.Log)
+}
+
+// FailingRuns is runs as every removal that carries them names them, and as the daemon's own
+// messages of one do: each run's line, "; " between them.
+func FailingRuns(runs []FailingRun) string {
+	lines := make([]string, len(runs))
+	for i, run := range runs {
+		lines[i] = run.String()
+	}
+	return strings.Join(lines, "; ")
 }
 
 // Submit asks GitHub to merge pull request number of repo at head, the head an accepted READY
@@ -185,11 +206,13 @@ type Logs struct {
 // the refusal as its context, so a rate limit it meets reaches the caller (githubrest.RetryAfter).
 // Any other failure, an HTTP or network one included, is returned as it is, for the row to retry.
 //
-// github is GitHub's GraphQL route, which the pull request is read and changed on, and logs the
-// same installation's repository REST base with the context its reads run under (Logs), which
-// the log of a run that failed in the merge queue is read with (removal): the removal a failing
-// log belongs to says what failed, and a log the daemon cannot read holds up nothing.
-func Submit(ctx context.Context, github githubrest.Client, logs Logs, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
+// github is GitHub's GraphQL route, and the one client Submit calls: deciding a submission reads
+// and changes the pull request and nothing else, so a removal it reads names each failing run
+// with its Actions job (MergeFailed, Removed, ConflictRemoval) and leaves the log of that job to
+// its caller, which reads it once the decision is made and only where it tells of it
+// (ReadFailingTests). A read of a 54 MB log cannot finish inside a merge row's own budget, so
+// deciding a removal must never wait on one.
+func Submit(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
 	answer, err := readRepository(ctx, github, repo, number)
 	if err != nil {
 		return "", err
@@ -215,7 +238,7 @@ func Submit(ctx context.Context, github githubrest.Client, logs Logs, repo ghrep
 	case pull.armed():
 		return "", pull.armedWait(repo, number, head)
 	case armed:
-		if err := removal(ctx, github, logs, repo, number, head, pull.MergeStateStatus); err != nil {
+		if err := removal(ctx, github, repo, number, head, pull.MergeStateStatus); err != nil {
 			return "", err
 		}
 	}
@@ -389,12 +412,14 @@ func (a *Armed) UnmergeableOnBaseTip() bool {
 // failed: GitHub's removal for Reason failed_checks, or for a reason GitHub gives no other meaning
 // with a run that failed on Commit, the commit the queue built for it (its merge_group runs ran on
 // gh-readonly-queue/<base>/pr-<n>-…, a branch GitHub deletes with the entry). Runs names each check
-// that failed there, with its run's URL; Event is GitHub's id for the removal, and At when it was
-// made. The submission is over: the issue goes back to implementing on it.
+// that failed there, with its run's URL and the Actions job it ran as, and what that job's log
+// says failed where its caller has read it (ReadFailingTests); Event is GitHub's id for the
+// removal, and At when it was made. The submission is over: the issue goes back to implementing
+// on it.
 type MergeFailed struct {
 	Number               int
 	Head, Reason, Commit string
-	Runs                 []string
+	Runs                 []FailingRun
 	Event                string
 	At                   time.Time
 }
@@ -403,7 +428,7 @@ func (f *MergeFailed) Error() string {
 	text := fmt.Sprintf("the merge queue took pull request #%d out at READY's head %s at %s (%s)", f.Number, f.Head, f.At.UTC().Format(time.RFC3339), f.Reason)
 	switch {
 	case len(f.Runs) > 0:
-		return text + fmt.Sprintf(": its merge_group run on %s, the commit the queue built for it, failed: %s", f.Commit, strings.Join(f.Runs, "; "))
+		return text + fmt.Sprintf(": its merge_group run on %s, the commit the queue built for it, failed: %s", f.Commit, FailingRuns(f.Runs))
 	case f.Commit != "":
 		return text + fmt.Sprintf(": GitHub reported no failing run on %s, the commit the queue built for it", f.Commit)
 	default:
@@ -418,15 +443,16 @@ func (f *MergeFailed) Error() string {
 // own disables (a merge method the repository blocks, a base switch). Reason is GitHub's reason: a
 // queue removal's, or an auto-merge disable's reason code, with Detail its sentence for it (none for
 // a queue removal). At is when it was made. Runs names each check that failed on the commit the
-// queue built for a queue removal, with its run's URL and what its job's log says failed, from
-// the page of that commit's checks GitHub's timeline answer carried (removal); it is empty where
-// nothing failed, which is what a removal GitHub explains by itself usually leaves. The
-// submission is over: the removal stands, and the row ends rather than undo it.
+// queue built for a queue removal, with its run's URL, the Actions job it ran as and what that
+// job's log says failed where its caller has read it (ReadFailingTests), from the page of that
+// commit's checks GitHub's timeline answer carried (removal); it is empty where nothing failed,
+// which is what a removal GitHub explains by itself usually leaves. The submission is over: the
+// removal stands, and the row ends rather than undo it.
 type Removed struct {
 	Number                      int
 	Head, Actor, Reason, Detail string
 	Queue, ByGitHub             bool
-	Runs                        []string
+	Runs                        []FailingRun
 	At                          time.Time
 }
 
@@ -454,7 +480,7 @@ func (r *Removed) failures() string {
 	if len(r.Runs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf(". These checks failed on the commit the queue built for it: %s", strings.Join(r.Runs, "; "))
+	return fmt.Sprintf(". These checks failed on the commit the queue built for it: %s", FailingRuns(r.Runs))
 }
 
 // ConflictRemoval is the merge queue taking a pull request out at READY's head because the merge

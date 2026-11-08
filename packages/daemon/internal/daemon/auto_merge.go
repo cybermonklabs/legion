@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +22,16 @@ import (
 // mint with them: the row runs on its issue's lifecycle lane, so one unanswered call would hold
 // every later lifecycle row of the issue behind it.
 const autoMergeTimeout = 30 * time.Second
+
+// removalLogReads is how long the whole of one removal's job-log reads take before the row gives
+// up on what is left of them (readyMerge's readFailures): the one deadline every read of that
+// removal shares, off the row's own autoMergeTimeout, which no read of a 54 MB log finishes
+// inside. Each read is bounded in itself at the log client's githubrest.Client.JobLogTimeBound,
+// a minute in production, and they go eight at a time (ghautomerge's jobLogReads), so three
+// minutes is three such waves: twenty-four failing jobs of a merge group read at the production
+// bound. A read this deadline cuts short is a log the daemon could not read, told in that run's
+// own line as every other unread log is, and the removal is recorded either way.
+const removalLogReads = 3 * time.Minute
 
 // mergeWaitWarn is how long a ready_merge row waits before its issue's architect is told once that
 // GitHub has not completed the merge Legion submitted (readyMergeWaiting). It runs from
@@ -70,7 +79,7 @@ const conflictUnknownBound = 5 * time.Minute
 func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, payload record.AutoMergeDisable) error {
 	ctx, cancel := context.WithTimeout(ctx, autoMergeTimeout)
 	defer cancel()
-	github, _, repo, err := r.graphQL(ctx, row.Issue)
+	github, repo, err := r.graphQL(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
@@ -110,29 +119,19 @@ func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, pay
 // entry in the queue can be what makes it unmergeable. A wait GitHub has left standing longer than
 // mergeWaitWarn tells the architect once that the merge is still waiting (merge-waiting,
 // rememberWait), and the row waits on.
+//
+// A removal the row tells of names what the log of each of its failing jobs says failed: those
+// reads are made once the removal is decided and only on the paths that tell of it
+// (readFailures, ghautomerge.ReadFailingTests), never while GitHub's own answer is judged and
+// never for a row that only waits.
 func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge) error {
 	lane := ctx
 	ctx, cancel := context.WithTimeout(ctx, autoMergeTimeout)
 	defer cancel()
-	github, logs, repo, err := r.graphQL(ctx, row.Issue)
+	github, repo, err := r.graphQL(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
-	// The log of each job a removal found failing is read off this row's deadline, which is the
-	// one place the row hands the log client down: context.WithoutCancel takes the row's 30
-	// seconds off those reads and each read puts its own bound on top (the log client's
-	// githubrest.Client.JobLogTimeBound, a minute in production),
-	// because a read the row's deadline cuts reports "could not read" for exactly the logs this
-	// reads — job 128558893568 of this repository is 54,330,939 bytes. Holding the row that long
-	// costs the issue's lifecycle lane and nothing else: the removal path arms nothing while a
-	// read runs, and the reads go eight at a time (ghautomerge's jobLogReads), so a removal costs
-	// about one read's wall time rather than the sum of its logs'. A cancellation of the daemon
-	// itself must still stop them, which the row's context no longer carries once its deadline is
-	// off it, so the lane's own cancellation is carried across.
-	reads, stopReads := context.WithCancel(context.WithoutCancel(ctx))
-	defer stopReads()
-	defer context.AfterFunc(lane, stopReads)()
-	jobLogs := ghautomerge.Logs{Ctx: reads, Client: logs}
 	// The record ends the row only when it awaits no READY head or has applied a close: a close
 	// GitHub shows first leaves the row waiting for the record (ghautomerge.Lagging).
 	keep := func(ctx context.Context) (string, error) {
@@ -146,22 +145,39 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	// the same head, with nothing armed: it is built here, where keep is, so the decision that
 	// makes it takes the submission rather than the four values it is made of.
 	resubmit := func(ctx context.Context) (ghautomerge.Outcome, error) {
-		return ghautomerge.Submit(ctx, github, jobLogs, repo, payload.Number, payload.Head, false, keep)
+		return ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, false, keep)
 	}
-	outcome, err := ghautomerge.Submit(ctx, github, jobLogs, repo, payload.Number, payload.Head, payload.Armed, keep)
-	// A submission that read a removal's logs can come back with the row's budget spent on a read
-	// rather than on the row's own calls, so what the answer calls for — the fact that sends the
-	// issue back, the marks, the further submission — takes that budget again, off the lane: a
-	// removal the daemon spent a minute reading is recorded rather than retried for ever.
-	cancel()
-	ctx, cancel = context.WithTimeout(lane, autoMergeTimeout)
-	defer cancel()
+	// readFailures fills in what the log of each of a removal's failing jobs says failed
+	// (ghautomerge.ReadFailingTests), and answers the budget the row tells of that removal on.
+	// It is called once a removal is decided and only where the row is about to tell of it — the
+	// fact that sends the issue back, the notice that ends the row, the message its further
+	// submission is posted with — so a run that waits reads no log at all and a decision already
+	// applied is never read for again.
+	//
+	// The reads run off this row's own deadline, on the lane's context: a read the row's 30
+	// seconds cut short reports "could not read" for exactly the logs this reads — job
+	// 128558893568 of this repository is 54,330,939 bytes — while a cancellation of the daemon
+	// itself must still stop them, which the lane carries. One removal's reads share the one
+	// deadline (removalLogReads) rather than taking a read's own bound each. Holding the row
+	// that long costs the issue's lifecycle lane and nothing else: the removal path arms nothing
+	// while a read runs, and the reads go eight at a time (ghautomerge's jobLogReads), so a
+	// removal costs about one read's wall time rather than the sum of its logs'. What the row
+	// then does with what they said must not run on a budget they spent, so the budget answered
+	// here is a fresh one: a removal the daemon spent a minute reading is recorded rather than
+	// retried for ever.
+	readFailures := func(removal error) (context.Context, context.CancelFunc) {
+		reads, stopReads := context.WithTimeout(lane, removalLogReads)
+		defer stopReads()
+		ghautomerge.ReadFailingTests(reads, githubrest.Client{Token: github.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}, removal)
+		return context.WithTimeout(lane, autoMergeTimeout)
+	}
+	outcome, err := ghautomerge.Submit(ctx, github, repo, payload.Number, payload.Head, payload.Armed, keep)
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
 	// off that decision's own answer, which those arms then handle as any other.
 	var conflicted *ghautomerge.ConflictRemoval
 	if errors.As(err, &conflicted) {
-		outcome, err = r.conflictRemoval(ctx, row, &payload, conflicted, resubmit)
+		outcome, err = r.conflictRemoval(ctx, row, &payload, conflicted, resubmit, readFailures)
 	}
 	var armed *ghautomerge.Armed
 	var failed *ghautomerge.MergeFailed
@@ -179,8 +195,25 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		}
 		return err
 	case errors.As(err, &failed):
+		// A failure already applied is one a run of this row has already told of: the issue went
+		// back to implementing with the tests that run read, and this run's apply would change
+		// nothing. The mark is read before the logs are, so a retry — the apply that failed
+		// after its mark stood, a worker whose settle was lost — reads no log a second time for
+		// a decision already made.
+		key := fmt.Sprintf("merge-failed:%s:%s:%s", row.Issue, payload.Head, failed.Event)
+		told, failure := r.factApplied(ctx, key)
+		if failure != nil {
+			return fmt.Errorf("read whether %s was already sent back to implementing on its failed merge: %w", row.Issue, failure)
+		}
+		if told {
+			r.log.Info("outbox READY merge failed in the merge queue; that failure was already applied, so nothing changed",
+				"row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "reason", failed.Error())
+			return nil
+		}
+		ctx, cancel := readFailures(err)
+		defer cancel()
 		fact := intake.MergeFailed{Issue: row.Issue, Number: payload.Number, Head: payload.Head, Reason: failed.Error()}
-		applied, applyErr := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-failed:%s:%s:%s", row.Issue, payload.Head, failed.Event), fact, r.handlers...)
+		applied, applyErr := intake.ApplyFact(ctx, r.pool, "outbox", key, fact, r.handlers...)
 		if applyErr != nil {
 			return fmt.Errorf("send %s back to implementing on its failed merge: %w", row.Issue, applyErr)
 		}
@@ -193,6 +226,11 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 		r.log.Info(message, "row", row.ID, "issue", row.Issue, "number", payload.Number, "head", payload.Head, "reason", failed.Error())
 		return nil
 	case err != nil:
+		// A removal that ends the row is told by the notice its finish writes (readyMergeEnded),
+		// which renders this error: its failing runs are read here, where every other answer —
+		// a wait, a refusal, a read of GitHub that failed — names none and reads none.
+		ctx, cancel := readFailures(err)
+		defer cancel()
 		if remembered := r.rememberWait(ctx, row, payload, false, err); remembered != nil {
 			return remembered
 		}
@@ -295,9 +333,14 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 // second removal of the same head, this one's own re-queue of the pull request included, ends the
 // row. The entry is left where it is on every path: taking one out is the disarm's alone
 // (ghautomerge.Disarm). resubmit is that further submission, built by readyMerge beside the
-// keep both submissions ask: the same submission at the same head with nothing armed.
+// keep both submissions ask: the same submission at the same head with nothing armed, and
+// readFailures the read of what each failing job's log says, built there as well. Only the
+// branch that posts the message reads those logs: a merge state GitHub has not computed tells
+// nobody anything, so the row that waits for one reads none, and the two branches that end the
+// row leave the reading to the arm that tells of their *Removed (readyMerge).
 func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payload *record.ReadyMerge, conflict *ghautomerge.ConflictRemoval,
-	resubmit func(context.Context) (ghautomerge.Outcome, error)) (ghautomerge.Outcome, error) {
+	resubmit func(context.Context) (ghautomerge.Outcome, error),
+	readFailures func(error) (context.Context, context.CancelFunc)) (ghautomerge.Outcome, error) {
 	now := r.now().UTC()
 	switch {
 	case payload.Resubmitted, conflict.WithBase():
@@ -316,6 +359,10 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 		return "", conflict
 	}
 	payload.Resubmitted = true
+	// The message names what failed on the commit the queue built, so the logs of those jobs are
+	// read before it is written and after the decision to submit again is made.
+	ctx, cancel := readFailures(&conflict.Removal)
+	defer cancel()
 	told, err := record.NewOutboxRow(row.Issue, readyMergeResubmitted(*payload, conflict), now)
 	if err != nil {
 		return "", err
@@ -355,6 +402,23 @@ func (r *outbox) markPayload(ctx context.Context, row record.OutboxRow, payload 
 		_, err := r.records.ReplaceOutboxPayload(ctx, tx, row.ID, row.LeaseToken, payload)
 		return err
 	})
+}
+
+// factApplied reports whether the fact under key has already been applied, the mark
+// intake.ApplyFact takes for itself (record.Store.Processed, source "outbox"): the one question
+// a merge row asks before it spends a removal's log reads on a decision another run of it has
+// already told the workflow (readyMerge). A fact already applied is one ApplyFact would answer
+// Duplicate for, whatever this row built its reason from, so the reason is never built.
+func (r *outbox) factApplied(ctx context.Context, key string) (bool, error) {
+	var applied bool
+	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		var err error
+		applied, err = r.records.Processed(ctx, tx, "outbox", key)
+		return err
+	}); err != nil {
+		return false, err
+	}
+	return applied, nil
 }
 
 // rememberWait records on row what its wait learned that its next run must know, and tells the
@@ -499,18 +563,20 @@ func readyMergeWaiting(payload record.ReadyMerge, waited time.Duration, cause er
 func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.ConflictRemoval) record.MessagePost {
 	checks := "and no check failed"
 	if runs := conflict.Removal.Runs; len(runs) > 0 {
-		checks = "while these checks failed on the commit the queue built for it: " + strings.Join(runs, "; ")
+		checks = "while these checks failed on the commit the queue built for it: " + ghautomerge.FailingRuns(runs)
 	}
 	return record.MessagePost{Body: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s once more: GitHub's merge queue took the pull request out at %s without merging it (%s), while GitHub reports its merge state %s. That merge state leaves the conflict with an entry ahead of it in the queue rather than with the base, %s, so nothing else would ever submit this merge again. This is the one further submission this head gets: a second removal of it for a conflict ends the merge and tells the architect.",
 		payload.Number, payload.Head, conflict.Removal.At.UTC().Format(time.RFC3339), conflict.Removal.Reason, conflict.MergeState, checks)}
 }
 
-// graphQL is the pair of GitHub clients a merge row calls with, both carrying the implement App's
-// token, the App that writes the issue branch and submits or disarms its pull request's merge,
-// and the repository GitHub holds the one issue's record names under now (serving), which the
-// token is minted for the owner of: GitHub's GraphQL route, which the merge itself is read and
-// made on, and the repository's REST base, which the log of a run that failed in the merge queue
-// is read under (ghautomerge.Submit).
+// graphQL is the GitHub client a merge row calls with, carrying the implement App's token, the
+// App that writes the issue branch and submits or disarms its pull request's merge, and the
+// repository GitHub holds the one issue's record names under now (serving), which the token is
+// minted for the owner of: GitHub's GraphQL route, which the merge itself is read and made on.
+// A row that reads a failing job's log builds the repository's REST base where it reads it,
+// from this client's own token (readyMerge's readFailures), since that read is one answer's
+// alone and no merge row else touches that route.
+//
 // What a record's old name cannot do is carry a token: after a transfer the App installation that
 // covers the repository is the new owner's. The address is the served name as well, though GitHub
 // answers the old one too (measured: `GET /repos/twitter/bootstrap` answers 301 to
@@ -518,22 +584,21 @@ func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.Conf
 // `twbs/bootstrap`), because a write such as createBranch's POST should not depend on a redirect,
 // and because the submission and the disarm its callers make name the repository in their log
 // lines.
-func (r *outbox) graphQL(ctx context.Context, issue string) (githubrest.Client, githubrest.Client, ghrepo.Repository, error) {
+func (r *outbox) graphQL(ctx context.Context, issue string) (githubrest.Client, ghrepo.Repository, error) {
 	recorded, err := r.issue(ctx, issue)
 	if err != nil {
-		return githubrest.Client{}, githubrest.Client{}, ghrepo.Repository{}, err
+		return githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	named, err := recorded.Repository()
 	if err != nil {
-		return githubrest.Client{}, githubrest.Client{}, ghrepo.Repository{}, err
+		return githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	repo := r.repositories.serving(named)
 	lease, err := r.tokens.Token(ctx, appauth.Implement, repo)
 	if err != nil {
-		return githubrest.Client{}, githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
+		return githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return githubrest.Client{Token: lease.Token, API: githubrest.GraphQLAPI(r.githubAPI)},
-		githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(r.githubAPI, repo)}, repo, nil
+	return githubrest.Client{Token: lease.Token, API: githubrest.GraphQLAPI(r.githubAPI)}, repo, nil
 }
 
 // awaitedREADY is the READY head issue awaits the merge of, and whether the record holds its pull

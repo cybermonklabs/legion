@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -95,12 +96,12 @@ const moreChecks = `query MergeGroupContexts($owner: String!, $name: String!, $o
 // not by the removal alone. A timeline that shows no removal since the last arm is behind the
 // read of the pull request (Disappeared).
 //
-// logs is the repository's REST base with the context its reads run under (Logs), which the log
-// of each failing job is read with, where github is GitHub's GraphQL route: the two are the same
-// installation token on the same API root, and a job's log lives on neither of the other's
-// routes. The logs' context is the caller's own, off the merge row's deadline, since a read of a
-// 54 MB log cannot finish inside it (the daemon's readyMerge).
-func removal(ctx context.Context, github githubrest.Client, logs Logs, repo ghrepo.Repository, number int, head, mergeState string) error {
+// github is the one client removal calls, GitHub's GraphQL route: no log of a failing job is
+// read here. Each failing run a removal names carries the Actions job it ran as instead
+// (FailingRun.JobID), for the caller to read once the removal is decided and only where it tells
+// of it (ReadFailingTests, the daemon's readyMerge), since a read of a 54 MB log cannot finish
+// inside a merge row's own budget and a judgment of a removal must wait on none.
+func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head, mergeState string) error {
 	var answer struct {
 		Viewer struct {
 			Login string `json:"login"`
@@ -134,7 +135,7 @@ func removal(ctx context.Context, github githubrest.Client, logs Logs, repo ghre
 	}
 	self := strings.TrimSuffix(answer.Viewer.Login, "[bot]")
 	var failed, other *timelineItem
-	var runs []string
+	var runs []FailingRun
 	for i := range removed {
 		item := &removed[i]
 		if item.judgedByChecks() {
@@ -142,7 +143,7 @@ func removal(ctx context.Context, github githubrest.Client, logs Logs, repo ghre
 			if err != nil {
 				return err
 			}
-			if failing := failingRuns(logs, checks); item.Reason == "failed_checks" || len(failing) > 0 {
+			if failing := failingRuns(checks); item.Reason == "failed_checks" || len(failing) > 0 {
 				failed, runs = item, failing
 				continue
 			}
@@ -167,7 +168,7 @@ func removal(ctx context.Context, github githubrest.Client, logs Logs, repo ghre
 		// none either.
 		removed := &Removed{Number: number, Head: head, Actor: other.actor(), Reason: other.removalReason(), Detail: other.detail(),
 			Queue: other.Type == "RemovedFromMergeQueueEvent", ByGitHub: self != "" && other.actor() == self, At: other.CreatedAt,
-			Runs: failingRuns(logs, other.BeforeCommit.page())}
+			Runs: failingRuns(other.BeforeCommit.page())}
 		if removed.Queue && other.Reason == "merge_conflict" {
 			return &ConflictRemoval{Removal: *removed, MergeState: mergeState}
 		}
@@ -256,59 +257,95 @@ func (t *timelineItem) detail() string {
 }
 
 // failingRuns is each of checks, every check on the commit the merge queue built for a queue
-// removal (mergeGroupCommit.checks), that failed there, named with how it ended, its run, and what
-// the log of the Actions job behind it says failed (jobFailures): a check run that ended in a
-// result Legion's rule for a check run counts as failed (classify.RunResult: failure, timed out,
-// failed to start, action required, stale), and a commit status in failure or error. A cancelled
-// run is no failure here: a person's dequeue cancels every run in flight. A commit status is no
-// Actions job and has no log of its own, so its line is what it has always been.
+// removal (mergeGroupCommit.checks), that failed there, named with how it ended, the run it
+// failed in and the Actions job it ran as (checkContext.run): a check run that ended in a result
+// Legion's rule for a check run counts as failed (classify.RunResult: failure, timed out, failed
+// to start, action required, stale), and a commit status in failure or error. A cancelled run is
+// no failure here: a person's dequeue cancels every run in flight. A commit status is no Actions
+// job and has no log of its own, so it names none.
 //
-// The logs are read at once, jobLogReads at a time, each line written into the place its check
-// has among checks, so the lines read in the order the checks came whatever order the reads
-// finish in.
-func failingRuns(logs Logs, checks []checkContext) []string {
-	lines := make([]string, len(checks))
-	var group errgroup.Group
-	group.SetLimit(jobLogReads)
-	for i, check := range checks {
+// No log is read here: judging a removal is this package's own work and costs GitHub nothing
+// beyond the pull request, and what each named job's log says is read afterwards by the caller
+// that tells of the removal (ReadFailingTests).
+func failingRuns(checks []checkContext) []FailingRun {
+	var runs []FailingRun
+	for _, check := range checks {
 		switch check.Type {
 		case "CheckRun":
 			result := classify.RunResult(strings.ToLower(check.Status), strings.ToLower(check.Conclusion))
 			if result == classify.Pending || result == classify.Success || result == classify.Cancelled {
 				continue
 			}
-			url := check.DetailsURL
-			if check.CheckSuite != nil && check.CheckSuite.WorkflowRun != nil && check.CheckSuite.WorkflowRun.URL != "" {
-				url = check.CheckSuite.WorkflowRun.URL
-			}
-			group.Go(func() error {
-				lines[i] = fmt.Sprintf("%s (%s, %s)%s", check.Name, result, url, jobFailures(logs, check.JobID))
-				return nil
-			})
+			link, job := check.run()
+			runs = append(runs, FailingRun{Name: check.Name, Result: result, URL: link, JobID: job})
 		case "StatusContext":
 			if check.State == "FAILURE" || check.State == "ERROR" {
-				lines[i] = fmt.Sprintf("%s (%s, %s)", check.Context, strings.ToLower(check.State), check.TargetURL)
+				runs = append(runs, FailingRun{Name: check.Context, Result: strings.ToLower(check.State), URL: check.TargetURL})
 			}
-		}
-	}
-	_ = group.Wait() // no log read ever fails a removal: each failure of one is told in its own line
-	var runs []string
-	for _, line := range lines {
-		if line != "" {
-			runs = append(runs, line)
 		}
 	}
 	return runs
 }
 
+// ReadFailingTests fills in, for each failing run the removal err names, what the log of the
+// Actions job it ran as says failed (jobFailures): the tests the end of that log states as
+// failed with the first line stating one, or which way the daemon could not read them. A run
+// GitHub named no Actions job for has no log at all, and is left as it stands.
+//
+// err is the removal: a *MergeFailed, or a *Removed, which is what a ConflictRemoval's caller
+// passes its own Removal as where it tells of one — a *ConflictRemoval answers errors.As no
+// *Removed on purpose, since whether its runs are ever told is the daemon's decision
+// (conflictRemoval) and not this package's. Anything else is left alone.
+//
+// This is the one read of GitHub this package makes outside a submission, and it is made after
+// the removal is decided and only where the row is about to tell of it — the fact a failed merge
+// sends the issue back with, the notice a removal ends the row with, the message a further
+// submission is posted with (the daemon's readyMerge) — so a run that only waits reads no log,
+// and a decision already told is never read for twice. logs is the installation's repository
+// REST base (githubrest.RepositoryAPI), the one route a job's log lives on, and ctx the context
+// the reads run under, which its caller bounds as the whole of one removal's reads rather than
+// leaving each read to its own bound (the daemon's removalLogReads): it is deliberately not the
+// context the submission's own calls ran under, since no read of a 54 MB log finishes inside a
+// merge row's 30 seconds. No failure of a read ever fails the removal: each is told in its own
+// run's line and nowhere else.
+//
+// The logs are read at once, jobLogReads at a time, each into the run it belongs to, so the runs
+// read in the order they came whatever order the reads finish in.
+func ReadFailingTests(ctx context.Context, logs githubrest.Client, err error) {
+	var runs []FailingRun
+	var failed *MergeFailed
+	var removed *Removed
+	switch {
+	case errors.As(err, &failed):
+		runs = failed.Runs
+	case errors.As(err, &removed):
+		runs = removed.Runs
+	default:
+		return
+	}
+	var group errgroup.Group
+	group.SetLimit(jobLogReads)
+	for i := range runs {
+		run := &runs[i]
+		if run.JobID == 0 {
+			continue
+		}
+		group.Go(func() error {
+			run.Log = jobFailures(ctx, logs, run.JobID)
+			return nil
+		})
+	}
+	_ = group.Wait() // no log read ever fails a removal: each failure of one is told in its own line
+}
+
 // jobLogReads is how many of a removal's failing jobs have their logs read at once. One read is
-// bounded at the log client's own time bound (githubrest.JobLogTimeBound), a minute in
-// production, and by nothing else: the merge row that reads them hands these reads a context off
-// its own deadline, since a 54 MB log cannot be read inside the row's 30 seconds (the daemon's
-// readyMerge). Read one after another, three failing jobs — an ordinary matrix shape — would hold
-// the row three minutes; read at once they cost about one read instead, and the limit is what
-// holds a merge group with dozens of failing jobs to eight reads of GitHub open at a time, and so
-// to eight rings of githubrest.JobLogTail, rather than one per job.
+// bounded at the log client's own time bound (githubrest.Client.JobLogTimeBound), a minute in
+// production, and the whole of a removal's reads by the one deadline its caller gives them
+// (ReadFailingTests), since a 54 MB log cannot be read inside a merge row's 30 seconds (the
+// daemon's readyMerge). Read one after another, three failing jobs — an ordinary matrix shape —
+// would hold the row three minutes; read at once they cost about one read instead, and the limit
+// is what holds a merge group with dozens of failing jobs to eight reads of GitHub open at a
+// time, and so to eight rings of githubrest.JobLogTail, rather than one per job.
 const jobLogReads = 8
 
 // jobFailures is what the log of Actions job id says failed, written as the end of that run's own
@@ -316,31 +353,41 @@ const jobLogReads = 8
 // the daemon could not read them, which of the five ways it could not — the end of the log states
 // no test name, the body passed the byte bound, the read passed the time bound, the fetch failed,
 // or GitHub refused the read for want of the Actions grant, a deployment state and no defect. The
-// run link the line already carries is what is left to read in every one of those. A check GitHub
-// gives no job id for is no Actions job and has no log, so its line is left as it is, and no
-// failure of this read ever fails the removal it belongs to: each is told in the line and nowhere
-// else.
-func jobFailures(logs Logs, id int64) string {
-	if id == 0 {
-		return ""
-	}
+// run link the line already carries is what is left to read in every one of those. No failure of
+// this read ever fails the removal it belongs to: each is told in the line and nowhere else.
+func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
 	unread := func(why string) string { return ": the daemon could not read its failing tests, " + why }
-	tail, err := logs.Client.JobLog(logs.Ctx, id)
+	tail, err := logs.JobLog(ctx, id)
 	switch {
 	case errors.Is(err, githubrest.ErrJobLogForbidden):
 		return unread("since GitHub refused the log: this deployment's App was never granted GitHub's optional Actions read")
 	case errors.Is(err, githubrest.ErrJobLogTooLong):
 		return unread(fmt.Sprintf("since its log passed the %d MiB this read takes", githubrest.JobLogBound>>20))
 	case errors.Is(err, githubrest.ErrJobLogSlow):
-		return unread(fmt.Sprintf("since the read passed its %s bound", logs.Client.JobLogTimeBound()))
+		return unread(fmt.Sprintf("since the read passed its %s bound", logs.JobLogTimeBound()))
 	case err != nil:
-		return unread(fmt.Sprintf("since the fetch of its log failed: %v", err))
+		return unread(fmt.Sprintf("since the fetch of its log failed: %s", fetchFailure(err)))
 	}
 	names, first := failingTests(tail)
 	if len(names) == 0 {
 		return unread("since the end of its log states no test name")
 	}
 	return fmt.Sprintf(": its log names %s as failing, its first failure line %q", strings.Join(names, ", "), first)
+}
+
+// fetchFailure is why a fetch of a job's log failed, with no URL in what it says: GitHub answers
+// that read with a redirect to blob storage, and the URL it redirects to is pre-signed, so the
+// *url.Error Go's client returns for a GET that failed on the way carries that whole URL, its
+// sig= token included. Every line this package writes is rendered into Dispatch messages, the
+// architect's notices and an implementer's prompt, which no signature belongs in: what is left
+// is the request's own operation and what failed under it, which say what went wrong without
+// saying where the token is. An error of any other shape says no URL of its own and is kept.
+func fetchFailure(err error) string {
+	var route *url.Error
+	if errors.As(err, &route) {
+		return fmt.Sprintf("%s: %v", route.Op, route.Err)
+	}
+	return err.Error()
 }
 
 // goFailure is what Go's test binary prints before the name of every test that failed;
@@ -489,9 +536,10 @@ func (c *mergeGroupCommit) checks(ctx context.Context, github githubrest.Client,
 	return checks, nil
 }
 
-// checkContext is one check run or commit status on a merge queue's commit. JobID is the Actions
-// job a check run ran as, GitHub's databaseId for it, and zero for a check run GitHub gives none
-// and for a commit status, neither of which has an Actions log to read.
+// checkContext is one check run or commit status on a merge queue's commit. JobID is GitHub's
+// databaseId for a check run, which is the Actions job it ran as where an Actions workflow run
+// is what made it (checkContext.run), and zero for a check run GitHub gives none and for a
+// commit status, neither of which has an Actions log to read.
 type checkContext struct {
 	Type       string `json:"__typename"`
 	Name       string `json:"name"`
@@ -507,4 +555,20 @@ type checkContext struct {
 	Context   string `json:"context"`
 	State     string `json:"state"`
 	TargetURL string `json:"targetUrl"`
+}
+
+// run is the run a failing check names, and the Actions job whose log says what failed in it: a
+// check run GitHub names a workflow run for is a job of that run, read by the databaseId GitHub
+// answers for it, and the run's own URL is the link. A check run with no workflow run is a
+// third-party App's, which is no Actions job however GitHub numbers it — its log route answers
+// 404 — so it is named by its details URL and read for nothing. A workflow run GitHub gives no
+// URL leaves the check's own details URL as the link, the job still being its job.
+func (c *checkContext) run() (string, int64) {
+	if c.CheckSuite == nil || c.CheckSuite.WorkflowRun == nil {
+		return c.DetailsURL, 0
+	}
+	if c.CheckSuite.WorkflowRun.URL == "" {
+		return c.DetailsURL, c.JobID
+	}
+	return c.CheckSuite.WorkflowRun.URL, c.JobID
 }
