@@ -470,7 +470,11 @@ jobs:
   # `Merge <head> into <base>`. Its SECOND PARENT is the pull request's head, which is the
   # commit the build checked out (BUILT_SHA above, this job's `ref:`), and the row's `digest:`
   # moves in a later push still, so a reviewer holding that commit to "the head whose review
-  # moved this row" rejects every correct move. The check, on the row this tree pins today:
+  # moved this row" rejects every correct move. Worked through below on one row this branch
+  # pinned, sha256:f77e9ae1...; a reviewer substitutes the digest .github/ci-images.yaml names
+  # when they read it. The example keeps its own digest and its own numbers on purpose: this
+  # file is part of the recipe the row's gate hashes, so editing it to name a newer row would
+  # move that hash, publish another image and ask for the row to move again, without end.
   #
   #   gh attestation verify oci://ghcr.io/cybermonklabs/legion/ci@sha256:f77e9ae1c4a522c14bc6fb163e22c14797854e43e5acbf506484a5aef7a5f4fd \
   #     --repo cybermonklabs/legion \
@@ -502,8 +506,8 @@ jobs:
   # printed the same string, 31ca9a7777b6f441a952cabf3fea49f9d045b8ae154ec630b836277453355495,
   # which is what "the image this row pins was built from the recipe that commit held" looks
   # like. (That label was read here from the `.config.Labels` of the config blob ghcr.io
-  # serves for that manifest, which is what `crane config` reads, because this machine has no
-  # crane.) AGENTS.md's "Container images" item carries this same check, and a
+  # serves for that manifest, which is what `crane config` reads, because the machine it was
+  # read on has no crane.) AGENTS.md's "Container images" item carries this same check, and a
   # gate that reads the attestation's source commit itself is a design decision for the
   # architect, not something these two rules do today.
   #
