@@ -690,3 +690,49 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 		}
 	})
 }
+
+// A production check's look starts its role behind a root that does not linger. The issue is
+// done, so the standing status fence (record.OutOfWorkflow) would decline any other start of it,
+// and its tree's linger has run out, so the lingering-tree guard never reaches the row: neither
+// of the two paths that let a check start through a closed issue before this one is open here.
+// What is left is the look's own exemption — the fence sits inside payload.CheckLook == 0, so a
+// look is the one start an issue out of the workflow still runs — and this arrangement is the
+// one that fence alone governs. The role the check records comes back in the stand-in runtime,
+// the claim records the row as its newest start, and the issue is still done when the look is
+// running: a look runs behind the close rather than reopening the issue.
+func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	ctx := context.Background()
+	root := checkRoot()
+	// The linger the close gave the tree has run out while the check stays open: the check
+	// outlives the tree it was opened under (two weeks against an hour), so this is the state a
+	// look spends nearly all its life in.
+	root.LingerUntil = nil
+	putOutboxIssue(t, pool, records, root)
+	putProductionCheck(t, pool, records, openCheck(root, "a1b2c3d4"))
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	machine, _ := suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, supervisor: sup, tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(), log: quietLogger(), now: time.Now}
+
+	row := checkStart(t, root, 1)
+	if err := runner.execute(ctx, row); err != nil {
+		t.Fatalf("check start under a root that does not linger = %v, want the implementer started", err)
+	}
+	if got := machine.Claim(); got.LastStartRow != row.ID || len(rt.CallsOf("Resume")) != 1 {
+		t.Fatalf("implementer after the look's start = %s with last start %d and %d resumes, want it resumed by row %d",
+			got.State, got.LastStartRow, len(rt.CallsOf("Resume")), row.ID)
+	}
+	var after *record.Issue
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		var err error
+		after, err = records.Issue(ctx, tx, root.Key)
+		return err
+	}); err != nil || after == nil {
+		t.Fatalf("read %s after the look's start = %+v, %v", root.Key, after, err)
+	}
+	if after.Status != "done" || after.Lingers() {
+		t.Fatalf("%s after the look's start = %q lingering until %v, want it left done under a tree that does not linger",
+			root.Key, after.Status, after.LingerUntil)
+	}
+}
