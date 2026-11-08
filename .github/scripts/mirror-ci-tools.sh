@@ -1,0 +1,412 @@
+#!/usr/bin/env bash
+# Fills the copy of every `second_source: ghcr` row of .github/ci-tools.yaml in the package that
+# file's `registry:` names.
+# An hour of 504s on GitHub's release assets holds every merge of this repository, because each
+# of those installs reads one source and has nowhere else to go (dispatch://INFRA-1873).
+# The copy in the package is the second source those installs read, and this script is what puts
+# the bytes in it.
+#
+# THE BLOB'S ADDRESS IS THE PINNED DIGEST, SO THIS SCRIPT PUSHES WITH curl AND NOT `crane append`.
+# `crane append` re-compresses the layer it writes, and the blob's digest would then stop being
+# the asset's digest.
+# That digest is the whole point: the blob's address in the package is the one literal both paths
+# check.
+# .github/scripts/ci-tools.sh reads the copy at /v2/<path>/blobs/sha256:<the row's digest> and
+# holds whatever it gets to that same string, so a blob stored under any other digest is a blob
+# no install can find and no install would accept.
+# This script therefore pushes the asset's own bytes through the registry API, which stores a
+# blob under the digest of the bytes it is given, and builds the small config and manifest around
+# them itself.
+#
+# THIS SCRIPT IS THE ONLY JUDGE OF THAT COPY'S STATE.
+# It reads the package, it decides what each row needs, and it says what it did.
+# No second step of the same job can refuse a row this one allowed.
+# .github/scripts/check-ci-tools.sh, the gate beside it, reads the tree alone and has no mode
+# that reads the package, for that reason: a cold row is green here, and a second reader with a
+# rule of its own would redden the run during the outage the copy exists to survive.
+#
+# THE TOKEN.
+# The package is public to read and needs a login to write, so this run mints a push token from
+# GITHUB_ACTOR and GITHUB_TOKEN:
+# GET <base>/token?service=ghcr.io&scope=repository:<the registry's path>:pull,push, with
+# `curl -u "$GITHUB_ACTOR:$GITHUB_TOKEN"`, and `.token` of the JSON it answers.
+# ci.yaml's ci-images job holds `packages: write` and sets both variables, and a run with either
+# of them empty is refused before it reads anything.
+#
+# WHAT IT DOES WITH EACH ghcr ROW, IN ORDER.
+#
+#   1. It asks the package for the row's blob, and for the row's `mirror_tag`.
+#      A blob the package holds under a tag that resolves is `held`, and nothing is pushed.
+#      A blob it holds under a tag that does not resolve gets the manifest pushed, because an
+#      untagged blob is a package version nothing names and a retention policy may take it.
+#      A blob the package lacks under a tag that resolves is refused, naming the row: the package
+#      held this blob and no longer holds it, which is the garbage collection that tag exists to
+#      stop, and a run that quietly filled it again would hide that.
+#      A blob it lacks under a tag that does not resolve is filled.
+#      Any other status from either read is refused, naming the row, the URL and the status.
+#   2. It fetches the row's `mirror_from` with the row's own `max_time`.
+#      An asset that does not answer leaves the row `cold`: this run prints one warning beside it,
+#      and exits 0 for that row.
+#      That is the one case that stays green, because the asset is down, the blob is absent, and
+#      nothing can be done.
+#      Each install keeps the single source it has today until a later run fills the copy.
+#      Where the row names a `mirror_member`, that member is taken out of the archive, and those
+#      are the bytes.
+#   3. It checks the sha256 of those bytes against the row's `digest`.
+#      A mismatch is refused, naming the row, the URL and both digests, and nothing is pushed.
+#   4. It pushes the layer blob, then the config blob, then the manifest at the row's
+#      `mirror_tag`, each with the status the registry API gives it.
+#      Any other status is refused, naming the row, the request and the status.
+#   5. It reads the blob back.
+#      Anything but 200 is refused, naming the row: an asset that answered and a fill that then
+#      did not land is a defect, not an outage.
+#
+# An `npm` row needs no copy of ours, and this run prints one line per such row and reads
+# nothing for it.
+#
+# It prints exactly one of `held`, `filled` or `cold` per ghcr row, one line per npm row, and one
+# summary line at the end that counts each.
+#
+# THE THREE SEAMS, each read with a default, so a CI job sets none of them. They are
+# .github/scripts/ci-tools.sh's own names, so one reader learns one set:
+#
+#   CI_TOOLS_MANIFEST     the manifest. Default .github/ci-tools.yaml, relative to the repository
+#                         root this script cd's to.
+#   CI_TOOLS_GHCR_BASE    default https://ghcr.io.
+#   CI_TOOLS_GITHUB_BASE  default https://github.com, applied to a row's `mirror_from` the way
+#                         that helper applies it to a row's `primary`.
+#
+# .github/scripts/mirror-ci-tools.test.sh serves the package and the release host from a local
+# HTTP origin through those seams, so no case of it reaches the network.
+#
+# Run from anywhere: .github/scripts/mirror-ci-tools.sh
+# CI runs it in ci.yaml's ci-images job, after that job's image copy, under the login that job
+# already holds for the package. Its tests run in ci.yaml's test job.
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+
+manifest=${CI_TOOLS_MANIFEST:-.github/ci-tools.yaml}
+ghcr_base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
+github_base=${CI_TOOLS_GITHUB_BASE:-https://github.com}
+
+# The media types of the copy. A row that pushes an archive whole pushes a gzipped tar layer, and
+# a row that pushes a member taken out of one pushes those bytes as they are.
+ARCHIVE_LAYER=application/vnd.oci.image.layer.v1.tar+gzip
+MEMBER_LAYER=application/octet-stream
+CONFIG_TYPE=application/vnd.oci.image.config.v1+json
+MANIFEST_TYPE=application/vnd.oci.image.manifest.v1+json
+
+error() { printf '::error file=%s::%s\n' "$manifest" "$*" >&2; }
+
+if [ -z "${GITHUB_ACTOR:-}" ] || [ -z "${GITHUB_TOKEN:-}" ]; then
+  error "this run has no GITHUB_ACTOR and GITHUB_TOKEN to mint a push token from, and it writes to the package ci.yaml's ci-images job logs in to, so it reads nothing and fills nothing."
+  exit 1
+fi
+
+work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/mirror-ci-tools.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+headers="$work/headers"
+
+# The manifest's `registry:` on the first line, then one row per line. One read of the file, and
+# the fields this script needs in the order it reads them.
+# The fields are separated by the unit separator and not by a tab, because a tab is an IFS
+# whitespace character: two of them in a row read as one, and a row whose `mirror_member` is
+# empty would hand `max_time` to the wrong variable.
+rows=$(CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import os
+import sys
+
+import yaml
+
+path = os.environ["CI_TOOLS_FILE"]
+try:
+    with open(path) as handle:
+        document = yaml.safe_load(handle) or {}
+except OSError as error:
+    sys.stderr.write(f"::error file={path}::this run cannot read the manifest ({error})\n")
+    raise SystemExit(1)
+registry = document.get("registry") or ""
+if not registry:
+    sys.stderr.write(
+        f"::error file={path}::this file names no registry:, and every copy this run fills lives "
+        f"in that package\n"
+    )
+    raise SystemExit(1)
+rows = document.get("tools") or []
+if not rows:
+    sys.stderr.write(f"::error file={path}::this file holds no row, so there is nothing to fill\n")
+    raise SystemExit(1)
+fields = (
+    "name",
+    "second_source",
+    "digest",
+    "mirror_tag",
+    "mirror_from",
+    "mirror_member",
+    "max_time",
+)
+print(registry)
+for row in rows:
+    print("\x1f".join(str(row.get(field, "")) for field in fields))
+PY
+)
+
+registry=${rows%%$'\n'*}
+rows=${rows#*$'\n'}
+# The registry's path is the manifest's `registry:` with its host removed.
+path=${registry#*/}
+
+# The push token. The package is public to read, and every request below carries this token
+# because the same run writes to it.
+if ! curl -fsS -u "$GITHUB_ACTOR:$GITHUB_TOKEN" -o "$work/token.json" \
+  "$ghcr_base/token?service=ghcr.io&scope=repository:$path:pull,push"; then
+  error "the registry would not answer a pull,push token request for $path, so this run reads nothing and fills nothing."
+  exit 1
+fi
+token=$(PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    print(json.load(handle)["token"])
+' "$work/token.json" 2>/dev/null) || token=''
+if [ -z "$token" ]; then
+  error "the token request for $path answered no .token this run could read, so it reads nothing and fills nothing."
+  exit 1
+fi
+
+# registry_head <url> [curl argument…]: the HTTP status of one HEAD of the package, with that
+# answer's headers left in $headers. A registry may answer a read of a blob with a redirect to
+# the store that holds it, so curl follows it and this reads the status of the last hop. A
+# request the service did not answer at all reads 000, which is no status this script admits, so
+# it is refused like any other.
+registry_head() {
+  local url=$1 status
+  shift
+  status=$(curl -sSL -o /dev/null -D "$headers" -w '%{http_code}' -I \
+    -H "Authorization: Bearer $token" "$@" "$url") || status=000
+  printf '%s\n' "$status"
+}
+
+# header_value <name>: that header of the answer $headers holds, empty where it holds none.
+header_value() {
+  awk -v want="$1:" '
+    BEGIN { want = tolower(want) }
+    tolower($1) == want { value = $2 }
+    END { gsub(/\r/, "", value); print value }
+  ' "$headers"
+}
+
+# github_url <url>: that URL with the CI_TOOLS_GITHUB_BASE seam in place of its https://github.com
+# prefix, which is how .github/scripts/ci-tools.sh reads the same field.
+github_url() {
+  case "$1" in
+    https://github.com/*) printf '%s\n' "$github_base${1#https://github.com}" ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# push_blob <row> <file> <digest> <what these bytes are>: one blob of the copy, in the two steps
+# the registry API takes. The upload's location may be absolute or path-only, and it may already
+# carry a query, so the digest is appended with the separator that location needs.
+push_blob() {
+  local row=$1 file=$2 digest=$3 what=$4 status location separator
+  status=$(curl -sS -X POST -o /dev/null -D "$headers" -w '%{http_code}' \
+    -H "Authorization: Bearer $token" -H 'Content-Length: 0' \
+    "$ghcr_base/v2/$path/blobs/uploads/") || status=000
+  if [ "$status" != 202 ]; then
+    error "$row: the upload of the $what started with POST $ghcr_base/v2/$path/blobs/uploads/, and the package answered $status where the registry API answers 202. The copy of this row is unchanged."
+    return 1
+  fi
+  location=$(header_value location)
+  case "$location" in
+    http://* | https://*) ;;
+    /*) location="$ghcr_base$location" ;;
+    *)
+      error "$row: the upload of the $what answered 202 with Location '$location', and this run reads an absolute URL or a path. The copy of this row is unchanged."
+      return 1
+      ;;
+  esac
+  case "$location" in
+    *\?*) separator='&' ;;
+    *) separator='?' ;;
+  esac
+  status=$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $token" -H 'Content-Type: application/octet-stream' \
+    --data-binary "@$file" "${location}${separator}digest=sha256:$digest") || status=000
+  if [ "$status" != 201 ]; then
+    error "$row: the $what was PUT to $location and the package answered $status where the registry API answers 201. The copy of this row is unchanged."
+    return 1
+  fi
+}
+
+# push_copy <row> <layer digest> <layer size> <layer media type> <title> <tag>: the config blob
+# and the manifest, which are the same two pushes whether this run filled the blob now or found
+# it already there under no tag. Both documents are built with python3, so no shell quoting
+# decides a byte of either.
+push_copy() {
+  local row=$1 digest=$2 size=$3 media=$4 title=$5 tag=$6
+  local config="$work/config.json" document="$work/manifest.json" config_digest config_size status
+  CI_TOOLS_LAYER="sha256:$digest" PYTHONDONTWRITEBYTECODE=1 python3 - "$config" <<'PY'
+import json
+import os
+import sys
+
+document = {
+    "architecture": "amd64",
+    "os": "linux",
+    "rootfs": {"type": "layers", "diff_ids": [os.environ["CI_TOOLS_LAYER"]]},
+}
+with open(sys.argv[1], "w") as handle:
+    handle.write(json.dumps(document, separators=(",", ":")))
+PY
+  config_digest=$(sha256sum -- "$config")
+  config_digest=${config_digest%% *}
+  config_size=$(wc -c < "$config")
+  push_blob "$row" "$config" "$config_digest" "config of the copy" || return 1
+  PYTHONDONTWRITEBYTECODE=1 python3 - "$document" "$MANIFEST_TYPE" "$CONFIG_TYPE" \
+    "$config_digest" "$config_size" "$media" "$digest" "$size" "$title" <<'PY'
+import json
+import sys
+
+(
+    path,
+    manifest_type,
+    config_type,
+    config_digest,
+    config_size,
+    media,
+    layer_digest,
+    layer_size,
+    title,
+) = sys.argv[1:10]
+document = {
+    "schemaVersion": 2,
+    "mediaType": manifest_type,
+    "config": {
+        "mediaType": config_type,
+        "digest": f"sha256:{config_digest}",
+        "size": int(config_size),
+    },
+    "layers": [
+        {
+            "mediaType": media,
+            "digest": f"sha256:{layer_digest}",
+            "size": int(layer_size),
+            "annotations": {"org.opencontainers.image.title": title},
+        }
+    ],
+}
+with open(path, "w") as handle:
+    handle.write(json.dumps(document, separators=(",", ":")))
+PY
+  status=$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $token" -H "Content-Type: $MANIFEST_TYPE" \
+    --data-binary "@$document" "$ghcr_base/v2/$path/manifests/$tag") || status=000
+  if [ "$status" != 201 ]; then
+    error "$row: the manifest was PUT to $ghcr_base/v2/$path/manifests/$tag and the package answered $status where the registry API answers 201. The blob is in the package and the tag $tag names nothing, so re-run the ci-images job."
+    return 1
+  fi
+}
+
+held=0
+filled=0
+cold=0
+uncopied=0
+while IFS=$'\x1f' read -r name second digest tag from member max_time; do
+  [ -n "$name" ] || continue
+  if [ "$second" != ghcr ]; then
+    echo "none $name needs no copy: its second source is $second, which serves the bytes itself"
+    uncopied=$((uncopied + 1))
+    continue
+  fi
+  blob_url="$ghcr_base/v2/$path/blobs/sha256:$digest"
+  tag_url="$ghcr_base/v2/$path/manifests/$tag"
+  blob_status=$(registry_head "$blob_url")
+  blob_size=$(header_value content-length)
+  tag_status=$(registry_head "$tag_url" -H "Accept: $MANIFEST_TYPE")
+  case "$blob_status" in
+    200 | 404) ;;
+    *)
+      error "$name: a HEAD of $blob_url answered $blob_status, and this run reads 200 for a blob the package holds and 404 for one it does not. It cannot tell what this row's copy is, so it fills nothing."
+      exit 1
+      ;;
+  esac
+  case "$tag_status" in
+    200 | 404) ;;
+    *)
+      error "$name: a HEAD of $tag_url answered $tag_status, and this run reads 200 for a tag the package resolves and 404 for one it does not. It cannot tell what this row's copy is, so it fills nothing."
+      exit 1
+      ;;
+  esac
+
+  # The title the copy carries: what a reader of the package sees the layer as.
+  if [ -n "$member" ]; then
+    media=$MEMBER_LAYER
+    title=$(basename -- "$member")
+  else
+    media=$ARCHIVE_LAYER
+    title=$(basename -- "$from")
+  fi
+
+  if [ "$blob_status" = 200 ]; then
+    if [ "$tag_status" = 404 ]; then
+      # The blob is there and nothing names it. A package version nothing names is one a
+      # retention policy may take, and the tag is what keeps this blob.
+      push_copy "$name" "$digest" "$blob_size" "$media" "$title" "$tag"
+    fi
+    echo "held $name sha256:$digest ($tag)"
+    held=$((held + 1))
+    continue
+  fi
+
+  if [ "$tag_status" = 200 ]; then
+    error "$name: the package resolves $tag and holds no blob sha256:$digest, so it held this blob and does not hold it now. That is the garbage collection the tag exists to stop, and a run that filled it again would hide it. Read the package's versions for this tag, then re-run the ci-images job."
+    exit 1
+  fi
+
+  asset="$work/$name.asset"
+  status=0
+  curl -fsSL --retry 7 --retry-all-errors --max-time "$max_time" -o "$asset" \
+    "$(github_url "$from")" || status=$?
+  if [ "$status" -ne 0 ]; then
+    printf 'cold %s sha256:%s — %s did not answer (curl exit %s)\n' "$name" "$digest" "$from" "$status"
+    printf '::warning::%s\n' \
+      "mirror-ci-tools: $name has no second source yet, because $from did not answer this run and the package holds no blob sha256:$digest. Each install of this tool keeps the single source it has today until a later run of the ci-images job fills the copy." >&2
+    rm -f -- "$asset"
+    cold=$((cold + 1))
+    continue
+  fi
+
+  bytes="$asset"
+  if [ -n "$member" ]; then
+    bytes="$work/$name.member"
+    if ! tar -xzOf "$asset" "$member" > "$bytes"; then
+      error "$name: $from answered, and its archive holds no member $member, which is the part of it this row pins. Nothing is pushed."
+      exit 1
+    fi
+  fi
+  read_back=$(sha256sum -- "$bytes")
+  read_back=${read_back%% *}
+  if [ "$read_back" != "$digest" ]; then
+    error "$name: $from served bytes whose sha256 is $read_back, and this row pins $digest. The bytes arrived and they are not the pinned ones, so nothing is pushed."
+    exit 1
+  fi
+  size=$(wc -c < "$bytes")
+
+  push_blob "$name" "$bytes" "$digest" "layer of the copy"
+  push_copy "$name" "$digest" "$size" "$media" "$title" "$tag"
+
+  # The one read that says the fill landed. The asset answered, so an absent blob here is a
+  # defect of this run and never an outage.
+  blob_status=$(registry_head "$blob_url")
+  if [ "$blob_status" != 200 ]; then
+    error "$name: this run pushed the blob, the config and the manifest, and a HEAD of $blob_url then answered $blob_status. The asset served the pinned bytes, so this is a defect of the fill and not an outage. Read the package for this tag, then re-run the ci-images job."
+    exit 1
+  fi
+  echo "filled $name sha256:$digest ($tag)"
+  filled=$((filled + 1))
+  rm -f -- "$asset" "$work/$name.member"
+done <<<"$rows"
+echo "$held ghcr row(s) held, $filled filled, $cold cold, and $uncopied row(s) that need no copy"
