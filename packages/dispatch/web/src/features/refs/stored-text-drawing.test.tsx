@@ -1,9 +1,10 @@
-import { afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { snippetSource } from "../../__tests__/display-trees";
+import { api } from "../../api/client";
 import type { DisplayTree } from "../../api/types";
 import fixtures from "./__fixtures__/display-trees.json";
 import { MarkdownBody } from "./MarkdownBody";
@@ -162,24 +163,38 @@ test("a preview marks the runs the server matched, from the snippet's own tree",
 });
 
 test("a hit inside a link's own words marks the whole link, whose title replaces them", () => {
+  // The snippet's own text cites `dispatch://CORE-1`, so the preview resolves that reference and
+  // reads the issue's summary; without the spy that read reaches the network and the row fails on
+  // it rather than on what it asserts (main's #2906 made a snippet's references its body's own).
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-1",
+    project: "CORE",
+    status: "in_progress",
+    title: "Design decision",
+  });
   const hit = stored("a-marked-reference");
   if (hit.snippet === undefined) {
     throw new Error("the marked reference carries no snippet tree");
   }
-  const view = render(
-    withQueries(
-      <MarkdownPreview
-        highlightClassName="hit"
-        lines={2}
-        markdown={snippetSource(hit.markdown)}
-        tree={hit.snippet}
-      />
-    )
-  );
-  const mark = view.container.querySelector("mark");
-  expect(mark?.className).toBe("hit");
-  expect(mark?.querySelector("[data-dispatch-ref]")).not.toBeNull();
-  expect(parses).toBe(0);
+  try {
+    const view = render(
+      withQueries(
+        <MarkdownPreview
+          highlightClassName="hit"
+          lines={2}
+          markdown={snippetSource(hit.markdown)}
+          tree={hit.snippet}
+        />
+      )
+    );
+    const mark = view.container.querySelector("mark");
+    expect(mark?.className).toBe("hit");
+    expect(mark?.querySelector("[data-dispatch-ref]")).not.toBeNull();
+    expect(parses).toBe(0);
+  } finally {
+    getIssueSummary.mockRestore();
+  }
 });
 
 test("a view that shows the head of a text cuts the tree and parses nothing", () => {
