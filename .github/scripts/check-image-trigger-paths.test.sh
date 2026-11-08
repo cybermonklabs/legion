@@ -2117,7 +2117,7 @@ echo "case: a ./ action under a second checkout of this repository is that actio
 # repository — one checkout at the root, one at <checkout path>, and <uses> in place of the
 # build step.
 base_action() {
-  local root=$1 path=$2 uses=$3 second=""
+  local root=$1 path=$2 uses=$3 repository=${4:-} second=""
   mkdir -p "$root/.github/actions/builder"
   cat > "$root/.github/actions/builder/action.yml" <<'ACTION'
 name: Builder
@@ -2131,8 +2131,11 @@ runs:
 ACTION
   # A command substitution drops the trailing newline, so `second` is the step's lines with
   # none, and the heredoc gives it a line of its own. Empty, it leaves a blank line there.
+  # A fourth argument gives that checkout a `repository:`, which is the one way the directory
+  # it writes holds a tree other than this one's.
   if [ -n "$path" ]; then
     second=$(printf '      - uses: actions/checkout@v5\n        with:\n          path: %s' "$path")
+    [ -z "$repository" ] || second=$(printf '%s\n          repository: %s' "$second" "$repository")
   fi
   cat > "$root/.github/workflows/image.yaml" <<YAML
 name: Image
@@ -2192,6 +2195,20 @@ base_action "$root" base ./base/.github/actions/absent
 run_check "$root"
 check "a name no action of this tree has is refused under the checkout too" "$(is "$status" 1)"
 check "  with today's message" "$(contains "$out" 'uses ./base/.github/actions/absent, which has no action.yml this check can read')"
+
+# A checkout of another repository writes that repository's tree at `base`, so `./base/<rest>`
+# is a file of that repository and not this tree's `<rest>`, whatever this tree keeps there.
+root=$(fixture base-checkout-foreign)
+base_action "$root" base ./base/.github/actions/builder acme/other
+run_check "$root"
+check "a checkout of another repository at that path is refused" "$(is "$status" 1)"
+check "  with the message a missing action gets" \
+  "$(contains "$out" 'uses ./base/.github/actions/builder, which has no action.yml this check can read')"
+
+root=$(fixture base-checkout-this-repository)
+base_action "$root" base ./base/.github/actions/builder '${{ github.repository }}'
+run_check "$root"
+check "a checkout that names this repository is read as this tree, as one naming none is" "$(is "$status" 0)"
 
 echo "case: a job that calls a workflow outside this repository is refused"
 root=$(fixture job-uses-foreign)

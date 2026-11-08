@@ -26,12 +26,23 @@
 # rule of its own would redden the run during the outage the copy exists to survive.
 #
 # THE TOKEN.
-# The package is public to read and needs a login to write, so this run mints a push token from
-# GITHUB_ACTOR and GITHUB_TOKEN:
-# GET <base>/token?service=ghcr.io&scope=repository:<the registry's path>:pull,push, with
-# `curl -u "$GITHUB_ACTOR:$GITHUB_TOKEN"`, and `.token` of the JSON it answers.
+# The package is public to read and needs a login to write, so this run asks
+# .github/scripts/ci-tools.sh for a `pull,push` token with GITHUB_ACTOR:GITHUB_TOKEN, through
+# the one token request this repository makes (`ci_tools_ghcr_token`), which an install makes
+# with that helper's own defaults for an anonymous `pull`.
 # ci.yaml's ci-images job holds `packages: write` and sets both variables, and a run with either
 # of them empty is refused before it reads anything.
+#
+# WHAT THIS SCRIPT DECIDES, AND WHAT IT READS FROM THE HELPER BESIDE IT.
+# The copy is written here and read by every install through .github/scripts/ci-tools.sh, so the
+# two must agree on the row, the digest and the address, and this script holds no second copy of
+# any of that: it reads the rows with `ci_tools_rows ghcr-mirror` and their fields with
+# `ci_tools_field`, fetches the asset with `ci_tools_curl`, holds the bytes to the row with
+# `ci_tools_verify`, addresses the blob with `ci_tools_blob_url` and mints its token with
+# `ci_tools_ghcr_token`.
+# What is this script's own is what no install does: the state of the copy — `held`, `filled` or
+# `cold` — the blob and manifest pushes, the read-back, and the refusal of a blob the package
+# held and no longer holds.
 #
 # WHAT IT DOES WITH EACH ghcr-mirror ROW, IN ORDER.
 #
@@ -52,8 +63,10 @@
 #      Each install keeps the single source it has today until a later run fills the copy.
 #      Where the row names a `mirror_member`, that member is taken out of the archive, and those
 #      are the bytes.
-#   3. It checks the sha256 of those bytes against the row's `digest`.
-#      A mismatch is refused, naming the row, the URL and both digests, and nothing is pushed.
+#   3. It holds those bytes to the row's `digest` with `ci_tools_verify`, the check every
+#      install of the copy runs on what it fetched.
+#      A mismatch is refused there, naming the row and both digests, and here, naming the URL
+#      that served the bytes, and nothing is pushed.
 #   4. It pushes the layer blob, then the config blob, then the manifest at the row's tag, each
 #      with the status the registry API gives it.
 #      Any other status is refused, naming the row, the request and the status.
@@ -90,14 +103,17 @@ set -euo pipefail
 script_dir=$(cd "$(dirname "$0")" && pwd)
 cd "$script_dir/../.."
 
-# The fetch helper every install goes through, sourced for the pieces this script would
-# otherwise write a second time: ci_tools__curl's flag set, ci_tools_github_url's seam and
-# ci_tools_token_of's reading of a token response. It defines only ci_tools_* names and runs
+# The fetch helper every install goes through, which is where this script reads the manifest,
+# the digest check, the token, the fetch and the blob's address from, so the filler and the
+# reader of a copy cannot disagree about any of them. It defines only ci_tools_* names and runs
 # nothing at load.
 # shellcheck source=.github/scripts/ci-tools.sh
 . "$script_dir/ci-tools.sh"
 
+# The one manifest this run reads: the annotations below name this path, and the helper reads
+# the same file through this same seam.
 manifest=${CI_TOOLS_MANIFEST:-.github/ci-tools.yaml}
+CI_TOOLS_MANIFEST=$manifest
 ghcr_base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
 
 # The media types of the copy. A row that pushes an archive whole pushes a gzipped tar layer, and
@@ -118,69 +134,35 @@ work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/mirror-ci-tools.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 headers="$work/headers"
 
-# The manifest's `registry:` on the first line, then one row per line. One read of the file, and
-# the fields this script needs in the order it reads them.
-# The fields are separated by the unit separator and not by a tab, because a tab is an IFS
-# whitespace character: two of them in a row read as one, and a row whose `mirror_member` is
-# empty would hand `max_time` to the wrong variable.
-rows=$(CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-import os
-import sys
+# Every row of the manifest, and the set of those whose second source is the copy this run
+# fills. Both lists come from the helper, so the rows this script fills are the rows an install
+# reads, and neither list is parsed here.
+rows=$(ci_tools_rows)
+if [ -z "$rows" ]; then
+  error "this file holds no row, so there is nothing to fill."
+  exit 1
+fi
+declare -A mirrored=()
+for name in $(ci_tools_rows ghcr-mirror); do
+  mirrored[$name]=1
+done
 
-import yaml
-
-path = os.environ["CI_TOOLS_FILE"]
-try:
-    with open(path) as handle:
-        document = yaml.safe_load(handle) or {}
-except OSError as error:
-    sys.stderr.write(f"::error file={path}::this run cannot read the manifest ({error})\n")
-    raise SystemExit(1)
-registry = document.get("registry") or ""
-if not registry:
-    sys.stderr.write(
-        f"::error file={path}::this file names no registry:, and every copy this run fills lives "
-        f"in that package\n"
-    )
-    raise SystemExit(1)
-rows = document.get("tools") or []
-if not rows:
-    sys.stderr.write(f"::error file={path}::this file holds no row, so there is nothing to fill\n")
-    raise SystemExit(1)
-fields = (
-    "name",
-    "second_source",
-    "digest",
-    "version",
-    "mirror_from",
-    "mirror_member",
-    "max_time",
-)
-print(registry)
-# A field the manifest leaves null reads as an empty string, as it does through
-# .github/scripts/ci-tools.sh: `mirror_member:` with no value is a row that pushes its archive
-# whole, and Python's own `None` would reach this run as the word None and be asked of tar as
-# the member to take out.
-for row in rows:
-    print("\x1f".join("" if row.get(field) is None else str(row.get(field)) for field in fields))
-PY
-)
-
-registry=${rows%%$'\n'*}
-rows=${rows#*$'\n'}
+# The package every copy lives in, which the manifest names once for the whole file: every row
+# carries it, so the first row answers for all of them.
+registry=$(ci_tools_field "${rows%%$'\n'*}" registry)
+if [ -z "$registry" ]; then
+  error "this file names no registry:, and every copy this run fills lives in that package."
+  exit 1
+fi
 # The registry's path is the manifest's `registry:` with its host removed.
 path=${registry#*/}
 
-# The push token. The package is public to read, and every request below carries this token
-# because the same run writes to it.
-if ! curl -fsS -u "$GITHUB_ACTOR:$GITHUB_TOKEN" -o "$work/token.json" \
-  "$ghcr_base/token?service=ghcr.io&scope=repository:$path:pull,push"; then
-  error "the registry would not answer a pull,push token request for $path, so this run reads nothing and fills nothing."
-  exit 1
-fi
-token=$(ci_tools_token_of "$work/token.json") || token=''
-if [ -z "$token" ]; then
-  error "the token request for $path answered no .token this run could read, so it reads nothing and fills nothing."
+# The push token: the helper's one token request, asked for `pull,push` with the credential
+# ci.yaml's ci-images job holds, where an install asks the same request for an anonymous
+# `pull`. The empty first argument takes the helper's own per-attempt bound.
+# Every request below carries this token, because the same run writes to the package it reads.
+if ! token=$(ci_tools_ghcr_token "" pull,push "$GITHUB_ACTOR:$GITHUB_TOKEN"); then
+  error "the registry would not answer a pull,push token request for $path ($token), so this run reads nothing and fills nothing."
   exit 1
 fi
 
@@ -313,13 +295,20 @@ held=0
 filled=0
 cold=0
 uncopied=0
-while IFS=$'\x1f' read -r name second digest version from member max_time; do
-  [ -n "$name" ] || continue
-  if [ "$second" != ghcr-mirror ]; then
+for name in $rows; do
+  if [ -z "${mirrored[$name]:-}" ]; then
+    second=$(ci_tools_source_name "$name" second)
     echo "none $name needs no copy: its second source is $second, which serves the bytes itself"
     uncopied=$((uncopied + 1))
     continue
   fi
+  # The fields of a ghcr-mirror row this run fills, each read through the helper, so this
+  # script learns the manifest's shape from the one reader of it.
+  digest=$(ci_tools_digest "$name")
+  version=$(ci_tools_field "$name" version)
+  from=$(ci_tools_field "$name" mirror_from)
+  member=$(ci_tools_field "$name" mirror_member)
+  max_time=$(ci_tools_field "$name" max_time)
   # The copy's tag in the package, `tool-<name>-<version>-<the first eight hex characters of the
   # digest>`, so one tag names one digest and a row that moves to a new digest takes a new tag
   # with it. The tag also keeps the blob from being a package version nothing names, which a
@@ -327,7 +316,9 @@ while IFS=$'\x1f' read -r name second digest version from member max_time; do
   # It is derived here and written in no row: a field that can hold one string is a field a gate
   # has to police, and the rule it would be policed against is this line.
   tag="tool-$name-$version-${digest:0:8}"
-  blob_url="$ghcr_base/v2/$path/blobs/sha256:$digest"
+  # The address every install reads this copy at, which is the one this run writes and reads
+  # back: the helper builds it, so neither side can address a blob the other does not.
+  blob_url=$(ci_tools_blob_url "$name")
   tag_url="$ghcr_base/v2/$path/manifests/$tag"
   blob_status=$(registry_head "$blob_url")
   blob_size=$(header_value content-length)
@@ -374,7 +365,7 @@ while IFS=$'\x1f' read -r name second digest version from member max_time; do
 
   asset="$work/$name.asset"
   status=0
-  ci_tools__curl "$asset" "$max_time" "$(ci_tools_github_url "$from")" || status=$?
+  ci_tools_curl "$asset" "$max_time" "$(ci_tools_github_url "$from")" || status=$?
   if [ "$status" -ne 0 ]; then
     printf 'cold %s sha256:%s — %s did not answer (curl exit %s)\n' "$name" "$digest" "$from" "$status"
     printf '::warning::%s\n' \
@@ -392,10 +383,11 @@ while IFS=$'\x1f' read -r name second digest version from member max_time; do
       exit 1
     fi
   fi
-  read_back=$(sha256sum -- "$bytes")
-  read_back=${read_back%% *}
-  if [ "$read_back" != "$digest" ]; then
-    error "$name: $from served bytes whose sha256 is $read_back, and this row pins $digest. The bytes arrived and they are not the pinned ones, so nothing is pushed."
+  # The one digest check this repository has, the same call every install of this copy makes on
+  # what it fetched. It names the row and both digests; the URL that served the bytes is this
+  # script's to add, and so is what a mismatch means here: nothing is pushed.
+  if ! ci_tools_verify "$name" "$bytes" "$(ci_tools_source_name "$name" primary)"; then
+    error "$name: $from served those bytes, and they are not the ones this row pins, so nothing is pushed."
     exit 1
   fi
   size=$(wc -c < "$bytes")
@@ -413,5 +405,5 @@ while IFS=$'\x1f' read -r name second digest version from member max_time; do
   echo "filled $name sha256:$digest ($tag)"
   filled=$((filled + 1))
   rm -f -- "$asset" "$work/$name.member"
-done <<<"$rows"
+done
 echo "$held ghcr-mirror row(s) held, $filled filled, $cold cold, and $uncopied row(s) that need no copy"

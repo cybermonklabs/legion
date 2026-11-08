@@ -273,7 +273,8 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both values and both files" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the bun-linux-aarch64 row's version is 9.9.8 and .bun-version pins 9.9.9")"
-check "and says raising Bun is two commits" "$(contains "$out" 'Raising Bun is two commits')"
+check "and says to raise Bun in one commit, with the reason a call site gives" \
+  "$(contains "$out" 'Raise Bun in one commit: this row, .bun-version and every call site together, because a call site names a row')"
 
 echo "case: rule 2 — the mise row and ARG MISE_VERSION disagree"
 root=$(fixture pin-mise-version)

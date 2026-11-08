@@ -353,6 +353,11 @@ jobs:
               - 'docs/site/package.json'
               - '.bun-version'
               - '.github/actions/setup-bun/**'
+              # setup-bun's second step reads this runner's bun row through that helper and
+              # fetches the npm copy when the release asset served no Bun of the pinned version,
+              # and its last step holds the bun on PATH to that row's digest.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             # `bunx biome check|lint` reads the root biome.json, which has it read the root
             # .gitignore too (biome.json:3-6, vcs.useIgnoreFile).
             biome: &biome
@@ -687,8 +692,14 @@ jobs:
               - '.omp-pin'
               - '.github/actions/install-omp/**'
               - '.github/actions/install-jj/**'
-              # install-jj reads the mise version and checksum it installs from here.
+              # install-jj's second step reads `ARG JJ_TOOL` from here, the tool spec mise
+              # installs.
               - 'packages/daemon/docker/worker.Dockerfile'
+              # install-jj's first step installs mise from the manifest's `mise` row through
+              # that helper, and its second step holds the jj binary mise installs to the `jj`
+              # row's digest, or fetches that row's second source when mise cannot.
+              - '.github/ci-tools.yaml'
+              - '.github/scripts/ci-tools.sh'
             # What the test job's two Go steps read together — the plain step, which tests every
             # package of packages/daemon but the three concurrent ones, and the race step, which
             # tests those three — so the filter still covers the whole module's closure. The
@@ -807,6 +818,8 @@ jobs:
               - '.github/ci-images.yaml'
               # ci-tools.test.sh and check-ci-tools.test.sh run their checker over the
               # repository's own tool rows, as the image tests above do over its image rows.
+              # install-changie below installs the `changie` row of this same file through
+              # .github/scripts/ci-tools.sh, which the '.github/scripts/*' line above names.
               - '.github/ci-tools.yaml'
               # select-e2e-proofs.test.sh runs the selector over this list and over scripts/e2e/.
               - '.github/e2e-scripts.json'
@@ -826,6 +839,8 @@ jobs:
               # The tools the job installs: jj, mise and Oh My Pi, uv, changie, and the NATS images.
               - *omp_install
               - '.github/actions/install-uv/**'
+              # install-changie's one step sources .github/scripts/ci-tools.sh and fetches the
+              # `changie` row of .github/ci-tools.yaml, both named above.
               - '.github/actions/install-changie/**'
               - '.github/actions/pull-test-images/**'
               # The fold-check step renders every fragment of every package

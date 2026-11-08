@@ -21,7 +21,11 @@
 #     repository holds this same repository's actions, and it can introduce no image builder
 #     this check does not already read at `<rest>`, because `<rest>` is where every other
 #     caller uses it; ci.yaml's `tool-fallback` job runs the merge base's four installs that
-#     way. The rule refuses what it always did: a local `uses:` into a directory no checkout
+#     way. A step counts only where it checks out this same repository: one that names no
+#     `repository:`, or names this one. A checkout of another repository writes that
+#     repository's tree at `<dir>`, and the action it holds there is one this check never
+#     reads, so `./<dir>/<rest>` under it is refused as any other unknown path is. The rule
+#     refuses what it always did besides: a local `uses:` into a directory no checkout
 #     of the job creates, and one whose `<rest>` names no action of this tree. That typo is
 #     what the refusal exists to catch. A job-level `uses:` must be a `./.github/workflows/`
 #     call, which triggers_for traces.
@@ -1270,13 +1274,31 @@ def triggers_for(workflow: Path) -> tuple[list[tuple[str, str, list, Path, tuple
 builds = []
 
 
+# The two spellings of this repository a checkout may name: the context that resolves to the
+# repository the run is of, and the slug itself (.github/scripts/repo-paths.sh's own default).
+THIS_REPOSITORY = re.compile(r"\$\{\{\s*github\.repository\s*\}\}|cybermonklabs/legion", re.I)
+
+
+def checks_out_this_repository(step: dict) -> bool:
+    """Whether this checkout step writes this repository's own tree.
+
+    A step that names no `repository:` checks out the repository the run is of, and so does one
+    that names it. Anything else — another repository, or a value this check cannot resolve —
+    writes a tree whose files this check never reads."""
+    repository = step["with"].get("repository")
+    if repository is None:
+        return True
+    return isinstance(repository, str) and bool(THIS_REPOSITORY.fullmatch(repository.strip()))
+
+
 def checkout_paths(job: dict) -> set[str]:
     """The directories this job checks this repository out into, normalised.
 
     A checkout writes `path:` as `base`, `./base` or `base/`, and all three name one directory,
     so both sides of the comparison in scan_local_action go through posixpath.normpath. The
     root checkout, which has no `path:` or writes `.`, is left out: `./x` already names this
-    tree."""
+    tree. A checkout of another repository is left out too: `./x` under it is that repository's
+    file and not this tree's, whatever `ref:` either of them names."""
     return {
         posixpath.normpath(step["with"]["path"])
         for step in job.get("steps") or []
@@ -1284,6 +1306,7 @@ def checkout_paths(job: dict) -> set[str]:
         and str(step.get("uses", "")).split("@", 1)[0] == "actions/checkout"
         and isinstance(step.get("with"), dict)
         and isinstance(step["with"].get("path"), str)
+        and checks_out_this_repository(step)
     } - {"."}
 
 

@@ -42,12 +42,18 @@
 #      are not. Its other steps are free to read the pin and restore the cache the version
 #      names, which is what the wrapper does today: what they may not do is hand a later step
 #      an input or a bun of their own, since both outlive this action,
-#   9. a `FROM oven/bun` (case-insensitive) whose tag does not come from `${BUN_VERSION}`, a
+#   9. that wrapper's last step not calling `ci_tools_verify` on the bun `command -v bun`
+#      gives — oven-sh/setup-bun verifies no checksum of its own, so the bun a lane runs is
+#      held to the `.github/ci-tools.yaml` row of this runner's build variant there and
+#      nowhere else, and a wrapper that lost that step would leave every job of this
+#      repository running whatever the download, the cache or a second source put on PATH,
+#      with this gate green,
+#  10. a `FROM oven/bun` (case-insensitive) whose tag does not come from `${BUN_VERSION}`, a
 #      `FROM` on `ghcr.io/cybermonklabs/legion/ci` — the package every image a CI job fetches is copied
 #      into, named by digest — whose digest no row of `.github/ci-images.yaml` holds, or whose row
 #      copies another Bun release, an `ARG BUN_VERSION` default that disagrees with the pin, or
 #      a Dockerfile `RUN` (backslash continuations joined) that installs Bun,
-#  10. a tool-manager manifest (any mise file, `.tool-versions`) naming bun.
+#  11. a tool-manager manifest (any mise file, `.tool-versions`) naming bun.
 #
 # Files are discovered by walking the tree, not by asking git, so an unsnapshotted change cannot
 # read green locally. Workflows and actions are parsed as YAML, never grepped, and an image
@@ -115,6 +121,9 @@ SETUP_ACTION = Path(".github/actions/setup-bun/action.yml")
 # job publishes it from CI_IMAGES), so a Dockerfile's Bun base names a digest and no version.
 # The row that digest belongs to is what says which Bun it is.
 CI_IMAGES = Path(".github/ci-images.yaml")
+# The manifest that pins the digest of the Bun each build variant installs, which the wrapper's
+# last step holds the bun on PATH to (rule 9).
+CI_TOOLS = Path(".github/ci-tools.yaml")
 MIRROR_REGISTRY = "ghcr.io/cybermonklabs/legion/ci"
 SKIP_DIRS = {".git", ".jj", "node_modules", ".venv", "vendor"}
 MISE_FILES = {
@@ -155,6 +164,9 @@ BUN_ARG_STANDIN = "0bun-version-arg0"
 problems = []
 wrapper_setup_steps: list[tuple[int, dict]] = []
 wrapper_path_writes: list[int] = []
+# The wrapper's `runs.steps` as YAML read them, for rule 9: the last of them is where the bun
+# this action leaves on PATH is held to its row.
+wrapper_steps: list = []
 
 
 def one_line(value: object) -> str:
@@ -342,6 +354,9 @@ for workflow in workflows:
         # it cannot parse is that file's problem to report, not a crash for everyone.
         problems.append(f"::error file={workflow}::{workflow} is not valid YAML: {one_line(error)}")
         continue
+    if workflow == SETUP_ACTION and isinstance(document, dict):
+        held = (document.get("runs") or {}).get("steps")
+        wrapper_steps = held if isinstance(held, list) else []
     for step in steps(document):
         line = line_of(step)
         script = step.get("run")
@@ -435,6 +450,24 @@ else:
         problems.append(
             f"{SETUP_ACTION}:{line}: the wrapper sets {', '.join(named)} on the step — an action "
             f"reads its inputs from INPUT_*, so an env entry is an input by another name"
+        )
+
+# Rule 9. oven-sh/setup-bun verifies no checksum, and nothing else in the tree holds the Bun a
+# job runs to a digest: the wrapper's last step does, on the bun `command -v bun` gives, against
+# the .github/ci-tools.yaml row of this runner's build variant. It is the last step because the
+# bun it must judge is the one every later step of the job will run, whichever of the two
+# sources installed it. A wrapper that lost that call would leave an unverified Bun on every
+# lane with this gate green, which is the state the rule exists to refuse.
+if SETUP_ACTION.is_file():
+    last = wrapper_steps[-1] if wrapper_steps and isinstance(wrapper_steps[-1], dict) else None
+    script = last.get("run") if last else None
+    if not isinstance(script, str) or "ci_tools_verify" not in script or "command -v bun" not in script:
+        problems.append(
+            f"{SETUP_ACTION}:{line_of(last) if last else 1}: the wrapper's last step does not "
+            f"call ci_tools_verify on the bun `command -v bun` gives — oven-sh/setup-bun "
+            f"verifies no checksum, so without that call this action would leave on PATH, for "
+            f"every job of this repository, whatever the download, the cache or the second "
+            f"source wrote, and no step would read it against the {CI_TOOLS} row that pins it"
         )
 
 def joined_lines(text: str):

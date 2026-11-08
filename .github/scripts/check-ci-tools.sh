@@ -343,8 +343,11 @@ for row in readable:
         problems.append(
             f"{CI_TOOLS}:{key_line(row, 'version')}: the {name} row's version is {version} and "
             f"{BUN_PIN} pins {bun_pin}. Every job installs the version that file pins, so this "
-            f"row pins the digest of a Bun no job runs. Raising Bun is two commits: this row "
-            f"first, then {BUN_PIN} and every call site."
+            f"row pins the digest of a Bun no job runs. Raise Bun in one commit: this row, "
+            f"{BUN_PIN} and every call site together, because a call site names a row and a "
+            f"second row of this tool would have no name one could use. The copy of the new "
+            f"row is filled by the ci-images job that the tool-fallback job needs, so nothing "
+            f"of that run reads it before it lands."
         )
     if name == "mise" and mise_version:
         wanted = mise_version[1:] if mise_version.startswith("v") else mise_version

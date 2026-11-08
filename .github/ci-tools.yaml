@@ -17,13 +17,22 @@
 # shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr-mirror row from
 # ci.yaml's `ci-images` job, the one copy path this repository has.
 #
-# Raising a tool is two commits, as .github/ci-images.yaml already requires.
-# The new version's row goes in first, and the pin and the call sites stay where they are, so the
-# `ci-images` job of that run fills the copy while nothing reads it yet.
-# The second commit moves the pin and every call site onto the new row and deletes the row they
-# leave.
-# One commit holding both would race its own copy: a job that installs the tool waits on the
-# `changes` job alone, so it can read a digest the copy of that same run is still landing.
+# Raising a tool is one commit: the row and the pin it answers to move together.
+# A row that disagrees with its pin installs one version and verifies another, and that is the
+# hole .github/scripts/check-ci-tools.sh exists to close, so the tree never holds that state.
+#
+# .github/ci-images.yaml takes two commits for the same move, and the difference is what a
+# consumer names. There a consumer names a digest, so a new row is inert until a `FROM` moves
+# onto it and the intermediate state is readable by nobody. Here a call site names a row, so a
+# second row of the same tool has no name a call site can use, and this file's gate refuses two
+# rows of one name for that reason.
+#
+# One commit races nothing: ci.yaml's `tool-fallback` job declares `needs: [changes, ci-images]`,
+# so the copy of the new row is filled before anything of that run reads it, and an install
+# reaches the copy only where its primary did not serve the bytes.
+# The one window it leaves, said out loud: a raise merged while that tool's release asset is
+# down and its copy is not yet filled. In that window the tool has exactly the single source it
+# has today, which is what every install of it had before this file existed.
 #
 # WHY A ROW'S SECOND SOURCE IS WHAT IT IS.
 # crane, changie, mise and jj publish the exact bytes nowhere but GitHub release assets, so their

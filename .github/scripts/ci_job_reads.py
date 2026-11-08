@@ -123,7 +123,12 @@ def bun_job(job, workflow=CI):
     install = at(job, "bun install --frozen-lockfile", workflow)
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
-        (".bun-version", ".github/actions/setup-bun/action.yml:22 bun-version-file: .bun-version"),
+        (".bun-version", ".github/actions/setup-bun/action.yml:47 bun-version-file: .bun-version"),
+        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:60-95 reads the bun row of this runner's build "
+                                  "variant and fetches its second source where the release asset served no Bun of the "
+                                  "pinned version, and :119 holds the bun on PATH to that row's digest"),
+        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:56,105 source it: ci_tools_fetch_fallback "
+                                        "installs the npm copy and ci_tools_verify checks the installed binary"),
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:50-59 patchedDependencies"),
@@ -144,7 +149,12 @@ def biome(where):
 def install_jj(job):
     return reads(
         (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:22-24,49-50 read ARG MISE_VERSION, MISE_SHA256, JJ_TOOL"),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:60 reads ARG JJ_TOOL, the tool spec mise installs"),
+        (".github/ci-tools.yaml", ".github/actions/install-jj/action.yml:42-43 installs the mise row's archive, and "
+                                  ":74,83 hold the jj binary to the jj row's digest, whichever source served it"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:39,58 source it: ci_tools_fetch installs "
+                                        "mise, ci_tools_fetch_fallback reads the jj row's second source and "
+                                        "ci_tools_verify checks the binary"),
     )
 
 
@@ -855,6 +865,9 @@ GATES = [
         (".github/actions/install-uv/**", at("test", "./.github/actions/install-uv")),
         (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-uv/action.yml:16-17 ARG UV_VERSION/UV_SHA256"),
         (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
+        (".github/ci-tools.yaml", ".github/actions/install-changie/action.yml:19-20 installs the changie row's tarball"),
+        (".github/scripts/ci-tools.sh", ".github/actions/install-changie/action.yml:18 sources it, and ci_tools_fetch "
+                                        "reads the changie row's two sources"),
         ("packages/pi-legion/.changie.yaml", ".github/scripts/release-push.test.sh's \"Case: fold-notes renders a package with the shipped packages/pi-legion/.changie.yaml\" copies it"),
         (".github/changelog-packages", f"{at('test', FOLD_CHECK_STEP)}: the step reads it as the package list"),
         ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),

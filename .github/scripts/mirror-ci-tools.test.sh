@@ -446,8 +446,13 @@ fixture asset-changed whole
 cp "$work/payloads/other.tar.gz" "$state/assets/$WHOLE_ASSET"
 run_mirror
 check "fails" "$(is "$status" 1)"
-check "names the row, the URL and both digests" \
-  "$(contains "$out" "::error file=.github/ci-tools.yaml::whole: $WHOLE_URL served bytes whose sha256 is $OTHER, and this row pins $WHOLE")"
+# The digest check is .github/scripts/ci-tools.sh's, the one every install of this copy runs,
+# so the refusal naming both digests is that file's and the URL that served the bytes is this
+# script's.
+check "the helper names the row and both digests" \
+  "$(contains "$out" "::error::ci-tools: whole: the bytes from github-release are not the pinned ones (pinned sha256 $WHOLE, read sha256 $OTHER) — refusing")"
+check "and this script names the URL that served them" \
+  "$(contains "$out" "::error file=.github/ci-tools.yaml::whole: $WHOLE_URL served those bytes")"
 check "says nothing is pushed" "$(contains "$out" 'so nothing is pushed')"
 check "and pushes nothing" "$(is "$(requests PUT)$(requests POST)" "")"
 

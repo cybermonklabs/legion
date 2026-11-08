@@ -49,12 +49,27 @@
 #                                         the argument is given.
 #   ci_tools_github_url <url>             that URL with the CI_TOOLS_GITHUB_BASE seam in place
 #                                         of its https://github.com prefix.
+#   ci_tools_curl <file> <max_time>
+#                 <url> [argument…]       the one fetch this file makes: <url> into <file>,
+#                                         under the retry ladder and the bounds every source is
+#                                         read with. .github/scripts/mirror-ci-tools.sh fetches
+#                                         the asset it pushes with it, so the copy is filled
+#                                         with the same ladder an install reads it under.
+#   ci_tools_blob_url <row>               that row's blob in the package `registry:` names: the
+#                                         address a ghcr-mirror row's second source is read
+#                                         from, and the one .github/scripts/mirror-ci-tools.sh
+#                                         writes and reads back.
 #   ci_tools_token_of <file>              the `.token` of a registry token response. It is the
 #                                         one reader of such an answer this repository has, and
-#                                         .github/scripts/mirror-ci-tools.sh reads its own
-#                                         pull,push token with it.
-#   ci_tools_ghcr_token [<max_time>]      an anonymous pull token for the package `registry:`
-#                                         names, which is what a read of a copy carries.
+#                                         ci_tools_ghcr_token below reads every token with it.
+#   ci_tools_ghcr_token [<max_time>
+#                        [<scope>
+#                         [<credential>]]]
+#                                         a token for the package `registry:` names. With no
+#                                         argument it is the anonymous `pull` token a read of a
+#                                         copy carries; .github/scripts/mirror-ci-tools.sh asks
+#                                         for `pull,push` with GITHUB_ACTOR:GITHUB_TOKEN. An
+#                                         empty argument takes that position's default.
 #   ci_tools_verify <row> <file> <source> holds <file> to that digest and writes the line that
 #                                         names <source>. It is what an action calls to hold an
 #                                         installed binary to its row, so it leaves the file where
@@ -306,7 +321,9 @@ ci_tools__tempfile() {
   mktemp "$directory/ci-tools-${row//[^A-Za-z0-9._-]/-}.XXXXXX"
 }
 
-# ci_tools__curl <file> <max_time> <url> [curl argument…]: the one fetch this file makes.
+# ci_tools_curl <file> <max_time> <url> [curl argument…]: the one fetch this file makes, and the
+# one .github/scripts/mirror-ci-tools.sh makes for the asset it copies, so the bytes a copy is
+# filled with are fetched under the ladder an install reads them under.
 # `--fail` is what keeps a 504's body out of <file>, `--retry 7 --retry-all-errors` rides out a
 # flap of the service, and `--max-time` bounds one attempt, so a hung attempt becomes the exit
 # code that sends the caller to the second source.
@@ -321,7 +338,7 @@ ci_tools__tempfile() {
 # the second source gets the rest of the job's time.
 # This issue's tester measured both ladders against a source that refuses at once: 4 attempts in
 # 15 s with the bound, 8 attempts in 127 s without it.
-ci_tools__curl() {
+ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
   curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
@@ -369,38 +386,49 @@ with open(sys.argv[1]) as handle:
 ' "$1" 2>/dev/null
 }
 
-# ci_tools_ghcr_token [<max_time>]: an anonymous pull token for the package the manifest's
-# `registry:` names. The package is public, so this request carries no credential; ghcr.io
-# answers a pull token for it and refuses a blob without one.
+# ci_tools_ghcr_token [<max_time> [<scope> [<credential>]]]: a token for the package the
+# manifest's `registry:` names. Each argument has a default and an empty one takes it, so a
+# caller that names a credential alone writes `ci_tools_ghcr_token "" pull,push "$user:$secret"`.
+#
+# The defaults are what an install carries: the package is public to read, so a `pull` token is
+# minted with no credential at all, and ghcr.io answers one for it and refuses a blob without
+# it. .github/scripts/mirror-ci-tools.sh writes to that same package, so it asks for
+# `pull,push` with GITHUB_ACTOR:GITHUB_TOKEN, and the one request both make is this one.
+#
 # Prints the token, and prints what happened and returns non-zero where the request or the read
 # of its answer failed, as the fetch functions below do, so a caller holds the sentence rather
 # than a half-read token.
 ci_tools_ghcr_token() {
-  if [ "$#" -gt 1 ]; then
-    ci_tools__error "ci_tools_ghcr_token takes an optional per-attempt bound, and this call gave $#"
+  if [ "$#" -gt 3 ]; then
+    ci_tools__error "ci_tools_ghcr_token takes an optional per-attempt bound, scope and credential, and this call gave $#"
     return 1
   fi
-  local max_time=${1:-60}
+  local max_time=${1:-60} scope=${2:-pull} credential=${3:-}
   local base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
   local registry path token_file token status=0
+  # A credential is passed to curl as its own argument and never spliced into the URL, so the
+  # secret reaches no log line and no process name of a redirect.
+  local -a authentication=()
+  [ -z "$credential" ] || authentication=(-u "$credential")
   ci_tools__registry registry || return 1
   # The registry's path is the manifest's `registry:` with its host removed.
   path=${registry#*/}
   token_file=$(ci_tools__tempfile ghcr-token) || {
-    printf 'this run could not make a temporary file for the pull token\n'
+    printf 'this run could not make a temporary file for the %s token\n' "$scope"
     return 1
   }
-  ci_tools__curl "$token_file" "$max_time" \
-    "$base/token?service=ghcr.io&scope=repository:$path:pull" || status=$?
+  ci_tools_curl "$token_file" "$max_time" \
+    "$base/token?service=ghcr.io&scope=repository:$path:$scope" \
+    ${authentication[@]+"${authentication[@]}"} || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$token_file"
-    printf 'the anonymous pull token request failed (curl exit %s)\n' "$status"
+    printf 'the %s token request failed (curl exit %s)\n' "$scope" "$status"
     return 1
   fi
   token=$(ci_tools_token_of "$token_file") || token=''
   rm -f -- "$token_file"
   if [ -z "$token" ]; then
-    printf 'the token request answered no .token this run could read\n'
+    printf 'the %s token request answered no .token this run could read\n' "$scope"
     return 1
   fi
   printf '%s\n' "$token"
@@ -420,26 +448,37 @@ ci_tools__registry() {
   ci_tools__read "$__variable" "$first" registry
 }
 
+# ci_tools_blob_url <row>: the row's blob in the package the manifest's `registry:` names. It is
+# the address of a ghcr-mirror row's second source, which is the row's own pinned digest: the
+# fetch below reads it, and .github/scripts/mirror-ci-tools.sh writes it and reads it back, so
+# neither of the two can address a blob the other does not.
+ci_tools_blob_url() {
+  if [ "$#" -ne 1 ]; then
+    ci_tools__error "ci_tools_blob_url takes a row, and this call gave $#"
+    return 1
+  fi
+  local row=$1 registry digest
+  ci_tools__read registry "$row" registry || return 1
+  ci_tools__read digest "$row" digest || return 1
+  # The registry's path is the manifest's `registry:` with its host removed.
+  printf '%s/v2/%s/blobs/sha256:%s\n' "${CI_TOOLS_GHCR_BASE:-https://ghcr.io}" "${registry#*/}" "$digest"
+}
+
 # ci_tools__fetch_ghcr <row> <max_time> <file>: the row's blob from the copy in the package the
 # manifest's `registry:` names, read with the anonymous pull token above. The blob is already the
 # bytes the digest names, so nothing is taken out of it.
 # Prints what happened, and returns non-zero, where the service did not serve the bytes.
 ci_tools__fetch_ghcr() {
   local row=$1 max_time=$2 file=$3
-  local base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
-  local registry path digest token status=0
-  ci_tools__read registry "$row" registry || return 1
-  ci_tools__read digest "$row" digest || return 1
-  # The registry's path is the manifest's `registry:` with its host removed.
-  path=${registry#*/}
+  local url token status=0
+  url=$(ci_tools_blob_url "$row") || return 1
   # The token helper prints what went wrong in place of a token, and this is the caller that
   # reports it: the sentence belongs in the refusal this row's fetch builds.
   token=$(ci_tools_ghcr_token "$max_time") || {
     printf '%s\n' "$token"
     return 1
   }
-  ci_tools__curl "$file" "$max_time" "$base/v2/$path/blobs/sha256:$digest" \
-    -H "Authorization: Bearer $token" || status=$?
+  ci_tools_curl "$file" "$max_time" "$url" -H "Authorization: Bearer $token" || status=$?
   if [ "$status" -ne 0 ]; then
     printf 'the blob request failed (curl exit %s)\n' "$status"
     return 1
@@ -463,7 +502,7 @@ ci_tools__fetch_npm() {
     return 1
   }
   # npm serves a scoped package's tarball under the package name without its scope.
-  ci_tools__curl "$tarball" "$max_time" "$base/$package/-/${package##*/}-$version.tgz" || status=$?
+  ci_tools_curl "$tarball" "$max_time" "$base/$package/-/${package##*/}-$version.tgz" || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$tarball"
     printf 'the package tarball request failed (curl exit %s)\n' "$status"
@@ -537,7 +576,7 @@ ci_tools_fetch() {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
     return 1
   }
-  ci_tools__curl "$file" "$max_time" "$(ci_tools_github_url "$primary")" || status=$?
+  ci_tools_curl "$file" "$max_time" "$(ci_tools_github_url "$primary")" || status=$?
   if [ "$status" -eq 0 ]; then
     # The bytes arrived. Whatever they are, this call answers for them: a mismatch here is a
     # supply-chain signal, and the second source is never read after one.
