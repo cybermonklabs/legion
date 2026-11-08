@@ -194,8 +194,8 @@ test("a file let go while its put is reading the bytes is not written back", asy
 
   await files.delete("k6");
   release();
-  await kept;
 
+  expect(await kept).toBe(false);
   expect(await rowOf("k6")).toBeUndefined();
   expect(await files.get("k6")).toBeUndefined();
 });
@@ -209,8 +209,8 @@ test("a put of another person's file, still reading its bytes, is not written ba
 
   await files.keepOnly("alice");
   release();
-  await kept;
 
+  expect(await kept).toBe(false);
   expect(await rowOf("k7")).toBeUndefined();
   expect(await files.get("k7")).toBeUndefined();
 });
@@ -222,7 +222,33 @@ test("a put of the signed-in person's file is kept across the sweep", async () =
 
   await files.keepOnly("alice");
   release();
-  await kept;
 
+  expect(await kept).toBe(true);
   expect(await files.get("k8")).toBeInstanceOf(File);
+});
+
+// A browser with no IndexedDB keeps nothing, and says so before it reads the file: the write
+// that waits on this answer (`write-store.ts`) would otherwise pay a whole upload's bytes for an
+// answer that is already known, and the page would keep a record naming a file that is not
+// there.
+test("a page with no IndexedDB answers that it kept nothing, having read no bytes", async () => {
+  const database = globalThis.indexedDB;
+  let read = false;
+  const file = {
+    arrayBuffer: async () => {
+      read = true;
+      return new ArrayBuffer(0);
+    },
+    lastModified: LAST_MODIFIED,
+    name: NAME,
+    type: TYPE,
+  } as unknown as File;
+  // @ts-expect-error a browser that has none leaves the property undefined.
+  globalThis.indexedDB = undefined;
+  try {
+    expect(await files.put("k9", "alice", file)).toBe(false);
+    expect(read).toBe(false);
+  } finally {
+    globalThis.indexedDB = database;
+  }
 });

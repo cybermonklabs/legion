@@ -169,9 +169,16 @@ func (s *server) sendResolvedDelivery(
 //
 // The two fields are the whole test. Nothing reads the body: a comment's text does not open an
 // ask, and a program that judged what an agent wrote is what this rule refuses to be.
+//
+// A remark leaves the field out (ExpectsReplyUnset) rather than writing the literal false that
+// says the same thing, because a listener built before #2903 reads expects_reply only as a
+// string and answers 400 to a send carrying false, so a Dispatch server rolled ahead of the
+// listeners of its deployment could deliver no plain mention at all. What removes the
+// workaround: every listener of a deployment at or after #2903, after which this returns
+// contracts.ExpectsReplyNone and the delivery says "nothing wanted back" out loud.
 func commentExpectsReply(comment model.Comment) contracts.ExpectsReply {
 	if comment.AskID == nil && comment.ReplyTo == nil {
-		return contracts.ExpectsReplyNone
+		return contracts.ExpectsReplyUnset
 	}
 	return contracts.ExpectsReplyOptional
 }
@@ -272,7 +279,7 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	defer tx.Rollback(ctx)
-	stored, err := s.lockedComment(ctx, tx, comment.ID)
+	stored, err := s.lockedCommentForDelivery(ctx, tx, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
@@ -1020,7 +1027,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
@@ -1156,8 +1163,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// `reply_to_block` names a block of the comment this callback answers, the only item the
-	// request names, which lockedComment holds after its owner — never a part of the ask the
-	// thread hangs under, which a reply naming `ask_id` on the comments route names.
+	// request names, which lockedCommentForDelivery holds after its owner — never a part of the
+	// ask the thread hangs under, which a reply naming `ask_id` on the comments route names.
 	var block *namedBlock
 	if input.ReplyToBlock != nil {
 		block, err = s.namedReplyBlock(r.Context(), tx, refs.ItemComment, comment.ID, *input.ReplyToBlock)
