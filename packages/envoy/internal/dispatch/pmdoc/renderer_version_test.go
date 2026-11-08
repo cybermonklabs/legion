@@ -27,9 +27,15 @@ type rendererVersionGolden struct {
 //
 // A typed block a document does not name an id for is given one as it is parsed, and a minted id
 // is a random UUID that reaches both the rendering and the token, so the hashes stand only while
-// the ids do: the walk mints them in document order instead (SetBlockIDGenerator, which is there
-// for this), and puts the random mint back when it is done. What is left of the hash is what the
+// the ids do: the walk mints them in order instead (SetBlockIDGenerator, which is there for
+// this), and puts the random mint back when it is done. What is left of the hash is what the
 // renderer writes, which is what RendererVersion numbers.
+//
+// The counter is reset for each document, so a document's share of the hash is its own: with one
+// counter running across the corpus, a document inserted anywhere shifted every later document's
+// ids, and a build that wrote the same bytes as the build before it still moved both hashes. A
+// corpus addition moves the total through the added document alone now, which is what the two
+// readings of a red result below are told apart by.
 func corpusRenderingAndTokenHashes(t *testing.T) (renderings, tokens string) {
 	t.Helper()
 	minted := 0
@@ -49,6 +55,7 @@ func corpusRenderingAndTokenHashes(t *testing.T) (renderings, tokens string) {
 		}
 	}
 	for _, document := range corpusMarkdown(t) {
+		minted = 0
 		tree, err := Parse(document.markdown)
 		if err != nil {
 			t.Fatalf("parse %s: %v", document.name, err)
@@ -85,12 +92,20 @@ func TestRendererVersionGoldenHoldsTheCorpus(t *testing.T) {
 		t.Fatalf("%s holds renderer version %d, want RendererVersion %d", path, golden.RendererVersion, RendererVersion)
 	}
 	renderings, tokens := corpusRenderingAndTokenHashes(t)
+	// Two reds live here and the remedies differ, so each message names both: a document whose
+	// own text did not change has moved, which is a renderer change and takes a new
+	// RendererVersion, since a reader must stop serving what this build no longer writes; or the
+	// corpus gained or lost a document, which moves the total through that document alone and
+	// takes the new hash with the version left where it stands. `git diff` of testdata/corpus
+	// says which, and the hashes are written by hand from the numbers below.
+	const remedy = "a document whose text did not change has moved: raise RendererVersion past %d and write the new hash; " +
+		"the corpus gained or lost a document and nothing else: write the new hash and leave RendererVersion at %d"
 	if renderings != golden.RenderingsSHA256 {
-		t.Errorf("the corpus renders to %s, and %s holds %s: raise RendererVersion past %d and write the new hash",
-			renderings, path, golden.RenderingsSHA256, RendererVersion)
+		t.Errorf("the corpus renders to %s, and %s holds %s: "+remedy,
+			renderings, path, golden.RenderingsSHA256, RendererVersion, RendererVersion)
 	}
 	if tokens != golden.TokensSHA256 {
-		t.Errorf("the corpus's document tokens hash to %s, and %s holds %s: raise RendererVersion past %d and write the new hash",
-			tokens, path, golden.TokensSHA256, RendererVersion)
+		t.Errorf("the corpus's document tokens hash to %s, and %s holds %s: "+remedy,
+			tokens, path, golden.TokensSHA256, RendererVersion, RendererVersion)
 	}
 }

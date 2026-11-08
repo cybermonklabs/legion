@@ -63240,6 +63240,236 @@
     }
   },
   {
+    "name": "nul-in-a-directive-attribute",
+    "markdown": "A U+0000 in a directive's attribute value, and in no other place of this document.\n\n:::callout{#n1 kind=\"note\" title=\"t\u0000t\"}\ninside\n:::\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "A U+0000 in a directive's attribute value, and in no other place of this document."
+            }
+          ]
+        },
+        {
+          "type": "callout",
+          "attrs": {
+            "kind": "note",
+            "title": "t�t",
+            "blockId": "n1"
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "attrs": {
+                "blockId": "b-000002"
+              },
+              "content": [
+                {
+                  "type": "text",
+                  "text": "inside"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQwBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQFSQSBVKzAwMDAgaW4gYSBkaXJlY3RpdmUncyBhdHRyaWJ1dGUgdmFsdWUsIGFuZCBpbiBubyBvdGhlciBwbGFjZSBvZiB0aGlzIGRvY3VtZW50LigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwdjYWxsb3V0BwABVQMJcGFyYWdyYXBoBwABVgYEAAFXBmluc2lkZSgAAVYHYmxvY2tJZAF3CGItMDAwMDAyKAABVQRraW5kAXcEbm90ZSgAAVUFdGl0bGUBdwV077+9dCgAAVUHYmxvY2tJZAF3Am4xAA==",
+    "rendered_by_milkdown": "A U+0000 in a directive's attribute value, and in no other place of this document.\n\n:::callout{#n1 kind=\"note\" title=\"t�t\"}\ninside\n:::\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "A U+0000 in a directive's attribute value, and in no other place of this document."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "inside"
+        }
+      ]
+    }
+  },
+  {
+    "name": "nul-in-a-fence-info-string",
+    "markdown": "A U+0000 in a fence's info string, and in no other place of this document.\n\n```g\u0000o\nx\n```\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "A U+0000 in a fence's info string, and in no other place of this document."
+            }
+          ]
+        },
+        {
+          "type": "code_block",
+          "attrs": {
+            "language": "g�o",
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "x"
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQkBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQFKQSBVKzAwMDAgaW4gYSBmZW5jZSdzIGluZm8gc3RyaW5nLCBhbmQgaW4gbm8gb3RoZXIgcGxhY2Ugb2YgdGhpcyBkb2N1bWVudC4oAAEAB2Jsb2NrSWQBdwhiLTAwMDAwMYcBAAMKY29kZV9ibG9jawcAAU0GBAABTgF4KAABTQhsYW5ndWFnZQF3BWfvv71vKAABTQdibG9ja0lkAXcIYi0wMDAwMDIA",
+    "rendered_by_milkdown": "A U+0000 in a fence's info string, and in no other place of this document.\n\n```g�o\nx\n```\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "A U+0000 in a fence's info string, and in no other place of this document."
+        }
+      ]
+    }
+  },
+  {
+    "name": "nul-in-a-link-destination",
+    "markdown": "A U+0000 in a link's destination, and in no other place of this document.\n\n[the design](https://example.com/a\u0000b) is the one link here.\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "A U+0000 in a link's destination, and in no other place of this document."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "text",
+              "marks": [
+                {
+                  "type": "link",
+                  "attrs": {
+                    "href": "https://example.com/a�b",
+                    "title": null
+                  }
+                }
+              ],
+              "text": "the design"
+            },
+            {
+              "type": "text",
+              "text": " is the one link here."
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQsBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQFJQSBVKzAwMDAgaW4gYSBsaW5rJ3MgZGVzdGluYXRpb24sIGFuZCBpbiBubyBvdGhlciBwbGFjZSBvZiB0aGlzIGRvY3VtZW50LigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwlwYXJhZ3JhcGgHAAFMBgYAAU0EbGluazF7ImhyZWYiOiJodHRwczovL2V4YW1wbGUuY29tL2Hvv71iIiwidGl0bGUiOm51bGx9hAFOCnRoZSBkZXNpZ26GAVgEbGluawRudWxshAFZFiBpcyB0aGUgb25lIGxpbmsgaGVyZS4oAAFMB2Jsb2NrSWQBdwhiLTAwMDAwMgA=",
+    "rendered_by_milkdown": "A U+0000 in a link's destination, and in no other place of this document.\n\n[the design](https://example.com/a�b) is the one link here.\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "A U+0000 in a link's destination, and in no other place of this document."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "the design is the one link here."
+        }
+      ]
+    }
+  },
+  {
+    "name": "nul-in-an-image",
+    "markdown": "A U+0000 in an image's address, alt text and title, and in no other place of this\ndocument.\n\n![a\u0000b](https://example.com/a\u0000b.png \"t\u0000t\")\n",
+    "pm_json": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000001"
+          },
+          "content": [
+            {
+              "type": "text",
+              "text": "A U+0000 in an image's address, alt text and title, and in no other place of this document."
+            }
+          ]
+        },
+        {
+          "type": "paragraph",
+          "attrs": {
+            "blockId": "b-000002"
+          },
+          "content": [
+            {
+              "type": "image",
+              "attrs": {
+                "src": "https://example.com/a�b.png",
+                "alt": "a�b",
+                "title": "t�t"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "yjs_update_v1_b64": "AQoBAAcBC3Byb3NlbWlycm9yAwlwYXJhZ3JhcGgHAAEABgQAAQFbQSBVKzAwMDAgaW4gYW4gaW1hZ2UncyBhZGRyZXNzLCBhbHQgdGV4dCBhbmQgdGl0bGUsIGFuZCBpbiBubyBvdGhlciBwbGFjZSBvZiB0aGlzIGRvY3VtZW50LigAAQAHYmxvY2tJZAF3CGItMDAwMDAxhwEAAwlwYXJhZ3JhcGgHAAFeAwVpbWFnZSgAAV8Dc3JjAXcdaHR0cHM6Ly9leGFtcGxlLmNvbS9h77+9Yi5wbmcoAAFfA2FsdAF3BWHvv71iKAABXwV0aXRsZQF3BXTvv710KAABXgdibG9ja0lkAXcIYi0wMDAwMDIA",
+    "rendered_by_milkdown": "A U+0000 in an image's address, alt text and title, and in no other place of this document.\n\n![a�b](https://example.com/a�b.png \"t�t\")\n",
+    "reading": {
+      "tables": [],
+      "paragraphs": [
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": "A U+0000 in an image's address, alt text and title, and in no other place of this document."
+        },
+        {
+          "emphasized": [],
+          "strong": [],
+          "struck": [],
+          "text": ""
+        }
+      ]
+    }
+  },
+  {
     "name": "ordered-list-prefixes",
     "markdown": "1\\. not a list\n2\\) also not a list\n\n- A tight item.\n  >\n  > 2. Quoted, numbered from two.\n- Another.\n  >\n  > > 3. Two quotes down.\n- An empty item.\n  >\n  > -\n\nA paragraph line\n01. that no list interrupts.\n\nAnother\n001) likewise.\n\nAnd one\n1. that a list interrupts.\n\n> Quoted\n> 01. text.\n\nIn a definition[^o]:\n\n> [^o]: a\n>     01. b\n",
     "pm_json": {

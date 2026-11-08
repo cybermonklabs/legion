@@ -90,8 +90,22 @@ const (
 // HTML draws as no break at all. Normalizing here, above every split, is what keeps the whole
 // read - the parse, the fence lines it draws and the literal text it falls back to - seeing one
 // line ending.
+//
+// Every U+0000 is read as U+FFFD (nulAsReplacement) before any parser sees a byte of the text,
+// as CommonMark requires of a reader (§2.3 Insecure characters), as Parse does at the same seam
+// and as both browser engines do in their own preprocessor. A reader was otherwise shown a tree
+// whose text, and whose attribute values, carried a character every other reading of those bytes
+// carries as the replacement, and which PostgreSQL's text and jsonb cannot hold at all.
+//
+// It is read here, above the parse, rather than written into each node the read makes, because
+// the display read takes text from the source in more places than a text node - a fence's info
+// string, a link's destination, an image's alt text and title, a directive's attribute value, a
+// mark's attributes, the fence lines a drawn directive shows and the literal text a refused
+// block falls back to - and because the parse itself must see what the browser's parse sees:
+// U+0000 is neither punctuation nor a symbol and U+FFFD is both, so the replacement ends a
+// directive's name where the raw character would have stood inside it (displayDirectiveName).
 func ReadForDisplay(markdown string, mode DisplayMode) *Node {
-	doc := displayDocument(LineFeeds(markdown))
+	doc := displayDocument(nulAsReplacement(LineFeeds(markdown)))
 	if mode == DisplayLatest {
 		StripServerOwnedAttrs(doc)
 	}

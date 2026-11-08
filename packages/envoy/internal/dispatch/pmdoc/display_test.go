@@ -3,8 +3,11 @@ package pmdoc
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -19,7 +22,8 @@ type displayFixture struct {
 
 // displayCorpusDocuments are the documents the display read is held to: every one of
 // testdata/corpus-display, which holds the shapes a reader must still be shown and no writer
-// stores, and the documents of testdata/corpus this change added. Their fixture is a golden of
+// stores, the documents of testdata/corpus written to carry a U+0000 (nulCorpusDocuments), and
+// the documents of testdata/corpus this change added. Their fixture is a golden of
 // what Go reads, not of what a browser reads: that the two agree is what the differential's
 // cross-reader gate answers, over the whole corpus (gen/differential.sh).
 func displayCorpusDocuments(t *testing.T) []string {
@@ -27,6 +31,9 @@ func displayCorpusDocuments(t *testing.T) []string {
 	paths, err := filepath.Glob(filepath.Join("testdata", "corpus-display", "*.md"))
 	if err != nil || len(paths) == 0 {
 		t.Fatalf("testdata/corpus-display: %d documents, %v", len(paths), err)
+	}
+	for _, name := range nulCorpusDocuments {
+		paths = append(paths, filepath.Join("testdata", "corpus", name+".md"))
 	}
 	for _, name := range []string{
 		"list-nested-33-deep", "mention", "reply-quoting-a-block",
@@ -247,53 +254,94 @@ func TestReadForDisplayEndsAnUnknownBlocksLinesAtEveryLineEnding(t *testing.T) {
 	}
 }
 
+// nulCorpusDocuments are the corpus documents written to hold a U+0000: the one main added with
+// #2507, which holds one in each place markdown can carry one, and one per attribute the display
+// read writes a value into, so the differential proves each of those seams on a document of its
+// own rather than on one document that happens to cover them all.
+var nulCorpusDocuments = []string{
+	"nul-characters",
+	"nul-in-a-directive-attribute",
+	"nul-in-a-fence-info-string",
+	"nul-in-a-link-destination",
+	"nul-in-an-image",
+}
+
 // TestReadForDisplayReplacesANulAsEveryOtherReaderDoes holds the display read to the one rule
 // every other reader of the same text already follows: CommonMark replaces U+0000 with U+FFFD,
 // which is what Parse does and what the browser's own engines do, so a reader is shown the
-// replacement character. The display read keeps the NUL, so a text holding one is served to the
-// dashboard as a tree whose text node carries a raw U+0000 where every other reading of the same
-// bytes carries U+FFFD - the disagreement the differential's two cross-reader gates report on
+// replacement character. The display read kept the NUL, so a text holding one was served to the
+// dashboard as a tree whose text node carried a raw U+0000 where every other reading of the same
+// bytes carries U+FFFD - the disagreement the differential's two cross-reader gates reported on
 // testdata/corpus/nul-characters.md, the document main added with #2507.
+//
+// A text node is not the only place the character reached: the read writes attribute values of
+// its own - a fence's info string, a link's destination, an image's address, alt text and title,
+// a directive's attribute value - on a node and on a mark, and each of those is a seam the one
+// rule must hold at. The walk below reads all three, over every document written to carry a NUL
+// (nulCorpusDocuments).
 func TestReadForDisplayReplacesANulAsEveryOtherReaderDoes(t *testing.T) {
-	markdown, err := os.ReadFile(filepath.Join("testdata", "corpus", "nul-characters.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	written, err := Parse(string(markdown))
-	if err != nil {
-		t.Fatalf("the writer refuses the document this test is about: %v", err)
-	}
-	if nulTexts(written) != 0 {
-		t.Fatalf("Parse keeps %d NUL-bearing text nodes; this test assumes it replaces them", nulTexts(written))
-	}
-	for _, mode := range []struct {
-		name string
-		mode DisplayMode
-	}{{"the latest mode", DisplayLatest}, {"the version mode", DisplayVersion}} {
-		t.Run(mode.name, func(t *testing.T) {
-			doc := ReadForDisplay(string(markdown), mode.mode)
-			if err := doc.Validate(); err != nil {
-				t.Fatalf("the display read is outside the schema: %v", err)
+	for _, name := range nulCorpusDocuments {
+		t.Run(name, func(t *testing.T) {
+			markdown, err := os.ReadFile(filepath.Join("testdata", "corpus", name+".md"))
+			if err != nil {
+				t.Fatal(err)
 			}
-			if held := nulTexts(doc); held != 0 {
-				t.Errorf("the display read keeps a NUL in %d text nodes, where Parse and both browser engines answer U+FFFD", held)
+			if !strings.ContainsRune(string(markdown), 0) {
+				t.Fatalf("%s.md holds no U+0000; this test is about documents that do", name)
+			}
+			written, err := Parse(string(markdown))
+			if err != nil {
+				t.Fatalf("the writer refuses the document this test is about: %v", err)
+			}
+			if held := nulsHeld(written); len(held) != 0 {
+				t.Fatalf("Parse keeps a NUL at %s; this test assumes it replaces them", strings.Join(held, ", "))
+			}
+			for _, mode := range []struct {
+				name string
+				mode DisplayMode
+			}{{"the latest mode", DisplayLatest}, {"the version mode", DisplayVersion}} {
+				t.Run(mode.name, func(t *testing.T) {
+					doc := ReadForDisplay(string(markdown), mode.mode)
+					if err := doc.Validate(); err != nil {
+						t.Fatalf("the display read is outside the schema: %v", err)
+					}
+					if held := nulsHeld(doc); len(held) != 0 {
+						t.Errorf("the display read keeps a NUL at %s, where Parse and both browser engines answer U+FFFD",
+							strings.Join(held, ", "))
+					}
+				})
 			}
 		})
 	}
 }
 
-// nulTexts is how many text nodes of doc hold a U+0000.
-func nulTexts(doc *Node) int {
-	held := 0
-	var walk func(node *Node)
-	walk = func(node *Node) {
-		if strings.ContainsRune(node.Text, 0) {
-			held++
-		}
-		for _, child := range node.Children {
-			walk(child)
+// nulsHeld is every place in doc that holds a U+0000 - a node's text, a node's attribute and a
+// mark's attribute - each named by the node types that reach it and by the value it stands in,
+// so a failure says where the character is rather than how many there are. The attributes of one
+// node are read in name order, so two runs name the same places in the same order.
+func nulsHeld(doc *Node) []string {
+	var held []string
+	attrs := func(path string, values Attrs) {
+		for _, name := range slices.Sorted(maps.Keys(values)) {
+			if text, ok := values[name].(string); ok && strings.ContainsRune(text, 0) {
+				held = append(held, fmt.Sprintf("%s attribute %s = %q", path, name, text))
+			}
 		}
 	}
-	walk(doc)
+	var walk func(node *Node, path string)
+	walk = func(node *Node, path string) {
+		path += "/" + node.Type
+		if strings.ContainsRune(node.Text, 0) {
+			held = append(held, fmt.Sprintf("%s text %q", path, node.Text))
+		}
+		attrs(path, node.Attrs)
+		for _, mark := range node.Marks {
+			attrs(path+" mark "+mark.Type, mark.Attrs)
+		}
+		for _, child := range node.Children {
+			walk(child, path)
+		}
+	}
+	walk(doc, "")
 	return held
 }

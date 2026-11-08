@@ -20,7 +20,7 @@ import "sync/atomic"
 // The golden testdata/display-tree-version.json holds this number beside a hash of the display
 // corpus's trees in both modes, and TestDisplayTreeVersionGoldenHoldsTheCorpus refuses a change
 // to that hash that leaves the number alone.
-const DisplayTreeVersion = 2
+const DisplayTreeVersion = 3
 
 // displayTreeVersionNow is the version this process keys a stored tree by. It is a variable
 // seeded from the constant rather than the constant itself because a test has to stand the

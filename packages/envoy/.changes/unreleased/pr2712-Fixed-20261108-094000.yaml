@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The display read reads a U+0000 as U+FFFD, as CommonMark requires of a reader (§2.3 Insecure characters) and as the writer's own read and both browser engines already did: `pmdoc.ReadForDisplay` passes the text through `nulAsReplacement` before it parses a byte of it, where the writer's `Parse` has always done so.
+  A text holding the character was served to the dashboard as a tree carrying it raw, in a text node and in every attribute the read takes from the source - a fence's info string, a link's destination on the node and on the mark, an image's address, alt text and title, and a callout's title among them - where every other reading of the same bytes carries the replacement character, and where PostgreSQL's `text` and `jsonb` hold no U+0000 at all.
+  `pmdoc.DisplayTreeVersion` is 3, so every tree stored by the build before this one is read again.
+time: 2026-11-08T09:40:00.000000000Z
+custom:
+    Issue: pr2712
