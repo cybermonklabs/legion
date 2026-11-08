@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -58,11 +57,11 @@ const (
 // and logs rather than take a claim from a session it knows nothing about.
 //
 // A tree the operator holds is left alone whoever holds the claim, on the predicate a park of
-// such a root reads (workflow.Engine.operatorHoldsTree): the operator's tree shares the root's
-// key, so its own session reads as a session of the issue's tree here, and the workflow may
-// record nothing that acts on such a tree's claims (treelifecycle.Lifecycle.HeldByOperator). The
-// test is here rather than where the row is queued because the operator can open the tree in the
-// hour a row waits out a holder.
+// such a root reads (record.OperatorHoldsTree): the operator's tree shares the root's key, so its
+// own session reads as a session of the issue's tree here, and the workflow may record nothing
+// that acts on such a tree's claims (treelifecycle.Lifecycle.HeldByOperator). The test is here
+// rather than where the row is queued because the operator can open the tree in the hour a row
+// waits out a holder.
 func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 	if r.dispatch == nil {
 		return errors.New("claim release executor has no Dispatch client")
@@ -99,14 +98,8 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 		if !record.Stopped(*recorded) {
 			return nil
 		}
-		project, err := claim.ProjectToken(recorded.Project)
-		if err != nil {
-			return err
-		}
-		// A tree with no lifecycle row is no tree the operator holds, which is the read's own
-		// answer for it.
-		lifecycle, found, err := r.records.TreeLifecycle(ctx, tx, project, recorded.Tree)
-		if err != nil || found && lifecycle.HeldByOperator() {
+		held, err := record.OperatorHoldsTree(ctx, r.records, tx, *recorded)
+		if err != nil || held {
 			return err
 		}
 		inTree, err := r.records.SessionClaimsTree(ctx, tx, recorded.Tree, holder.ID)
@@ -155,32 +148,37 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 // its holder's name: settle computes permanentRefusal before it tests wait.ErrWaiting, so a wait
 // errors.As could reach the *dispatch.Error through would be finished rather than retried.
 func claimHeldWait(holder string) error {
-	return claimHeld{err: wait.Errorf("the Dispatch claim is still held by %s", holder)}
+	return claimWait{err: wait.Errorf("the Dispatch claim is still held by %s", holder)}
 }
 
 // claimContendedWait is the wait a claim release answers a contended refusal with
 // (dispatch.Contended): the issue's holder changed twice while the request ran, so Dispatch
 // judged nobody and applied nothing (issue_claim.go's answerContendedClaim). That is a routine
-// retry rather than a failure, and it says nothing about the holder, so it never counts toward
-// the hour claimReleaseWait caps a refused release at — only the holder still holding the claim
-// does. It wraps nothing of Dispatch's refusal, for the reason claimHeldWait gives.
+// retry rather than a failure, and it says nothing about the holder, so no contended answer ends
+// the row by itself. It does not hold the row open either: the hour claimReleaseWait caps a
+// refused release at is wall-clock time from row.CreatedAt, so the time these retries take
+// counts toward it like any other, and a refusal naming the holder (dispatch.Claimed) after them
+// can end the row at once. It wraps nothing of Dispatch's refusal, for the reason claimHeldWait
+// gives.
 func claimContendedWait(issue string) error {
-	return claimHeld{err: wait.Errorf("the Dispatch claim of %s was contended while it was released", issue)}
+	return claimWait{err: wait.Errorf("the Dispatch claim of %s was contended while it was released", issue)}
 }
 
-// claimHeld is routine (routineWait), so the hour's attempts stay at debug: the backoff caps at
-// 64 seconds, so an hour costs about 57 of them, and every attempt from the seventh would
-// otherwise be logged as a warning (waitWarnAttempts). A holder that has not stopped yet is not
-// something an operator should be woken for; the hour running out is, and that line is its own.
-// A contended refusal rides the same type for the same reason: Dispatch applied nothing, so the
-// row has only to ask again.
-type claimHeld struct{ err error }
+// claimWait is the wait a claim release row rides out, whichever refusal it answers: the claim
+// still held by its holder (claimHeldWait) or a contended answer (claimContendedWait). It is
+// routine (routineWait), so the hour's attempts stay at debug: the backoff caps at 64 seconds,
+// so an hour costs about 57 of them, and every attempt from the seventh would otherwise be
+// logged as a warning (waitWarnAttempts). A holder that has not stopped yet is not something an
+// operator should be woken for; the hour running out is, and that line is its own. A contended
+// refusal rides the same type for the same reason: Dispatch applied nothing, so the row has only
+// to ask again.
+type claimWait struct{ err error }
 
-func (c claimHeld) Error() string { return c.err.Error() }
+func (c claimWait) Error() string { return c.err.Error() }
 
-func (c claimHeld) Unwrap() error { return c.err }
+func (c claimWait) Unwrap() error { return c.err }
 
-func (claimHeld) Routine() bool { return true }
+func (claimWait) Routine() bool { return true }
 
 // releaseParkedClaims queues one Dispatch claim release (record.ClaimRelease) for each issue of
 // the boot's listing that still carries a claim while the daemon's own record says it stopped.

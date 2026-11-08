@@ -600,10 +600,12 @@ func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	}
 }
 
-// routineWait is a wait only GitHub's own rules hold back, which ends without anyone acting for
-// Legion: a pull request armed or queued at READY's head (ghautomerge.Armed), one GitHub reports not
-// mergeable yet for a reason its rules end (ghautomerge.Unmergeable.Routine), or one the merge queue
-// took out to merge, which GitHub has yet to show merged (ghautomerge.Merging).
+// routineWait is a wait nobody has to act on for Legion, which ends on its own: one only GitHub's
+// own rules hold back — a pull request armed or queued at READY's head (ghautomerge.Armed), one
+// GitHub reports not mergeable yet for a reason its rules end (ghautomerge.Unmergeable.Routine),
+// or one the merge queue took out to merge, which GitHub has yet to show merged
+// (ghautomerge.Merging) — and a Dispatch claim release waiting on the claim's holder or on a
+// contended answer (claimWait), which the hour claimReleaseWait caps rather than an operator.
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()

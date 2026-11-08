@@ -939,6 +939,27 @@ func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps 
 	return TreeRuns(root, lifecycle, gate), nil
 }
 
+// OperatorHoldsTree says whether the operator opened the lifetime of the issue's tree (an
+// operator root spawn under the tree root's key) and its cleanup has not confirmed. Only a root
+// waiting for its slot can meet one: promotion waits on the operator's lifetime
+// (treelifecycle.ErrAuthorityHeld) and never opens a workflow tree under it. A tree with no
+// lifecycle row is no tree the operator holds, which is the read's own answer for it.
+//
+// It is the one statement of that rule, and the readers that must agree — the park of such a
+// root (workflow.Engine.leave) and the claim release row every other park queues
+// (outbox.releaseClaim) — both call it.
+func OperatorHoldsTree(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bool, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return false, err
+	}
+	lifecycle, found, err := store.TreeLifecycle(ctx, tx, project, issue.Tree)
+	if err != nil {
+		return false, err
+	}
+	return found && lifecycle.HeldByOperator(), nil
+}
+
 // RunningRoots is the set of keys whose trees are running (TreeRuns), read from the records and
 // the pass's own facts already in hand.
 func RunningRoots(issues []Issue, facts LineFacts) map[string]struct{} {

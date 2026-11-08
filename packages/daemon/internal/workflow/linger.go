@@ -57,7 +57,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if issue.Lingers() {
 			return nil
 		}
-		if held, err := e.operatorHoldsTree(ctx, tx, issue); err != nil || held {
+		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
 				return err
 			}
@@ -157,22 +157,6 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		return err
 	}
 	return e.openCheck(ctx, tx, issue, *pr, lingers)
-}
-
-// operatorHoldsTree says whether the operator opened the lifetime of root's tree (an operator root
-// spawn under the root's key) and its cleanup has not confirmed. Only a root waiting for its slot
-// can meet one: promotion waits on the operator's lifetime (treelifecycle.ErrAuthorityHeld) and
-// never opens a workflow tree under it.
-func (e *Engine) operatorHoldsTree(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
-	project, err := claim.ProjectToken(root.Project)
-	if err != nil {
-		return false, err
-	}
-	lifecycle, found, err := e.store.TreeLifecycle(ctx, tx, project, root.Tree)
-	if err != nil {
-		return false, err
-	}
-	return found && lifecycle.HeldByOperator(), nil
 }
 
 // releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
