@@ -106,9 +106,6 @@ let holdNextPrompt: PromiseWithResolvers<void> | undefined
 /** What holds the engine's next `$.session.append` open, where a test wants the session to move
  *  on while a row of it is still being stored. */
 let holdNextAppend: PromiseWithResolvers<void> | undefined
-/** True where the engine takes the next prompt and writes no row this mod can see, which is
- *  the one case a prompt the session holds has no row to answer with (`PROMPT_ROW_MS`). */
-let hideNextPromptRow = false
 /** This plugin's `$.store`, which is a JSON file on the live binary and a map here: values
  *  round-trip as `JSON.parse(JSON.stringify(value))` and `keys()` is insertion order, both
  *  measured on 2.1.310 (`/legion/scratch/tmp/infra-1026-store`). */
@@ -189,15 +186,12 @@ function engineOn(directory: string): EngineInterface {
         dropNextPrompt = undefined
         if (drop !== undefined) return { drop }
         submits.push({ asUser: args.asUser === true, text: args.text })
-        const seen = !hideNextPromptRow
-        hideNextPromptRow = false
         // Claude Code writes the prompt's row, and runs this mod's `session.append` hook for
         // it, before the call resolves: the row landed 15 ms to 26 ms ahead of the answer in
         // all six submits recorded on 2.1.310
         // (`/legion/scratch/tmp/infra-1026-spike/logs/mod3-q1q3q5.jsonl:236-239`,
-        // `logs/mod3-q2-310.jsonl:51-52,86-87`, `logs/mod2.jsonl:144-145`). A test that wants
-        // the row unseen writes none: the prompt is in the session all the same.
-        if (seen) await promptRowWritten(args.text, args.asUser === true)
+        // `logs/mod3-q2-310.jsonl:51-52,86-87`, `logs/mod2.jsonl:144-145`).
+        await promptRowWritten(args.text, args.asUser === true)
         return { text: args.text }
       },
     },
@@ -864,26 +858,61 @@ test("a person's message and the card its resend becomes are one write", async (
   await turn("turn-after-resend", 1)
 })
 
-// The engine takes a prompt before it writes the row for it, and the mod watches for that row
-// for `PROMPT_ROW_MS` (measured on 2.1.310: the row landed 15 ms to 26 ms ahead of the call's
-// own answer in all six submits recorded). A row the mod never saw is no refusal: the prompt is
-// in the session. Answered as one, the Envoy event was recorded nowhere, so the resend
-// submitted the message a second time, and for a person's own message Dispatch told them their
-// session had dropped a prompt it took (INFRA-1026 review).
-test("a prompt the session took whose row went unseen is written, not dropped", async () => {
+// A prompt the engine took is the write itself, and it names no row of this mod's: the answer
+// carries no uuid, and no `deny`, because the session has the prompt. The Envoy event is
+// recorded under it all the same, which is what keeps the resend of that event from writing
+// the message a second time — unrecorded, it was written twice, and for a person's own
+// message Dispatch told them their session had dropped a prompt it took (INFRA-1026 review).
+test("a prompt the session took is recorded, so the resend of its event writes nothing", async () => {
   const words = "the staging box is yours for the afternoon"
   const sent = submits.length
   const stored = appends.length
-  hideNextPromptRow = true
 
   // No uuid, because there is no row to name — and no `deny`, because the session has it.
-  expect(await message(words, "evt-unseen", "person")).toEqual({ as: "prompt" })
+  expect(await message(words, "evt-taken", "person")).toEqual({ as: "prompt" })
   expect(submits[sent]).toEqual({ asUser: true, text: words })
 
   // The write was recorded, so the card Envoy's resend becomes is answered from the record and
   // the session is written nothing further.
-  expect(await message(words, "evt-unseen")).toEqual({ as: "prompt" })
+  expect(await message(words, "evt-taken")).toEqual({ as: "prompt" })
   expect(submits.length).toBe(sent + 1)
   expect(appends.length).toBe(stored)
-  await turn("turn-after-unseen", 1)
+  await turn("turn-after-taken", 1)
 })
+
+// A submit resolves when the engine takes the prompt, and one that waits behind a turn already
+// running took 8.5 s, 11.2 s and 12.4 s on 2.1.310
+// (`/legion/scratch/tmp/infra-1026-spike/logs/mod2.jsonl:136-147`) while the row still landed
+// 15 ms to 26 ms before that answer. So the watch for the row is bounded from the answer and
+// not from the call: bounded from the call, a prompt the engine held longer than
+// `PROMPT_ROW_MS` had its row arrive unclaimed, the pointer prompt's row went unstamped, and
+// the live view drew every message that prompt quotes a second time (INFRA-1026 review, round
+// six).
+test("a pointer prompt the engine holds past the row window still has its row stamped pointer", async () => {
+  const card = "the deploy window moved to Thursday"
+  const sent = submits.length
+  const { engine, turnStart, turnComplete } = started()
+  await turnStart(engine, { text: "go", turnId: "turn-slow" }, async (e) => ({ turnId: e.turnId }))
+  await runStep({ turnId: "turn-slow", index: 0, model: MODEL_WITH_EFFORT, messageCount: 2 })
+  expect((await message(card)).as).toBe("row")
+
+  // The turn's end points the model at that unread row, and the engine holds the prompt it
+  // submits for 2.5 s — past `PROMPT_ROW_MS` (2 s) — before taking it and writing its row.
+  // The wait is real because the window is: the mod spends it on the host's own clock
+  // (`$.clock.sleep`, which this file answers with `Bun.sleep`), and there is no handle on
+  // that wait to advance, so crossing the window means crossing it in real time.
+  const held = Promise.withResolvers<void>()
+  holdNextPrompt = held
+  await turnComplete(
+    engine,
+    { answer: "done", durationMs: 1, isAborted: false, reason: "answer", turnId: "turn-slow" },
+    async (e) => ({ text: e.answer }),
+  )
+  await until("the pointer submit to be in flight", () => holdNextPrompt === undefined)
+  await Bun.sleep(2_500)
+  held.resolve()
+  await until("the pointer submitted", () => submits.length === sent + 1)
+
+  expect((await rowReported(`prompt-row-${promptRows}`)).wrote).toBe("pointer")
+  await turn("turn-after-slow-pointer", 1)
+}, 20_000)

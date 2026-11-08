@@ -32,13 +32,16 @@ import {
 
 /**
  * How long the writer watches for the row Claude Code writes for a prompt it submitted, to
- * stamp that row for the server (`claimRow`).
+ * stamp that row for the server (`claimRow`), counted from the answer of the `$.prompt.submit`
+ * that carried it.
  *
  * The row is there before the call answers: in all six `$.prompt.submit` calls recorded on
  * 2.1.310 the prompt's own `prompt`-door row landed 15 ms to 26 ms before the call resolved
  * (`/legion/scratch/tmp/infra-1026-spike/logs/mod2.jsonl:144-145`,
  * `logs/mod3-q2-310.jsonl:51-52,86-87`, `logs/mod3-q1q3q5.jsonl:236-239`). So this is a bound
  * on a watch that is normally over before it starts, at about eighty times the largest gap.
+ * Counted from the call instead it would bound something else, since that call waits for a
+ * turn already running and such waits ran to 12.4 s (`submitPrompt`).
  */
 const PROMPT_ROW_MS = 2_000
 
@@ -204,8 +207,9 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
    *  goes out, so this holds the rows of the turn running and nothing else. */
   const watched = new Map<string, WatchedRow>()
   /** The prompts this mod submitted whose row has not arrived, oldest first. An entry leaves
-   *  it when the row arrives, and `PROMPT_ROW_MS` after it was made where no row does, so
-   *  nothing else bounds this. */
+   *  it when the row arrives, and `PROMPT_ROW_MS` after the engine took the prompt where no
+   *  row does; a submit still in flight holds its entry, since the row comes just before that
+   *  call answers (`submitPrompt`). So nothing else bounds this. */
   const awaitedRows: AwaitedRow[] = []
   /** The write running for each Envoy event id, so a copy of that event which arrives while the
    *  first is still running waits for it and then finds what it recorded (`writeOnce`). */
@@ -240,11 +244,13 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
     }
   }
 
-  /** Watch for the row Claude Code writes for the prompt carrying `text`, so that row is
+  /** Register the row Claude Code writes for the prompt carrying `text`, so that row is
    *  stamped `wrote` for the server (`claimRow`). Registered before the submit goes out,
-   *  because the row reaches this mod's own `session.append` hook before the call resolves,
-   *  and given up after `PROMPT_ROW_MS`, by when a row that was coming has come. Nothing waits
-   *  on it: the write is answered with the prompt alone (`./mod-protocol`,
+   *  because the row reaches this mod's own `session.append` hook before the call resolves.
+   *  Giving the entry up is the caller's, and `submitPrompt` times that from the call's
+   *  answer: the gap `PROMPT_ROW_MS` bounds is the one between the row and that answer, and a
+   *  submit itself can wait seconds for a turn already running. Nothing waits on the row: the
+   *  write is answered with the prompt alone (`./mod-protocol`,
    *  `ModCallResults["session.message"]`). */
   const awaitRow = (text: string, wrote: "message" | "pointer"): { readonly drop: () => void } => {
     const waiting: AwaitedRow = { text, wrote }
@@ -253,7 +259,6 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
       const at = awaitedRows.indexOf(waiting)
       if (at !== -1) awaitedRows.splice(at, 1)
     }
-    void sleep(PROMPT_ROW_MS).then(drop)
     return { drop }
   }
 
@@ -349,6 +354,14 @@ export function createMessageWriter(options: MessageWriterOptions): MessageWrite
       stopPrompting()
       return { drop: answer.drop }
     }
+    // The engine has the prompt, so its row is due: it landed 15 ms to 26 ms before this
+    // answer in all six submits recorded on 2.1.310, and the wait for the answer itself was
+    // 8.5 s, 11.2 s and 12.4 s where a turn was already running. Timed from the call instead,
+    // the window closed on a row still coming and the pointer prompt's row went unstamped,
+    // which drew every message that prompt quotes a second time (INFRA-1026 review, round
+    // six). Both paths above drop the entry themselves, so nothing is left behind for a
+    // prompt that never entered.
+    void sleep(PROMPT_ROW_MS).then(row.drop)
     guardTurnStart()
     return {}
   }
