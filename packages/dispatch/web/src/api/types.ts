@@ -307,6 +307,13 @@ interface CredentialGrantFields {
   grant_id: string;
   enrollment: CredentialEnrollment;
   names: string[];
+  /** Who decided the request this grant rests on: the approving person's own login, or
+   *  `judge:<model id>` where the broker's model judge approved it, which is no person. Null for
+   *  a grant nobody decided, and absent from a broker older than the field. It is who decided
+   *  this grant, which `approver` is not: a judged grant records the record's own approver
+   *  there, in whose stead the judge decided, so a surface that says who approved a grant says
+   *  this one and names the judge rather than a person who never saw the request. */
+  decided_by?: string | null;
   /** When it expires; null for a grant that lasts until its session ends. */
   expires_at: string | null;
   created_at: string;
@@ -318,8 +325,10 @@ export interface AutomaticCredentialGrant extends CredentialGrantFields {
   approver: null;
   record_id: null;
 }
-/** A grant someone approved: `approver` names the login that did (another person's, on a session
- *  the viewer operates), and `record_id` the record the approval rests on. */
+/** A grant someone approved: `approver` names whose grant it is, which is what the broker's
+ *  revoke rule reads (another person's, on a session the viewer operates, and for a judged grant
+ *  the record's own approver, who may be `anyone`), and `record_id` the record the approval rests
+ *  on. Who decided it is `decided_by`. */
 export interface ApprovedCredentialGrant extends CredentialGrantFields {
   granted: "approval";
   approver: string;

@@ -35,6 +35,61 @@ function nobodys(operator: string | null): CredentialGrant {
   };
 }
 
+/** A grant the broker's model judge approved in the owner's stead: the grant records the owner,
+ *  who may end it, and the request records the judge, who decided it. */
+const judged: CredentialGrant = {
+  approver: "ada@example.com",
+  created_at: "2026-10-03T12:07:00Z",
+  decided_by: "judge:claude-opus-4-6",
+  enrollment: { kind: "pod", operator: null, runtime_id: "pod-9", slot: null },
+  expires_at: "2026-10-03T12:22:00Z",
+  grant_id: "grant-judged",
+  granted: "approval",
+  names: ["DEEL_API_KEY"],
+  record_id: "record-judged",
+};
+
+/** A grant ada approved herself, which names her both ways. */
+const byAda: CredentialGrant = {
+  ...judged,
+  created_at: "2026-10-03T12:08:00Z",
+  decided_by: "ada@example.com",
+  grant_id: "grant-by-ada",
+  names: ["BILLING_KEY"],
+  record_id: "record-by-ada",
+};
+
+// The judge decides in the record approver's stead, so a judged grant's approver is the person
+// the request waited on and its decider is the judge. The row says who decided it; saying the
+// approver named ada for a request she never saw. Her revoke is unchanged: the broker allows it
+// because she is the approver, which is what `unrevocable` reads.
+test("a judged grant is granted by the judge, a person's own by that person, and both are revocable", async () => {
+  const getCredentialGrants = spyOn(api, "getCredentialGrants").mockResolvedValue({
+    grants: [judged, byAda],
+  });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <GrantsSection />
+      </QueryClientProvider>
+    );
+    const section = within(await screen.findByRole("region", { name: "Live grants" }));
+
+    const judgedRow = (await section.findByText("DEEL_API_KEY")).closest("tr") as HTMLElement;
+    expect(within(judgedRow).getByText("Approved by judge:claude-opus-4-6")).toBeDefined();
+    expect(within(judgedRow).queryByText("Approved by ada@example.com")).toBeNull();
+    expect(within(judgedRow).getByRole("button", { name: "Revoke" })).toBeDefined();
+
+    const adasRow = section.getByText("BILLING_KEY").closest("tr") as HTMLElement;
+    expect(within(adasRow).getByText("Approved by ada@example.com")).toBeDefined();
+  } finally {
+    cleanup();
+    getCredentialGrants.mockRestore();
+  }
+});
+
 // A grant with neither an approver nor an operator is on every signed-in person's page so that
 // what a pod took is visible, and RevokeByApprover's mayRevoke refuses all of them for it. A
 // Revoke button there could only fail, so the row is read-only and says what does end it.

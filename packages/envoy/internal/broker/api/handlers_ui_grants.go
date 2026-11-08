@@ -29,8 +29,17 @@ type approverGrantResp struct {
 	Enrollment recordEnrollmentResp `json:"enrollment"`
 	// The secrets it covers.
 	Names []string `json:"names"`
-	// The person who approved it; null for an automatic grant.
+	// The person who approved it; null for an automatic grant. It is who the grant belongs to,
+	// which is what the revoke rule reads (requests.Machine.RevokeByApprover's mayRevoke), and
+	// for a grant the model judge approved it is the record's own approver — the owner, or
+	// "anyone" for a shared secret — in whose stead the judge decided. Who decided it is
+	// DecidedBy, which for such a grant is the judge and not this person.
 	Approver *string `json:"approver"`
+	// Who decided the request this grant rests on (requests.decided_by): the approving person's
+	// own login, or "judge:<model id>" where the model judge approved it. Null for an automatic
+	// grant, which nobody decided. A page that says who decided a grant says this, so that a
+	// judged grant names the judge rather than a person who never saw the request.
+	DecidedBy *string `json:"decided_by"`
 	// When it expires; null for a grant that lasts until its session ends.
 	ExpiresAt *time.Time `json:"expires_at"`
 	// When it was granted.
@@ -70,7 +79,8 @@ func (s *server) writeApproverGrants(w http.ResponseWriter, r *http.Request, app
 		}
 		out[i] = approverGrantResp{
 			GrantID: g.GrantID, Granted: g.Granted, RecordID: g.RecordID, Enrollment: enrollmentResp(g.Enrollment),
-			Names: names, Approver: strPtr(g.Approver), ExpiresAt: g.ExpiresAt, CreatedAt: g.CreatedAt,
+			Names: names, Approver: strPtr(g.Approver), DecidedBy: strPtr(g.DecidedBy),
+			ExpiresAt: g.ExpiresAt, CreatedAt: g.CreatedAt,
 		}
 	}
 	writeJSON(w, http.StatusOK, approverGrantsResponse{Grants: out})

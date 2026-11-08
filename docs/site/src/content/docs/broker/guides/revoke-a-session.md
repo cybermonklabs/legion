@@ -31,7 +31,8 @@ anyone's session. It also lists, to everyone, every live grant that belongs to n
 pod or a VM got without asking, under a machine login that is a service's rather than a person's.
 Nobody operates such a session and nobody approved such a grant, so without this nobody would see
 what a pod had taken. Each row names its enrollment, its secrets, how it was **Granted**
-(**Automatically**, or **Approved by** an email), and when it was created and expires. Click
+(**Automatically**, or **Approved by** whoever decided it: an email, or `judge:<model id>` where
+the model judge decided it in an approver's stead), and when it was created and expires. Click
 **Revoke** to end one at once; the session's next read of it is refused `GRANT_NOT_LIVE`. The
 broker allows it when you are the grant's approver or its session's operator, and refuses anyone
 else `NOT_APPROVER` — so a grant that belongs to no person has no **Revoke** button at all. Its

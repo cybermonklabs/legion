@@ -967,8 +967,15 @@ type RecordDecision struct {
 	At           time.Time
 	CredentialID string
 	// Login is the person who decided the record, empty for an event no person made (expired,
-	// cancelled).
+	// cancelled), and empty for the model judge's own approval, which is no person's
+	// (decider.eventLogin).
 	Login string
+	// Actor is the audit actor the event was written under: record.HumanActor for a person's
+	// decision, record.JudgeActor for one the model judge made, and the broker's own actor for an
+	// event it ended on its own. It is the one field that tells the judge's decision from a
+	// person's, since a judged event carries no login at all, so every surface that says who
+	// decided a record reads it beside Login (record.JudgeLogin).
+	Actor string
 	// Detail is what the decision records beside its event, empty when it records nothing. An
 	// agent_secret approval carries one exactly when ApplyDecision recorded the request denied
 	// rather than granted: because its requesting enrollment was no longer live, or because the
@@ -1045,17 +1052,19 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 	// Whether the record is still pending follows PendingForApprover's rule: an agent_secret record
 	// by its request's state, a machine login by its terminal event. A decided record's terminal
 	// event names the decision; a request an ended enrollment cancelled before endEnrollment wrote
-	// that event has none, and its request row stands in for it.
-	var event, credID, login, eventDetail string
+	// that event has none, and its request row stands in for it. The actor is the event's own and
+	// has no stand-in there: a record with no event was decided by nobody, so there is nobody to
+	// name, and the empty actor says so.
+	var event, credID, login, actor, eventDetail string
 	var decidedAt time.Time
 	if agentSecret {
 		err = m.Store.Pool.QueryRow(ctx, `select coalesce(ev.event, r.state), coalesce(ev.at, r.decided_at), coalesce(ev.credential_id, ''),
-				coalesce(ev.login, ''), coalesce(ev.detail, r.decision_detail, '')
+				coalesce(ev.login, ''), coalesce(ev.actor, ''), coalesce(ev.detail, r.decision_detail, '')
 			from requests r left join credential_request_events ev on ev.record_id=r.record_id and ev.event = any($2)
-			where r.record_id=$1 and r.state <> 'pending'`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &eventDetail)
+			where r.record_id=$1 and r.state <> 'pending'`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &actor, &eventDetail)
 	} else {
-		err = m.Store.Pool.QueryRow(ctx, `select event, at, coalesce(credential_id,''), coalesce(login, ''), coalesce(detail, '') from credential_request_events
-			where record_id=$1 and event = any($2)`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &eventDetail)
+		err = m.Store.Pool.QueryRow(ctx, `select event, at, coalesce(credential_id,''), coalesce(login, ''), coalesce(actor, ''), coalesce(detail, '') from credential_request_events
+			where record_id=$1 and event = any($2)`, recordID, record.TerminalEventNames()).Scan(&event, &decidedAt, &credID, &login, &actor, &eventDetail)
 	}
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
@@ -1064,7 +1073,7 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 		return RecordDetail{}, err
 	}
 	detail.State = event
-	detail.Decided = &RecordDecision{Event: event, At: decidedAt, CredentialID: credID, Login: login, Detail: eventDetail}
+	detail.Decided = &RecordDecision{Event: event, At: decidedAt, CredentialID: credID, Login: login, Actor: actor, Detail: eventDetail}
 	var revoked int
 	err = m.Store.Pool.QueryRow(ctx, `select 1 from credential_request_events where record_id=$1 and event='revoked' limit 1`, recordID).Scan(&revoked)
 	switch {
@@ -1083,6 +1092,15 @@ func (m *Machine) ReadRecord(ctx context.Context, recordID string) (RecordDetail
 // the record the approval rests on and whose Approver is that person's login, which for an
 // operator's own list can be another login. ExpiresAt is nil for a grant that lasts until its
 // session ends.
+//
+// Approver and DecidedBy are two different facts and a judged grant tells them apart. Approver is
+// the grant's own column: whose grant it is, which is what this list filters by and what
+// mayRevoke reads, and for a grant the model judge approved it is the record's own approver — the
+// owner, or record.AnyoneApprover for a shared secret — since the judge decides in their stead
+// (D1, decider.grantApprover). DecidedBy is who decided the request the grant rests on
+// (requests.decided_by): that same person for a person's own approval, and record.JudgeActor for
+// the judge's, so a surface that says who decided this grant names the judge rather than a person
+// who never saw the request. It is empty for an automatic grant, which nobody decided.
 type ApproverGrant struct {
 	GrantID    string
 	Granted    string
@@ -1090,6 +1108,7 @@ type ApproverGrant struct {
 	Enrollment record.Enrollment
 	Names      []string
 	Approver   string
+	DecidedBy  string
 	ExpiresAt  *time.Time
 	CreatedAt  time.Time
 }
@@ -1124,7 +1143,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	if login == "" || login == record.AnyoneApprover {
 		return nil, nil
 	}
-	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), g.expires_at, g.created_at,
+	rows, err := m.Store.Pool.Query(ctx, `select g.id, r.record_id, e.kind, e.runtime_id, coalesce(e.operator,''), e.slot, coalesce(g.approver,''), coalesce(r.decided_by,''), g.expires_at, g.created_at,
 		coalesce((select array_agg(rs.name order by rs.name) from request_secrets rs where rs.request_id=r.id and rs.decision<>'deny'), '{}')
 		from grants g
 		join requests r on r.id=g.request_id
@@ -1141,7 +1160,7 @@ func (m *Machine) GrantsForApprover(ctx context.Context, approver string) ([]App
 	var out []ApproverGrant
 	for rows.Next() {
 		var g ApproverGrant
-		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.ExpiresAt, &g.CreatedAt, &g.Names); err != nil {
+		if err := rows.Scan(&g.GrantID, &g.RecordID, &g.Enrollment.Kind, &g.Enrollment.RuntimeID, &g.Enrollment.Operator, &g.Enrollment.Slot, &g.Approver, &g.DecidedBy, &g.ExpiresAt, &g.CreatedAt, &g.Names); err != nil {
 			return nil, err
 		}
 		g.Granted = policy.Approval

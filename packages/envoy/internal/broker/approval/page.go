@@ -53,8 +53,13 @@ type recordView struct {
 	ExpiresAt   string
 	Approver    string
 	// State is the record's state, "expired" too for one past its expiry the sweeper has not
-	// ended yet; DecidedBy, DecidedAt and Detail are its decision's.
+	// ended yet; DecidedBy, DecidedAt and Detail are its decision's. DecidedBy is empty for a
+	// record nobody decided, and names the model judge where the judge decided it (decidedBy).
 	State, DecidedBy, DecidedAt, Detail string
+	// DecidedByJudge is whether DecidedBy names the model judge rather than a person. The page
+	// prints the two differently: a person's login as it is, and the judge's name as the literal
+	// id it is, in the same <code> every other id on the page is in.
+	DecidedByJudge bool
 	// Pending is a record still waiting for a decision.
 	Pending bool
 	// MayDecide is whether the signed-in person may decide it (record.MayDecide).
@@ -220,7 +225,8 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 		v.Lifetime = "for " + (time.Duration(*d.LifetimeSeconds) * time.Second).String()
 	}
 	if d.Decided != nil {
-		v.DecidedBy, v.DecidedAt, v.Detail = d.Decided.Login, d.Decided.At.UTC().Format(timeLayout), d.Decided.Detail
+		v.DecidedBy, v.DecidedByJudge = decidedBy(*d.Decided)
+		v.DecidedAt, v.Detail = d.Decided.At.UTC().Format(timeLayout), d.Decided.Detail
 	}
 	v.Pending = d.State == "pending" && d.ExpiresAt.After(now)
 	if d.State == "pending" && !v.Pending {
@@ -228,6 +234,25 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	}
 	v.Buttons = v.Pending && !v.MachineLogin && v.MayDecide
 	return v
+}
+
+// decidedBy is who the page says decided a record, read from its terminal event: the model judge
+// where the event's actor is the judge's, and the deciding person's login otherwise. It is empty
+// where nobody decided the record — an expiry, or a cancellation the requesting session's end
+// wrote — since such an event carries no login and no judge actor either.
+//
+// The judge's event carries no login at all, on purpose: the person who would otherwise have
+// decided is named nowhere in it (decider.eventLogin). Its actor is therefore the only thing
+// that names the decider, and a page that read the login alone printed "approved at <time>" with
+// nobody beside it. The name this returns for the judge is the one the audit row holds,
+// "judge:<model id>", which is also what requests.decided_by keeps and what
+// `agent-secrets status` prints under decided_by: one name for the judge everywhere a person
+// reads one.
+func decidedBy(d requests.RecordDecision) (name string, judge bool) {
+	if _, byTheJudge := record.JudgeLogin(d.Actor); byTheJudge {
+		return d.Actor, true
+	}
+	return d.Login, false
 }
 
 // approverText is who a record's approver field says may decide it.
@@ -270,6 +295,12 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 }
 
 // outcome says what became of a record a decision named, from its state now.
+//
+// "already decided: " opens the line whenever somebody other than the reader decided the record,
+// the model judge included: the reader clicked Approve and got the broker's refusal, and what
+// they must read first is that the record was already decided and by whom. A record nobody
+// decided — one that expired, or that its requesting session withdrew — has no decider to
+// compare, and its own line says what became of it.
 func outcome(d requests.RecordDetail, login string, now time.Time) string {
 	what := strings.Join(d.Identifiers, ", ") + ": "
 	switch {
@@ -282,7 +313,8 @@ func outcome(d requests.RecordDetail, login string, now time.Time) string {
 	case d.Decided == nil:
 		return what + "still pending; it was not decided."
 	}
-	by, at := d.Decided.Login, d.Decided.At.UTC().Format(timeLayout)
+	by, _ := decidedBy(*d.Decided)
+	at := d.Decided.At.UTC().Format(timeLayout)
 	if by != "" && by != login {
 		what += "already decided: "
 	}
