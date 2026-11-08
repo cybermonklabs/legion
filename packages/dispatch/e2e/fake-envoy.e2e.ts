@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { request as httpRequest } from "node:http";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { roleToken } from "@legion/contracts";
 import { expect, test } from "@playwright/test";
 
 import type { FakeInterest, FakeLegionAgent, FakeSession } from "./agents";
@@ -95,11 +96,10 @@ test("an interests seed whose body arrives during a session reseed is kept", asy
 
 // The registry reads answer from the seeded entries as the listener's do: an issue's sessions by
 // role in workflow order and each role token's newest first, `replaced_by`/`replaced_at` from the
-// next session of the token to start, and `live` from the session's own registration inside the
-// live window (`sessionIsLive` through `session.StateOf`), never from this listener's session
-// cache - so a session the cache holds whose registration is older than the window reads
-// `live: false` while it is not gone. A session reseed keeps the entries, as the real bucket
-// outlives a session ending.
+// next session of the token to start, and `live` from the state the session's own record puts it
+// in (`sessionIsLive` through `session.StateOf`), never from this listener's session cache - so a
+// session the cache holds whose record is unresponsive reads `live: false` while it is not gone.
+// A session reseed keeps the entries, as the real bucket outlives a session ending.
 test("the Legion agent registry reads derive live and replacement, and outlive a session reseed", async () => {
   test.skip(test.info().project.name !== "chromium", "the fixture has no browser to vary");
   const { origin, stop } = await startFakeEnvoy();
@@ -119,7 +119,7 @@ test("the Legion agent registry reads derive live and replacement, and outlive a
     issue,
     legion_project: "e2elegion",
     role,
-    role_token: `legion-e2elegion-${issue.toLowerCase()}-${role}`,
+    role_token: roleToken("e2elegion", issue, role),
     session_id: session,
     started_at: startedAt,
     title: `Legion ${role} · ${issue}`,
@@ -133,17 +133,21 @@ test("the Legion agent registry reads derive live and replacement, and outlive a
       entry("elsewhere", "E2E-2", "tester", "2026-10-26T00:00:00Z"),
     ];
     expect((await put("/__fixture/legion-agents", seeded)).status).toBe(200);
-    // The reseed puts both sessions in the listener's cache; only the registration decides `live`,
-    // and the tester's is an hour old.
+    // The reseed puts both sessions in the listener's cache. Only the session's own record
+    // decides `live`, as `sessionIsLive` judges it through `session.StateOf`, so the tester is
+    // moved past the live window: unresponsive is not gone, and it keeps its registry entry, its
+    // role token and its place in the list while reading `live: false`.
     const sessions: FakeSession[] = [
       { session_id: "new-reviewer", title: "Legion reviewer" },
-      {
-        last_seen: Date.now() - 60 * 60 * 1000,
-        session_id: "stale-tester",
-        title: "Legion tester",
-      },
+      { session_id: "stale-tester", title: "Legion tester" },
     ];
     expect((await put("/__fixture/sessions", sessions)).status).toBe(200);
+    const unresponsive = await fetch(`${origin}/__fixture/sessions/stale-tester`, {
+      body: JSON.stringify({ state: "unresponsive" }),
+      headers: { "Content-Type": "application/json" },
+      method: "PATCH",
+    });
+    expect(unresponsive.status).toBe(200);
 
     const issue = await fetch(`${origin}/v1/legion/agents?issue=E2E-1`);
     expect(issue.status).toBe(200);

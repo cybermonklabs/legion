@@ -91,10 +91,14 @@ async function seed(): Promise<Fixture> {
   };
 }
 
-/** An agent's own row name in the Legion agents section: the name `Row` marks `data-collaborator`
+/** The selector for an agent's own row name: the name `Row` marks `data-collaborator`
  *  (`CollaboratorsTab.tsx`), never one that names it as another row's replacement. */
+const rowNameSelector = (sessionId: string) =>
+  `[data-collaborator] [data-agent-name="${sessionId}"]`;
+
+/** An agent's own row name in the Legion agents section. */
 function agentRowName(legion: Locator, sessionId: string): Locator {
-  return legion.locator(`[data-collaborator] [data-agent-name="${sessionId}"]`);
+  return legion.locator(rowNameSelector(sessionId));
 }
 
 // No `@phone` tag: this row starts at the project's own desktop width and narrows the window
@@ -141,9 +145,7 @@ test("the Collaborators tab lists an issue's people and its Legion agents, runni
     // holds the new session's name, in the line that says what replaced it, so a row selected by
     // any name inside it would match both.
     const rowOf = (sessionId: string) =>
-      reviewers
-        .getByRole("listitem")
-        .filter({ has: page.locator(`[data-collaborator] [data-agent-name="${sessionId}"]`) });
+      reviewers.getByRole("listitem").filter({ has: page.locator(rowNameSelector(sessionId)) });
     await expect(rowOf(oldReviewer).locator(`[data-replaced-by="${newReviewer}"]`)).toContainText(
       `replaced by Legion reviewer · ${issueKey}`
     );

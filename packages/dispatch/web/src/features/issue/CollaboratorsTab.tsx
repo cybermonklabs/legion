@@ -1,8 +1,8 @@
-import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
+import { isLegionRole, LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { api } from "../../api/client";
+import { issueCollaboratorsQuery } from "../../api/queries";
 import type {
   IssueCollaboratorAgent,
   IssueCollaboratorLegion,
@@ -49,11 +49,12 @@ function newestFirst(left: string | null, right: string | null): number {
 }
 
 export function collaboratorSections(collaborators: IssueCollaborators): CollaboratorSections {
-  const roleOf = (agent: IssueCollaboratorAgent): LegionRole | undefined =>
-    LEGION_ROLES.find((role) => role === agent.legion?.role);
-  const legion = collaborators.agents.filter(
-    (agent): agent is LegionAgent => agent.legion !== null && roleOf(agent) !== undefined
-  );
+  /** Whether this row is held by a role this build knows, which is what puts it in a Legion
+   *  section: a row with no Legion record, and one naming a role `LEGION_ROLES` does not hold,
+   *  both belong to `others`. */
+  const known = (agent: IssueCollaboratorAgent): agent is LegionAgent =>
+    agent.legion !== null && isLegionRole(agent.legion.role);
+  const legion = collaborators.agents.filter(known);
   return {
     legion: LEGION_ROLES.flatMap((role) => {
       const agents = legion
@@ -64,7 +65,7 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
     // Every session no Legion section holds, so a registry entry naming a role this build does
     // not know is listed rather than dropped from the page.
     others: collaborators.agents
-      .filter((agent) => roleOf(agent) === undefined)
+      .filter((agent) => !known(agent))
       .sort((left, right) => newestFirst(left.last_at, right.last_at)),
     people: collaborators.people,
   };
@@ -117,10 +118,7 @@ function Worked({
  * click from the conversation it had; a person is their login as plain text, as everywhere.
  */
 export function CollaboratorsTab({ issueKey }: { issueKey: string }): ReactNode {
-  const query = useQuery({
-    queryFn: () => api.getIssueCollaborators(issueKey),
-    queryKey: ["issue", issueKey, "collaborators"],
-  });
+  const query = useQuery(issueCollaboratorsQuery(issueKey));
   if (query.isPending) {
     return <p className={textMutedOnCanvas}>Loading collaborators…</p>;
   }

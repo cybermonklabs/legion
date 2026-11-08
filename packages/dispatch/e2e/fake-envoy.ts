@@ -231,7 +231,9 @@ function legionAnswer(selected: readonly FakeLegionAgent[]): Record<string, unkn
   const byToken = new Map<string, FakeLegionAgent[]>();
   for (const agent of state.legionAgents) {
     if (!tokens.has(agent.role_token)) continue;
-    byToken.set(agent.role_token, [...(byToken.get(agent.role_token) ?? []), agent]);
+    const token = byToken.get(agent.role_token);
+    if (token === undefined) byToken.set(agent.role_token, [agent]);
+    else token.push(agent);
   }
   return [...byToken.values()]
     .sort((left, right) => {
@@ -372,9 +374,7 @@ const server = Bun.serve({
       if (agent === undefined) {
         return Response.json({ error: `unknown legion agent ${sessionID}` }, { status: 404 });
       }
-      const answer = legionAnswer(
-        state.legionAgents.filter((item) => item.role_token === agent.role_token)
-      ).find((item) => item.session_id === sessionID);
+      const [answer] = legionAnswer([agent]);
       return Response.json(answer);
     }
     if (request.method === "POST" && url.pathname === "/v1/messages/send") {

@@ -23,6 +23,7 @@ import {
   isAnchorMissing,
   isCapExceeded,
 } from "../../api/client";
+import { issueCollaboratorsQuery } from "../../api/queries";
 import type { Agent, AskOption, AskUrgency, IssueCollaboratorAgent } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
@@ -234,8 +235,10 @@ export function stoppedRoleOptions(
   const running = new Set(live.map((agent) => agent.session_id));
   // A role this build does not know sorts after every role it does, rather than ahead of them
   // all, which is where `indexOf`'s -1 would put it.
-  const order = (role: LegionRole) =>
-    LEGION_ROLES.indexOf(role) === -1 ? LEGION_ROLES.length : LEGION_ROLES.indexOf(role);
+  const order = (role: LegionRole) => {
+    const place = LEGION_ROLES.indexOf(role);
+    return place === -1 ? LEGION_ROLES.length : place;
+  };
   return collaborators
     .flatMap((agent) => {
       const legion = agent.legion;
@@ -653,33 +656,27 @@ export function MentionComposer({
   const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
   // The issue's collaborators feed the "Not running" options, read once the picker opens on an
   // issue owner alone: the composer in a document's margin carries that document rather than its
-  // issue, and a closed picker and a direct message read nothing. The key is the Collaborators
+  // issue, and a closed picker and a direct message read nothing. The query is the Collaborators
   // tab's, so the two readers share one entry - a tab read within the shell's 30 s `staleTime`
   // opens the picker with no request of its own - and an invalidation of the `["issue", key]`
   // prefix refetches it under a picker that stays open.
   const collaboratorsIssue = owner.kind === "issue" ? owner.issueKey : undefined;
   const collaborators = useQuery({
+    ...issueCollaboratorsQuery(collaboratorsIssue),
     enabled: collaboratorsIssue !== undefined && autocompleteOpen,
-    queryFn: () => {
-      if (collaboratorsIssue === undefined) {
-        throw new Error("The picker reads collaborators for an issue owner only.");
-      }
-      return api.getIssueCollaborators(collaboratorsIssue);
-    },
-    queryKey: ["issue", collaboratorsIssue, "collaborators"],
   });
-  // A live list whose state is unknown holds every role as far as the picker can tell.
-  const liveKnown = suppliedAgents !== undefined || !(live.isPending || live.isError);
+  // A live list whose state is unknown holds every role as far as the picker can tell, which is
+  // what `agentsCurrent` false says of it.
   const stoppedOptions = useMemo(
     () =>
       collaboratorsIssue === undefined
         ? []
         : stoppedRoleOptions(
-            liveKnown ? agents : undefined,
+            agentsCurrent ? agents : undefined,
             collaborators.data?.agents ?? [],
             text
           ),
-    [agents, collaborators.data, collaboratorsIssue, liveKnown, text]
+    [agents, agentsCurrent, collaborators.data, collaboratorsIssue, text]
   );
   const [filteredOptions, filteredStoppedOptions] = useMemo<
     [MentionOption[], MentionOption[]]
