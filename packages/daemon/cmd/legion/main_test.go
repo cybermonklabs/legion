@@ -1710,7 +1710,7 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // The `roots waiting on a person` line counts the answered roots the daemon's own published
 // waiting line still names (api.WaitingLineView), not every answered one: a root whose design
 // gate has opened at every gated step resumes at once and takes no slot, so it stands in no line
-// and belongs in no count of one. A daemon below contract 56 serves no place at all, and 0 is
+// and belongs in no count of one. A daemon below contract 57 serves no place at all, and 0 is
 // the true answer for a caller that cannot see the line.
 //
 // The operator's guide prints this line as its sample and says what the count is, so the sample

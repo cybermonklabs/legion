@@ -2,7 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -132,5 +137,67 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 	if waitingLineContract > DaemonAPIVersion {
 		t.Fatalf("waitingLineContract = %d, above DaemonAPIVersion %d: no caller could be served the field",
 			waitingLineContract, DaemonAPIVersion)
+	}
+}
+
+// Every shipped text that names a contract number beside the waiting line names the one the
+// daemon declares for it. A renumber moves the constants, which the test above holds, and leaves
+// the prose saying the boundary the old number drew: a reader then takes a daemon below the old
+// number to serve no place, where the daemon below the new one serves none. This change was
+// renumbered twice, and the second renumber left five such sentences behind, so the guard is
+// here rather than in a reviewer's eye.
+//
+// A text names this field's contract when `contract <N>`, or the bare `below <N>` a sentence
+// writes once the passage has already said "contract", stands within 220 bytes of
+// WaitingLineField, and that window names neither the retired stranded state nor the stranded
+// report, which is the other contract these same files discuss; the window is where the
+// sentences that state the boundary fall. Both forms are read because a passage commonly writes
+// the number twice — a headline "Daemon API contract 57:" and then "a caller from a pod below
+// 57 is served the state without the field" — and a reader of the first form alone passes a
+// text whose headline was corrected and whose boundary sentence was not. A file that names no
+// such pair is passed over, so a later text in another file is covered the moment it names the
+// two together.
+func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
+	root := filepath.Join("..", "..", "..", "..")
+	named := regexp.MustCompile(`(?:contract|below) (\d+)`)
+	const window = 220
+	checked := 0
+	for _, name := range []string{
+		"packages/daemon/cmd/legion/main.go",
+		"packages/daemon/cmd/legion/main_test.go",
+		"packages/daemon/internal/api/server.go",
+		"packages/daemon/internal/api/state.go",
+		"packages/daemon/internal/projection/project.go",
+		"packages/daemon/internal/projection/project_test.go",
+		"packages/contracts/src/legion-api.ts",
+		"packages/pi-legion/AGENTS.md",
+		"docs/site/src/content/docs/legion/running-legion.md",
+		"docs/site/src/content/docs/legion/troubleshooting.md",
+		"packages/contracts/.changes/unreleased/pr2989-Added-20261108-074056.yaml",
+		"packages/pi-legion/.changes/unreleased/pr2989-Changed-20261108-074108.yaml",
+		"packages/claude-envoy/.changes/unreleased/pr2989-Changed-20261108-074111.yaml",
+	} {
+		body, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		text := string(body)
+		for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
+			near := text[max(0, at[0]-window):min(len(text), at[1]+window)]
+			if !strings.Contains(near, WaitingLineField) ||
+				strings.Contains(near, "retired") || strings.Contains(near, "stranded") {
+				continue
+			}
+			checked++
+			said := text[at[2]:at[3]]
+			if want := strconv.Itoa(waitingLineContract); said != want {
+				t.Errorf("%s says `%s` of the %s, want the number %d, the contract that added it: %q",
+					name, strings.TrimSpace(text[at[0]:at[1]]), WaitingLineField, waitingLineContract,
+					strings.TrimSpace(near))
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatalf("no shipped text names a contract beside %s; this test proves nothing", WaitingLineField)
 	}
 }

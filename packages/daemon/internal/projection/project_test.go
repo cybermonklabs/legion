@@ -721,7 +721,7 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 }
 
 // Every issue `admission.waiting` names carries its own place in the line and the length of that
-// list (contract 56): the places run 1 to the length in the order the list is published in, and
+// list (contract 57): the places run 1 to the length in the order the list is published in, and
 // no two issues stand at the same one. Nothing is filtered out of it — a member a Dispatch link
 // blocks, a root a person has answered and a root whose first phase has never started each take
 // their place, and what holds the blocked one is `admission.blocked` beside this. An issue
