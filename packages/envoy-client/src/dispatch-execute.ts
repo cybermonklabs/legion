@@ -5254,8 +5254,11 @@ export async function executeDispatchTool(
       const name = stringArg(args, "name");
       const content = optionalString(args, "content");
       // The base this upload replaces, for an upload over a document that already exists; the
-      // server takes the document token alone and refuses a blocks guard.
-      const precondition = args.precondition as EditPrecondition | undefined;
+      // server takes the document token alone and refuses a blocks guard. Destructured as
+      // dispatch_doc_edit reads its own, since args carries an index signature and a package
+      // built with noPropertyAccessFromIndexSignature refuses the dotted read.
+      const { precondition: rawPrecondition } = args;
+      const precondition = rawPrecondition as EditPrecondition | undefined;
       const base = precondition === undefined ? {} : { precondition };
       const artifactInput =
         content === undefined

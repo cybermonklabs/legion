@@ -1,5 +1,6 @@
 kind: Fixed
-body: AskGate's rules check no longer judges a question a re-upload keeps. An ask block of an upload that names no block id is left out when its question is one the current version of the document already holds, as one naming a held block id already was: the server gives such a block the live block's id, so the upload opens no ask for it. An opener whose question matches none is judged as before, and no second read is made.
+body: |-
+    AskGate's rules check no longer judges a question a re-upload keeps. An ask block of an upload that names no block id is left out when its question is one the current version of the document already holds, as one naming a held block id already was: the server gives such a block the live block's id, so the upload opens no ask for it. An opener whose question matches none is judged as before, and no second read is made.
 time: 2026-11-08T00:00:02.000000000Z
 custom:
     Issue: pr3000
