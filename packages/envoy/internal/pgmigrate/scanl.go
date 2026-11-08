@@ -239,8 +239,27 @@ var lexRules = [lexStates][]lexRule{
 // lexSQL reads text as scan.l reads it with standard_conforming_strings standardConformingStrings,
 // calling emit with every token in order, and returns where scan.l first raised an error, or -1.
 func lexSQL(text string, standardConformingStrings bool, emit func(sqlToken)) int {
+	return lexSQLTo(text, standardConformingStrings, len(text), emit)
+}
+
+// lexSQLTo is lexSQL stopped as soon as the scanner is back in INITIAL at or past stop: a reader
+// that asks about one span of a text need not read the text past it. Two things make that the
+// same answer the whole reading gives about [0, stop). The scanner is in INITIAL between tokens
+// and nowhere else, so every token that can hold a byte before stop has been emitted by then and
+// every token after it starts at stop or later. And the byte an error is recorded on is the start
+// of the token being read (fail), which only grows, so a refusal raised after the stop is a
+// refusal at stop or past it: what a reader learns from the tail of the text is which bytes past
+// stop are hidden, and it was not asking.
+//
+// stop is len(text) for lexSQL itself, where the only position it can stop at is the end of the
+// text with the scanner in INITIAL - which is the one case atEOF has nothing to do - so the whole
+// reading is unchanged.
+func lexSQLTo(text string, standardConformingStrings bool, stop int, emit func(sqlToken)) int {
 	l := &lexer{text: text, standardConformingStrings: standardConformingStrings, emit: emit, failAt: -1}
 	for l.pos < len(text) {
+		if l.state == lexInitial && l.pos >= stop {
+			return l.failAt
+		}
 		if l.state == lexXQS {
 			// <xqs>{quotecontinue} is the only rule of this state with an action of its own.
 			// <xqs>{quotecontinuefail}, <xqs>{other} and <xqs><<EOF>> share one action: throw
