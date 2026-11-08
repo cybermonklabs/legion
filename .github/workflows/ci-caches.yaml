@@ -28,20 +28,23 @@ name: CI caches
 # families it fills the smaller one first, so the entry that carries the other's objects too is
 # the one that was large already.
 #
-# Five families and no more: every entry this workflow fills is a Go family. Two that were not
-# went with the jobs that read them - the Playwright browsers and the .deb files of the apt list
-# the browser suite installed - because dispatch-browser.yaml's shard and alone jobs run in the
-# image this repository builds, which carries the browsers and their host packages, so neither
-# entry has a restore left to serve (dispatch://INFRA-1443). A save whose restore is gone is
-# what check-ci-filters.sh refuses, so the two jobs that wrote them are gone with them.
+# One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
+# content of the Lean toolchain the model names rather than a Go version. Two others that were
+# no Go family went with the jobs that read them - the Playwright browsers and the .deb files of
+# the apt list the browser suite installed - because dispatch-browser.yaml's shard and alone
+# jobs run in the image this repository builds, which carries the browsers and their host
+# packages, so neither entry has a restore left to serve (dispatch://INFRA-1443). A save whose
+# restore is gone is what check-ci-filters.sh refuses, so the two jobs that wrote them are gone
+# with them.
 #
 # go-docs is not here: docs-pages.yaml saves it on this same push, from the build job it shares
 # with ci.yaml's docs job. The Bun cache is not here either: .github/actions/setup-bun reads and
 # writes it on main, and five workflows that run there call it.
 
 # A push to main is what writes the default branch's cache scope; workflow_dispatch fills a family
-# by hand, after a Go bump or an eviction. No `paths:`: a key holds a Go version, not a file list,
-# so what the push touched decides nothing, and a run whose keys are all there is seconds.
+# by hand, after a Go bump, a move of the Lean toolchain or an eviction. No `paths:`: a key holds
+# a Go version or that toolchain file's hash, not a file list, so what the push touched decides
+# nothing, and a run whose keys are all there is seconds.
 on:
   push:
     branches: [main]
@@ -272,3 +275,42 @@ jobs:
             ~/go/pkg/mod
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+
+  # The elan home ci.yaml's airlock-lean job restores, the Lean toolchain that job's `lake build`
+  # needs. No setup-go and no Go family: the key is the content of the lean-toolchain the model
+  # names, since that file is what decides which toolchain elan installs, so the entry is
+  # refreshed when the model moves to another Lean and at no other time. install-elan puts elan
+  # under $RUNNER_TEMP/elan and `lake build` downloads the named toolchain into it on a miss,
+  # which is the whole of what is saved.
+  elan:
+    runs-on: ubuntu-24.04
+    # One toolchain download and one build of the model on a miss; a run that finds the key
+    # costs the checkout alone.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - id: elan-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/elan
+          key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+          lookup-only: true
+
+      - if: steps.elan-cache.outputs.cache-hit != 'true'
+        uses: ./.github/actions/install-elan
+
+      # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
+      # airlock-lean will find rather than elan alone.
+      - name: Build what airlock-lean builds
+        if: steps.elan-cache.outputs.cache-hit != 'true'
+        run: lake build
+        working-directory: packages/envoy/internal/broker/airlock/lean
+
+      - if: steps.elan-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/elan
+          key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
