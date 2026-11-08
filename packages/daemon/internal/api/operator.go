@@ -50,8 +50,9 @@ type DeliverRequest struct {
 // `legion claims retry --fresh-session`, which starts the claim in a new session instead — what a
 // claim its provider refused needs, since the session those turns were refused in would be
 // refused again. It is the one effect the controller's fresh_session runs as well
-// (freshSession), and it reaches every claim of the project that is not in a turn, where the
-// plain retry reaches only a claim that failed and one an operator stopped.
+// (freshSession), and it reaches every claim of the project that is not in a turn and whose
+// launch is not in flight, where the plain retry reaches only a claim that failed and one an
+// operator stopped.
 type RetryRequest struct {
 	FreshSession bool `json:"freshSession,omitempty"`
 }
@@ -515,9 +516,9 @@ func forgettable(state supervise.ClaimState) bool {
 // fresh_session runs too (freshSession). The two differ in what they reach and in what they
 // leave behind, and nothing else answers either: a plain retry acts on a claim that failed and
 // on one an operator stopped, resuming the session it recorded, while a fresh session reaches
-// every claim of the project that is not in a turn and drops that session first. Only the fresh
-// session answers the claim with a phase restart that was refused named on it
-// (OperatorClaim.PhaseNotRestarted).
+// every claim of the project that is not in a turn and whose launch is not in flight, and drops
+// that session first. Only the fresh session answers the claim with a phase restart that was
+// refused named on it (OperatorClaim.PhaseNotRestarted).
 func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	token := claim.Token(r.PathValue("token"))
 	m, ok := s.supervisor.Machine(token)

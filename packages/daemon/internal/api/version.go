@@ -732,11 +732,11 @@ package api
 // of provider-error turns back to zero. One effect stands behind both doors (api's
 // freshSession), and it reaches every claim of the project that is not in a turn and whose
 // launch is not in flight, where the plain retry reaches only a claim that failed and one an
-// operator stopped. Its answer
-// (`api.FreshSessionResponse`), and the `api.OperatorClaim` the operator's retry answers, carry
-// an optional `phaseNotRestarted`: the claim came back owing no task and the workflow refused
-// the restart of its phase, which is the one thing the claim's state does not record, so the
-// fresh session reports the refusal rather than giving it, and the claim is started either way.
+// operator stopped. Its answer (`api.FreshSessionResponse`), and the `api.OperatorClaim` the
+// operator's retry answers, carry an optional `phaseNotRestarted`: the claim came back owing no
+// task and the workflow refused the restart of its phase, which is the one thing the claim's
+// state does not record, so the fresh session reports the refusal rather than giving it, and the
+// claim is started either way.
 // The controller's `legion` tool gains `fresh_session (issue, role)`, which posts it, and
 // `packages/contracts/src/legion-api.ts` mirrors the request and that member.
 // `POST /legion/v1/claims/compact`
@@ -751,10 +751,10 @@ package api
 // or stored working under a launch the wake pacing parks, which fresh_session refuses as well
 // (`CLAIM_UNSETTLED`) — a Claude Code claim, which runs no Oh My Pi session (`CLAIM_NOT_ON_OMP`),
 // and the role `controller` (`INVALID_ROLE`). The controller's `legion` tool gains
-// `compact (issue, role)` beside
-// `fresh_session`, and `POST /legion/v1/operator/claims/{token}/compact`, which
-// `legion claims compact --claim <token>` posts, is the operator's door onto the
-// same effect. The compaction reaches Oh My Pi as the shim's own `compact` frame
+// `compact (issue, role)` beside `fresh_session`, and
+// `POST /legion/v1/operator/claims/{token}/compact`, which `legion claims compact --claim <token>`
+// posts, is the operator's door onto the same effect. The compaction reaches Oh My Pi as the
+// shim's own `compact` frame
 // (`shimwire.Compact`, carried by `internal/stream`'s Conn.Compact and forwarded by the image's
 // `legion shim` as a prompt is), so the pod's shim is one of this number's surfaces beside the
 // three routes. None of the three routes needs a number of its

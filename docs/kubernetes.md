@@ -1101,7 +1101,7 @@ A session the compaction left refused is the fresh session's, which is the last 
 legion claims retry --claim <token> --operator-token-file <file> --fresh-session
 ```
 
-It reaches every claim of the project that is not in a turn — one idle between the ladder's sends, a suspended one, one an operator stopped (`legion claims stop` retires the claim it stops), a failed one, and a root architect as much as a phase worker — suspending it where it is live, forgetting the session it recorded, and starting it again (`freshSession`, `packages/daemon/internal/api/freshsession.go`).
+It reaches every claim of the project that is not in a turn and whose launch is not in flight — one idle between the ladder's sends, a suspended one, one an operator stopped (`legion claims stop` retires the claim it stops), a failed one, and a root architect as much as a phase worker — suspending it where it is live, forgetting the session it recorded, and starting it again (`freshSession`, `packages/daemon/internal/api/freshsession.go`).
 A phase worker comes back with the task of the phase its issue stands in now, and a root architect with its tree's catch-up.
 No `forget-session` comes before it, and no recovery here needs an edit of the daemon's store.
 

@@ -528,8 +528,8 @@ printed with its reason, and whatever task the claim owed has gone again all the
 left refused: it forgets the session that claim recorded and starts the claim
 in a new session with its phase's task, so no `legion claims forget-session` comes before it. It
 reaches a live or suspended claim as well as a failed or stopped one — every claim of the
-project that is not in a turn — so it is what starts a claim the compaction could not reach, and
-a new session loses everything the old one held. It
+project that is not in a turn and whose launch is not in flight — so it is what starts a claim the
+compaction could not reach, and a new session loses everything the old one held. It
 forgets that session before it starts the phase, because the start runs the moment the restart
 commits and would otherwise resume the very session you are dropping. A retry the daemon then
 refuses has forgotten the session all the same: the claim keeps its state and its task, the

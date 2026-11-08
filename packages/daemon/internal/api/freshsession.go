@@ -158,11 +158,11 @@ func roleList() string {
 // and reports the status its caller's success answer takes, with the sentence that answer
 // carries when nothing restarted the claim's phase (FreshSessionResponse.PhaseNotRestarted).
 //
-// It reaches every claim of the project that is not in a turn — one idle on the provider-error
-// ladder, a suspended one, one an operator stopped, a failed one, and a root architect as much
-// as a phase worker. The claim a run of provider errors names is live and idle between the
-// ladder's sends, not stopped, so a recovery that reached only stopped and failed claims would
-// miss the one the notice is sent for.
+// It reaches every claim of the project that is not in a turn and whose launch is not in
+// flight — one idle on the provider-error ladder, a suspended one, one an operator stopped, a
+// failed one, and a root architect as much as a phase worker. The claim a run of provider
+// errors names is live and idle between the ladder's sends, not stopped, so a recovery that
+// reached only stopped and failed claims would miss the one the notice is sent for.
 //
 // It is three operator commands in a row, and nothing else: `legion claims suspend` for a claim
 // that runs, then `legion claims forget-session`, then the start — `legion claims resume` for a
@@ -216,16 +216,17 @@ func roleList() string {
 // cut that turn off, and the turn may be the one that ends the run; the caller is told to ask
 // again after it, and so is a claim that entered a turn between the read below and the machine's
 // lock, whose suspension the machine refuses rather than holds (suspendForFreshSession), and a
-// claim a held suspension stops at the end of its turn, which this route reaches once that
-// suspension has landed (relaunchWaits). A claim between states — queued, with a launch in
-// flight, or stored working under a launch the wake pacing parks — is refused because it has no
-// settled agent to stop: its suspension would be held for the launch it is still waiting for,
-// and the request would answer long after the claim moved on. The parked launch's turn comes by
-// itself, so that claim is told to ask again once it has run (refuseParkedRelaunch). The
-// project's controller is refused whatever state it is in: its keeper starts it, as that keeper
-// alone is told when it must (supervise's operatorRetry refuses the controller's retry for the
-// same reason), and the controller's own door cannot name it at all, since `controller` is no
-// role a claim token is built from (claimFreshSession).
+// claim under a held suspension, which this route reaches once that suspension has landed at
+// the agent's turn's end, the parked launch's turn or the operator's deadline (relaunchWaits).
+// A claim between states — queued, with a launch in flight, or stored working under a launch
+// the wake pacing parks — is refused because it has no settled agent to stop: its suspension
+// would be held for the launch it is still waiting for, and the request would answer long after
+// the claim moved on. The parked launch's turn comes by itself, so that claim is told to ask
+// again once it has run (refuseParkedRelaunch). The project's controller is refused whatever
+// state it is in: its keeper starts it, as that keeper alone is told when it must (supervise's
+// operatorRetry refuses the controller's retry for the same reason), and the controller's own
+// door cannot name it at all, since `controller` is no role a claim token is built from
+// (claimFreshSession).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, ok bool) {
 	c := m.Claim()
 	if c.Role == claim.RoleController {
@@ -325,8 +326,10 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 // A suspension held over the claim is read out here, because the launch's turn ends that
 // suspension instead of launching (supervise's wakeNow, endHeld): the claim comes out
 // suspended, so "ask again once it is running" would be a wait for something no turn brings.
-// Such a claim keeps the refusal of a claim in a turn, which is true of it — the suspension is
-// held for that turn's end — and a fresh session reaches the suspended claim it leaves.
+// Such a claim keeps the refusal of a claim in a turn, whose advice holds for it: the
+// suspension lands at the agent's turn's end, the parked launch's turn or the operator's
+// deadline, all of which come by themselves, and a fresh session reaches the suspended claim
+// it leaves.
 func relaunchWaits(view supervise.ClaimView) bool {
 	return !view.SuspensionHeld && view.WakeWaiting != nil && view.WakeWaiting.Kind == supervise.WakeLaunch
 }

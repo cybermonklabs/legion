@@ -35,8 +35,8 @@ const nonEmptyString = z.string().min(1);
  * `CLAIM_IN_A_TURN`, since cutting a running turn off would lose the turn that may be the one
  * ending the run of provider errors, and both give `CLAIM_UNSETTLED` for a claim between states:
  * one queued, one with a launch in flight, and one left working over a process the daemon is
- * starting again, whose relaunch waits its turn in the wake pacing — that claim is in no turn,
- * and the turn it waits for comes by itself. The compaction adds three refusals of its own:
+ * starting again, whose relaunch waits its turn in the wake pacing, the turn that comes by
+ * itself. The compaction adds three refusals of its own:
  * `CLAIM_NOT_RUNNING` for a suspended, stopped or failed claim, which runs no session at all and
  * which `fresh_session` reaches; `CLAIM_NOT_ON_OMP` for a role running on Claude Code, which has
  * no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end the daemon
