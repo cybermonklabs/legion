@@ -42,6 +42,7 @@ type unansweredRelay struct {
 	url      string
 	listener net.Listener
 	mu       sync.Mutex
+	pass     int
 	drops    int
 	sends    int
 }
@@ -79,6 +80,19 @@ func startUnansweredRelay(t *testing.T, target, bucket string) *unansweredRelay 
 func (r *unansweredRelay) arm(drops int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	r.pass = 0
+	r.drops = drops
+	r.sends = 0
+}
+
+// passThenDrop lets the next pass sends through and drops the drops after them, counting the
+// sends from now. A row that drives a whole start needs this where arm does not: EnsureKeyValue
+// looks its bucket up with the same STREAM.INFO on the same subject as the handle open, so a
+// relay armed to drop the first send would drop the lookup instead of the open.
+func (r *unansweredRelay) passThenDrop(pass, drops int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pass = pass
 	r.drops = drops
 	r.sends = 0
 }
@@ -99,6 +113,10 @@ func (r *unansweredRelay) send(subject string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.sends++
+	if r.pass > 0 {
+		r.pass--
+		return false
+	}
 	if r.drops > 0 {
 		r.drops--
 		return true
@@ -270,5 +288,43 @@ func TestAnUnansweredHandleOpenOffAStartIsSentOnce(t *testing.T) {
 	}
 	if sends := relay.sent(); sends != 1 {
 		t.Fatalf("handle opens sent = %d, want 1: this path is a request's, not a start's", sends)
+	}
+}
+
+// A start that opens its bucket the way every start of this deployment does, through
+// EnsureKeyValue, sends the handle open again when the server leaves it unanswered.
+//
+// The rows above hold wrapKeyValue with the choice already handed to it, and the choice is the
+// half that was wrong: while created made it, a start that found its bucket sent the open once
+// and one lost answer ended the program with "open the jetstream handle of KV bucket <name>:
+// context deadline exceeded". Nothing held EnsureKeyValue's own choice - with it handing oneSend
+// the whole of internal/bus passes and go vet is clean - so this row drives the entry point a
+// start calls and reads the sends off the wire.
+//
+// How many requests a clean start sends on this subject is read rather than counted here: the
+// lookup EnsureKeyValue makes is the same STREAM.INFO on the same subject as the open that
+// follows it, so the drop is placed behind what a clean start sends, and a step added to the
+// found-bucket path moves it along rather than landing it on another request.
+func TestAStartThatOpensAFoundBucketThroughEnsureKeyValueSendsTheOpenAgain(t *testing.T) {
+	relay := startUnansweredRelay(t, testnats.URL(t), unansweredBucket)
+	conn, js, _ := unansweredKeyValue(t, relay)
+	config := &nats.KeyValueConfig{Bucket: unansweredBucket, Storage: nats.MemoryStorage}
+
+	relay.arm(0)
+	if _, err := EnsureKeyValue(conn, js, config); err != nil {
+		t.Fatalf("a start whose every request the server answered = %v, want it to go on", err)
+	}
+	answered := relay.sent()
+	if answered < 1 {
+		t.Fatalf("a clean start sent %d requests on the bucket's stream, want at least the handle open itself", answered)
+	}
+
+	relay.passThenDrop(answered-1, 1)
+	if _, err := EnsureKeyValue(conn, js, config); err != nil {
+		t.Fatalf("a start that found its bucket and lost its handle open = %v, want it to go on", err)
+	}
+	if sends := relay.sent(); sends != answered+1 {
+		t.Fatalf("the start sent %d requests on the bucket's stream, want %d: a clean start's %d with the lost open sent again",
+			sends, answered+1, answered)
 	}
 }
