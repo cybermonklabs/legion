@@ -857,32 +857,40 @@ jobs:
   # make this list stale: it names what the numbers were derived from, and a run that outran a
   # budget fails the step by name, which is the signal to derive them again.
   #
-  #   step                                      job 128655164325  job 128661965627  job 128664453706
-  #   checkout                                                 8                 7                 -
-  #   setup-go                                                 7                 9                 -
-  #   the go cache restore                                     1                 2                 -
-  #   setup-bun                                                2                 1                 -
-  #   bun install                                              5                 7                 -
-  #   the contracts build                                      0                 0                 -
-  #   the dashboard build                                     33                37                 -
-  #   the image pull                                          33                26                32
-  #   Browser-test dispatch dashboard against its baselines   90               106                78
-  #   the upload                                               1                 1                 -
-  #   the whole job                                          180               201               163
+  #   step                              job 128655164325  128661965627  128664453706  128713801668  128720753224
+  #   checkout                                         8             7             -             7             7
+  #   setup-go                                         7             9             -             6             9
+  #   the go cache restore                             1             2             -             2             2
+  #   setup-bun                                        2             1             -           218           131
+  #   bun install                                      5             7             -             3             -
+  #   the contracts build                              0             0             -             0             -
+  #   the dashboard build                             33            37             -            23             -
+  #   the image pull                                  33            26            32            32             -
+  #   the browser step                                90           106            78             -             -
+  #   the upload                                       1             1             -             2             1
+  #   the whole job                                  180           201           163           318           272
   #
   # The rule is in this file's head. The browser step's maximum is 106 s, so 106 x 1.15 = 122 s
-  # -> 3 min. The job budget is that step's 180 s plus the 95 s of every step without one:
-  # 275 s -> 5 min.
+  # -> 3 min. The job budget is that step's 180 s plus the measured maximum of every step
+  # without one, which is 314 s of the five columns together: 494 s -> 9 min.
   #
   # The first of those runs was the only one this job had when these budgets were first written,
   # and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor, and
   # the next run came in at 106 s, 14 s inside it. A third run then read 78 s, so the spread of
   # the browser step is 78-106 s over three runs and the 15 per cent the rule adds carries the
   # rest.
+  #
+  # The job budget was 5 min on the first three columns, where setup-bun read 1-2 s because the
+  # runner image carried the pinned Bun. The last two columns are runs during a GitHub release
+  # CDN outage on 2026-11-08, where that same step downloaded Bun in 218 s and 131 s, and the
+  # 5-minute job budget cancelled both jobs - one in `setup-bun`, one in the dashboard build -
+  # before any step budget could fire. That inverts this file's rule, which says the job budget
+  # is the backstop that never fires first, so it is re-derived above from the maximum those
+  # runs measured. A download this job does not control may not decide a required check.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
