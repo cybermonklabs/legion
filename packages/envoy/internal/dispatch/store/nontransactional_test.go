@@ -108,3 +108,16 @@ func TestWindowOwnerMigrationKeepsAnExistingValidPartialIndex(t *testing.T) {
 		t.Fatalf("existing index changed: oid %d -> %d, valid %v, partial %v", before, after, valid, partial)
 	}
 }
+
+func TestWindowOwnerMigrationBuildsAValidPartialIndex(t *testing.T) {
+	store := openEmptyTestStore(t)
+	migrateThrough(t, store, 20261102233630)
+	var valid, partial bool
+	if err := store.Pool.QueryRow(context.Background(), `select indisvalid, indpred is not null
+		from pg_index where indexrelid = 'embeddings_window_owner'::regclass`).Scan(&valid, &partial); err != nil {
+		t.Fatal(err)
+	}
+	if !valid || !partial {
+		t.Fatalf("new owner index must be valid and partial over window kinds: valid %v, partial %v", valid, partial)
+	}
+}
