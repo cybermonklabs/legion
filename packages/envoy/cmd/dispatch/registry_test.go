@@ -14,12 +14,16 @@ import (
 // bootProbeDialDelay is how late slowPostgres lets each of the process's connections reach
 // Postgres in the row below. It is half again store.healthProbeTimeout's two seconds, so the
 // boot's own cold dial cannot fit inside that warm bound however the machine is loaded, and the
-// boot pays it three times over: measured through a counting proxy, exactly one connection (the
-// shared pool's, which carries every sequential boot step) completes before the probe's own dial,
-// the probe dials the second and processes.Register the third, and the whole boot to a 200 from
-// /healthz took 11.2 s at this delay. publishDashboard, the one step bounded tightly enough to
-// care (dashboardPublishTimeout, 60 s, and it exits 1), opens no connection of its own and took
-// 22 and 36 ms in those runs, so a delay charged from the first connection never reaches it.
+// boot pays it three times over: measured at this head through a counting proxy, over three runs,
+// the connections arrive in three rounds, each round waiting on the one before it. The shared
+// pool's one connection comes first, at 0.03-0.04 s, and carries every sequential boot step; ten
+// more open together once it is up, at 3.50-3.59 s; seven or eight more once those are up, at
+// 6.55-6.68 s. How many connections that comes to is no invariant, and nothing here rests on it:
+// it was 18, 18 and 19, all of them before the first /healthz 200, which came 9.64, 9.70 and
+// 9.76 s after the process started. publishDashboard, the one step bounded tightly enough to care
+// (dashboardPublishTimeout, 60 s, and it exits 1), opens no connection of its own - none reaches
+// the proxy while it runs - and took 11, 11 and 16 ms in those runs, so a delay charged from the
+// first connection never reaches it.
 const bootProbeDialDelay = 3 * time.Second
 
 // bootProbeDeadline is the failure CI showed when the boot's probe ran out of the warm probe's
@@ -58,9 +62,10 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 
 	process := startDispatchProcessWith(t, dsn.String(), dispatchOptions{})
 	// waitHealthy's own 30 s is a budget this boot has no reason to meet: it pays
-	// bootProbeDialDelay on each of the three connections it opens one after another, and every
-	// other step it takes is as slow as the machine is. So the row waits on a hang guard instead,
-	// far from the 11 s the boot took here, which fails only a process that never serves at all.
+	// bootProbeDialDelay once for each of the three rounds of connections it opens, each round
+	// waiting on the one before it, and every other step it takes is as slow as the machine is.
+	// So the row waits on a hang guard instead, far from the 9.6-9.8 s the boot took here, which
+	// fails only a process that never serves at all.
 	listening := `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(process.port)
 	hangGuard := 2 * time.Minute
 	deadline := time.Now().Add(hangGuard)
