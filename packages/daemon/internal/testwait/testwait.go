@@ -34,6 +34,18 @@ func Eventually(t *testing.T, what string, condition func() bool) {
 // smaller than it still reports the wait rather than the binary's panic.
 func EventuallyWithin(t *testing.T, bound time.Duration, what string, condition func() bool) {
 	t.Helper()
+	EventuallyEvery(t, bound, poll, what, condition)
+}
+
+// EventuallyEvery is EventuallyWithin at a pace of its own, for a condition whose own reading
+// costs the machine something: the daemon's whole state, a listener's HTTP call, a server's
+// process. Asked a hundred times a second beside the rest of this package, such a read competes
+// with the work it is waiting for and can keep it from finishing — the wait then fails on its
+// own weight rather than on its subject. A test takes this only where the read is the cost, and
+// names the pace in its comment; everything else takes Eventually, whose 10 ms is right for a
+// read of one row or one field.
+func EventuallyEvery(t *testing.T, bound, every time.Duration, what string, condition func() bool) {
+	t.Helper()
 	deadline := time.Now().Add(bound)
 	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-time.Second).Before(deadline) {
 		deadline = testDeadline.Add(-time.Second)
@@ -42,7 +54,7 @@ func EventuallyWithin(t *testing.T, bound time.Duration, what string, condition 
 		if condition() {
 			return
 		}
-		time.Sleep(poll)
+		time.Sleep(every)
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }

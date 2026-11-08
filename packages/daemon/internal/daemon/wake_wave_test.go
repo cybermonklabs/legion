@@ -443,14 +443,17 @@ func assertQueueLeft(t *testing.T, d *daemon, why string, before []api.WakeWaiti
 func awaitWave(t *testing.T, d *daemon, count int) []api.WakeWaiting {
 	t.Helper()
 	var waiting, settled []api.WakeWaiting
-	// Three minutes rather than testwait's standard one: this waits for `count` facts to be
-	// written by as many goroutines, not for one, and a package running the rest of itself
-	// beside this test on two cores takes longer than a minute over forty of them, where one
-	// delivery still does not.
-	testwait.EventuallyWithin(t, 3*time.Minute, fmt.Sprintf("the pacing to hold %d of the wave's %d wakes", count-1, count), func() bool {
-		waiting, settled = waitingWakes(t, d), waiting
-		return len(waiting) == count-1 && slices.Equal(waiting, settled)
-	})
+	// A pace of its own, and a bound to match. Each ask here is a read of the daemon's whole
+	// state, not of one row, and the thing it waits for is that daemon writing forty rows
+	// through its own goroutines: asked a hundred times a second, beside the rest of this
+	// package on two cores, the read competes with the work and the wait fails on its own
+	// weight. At ten times a second it does not, and five minutes is what forty facts written
+	// by as many goroutines can take on a machine running everything else at the same time.
+	testwait.EventuallyEvery(t, 5*time.Minute, 100*time.Millisecond,
+		fmt.Sprintf("the pacing to hold %d of the wave's %d wakes", count-1, count), func() bool {
+			waiting, settled = waitingWakes(t, d), waiting
+			return len(waiting) == count-1 && slices.Equal(waiting, settled)
+		})
 	return waiting
 }
 
