@@ -19,8 +19,10 @@ directory, bind no port and write no environment variable.
   registers the `beforeAll` that makes the directory and the `afterAll` that removes it where it is
   called. A directory per test is `temporaryDirectories(prefix)`, registered in those same two
   places, which returns a maker that makes a directory at each call and removes every one of them in
-  its `afterEach`. Call that maker from a test body or a hook only: it makes its directory at the
-  call, where the one-shot form makes nothing until its hook runs. `bun:test` takes a hook's scope
+  its `afterEach`. Call that maker from a test body or a `beforeEach`, never from a `beforeAll`: it
+  makes its directory at the call, and its `afterEach` removes it after the scope's first row, so
+  one a `beforeAll` made is gone for every later row. A directory a whole file or `describe` shares
+  is `temporaryDirectory`, which makes nothing until its hook runs. `bun:test` takes a hook's scope
   from the point of the call, and Bun 1.4.4 evaluates a module body and a `describe` body in three
   cases where it then runs no hook that body registered: a `bun test -t <pattern>` that selects no
   row of the file, one that selects no row of the `describe`, and `describe.skipIf(true)`. Nothing

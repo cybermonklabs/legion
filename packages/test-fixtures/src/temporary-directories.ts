@@ -47,12 +47,16 @@ export type TemporaryDirectoryMaker = (suffix?: string) => string;
  * a hook from the point of the call. The call itself makes nothing, so a scope whose hooks never
  * run leaves nothing behind.
  *
- * **Call the maker itself from a test body or from a hook, never at module scope or in a
- * `describe` body.** The maker makes its directory at the call, and Bun runs a module body and a
- * `describe` body in three cases where it then runs no hook of that scope: a `bun test -t
- * <pattern>` that selects no row of the file, one that selects no row of the `describe`, and
- * `describe.skipIf(true)`. In each of them a maker called there makes its directory and nothing
- * removes it again, and nothing runs at the end of a `bun test` process to catch it.
+ * **Call the maker itself from a test body or from a `beforeEach`, never from a `beforeAll` and
+ * never at module scope or in a `describe` body.** The maker's only removal is the `afterEach`
+ * registered at the call, so a directory made in a `beforeAll` is removed after the first row of
+ * the scope and every later row finds it gone; a whole file or `describe` that wants one
+ * directory of its own takes {@link temporaryDirectory} instead. The maker makes its directory at
+ * the call, and Bun runs a module body and a `describe` body in three cases where it then runs no
+ * hook of that scope: a `bun test -t <pattern>` that selects no row of the file, one that selects
+ * no row of the `describe`, and `describe.skipIf(true)`. In each of them a maker called there
+ * makes its directory and nothing removes it again, and nothing runs at the end of a `bun test`
+ * process to catch it.
  * {@link temporaryDirectory} is the form for one directory a whole file or `describe` shares: it
  * reserves the path at the call and makes the directory in a `beforeAll`, so the making and the
  * removal run together or not at all.

@@ -9,8 +9,9 @@ import { temporaryDirectories } from "./temporary-directories";
 // bodies registered. Nothing runs at the end of the process either — neither `process.once("exit")`
 // nor `"beforeExit"` runs under `bun test` — so anything a fixture makes at the call, rather than
 // in a hook, survives the run. The rows below run a file that takes every scratch this package
-// hands out, once with a filter that selects nothing and once with no filter at all, each under a
-// TMPDIR of its own, and read that TMPDIR afterwards.
+// hands out, once with a filter that selects nothing, once with a filter that selects the file's
+// own row and no row of its `describe`, and once with no filter at all, each under a TMPDIR of its
+// own, and read that TMPDIR afterwards.
 
 const makeDirectory = temporaryDirectories("test-fixtures-filtered-run");
 
@@ -83,6 +84,14 @@ function runFixture(filter: string | null): {
 test("a filtered run that selects no row evaluates the file and leaves its TMPDIR empty", () => {
   const run = runFixture("zzz-matches-nothing");
   expect(run.output).toContain(EVALUATED);
+  expect(run.left).toEqual([]);
+});
+
+test("a filter that selects no row of the describe passes and leaves its TMPDIR empty", () => {
+  const run = runFixture("beta row");
+  expect(run.output).toContain(EVALUATED);
+  expect(run.output).toContain("1 pass");
+  expect(run.exitCode).toBe(0);
   expect(run.left).toEqual([]);
 });
 
