@@ -633,10 +633,26 @@ function pageRoutes(
   return { block: id === undefined ? undefined : withBlock(route, id), page: route };
 }
 
-/** A reference a text cites: the `dispatch://` form and the dashboard path it opens. */
+/** A reference a text cites: the `dispatch://` form and the dashboard path it opens. The path
+ *  is always a path of this app (`appPath`), since the pill it is drawn as is a link and the
+ *  text behind it is the reader's own; a reference whose path is not one is no reference here. */
 export interface ComposerReference {
-  href?: string;
+  href: string;
   reference: string;
+}
+
+/**
+ * A path of this app and nothing else: one leading `/` and no second one, so what comes back is
+ * a place inside the dashboard rather than a scheme or another origin.
+ *
+ * Every builder below returns such a path for every route it knows, and this is what says so at
+ * the one place a path becomes a link a reader can press. The text those routes are read out of
+ * is the reader's own - a body they typed, a reference they pasted - so the rule a new route
+ * kind has to keep is here, in front of the sink, rather than spread over the builders where
+ * the next one would miss it.
+ */
+export function appPath(path: string): string | undefined {
+  return path.startsWith("/") && !path.startsWith("//") ? path : undefined;
 }
 
 /**
@@ -655,12 +671,17 @@ export function composerReferences(
     if (route === undefined) {
       continue;
     }
+    // The pill is a link, and the text behind this route is the reader's own.
+    const href = appPath(buildReferencePath(route));
+    if (href === undefined) {
+      continue;
+    }
     const reference = buildDispatchReference(route);
     if (seen.has(reference)) {
       continue;
     }
     seen.add(reference);
-    references.push({ href: buildReferencePath(route), reference });
+    references.push({ href, reference });
   }
   return references;
 }

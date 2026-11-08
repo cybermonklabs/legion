@@ -1323,6 +1323,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/storetest/*'
               - 'packages/envoy/internal/dispatch/text/*'
               - 'packages/envoy/internal/dispatch/text/testdata/**'
+              # first_sync_frames_test.go times the answer to a SyncStep1 through it.
+              - 'packages/envoy/internal/cputest/*'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
