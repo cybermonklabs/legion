@@ -3227,9 +3227,16 @@ Each item below names a path with its method and identity, then its purpose.
   `dispatch results` prints that one.
   Two results recorded in transactions that overlapped can come back in either order.
   Each result carries `currency`: `current`, `older`, or `unknown`.
-  It is `unknown` whenever Dispatch cannot see the repository the check's issue resolves to — it resolves to none, or the App cannot read it — whatever the check's `when`, and whenever a read of Dispatch's own fails:
-  a commit there may head a pull request Dispatch was never able to learn, so it is marked neither current nor older.
-  A `before_merge` result is current while its commit is the head of an `open` pull request, or the final head of a `merged` one, attributed to the check's own issue, and the check's words are the ones it proved.
+
+  - It is `unknown` whenever Dispatch cannot see the repository the check's issue resolves to — it resolves to none, or the App cannot read it — whatever the check's `when`, and whenever a read of Dispatch's own fails:
+    a commit there may head a pull request Dispatch was never able to learn, so it is marked neither current nor older.
+
+  - A `before_merge` result is current while its commit is the head of an `open` pull request, or the final head of a `merged` one, attributed to the check's own issue, and the check's words are the ones it proved.
+
+  - An `after_merge` result is current while its commit is on the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue, and that repository's default branch where Dispatch holds no merge of the issue or the merged row names no base branch.
+
+  - A `default_branch` result is current while its commit is on that repository's default branch, whatever branch the pull request merged into.
+
   Where the App can read that repository, a `before_merge` result whose commit heads no such pull request is read through GitHub itself before the answer is given, which is what makes a result recorded before its own pull request opened read `current` once that pull request opens at its commit:
 
   - One `GET /repos/{owner}/{repo}/commits/{sha}/pulls`, and every head GitHub names is written (`delivery.ReadThroughCommitPulls`).
@@ -3241,8 +3248,6 @@ Each item below names a path with its method and identity, then its purpose.
   - Eligibility for that read is the repository and commit's, never one result's: it is skipped only where GitHub's answer cannot change the result — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to, since its own passes keep reading that row; or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
   The issue a result was recorded on is read for nothing here, so a child's pull request never makes a result against a check above it current.
-  An `after_merge` result is current while its commit is on the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue, and that repository's default branch where Dispatch holds no merge of the issue or the merged row names no base branch.
-  A `default_branch` result is current while its commit is on that repository's default branch, whatever branch the pull request merged into.
   Nothing is written on a push: a push that moves a pull request's head makes the result at the old head older by itself.
   An issue with no Verification document answers no checks.
 
