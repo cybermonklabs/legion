@@ -461,7 +461,7 @@ gated write only when it consumes one, so a write sent any other way is refused 
   owner-only and exclusively. It binds the exact argument vector the CLI receives and, behind a
   review or a deliberate pass (a rebuttal, a breaker trip), the digest of the arguments the dry
   run printed and the sha256 of each file the argv names, as the gate read it. A call no verdict
-  stands behind (a halt and another provider among them), and a `task` subagent's literal call,
+  stands behind (a halt and another account among them), and a `task` subagent's literal call,
   get a marker of the argument vector alone. Nothing of it is in the command the agent sees. A
   marker goes when its call ends, is refused or the session shuts down; a backgrounded call keeps
   its marker until
@@ -621,10 +621,33 @@ shows at its start.
 
 **The model.** Both checks ask the session's `askgate` model role (`modelRoles.askgate`). When that
 role is not set, they ask the `default` role. A model that answers with an error passes the request
-to the next model of that role's `retry.fallbackChains` chain, on the same provider. When neither
+to the next model of that role's `retry.fallbackChains` chain, on the gate model's own account.
+When neither
 role resolves, the gate refuses the write in both modes and names the two roles. A session whose
-main model is on another provider than the gate's model is not reviewed: its transcript stays on
-that provider.
+main model is billed to another account than the gate's model is not reviewed: its transcript
+stays on the account that paid for it.
+
+**The account.** The gate's rule is the billing account, not the vendor and not the provider id.
+One provider id is its own account. Two different provider ids are one account only where the
+machine says so, in omp's `askgate.sharedAccountProviders`: a list of provider ids that reach one
+account. A session whose provider and the gate model's provider are both in that list is
+reviewed, and so is a fallback model of the chain. Unset — what a machine that declares nothing
+leaves it — the list is empty and every comparison is the plain provider-id comparison this gate
+made before the setting existed. A list that names only one of two providers declares nothing
+about them, and so does a value that is not a list of strings, a list with one entry that is not
+a string included.
+
+**Where that list goes.** In an **operator** layer of omp's settings, and nowhere else: the
+global `config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config`
+overlay, or a runtime override. The gate reads it through `Settings.grantAuthority()`, the
+host's own operator view, which drops every project layer — so a repository's `.omp/config.yml`
+declares nothing, because the agent under review can write that file, and a declaration from
+there would be that agent choosing who may read its transcript. A host build whose settings
+offer no such view offers nothing safe to read, so there the list is empty whatever any layer
+holds. Which file of a machine ends up in those layers is that machine's launcher's business:
+omp reads the agent directory's own `config.yml` and whatever `PI_CONFIG_FILES` names, so a
+launcher that gives each profile its own overlay is how a profile billing another account
+declares — or declines to declare — for itself.
 
 **When a write posts unreviewed.** Each of these lets the write out, records an `advisor-gate`
 entry with its outcome, and hands the agent a note that says the write went out unreviewed and
@@ -636,7 +659,7 @@ why. The note reaches a headless session too:
 | `error` | the review failed: a model error, a handler exception, or a dry run that failed; a dry run that timed out twice, or once with no time left to run it again, gets a note that the machine was busy and that the agent should read back what the write posted |
 | `no-verdict` | the model answered with no verdict the gate could read |
 | `halted` | three calls in a row reached no verdict, and the gate is paused for the session |
-| `skipped` | the session's main model is on another provider than the gate's |
+| `skipped` | the session's main model is on a provider that does not bill the gate model's account |
 | `rebuttal` | the agent sent `--advisor-rebuttal <line>`, which is recorded and kept only as a shell comment, or `"advisor_rebuttal"`, which is recorded and removed |
 | `breaker` | the third attempt at one thing on one target, after the gate refused it twice there |
 | `unreadable` (warn mode) | a file the literal call names was missing or not a regular file when the gate ran |
