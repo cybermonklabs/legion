@@ -1428,21 +1428,107 @@ bun run test
 bun run dispatch:local
 ```
 
-`bun run test` loads `web/src/__tests__/setup.ts` first (`bunfig.toml`), which registers happy-dom
-and guards the network: a unit test has no Dispatch, so a write (anything but `GET` and `HEAD`)
-that reaches it was answered by nothing the test set up, and whatever the page then made of the
-failure — a write retried, a read mark dropped — passed unchecked. Such a write is refused with
-its method and path, and one still retrying after a file's last test fails that file from the
-preload's `afterEach` (`__tests__/network-guard.ts`). Both ways the page makes a request are
-guarded, because happy-dom's `XMLHttpRequest` — which an upload goes through — has a `Fetch` of
-its own rather than `globalThis.fetch`. After every test the preload also stops every write store
-made since the last, which `watchWriteStores` in `features/writes/write-store.ts` tells it of as
-each is made (the app holds none but its own), and drops what the page kept (`resetWriteStorage`): a store outlives the
-test that made it, and a write it left out would go on retrying, once that test's spies are
-restored, into the tests and files after it, which a bare `bun test`, every file in one process,
-reports as failures of whichever test is running then. Reads still reach the network as before: hundreds of
-tests leave incidental reads unanswered. A test answers its own requests with
-`__tests__/send-answers.ts` (`answerRoute`), or by replacing `globalThis.fetch` for its own run.
+`bun run test` runs the suite in two halves, because only the web half wants a DOM:
+`bun run test:web web/src`, which preloads `web/src/__tests__/register-dom.ts` and then
+`web/src/__tests__/setup.ts`, and then `bun test e2e/__tests__`, which preloads neither and runs
+as the node processes those harness tests are.
+The order of that preload list is the one order that holds: `register-dom.ts` puts happy-dom's
+DOM on the globals at the test origin `http://dispatch.test`, and a module that reads a DOM
+global while it is evaluated keeps whatever it found then — `@testing-library/dom` builds
+`screen` from `document`, `@mswjs/interceptors` builds its requests with `Request`.
+An import written first inside one file does not hold that order; Bun evaluated a package import
+ahead of a relative one written above it.
+To run one file, `bun run test:web web/src/path/to/file.test.tsx`: a bare `bun test <file>` loads
+no preload and fails with no DOM.
+
+Every request a unit test makes is answered by something the test set up or it fails that test,
+reads included.
+`web/src/__tests__/network.ts` is MSW (`defineNetwork` over the `fetch/web` and
+`XMLHttpRequest/web` interceptors, which are the ones that reach this runtime), and both
+transports are intercepted apart, because happy-dom's `XMLHttpRequest` — which an upload goes
+through — has a `Fetch` of its own rather than `globalThis.fetch`.
+A request no handler answers is errored and recorded with its method and path, and the preload's
+`afterEach` and `afterAll` fail the test with what was recorded, so a read the page swallowed in
+a `catch`, and a write still retrying after a file's last test, are reported all the same.
+The module answers six routes with the API's empty shape: the five the application shell reads on
+every page (`/auth/whoami` as a 401 with no identity, `/api/v1/agents`, `/api/v1/me/replies`,
+`/api/v1/credential-requests`, `/api/v1/me/agents/state`), and `/api/v1/projects`.
+The project list is read by the sidebar wherever it is drawn (`features/sidebar/Sidebar.tsx:91`,
+with no `enabled` guard) and by the issue header for every root issue, to learn which design steps
+are gated (`features/issue/IssueHeader.tsx:292`); removing its answer fails 36 rows, every one a
+page carrying that header, none of them about projects.
+The sidebar's other reads, the Inbox and the pinned issues, are not answered here: a test that
+draws the sidebar answers them itself.
+Every other route is the test's own to answer, and there are four seams for it, from the top
+down: the api-client method a test spies (`spyOn(api, "issue")`), which most of the suite uses
+and which never reaches MSW; the request identity `__tests__/send-answers.ts` (`answerRoute`)
+and `__tests__/keyed-attempt.ts` carry, which answers a write by the request object it was sent
+with and hands its answer the bounds — neither of which crosses the wire;
+`spyOn(globalThis, "fetch")`, or a `globalThis.fetch` replaced, that a test installs and restores
+for its own run, which takes the request before MSW sees it
+(`features/shell/DeploymentResilience.test.tsx`, `features/writes/write-store.test.ts`,
+`__tests__/client.test.ts`); and `answerRequests(http.get(…))` from `__tests__/network.ts`, which
+answers at HTTP and is forgotten after each test.
+After every test the preload also stops every write store made since the last, which
+`watchWriteStores` in `features/writes/write-store.ts` tells it of as each is made (the app holds
+none but its own), and drops what the page kept (`resetWriteStorage`): a store outlives the test
+that made it, and a write it left out would go on retrying, once that test's spies are restored,
+into the tests and files after it, which one process running every file reports as failures of
+whichever test is running then.
+
+An interaction is performed with `@testing-library/user-event`, never dispatched with
+`fireEvent`: a `user.click` focuses what it clicks, leaves the pointer over it and refuses a
+disabled control, as a person's press does.
+The root `biome.json` refuses a new `fireEvent` import under `packages/dispatch/web/src`: the name
+`fireEvent` imported from `@testing-library/react` or from `@testing-library/dom`, which are the
+two packages that export it.
+What it does not see is a namespace import — `import * as dom from "@testing-library/react"` and
+then `dom.fireEvent` passes, because the rule reads the names an import binds and a namespace
+binds one name for the whole module — so that shape is a thing to catch in review rather than at
+the linter.
+Where user-event has no form for what a row proves — a form's own `submit`, a `blur`, a `scroll`,
+a picture's `error`, a `drop` or a paste of files, a pointer gesture that carries a
+`pointerType`, a held button or a `relatedTarget`, two presses inside one task, or a press on a
+control that is already disabled — the site keeps `fireEvent` behind a one-line
+`biome-ignore lint/style/noRestrictedImports` comment on the import stating the file's reasons,
+with a one-line reason at the site itself.
+That reason is required of each site, and `.github/scripts/check-fireevent-reasons.sh` is what
+requires it: Biome's rule reads imports, so a file that already carries the ignore line absorbs any
+number of new `fireEvent` calls with nothing to report, which is what a forward merge of the default
+branch brings — no conflict, no lint error, no type error.
+That check reads every `fireEvent` call under `packages/dispatch/web/src`, both the
+`fireEvent.click(node)` form and the direct `fireEvent(node, event)` one, and refuses a call with no
+comment line in the five lines above it; `ci.yaml`'s lint job runs it and its test job runs
+`check-fireevent-reasons.test.sh`.
+A comment is a line whose trimmed text begins `//`, `/*`, `*` or `{/*`, and nothing else is: a `*`
+or a `//` elsewhere on a line is code, whether that line is the call's own (a URL before the call on
+it) or one of the five above it (the same URL, or an arithmetic `*`).
+It buys one thing, that no call is added silently, and it does not judge the reason: any comment
+satisfies it, so whether user-event really has no form for that interaction is a reviewer's to say.
+Its window is five lines rather than the line above, because a site's reason often sits above the
+`act(` or `await` wrapper the call needs.
+Under a held clock (`jest.useFakeTimers()`) the user comes from `__tests__/user.ts`'s
+`userOnFakeClock()`, created after the clock is installed: user-event waits through `setTimeout`,
+and a plain `userEvent.setup()` never finishes an interaction there.
+The DOM is asserted with `@testing-library/jest-dom`'s matchers, which the preload registers and
+`__tests__/jest-dom.d.ts` declares for `bun:test`: `toBeInTheDocument`, `toHaveAttribute`,
+`toHaveClass`, `toHaveFocus`, `toHaveTextContent` and their kin, in place of a hand-written read
+of an attribute compared with `toBe`.
+The preload registers them through `__tests__/jest-dom-matchers.ts` rather than directly:
+`expect.extend` hands a matcher a `utils` whose methods read the object they live on, jest-dom
+destructures them, and the first one it calls while building a failure message throws
+`Expected this to be instanceof ExpectMatcherUtils` — so a failing assertion would name neither
+what it asked for nor what it found.
+The wrapper binds that context, and `__tests__/jest-dom-messages.test.ts` holds it in place by
+reading the message a failing `toHaveAttribute` throws.
+It cures the six matchers this suite uses — `toBeInTheDocument` and its negation,
+`toHaveAttribute`, `toHaveTextContent`, `toHaveFocus`, `toHaveClass` and `toBeEnabled` — and not
+every matcher jest-dom ships: `toHaveStyle` and `toHaveFormValues` want a `this.utils.diff` that
+Bun's context does not carry at all, and still throw when they fail.
+No row calls either; the first row that wants one supplies that `diff` in
+`__tests__/jest-dom-matchers.ts`.
+An exact `textContent` comparison stays `toBe`, since `toHaveTextContent` matches a substring and
+normalises whitespace.
 
 No module in the SPA may import, directly or through a chain, a module that imports it back: a
 cycle resolves to `undefined` at whichever edge the bundler evaluates first, so it is a runtime
@@ -1653,12 +1739,33 @@ owns the claim — a bun test under `e2e/__tests__/` for a harness module of thi
 directory (`e2e/__tests__/round-robin-proxy.test.ts` is the shape to follow: it
 spawns the module with `Bun.spawn`, waits for its listening line, drives it
 against stub upstreams and kills it in `afterAll`), that package's own tests for
-a command, and a Go test for a claim about the server (INFRA-1404). Two rows
-still in this suite take no page fixture: `e2e/cli-reply-answers.e2e.ts:10`,
-which drives the CLI, and `e2e/two-builds.multiprocess.e2e.ts:723`, which waits
-out the two-build block index's window. Both sit outside the ten rows
-INFRA-1404 moved and are tracked as dispatch://INFRA-1554, so they are
-exceptions on record rather than the shape to copy.
+a command, and a Go test for a claim about the server (INFRA-1404). Every row
+of this suite binds `page`, `browser` or `context`, and
+`cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
+check that decides it: it reads every call of `e2e/**/*.e2e.ts` whose callee
+TypeScript types as @playwright/test's `TestType`, or types as one of the
+title-first members `only`, `skip`, `fixme`, `fail` and `fail.only` of one — so
+a `test` extended by `test.extend`, renamed on import, reached through a
+namespace or bound to another name declares its rows like `test` itself, and a
+member bound to another name, by `const only = test.only` or
+`const { skip } = test`, declares its row like `test.only` and `test.skip`,
+since each is decided by the type the callee carries and not by the name it is
+written under — for the fixtures its callback binds, and refuses a row that
+binds none of the three. A callback written in the call is read there, and one
+passed by name is read where TypeScript's own checker says that name is bound:
+in its own scope, and in the module an import leads to, so a `for`-of `const`,
+a parameter or an import is never read as a same-named function declared
+elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
+the program cannot resolve — leaves its row refused with no fixtures, since
+fixtures the check did not read are not fixtures it saw. It reads the three
+Playwright listings first, to prove it scanned the files the suite runs. A row
+may stand all the same as a named exemption with its reason, written in
+`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
+exemption too — one naming a row the suite no longer holds, or one that drives
+a browser now — so the rule cannot come to lie in the other direction either.
+INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
+agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
+two-build rollout row.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites

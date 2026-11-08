@@ -118,8 +118,8 @@ WORKSPACES = root_workspaces()
 
 
 def bun_job(job, workflow=CI):
-    """.github/actions/setup-bun and a frozen `bun install`. No bunfig.toml at the root and no
-    .npmrc anywhere; packages/dispatch/bunfig.toml is read only by bun test there."""
+    """.github/actions/setup-bun and a frozen `bun install`. No Bun configuration file and no
+    .npmrc anywhere."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
@@ -303,9 +303,9 @@ RULES = {
     # --- envoy
     f"{ENVOY}/cmd/broker-refgen/auth_test.go": [
         Read(f"{ENVOY}/{d}/*", "cmd/broker-refgen/auth_test.go:14 readAPI(repo root) parses it") for d in BROKER_REFGEN_DIRS],
-    f"{ENVOY}/cmd/broker/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/broker/main_test.go:220 sslrootcert=../../docker/rds-global-bundle.pem")),
+    f"{ENVOY}/cmd/broker/main_test.go": reads((f"{ENVOY}/docker/rds-global-bundle.pem", "cmd/broker/main_test.go:344 sslrootcert=../../docker/rds-global-bundle.pem")),
     f"{ENVOY}/cmd/broker/outage_test.go": [
-        run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:317-318 go build . in ../agent-secrets", mode="build")],
+        run(ENVOY, ["./cmd/agent-secrets"], "cmd/broker/outage_test.go:323-325 cmdtest.BuildCommand . in ../agent-secrets", mode="build")],
     f"{ENVOY}/cmd/broker/multiprocess_test.go": reads((f"{ENVOY}/internal/broker/store/migrations/*", "cmd/broker/multiprocess_test.go:289")),
     f"{ENVOY}/cmd/dispatch/main_test.go": reads((f"{ENVOY}/internal/dispatch/store/migrations/*", "cmd/dispatch/main_test.go:695")),
     # cmd/dispatch/memory_profile_test.go:147-148 reads four guides only when
@@ -345,9 +345,9 @@ RULES = {
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
         (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
-        run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:38 go build ./systemroots CGO_ENABLED=0 GOOS=linux",
+        run(ENVOY, ["./internal/smoke/systemroots"], "internal/smoke/rdsbundle_test.go:36-41 cmdtest.BuildCommand ./systemroots CGO_ENABLED=0 GOOS=linux",
             mode="build", env={"CGO_ENABLED": "0", "GOOS": "linux"}),
-        Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:64")],
+        Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
     f"{ENVOY}/internal/testnats/nats_test.go": [
         run(ENVOY, ["./..."], "internal/testnats/nats_test.go:708-709 go list -f ... ./... in packages/envoy", mode="build"),
         *[Read(g, "internal/testnats/nats_test.go:741-747 walks every .go file under packages/envoy but infra, node_modules, testdata")
@@ -356,11 +356,11 @@ RULES = {
         (f"{ENVOY}/**", "internal/testpg/file_copy_test.go:22 walks every .go file under packages/envoy (../.., infra included)")),
     # --- envoy-infra
     f"{INFRA}/core/permissions_live_test.go": [
-        run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go's buildEnvoyCommand go build . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],
+        run(ENVOY, ["./cmd/dispatch", "./cmd/listener"], "infra/core/permissions_live_test.go:328 buildEnvoyCommand builds . in ../../cmd/<dispatch|listener> (root go.work)", mode="build")],
     f"{INFRA}/core/allowed_hosts_agreement_test.go": [run(f"{INFRA}/core", ["."], "infra/core/allowed_hosts_agreement_test.go:95 go list -deps .", mode="build")],
     f"{INFRA}/gcp/imports_test.go": [run(f"{INFRA}/gcp", ["."], "infra/gcp/imports_test.go:15 go list -deps .", mode="build")],
     f"{INFRA}/host/heldportwrapper/main_test.go": [
-        run(ENVOY, ["./cmd/listener"], "infra/host/heldportwrapper/main_test.go:113-114 go build . in ../../../cmd/listener (root go.work)", mode="build")],
+        run(ENVOY, ["./cmd/listener"], "infra/host/heldportwrapper/main_test.go:112 buildListener builds . in ../../../cmd/listener (root go.work)", mode="build")],
     f"{INFRA}/host/live_test.go": [run(INFRA, ["./cmd/pulumi-resource-envoy-infra"], "infra/host/live_test.go pulumitest.Plugin -> internal/pulumitest/pulumitest.go:168 go build", mode="build")],
 }
 
@@ -1080,7 +1080,7 @@ GATES = [
         (CONTRACTS_SRC, f"{BROWSER_SUITE_STEPS} build it "
          "through packages/dispatch/e2e/run.ts's buildContracts, which every run of the suite does for "
          "Playwright's Node resolution; packages/dispatch/web/vite.config.ts:117-126 aliases"),
-        ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/cli-reply-answers.e2e.ts:18 runs it through e2e/dispatch-cli.ts:8"),
+        ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
         ("scripts/e2e/lib/held-port.py", "packages/dispatch/e2e/run-server.sh:80 holds each lane's server port through it"),
@@ -1093,7 +1093,7 @@ GATES = [
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
-                         "packages/dispatch/e2e/cli-reply-answers.e2e.ts:18 runs")
+                         "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs")
       + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)
       + setup_go(BROWSER_MP, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF),
