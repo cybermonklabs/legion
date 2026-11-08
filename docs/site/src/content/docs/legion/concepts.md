@@ -354,7 +354,7 @@ Legion uses GitHub's own review mechanisms rather than labels:
 ## READY and the merge
 
 When the reviewer has approved, the architect has accepted and retro is done, the merger sends **READY**. The daemon accepts
-it only when the pull request's head is the approved one plus only retro's notes; it reads no check
+it against the round's recorded approval alone, comparing that head with the pull request's nowhere; it reads no check
 of that head at all, since whether the merge happens is GitHub's to decide under the base branch's
 own rules. It posts
 the READY on the Dispatch issue as one message:

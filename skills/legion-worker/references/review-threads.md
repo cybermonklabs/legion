@@ -86,12 +86,15 @@ nothing (`packages/daemon/internal/workflow/review.go`), so each step is carried
 its own role sends and a step that sends none leaves the next role never learning its turn
 began.
 
-1. **The reviewer tells the implementer, after its own completion.** Once `handoff_complete` is
-   accepted, `envoy_publish` to the implementer's role topic, naming the approved head by SHA
-   and each open thread by its node id. After the completion and not with the review: a push
-   that lands while the round is still open in `reviewing` moves the head out from under the
-   approval, which then stands for nothing and the round goes stuck
-   (`ApprovalStands`, `packages/daemon/internal/classify/decisions.go`).
+1. **The reviewer tells the implementer, once the issue stands in `accepting`.** Read the
+   issue's record with the `legion` tool's `read_record` and send only when its `phase` is
+   `accepting`; then `envoy_publish` to the implementer's role topic, naming the approved head
+   by SHA and each open thread by its node id. The round ends on both halves, the review fact
+   and the completion, and an accepted completion can land before the review's webhook does, so
+   the completion alone does not say the round is over. A push that lands while the round is
+   still open in `reviewing` moves the head out from under the approval, which then stands for
+   nothing and the round goes stuck (`ApprovalStands`,
+   `packages/daemon/internal/classify/decisions.go`).
 2. **The implementer fixes the text and pushes it, once.** Its session is live from its own phase
    until the issue closes, so that message reaches it there and it makes the fixes while the
    architect reads the issue for acceptance: it runs in no phase, writes no handoff, and makes
