@@ -452,6 +452,10 @@ export default function legionExtension(pi: PiApi): void {
   // `legion-stall-watchdog-omp.test.ts`, which is the one a case can hold: the call declares a
   // deadline the sweep would judge it by, and a case that waited out the host's own minute
   // would have to declare a deadline longer than itself and could then fail at nothing).
+  // Each of these two closes is held by a case of `legion.test.ts` that is red when that one
+  // alone is cut: a call ended by its execution's end, and a call whose result arrives with no
+  // execution end of this session's. They are what keeps a finished call out of the ladder's
+  // way while its turn goes on, which is most calls of a turn that makes several.
   pi.on("tool_execution_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.executionEnded(event);

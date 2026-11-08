@@ -7019,4 +7019,64 @@ describe("the stall watch the plugin's entry arms", () => {
     ]);
     expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
   });
+
+  test("a call that ends while its turn goes on leaves the book at its execution's end, so the sweep that follows judges it not at all", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_execution_end",
+    });
+    await callStarts(pane);
+
+    // The ordinary end of an ordinary call, and the one the live proof cannot hold alone: there
+    // the host ends the turn a breath after the call, so the turn's own close takes the record
+    // whatever this handler did (`legion-stall-watchdog-omp.test.ts`, the backgrounded call).
+    // Here nothing else happens, so this close is the only one there is. It is what keeps a
+    // finished call out of the ladder's way — most calls of a multi-call turn end while the turn
+    // goes on — and without it a call nobody waits on would be judged an hour later, its
+    // processes ended and the turn working on it aborted.
+    await hook(pane.handlers, "tool_execution_end")(
+      { toolCallId: stuckCall.toolCallId },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a call whose result is delivered without an execution end leaves the book at that result", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_tool_result",
+    });
+    await callStarts(pane);
+
+    // The second road of the same close, held by a case of its own because each handler is the
+    // only one of the two that runs for some call: a result delivered for a call whose execution
+    // end this session never saw closes it here and nowhere else.
+    await hook(pane.handlers, "tool_result")(
+      { ...stuckCall, input: {}, details: {}, isError: false },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
 });
