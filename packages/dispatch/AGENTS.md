@@ -2253,6 +2253,15 @@ than missing, a focus order that is legal and useless - none of those are findin
 them stay the work of the browser rows that drive the page. A green accessibility pass says no
 machine-decidable conformance failure, never that the page is usable without a mouse.
 
+One bound on that is worth knowing before you reason about what this gate would have caught, and
+it was found by driving the check's own negative control rather than by reading the rules. A
+control's accessible name has more than one source, and axe takes `title` when nothing better is
+there. `components/PinButton.tsx` is icon-only and sets both `aria-label` and `title`: with the
+`aria-label` deleted the scan stayed at `critical=0 serious=0` and the row passed, because the
+name had not gone, it had fallen back. Only with both gone did the page report `button-name`
+(critical). So on a control that carries a `title`, a missing label is invisible here - and a
+negative control that deletes one and reads a green pass has measured nothing.
+
 A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
 disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
 entry by its `name`, the selector axe reported for the node, the reason in a sentence a reviewer
