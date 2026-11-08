@@ -35,6 +35,7 @@ import type {
   CreateProjectInput,
   EditAskInput,
   Event,
+  GatedStep,
   HandoffSummary,
   InboxRow,
   Issue,
@@ -326,6 +327,24 @@ export function createProject(
   options: ApiOptions = {}
 ): Promise<Project> {
   return request<Project>("/api/v1/projects", "POST", input, options);
+}
+
+/** `PUT /api/v1/projects/{key}/gated-steps`: the design-gate steps the Legion deployment that
+ *  serves `project` gates, in the order it gates them, published as that deployment's daemon
+ *  publishes them - over the agent bearer, naming its session in `actor`, since the list is the
+ *  daemon's own configuration rather than a choice a person makes. The empty list is a
+ *  deployment that gates nothing. */
+export function setGatedSteps(
+  project: string,
+  steps: GatedStep[],
+  options: ApiOptions = { as: "agent" }
+): Promise<{ project: string; steps: GatedStep[] }> {
+  return request<{ project: string; steps: GatedStep[] }>(
+    `/api/v1/projects/${encodeURIComponent(project)}/gated-steps`,
+    "PUT",
+    { steps },
+    options
+  );
 }
 
 /** Maps `repo` (`owner/name`) to a project, as the Settings page does; `default: true` makes it the

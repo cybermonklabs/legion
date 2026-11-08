@@ -152,6 +152,7 @@ export type {
   EventsLiveView,
   EventType,
   ExternalLink,
+  GatedStep,
   GraphEdge,
   GraphReferences,
   Handoff,

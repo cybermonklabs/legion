@@ -892,7 +892,7 @@ test("an element the editor cannot build survives a read-only session and a late
       onAskBlockHosts: () => {},
       // No picture in this row's document, so nothing ever asks for a latest version.
       watchPicture: () => () => {},
-      readOnly: true,
+      access: "read",
       user: { color: "#f59e0b", name: "alice" },
       ydoc: readOnly.connection.doc,
     });

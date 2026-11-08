@@ -39,7 +39,7 @@ name: CI
 # nothing about it, and a gate in
 # .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 # rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-# event must hold back, as the ten slow suites' pull-request case is (the comment on them
+# event must hold back, as the nine slow suites' pull-request case is (the comment on them
 # below). The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 # CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 # every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -52,10 +52,10 @@ name: CI
 # actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-# listener, and dispatch, dispatch-browser-multiprocess, envoy-go-race-docs and
-# envoy-go-docs-finalizers), go-envoy-test (envoy-go alone: it builds the test binary of every
-# package of the envoy module, a set no other job builds), go-envoy-infra (envoy-infra-go) and
-# go-notices (lint's notices step). Every family but go-docs is filled by
+# listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the shard, alone and
+# multiprocess jobs of dispatch-browser.yaml), go-envoy-test (envoy-go alone: it builds the test
+# binary of every package of the envoy module, a set no other job builds), go-envoy-infra
+# (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 # entry, keyed on the Go version its job's setup-go installed, so it is
@@ -64,10 +64,11 @@ name: CI
 # go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
-# older Go built, and no run here saves any more. Beside the Go families, dispatch restores the
-# Playwright browsers of the version bun.lock pins, which ci-caches.yaml's browsers job fills on
-# that same push. setup-bun reads and writes its cache only on main (.github/actions/setup-bun),
-# which of this workflow's events is the dispatched run alone.
+# older Go built, and no run here saves any more. Beside the Go families, dispatch-browser.yaml's
+# shard and alone jobs restore the Playwright browsers of the version bun.lock pins, which
+# ci-caches.yaml's browsers job fills on that same push. setup-bun reads and writes its cache
+# only on main (.github/actions/setup-bun), which of this workflow's events is the dispatched
+# run alone.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -140,9 +141,8 @@ env:
       "pi-shared": "pi_shared",
       "pi-envoy": "pi_envoy",
       "pi-legion": "pi_legion",
-      "dispatch": "dispatch",
       "dispatch-ui": "dispatch_ui",
-      "dispatch-browser-multiprocess": "dispatch_browser_multiprocess",
+      "dispatch-browser": "dispatch_browser",
       "claude-envoy": "claude_envoy",
       "envoy-go": "envoy_go",
       "envoy-go-checks": "envoy_go_checks",
@@ -236,7 +236,17 @@ jobs:
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_envoy }}
       pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_legion }}
-      # The ten slow suites, whose runner time dwarfs every other job's. The merge queue runs
+      # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
+      # dispatched one above, so they come back on every push.
+      dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
+      # The browser suite, ungated: a pull request that changes what it reads runs it, because
+      # the dispatch-browser job below then runs the cheap `pull-request` lane, the two projects
+      # a pull request is held to. The `full-ci` label no longer decides whether this suite runs,
+      # only which lane it runs: that job's `lane:` input reads the label, and the comment there
+      # says what each event gets.
+      dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
+      claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
+      # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
       # them on the tree the change lands as, and that is where their result normally comes from;
       # a pull request runs them only when it carries the label `full-ci`. Each is false on a
       # pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -245,20 +255,13 @@ jobs:
       # reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
       # trigger, which would start a run that joins the concurrency group above and cancels the
       # pull request's run in progress.
-      dispatch: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch || 'false' }}
-      # The dashboard's and the proof editor's fast checks, split out of `dispatch` so they come
-      # back on every push: no `full-ci` term, only the dispatched one above.
-      dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
-      dispatch_browser_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_multiprocess }}
-      claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # A slow suite, gated as the comment above `dispatch` says.
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
       # envoy-go's fast half (the format and generated-code checks, the shell-script tests and
       # the build of the envoy commands), split out so it comes back on every push: no `full-ci`
       # term, only the dispatched one above.
       envoy_go_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_go_checks }}
       envoy_infra_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_infra_go }}
-      # Seven slow suites, gated as the comment above `dispatch` says.
+      # Seven slow suites, gated as the comment above `envoy_go` says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
@@ -270,7 +273,7 @@ jobs:
       dispatch_two_builds: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_two_builds || 'false' }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
-      # A slow suite, gated as the comment above `dispatch` says.
+      # A slow suite, gated as the comment above `envoy_go` says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
@@ -599,6 +602,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/kvwatch/*'
+              - 'packages/envoy/internal/legionagents/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/*'
@@ -1057,45 +1061,63 @@ jobs:
               # scripts/skill-scenarios/rig.test.ts:13,129,1009 and rig.sh:215.
               - 'scripts/e2e/lib/**'
               - *omp_install
-            dispatch: &dispatch
+            # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
+            # holds: the shards, the three `-alone` projects, the two-process job and the merge
+            # job. Every entry is something a browser row reads: the dashboard and its contracts,
+            # the Dispatch server its harness builds, and the two workflow files that hold the
+            # steps. The retired `dispatch` job's filter also held three fixture sets whose only
+            # readers are the dashboard's and the proof editor's unit tests, and they are not here:
+            # dispatch-ui's filter names all three, and with this output ungated on a pull request
+            # they would start four shard machines and the merge job for a fixture-only change.
+            # The dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite
+            # reads, and check-ci-filters.sh holds this filter to that gate - it refuses a filter
+            # that misses a read, never one that is too wide, so a path is in this list because a
+            # browser row reads it and for no other reason.
+            dispatch_browser:
               - '.github/workflows/ci.yaml'
-              # The install step runs it, so a change to it must re-run this job.
-              - '.github/scripts/playwright-deps-current.sh'
-              # The apt list the install step installs, so a change to it must re-run this job.
-              - '.github/playwright-apt-packages.txt'
-              # The key step runs it for the apt archive cache's key, so a change to it must
-              # re-run this job.
-              - '.github/scripts/apt-archive-cache-key.sh'
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
-              # web/src/features/delivery/lib/applyDelta.test.ts:2-4 and
-              # web/src/features/doc/decision-blocks.test.ts:10.
-              - 'packages/contracts/fixtures/live/**'
-              - 'packages/contracts/fixtures/decision-blocks/**'
-              # The answers packages/envoy/going's filter emitted for every probe of its own
-              # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
-              # reads and parses with the app's own remark pipeline: a filter change that moves
-              # them must run this job.
-              - 'packages/envoy/going/testdata/**'
-              # e2e/cli-body-cap.e2e.ts:27 runs envoy-client's dispatch CLI.
-              - 'packages/envoy-client/src/**'
-              # And @legion/broker-client with it, which that CLI's own closure holds
-              # (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
-              - 'packages/envoy-client/bin/dispatch.ts'
-              # The Dispatch server the browser tests start (e2e/run-server.sh:135), on the socket
-              # scripts/e2e/lib/held-port.py holds (run-server.sh:37).
+              # The Dispatch server e2e/run-server.sh builds (run-server.sh:340), on the socket
+              # scripts/e2e/lib/held-port.py holds (run-server.sh:80).
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
+              # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
+              - 'scripts/third-party-notices.ts'
+              # The workflow that holds every browser step, which this job reads as its own
+              # definition, and the nightly, the other caller of that file. An unlabelled pull
+              # request runs the pull-request lane, the two projects a change is held to; a pull
+              # request carrying `full-ci`, the merge group and a dispatch run the full lane,
+              # every project and the two-process job, which is the lane the nightly calls. So a
+              # worker can put the whole suite on a pull request with the label, the group is
+              # where a change to either file meets it before main anyway, and the nightly,
+              # started from the default branch alone, answers for no pull request.
+              - '.github/workflows/dispatch-browser.yaml'
+              - '.github/workflows/dispatch-browser-nightly.yaml'
+              # The install both browser jobs run, which reads the pinned apt list and ends with
+              # the check that the list has not fallen behind Playwright; the key their apt
+              # archive cache is read and written under, which their "Compute the apt archive
+              # cache key" steps call; the memory and CPU sampler their browser steps start and
+              # read back; and the script the merge job runs to take each leg's newest attempt.
+              - '.github/scripts/playwright-install.sh'
+              - '.github/playwright-apt-packages.txt'
+              - '.github/scripts/playwright-deps-current.sh'
+              - '.github/scripts/apt-archive-cache-key.sh'
+              - '.github/scripts/dispatch-browser-samples.sh'
+              - '.github/scripts/dispatch-browser-latest-blobs.sh'
+              # e2e/cli-body-cap.e2e.ts:52,57,65 run envoy-client's dispatch CLI, spawned as its
+              # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
+              # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
+              # (ci_job_reads.py's envoy_client_dep).
+              - 'packages/envoy-client/src/**'
+              - 'packages/envoy-client/bin/dispatch.ts'
+              - 'packages/broker-client/**'
               # The file store image: the pull step names its declaration to the pull-test-images
               # action, and the S3 step reads the same declaration for its docker run.
               - 'packages/envoy/internal/tests3/seaweedfs.go'
               - '.github/actions/pull-test-images/**'
-              # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
-              - 'scripts/third-party-notices.ts'
               # The real secrets broker e2e/broker-approval.e2e.ts approves a request on, the dev
               # OIDC issuer it trusts, and the seeding step that logs its service in and enrols its
               # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
@@ -1128,9 +1150,9 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
-            # The dashboard's and the proof editor's fast checks (dispatch-ui), split out of the
-            # dispatch filter above: what their lint, typecheck, unit tests and the dashboard's
-            # build and asset checks read. No Go and no Dispatch server: the job runs neither.
+            # The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,
+            # typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
+            # Dispatch server: the job runs neither.
             dispatch_ui:
               - '.github/workflows/ci.yaml'
               - *bun_install
@@ -1167,12 +1189,6 @@ jobs:
               # so that read is this gate's (ci_job_reads.py's dispatch_ui).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/test/**'
-            # The browser suite's two-process mode (dispatch-browser-multiprocess): what the
-            # dispatch filter names. The dev OIDC issuer its sign-in step signs the browser in at
-            # (e2e/run-signin-issuer.sh:34 builds it) compiles no package beyond the closure of the
-            # three commands e2e/run-broker.sh builds, which the dispatch filter above names.
-            dispatch_browser_multiprocess:
-              - *dispatch
             envoy_go:
               - '.github/workflows/ci.yaml'
               - *bun_install
@@ -2177,6 +2193,26 @@ jobs:
       - name: Test the main bypass check's decision
         run: .github/scripts/main-bypass-check.test.sh
 
+      # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
+      # artifacts. A run holds every attempt's artifacts, so the newest of each leg has to be
+      # chosen or a re-run is judged on the attempt it replaced; these are the assertions that
+      # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
+      - name: Test the browser lane's blob attempt selection
+        run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
+      # sample files: its two readings are pure functions of those files, so the numbers and the
+      # notice titles are held here, where no browser and no runner are needed.
+      - name: Test the browser lane's memory and CPU sampler
+        run: .github/scripts/dispatch-browser-samples.test.sh
+
+      # The apt archive cache key dispatch-browser.yaml's two browser jobs restore under and
+      # ci-caches.yaml's apt-debs job fills under, over fixture checkouts: a key that changes
+      # misses every entry saved under the old one, so the whole string and the refusals that
+      # keep it from naming nothing are held here.
+      - name: Test the apt archive cache key
+        run: .github/scripts/apt-archive-cache-key.test.sh
+
       - name: Test the race memory sampler
         run: .github/scripts/race_memory.test.sh
 
@@ -2675,10 +2711,11 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
-  # The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks,
-  # split out of the `dispatch` job below: that job's browser suite is one of the ten slow
-  # suites, which run in the merge queue and on a pull request labelled `full-ci`, while these
-  # checks must come back on every push. No Postgres service and no Go, but contracts is built
+  # The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
+  # They were split out of the browser suite (dispatch-browser below), whose full lane - the one
+  # the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
+  # nine suites that label holds back, while these checks must come back on every push.
+  # No Postgres service and no Go, but contracts is built
   # before the suites: one case of the dashboard's test run spawns Playwright, whose own
   # resolution reads contracts' built dist/ (the step below says what failed without it). tsc and
   # bun read @legion/contracts through the workspace's "bun" export condition and the dashboard's
@@ -2700,8 +2737,9 @@ jobs:
       # that spawn fails the moment contracts' source gains an export its dist lacks, measured on
       # run 42303677853 at 5636a301, where both of its cases failed with "The requested module
       # '@legion/contracts/dispatch-tools' does not provide an export named
-      # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built (the dispatch and
-      # dispatch-browser-multiprocess jobs carry the same step for the same reason).
+      # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built
+      # (dispatch-browser.yaml's shard, alone and multiprocess jobs carry the same step for the
+      # same reason).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build
         working-directory: packages/contracts
@@ -2723,8 +2761,8 @@ jobs:
       # The lane cases of e2e/__tests__/psql-session.test.ts and harness-lanes.test.ts skip
       # themselves where no database is named, so in this job they do not run: it has no
       # `postgres:` service, as this job's head says. A container of the pinned image for this
-      # step alone was tried and taken out again, in the dispatch job below where these tests ran
-      # before: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on
+      # step alone was tried and taken out again, in the job these tests ran in before this
+      # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on
       # one runner in three. What those cases prove - that a lane's psql reads its own lane's
       # database and not the plain name - is proven on any machine with DATABASE_URL set, which
       # is how a developer and an issue pod run them (`bun run test` in packages/dispatch), and
@@ -2755,695 +2793,43 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
-  # The browser suite, one of the ten slow suites: the dashboard's lint, typecheck, unit tests,
-  # build and asset checks are dispatch-ui's above.
-  dispatch:
+  # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
+  # holds: the shard legs, the three `-alone` projects a machine each, the two-process job and
+  # the merge job that joins their reports into one and posts this job's ci-ok report.
+  #
+  # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
+  # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
+  # proves those two rows and no more - it is not the run that proves the suite before main.
+  # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
+  # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
+  # group is where a change meets the whole suite before it lands, and the nightly
+  # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
+  # lane, from main) runs it again on main's tip.
+  #
+  # One input decides that: the called workflow reads `lane` for the projects each job runs and
+  # for the browsers each one installs, so nothing here chooses the engines a second time.
+  #
+  # The matrix is in the called workflow and cannot be here. Every leg of a matrix shares one
+  # job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-group run from
+  # the job whose own result decides that run, as that job's last step: legs written here would
+  # each be `dispatch-browser`, so a decided group would take one such post per leg that failed,
+  # each posting under a job id several legs answer to. A called workflow's legs are jobs of
+  # that workflow, and one job of it - the merge job, which needs every other - posts the single
+  # report this job id gets.
+  #
+  # No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
+  # Each job of dispatch-browser.yaml carries its own limit.
+  dispatch-browser:
     needs: changes
-    if: needs.changes.outputs.dispatch == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    runs-on: ubuntu-24.04
-    # The browser suite runs one lane per Playwright worker, each with a Postgres, a harness and
-    # a file-store bucket of its own (packages/dispatch/e2e/run.ts), so this job has no
-    # `postgres:` service and no job-level DATABASE_URL: a run of more than one lane refuses a
-    # caller-set DATABASE_URL, since one database cannot serve lanes that truncate it per row.
-    # The lanes' image and worker count are set on the browser step's own command line, not in an
-    # `env:`: a name outside ci_filter_coverage.py's ENV_ALLOWED in this job's or any of its
-    # steps' `env:` drops run-server.sh's `go build` out of check-ci-filters.sh's reduction, which
-    # then counts it as reading every Go file of the repository.
-    #
-    # The job budget below and the browser step's are measured: GitHub's jobs API over the
-    # 397 of the newest 400 ci.yaml runs that could be read, created between 2026-11-05T04:52:45Z
-    # and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12 push), over the 217 jobs of
-    # this name that concluded success. Three runs could not be read, 41995538189, 42034266338 and
-    # 42087689355, whose jobs endpoint answered HTTP 502 on four attempts. The whole window is
-    # after the commit that moved this job to four lanes, 9689e2c54 of 2026-11-05T04:09:18Z, so no
-    # run is left out for being older than it. Those 217 jobs ran a smaller package list than the
-    # install step's below, so the install step is out of the table below, and its budget is its
-    # own retry arithmetic rather than a reading of that window.
-    #
-    #   step                               median    95th     max
-    #   Browser-test dispatch dashboard    1475 s  1582 s  1671 s
-    #   every other step summed             199 s   221 s   232 s
-    #   the whole job                      1715 s  1875 s  2348 s
-    #
-    # The install step has one reading at its present package set, not a distribution: 30 s, in
-    # job 128209099649 of cybermonklabs/legion#2888 at 5ff42456. A distribution at that set can
-    # be read from main's jobs of this name. The apt archive cache's two steps came after that
-    # window too, so the "every other step summed" row holds none of them. In that job the restore
-    # missed, and the key and restore steps took under a second each. A restore that hits reads
-    # about 114 MB from the Actions cache, which has no reading yet.
-    #
-    # The rule: a step budget is that step's measured maximum plus 15 per cent, rounded up to the
-    # next whole minute, with a floor of two minutes; an install step's budget comes from its own
-    # retry arithmetic instead. So 1671 s x 1.15 = 1922 s -> 33 min for the browser step, and
-    # 22 min for the install step, for the reason its own comment gives. The job budget is the
-    # sum of its step budgets plus the measured maximum of every step without one, rounded up:
-    # 1320 + 1980 + 232 s = 3532 s -> 59 min. The spread is the fleet's rather than the suite's,
-    # which is why each budget is that measured maximum plus a margin rather than a figure near
-    # the median.
-    #
-    # Budgets on the steps and not on the job alone, because a step the runner cancels at its own
-    # budget fails that step and names it (`The action '<step name>' has timed out after <N>
-    # minutes.`), where a job budget cancels the job. So the `if: always()` and `if: failure()`
-    # upload steps below still run and the Playwright report, the memory samples and the CPU
-    # samples still reach the run, which a cancelled job loses. The job budget is the backstop
-    # above the sum of the step budgets, so it never fires first.
-    timeout-minutes: 59
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # go-envoy, restored only: each lane's run-server.sh builds the Dispatch server, not the
-      # listener and natsd ci-caches.yaml's envoy job builds to fill the family, and no job here
-      # saves it. Without it that build is a cold `go build` in every lane.
-      - id: go-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # e2e/agent-view.e2e.ts imports AGENT_STREAM_LIMITS and capAgentStreamText as values
-        # (LEGION-548), which Playwright's own Node resolution reads from contracts' built
-        # dist/, unlike a type-only import or the dashboard's own Vite build (which bundles the
-        # TS source directly through the workspace's "bun" export condition).
-        run: bun run build
-        working-directory: packages/contracts
-      # The SPA every lane's server serves: run-server.sh serves web/dist (:103) and builds
-      # nothing itself, and the dashboard's own build step, with the notices listing it asserts
-      # on, is dispatch-ui's now. One build for all the lanes, which read the same dist.
-      - name: Build the dashboard the lanes serve
-        run: bun run build:web
-        working-directory: packages/dispatch
-      # The file store the step below starts, pulled first for the reason the action gives. The
-      # image comes from ghcr.io/cybermonklabs/legion/ci, a registry this repository publishes, so a
-      # failed pull is a fault of this repository. The action must show it, not retry it.
-      - name: Pull the file store image
-        uses: ./.github/actions/pull-test-images
-        with:
-          consts: packages/envoy/internal/tests3/seaweedfs.go Image
-      - name: Start an S3-compatible server for uploaded files
-        # The browser suite runs the server with DISPATCH_FILE_STORE_BUCKET set (e2e/run-server.sh
-        # reads DISPATCH_E2E_FILE_STORE_ENDPOINT), so every upload and download the dashboard makes
-        # goes through the file store, as production's does. Same image as the Go tests
-        # (internal/tests3), read from its declaration again to name it for the docker run below.
-        # Started before the Playwright install, and waited for after it, so the container's own
-        # start overlaps that install instead of following it.
-        run: |
-          image=$(sed -n 's/^const Image = "\(.*\)"$/\1/p' ../envoy/internal/tests3/seaweedfs.go)
-          [ -n "$image" ] || { echo "::error::no const Image in packages/envoy/internal/tests3/seaweedfs.go"; exit 1; }
-          docker run -d --name dispatch-e2e-files -p 127.0.0.1:18333:8333 "$image" server -s3 -dir=/data -ip=0.0.0.0 -s3.port=8333
-        working-directory: packages/dispatch
-      # The browsers the install step below downloads, under the Playwright version bun.lock
-      # pins, which is what decides their revisions. No job of this workflow saves an Actions
-      # cache entry: the entry this reads is the one ci-caches.yaml's browsers job fills on a
-      # push to main, and a miss costs this job the download alone.
-      - id: playwright-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: ${{ format('playwright-{0}-', runner.os) }}
-      # The key the apt archive cache below is read under, computed by
-      # .github/scripts/apt-archive-cache-key.sh because a step expression cannot read the
-      # runner's own image environment, and by a script because ci-caches.yaml's apt-debs job,
-      # which saves the entry, computes the same key the same way.
-      - id: apt-debs-key
-        name: Compute the apt archive cache key
-        run: |
-          key=$(.github/scripts/apt-archive-cache-key.sh)
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-      # No restore-keys: a partial match would hand the install the .deb files of another
-      # Playwright version or another image, which apt would fetch again anyway.
-      - id: apt-debs
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/apt-archives
-          key: ${{ steps.apt-debs-key.outputs.key }}
-      # This step installs the system packages itself instead of through `playwright install
-      # --with-deps`, which runs its apt calls with no bound, no retry and no second origin. The
-      # pinned list is .github/playwright-apt-packages.txt, read below with its blank lines and
-      # `#` comments dropped: ci-caches.yaml's apt-debs job downloads that same file to fill the
-      # archive cache this step seeds itself from. The file holds Playwright's list alone, and
-      # this step and that job each add gstreamer1.0-tools to it themselves - here as
-      # `step_tools` below - so the set the fill fetches is the set this installs as long as both
-      # read the file and both name that package. That file's own header says what the list is -
-      # Playwright's ubuntu24.04-x64 list exactly, the union of the `tools`, `chromium`,
-      # `firefox` and `webkit` entries of that table in playwright-core's lib/coreBundle.js.
-      # Measured in job 128209099649, of cybermonklabs/legion#2888 at 5ff42456: Playwright's 79
-      # names and gstreamer1.0-tools resolve, with their dependencies, to 182 packages and
-      # 114 MB of archives (`0 upgraded, 182 newly installed, 0 to remove and 27 not upgraded.`
-      # and `Need to get 114 MB of archives.`), and the `apt-get update` before them fetched
-      # 13.0 MB of indexes (`Fetched 13.0 MB in 1s (10.1 MB/s)`). Nothing is left out of the
-      # list, so there is no reduced set beside it and no split to measure.
-      #
-      # `step_tools` below is the one package this step installs that Playwright's list does not
-      # name: gstreamer1.0-tools, for the `gst-inspect-1.0` the decoder guard runs. It is a
-      # variable of its own because `packages` is what the check at the end of the step holds
-      # against Playwright's own list, name for name.
-      #
-      # WebKit plays video and audio through GStreamer, so without gstreamer1.0-plugins-good,
-      # gstreamer1.0-plugins-bad, gstreamer1.0-libav and libavcodec60 it loads a page and plays
-      # nothing: the first three hold the plugins that demux Matroska and decode VP8 and h.264,
-      # and libavcodec60 is the codec library gstreamer1.0-libav's plugin links for h.264.
-      # Playwright's own source says of gstreamer1.0-libav that its one library libgstlibav.so is
-      # the library required for playing h.264. The decoder guard after the install asks the
-      # GStreamer registry for one element out of each of those three plugin packages and out of
-      # the already-pinned gstreamer1.0-plugins-base; avdec_h264 loads only where libavcodec60 is
-      # installed, so it answers for that library too. It runs before the browsers are
-      # downloaded, and it is the one check that catches a package that installs without its
-      # element reaching the GStreamer registry. That the browsers launch at all is what the
-      # suite's six WebKit and Firefox projects prove - webkit, webkit-iphone, webkit-alone,
-      # firefox, firefox-download-navigation and firefox-alone (e2e/playwright.config.ts) -
-      # which the "Browser-test dispatch dashboard" step below runs.
-      #
-      # On a Playwright upgrade, re-derive the list as that union again, with nothing taken out
-      # of it. Deriving it at run time by subtracting one apt closure from another does not work
-      # and must not be written: the closure of the four that carry playback and the closure of
-      # the rest share 35 packages Playwright's own list names or needs, and the subtraction
-      # leaves WebKit unable to launch. This paragraph is a standing refusal, not a record of a
-      # design that was taken out: nobody is to re-derive a reduced list.
-      #
-      # The 22-minute budget is the step's own retry arithmetic, not its measured maximum, which
-      # the bounds make unreachable: two bounded attempts of `apt-get update` at 90 s, two of the
-      # download at 300 s, then, where both of those time out, one 90 s read of the fallback
-      # origin's indexes and a third 300 s download attempt, then the unpack, the decoder guard,
-      # the browser download and the one apt simulation of the list check, none of which touch the
-      # Ubuntu mirror. So the arithmetic is 2 x 90 + 2 x 300 + 90 + 300 = 1170 s of bounded apt,
-      # 13.6 s of unpack, 0.4 s of decoder guard, about 90 s for the browsers and 1.6 s for the
-      # list check: 1170 + 13.6 + 0.4 + 90 + 1.6 = 1275.6 s, rounded up to 22 min. The budget has
-      # to carry the fallback's own update, because the path that needs every one of those bounds is
-      # the path on which the step still succeeds.
-      #
-      # The four readings after the bounded apt are job 128209099649's, of cybermonklabs/legion#2888
-      # at 5ff42456, at its 182 packages. The unpack is the 13.6 s from `Download complete and in
-      # download only mode` at 23:14:13.884 to the last line of the unbounded install at
-      # 23:14:27.475. The decoder guard is the 0.4 s to `the decoders WebKit plays through are in
-      # the registry: ...` at 23:14:28.984. The browsers and the list check together are the 1.6 s
-      # to `The pinned list is current: ...` at 23:14:30.540 - but that job restored its browsers
-      # from the Actions cache (`Cache hit for: playwright-Linux-7f68fc...`, 482 MB, at 23:13:54),
-      # so that 1.6 s is no reading of the cold browser download and the budget has to carry the
-      # cold case. That is what the 90 s term is: the step's estimate for the cold browsers, not a
-      # reading, which the package set does not reach. The list check is measured inside that
-      # 1.6 s, so 1.6 s is the term the reading supports for it. The whole step took 30 s in that
-      # job, 23:14:00 to 23:14:30: one reading at this package set, not a distribution. Each is one
-      # reading, so each moves a little from run to run; the margin the sum leaves under 22 min is
-      # what carries that.
-      #
-      # Each bound is derived from its own phase: each job's two apt rates, as apt logged them,
-      # scaled onto the step's fetch of 13.0 MB of indexes and the list's 114 MB of packages. The
-      # population is the 205 green dispatch jobs of the tester's window (2026-11-05T08:51:42Z
-      # to 23:07:42Z, a different window from the table above, which is why its count differs),
-      # read in full for the 26 whose install step ran over 73 s.
-      #
-      # Two jobs bind the two bounds. Job 127238648049 binds the download: apt logged
-      # `Fetched 114 MB in 10min 13s (186 kB/s)` for its packages, so the list's 114 MB need
-      # 613 s there, which the two 300 s attempts on the primary do not reach. Job 127357441704
-      # binds the update: apt logged `Fetched 10.5 MB in 45s (233 kB/s)` for its `apt-get
-      # update`, so the step's 13.0 MB of indexes need 55.8 s there, and 90 s leaves 61 per cent
-      # over that need. Neither the index figure nor its 90 s bound moves with the package set.
-      #
-      # So at 186 kB/s, the slowest mirror a green job of that window met, the list's 114 MB
-      # need more than the 600 s of the two attempts on the primary, and the origin switch
-      # fires. That is the trade Playwright's whole list costs: a download phase that reaches the
-      # fallback origin on that mirror.
-      #
-      # One blended rate per job is the wrong model, as job 127238648049's own log shows:
-      # `Fetched 10.5 MB in 1s (9797 kB/s)` for its update and the 186 kB/s above for its
-      # packages. One rate over both phases mixes a fast update into a slow download and
-      # understates the download. The model assumes a retry meets the same mirror rate, and
-      # azure.archive.ubuntu.com is a pool, so a retry may meet a faster mirror or a slower one.
-      # Both bounds come from the slowest mirror a green job of that window met, and are read
-      # again when a green job meets a slower one. Under 13.0 MB / 90 s = 144 kB/s the indexes
-      # do not arrive inside one bound, and under 114 MB / 300 s = 380 kB/s the packages do not:
-      # job 127274913129 met 62.5 kB/s for its packages, and its job budget cancelled it. The
-      # list's 114 MB need 1824 s at that rate, which neither 600 s nor 900 s of download
-      # reaches, so the step fails by its own name there.
-      #
-      # What the attempts complete is the threshold the step carries, and it is three bands
-      # rather than one number, because the third attempt is on another origin and the partial
-      # may not be reused across that switch. With B the 114 MB the list fetches:
-      #   above B / 600 s = 190 kB/s the two attempts on the primary complete the download;
-      #   between B / 900 s = 127 kB/s and 190 kB/s the origin switch fires on every run and
-      #     completion rests on the fallback resuming the partial; where it does not, that one
-      #     attempt carries all 114 MB and needs B / 300 s = 380 kB/s, which nothing in this
-      #     band meets, so that class fails by its own name;
-      #   below 127 kB/s the step fails by its own name whatever the fallback does - in about
-      #     900 s where both `apt-get update` phases were fast, and in at most 1170 s where each
-      #     was retried to its bound.
-      #
-      # The attempts accumulate, which is measured and not assumed: `apt-get ... -d` resumes. An
-      # attempt the bound kills leaves its bytes in apt's partial directory, and the attempt
-      # after it asks only for the rest. Job 128209099649 measured that at 5ff42456: after the
-      # download phase had fetched all 114 MB, the install call after it asked for
-      # `Need to get 0 B/114 MB of archives.`, so what the download put on disk the install does
-      # not fetch again. Measured separately, the partial is resumed across the origin switch
-      # too, since the two mirrors serve the same file and the server answers a byte-range
-      # request. Where the fallback's snapshot holds a different version the filename differs,
-      # the partial is not reused and that attempt carries the full 114 MB, which that job
-      # fetched in 8 s at 14.7 MB/s.
-      #
-      # Why the third attempt changes origin rather than the bound being raised: a longer bound
-      # buys a longer hang and hides the mirror. One step's log holds both of the rates the one
-      # host it met served, 9977 kB/s for the indexes and 31 kB/s for the pool files, so the
-      # slowness was in the pool path rather than in the host, and another origin is the lever
-      # that answers that. A single bad pool member is the case no attempt count on one origin
-      # reaches.
-      #
-      # The slowest reading this repository holds is that 31 kB/s: the list's 114 MB need 3677 s
-      # at it, which no attempt count worth having completes, so the step fails by its own name
-      # there, which is the intended outcome.
-      #
-      # The worst case the step carries: if both `apt-get update` attempts fail, the step
-      # stops after about 180 s, so the longest the bounded apt phases can run is one update
-      # attempt stopped at 90 s, a second ending just inside 90 s, two download attempts stopped
-      # at 300 s, the fallback origin's update stopped at 90 s and a third download attempt
-      # stopped at 300 s. The step fails by its own name in at most 1170 s, against the
-      # 40-minute job cancel it replaces.
-      #
-      # The .deb files of that list are cached between runs. The restore step above reads them
-      # into ~/apt-archives, and the step below copies them into apt's archive directory before
-      # its first call. apt takes a file there whose name and size match the index without
-      # fetching it and without hashing it (the pkgAcqArchive constructor in
-      # apt-pkg/acquire-item.cc, lines 3499-3507 of apt 2.7.14, compares the size alone), so a
-      # restored file is trusted as the run that wrote the entry left it. The key names the
-      # Playwright version bun.lock pins, because that version decides Playwright's list, and
-      # the runner image, because the image decides which versions apt resolves, so an image roll
-      # misses the entry rather than restoring files the new image's indexes no longer name. It
-      # names neither `step_tools` nor the versions apt resolves from updates published after the
-      # image was built, and an entry is written once and never replaced, so a package that changes
-      # under one key is fetched on every run until the key moves. No job of this workflow writes
-      # the entry, for the reason the browsers' restore above gives: filling a cache on a push to
-      # main is ci-caches.yaml's work, and its apt-debs job is what fills this family there. So a
-      # run whose key is in the cache restores the archives and the download below finds them on
-      # disk, and the whole set is fetched only on a miss - an image roll, a Playwright bump or an
-      # eviction - which is the cold case every bound and budget above is read at.
-      - name: Install Playwright Chromium, WebKit and Firefox
-        # The runner image preconfigures Google's chrome-stable apt source, whose index
-        # intermittently fails `apt-get update` with a hash-sum mismatch and takes the install
-        # down with it. Chrome is already installed there; the source only serves upgrades, so
-        # drop it before installing our deps.
-        timeout-minutes: 22
-        run: |
-          grep -rl dl.google.com /etc/apt/sources.list.d | xargs -r sudo rm -f
-          # The pinned list, out of .github/playwright-apt-packages.txt with that file's `#`
-          # header and its blank lines dropped, which is the expression ci-caches.yaml's apt-debs
-          # job reads it with too. The step's working-directory is packages/dispatch, so the file
-          # is reached through $GITHUB_WORKSPACE, the checkout root GitHub sets, as the list check
-          # at the end of this step reaches its script.
-          packages=$(grep -vE '^[[:space:]]*(#|$)' \
-            "$GITHUB_WORKSPACE/.github/playwright-apt-packages.txt")
-          # gstreamer1.0-tools holds the gst-inspect-1.0 the decoder guard below runs, and is no
-          # name of Playwright's list. It is out of `packages` because `packages` is the list the
-          # check at the end of the step holds against Playwright's own.
-          step_tools="gstreamer1.0-tools"
-          # What apt is given in every phase: the pinned list and the step's own tool.
-          apt_list="$packages $step_tools"
-          # A bounded attempt, retried: the attempt count, then what the log calls the phase,
-          # then the command. Each failed attempt prints the phase, that attempt's exit status
-          # and how many attempts are left; `timeout` exits 124 when it killed the command, so
-          # the status separates a mirror that stalled from one that refused. What an exhausted
-          # phase means is the caller's: the update below ends the step, and the download moves
-          # to another origin and takes its last attempt there.
-          attempts() {
-            local left=$1 what=$2 status
-            shift 2
-            while :; do
-              "$@" && return 0
-              status=$?
-              left=$((left - 1))
-              echo "::warning::$what failed with exit $status (124 is the timeout); attempts left: $left"
-              [ "$left" -gt 0 ] || return 1
-            done
-          }
-          # What the restore above found, handed to apt before it reads any index. A file whose
-          # version the index no longer names has another file name, and one whose size differs is
-          # deleted (acquire-item.cc:3508-3511), so apt fetches both again. nullglob makes an empty
-          # or absent directory an empty list instead of a failed copy.
-          shopt -s nullglob
-          seeded=("$HOME"/apt-archives/*.deb)
-          shopt -u nullglob
-          [ "${#seeded[@]}" -eq 0 ] || sudo cp "${seeded[@]}" /var/cache/apt/archives/
-          # `sudo timeout`, not `timeout sudo`: the signal has to reach apt-get itself, not a
-          # sudo holding it.
-          attempts 2 "apt-get update" sudo timeout 90 apt-get update || {
-            echo "::error::apt-get update failed twice, so no package list was read;" \
-              "the apt mirror is the suspect"
-            exit 1
-          }
-          # Download only (`-d`): a killed apt releases its fcntl locks either way, but with
-          # nothing unpacked in this phase no dpkg run is ever stopped part way, so the attempts
-          # after it and the unbounded install below start from a clean package state. It prints
-          # what it fetched, which is this step's own byte record. $apt_list is left unquoted on
-          # purpose, to split into words.
-          if ! attempts 2 "the package download" sudo timeout 300 \
-            apt-get install -y --no-install-recommends -d $apt_list; then
-            # The last attempt fetches from another origin, which is the one thing more attempts
-            # on the configured pool cannot do. That pool is a mirrorlist, which `apt-get update`
-            # reads as `Get:1 file:/etc/apt/apt-mirrors.txt Mirrorlist`, so the switch is an edit
-            # of that file. The copy beside it is what was there; nothing puts it back, and
-            # nothing has to, the runner being ephemeral and going with the job.
-            mirrorlist=/etc/apt/apt-mirrors.txt
-            # Where the image stops shipping it, the copy below ends on `cp: cannot stat` and the
-            # log names no cause, so the file is tested here and the error is the step's own.
-            [ -f "$mirrorlist" ] || {
-              echo "::error::there is no $mirrorlist, so the fallback origin cannot be set;" \
-                "the package download ends here"
-              exit 1
-            }
-            sudo cp "$mirrorlist" "$mirrorlist.orig"
-            sudo sed -i 's,^\(https\?://\)[^/]*,\1archive.ubuntu.com,' "$mirrorlist"
-            cat "$mirrorlist"
-            # The new origin's indexes are not the old one's, so they are read before the
-            # attempt that uses them. Where that read fails the attempt still runs: the lists on
-            # disk may still name files this origin serves, and an attempt is worth more here
-            # than a tidy exit.
-            attempts 1 "apt-get update for the fallback origin" sudo timeout 90 apt-get update ||
-              echo "::warning::the fallback origin's lists were not read; the attempt below uses what is on disk"
-            attempts 1 "the package download from the fallback origin" sudo timeout 300 \
-              apt-get install -y --no-install-recommends -d $apt_list || {
-              echo "::error::the package download failed three times, the last of them on another origin;" \
-                "the step ends here rather than leaving the job's budget to cancel the browser step after it"
-              exit 1
-            }
-          fi
-          # Unbounded and unretried: the archive is on disk now, so this takes no network.
-          sudo apt-get install -y --no-install-recommends $apt_list
-          # The .deb files apt fetched are not kept: nothing in this workflow saves a cache
-          # entry, and the fill is ci-caches.yaml's apt-debs job, which downloads the same list
-          # on a push to main rather than reading a pull request's runner, so a copy of them
-          # under $HOME here would be read by nobody. This is where main's #2868 put one, under
-          # the push-gated save this pull request's rule 10 removed with the push.
-          echo "apt archives: seeded ${#seeded[@]} .deb files"
-          # Is each decoder WebKit plays through in the GStreamer registry? One call per element:
-          # `gst-inspect-1.0 --exists` reads one element argument and discards the rest, so a
-          # single call with five names would report on the first alone. Each element is written
-          # with the package that carries it, and this is what fails the step by its own name
-          # where one of those packages has gone missing from the list above.
-          probed=()
-          for probe in matroskademux:gstreamer1.0-plugins-good vp8dec:gstreamer1.0-plugins-good \
-            h264parse:gstreamer1.0-plugins-bad avdec_h264:gstreamer1.0-libav \
-            vorbisdec:gstreamer1.0-plugins-base; do
-            element=${probe%%:*}
-            gst-inspect-1.0 --exists "$element" || {
-              echo "::error::GStreamer has no $element, which WebKit plays media through;" \
-                "${probe#*:} carries it: packages= above must hold it, and if it does, the plugin" \
-                "did not load: gst-inspect-1.0 -b lists the files GStreamer could not load"
-              exit 1
-            }
-            probed+=("$element")
-          done
-          echo "the decoders WebKit plays through are in the registry: ${probed[*]}"
-          # The browsers alone. Named, because with no argument Playwright resolves its own
-          # default set rather than this job's three.
-          bunx playwright install chromium webkit firefox
-          # Has the pinned list fallen behind Playwright? The check is the repository's
-          # .github/scripts/playwright-deps-current.sh, and it runs here, against the list it is
-          # given on this line: $packages, unquoted so it splits into words, as apt takes it
-          # above. It holds the two lists against each other both ways: every name Playwright
-          # asks for is one the pinned list holds, and every pinned name is one Playwright asks
-          # for. It runs after the install, so it expects nothing left missing. The step's
-          # working-directory is packages/dispatch, so the script is reached through
-          # $GITHUB_WORKSPACE, the checkout root GitHub sets, and the bunx it runs resolves
-          # this suite's Playwright.
-          "$GITHUB_WORKSPACE/.github/scripts/playwright-deps-current.sh" $packages
-        working-directory: packages/dispatch
-      - name: Wait for the S3-compatible server
-        # The readiness wait of the step that started the container, after the install the
-        # container came up during. An anonymous PUT makes the bucket; each lane makes its own
-        # (dispatch-e2e-files-lane-N) with the same request (e2e/run.ts), so this one proves the
-        # store answers a PUT and serves the one-lane run its own bucket.
-        run: |
-          for attempt in $(seq 1 60); do
-            curl -sf -o /dev/null http://127.0.0.1:18333/ && break
-            [ "$attempt" -lt 60 ] || { docker logs dispatch-e2e-files; exit 1; }
-            sleep 1
-          done
-          curl -sf -X PUT -o /dev/null http://127.0.0.1:18333/dispatch-e2e-files
-        working-directory: packages/dispatch
-      - name: Browser-test dispatch dashboard
-        # `bun run e2e` builds the SPA itself, which would build it a second time in this job.
-        # Calling the wrapper directly reuses the "Build the dashboard the lanes serve" step's
-        # dist above, holds this job to one Vite build, and keeps that build's own CPU out of the
-        # reading this step takes below. Safe because that build and this one are now the same
-        # binary: `packages/dispatch` no longer has an E2E-only build flag (removed with its sole,
-        # unconsumed consumer, the `window.__dispatchDocument` inspection probe). e2e/run.ts starts
-        # the harness on ports the OS chooses and runs Playwright with them; the config starts no
-        # server.
-        #
-        # DISPATCH_E2E_WORKERS is how many lanes e2e/run.ts starts, one per Playwright worker,
-        # each a harness, a bucket and a Postgres of its own, that last one a `docker run` of
-        # DISPATCH_E2E_PG_IMAGE (e2e/harness-postgres.ts). They are set on the command line, not
-        # in this step's `env:`, for the reason the job's head gives.
-        #
-        # MemAvailable every 5 s for the length of this step, kept for the upload below and its
-        # lowest value printed at the end: the lanes' Postgres containers run outside this job's
-        # cgroup, so /proc/meminfo is the one reading that counts them. The JSON report goes
-        # beside the list reporter's output, so a green run reports what it ran too. Both sample
-        # files and that report are written under $RUNNER_TEMP, beside the lanes' own run
-        # directory: a file this step wrote into the checkout would leave it dirty afterwards.
-        #
-        # Beside it, the same 5 s tick records where the CPU goes, which is the bound a run of
-        # four lanes on four vCPU hits (INFRA-317): one line per process of a named group, with
-        # the CPU that process has used, read from /proc/<pid>/stat. `pidstat` is not on this
-        # image and `ps -o pcpu` is a process's average over its whole life, not what it spent
-        # since the last tick, so neither answers this; /proc costs one `ps` and one `awk` per
-        # tick. A group's total is the sum of its processes' ticks apart, and the whole reading
-        # of a process this tick first saw, which is what catches a renderer that was started
-        # after the last tick. Nothing is ever counted twice, so the named groups are a floor:
-        # what is lost is a process that lived and died inside one tick, and the last seconds of
-        # one that died between ticks. `everything else` is the machine's own busy time
-        # (/proc/stat) less the named groups, so a reader sees the whole step without
-        # downloading the samples: it holds that loss, the runner's own work, the file-store
-        # container and the sampler itself.
-        timeout-minutes: 33
-        run: |
-          # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
-          # (mkdtempSync in os.tmpdir(), :183) among it, which is what the upload steps below
-          # read. TMPDIR is exported on the command line, not in this step's `env:`, for the
-          # reason the job's head gives.
-          export TMPDIR="$RUNNER_TEMP"
-          : > "$RUNNER_TEMP/memory-samples.txt"
-          : > "$RUNNER_TEMP/cpu-samples.txt"
-          while :; do
-            awk '/^MemAvailable:/ { print $2 }' /proc/meminfo >> "$RUNNER_TEMP/memory-samples.txt"
-            ps -eo pid=,args= | awk '
-              function group(args) {
-                if (args ~ /ms-playwright/)     return "browser"
-                if (args ~ /(^|\/)bun( |$)/)    return "bun"
-                if (args ~ /playwright/)        return "runner"
-                if (args ~ /dispatch-e2e( |$)/) return "dispatch"
-                if (args ~ /postgres|psql/)     return "postgres"
-                return ""
-              }
-              BEGIN { while ((getline l < "/proc/stat") > 0) if (l ~ /^cpu /) { split(l, c); print "machine", c[2]+c[3]+c[4]+c[7]+c[8]+c[9]; break } }
-              { g = group($0); if (g == "") next
-                if ((getline l < ("/proc/" $1 "/stat")) <= 0) next
-                close("/proc/" $1 "/stat"); sub(/^[^ ]+ \(.*\) /, "", l); split(l, s)
-                print $1, s[12] + s[13], g }' >> "$RUNNER_TEMP/cpu-samples.txt"
-            sleep 5
-          done &
-          sampler=$!
-          trap 'kill "$sampler" 2>/dev/null || true' EXIT
-          # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml) this
-          # job's service used before the lanes.
-          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-          export DISPATCH_E2E_WORKERS=4
-          export PLAYWRIGHT_JSON_OUTPUT_NAME="$RUNNER_TEMP/report.json"
-          status=0
-          bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --reporter=list,json || status=$?
-          kill "$sampler" 2>/dev/null || true
-          awk '$1 ~ /^[0-9]+$/ { if (++n == 1 || $1 + 0 < low) low = $1 + 0 } END { if (n) printf "::notice title=dispatch MemAvailable::the lowest MemAvailable during the browser step was %d kB, over %d samples\n", low, n; else print "::warning::the browser step took no MemAvailable sample" }' "$RUNNER_TEMP/memory-samples.txt"
-          awk '
-            $1 == "machine" { if (samples++) busy += $2 - was; was = $2; next }
-            ($1, $3) in seen { if ($2 >= seen[$1, $3]) group[$3] += $2 - seen[$1, $3]; seen[$1, $3] = $2; next }
-            { if (samples > 1) group[$3] += $2; seen[$1, $3] = $2 }
-            END {
-              if (!samples) { print "::warning::the browser step took no CPU sample"; exit }
-              split("browser runner dispatch postgres bun", names, " ")
-              for (i = 1; i <= 5; i++) {
-                named += group[names[i]]
-                split_up = split_up sprintf("%s %.0f (%.0f%%), ", names[i], group[names[i]] / 100, busy ? 100 * group[names[i]] / busy : 0)
-              }
-              printf "::notice title=dispatch CPU::the browser step used %.0f CPU-seconds over %d samples: %severything else %.0f (%.0f%%)\n", busy / 100, samples, split_up, (busy - named) / 100, busy ? 100 * (busy - named) / busy : 0
-            }' "$RUNNER_TEMP/cpu-samples.txt"
-          exit "$status"
-        working-directory: packages/dispatch
-        # The file store the step above started. Set here, not written to $GITHUB_ENV, which every
-        # later step would inherit, and which check-ci-filters.sh treats as reaching the job's go
-        # commands unseen.
-        env:
-          DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
-          DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
-      # Always, not on failure alone: the memory and CPU readings are of the run that passed as
-      # much as of the one that did not, and the report says what a green run ran.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: always()
-        with:
-          name: dispatch-e2e-report-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/report.json
-            ${{ runner.temp }}/memory-samples.txt
-            ${{ runner.temp }}/cpu-samples.txt
-      # A failed row's trace says what the browser saw; these say what its lane's own servers did,
-      # which is where a lane-only failure (a port, a migration, a server that never came up) is
-      # legible. The glob is the run directory e2e/run.ts made under $TMPDIR, which the step
-      # above pointed at $RUNNER_TEMP; mkdtempSync gives the directory a random suffix, so the
-      # glob matches it however many lanes ran.
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
-        with:
-          name: dispatch-e2e-test-results-${{ github.run_attempt }}
-          path: |
-            packages/dispatch/e2e/test-results
-            ${{ runner.temp }}/dispatch-e2e-run-*/lane-*/log/*.log
-
-      - name: Report ci-ok when this job decides a merge-group run
-        if: always()
-        uses: ./.github/actions/ci-ok-report
-        with:
-          changes: ${{ toJSON(needs.changes) }}
-          job-status: ${{ job.status }}
-
-  # The browser suite's two-process mode (packages/dispatch/e2e/harness-processes.ts): two
-  # envoy-dispatch processes against one Postgres, behind e2e/round-robin-proxy.ts, B serving a
-  # second build of the dashboard, which is what a rolling release puts in front of a browser. It
-  # runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
-  # suite's job does not wait on a second Vite build and two more servers.
-  dispatch-browser-multiprocess:
-    needs: changes
-    if: needs.changes.outputs.dispatch_browser_multiprocess == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    runs-on: ubuntu-24.04
-    # The budgets below, this one and the three on steps, are measured: GitHub's jobs API over
-    # the 397 of the newest 400 ci.yaml runs that could be read, created between
-    # 2026-11-05T04:52:45Z and 2026-11-05T21:06:27Z (268 pull_request, 120 merge_group, 12
-    # push), over the 335 jobs of this name that concluded success.
-    #
-    #   step                                                          median   95th    max
-    #   Install Playwright Chromium                                     20 s   34 s  339 s
-    #   Browser-test dispatch dashboard against two server processes   102 s  188 s  202 s
-    #   Browser-test a sign-in across two server processes              11 s   12 s   13 s
-    #   every other step summed                                         68 s   94 s  135 s
-    #   the whole job                                                  207 s  305 s  516 s
-    #
-    # The rule, and the reason the budgets sit on the steps rather than on the job alone, are in
-    # the dispatch job's comment above its `timeout-minutes`; this job states only what it
-    # measured and what that rule gives here. 202 s x 1.15 = 232 s -> 4 min for the dashboard
-    # step, 13 s x 1.15 = 15 s -> the two-minute floor for the sign-in step, and 4 min for the
-    # install step, for the reason its own comment gives. The job budget is the sum of its step
-    # budgets plus the measured maximum of every step without one, rounded up: 4 + 4 + 2 min
-    # plus 135 s = 13 min. With budgets on the steps, the `if: failure()` upload below still
-    # runs, which a cancelled job skips.
-    timeout-minutes: 13
-    services:
-      postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: setup-go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version-file: packages/envoy/go.mod
-          cache: false
-      # go-envoy: its modules are the envoy module's, though this job builds the Dispatch server
-      # and the dev OIDC issuer rather than the listener and natsd ci-caches.yaml builds.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-envoy-{0}-', runner.os) }}
-      - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # The e2e helpers the specs import read some of contracts' values from its built dist/,
-        # through Playwright's own Node resolution (the dispatch job's step of the same name).
-        run: bun run build
-        working-directory: packages/contracts
-      - name: Build the Dispatch server
-        # run-server.sh builds it too, inside the harness's boot wait for each server
-        # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
-        # current and start in seconds.
-        run: go build -o ./dispatch-e2e ./cmd/dispatch
-        working-directory: packages/envoy
-      - name: Install Playwright Chromium
-        # No apt in this step at all. Playwright's `chromium` entry in its ubuntu24.04-x64 table
-        # adds no package this GitHub ubuntu-24.04 image lacks, so `--with-deps` installed only
-        # Playwright's `tools` list: the CJK, Thai and Cyrillic font packages and xvfb. Measured
-        # at the merge base in job 127214381394, that was `0 upgraded, 9 newly installed`, `Need
-        # to get 21.1 MB of archives`, plus 12.8 MB of package indexes in `apt-get update`. All
-        # of that is gone, and with it this step's removal of the runner image's chrome-stable
-        # apt source, which it carried only because that source's index intermittently failed
-        # `apt-get update`.
-        #
-        # The fonts are not needed: this job's two specs, signin.multiprocess.e2e.ts and
-        # two-builds.multiprocess.e2e.ts, run headless Chromium and compare no screenshot
-        # (neither holds `toHaveScreenshot` or `toMatchSnapshot`), and fonts-liberation and
-        # fonts-noto-color-emoji are on the image already. A row that later needs CJK or Thai
-        # glyphs would fail visibly.
-        #
-        # The 4-minute budget: this step downloads browsers only, and Playwright makes up to
-        # five attempts, across its download hosts, inside it. Of the 339 s maximum above,
-        # measured in job 127214381394, 317 s were the Ubuntu mirror serving 21.1 MB at
-        # 66.4 kB/s, which this step no longer asks for; Chromium, its headless shell and
-        # ffmpeg downloaded in 6 s there. Healthy today is a 20 s median and a 34 s 95th
-        # percentile for the whole step.
-        #
-        # No browser cache here: it would save about 4 s, since the three archives - Chrome for
-        # Testing, its headless shell and ffmpeg - download in 8 to 9 s, and it would add about
-        # 250 MiB to a cache store already holding 18.6 GB in 162 entries, where each existing
-        # playwright-Linux- entry is 481 MiB. The dispatch job's cache stays and is worth its
-        # place; this job's would not be.
-        timeout-minutes: 4
-        run: bunx playwright install chromium
-        working-directory: packages/dispatch
-      - name: Browser-test dispatch dashboard against two server processes
-        # Builds the dashboard twice (A's and B's, with distinct build ids) and runs the
-        # multiprocess specs through the round-robin proxy.
-        timeout-minutes: 4
-        run: bun run e2e:multiprocess
-        working-directory: packages/dispatch
-      - name: Browser-test a sign-in across two server processes
-        # Both processes sign people in through the dev OIDC issuer (DISPATCH_E2E_SIGNIN=oidc,
-        # e2e/harness-signin.ts), and its one spec starts a sign-in on A and completes it on B. The
-        # step before built the dashboard; B serves A's build, which this spec does not tell apart.
-        timeout-minutes: 2
-        run: DISPATCH_E2E_PROCESSES=2 DISPATCH_E2E_SIGNIN=oidc bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts
-        working-directory: packages/dispatch
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: failure()
-        with:
-          name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
-          path: packages/dispatch/e2e/test-results
-
-      - name: Report ci-ok when this job decides a merge-group run
-        if: always()
-        uses: ./.github/actions/ci-ok-report
-        with:
-          changes: ${{ toJSON(needs.changes) }}
-          job-status: ${{ job.status }}
+    if: needs.changes.outputs.dispatch_browser == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/dispatch-browser.yaml
+    with:
+      # An unlabelled pull request gets the two-project `pull-request` lane; a pull request
+      # carrying `full-ci`, and every other event, gets the full lane. That is what lets a worker
+      # recheck a slow-suite failure on a pull request: the label picks the lane, while the
+      # `dispatch_browser` output above runs the suite either way.
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   claude-envoy:
     needs: changes
@@ -3496,7 +2882,7 @@ jobs:
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
   # shell-script tests and the build and pack of the envoy commands. The slow half below (the
   # module's unit tests, the container-backed NATS matrix and the integration suite) is one of
-  # the ten slow suites, which run in the merge queue and on a pull request labelled `full-ci`,
+  # the nine slow suites, which run in the merge queue and on a pull request labelled `full-ci`,
   # while these checks must come back on every push. No Postgres service: nothing here opens a
   # database. It restores go-envoy rather than go-envoy-test, which is the slow half's family
   # alone (the test binary of every package of the envoy module).
@@ -5015,8 +4401,7 @@ jobs:
       - pi-envoy
       - pi-legion
       - dispatch-ui
-      - dispatch
-      - dispatch-browser-multiprocess
+      - dispatch-browser
       - claude-envoy
       - envoy-go-checks
       - envoy-go

@@ -218,7 +218,7 @@ test("a markdown paste or import of an element the editor cannot create yet is r
       handle.setMarkdown(storedMarkdown);
       expect(uncreatable(view.state.doc)).toEqual(everyUncreatable);
     },
-    { blockSchema: laterManifest, readOnly: true }
+    { blockSchema: laterManifest, access: "read" }
   );
 });
 

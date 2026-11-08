@@ -8,10 +8,14 @@
 # files the new image's indexes no longer name. The image is read from the runner's own
 # environment rather than from a workflow expression, which cannot reach it.
 #
-# Two jobs run it, and that is why it is one script: ci.yaml's dispatch job, whose restore reads
-# the entry, and .github/workflows/ci-caches.yaml's apt-debs job, whose save writes it on a push
-# to main. A key that drifted between the two would make every restore miss and nothing would
-# fail - the dispatch job would just fetch the whole 114 MB set again on every run.
+# Three jobs run it, and that is why it is one script: .github/workflows/dispatch-browser.yaml's
+# shard and alone jobs, whose restores read the entry, and .github/workflows/ci-caches.yaml's
+# apt-debs job, whose save writes it on a push to main. A key that drifted between them would
+# make every restore miss and nothing would fail - a browser job would just fetch the whole
+# 114 MB set again on every run.
+#
+# Its cases are .github/scripts/apt-archive-cache-key.test.sh, which ci.yaml's test job runs:
+# the whole key against the one a real run restored, and each refusal below.
 #
 # Its errors go to stderr, since its caller reads stdout for the key alone:
 #   key=$(.github/scripts/apt-archive-cache-key.sh)
