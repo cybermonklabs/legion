@@ -44,9 +44,36 @@ const (
 )
 
 // publisherHoldOptions are the publisher hold's parameters: it lasts 6 s on the database's clock
-// after each renewal, is renewed every 2 s, and reports itself lost 2 s before it lapses, so a
+// after each renewal, is renewed every 1 s, and reports itself lost 2 s before it lapses, so a
 // process that is killed is replaced by a standby within 6 s of its last renewal.
-var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: 2 * time.Second, Margin: 2 * time.Second}
+//
+// Renew is 1 s, not 2 s, because the window a renewal has is TTL - Margin, 4 s from the last
+// confirmed renewal, and each renewal's own wait for an answer is bounded at Renew. At 2 s the
+// window holds one usable attempt - the ticks fall at 2 s and 4 s, and the tick at 4 s is the
+// deadline itself - so one statement that does not answer within 2 s costs a hold whose row is
+// still live. At 1 s it holds three, at 1 s, 2 s and 3 s, and each abandons an unanswered
+// statement after 1 s rather than 2 s.
+//
+// What that buys, measured (dispatch://INFRA-1568, 2026-11-07, with a fake Holds that answers at
+// once outside one stall and makes every statement issued inside it wait the stall out, swept
+// over stalls of 0.5 s to 4 s in steps of 250 ms and over offsets of the stall from the last
+// confirmed renewal of 0 to one Renew in four steps): at Renew 2 s the hold survives a stall of
+// 1.75 s from every offset and 3.25 s from the best one; at Renew 1 s, 2.75 s from every offset
+// and 3.5 s from the best one. It costs one renewal statement a second per process instead of one
+// every two seconds, on the outbox's own two-connection pool, and, during a stall, one connection
+// of that pool per renewal abandoned at its timeout: pgx cancels a statement by setting a deadline
+// on its connection, which fails the read in flight and closes it (its default
+// BuildContextWatcherHandler, which nothing here overrides), so a 3 s stall now costs up to three
+// re-dials there instead of one. That is cheap against the take-over the shorter timeout buys
+// back.
+//
+// It is not what makes a stalled holder keep the hold: the job this was measured from stalled for
+// about 3.1 s (run 42346322118, attempt 1), which neither setting survives from every offset. A
+// holder whose renewal is late must stop at its deadline, and the row it still holds keeps every
+// standby out until its release deletes the row, or for Margin after the deadline when that
+// release cannot reach the database first. That gap is the product's, and the two-process row
+// holds it to the take-over bound rather than to nothing.
+var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
 
 // holdEnd is why a holder stopped publishing.
 type holdEnd string
@@ -57,9 +84,10 @@ const (
 	// natsLost: NATS stayed down for natsLossGrace, or a batch's sends failed and the probe of
 	// their connection failed too; the hold is released.
 	natsLost holdEnd = "NATS lost"
-	// holdLost: the hold reported itself lost, its deadline passed during a batch, or a record
-	// found it another's; its release stops its renewal and deletes the row only while it still
-	// names this process, since the name may already be another's.
+	// holdLost: the hold reported itself lost, its deadline had passed when a scan was to start
+	// a batch or when a send of one was to be written, or a record found it another's; its
+	// release stops its renewal and deletes the row only while it still names this process,
+	// since the name may already be another's.
 	holdLost holdEnd = "lost"
 )
 
@@ -83,6 +111,26 @@ type Outbox struct {
 	hold atomic.Pointer[duty.Hold]
 	// claims counts the batches this outbox read, one per scanBatch: how often it scanned.
 	claims atomic.Int64
+	// afterRetryArmed is given the wait serve armed its one retry timer for, each time it arms
+	// one. Nil in production; a test uses it to read the sequence the outbox went through - which
+	// wait it armed, and when - rather than measuring the wall clock the publish landed on. Set
+	// it only before Run starts, so nothing races it.
+	afterRetryArmed func(wait time.Duration)
+	// afterListening is called each time a LISTEN connection comes up, at the end of listen's
+	// OnConnected and after the wakes it sends. Nil in production; a test uses it to know the
+	// connection is up, so the catch-up wake that connection sends is accounted for rather than
+	// arriving later as a scan out of nowhere. Set it only before Run starts, so nothing races
+	// it.
+	afterListening func()
+	// afterServeWait is called in serve each time it is about to wait. Nil in production; a test
+	// uses it to know the holder has stopped working for now. What is pending is not handed in:
+	// serve would have to read the wake queue before the call, and a test judging rest on that
+	// reading would be judging one taken before the wake it is looking for. A test reads the
+	// queue itself, under whatever lock it holds its own facts with. Even then a wait is the
+	// outbox at rest only while its NATS connection is up: a holder whose publisher is
+	// disconnected waits here without having scanned, and says nothing about what is due. Set it
+	// only before Run starts, so nothing races it.
+	afterServeWait func()
 	// probeBeforeHold is set when this process gave the publisher hold up for NATS lost, and
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
@@ -186,6 +234,9 @@ func (o *Outbox) listen(ctx context.Context) {
 		OnConnected: func() {
 			o.signal()
 			o.signalStandby()
+			if o.afterListening != nil {
+				o.afterListening()
+			}
 		},
 		OnNotify: func(channel, payload string) {
 			switch {
@@ -322,22 +373,105 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // lost when a record found the hold another's with the loss deadline still ahead, and the release
 // is what stops that hold's renewal before the next take starts another. Its delete and notify are
 // guarded on this holder, so a hold another process has taken is left alone.
+//
+// The line that ends the turn is written before the release, and carries two bounds on the moment
+// this process stopped publishing, stopped and stopped_by. The order matters to a reader of the
+// log, and so does there being two of them.
+//
+// The order does, because the release is a database round trip: a line written after it dates the
+// loss by however long the database took, and a database that is slow is exactly the case this
+// line is read in. One job (run 42346322118, attempt 1, 2026-11-07) logged the lost line 1.09 s
+// after the process had stopped publishing, with a write of 3.1 s beside it.
+//
+// The pair does, because the reader - cmd/dispatch's two-process row, and anyone reading a
+// production log the way it does - decides from these attributes whether this process was
+// publishing at the moment a /healthz read of it was answered, and one bound cannot answer that
+// honestly for every moment. stopped is at or before the real stop and stopped_by is at or after
+// it, so a read answered before stopped fell while this process still published, one answered
+// after stopped_by fell after it had stopped, and one in between is left undecided rather than
+// decided wrongly. The start of the turn already has its two bounds: started, read before the
+// store of the hold, is at or before the real start, and the took line's own time plus the
+// millisecond slog's text handler truncates it to is after it.
+//
+// Each bound is the earlier of the hold's deadline and one of the two clock reads taken around
+// the store of nil below, because neither the deadline nor a clock read alone is right on every
+// path. Hold.Lost closes from four places - the deadline's own timer (expire), a renewal
+// confirmed at or after the deadline (confirm), a renewal that affected no row (renew), and
+// SetToken finding the row another's - and each runs loseLocked, which pulls a deadline still
+// ahead back to the moment it closed Lost, so there Deadline() is the moment Publishing() turned
+// false; scan's check before it starts a batch, and a send fenced mid-batch, are that deadline
+// itself. On all of those the deadline is behind both clock reads, so both bounds are the
+// deadline and the stop is named exactly. That exactness is what the ordinary paths live on: a
+// reader has to keep deciding the reads that fall in the stretch between a deadline and the line
+// that reports it, which the job above measured at 1.09 s.
+//
+// The paths that leave the deadline still ahead are a stop (ctx's end), a NATS loss, and the one
+// path that touches the hold not at all, a recordBatch that found the hold another's (scanBatch),
+// where the deadline can be up to TTL - Margin ahead. There Publishing() stays true until the
+// store of nil below, so that store is the real stop and the two clock reads taken around it are
+// what bracket it. Nothing carries a deadline back inside the stretch it names, because a
+// deadline that has passed is final (confirm loses rather than extends), so Publishing() is one
+// unbroken stretch per turn as holder.
+//
+// The clock reads sit deliberately on the outside of the stores of o.hold, each on the side that
+// leaves a reader's disagreement a real one. returned is read before o.hold.Store(nil), so
+// stopped, which is no later than it, is at or before the moment Publishing() turned false;
+// cleared is read after that store, so stopped_by, which is no earlier than it unless the
+// deadline caps it at the stop itself, is at or after that moment. Reading the clock once only,
+// after the store, reports the stretch between the store and the read as time this process had
+// already stopped, while a /healthz read issued in there still answers true, and answers it
+// honestly: the reader calls a correct answer a disagreement.
+// Reading it once only, before the store, hides the opposite stretch the same way. The stretch is
+// nanoseconds unless this goroutine is pre-empted between the two statements, which is exactly
+// what a loaded runner does.
+//
+// The line's own time would be a correct upper bound as well, since the line is written after the
+// store, and it is not used as one because it is far too loose on the deadline paths, the
+// ordinary ones: there the two bounds are the deadline itself, and the line can trail it by the
+// 1.09 s that job measured, so every health read in that stretch would go undecided for nothing.
+//
+// started is read before o.hold.Store(hold) for the same reason from the other end: the
+// attribute is then at or before the moment Publishing() turned true, so a health read that
+// answered "not publishing" and fell before started agrees with the log, and one after it is a
+// real disagreement. It is logged as an RFC3339Nano string, as stopped and stopped_by are,
+// because slog's text handler writes a time.Time to the millisecond; the line's own time is
+// truncated the same way, and the log call comes after the store, so without the attribute a
+// reader cannot date the start to better than a millisecond plus whatever ran in between.
+//
+// Rows wait on these messages' words (tookHold, releasedHold and lostHold in
+// cmd/dispatch/multiprocess_test.go), so a change to them is a change to those rows too.
 func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
+	started := time.Now()
 	o.hold.Store(hold)
-	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance)
+	slog.Info("dispatch outbox: took the publisher hold", "instance", o.instance,
+		"started", started.Format(time.RFC3339Nano))
 	end := o.serve(ctx, hold)
+	returned := time.Now()
 	o.hold.Store(nil)
+	cleared := time.Now()
+	deadline := hold.Deadline()
+	stopped, stoppedBy := deadline, deadline
+	if returned.Before(stopped) {
+		stopped = returned
+	}
+	if cleared.Before(stoppedBy) {
+		stoppedBy = cleared
+	}
+	if end == holdLost {
+		slog.Info("dispatch outbox: lost the publisher hold", "instance", o.instance,
+			"stopped", stopped.Format(time.RFC3339Nano),
+			"stopped_by", stoppedBy.Format(time.RFC3339Nano))
+	} else {
+		slog.Info("dispatch outbox: released the publisher hold", "instance", o.instance,
+			"reason", string(end), "stopped", stopped.Format(time.RFC3339Nano),
+			"stopped_by", stoppedBy.Format(time.RFC3339Nano))
+	}
 	release, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 	defer cancel()
 	if err := hold.Release(release); err != nil {
 		// The renewal has stopped, and the row lapses on its own, TTL after the last renewal.
 		slog.Error("dispatch outbox: release the publisher hold", "instance", o.instance, "error", err)
 	}
-	if end == holdLost {
-		slog.Info("dispatch outbox: lost the publisher hold", "instance", o.instance)
-		return end
-	}
-	slog.Info("dispatch outbox: released the publisher hold", "instance", o.instance, "reason", string(end))
 	return end
 }
 
@@ -345,9 +479,9 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // client is connected. A scan runs its batches side by side and returns only once every one of
 // them has, so serve answers a lost hold, a disconnection or ctx's end between scans and never
 // while a batch is still sending. It returns why it stopped: ctx ended, the hold was lost or its
-// deadline passed mid-batch, or NATS was lost - down for natsLossGrace without a break and still
-// down when the grace ends, or a batch's sends failed for the connection and a probe of that
-// connection failed too.
+// deadline had passed when a scan was to start a batch or write a send of one, or NATS was lost
+// - down for natsLossGrace without a break and still down when the grace ends, or a batch's
+// sends failed for the connection and a probe of that connection failed too.
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	var disconnected, retryTimer *time.Timer
 	var disconnectedFor, retryDue <-chan time.Time
@@ -381,12 +515,18 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 				if wait, ok := o.nextRetry(ctx, end.failed); ok {
 					retryTimer = time.NewTimer(wait)
 					retryDue = retryTimer.C
+					if o.afterRetryArmed != nil {
+						o.afterRetryArmed(wait)
+					}
 				}
 				// The client's state is read again before waiting: a scan takes the wakes that
 				// reach it while it runs (scan), the change of this connection among them, so the
 				// loop would otherwise wait on a grace it never armed.
 				continue
 			}
+		}
+		if o.afterServeWait != nil {
+			o.afterServeWait()
 		}
 		select {
 		case <-ctx.Done():
@@ -412,9 +552,9 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	}
 }
 
-// scanEnd is how a scan ended: fenced, the hold's deadline passed or a record found the hold
-// another's; natsLost, a batch's sends failed for the connection and the probe of it failed;
-// failed, a statement failed.
+// scanEnd is how a scan ended: fenced, the hold's deadline had passed before a batch, a send of
+// one met it, or a record found the hold another's; natsLost, a batch's sends failed for the
+// connection and the probe of it failed; failed, a statement failed.
 type scanEnd struct {
 	fenced, natsLost, failed bool
 }

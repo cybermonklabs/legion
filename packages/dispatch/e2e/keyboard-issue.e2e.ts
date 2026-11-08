@@ -185,6 +185,7 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
       ["h", "children"],
       ["a", "artifacts"],
       ["v", "activity"],
+      ["o", "collaborators"],
       ["s", "spec"],
     ] as const) {
       await page.keyboard.press("t");
@@ -212,11 +213,15 @@ test("the issue scope reaches the header controls and the tab chords, and ? list
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Plan tab" }).locator("kbd")
     ).toHaveText(["t", "p"]);
-    // Activity is the last tab and takes `t v`, since `t a` is Artifacts and `l` the labels.
+    // Collaborators is the last tab and takes `t o`; Activity takes `t v`, since `t a` is
+    // Artifacts and `l` the labels.
     await expect(issueSection).toContainText("Activity tab");
     await expect(
       issueSection.getByRole("listitem").filter({ hasText: "Activity tab" }).locator("kbd")
     ).toHaveText(["t", "v"]);
+    await expect(
+      issueSection.getByRole("listitem").filter({ hasText: "Collaborators tab" }).locator("kbd")
+    ).toHaveText(["t", "o"]);
     await page.screenshot({
       path: testInfo.outputPath(`issue-shortcut-help-${testInfo.project.name}.png`),
     });

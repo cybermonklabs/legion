@@ -274,9 +274,19 @@ agents using it stop working at once.
   message as it was posted, and everything else that happened to the issue — status moves,
   claims, document versions, uploads, subscriptions, changes to child issues. It has **Load
   older** at the bottom, a divider for each day, and a mark where your last read ends.
+- **Decisions** is a view of the issue's `decisions.md`, in order: the open questions its spec
+  asks, the agent decisions waiting for your review, each with **Keep** and **Change**, your own
+  decisions, and the ones since replaced. Each decision links the spec blocks it shaped.
+- **Collaborators** lists everyone who has worked the issue: Legion's agents by role, each role's
+  newest session first and a superseded session naming the one that replaced it; then every other
+  agent session, the most recently active first; then the people, with why each is a collaborator
+  and when they last worked it. Every agent is one click from its conversation and shows whether
+  it is running. When Legion's record of this issue's agents cannot be read, the tab says so
+  instead of listing nothing. An issue nobody has worked reads **No one has worked this issue
+  yet.**
 
-Press `t` and then `s`, `k`, `p`, `c`, `h`, `a`, or `v` to switch to Spec, Verification, Plan,
-Conversation, Children, Artifacts, or Activity.
+Press `t` and then `s`, `k`, `p`, `c`, `h`, `a`, `v`, `d`, or `o` to switch to Spec, Verification,
+Plan, Conversation, Children, Artifacts, Activity, Decisions, or Collaborators.
 
 An issue with no Verification document, or no plan document, shows on that tab the
 `dispatch artifact` command that makes one.
@@ -287,8 +297,13 @@ The box at the foot of the Conversation posts a comment on the issue, on a close
 composers, **Reply** on a message and a delivery's **Retry** all work there, and you can still
 comment on a quote of its documents: select the text and choose **Comment**, the one action the
 selection bar offers on a closed issue's document, and the comment opens in the margin. Type `@`
-to mention an agent role or a live agent session; the comment is then delivered to it. Start the
-comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
+to mention an agent role or a live agent session; the comment is then delivered to it. The picker
+also offers, under **Not running**, this issue's Legion roles that no running agent holds; a
+mention picked there is addressed to the role, and the comment is posted on the issue, but its
+delivery fails while nobody holds that role, since there is no session to take it. The thread
+shows that failed attempt with **Retry** beside it, which sends to whoever holds the role at the
+time; that Retry is offered for three days, after which a fresh comment is the way to reach the
+role. Start the comment with `/btw ` or `/aside ` to choose how a mentioned agent receives it.
 [Agents](/legion/dispatch/agents/#sending-to-one-agent) explains the delivery modes.
 
 Press `Ctrl+Enter` (`⌘Enter` on a Mac) to send. `Enter` alone starts a new line.

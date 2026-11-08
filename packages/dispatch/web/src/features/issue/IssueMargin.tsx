@@ -1,4 +1,4 @@
-import { type ReactNode, useId, useState } from "react";
+import { type ReactNode, useEffect, useId, useState } from "react";
 import { Link } from "react-router-dom";
 import type { IssueDetails } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -18,6 +18,7 @@ import { ConversationStates } from "./conversation-states";
 import { FocusedNodeFacts } from "./FocusedNodeFacts";
 import type { FocusedNode } from "./focused-node";
 import { GitHubLink } from "./GitHubLink";
+import { IssueCollaboratorList } from "./IssueCollaboratorList";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import {
   authorText,
@@ -54,6 +55,7 @@ export function IssueMarginPanel({
   isClosed,
   issue,
   onConversationState,
+  openCollaborators = false,
 }: {
   /** The margin's own content, where this panel sits inside the shell's margin. */
   conversation?: ReactNode;
@@ -70,13 +72,24 @@ export function IssueMarginPanel({
   issue: IssueDetails;
   /** Takes the state a reader picked, which the page turns into its address. */
   onConversationState: (state: ConversationState) => void;
+  /** Whether the People section opens with the issue's collaborators drawn, which is what
+   *  `/issues/<key>/collaborators` - the address the Collaborators tab answered - names
+   *  (R19). Every other address leaves the list closed and reads nothing. */
+  openCollaborators?: boolean;
 }): ReactNode {
   const sections = useMarginSections();
   const subscribers = useIssueSubscribers(issue.key);
   const [subscribersOpen, setSubscribersOpen] = useState(false);
+  const [collaboratorsOpen, setCollaboratorsOpen] = useState(openCollaborators);
   const [referencesOpen, setReferencesOpen] = useState(false);
   const referencesPanelId = useId();
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
+  // The address opens the list; closing it again is the reader's, so this only ever opens.
+  // The panel outlives a move between the issue's addresses, so seeding the state is not
+  // enough: the `t o` chord navigates under a panel that is already mounted.
+  useEffect(() => {
+    if (openCollaborators) setCollaboratorsOpen(true);
+  }, [openCollaborators]);
 
   return (
     // The panel is the page's, wherever the shell mounts it, and the page draws no tooltips
@@ -170,6 +183,23 @@ export function IssueMarginPanel({
               }
               retrying={subscribers.unsubscribe.isPending}
             />
+          ) : null}
+          {/* Everyone who worked the issue, running or not, which the eight-tab page gave a tab
+              of its own. It is read only once a reader opens it, so the panel costs the page no
+              request on an address that does not name it (R20). */}
+          <button
+            aria-expanded={collaboratorsOpen}
+            className={`flex min-h-11 items-center gap-2 rounded-lg px-2 py-1 text-sm font-medium ${textSecondaryOnSurface}`}
+            onClick={() => setCollaboratorsOpen((open) => !open)}
+            type="button"
+            {...pageChrome}
+          >
+            <span>{PROPERTY_LABELS.collaborators}</span>
+          </button>
+          {collaboratorsOpen ? (
+            <div {...authorText}>
+              <IssueCollaboratorList issueKey={issue.key} />
+            </div>
           ) : null}
         </PropertySection>
         <PropertySection name="references" sections={sections}>

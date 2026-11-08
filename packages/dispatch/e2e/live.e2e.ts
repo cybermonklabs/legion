@@ -594,11 +594,15 @@ test("live: a fresh page load opens the socket at the current head and stays wit
 
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
-  const apiRequestUrls: string[] = [];
+  const apiRequestPaths: string[] = [];
   page.on("request", (request) => {
-    const url = request.url();
-    if (url.includes("/api/v1/") || url.includes("/auth/")) {
-      apiRequestUrls.push(url);
+    // Called for every request of a cold load this row measures, so the cheap string test comes
+    // first: a path under /api/v1/ or /auth/ always shows in the raw URL.
+    const raw = request.url();
+    if (!(raw.includes("/api/v1/") || raw.includes("/auth/"))) return;
+    const url = new URL(raw);
+    if (url.pathname.startsWith("/api/v1/") || url.pathname.startsWith("/auth/")) {
+      apiRequestPaths.push(url.pathname + url.search);
     }
   });
 
@@ -613,62 +617,113 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await socketOpened;
 
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
-  expect(apiRequestUrls.some((url) => new URL(url).pathname === "/api/v1/events")).toBe(false);
+  expect(apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/events")).toEqual([]);
 
-  // Exactly 28 on desktop (chromium): whoami, the project sidebar's Inbox, Pinned,
-  // and Projects queries, me/state, issue detail, the shared inbox query for the
-  // margin's open-ask count, the active-sessions read, the primary artifact's comments -
-  // which the Conversation's own list shares rather than fetching again - the margin's own
-  // list of the issue's asks and the Conversation's, which asks the same route for each
-  // ask's thread (`?thread=1`) and so is a request of its own, not the margin's shared,
-  // the issue's message threads, the two one-row event reads the unread mark
-  // needs (the first event past the watermark, and the issue's head),
-  // Conversation's live-agent query, the one block-schema fetch every document
-  // surface shares for the session, the header's read of the project's
-  // architecture sources (the `Components:` line offers its picker only when the
-  // project has one; the component tree itself is fetched only once the picker
-  // opens, never on load), the header's read of the repository mappings (an issue
-  // that resolves to no repository, as this one does, shows the `Repository:` item only
-  // when its project maps one), me/agents/state, whose unread replies the Agents badge
-  // counts on every page (the sidebar's on desktop, the compact header's on phone), and
-  // the credential requests waiting on the viewer, which the Inbox count adds up on every
-  // page, `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one
-  // Inbox number (the sidebar's on desktop, the compact header's on phone), and the
-  // Conversation's list of the issue's phase handoffs, which it shows beside the messages.
+  // Exactly these addresses on a fresh load, and nothing else. A set rather than a count, and
+  // waited for rather than read at an instant: the page issues the last requests of its first
+  // load within a few milliseconds of painting the message this row waits for, so a count
+  // taken the moment that message appears can be one request short, which is how this row
+  // failed in CI - 20 against 21. The wait ends on the set itself, so a panel that starts
+  // eagerly fetching before its own address is ever opened still trips this immediately
+  // instead of only breaking some looser upper bound, and a failure names the address that is
+  // missing or extra instead of leaving a reader to work out which of a count of N dropped.
   // The Conversation pages no event log at all now that the history is the Activity list's,
   // and that list is unmounted until its own address is opened.
   //
-  // Eight of those requests are the one tree the page's body is, which every preset is a query
-  // over and which therefore draws on every address (dispatch://INFRA-1196 R1, R3): the
-  // issue's coverage, its decisions, its check results, its references, its asks, the blocks
-  // of each of its documents - this issue carries one - and the one batched read of every
-  // `dispatch://` address the tree holds. That read is one request and not one per read that
-  // lands: the tree grows as each of its reads answers, so the batch waits until all of them
-  // have (`features/issue/useIssueTree.ts`), where before it asked for the addresses known so
-  // far and asked again for the rest, and this budget was 29. The conversation's own comments
-  // and messages are the tree's reads too and are shared with the list, not fetched twice.
+  // It is the set of addresses, not the list of requests: the page reads an address it has
+  // already read when a query of the shell's invalidates, which is that query's business and
+  // not this budget's. What this holds is that no surface reads an address the page has no
+  // reason to read on a first load.
   //
-  // This row runs on the desktop project alone (#2866, no browser row runs twice), so the
-  // budget is one number. Asserted exactly (not a ceiling) so a panel that starts eagerly
-  // fetching before its own address is ever opened trips this immediately instead of only
-  // breaking some looser upper bound.
-  expect(apiRequestUrls.length).toBe(28);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith(`/api/v1/issues/${issue.key}/handoffs`))
-  ).toHaveLength(1);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith("/api/v1/settings/repo-projects"))
-  ).toHaveLength(1);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith("/api/v1/me/replies?kind=reply%2Cagent&limit=1"))
-  ).toHaveLength(1);
-  expect(apiRequestUrls.filter((url) => url.endsWith("/api/v1/me/agents/state"))).toHaveLength(1);
-  expect(
-    apiRequestUrls.filter((url) => url.endsWith("/api/v1/credential-requests?approver=me"))
-  ).toHaveLength(1);
-  expect(apiRequestUrls.some((url) => url.endsWith("/api/v1/projects/CORE/architecture"))).toBe(
-    false
-  );
+  // The last reads of the set are the one tree the page's body is, which every preset is a
+  // query over and which therefore draws on every address (dispatch://INFRA-1196 R1, R3): the
+  // issue's coverage, its decisions, its check results, its references, the blocks and the
+  // text of each of its documents - this issue carries one, which the page draws beside the
+  // tree - and the one batched read of every `dispatch://` address the tree holds. That read
+  // is one request and not one per read that lands: the tree grows as each of its reads
+  // answers, so the batch waits until all of them have (`features/issue/useIssueTree.ts`),
+  // where before it asked for the addresses known so far and asked again for the rest. The
+  // tree's asks, comments and messages are read under the keys the Conversation and the margin
+  // already own, so they are shared rather than asked twice and are the entries already here.
+  const firstLoad = [
+    "/auth/whoami",
+    // The project sidebar's Inbox query, which the margin's open-ask count shares rather than
+    // fetching again.
+    "/api/v1/inbox",
+    // The project sidebar's Pinned and Projects queries. This row runs on chromium alone, so
+    // there is no drawer-closed phone case to leave them out for.
+    "/api/v1/issues?pinned=true",
+    "/api/v1/projects",
+    "/api/v1/me/state",
+    // The issue's detail.
+    `/api/v1/issues/${issue.key}`,
+    // The active-sessions read.
+    "/api/v1/agents",
+    // The primary artifact's comments, which the Conversation's own list and the tree share
+    // rather than fetching again.
+    `/api/v1/issues/${issue.key}/comments`,
+    // The margin's own list of the issue's asks, which the tree shares, and the Conversation's,
+    // which asks the same route for each ask's thread (`?thread=1`) and so is a request of its
+    // own, not the margin's shared.
+    `/api/v1/issues/${issue.key}/asks?state=all`,
+    `/api/v1/issues/${issue.key}/asks?state=all&thread=1`,
+    // The issue's message threads, which the tree shares.
+    `/api/v1/issues/${issue.key}/messages`,
+    // The two one-row event reads the unread mark needs: the first event past the watermark,
+    // and the issue's head.
+    `/api/v1/issues/${issue.key}/events?after=&limit=1`,
+    `/api/v1/issues/${issue.key}/events?limit=1&order=desc`,
+    // The Conversation's live-agent query.
+    `/api/v1/issues/${issue.key}/subscribers`,
+    // The one block-schema fetch every document surface shares for the session.
+    "/api/v1/schema/blocks",
+    // The header's read of the project's architecture sources: the `Components:` line offers
+    // its picker only when the project has one. The component tree itself,
+    // `/api/v1/projects/CORE/architecture`, is fetched only once the picker opens, never on
+    // load, which is why it is absent from this set.
+    "/api/v1/projects/CORE/architecture-sources",
+    // The header's read of the repository mappings: an issue that resolves to no repository,
+    // as this one does, shows the `Repository:` item only when its project maps one.
+    "/api/v1/settings/repo-projects",
+    // me/agents/state, whose unread replies the Agents badge counts on every page (the
+    // sidebar's on desktop, the compact header's on phone).
+    "/api/v1/me/agents/state",
+    // The credential requests waiting on the viewer, which the Inbox count adds up on every
+    // page.
+    "/api/v1/credential-requests?approver=me",
+    // `me/replies?kind=reply,agent&limit=1`, whose total is the other half of that one Inbox
+    // number (the sidebar's on desktop, the compact header's on phone).
+    "/api/v1/me/replies?kind=reply%2Cagent&limit=1",
+    // The Conversation's list of the issue's phase handoffs, which it shows beside the
+    // messages.
+    `/api/v1/issues/${issue.key}/handoffs`,
+    // The reader's own state on this issue, which the unread mark and the pin read.
+    `/api/v1/me/issues/${issue.key}/state`,
+    // The tree's own reads, and the spec the page draws beside it.
+    `/api/v1/issues/${issue.key}/coverage`,
+    `/api/v1/issues/${issue.key}/decisions`,
+    `/api/v1/issues/${issue.key}/results`,
+    `/api/v1/issues/${issue.key}/references?own=1`,
+    `/api/v1/artifacts/${issue.primary_artifact_id}/blocks`,
+    `/api/v1/artifacts/${issue.primary_artifact_id}/text`,
+    // The one batched read of every `dispatch://` address the tree holds. Its query is that
+    // list, which is what the issue's own text holds rather than a fact about the budget, so
+    // this set names the read and `seen` drops the query.
+    "/api/v1/reference-targets",
+  ].sort();
+  // The watermark an event read starts past is the reader's, not a fact of the budget, and
+  // neither is the list of references the batched read names, so both are dropped here.
+  const seen = () =>
+    [
+      ...new Set(
+        apiRequestPaths.map((path) =>
+          path
+            .replace(/^\/api\/v1\/reference-targets\?.*$/, "/api/v1/reference-targets")
+            .replace(/\?after=\d+&limit=1$/, "?after=&limit=1")
+        )
+      ),
+    ].sort();
+  await expect.poll(seen).toEqual(firstLoad);
 
   await alice.close();
 });

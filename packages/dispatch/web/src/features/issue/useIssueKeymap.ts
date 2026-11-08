@@ -228,6 +228,16 @@ const CHORDS: readonly {
     path: (key) => buildIssuePath({ key, kind: "artifacts" }),
     tab: "artifacts",
   },
+  // `s k p c h a v d` are taken, so the collaborators, whose tab was the last of the eight,
+  // keep `t o`. The address opens them in the panel (`IssueMargin.tsx`), so the chord leaves
+  // the reader there.
+  {
+    keys: "t o",
+    label: "Collaborators tab",
+    part: "margin",
+    path: (key) => buildIssuePath({ key, kind: "collaborators" }),
+    tab: "collaborators",
+  },
   // The filter narrows the preset the reader is already on, so it opens no address of its own:
   // what it types is `?q=`, which the box itself writes.
   { keys: "t f", label: "Filter the preset", part: "filter", tab: "filter" },

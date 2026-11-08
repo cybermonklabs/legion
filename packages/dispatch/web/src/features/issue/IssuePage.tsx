@@ -222,6 +222,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     activity: activeTab === "activity",
     artifacts: activeTab === "artifacts",
     children: activeTab === "children",
+    collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
@@ -267,6 +268,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       state.data,
     ]
   );
+  // `/issues/<key>/collaborators`, the address the Collaborators tab answered, opens the
+  // panel's list of everyone who worked the issue (R19); every other address leaves it shut.
+  const opensCollaborators = route.kind === "collaborators";
   const panel = useCallback(
     (conversation: ReactNode) =>
       details === undefined ? (
@@ -280,9 +284,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           isClosed={details.closed_at !== null}
           issue={details}
           onConversationState={pickState}
+          openCollaborators={opensCollaborators}
         />
       ),
-    [conversationList, conversationState, details, focused, pickState]
+    [conversationList, conversationState, details, focused, opensCollaborators, pickState]
   );
   // Below the width the margin keeps a column at, the page's panel is drawn in its own column
   // and the margin's sheet keeps only its own cards - which are still this page's, so they
@@ -514,6 +519,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
               isClosed={isClosed}
               issue={issue.data}
               onConversationState={pickState}
+              openCollaborators={opensCollaborators}
             />
           </div>
         ) : null}

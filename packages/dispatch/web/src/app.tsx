@@ -191,9 +191,11 @@ function IssuePageFallback(): ReactNode {
       {/* `min-w-0`, so the row may be narrower than the names it holds: without it the row's
           min-content width is the page's own at every width, and a 390 px phone draws the
           whole issue page 465 px wide for as long as the chunk takes to arrive
-          (dispatch://INFRA-1196 R17, `e2e/phone.e2e.ts`). The names are the page's five
-          presets, so the skeleton and the page it stands in for say the same thing and no
-          retired tab name flashes on screen (R3). */}
+          (dispatch://INFRA-1196 R17, `e2e/phone.e2e.ts`). `overflow-hidden`, because this row
+          neither wraps nor scrolls where the real one scrolls inside itself: clipped, a chunk's
+          load never scrolls the page sideways. The names are the page's five presets, so the
+          skeleton and the page it stands in for say the same thing and no retired tab name
+          flashes on screen (R3). */}
       <div
         className={`mb-4 flex min-w-0 gap-2 overflow-hidden border-b ${borderDefault}`}
         role="tablist"

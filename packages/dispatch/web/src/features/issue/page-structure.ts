@@ -60,6 +60,8 @@ export const PROPERTY_LABELS = freeze({
   blocked_by: "Blocked by",
   /** Who is working the issue, which is not where its messages go. */
   claim: "Claimed by",
+  /** Everyone who worked the issue, running or not, which the panel opens on request. */
+  collaborators: "Collaborators",
   components: "Components",
   /** The issue's links out of Dispatch, such as a pull request. */
   external_links: "Links",
