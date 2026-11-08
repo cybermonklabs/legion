@@ -1464,19 +1464,19 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
 
     // From Alice's first batch until her editor opens, so his words cover her whole build
     // rather than a moment this row has to guess at. Both moments are announcements the page
-    // makes rather than readings this side takes (`large-documents-page.ts`). He writes at a
-    // person's pace - a word every second or two, a few dozen of them - rather than as fast
-    // as the protocol allows, as the row above him does and for the same reason: four words a
-    // second into a document of 986 blocks is a load no reader puts on another, and what this
-    // row reads is what the build costs the page, not what a second client can.
+    // makes rather than readings this side takes (`large-documents-page.ts`).
     //
-    // His words are short because it is his own page that they cost. He holds the same
-    // 986-block document, and on a desktop width each of his keystrokes costs a layout of it
-    // and of the margin beside it, so `Pangolin0` was three to four seconds of his and he
-    // wrote three words into a build of thirteen - which is what a build of this document now
-    // lasts, the frontier having stopped it rewriting the Yjs document a batch at a time
-    // (`packages/proof-editor/src/progressive-build.ts`). What covers a build is how often he
-    // writes, not how much.
+    // He types without resting between words. He used to rest half a second, so that four
+    // words a second would not go into a document of 986 blocks - a load no reader puts on
+    // another - and that rest was written when a build of this document lasted thirteen
+    // seconds. It does not any more: on a quiet machine the build is now about 1.3 s
+    // (dispatch://INFRA-341, R11), and a writer who rests half a second gets two words into it,
+    // which is fewer than this row needs to have proved anything. What bounded his rate was
+    // never that rest anyway, but his own page: he holds the same 986-block document, and at a
+    // desktop width each of his keystrokes costs a layout of it and of the margin beside it, so
+    // on a loaded machine `Pangolin0` was three to four seconds of his. So the rest is gone and
+    // the key delay stays: where the machine is slow his page still paces him, and where it is
+    // fast his words cover a fast build.
     await reached.firstBlock;
     let open = false;
     const opened = reached.editorOpened.then((at) => {
@@ -1486,7 +1486,6 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
     let words = 0;
     while (!open && words < 60) {
       await bobPage.keyboard.type(` Pan${words}`, { delay: 25 });
-      await bobPage.waitForTimeout(500);
       words += 1;
     }
     const openedMs = await opened;
@@ -1533,10 +1532,26 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
 
     expect(words, "Bob never wrote while Alice's editor was being built").toBeGreaterThan(3);
 
-    // The window is a real build: its first batch landed well before the editor opened, so
-    // the tasks counted below were handed over while the batches held the thread.
+    // The window is a real build, read from what the build had done rather than from how long
+    // it took: the first batch landed before the editor opened, and the editor's own top-level
+    // child count rose while the page was serving the timers counted below, so those timers
+    // were handed over while the batches were still arriving. A duration cannot say this, and
+    // a floor under one would say the opposite of what this row is for - the build on a quiet
+    // machine is now about 1.3 s, and a row that failed because the build was quick would be
+    // asserting that the product stays slow.
     expect(ran.firstBatchMs ?? 0).toBeGreaterThan(0);
-    expect(built).toBeGreaterThan(5_000);
+    const blocksBuilt = timers.map((timer) => timer.builtThen ?? 0);
+    expect(
+      timers.length,
+      "the page served fewer than two of its own timers inside the build, so nothing here " +
+        "shows the window held a build at all"
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      Math.max(...blocksBuilt) - Math.min(...blocksBuilt),
+      `the editor held ${Math.min(...blocksBuilt)} top-level blocks when the page served its ` +
+        `first timer of the window and ${Math.max(...blocksBuilt)} when it served its last: ` +
+        "the window did not cover the document being built"
+    ).toBeGreaterThan(0);
     // And the page was given both kinds of task inside it, so neither number below is the
     // target met by nothing having happened.
     expect(messages.length, "no socket message arrived while the build ran").toBeGreaterThan(3);
