@@ -16,6 +16,11 @@ type Client interface {
 	ListIssues(ctx context.Context, project string, statuses []string) ([]IssueSummary, error)
 	GetIssue(ctx context.Context, key string) (Issue, error)
 	SetStatus(ctx context.Context, key, status string) (Issue, error)
+	// ReleaseClaim clears the issue's Dispatch claim through DELETE
+	// /api/v1/issues/{key}/claim, as the daemon's own session. Dispatch answers 409
+	// ISSUE_CLAIMED when this caller may not release the holder, and 409 CLAIM_CONTENDED when
+	// the holder changed twice while the request ran, so nothing was applied.
+	ReleaseClaim(ctx context.Context, key string) error
 	HandOver(ctx context.Context, issue Issue, status string) error
 	PostMessage(ctx context.Context, key, body string) error
 	MessageBodiesSince(ctx context.Context, key string, since time.Time) ([]string, error)
