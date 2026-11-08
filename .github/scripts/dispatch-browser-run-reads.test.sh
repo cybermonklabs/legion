@@ -173,7 +173,8 @@ happy_page() {
     "14|dispatch-browser / multiprocess|skipped" \
     "15|dispatch-browser / merge|null" \
     "16|lint|success" \
-    "17|dispatch-multiprocess|success"
+    "17|dispatch-multiprocess|success" \
+    "18|dispatch-browser / visual|failure"
 }
 
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
@@ -222,7 +223,7 @@ echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
-check "writes this workflow's five jobs and none of the caller's" "$(is "$(entries)" 5)"
+check "writes this workflow's six jobs and none of the caller's" "$(is "$(entries)" 6)"
 check "each entry holds the four fields and no other" \
   "$(is "$(jq -r '.[0] | keys | join(",")' "$work/out.json")" "conclusion,id,leg,name")"
 check "a shard job's id, name and conclusion travel unchanged" \
@@ -237,6 +238,9 @@ check "the multiprocess job carries a null leg" "$(is "$(field 14 .leg)" null)"
 check "and keeps its conclusion" "$(is "$(field 14 .conclusion)" skipped)"
 check "the merge job carries a null leg" "$(is "$(field 15 .leg)" null)"
 check "and its conclusion, which is null while it runs" "$(is "$(field 15 .conclusion)" null)"
+check "the visual job is kept, with a null leg" "$(is "$(field 18 .leg)" null)"
+check "and its conclusion, so a run whose only red job is that one is named" \
+  "$(is "$(field 18 .conclusion)" failure)"
 check "the caller's own jobs are dropped" \
   "$(is "$(jq -r '[.[] | select(.id == 16 or .id == 17)] | length' "$work/out.json")" 0)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
@@ -519,7 +523,7 @@ retry_seconds=1
 drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "tried twice" "$(is "$(calls)" 2)"
-check "writes the attempt that answered" "$(is "$(entries)" 5)"
+check "writes the attempt that answered" "$(is "$(entries)" 6)"
 check "with its legs" "$(is "$(field 13 .leg)" alone-webkit-alone)"
 check "prints no ::error:: line" "$(is "$(errors)" 0)"
 check "and waited the ladder's first second" "$(at_least "$seconds" 1)"

@@ -263,18 +263,22 @@ case "$mode" in
     # readings take it rather than each parsing the job name again.
     #
     # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-    # after either caller's prefix. `merge` and `multiprocess` are this workflow's other two
-    # jobs: they pass the name filter and get a null leg, so reading one passes them over and
-    # reading three names them as holding no row. ci.yaml's jobs do not get a null leg - the
-    # filter drops them first, which is what keeps them out of reading three, since that
-    # reading selects on conclusion alone. The two that come nearest are ci.yaml's own
+    # after either caller's prefix. `merge`, `multiprocess` and `visual` are this workflow's
+    # other three jobs: they pass the name filter and get a null leg, so reading one passes
+    # them over and reading three names them as holding no row. `visual` is in that filter
+    # because a run whose only red job is that one must not read "every leg of this workflow
+    # concluded success": the verdict step fails ci-ok either way, so the gate held, but the
+    # summary a person reads was wrong. ci.yaml's jobs do not get a null leg - the filter
+    # drops them first, which is what keeps them out of reading three, since that reading
+    # selects on conclusion alone. The two that come nearest are ci.yaml's own
     # `dispatch-multiprocess` and `broker-multiprocess`, kept out only because the character
     # before `multiprocess` is a hyphen and the filter wants a space or a line start.
     #
     # The project part takes any name that holds no `)`, and the readings take one leg per
     # line, so a project named with a space, a digit or a capital is one leg here rather than
     # two or none.
-    jq '[.[].jobs[] | select(.name | test("(^| )(shard|alone|multiprocess|merge)( \\(|$)"))]
+    jq '[.[].jobs[] | select(.name |
+        test("(^| )(shard|alone|multiprocess|visual|merge)( \\(|$)"))]
       | map({id, name, conclusion,
           leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
             // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
