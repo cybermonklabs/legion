@@ -755,6 +755,8 @@ BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
+BROWSER_READ_ONE_STEP = "Reading one, the rows"
+BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 # The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
 # e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
@@ -1101,6 +1103,11 @@ GATES = [
          f"{at_browser(BROWSER_PG_STEP)} and {at_browser(BROWSER_PG_STEP, BROWSER_ALONE)} "
          "run it for the reading of the image's PostgreSQL their lanes start"),
         (".github/scripts/dispatch-browser-latest-blobs.sh", at_browser(BROWSER_SELECT_STEP, BROWSER_MERGE)),
+        (".github/scripts/dispatch-browser-run-reads.sh",
+         f"{at_browser(BROWSER_READ_ONE_STEP, BROWSER_MERGE)} runs its jobs mode over this run's "
+         f"own attempt's jobs, and {at_browser(BROWSER_BLOBS_REFUSED_STEP, BROWSER_MERGE)} its "
+         "blobs-refused mode, which prints the line for a blob download actions/download-artifact "
+         "could not complete"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs")
