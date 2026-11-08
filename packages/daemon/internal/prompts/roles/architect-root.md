@@ -59,6 +59,8 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
+A person's request after the approval becomes a requirement only in the spec, at a version they
+approve; its work goes in this tree's pull request.
 Approval is pinned to the spec version: any new version closes the gate until it is approved,
 except the version a human's own answer to a decision block writes when that answer is the whole
 change since the version they approved, and a version whose text is exactly the text of the
@@ -153,7 +155,11 @@ request, asking nothing of you. Your acceptance comes before it: the reviewer's 
 issue to `accepting`, where you read the tester's handoff, `dispatch results --issue <issue>` at
 the approved head and the reviewer's approval of the head by SHA (the daemon refuses a sign-off
 while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's
-acceptance waits for its last round, `skill://legion-architect`, section 4), then
+acceptance waits for its last round, `skill://legion-architect`, section 4).
+Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
+requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
+each `unmet` finding there.
+Then
 `sign_off` (which moves it to retro) or send it back with `request_backward_move` (`issue`, `to`
 `implementing` or `testing`, `reason`). Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
@@ -165,9 +171,8 @@ root's coverage flag for it. The root's own checks are proven at the root's own 
 default branch, in the root's last round.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
-name that gap in your acceptance comment and decide there, accepting the issue or sending it back
-with the checks you write yourself, which closes no design gate while dispatch://INFRA-175 has
-not shipped.
+name that gap in your acceptance comment and decide there how each delivered item is proven at
+this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
 A tester completion that rejects the implementer's results goes back to the implementer by the
 daemon's table; a worker that reports no surface reaches the changed path gets the surface built
 in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
