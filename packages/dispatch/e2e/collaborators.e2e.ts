@@ -1,7 +1,13 @@
 import { type LegionRole, roleToken } from "@legion/contracts";
 import { expect, type Locator, test } from "@playwright/test";
 
-import { type FakeLegionAgent, setLegionAgents, setLiveSessions, setSessionRecord } from "./agents";
+import {
+  type FakeLegionAgent,
+  setLegionAgents,
+  setLegionRegistryState,
+  setLiveSessions,
+  setSessionRecord,
+} from "./agents";
 import {
   createComment,
   createIssue,
@@ -186,6 +192,51 @@ test("the Collaborators tab lists an issue's people and its Legion agents, runni
     await expect(
       page.getByRole("heading", { level: 1 }).locator(`[data-agent-name="${oldImplementer}"]`)
     ).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// A registry the listener cannot read is an answer of its own, never a tab that failed: Dispatch
+// answers `legion_registry: "unavailable"` and still names the issue's people and the sessions
+// its own events hold (packages/envoy/internal/dispatch/api/issue_collaborators.go,
+// `issueLegionAgents`). So the tab says the record could not be read, and alice and bob stand
+// where they did - their place in the issue is Dispatch's own record, not Legion's.
+test("the Collaborators tab says so when Legion's record of the issue cannot be read", async ({
+  browser,
+}) => {
+  const { issueKey } = await seed();
+  await setLegionRegistryState("unreadable");
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    const collaborators = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${issueKey}/collaborators`
+    );
+    await page.goto(`/issues/${issueKey}/collaborators`);
+    // What the tab is showing is the server's answer: the read itself succeeded, and it named the
+    // registry unavailable and held no agent, the issue's events naming none of these sessions.
+    const answer = await collaborators;
+    expect(answer.status()).toBe(200);
+    expect(await answer.json()).toMatchObject({ agents: [], legion_registry: "unavailable" });
+
+    const tab = page.getByRole("tabpanel", { name: "Collaborators" });
+    await expect(tab.getByRole("status")).toHaveText(
+      "Legion's record of this issue's agents could not be read."
+    );
+
+    // The people are Dispatch's own, so the notice takes none of them with it.
+    const people = tab.getByRole("region", { name: "People" });
+    await expect(people.getByRole("listitem").filter({ hasText: "alice" })).toContainText(
+      "assignee"
+    );
+    await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText("posted");
+    // And nothing stands in for the agents: an empty section would read as an issue no agent
+    // ever worked, which is the one thing the registry did not say.
+    await expect(tab.getByRole("region", { name: "Legion agents" })).toHaveCount(0);
   } finally {
     await alice.close();
   }

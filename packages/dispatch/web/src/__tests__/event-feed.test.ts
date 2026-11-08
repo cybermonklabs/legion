@@ -1154,6 +1154,32 @@ test("a document version refreshes the issue's coverage and its recorded results
   expect(keys).toContain(JSON.stringify(["issue", "CORE-1", "results"]));
 });
 
+// The Collaborators tab's read, and the "Not running" options the composer draws from it, hang
+// under the issue's key, and every issue target is `exact`, so the key needs a rule of its own
+// (`changesCollaborators`). The rule is the server's own list of what makes a collaborator
+// (`collaboratorEventReasons`), plus an assignee move, which makes one with no write of its own.
+// Several branches return before the end of the target list - the claim's among them, and a claim
+// is how a Legion agent arrives on an issue - so the rule sits ahead of them.
+test("an event that makes a collaborator refreshes the issue's collaborators", () => {
+  const refreshesCollaborators = (incoming: Event): boolean =>
+    eventRefreshTargets(incoming, "alice").some(
+      (target) =>
+        target.exact === true &&
+        JSON.stringify(target.queryKey) === JSON.stringify(["issue", "CORE-1", "collaborators"])
+    );
+
+  // A write the server counts: the writer is a collaborator from this event on.
+  const posted = event("comment.created", { anchor: null, id: "comment-1" });
+  expect(refreshesCollaborators(posted)).toBe(true);
+  // The assignee is a collaborator the server lists with no write of their own.
+  const reassigned = event("issue.updated", issue({ changed: ["assignee"] }));
+  expect(refreshesCollaborators(reassigned)).toBe(true);
+  expect(refreshesCollaborators(event("issue.claimed", { key: "CORE-1" }))).toBe(true);
+  // A write that makes nobody a collaborator: the priority moved, and the issue's people did not.
+  const reprioritised = event("issue.updated", issue({ changed: ["priority"] }));
+  expect(refreshesCollaborators(reprioritised)).toBe(false);
+});
+
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here
  *  until it has a row. */
 const eventsByType: Record<EventType, Event> = {

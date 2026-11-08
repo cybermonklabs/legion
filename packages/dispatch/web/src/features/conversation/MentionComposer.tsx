@@ -1,4 +1,3 @@
-import { LEGION_ROLES, type LegionRole } from "@legion/contracts";
 import { hashKey, type MutationKey, useQuery } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
@@ -24,7 +23,13 @@ import {
   isCapExceeded,
 } from "../../api/client";
 import { issueCollaboratorsQuery } from "../../api/queries";
-import type { Agent, AskOption, AskUrgency, IssueCollaboratorAgent } from "../../api/types";
+import type {
+  Agent,
+  AskOption,
+  AskUrgency,
+  IssueCollaboratorAgent,
+  IssueCollaboratorLegion,
+} from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { AgentListRefilling, QueryError } from "../../components/QueryError";
 import { RefusableButton } from "../../components/RefusableButton";
@@ -221,53 +226,39 @@ export function mentionOptions(
  * session, the one entry per token the server leaves unreplaced (`legion.replaced_by` null), so a
  * replaced session is never an option of its own. A session the live list itself names is left
  * out whatever its roles say: a live session that claims no role would otherwise be offered here
- * and draw its own `Running` mark, so one row would read running and not running at once. `live`
- * undefined is a live list whose state is unknown (not read yet, or its read failed): every role
- * could be held, so none is offered as not running.
+ * and draw its own `Running` mark, so one row would read running and not running at once.
+ *
+ * The options keep the server's order, which the collaborators contract states: the registry's
+ * agents by role in workflow order, then newest first.
  */
 export function stoppedRoleOptions(
-  live: readonly Agent[] | undefined,
+  live: readonly Agent[],
   collaborators: readonly IssueCollaboratorAgent[],
   text: Pick<AgentText, "sessionText">
 ): MentionOption[] {
-  if (live === undefined) return [];
   const held = new Set(live.flatMap((agent) => agent.roles));
   const running = new Set(live.map((agent) => agent.session_id));
-  // A role this build does not know sorts after every role it does, rather than ahead of them
-  // all, which is where `indexOf`'s -1 would put it.
-  const order = (role: LegionRole) => {
-    const place = LEGION_ROLES.indexOf(role);
-    return place === -1 ? LEGION_ROLES.length : place;
-  };
-  return collaborators
-    .flatMap((agent) => {
-      const legion = agent.legion;
-      return legion === null ||
-        legion.replaced_by !== null ||
-        held.has(legion.role_token) ||
-        running.has(agent.session_id)
-        ? []
-        : [{ agent, legion }];
-    })
-    .sort(
-      (left, right) =>
-        order(left.legion.role) - order(right.legion.role) ||
-        left.legion.role_token.localeCompare(right.legion.role_token)
-    )
-    .map(({ agent, legion }) => {
-      // The title the server gives is the registry's, else the session's newest stamped one; the
-      // name is still `useAgentText`'s, as a live option's holder is.
-      const storedTitle = agent.title ?? "";
-      return {
-        capabilities: [],
-        detail: `${legion.role} · not running`,
-        holder: text.sessionText(agent.session_id, storedTitle),
-        sessionId: agent.session_id,
-        sessionTitle: storedTitle,
-        target: `role:${legion.role_token}`,
-        title: legion.role_token,
-      };
-    });
+  const offered = (
+    agent: IssueCollaboratorAgent
+  ): agent is IssueCollaboratorAgent & { readonly legion: IssueCollaboratorLegion } =>
+    agent.legion !== null &&
+    agent.legion.replaced_by === null &&
+    !held.has(agent.legion.role_token) &&
+    !running.has(agent.session_id);
+  return collaborators.filter(offered).map((agent) => {
+    // The title the server gives is the registry's, else the session's newest stamped one; the
+    // name is still `useAgentText`'s, as a live option's holder is.
+    const storedTitle = agent.title ?? "";
+    return {
+      capabilities: [],
+      detail: `${agent.legion.role} · not running`,
+      holder: text.sessionText(agent.session_id, storedTitle),
+      sessionId: agent.session_id,
+      sessionTitle: storedTitle,
+      target: `role:${agent.legion.role_token}`,
+      title: agent.legion.role_token,
+    };
+  });
 }
 
 /** Reconcile accepted mentions against the actual textarea edit range. */
@@ -655,28 +646,24 @@ export function MentionComposer({
   const text = useAgentText();
   const options = useMemo(() => mentionOptions(agents, text), [agents, text]);
   // The issue's collaborators feed the "Not running" options, read once the picker opens on an
-  // issue owner alone: the composer in a document's margin carries that document rather than its
-  // issue, and a closed picker and a direct message read nothing. The query is the Collaborators
-  // tab's, so the two readers share one entry - a tab read within the shell's 30 s `staleTime`
-  // opens the picker with no request of its own - and an invalidation of the `["issue", key]`
-  // prefix refetches it under a picker that stays open.
+  // issue owner alone: a project document's margin composer carries that document rather than an
+  // issue, while an issue document's margin composer is an issue owner and does read them, and a
+  // closed picker and a direct message read nothing. The query is the Collaborators tab's, so the
+  // two readers share one entry - a tab read within the shell's 30 s `staleTime` opens the picker
+  // with no request of its own - and the event feed refreshes that key by a rule of its own
+  // (`changesCollaborators` in event-refresh.ts), which refetches it under a picker that stays
+  // open.
   const collaboratorsIssue = owner.kind === "issue" ? owner.issueKey : undefined;
   const collaborators = useQuery({
     ...issueCollaboratorsQuery(collaboratorsIssue),
     enabled: collaboratorsIssue !== undefined && autocompleteOpen,
   });
-  // A live list whose state is unknown holds every role as far as the picker can tell, which is
-  // what `agentsCurrent` false says of it.
+  // A live list whose state is unknown (not read yet, or its read failed) holds every role as far
+  // as the picker can tell, which is what `agentsCurrent` false says of it, so no role is offered
+  // as not running.
   const stoppedOptions = useMemo(
-    () =>
-      collaboratorsIssue === undefined
-        ? []
-        : stoppedRoleOptions(
-            agentsCurrent ? agents : undefined,
-            collaborators.data?.agents ?? [],
-            text
-          ),
-    [agents, agentsCurrent, collaborators.data, collaboratorsIssue, text]
+    () => (agentsCurrent ? stoppedRoleOptions(agents, collaborators.data?.agents ?? [], text) : []),
+    [agents, agentsCurrent, collaborators.data, text]
   );
   const [filteredOptions, filteredStoppedOptions] = useMemo<
     [MentionOption[], MentionOption[]]

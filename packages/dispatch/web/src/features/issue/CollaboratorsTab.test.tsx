@@ -86,20 +86,21 @@ function sessionsIn(container: HTMLElement): string[] {
   );
 }
 
-// Legion's agents by role in workflow order, each role's newest first with a replaced one naming
-// its successor; then every other agent by its last activity; then people with their reasons.
-test("the Collaborators tab orders Legion agents by role, other agents by activity, and people as sent", async () => {
+// What the page makes of one answer in the order the server sends it (the contract's: the
+// registry's agents by role in workflow order and then newest first, the rest newest first):
+// Legion's agents split into a section per role, a replaced one naming its successor; then every
+// other agent; then people with their reasons.
+test("the Collaborators tab splits Legion agents into role sections and keeps the server's order", async () => {
   const tab = renderTab(
     {
       agents: [
-        // The server's order is not the tab's: reviewer before planner, oldest reviewer first.
-        legionAgent("old-reviewer", "reviewer", "2026-10-26T01:00:00Z", "new-reviewer"),
-        legionAgent("new-reviewer", "reviewer", "2026-10-26T05:00:00Z"),
-        legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
         legionAgent("planner", "planner", "2026-10-26T00:00:00Z"),
-        otherAgent("quiet", null),
-        otherAgent("older", "2026-10-26T01:00:00Z"),
+        legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
+        legionAgent("new-reviewer", "reviewer", "2026-10-26T05:00:00Z"),
+        legionAgent("old-reviewer", "reviewer", "2026-10-26T01:00:00Z", "new-reviewer"),
         otherAgent("newer", "2026-10-26T02:00:00Z"),
+        otherAgent("older", "2026-10-26T01:00:00Z"),
+        otherAgent("quiet", null),
       ],
       issue_key: "CORE-1",
       legion_registry: "ok",
@@ -182,16 +183,16 @@ test("the Collaborators tab says when Legion's record could not be read, and whe
   }
 });
 
-// The ordering rules themselves, without a DOM: a role nobody worked is left out, and a session
-// with no activity at all sorts after every session that has some.
-test("collaboratorSections orders the three sections the tab draws", () => {
+// The grouping itself, without a DOM: each section holds the server's list in the order it sent
+// it, and a role nobody worked has no section at all.
+test("collaboratorSections groups the server's list into the three sections the tab draws", () => {
   const sections = collaboratorSections({
     agents: [
-      legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
-      legionAgent("old-planner", "planner", "2026-10-26T00:00:00Z", "new-planner"),
       legionAgent("new-planner", "planner", "2026-10-26T02:00:00Z"),
-      otherAgent("quiet", null),
+      legionAgent("old-planner", "planner", "2026-10-26T00:00:00Z", "new-planner"),
+      legionAgent("tester", "tester", "2026-10-26T03:00:00Z"),
       otherAgent("loud", "2026-10-26T04:00:00Z"),
+      otherAgent("quiet", null),
     ],
     issue_key: "CORE-1",
     legion_registry: "ok",
@@ -209,8 +210,8 @@ test("collaboratorSections orders the three sections the tab draws", () => {
 });
 
 // What the page does with a registry this build does not understand: a role it has no section
-// for, and a start time it cannot order. Both come from the Legion daemon through the listener,
-// so neither is this app's to guarantee, and neither may lose a row or throw inside a render.
+// for, and a start time no reader here parses. Both come from the Legion daemon through the
+// listener, so neither is this app's to guarantee, and neither may lose a row.
 test("collaboratorSections keeps an agent whose role or timestamps it cannot read", () => {
   const skewed = {
     ...legionAgent("future-role", "tester", "2026-10-26T00:00:00Z"),
@@ -233,8 +234,8 @@ test("collaboratorSections keeps an agent whose role or timestamps it cannot rea
     people: [],
   });
 
-  // The unknown role is listed rather than dropped, and the session whose start cannot be ordered
-  // sorts after the one that can.
+  // The unknown role is listed rather than dropped, and the session whose start this build
+  // cannot read keeps the place the server gave it.
   expect(sections.others.map((agent) => agent.session_id)).toEqual(["future-role"]);
   expect(
     sections.legion.map(({ agents, role }) => [role, agents.map((a) => a.session_id)])

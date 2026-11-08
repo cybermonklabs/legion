@@ -96,6 +96,40 @@ interface FakeLegionAgent {
   readonly recorded_at?: string;
 }
 
+/** How this listener answers the three Legion agent registry reads, which is a question of its
+ *  own rather than part of `lists`: the registry is a bucket behind its own routes, and the real
+ *  listener serves every other route while it alone is unavailable
+ *  (`packages/envoy/cmd/listener/legion_agents.go`, `legionAgentRegistry`). Refusing the list
+ *  reads instead would take the sessions and the interests down with it, so nothing could show
+ *  what Dispatch does with a registry it cannot read while the rest of the listener answers.
+ *  `ok` answers from the seeded entries. `unopened` is the listener whose bucket never opened,
+ *  the missing NATS grant being the usual cause: a 503 naming that, with no `Retry-After`.
+ *  `unreadable` is a read the open bucket did not answer: a 503 with `Retry-After: 1`
+ *  (`writeLegionAgentError`). Dispatch answers `legion_registry: "unavailable"` for either. */
+type RegistryState = "ok" | "unopened" | "unreadable";
+
+const REGISTRY_STATES: readonly RegistryState[] = ["ok", "unopened", "unreadable"];
+
+/** The listener's registry answer for a state other than `ok`, as `listRefusal` is for the list
+ *  reads. */
+function registryRefusal(registry: Exclude<RegistryState, "ok">): Response {
+  if (registry === "unopened") {
+    return Response.json(
+      {
+        error:
+          "envoy: the legion agent registry is unavailable: could not open the legion_agents bucket (a missing grant is the usual cause): nats: permissions violation for JetStream API",
+      },
+      { status: 503 }
+    );
+  }
+  return Response.json(
+    {
+      error: "envoy: the legion agent registry did not answer: nats: no responders available",
+    },
+    { headers: { "Retry-After": "1" }, status: 503 }
+  );
+}
+
 /** Every piece of fixture state this listener holds. `PUT /__fixture/reset` replaces it whole, so
  *  a field added here is cleared with the rest without being listed anywhere else; the session
  *  reseed replaces it whole too, so a field that is to outlive a reseed - the Legion agent
@@ -119,6 +153,8 @@ interface FakeEnvoyState {
   /** The Legion agent registry's entries, which outlive a session reseed as the real bucket
    *  outlives a session ending. */
   legionAgents: FakeLegionAgent[];
+  /** How the three registry reads answer, which a session reseed keeps as it keeps the entries. */
+  legionRegistry: RegistryState;
   readonly sentMessages: SentMessage[];
   /** (idempotency key, recipient) pairs this stand-in has already published, the stream's own
    *  duplicate window for the life of the fixture. Cleared with the session seed. */
@@ -131,6 +167,7 @@ function emptyState(): FakeEnvoyState {
   return {
     interests: [],
     legionAgents: [],
+    legionRegistry: "ok",
     lists: "ok",
     liveSessions: new Set(),
     publishedKeys: new Set(),
@@ -350,18 +387,22 @@ const server = Bun.serve({
       return Response.json(answered);
     }
     // The Legion agent registry's three reads (packages/envoy/cmd/listener/api.go,
-    // legionAgentsHandler, legionAgentRoleHandler and legionAgentSessionHandler).
+    // legionAgentsHandler, legionAgentRoleHandler and legionAgentSessionHandler). A registry
+    // state other than `ok` refuses all three, after the read's own argument check, which is
+    // where the real handlers reach their registry (`serving`).
     if (request.method === "GET" && url.pathname === "/v1/legion/agents") {
       const issue = url.searchParams.get("issue");
       if (issue === null || issue === "") {
         return Response.json({ error: "issue is required", field: "issue" }, { status: 400 });
       }
+      if (state.legionRegistry !== "ok") return registryRefusal(state.legionRegistry);
       return Response.json({
         entries: legionAnswer(state.legionAgents.filter((agent) => agent.issue === issue)),
       });
     }
     if (request.method === "GET" && url.pathname.startsWith("/v1/legion/agents/roles/")) {
       const token = decodeURIComponent(url.pathname.slice("/v1/legion/agents/roles/".length));
+      if (state.legionRegistry !== "ok") return registryRefusal(state.legionRegistry);
       return Response.json({
         entries: legionAnswer(state.legionAgents.filter((agent) => agent.role_token === token)),
       });
@@ -370,6 +411,7 @@ const server = Bun.serve({
       const sessionID = decodeURIComponent(
         url.pathname.slice("/v1/legion/agents/sessions/".length)
       );
+      if (state.legionRegistry !== "ok") return registryRefusal(state.legionRegistry);
       const agent = state.legionAgents.find((item) => item.session_id === sessionID);
       if (agent === undefined) {
         return Response.json({ error: `unknown legion agent ${sessionID}` }, { status: 404 });
@@ -414,7 +456,7 @@ const server = Bun.serve({
     }
     // A reseed starts the sessions over (their live set, send statuses, sends and duplicate
     // window) and keeps the persisted subscriptions, the list answer and the Legion agent
-    // registry, which a test sets on their own.
+    // registry - its entries and whether it can be read at all - which a test sets on their own.
     if (request.method === "PUT" && url.pathname === "/__fixture/sessions") {
       const sessions = (await request.json()) as FakeSession[];
       const ids = sessions.map((session) => session.session_id);
@@ -422,6 +464,7 @@ const server = Bun.serve({
         ...emptyState(),
         interests: state.interests,
         legionAgents: state.legionAgents,
+        legionRegistry: state.legionRegistry,
         lists: state.lists,
         liveSessions: new Set(ids),
         sendStatuses: new Map(ids.map((id) => [id, 200] as const)),
@@ -435,6 +478,20 @@ const server = Bun.serve({
       const agents = (await request.json()) as FakeLegionAgent[];
       state.legionAgents = agents;
       return Response.json({ ok: true });
+    }
+    // Whether the registry can be read at all, the question the entries are behind: the three
+    // registry reads answer the refusal while this is not `ok`, and every other route serves as
+    // the real listener's do when its bucket is the only one it has lost.
+    if (request.method === "PUT" && url.pathname === "/__fixture/legion-registry") {
+      const body = (await request.json()) as { state?: RegistryState };
+      if (body.state === undefined || !REGISTRY_STATES.includes(body.state)) {
+        return Response.json(
+          { error: "state must be ok, unopened or unreadable" },
+          { status: 400 }
+        );
+      }
+      state.legionRegistry = body.state;
+      return Response.json({ state: state.legionRegistry });
     }
     if (request.method === "PUT" && url.pathname === "/__fixture/lists") {
       const body = (await request.json()) as { state?: ListsState };

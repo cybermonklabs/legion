@@ -625,6 +625,35 @@ function changesQuestionMaps(event: Event): boolean {
   );
 }
 
+/**
+ * Whether the event can change who the issue's collaborators are, the server's own list of what
+ * makes one (`collaboratorEventReasons` in dispatch/api/issue_collaborators.go): a claim, a
+ * comment, a message, an ask, a document version, and an answer to any of them. An issue
+ * document's events carry the issue's key, so the version here is that issue's.
+ *
+ * The assignee is a collaborator with no write of their own, so an `issue.updated` that moved
+ * `assignee` - or that does not say what it moved - changes the list too.
+ */
+function changesCollaborators(event: Event): boolean {
+  switch (event.type) {
+    case "artifact.version":
+    case "ask.answered":
+    case "ask.opened":
+    case "comment.answered":
+    case "comment.created":
+    case "issue.claimed":
+    case "message.answered":
+    case "message.created":
+      return true;
+    case "issue.updated": {
+      const changes = issueChanges(event);
+      return changes === undefined || changes.has("assignee");
+    }
+    default:
+      return false;
+  }
+}
+
 /** What a project document's event refreshes: an ask, a comment, a version or a review on a
  *  document that belongs to no issue. */
 function documentTargets(event: Event, viewer: string | undefined): RefreshTarget[] {
@@ -806,6 +835,12 @@ function ownerTargets(event: Event, viewer: string | undefined): RefreshTarget[]
   }
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
+  }
+  if (changesCollaborators(event)) {
+    // The Collaborators tab's read and the composer's "Not running" options, named here because
+    // every issue target is `exact` and because the branches below return before this point - a
+    // claim's among them, and a claim is what makes a Legion agent a collaborator.
+    targets.push({ exact: true, queryKey: ["issue", key, "collaborators"] });
   }
   if (event.type === "decision.kept") {
     // A Keep moves one decision's row of the issue's Decisions view and nothing else: it writes

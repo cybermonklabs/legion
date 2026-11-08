@@ -771,21 +771,25 @@ test("the mention picker draws each agent with its state and no link", async () 
   }
 });
 
+/** One collaborators answer in the order the server sends it (the contract's: the registry's
+ *  agents by role in workflow order and then newest first, then the rest newest first) - the
+ *  planner, the reviewer role's newest session and the one it replaced, then a session with no
+ *  registry entry. */
 const collaboratorsAnswer = {
   agents: [
     {
       kind: "session",
       last_at: null,
       legion: {
-        replaced_at: "2026-10-26T02:00:00Z",
-        replaced_by: "new-reviewer",
-        role: "reviewer",
-        role_token: "legion-p-core-1-reviewer",
-        started_at: "2026-10-26T01:00:00Z",
+        replaced_at: null,
+        replaced_by: null,
+        role: "planner",
+        role_token: "legion-planner",
+        started_at: "2026-10-26T00:00:00Z",
       },
       reasons: [],
-      session_id: "old-reviewer",
-      title: "Old reviewer",
+      session_id: "old-planner",
+      title: "Old planner",
     },
     {
       kind: "session",
@@ -805,15 +809,15 @@ const collaboratorsAnswer = {
       kind: "session",
       last_at: null,
       legion: {
-        replaced_at: null,
-        replaced_by: null,
-        role: "planner",
-        role_token: "legion-planner",
-        started_at: "2026-10-26T00:00:00Z",
+        replaced_at: "2026-10-26T02:00:00Z",
+        replaced_by: "new-reviewer",
+        role: "reviewer",
+        role_token: "legion-p-core-1-reviewer",
+        started_at: "2026-10-26T01:00:00Z",
       },
       reasons: [],
-      session_id: "old-planner",
-      title: "Old planner",
+      session_id: "old-reviewer",
+      title: "Old reviewer",
     },
     {
       kind: "session",
@@ -898,23 +902,21 @@ test("a picker holding only stopped roles does not say no agent matches", async 
 });
 
 // The rule the "Not running" options follow: a role a live agent holds is the live options'
-// (never offered twice), a role is offered once by its newest session whatever replaced it, and a
-// live list whose state is unknown adds none, since any role could be held.
-test("stopped role options leave out held roles, name each role once and wait on a known live list", () => {
+// (never offered twice), and a role is offered once by its newest session whatever replaced it.
+// A live list whose state is unknown is the caller's case, which the picker test below proves.
+test("stopped role options leave out held roles and name each role once", () => {
   const reviewerOnly = stoppedRoleOptions([planner], collaboratorsAnswer.agents, storedNames);
   expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
     ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
   ]);
   // The holder the filter matches and the detail tooltip names: that session's own name.
   expect(reviewerOnly.map((option) => option.holder)).toEqual(["New reviewer"]);
-  // Nobody live holds either role: both, in workflow order (planner before reviewer).
+  // Nobody live holds either role: both, in the order the server sent them (planner, reviewer).
   expect(
     stoppedRoleOptions([worker], collaboratorsAnswer.agents, storedNames).map(
       (option) => option.target
     )
   ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
-  // A live list not read yet, or whose read failed, adds no stopped option.
-  expect(stoppedRoleOptions(undefined, collaboratorsAnswer.agents, storedNames)).toEqual([]);
   // A session the live list names is no stopped option, whatever roles it claims: offered here it
   // would draw its own `Running` mark inside the "Not running" group.
   expect(

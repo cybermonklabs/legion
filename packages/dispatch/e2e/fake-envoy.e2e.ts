@@ -94,6 +94,34 @@ test("an interests seed whose body arrives during a session reseed is kept", asy
   }
 });
 
+/** A fixture write to the fake listening at `origin`. */
+function putFixture(origin: string, path: string, body: unknown): Promise<Response> {
+  return fetch(`${origin}${path}`, {
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "application/json" },
+    method: "PUT",
+  });
+}
+
+/** One registry entry as the daemon writes it, under a Legion project token of the e2e's own. */
+function entry(
+  session: string,
+  issue: string,
+  role: FakeLegionAgent["role"],
+  startedAt: string
+): FakeLegionAgent {
+  return {
+    harness: "omp",
+    issue,
+    legion_project: "e2elegion",
+    role,
+    role_token: roleToken("e2elegion", issue, role),
+    session_id: session,
+    started_at: startedAt,
+    title: `Legion ${role} · ${issue}`,
+  };
+}
+
 // The registry reads answer from the seeded entries as the listener's do: an issue's sessions by
 // role in workflow order and each role token's newest first, `replaced_by`/`replaced_at` from the
 // next session of the token to start, and `live` from the state the session's own record puts it
@@ -103,27 +131,6 @@ test("an interests seed whose body arrives during a session reseed is kept", asy
 test("the Legion agent registry reads derive live and replacement, and outlive a session reseed", async () => {
   test.skip(test.info().project.name !== "chromium", "the fixture has no browser to vary");
   const { origin, stop } = await startFakeEnvoy();
-  const put = (path: string, body: unknown) =>
-    fetch(`${origin}${path}`, {
-      body: JSON.stringify(body),
-      headers: { "Content-Type": "application/json" },
-      method: "PUT",
-    });
-  const entry = (
-    session: string,
-    issue: string,
-    role: FakeLegionAgent["role"],
-    startedAt: string
-  ): FakeLegionAgent => ({
-    harness: "omp",
-    issue,
-    legion_project: "e2elegion",
-    role,
-    role_token: roleToken("e2elegion", issue, role),
-    session_id: session,
-    started_at: startedAt,
-    title: `Legion ${role} · ${issue}`,
-  });
   try {
     const seeded = [
       entry("new-reviewer", "E2E-1", "reviewer", "2026-10-26T02:00:00Z"),
@@ -132,7 +139,7 @@ test("the Legion agent registry reads derive live and replacement, and outlive a
       entry("stale-tester", "E2E-1", "tester", "2026-10-26T00:30:00Z"),
       entry("elsewhere", "E2E-2", "tester", "2026-10-26T00:00:00Z"),
     ];
-    expect((await put("/__fixture/legion-agents", seeded)).status).toBe(200);
+    expect((await putFixture(origin, "/__fixture/legion-agents", seeded)).status).toBe(200);
     // The reseed puts both sessions in the listener's cache. Only the session's own record
     // decides `live`, as `sessionIsLive` judges it through `session.StateOf`, so the tester is
     // moved past the live window: unresponsive is not gone, and it keeps its registry entry, its
@@ -141,7 +148,7 @@ test("the Legion agent registry reads derive live and replacement, and outlive a
       { session_id: "new-reviewer", title: "Legion reviewer" },
       { session_id: "stale-tester", title: "Legion tester" },
     ];
-    expect((await put("/__fixture/sessions", sessions)).status).toBe(200);
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
     const unresponsive = await fetch(`${origin}/__fixture/sessions/stale-tester`, {
       body: JSON.stringify({ state: "unresponsive" }),
       headers: { "Content-Type": "application/json" },
@@ -183,6 +190,68 @@ test("the Legion agent registry reads derive live and replacement, and outlive a
     const unknown = await fetch(`${origin}/v1/legion/agents/sessions/nobody`);
     expect(unknown.status).toBe(404);
     expect(await unknown.json()).toEqual({ error: "unknown legion agent nobody" });
+  } finally {
+    await stop();
+  }
+});
+
+// The registry is a bucket of the listener's own, and a listener that cannot read it answers its
+// three reads 503 while every other route serves (packages/envoy/cmd/listener/legion_agents.go,
+// `legionAgentRegistry`); Dispatch turns any of those into `legion_registry: "unavailable"`. The
+// fixture's registry state is that listener, and the entries it was holding come back untouched
+// when the state goes back to `ok` - without which `collaborators.e2e.ts` could not tell the
+// notice from a fixture that had simply lost its entries.
+test("a registry state other than ok refuses all three registry reads, and ok restores the entries", async () => {
+  test.skip(test.info().project.name !== "chromium", "the fixture has no browser to vary");
+  const { origin, stop } = await startFakeEnvoy();
+  const reads = () =>
+    Promise.all([
+      fetch(`${origin}/v1/legion/agents?issue=E2E-1`),
+      fetch(`${origin}/v1/legion/agents/roles/legion-e2elegion-e2e-1-reviewer`),
+      fetch(`${origin}/v1/legion/agents/sessions/reviewer`),
+    ]);
+  try {
+    const seeded = [entry("reviewer", "E2E-1", "reviewer", "2026-10-26T01:00:00Z")];
+    expect((await putFixture(origin, "/__fixture/legion-agents", seeded)).status).toBe(200);
+    const sessions: FakeSession[] = [{ session_id: "reviewer", title: "Legion reviewer" }];
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+
+    // Both refusals the real listener gives: the bucket that never opened, which carries no
+    // Retry-After, and the read the open bucket did not answer, which carries `Retry-After: 1`.
+    for (const state of ["unopened", "unreadable"] as const) {
+      expect((await putFixture(origin, "/__fixture/legion-registry", { state })).status).toBe(200);
+      const refused = await reads();
+      for (const answer of refused) {
+        expect(answer.status).toBe(503);
+        expect(await answer.json()).toEqual({
+          error: expect.stringContaining("legion agent registry"),
+        });
+      }
+      expect(refused.map((answer) => answer.headers.get("Retry-After"))).toEqual(
+        state === "unopened" ? [null, null, null] : ["1", "1", "1"]
+      );
+    }
+
+    // Only the registry: the session list is the listener's other bucket and still answers, which
+    // is why this state is not the `lists` one.
+    const live = await fetch(`${origin}/v1/sessions`);
+    expect(live.status).toBe(200);
+    expect(await live.json()).toMatchObject([{ session_id: "reviewer" }]);
+    // And it outlives a session reseed, as the entries do.
+    expect((await putFixture(origin, "/__fixture/sessions", sessions)).status).toBe(200);
+    expect((await reads())[0].status).toBe(503);
+
+    expect((await putFixture(origin, "/__fixture/legion-registry", { state: "ok" })).status).toBe(
+      200
+    );
+    const [issue, role, session] = await reads();
+    expect(await issue.json()).toMatchObject({ entries: [{ live: true, session_id: "reviewer" }] });
+    expect(await role.json()).toMatchObject({ entries: [{ session_id: "reviewer" }] });
+    expect(await session.json()).toMatchObject({ issue: "E2E-1", session_id: "reviewer" });
+
+    const unknown = await putFixture(origin, "/__fixture/legion-registry", { state: "sideways" });
+    expect(unknown.status).toBe(400);
+    expect(await unknown.json()).toEqual({ error: "state must be ok, unopened or unreadable" });
   } finally {
     await stop();
   }

@@ -116,9 +116,12 @@ export const issueResultsQuery = (key: string) =>
 
 /** Everyone who worked one issue, running or not (`GET /api/v1/issues/{key}/collaborators`).
  *  The Collaborators tab and the composer's "Not running" options read this one entry, so a tab
- *  read within the shell's `staleTime` opens the picker with no request of its own, and an
- *  invalidation of the `["issue", key]` prefix refreshes both. The key takes `undefined` for the
- *  composer, whose own `enabled` holds the read until the picker opens on an issue owner. */
+ *  read within the shell's `staleTime` opens the picker with no request of its own, and what
+ *  refreshes one refreshes both. The event feed refreshes `["issue", key]` exactly, not as a
+ *  prefix, so this key has a rule of its own there (`changesCollaborators`); the write paths that
+ *  do invalidate the whole `["issue", key]` prefix reach it as well. The key takes `undefined`
+ *  for the composer, whose own `enabled` holds the read until the picker opens on an issue
+ *  owner. */
 export const issueCollaboratorsQuery = (key: string | undefined) =>
   queryOptions({
     queryKey: ["issue", key, "collaborators"],

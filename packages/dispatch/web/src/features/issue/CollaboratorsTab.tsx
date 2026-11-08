@@ -11,7 +11,6 @@ import type {
 } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
-import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import {
   borderDefault,
   card,
@@ -25,7 +24,9 @@ import { Timestamp } from "../refs/Timestamp";
 
 type LegionAgent = IssueCollaboratorAgent & { readonly legion: IssueCollaboratorLegion };
 
-/** The tab's three sections, in the order the reader meets them. */
+/** The tab's three sections, in the order the reader meets them. Each holds the server's own
+ *  order, which the contract states: the registry's agents first, by role in workflow order and
+ *  then newest first, then the rest newest first, and people newest first. */
 export interface CollaboratorSections {
   /** Legion agents by role in workflow order (`LEGION_ROLES`), each role's newest first. */
   readonly legion: readonly {
@@ -38,16 +39,6 @@ export interface CollaboratorSections {
   readonly people: readonly IssueCollaboratorPerson[];
 }
 
-/** Newer first; a missing time sorts after every time, and so does one this reader cannot order.
- *  `started_at` and `last_at` are the Legion daemon's and the listener's, relayed verbatim, so
- *  they are asked of `isTimestamp` first: `compareTimestamps` throws on anything but the server's
- *  own form, and that throw would land in a render. */
-function newestFirst(left: string | null, right: string | null): number {
-  const known = (value: string | null): value is string => value !== null && isTimestamp(value);
-  if (!(known(left) && known(right))) return known(left) ? -1 : known(right) ? 1 : 0;
-  return compareTimestamps(right, left);
-}
-
 export function collaboratorSections(collaborators: IssueCollaborators): CollaboratorSections {
   /** Whether this row is held by a role this build knows, which is what puts it in a Legion
    *  section: a row with no Legion record, and one naming a role `LEGION_ROLES` does not hold,
@@ -56,17 +47,17 @@ export function collaboratorSections(collaborators: IssueCollaborators): Collabo
     agent.legion !== null && isLegionRole(agent.legion.role);
   const legion = collaborators.agents.filter(known);
   return {
+    // A section is the role's slice of the server's list, in the order it sent them: the server
+    // ordered the registry's agents by role and then newest first, so a filter is the whole of
+    // this. `LEGION_ROLES` decides which sections there are and where each one sits, which is
+    // the same workflow order; a role nobody worked has no section.
     legion: LEGION_ROLES.flatMap((role) => {
-      const agents = legion
-        .filter((agent) => agent.legion.role === role)
-        .sort((left, right) => newestFirst(left.legion.started_at, right.legion.started_at));
+      const agents = legion.filter((agent) => agent.legion.role === role);
       return agents.length === 0 ? [] : [{ agents, role }];
     }),
     // Every session no Legion section holds, so a registry entry naming a role this build does
-    // not know is listed rather than dropped from the page.
-    others: collaborators.agents
-      .filter((agent) => !known(agent))
-      .sort((left, right) => newestFirst(left.last_at, right.last_at)),
+    // not know is listed rather than dropped from the page. The server's order again.
+    others: collaborators.agents.filter((agent) => !known(agent)),
     people: collaborators.people,
   };
 }

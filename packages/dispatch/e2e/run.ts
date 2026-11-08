@@ -155,8 +155,8 @@ function laneEnvironment(count: number): Record<string, string> {
 // condition - `dist/`, which is gitignored - where a `bun` run takes its source. So a workspace
 // that has never built it dies at the first spec with `Cannot find module
 // @legion/contracts/dist/index.js`, naming no cause. Building it here costs a fraction of a
-// second and makes any run self-sufficient; CI builds it in a step of its own before this
-// (`.github/workflows/ci.yaml`, "Build contracts for dispatch e2e").
+// second and makes every run self-sufficient, CI's as much as a workstation's: no workflow builds
+// contracts for the suite, so this is where that build happens.
 async function buildContracts(): Promise<void> {
   const built = Bun.spawn(["bun", "run", "build"], {
     cwd: join(import.meta.dir, "..", "..", "contracts"),

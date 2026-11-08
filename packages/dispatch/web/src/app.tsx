@@ -185,7 +185,10 @@ function IssuePageFallback(): ReactNode {
           />
         </h1>
       </header>
-      <div className={`mb-4 flex gap-2 border-b ${borderDefault}`} role="tablist">
+      {/* `overflow-hidden`: the nine labels are wider than a narrow window and this row neither
+          wraps nor scrolls, where the real tablist scrolls inside itself. Clipped, a chunk's load
+          never scrolls the page sideways. */}
+      <div className={`mb-4 flex gap-2 overflow-hidden border-b ${borderDefault}`} role="tablist">
         {ISSUE_TAB_LABELS.map((label) => (
           <span
             className={`animate-pulse rounded px-3 py-2 text-sm ${textTransparent} ${skeletonBg}`}

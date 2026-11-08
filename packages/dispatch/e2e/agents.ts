@@ -151,6 +151,21 @@ export async function setLegionAgents(rows: FakeLegionAgent[]): Promise<void> {
   await fixtureRequest("/__fixture/legion-agents", "PUT", rows);
 }
 
+/** How the fake listener answers the three Legion agent registry reads, which is its own
+ *  question rather than part of `ListsState`: the real listener serves every other route while
+ *  the registry's bucket alone is unavailable (`packages/envoy/cmd/listener/legion_agents.go`),
+ *  so a row that refused the list reads instead would take the sessions down with the entries.
+ *  `ok` answers from the seeded entries; `unopened` is the bucket that never opened (503, no
+ *  `Retry-After`) and `unreadable` a read the open bucket did not answer (503, `Retry-After: 1`).
+ *  Dispatch answers either with `legion_registry: "unavailable"`, keeping the issue's people and
+ *  the sessions its events name. A session reseed keeps the state; `resetFakeEnvoy` puts it back
+ *  to `ok`. */
+export type RegistryState = "ok" | "unopened" | "unreadable";
+
+export async function setLegionRegistryState(state: RegistryState): Promise<void> {
+  await fixtureRequest("/__fixture/legion-registry", "PUT", { state });
+}
+
 export async function getSentMessages(): Promise<Record<string, unknown>[]> {
   return (await fixtureRequest("/__fixture/sends", "GET")).json() as Promise<
     Record<string, unknown>[]

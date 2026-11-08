@@ -1775,7 +1775,14 @@ A page honours that `Retry-After: 5` before each of its two retries, plus a rand
 again (`queryRetryDelay`, `web/src/api/query-client.ts`), so a view's first refilling read says so
 up to 20 s after the page made it: a row that waits for the refilling notice gives it that budget
 (`REFILL_TIMEOUT` in both refilling specs), which is why those rows take minutes rather than
-seconds. All
+seconds. `setLegionRegistryState` (`PUT /__fixture/legion-registry` `{state}`) answers the same
+question for the three Legion agent registry reads, which the real listener loses on their own
+rather than with the lists: `ok` answers from the seeded entries (`setLegionAgents`), `unopened` is
+the bucket that never opened (`503`, no `Retry-After`) and `unreadable` a read the open bucket did
+not answer (`503`, `Retry-After: 1`), and Dispatch reports either one as
+`legion_registry: "unavailable"` while it still names the issue's people and the sessions its
+events carry. Every
+other route answers as in `ok` here too, and a session reseed keeps the state. All
 of these come from `e2e/agents.ts`. `resetDatabase()` clears every fake Envoy fixture as well as
 the database, so a
 subscription from an earlier row cannot match a recycled issue key; the fake holds all of its
