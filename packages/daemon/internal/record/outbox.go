@@ -485,10 +485,11 @@ func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 // moment and the moment it was reserved from go out with neither: all three are the daemon's own
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
 // notice (the daemon's wakeRan writes it to the log instead). What this strips, the re-hold puts
-// back by hand before it validates the copy (the daemon's exceptionNotice), because a copy is
-// built from the payload the publish carried: so a field validateOutboxPayload requires for its
-// kind, as it requires WaitingForSlot of a waiting-for-slot notice, is stripped here only
-// together with its own line there, or every re-hold of that kind is refused for want of it.
+// back by hand before it validates the copy (the daemon's noticeAnswered, where the copy is
+// built), because a copy is built from the payload the publish carried: so a field
+// validateOutboxPayload requires for its kind, as it requires WaitingForSlot of a
+// waiting-for-slot notice, is stripped here only together with its own line there, or every
+// re-hold of that kind is refused for want of it.
 func (n Notice) Published(id int64) (Notice, string) {
 	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
 	if n.ResendOf == 0 {

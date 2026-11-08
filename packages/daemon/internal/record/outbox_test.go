@@ -539,3 +539,45 @@ func TestNoRowsPostMeasuresAboveLongestPost(t *testing.T) {
 		})
 	}
 }
+
+// A notice the publish strips of a field its kind requires cannot be re-held: the daemon builds
+// a re-held copy from the payload the publish carried (the daemon's noticeAnswered, reholdNotice)
+// and NewOutboxRow validates that copy, so the copy of such a notice would be refused and its
+// architect never told. Published therefore has to carry every field validateOutboxPayload
+// requires, which today is a waiting-for-slot notice's own wait.
+//
+// The check is the validation itself rather than a list of field names, so it holds for the next
+// required field as it holds for this one: a field added to that list and dropped by Published
+// fails here without anybody remembering to name it.
+func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
+	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
+	paced := answered.Add(time.Minute)
+	notice := Notice{
+		Kind:           "waiting-for-slot",
+		Role:           claim.RoleArchitect,
+		Reason:         "a person answered the root's ask, and the admission cap has no free slot now",
+		WaitingForSlot: &WaitingForSlot{AnsweredAt: answered},
+		PacedAt:        paced,
+		PacedFrom:      answered,
+	}
+	if _, err := NewOutboxRow("LEGION-208", notice, paced); err != nil {
+		t.Fatalf("the notice the daemon writes is refused before any publish: %v", err)
+	}
+
+	published, key := notice.Published(41)
+	if key != OutboxKey(41) {
+		t.Errorf("the published notice goes under %q, want the key of row 41", key)
+	}
+	// The copy the re-hold builds is this payload, with the two paced moments put back by hand at
+	// the site that builds it; what Published dropped of the kind's own fields is not put back
+	// anywhere, so the copy is refused for want of it.
+	copied := published
+	copied.PacedAt, copied.PacedFrom = notice.PacedAt, notice.PacedFrom
+	if _, err := NewOutboxRow("LEGION-208", copied, paced); err != nil {
+		t.Fatalf("the re-held copy of a published waiting-for-slot notice is refused, so its architect is never told: %v", err)
+	}
+	if published.WaitingForSlot == nil || !published.WaitingForSlot.AnsweredAt.Equal(answered) {
+		t.Errorf("the published notice names the wait %+v, want the moment %s it was written for: the daemon reads it to decide whether the wait still stands",
+			published.WaitingForSlot, answered)
+	}
+}
