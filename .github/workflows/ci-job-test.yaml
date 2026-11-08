@@ -8,6 +8,18 @@ name: CI job test
 # change to that one file runs every job; once this job's filter names this file instead, a
 # change to these steps selects this job alone.
 #
+# What runs here is what reads this repository's own tooling: the Claude Code plugin build, the
+# changelog fold, the `*.test.sh` harness of each script under .github/scripts (and of
+# scripts/sessions-import-pods.sh), and the Bun suites of scripts/. The daemon's Go tests, which
+# this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's.
+#
+# Each harness step runs behind an input of its own, which ci.yaml's calling job fills from the
+# `changes` output of the same name, whose filter is that harness and the script it tests: so a
+# change to one script runs one harness instead of all of them. A step of a called workflow
+# cannot read `needs.changes.outputs.<name>` - inside a reusable workflow the only context
+# carrying a caller's value is `inputs` - which is why each of these is an input here and
+# `.github/scripts/check-ci-filters.sh` resolves it through the caller's `with:`.
+#
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
 # ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
@@ -26,6 +38,148 @@ on:
           when that filter matched.
         type: string
         required: true
+      release_push_test:
+        description: "ci.yaml's needs.changes.outputs.release_push_test: release-push.test.sh and what it tests."
+        type: string
+        required: true
+      release_bump_test:
+        description: "ci.yaml's needs.changes.outputs.release_bump_test: release-bump.test.sh and what it tests."
+        type: string
+        required: true
+      check_bun_version_test:
+        description: "ci.yaml's needs.changes.outputs.check_bun_version_test: check-bun-version.test.sh and what it tests."
+        type: string
+        required: true
+      check_bun_workspace_manifests_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_bun_workspace_manifests_test:
+          check-bun-workspace-manifests.test.sh and what it tests.
+        type: string
+        required: true
+      check_zod_version_test:
+        description: "ci.yaml's needs.changes.outputs.check_zod_version_test: check-zod-version.test.sh and what it tests."
+        type: string
+        required: true
+      check_gh_version_test:
+        description: "ci.yaml's needs.changes.outputs.check_gh_version_test: check-gh-version.test.sh and what it tests."
+        type: string
+        required: true
+      workflow_paths_test:
+        description: "ci.yaml's needs.changes.outputs.workflow_paths_test: workflow_paths.test.sh and what it tests."
+        type: string
+        required: true
+      check_image_trigger_paths_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_image_trigger_paths_test:
+          check-image-trigger-paths.test.sh and what it tests.
+        type: string
+        required: true
+      check_ci_images_test:
+        description: "ci.yaml's needs.changes.outputs.check_ci_images_test: check-ci-images.test.sh and what it tests."
+        type: string
+        required: true
+      mirror_ci_images_test:
+        description: "ci.yaml's needs.changes.outputs.mirror_ci_images_test: mirror-ci-images.test.sh and what it tests."
+        type: string
+        required: true
+      check_action_pins_test:
+        description: "ci.yaml's needs.changes.outputs.check_action_pins_test: check-action-pins.test.sh and what it tests."
+        type: string
+        required: true
+      check_private_names_test:
+        description: "ci.yaml's needs.changes.outputs.check_private_names_test: check-private-names.test.sh and what it tests."
+        type: string
+        required: true
+      check_plugin_names_test:
+        description: "ci.yaml's needs.changes.outputs.check_plugin_names_test: check-plugin-names.test.sh and what it tests."
+        type: string
+        required: true
+      check_release_credentials_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_release_credentials_test:
+          check-release-credentials.test.sh and what it tests.
+        type: string
+        required: true
+      repo_paths_test:
+        description: "ci.yaml's needs.changes.outputs.repo_paths_test: repo-paths.test.sh and what it tests."
+        type: string
+        required: true
+      playwright_deps_current_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.playwright_deps_current_test:
+          playwright-deps-current.test.sh and what it tests.
+        type: string
+        required: true
+      select_e2e_proofs_test:
+        description: "ci.yaml's needs.changes.outputs.select_e2e_proofs_test: select-e2e-proofs.test.sh and what it tests."
+        type: string
+        required: true
+      go_tagged_tests_test:
+        description: "ci.yaml's needs.changes.outputs.go_tagged_tests_test: go-tagged-tests.test.sh and what it tests."
+        type: string
+        required: true
+      ci_ok_test:
+        description: "ci.yaml's needs.changes.outputs.ci_ok_test: ci-ok.test.sh and what it tests."
+        type: string
+        required: true
+      ci_ok_report_test:
+        description: "ci.yaml's needs.changes.outputs.ci_ok_report_test: ci-ok-report.test.sh and what it tests."
+        type: string
+        required: true
+      ci_ok_reconcile_test:
+        description: "ci.yaml's needs.changes.outputs.ci_ok_reconcile_test: ci-ok-reconcile.test.sh and what it tests."
+        type: string
+        required: true
+      find_pr_payload_test:
+        description: "ci.yaml's needs.changes.outputs.find_pr_payload_test: find-pr-payload.test.sh and what it tests."
+        type: string
+        required: true
+      merge_group_cancels_test:
+        description: "ci.yaml's needs.changes.outputs.merge_group_cancels_test: merge-group-cancels.test.sh and what it tests."
+        type: string
+        required: true
+      main_bypass_check_test:
+        description: "ci.yaml's needs.changes.outputs.main_bypass_check_test: main-bypass-check.test.sh and what it tests."
+        type: string
+        required: true
+      dispatch_browser_latest_blobs_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.dispatch_browser_latest_blobs_test:
+          dispatch-browser-latest-blobs.test.sh and what it tests.
+        type: string
+        required: true
+      dispatch_browser_samples_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.dispatch_browser_samples_test:
+          dispatch-browser-samples.test.sh and what it tests.
+        type: string
+        required: true
+      apt_archive_cache_key_test:
+        description: "ci.yaml's needs.changes.outputs.apt_archive_cache_key_test: apt-archive-cache-key.test.sh and what it tests."
+        type: string
+        required: true
+      race_memory_test:
+        description: "ci.yaml's needs.changes.outputs.race_memory_test: race_memory.test.sh and what it tests."
+        type: string
+        required: true
+      disk_watch_test:
+        description: "ci.yaml's needs.changes.outputs.disk_watch_test: disk_watch.test.sh and what it tests."
+        type: string
+        required: true
+      sessions_import_pods_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.sessions_import_pods_test:
+          scripts/sessions-import-pods.test.sh and what it tests.
+        type: string
+        required: true
+      check_ci_filters_test:
+        description: "ci.yaml's needs.changes.outputs.check_ci_filters_test: check-ci-filters.test.sh and what it tests."
+        type: string
+        required: true
+      check_ts_filters_test:
+        description: "ci.yaml's needs.changes.outputs.check_ts_filters_test: check-ts-filters.test.sh and what it tests."
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -39,47 +193,14 @@ env:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
-    # prints the goroutine dump that names it. A step's worst case is therefore its largest
-    # measured green duration plus its own -timeout, not its compile plus its -timeout: 325 s of
-    # setup before the plain step starts, then that step's 839 s (measured while it still ran
-    # internal/daemon, so an upper bound for it now) and its 15 minutes, then the race step's
-    # 694 s and its 30, then 13 s for the steps after it, which is 4571 s, or about 76 minutes
-    # (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main push runs).
-    timeout-minutes: 80
-    services:
-      postgres:
-        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
-        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
-        env:
-          POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
-      # agentsecrets contract tests drive (brokertest.NewRig skips without
-      # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
-      # the script not to start a container of its own — that path is the devbox's.
-      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      LEGION_E2E_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
-      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
-      # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
-      # pull a test could fail on.
-      TESTCONTAINERS_RYUK_DISABLED: "true"
-      # The fuzz and property counts follow the lane. A pull-request run takes the reduced counts
-      # below; every other lane — a merge group, a dispatched run — takes the empty string, which
-      # every reader treats as unset (classify's run_fuzz_test.go and sender_fuzz_test.go, the
-      # daemon's keptPropertyEnv), so the full counts live in the Go source alone and the queue
-      # still runs them. sender_fuzz_test.go's own count is 2,000 histories of each order already,
-      # so the pull-request value leaves it as it is. The number of seeds falls rather than each
-      # seed's depth: a seed that stops early stops reaching the states the property is about.
-      LEGION_RUN_FUZZ_ITERS: ${{ github.event_name == 'pull_request' && '2000' || '' }}
-      LEGION_KEPT_PROPERTY_RUNS: ${{ github.event_name == 'pull_request' && '8' || '' }}
+    # No step here carries a -timeout of its own any more: the two go test steps that did, and
+    # the Stage 1 proof beside them, are .github/workflows/ci-job-daemon-go.yaml's now. What is
+    # left is the Bun install, the Claude Code plugin build, the thirty-two shell-script harnesses
+    # and a handful of Bun suites — the 325 s of setup dispatch://INFRA-1052 measured before the
+    # plain Go step started, less the tool installs that went with those steps. Thirty minutes is
+    # about six times that, which leaves a slow runner room and still fails a hung harness inside
+    # the hour.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -122,9 +243,11 @@ jobs:
           .github/scripts/release-push.sh fold-check $(<.github/changelog-packages)
 
       - name: Test release scripts
+        if: inputs.release_push_test == 'true'
         run: .github/scripts/release-push.test.sh
 
       - name: Test the release version bump
+        if: inputs.release_bump_test == 'true'
         run: .github/scripts/release-bump.test.sh
 
       - name: Test third-party notices
@@ -143,73 +266,95 @@ jobs:
         run: bun test scripts/semantic-line-breaks.guides.test.ts
 
       - name: Test the Bun pin check
+        if: inputs.check_bun_version_test == 'true'
         run: .github/scripts/check-bun-version.test.sh
 
       - name: Test the frozen Bun workspace manifest check
+        if: inputs.check_bun_workspace_manifests_test == 'true'
         run: .github/scripts/check-bun-workspace-manifests.test.sh
 
       - name: Test the zod version check
+        if: inputs.check_zod_version_test == 'true'
         run: .github/scripts/check-zod-version.test.sh
 
       - name: Test the gh version check
+        if: inputs.check_gh_version_test == 'true'
         run: .github/scripts/check-gh-version.test.sh
 
       - name: Test the workflow path model the path checks import
+        if: inputs.workflow_paths_test == 'true'
         run: .github/scripts/workflow_paths.test.sh
 
       - name: Test the image trigger path check
+        if: inputs.check_image_trigger_paths_test == 'true'
         run: .github/scripts/check-image-trigger-paths.test.sh
 
       - name: Test the CI image check
+        if: inputs.check_ci_images_test == 'true'
         run: .github/scripts/check-ci-images.test.sh
 
       - name: Test the CI image mirror
+        if: inputs.mirror_ci_images_test == 'true'
         run: .github/scripts/mirror-ci-images.test.sh
 
       - name: Test the action pin check
+        if: inputs.check_action_pins_test == 'true'
         run: .github/scripts/check-action-pins.test.sh
 
       - name: Test the private-name check
+        if: inputs.check_private_names_test == 'true'
         run: .github/scripts/check-private-names.test.sh
 
       - name: Test the plugin-name check
+        if: inputs.check_plugin_names_test == 'true'
         run: .github/scripts/check-plugin-names.test.sh
 
       - name: Test the release credential check
+        if: inputs.check_release_credentials_test == 'true'
         run: .github/scripts/check-release-credentials.test.sh
 
       - name: Test the repository path derivation
+        if: inputs.repo_paths_test == 'true'
         run: .github/scripts/repo-paths.test.sh
 
       - name: Test the Playwright dependency list check
+        if: inputs.playwright_deps_current_test == 'true'
         run: .github/scripts/playwright-deps-current.test.sh
 
       # The proof selector e2e.yaml's select job runs, over fixture trees and over this
       # repository's own .github/e2e-scripts.json and scripts/e2e/.
       - name: Test the e2e proof selector
+        if: inputs.select_e2e_proofs_test == 'true'
         run: .github/scripts/select-e2e-proofs.test.sh
 
       # The lister the build-tag steps take their `-run` from, over fixture packages and over
       # this repository's own tagged test files.
       - name: Test the build-tag test lister
+        if: inputs.go_tagged_tests_test == 'true'
         run: .github/scripts/go-tagged-tests.test.sh
 
       - name: Test ci-ok's verdict
+        if: inputs.ci_ok_test == 'true'
         run: .github/scripts/ci-ok.test.sh
 
       - name: Test ci-ok's report and the check-run post (a stand-in gh)
+        if: inputs.ci_ok_report_test == 'true'
         run: .github/scripts/ci-ok-report.test.sh
 
       - name: Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)
+        if: inputs.ci_ok_reconcile_test == 'true'
         run: .github/scripts/ci-ok-reconcile.test.sh
 
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
+        if: inputs.find_pr_payload_test == 'true'
         run: .github/scripts/find-pr-payload.test.sh
 
       - name: Test the merge-group cancel decision
+        if: inputs.merge_group_cancels_test == 'true'
         run: .github/scripts/merge-group-cancels.test.sh
 
       - name: Test the main bypass check's decision
+        if: inputs.main_bypass_check_test == 'true'
         run: .github/scripts/main-bypass-check.test.sh
 
       # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
@@ -217,12 +362,14 @@ jobs:
       # chosen or a re-run is judged on the attempt it replaced; these are the assertions that
       # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
       - name: Test the browser lane's blob attempt selection
+        if: inputs.dispatch_browser_latest_blobs_test == 'true'
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
 
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
       # notice titles are held here, where no browser and no runner are needed.
       - name: Test the browser lane's memory and CPU sampler
+        if: inputs.dispatch_browser_samples_test == 'true'
         run: .github/scripts/dispatch-browser-samples.test.sh
 
       # The apt archive cache key dispatch-browser.yaml's two browser jobs restore under and
@@ -230,15 +377,19 @@ jobs:
       # misses every entry saved under the old one, so the whole string and the refusals that
       # keep it from naming nothing are held here.
       - name: Test the apt archive cache key
+        if: inputs.apt_archive_cache_key_test == 'true'
         run: .github/scripts/apt-archive-cache-key.test.sh
 
       - name: Test the race memory sampler
+        if: inputs.race_memory_test == 'true'
         run: .github/scripts/race_memory.test.sh
 
       - name: Test the disk watch
+        if: inputs.disk_watch_test == 'true'
         run: .github/scripts/disk_watch.test.sh
 
       - name: Test the session import pods script (a stand-in kubectl)
+        if: inputs.sessions_import_pods_test == 'true'
         run: bash scripts/sessions-import-pods.test.sh
 
       - name: Lint the Dispatch census script
@@ -268,20 +419,17 @@ jobs:
       - name: Test the session message-wait script
         run: bun test scripts/sessions
 
+      # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
+      # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
+      # that compiled it. What runs go here is the held-port build of the envoy listener below,
+      # the CI-filter check's go list over a scratch module and the build-tag lister, none of
+      # which that entry is filled for. The daemon's go.mod is still the one Go pin of this
+      # repository's three modules that a job without one of its own reads.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/daemon/go.mod
           cache: false
-
-      # go-daemon, shared with typecheck and pi-legion.
-      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: |
-            ~/go/pkg/mod
-            ~/.cache/go-build
-          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
-          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
 
       # After setup-go: held-port.test.ts builds the real envoy-listener and hands it a held socket.
       - name: Test the live proofs' libraries (the GitHub ingress bridge, the proof human's check, the model gateway key command, the design-gate verdict, the held-port helper)
@@ -289,90 +437,14 @@ jobs:
 
       # After setup-go: its fixtures run go list over a scratch module.
       - name: Test the CI filter check
+        if: inputs.check_ci_filters_test == 'true'
         run: .github/scripts/check-ci-filters.test.sh
 
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
+        if: inputs.check_ts_filters_test == 'true'
         run: .github/scripts/check-ts-filters.test.sh
-
-      # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
-      # supervises under tmux and refuses to start without it.
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
-
-      # The workspace and boundary tests drive a real jj, the one the worker image ships (its
-      # working-copy filters are among what they plant), and the daemon resolves jj at boot and
-      # refuses to start without it.
-      - uses: ./.github/actions/install-jj
-
-      # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
-      # image ships, and refuse on GitHub Actions without one. The pin is read from
-      # .omp-pin, the repository's one copy of it, installed through the mise above
-      # (.github/actions/install-omp).
-      - uses: ./.github/actions/install-omp
-
-      # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
-      # ships (ARG UV_VERSION, checked against ARG UV_SHA256), and refuses on GitHub Actions
-      # without one (.github/actions/install-uv).
-      - uses: ./.github/actions/install-uv
-
-      # The daemon's NATS tests start testnats.Image and, for its grant test, Envoy's HubImage
-      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
-      - name: Pull the NATS test container images
-        uses: ./.github/actions/pull-test-images
-        with:
-          consts: |
-            packages/daemon/internal/testnats/nats.go Image
-            packages/envoy/internal/testnats/nats.go HubImage
-
-      # internal/launcher's role-namespace tests start each role generation in unprivileged user,
-      # mount, PID and IPC namespaces, as an issue pod's launcher does, and t.Fatal rather than
-      # skip under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged user namespaces with an
-      # AppArmor sysctl, so the job turns it off on its throwaway runner (`|| true`: a runner
-      # image without the key restricts nothing), and the unshare after it is the verdict that
-      # the restriction is gone.
-      - name: Allow unprivileged user namespaces (the launcher's role-namespace tests)
-        run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          unshare --user --map-root-user true
-
-      # The step runs every package of the module except the three the race step below tests and
-      # internal/textcheck, whose tests are the text-check job's: so each of the three runs once
-      # per job, under the detector, and the text checks run once per run of the router, in a
-      # job with no database. `set -o pipefail` is what makes a failed go list, or a pattern
-      # that matches every package, fail the step rather than pass it with nothing tested. The
-      # pattern is built in .github/scripts/ci_job_reads.py from the race step's own package
-      # list and that one package name, so the two steps cannot name different sets.
-      - name: Test the Go daemon
-        run: |
-          set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m
-        working-directory: packages/daemon
-
-      # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
-      # that share state with the intake's commit hooks and the API, so the packages the lanes
-      # live in run under the race detector once per job, the plain step above leaving them out;
-      # so do the session proxy and the launcher that wires it, whose accept loop, copy pairs,
-      # pair tracking and bounded drain share state across goroutines. internal/record is not
-      # here: the lanes' store is the package's subject, but its product code starts no goroutine
-      # and uses no sync, so the detector had only the package's own test goroutines to watch,
-      # and that cover is what leaving it out gives up. It runs in the plain step instead. The
-      # detector needs cgo, which the runners have gcc for. The lane tests hold a fake clock, so
-      # they are deterministic under it.
-      #
-      # The step carries a package deadline of its own, as the envoy race lanes do: under go
-      # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
-      # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
-      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
-      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
-      # slowest run.
-      - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
-        working-directory: packages/daemon
-
-      - name: Stage 1 live proof
-        run: bash scripts/e2e/stage1-skeleton.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

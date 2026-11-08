@@ -583,14 +583,12 @@ set -e
 check "both modes in one call fails" "$(is "$status" 1)"
 check "naming them" "$(contains "$out" 'this check takes one mode')"
 
-echo "case: the repository's own tree, in each mode"
-set +e
-out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" "$check_script" tree 2>&1)
-status=$?
-set -e
-check "the real tree passes the tree mode" "$(is "$status" 0)"
-check "says what it read" "$(contains "$out" "reference(s) in .* file(s) of CI's reach")"
-
+# The package mode alone. ci.yaml's lint job runs `check-ci-images.sh tree` over this
+# repository on every change (.github/workflows/ci-job-lint.yaml, "Check every image a CI job
+# fetches is a row of .github/ci-images.yaml"), so a tree-mode case here would run that same
+# check a second time in the same CI run; no job of a pull request's run runs the package mode,
+# which reads ghcr.io, so that one is this suite's.
+echo "case: the repository's own tree, in the package mode"
 set +e
 out=$(CI_IMAGES_MANIFEST_HEAD="$head_script" "$check_script" package 2>&1)
 status=$?

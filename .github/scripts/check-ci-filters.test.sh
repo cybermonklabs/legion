@@ -1725,18 +1725,10 @@ check "names the workflow and what it no longer builds" \
 check "and the packages the race step then links from nothing" \
   "$(contains "$out" "that step links ./lib/ from nothing on every run")"
 
-# The rule over the repository's own ci-caches.yaml and ci_job_reads.py, which no fixture stands
-# in for: the daemon job's `go test -c -o /dev/null -race` is the build that fills the cache
-# ci.yaml's race step restores, and the lane it must name is that step's own.
-echo "case: the repository's own race build is the lane ci_job_reads.py holds"
-real=$(cd "$script_dir/../.." && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-import ci_job_reads, ci_workflow_rules
-
-problems = []
-ci_workflow_rules.check_race_fill_packages(ci_job_reads.DAEMON_RACE_PACKAGES, problems)
-print("; ".join(problems))
-')
-check "the fill compiles exactly the packages the lane runs" "$(is "$real" "")"
+# No case runs this rule, or any other rule of check-ci-filters.sh, over this repository's own
+# tree: ci.yaml's ci-filters job runs the whole check there (.github/workflows/ci-job-ci-filters.yaml,
+# "Check every CI filter matches every file its job reads"), so such a case would only reach the
+# same verdict a second time in the same CI run.
 
 echo "case: a workspace of the root manifest that WORKSPACES does not name"
 root=$(fixture workspace-untabled)

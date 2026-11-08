@@ -9,6 +9,10 @@
 # root from its own path (`cd "$(dirname "$0")/../.."`), which the symlink puts at the fixture
 # root, and imports the module from the .github/scripts under it.
 #
+# No case runs the gate over this repository's own tree: ci.yaml's lint job does
+# (.github/workflows/ci-job-lint.yaml, "Check every Bun install reads .bun-version"), on every
+# change, so a case here would only run that same check a second time in the same CI run.
+#
 # Run from anywhere: .github/scripts/check-bun-version.test.sh
 # CI runs it in ci.yaml's test job.
 set -euo pipefail
@@ -324,14 +328,6 @@ printf 'FROM ghcr.io/cybermonklabs/legion/ci@sha256:0a1b2c3d4e5f60710a1b2c3d4e5f
   > "$root/worker.Dockerfile"
 run_check "$root"
 check "a row whose upstream host carries a port passes" "$(is "$status" 0)"
-
-echo "case: the repository's own tree"
-set +e
-out=$("$check_script" 2>&1)
-status=$?
-set -e
-check "the real tree passes" "$(is "$status" 0)"
-check "says so" "$(contains "$out" 'every Bun install reads .bun-version')"
 
 echo "case: rule 7 — a tool manager that installs bun"
 for manifest in mise.toml .mise.toml mise.local.toml .mise.local.toml .config/mise.toml \

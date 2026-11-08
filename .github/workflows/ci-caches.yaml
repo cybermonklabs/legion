@@ -13,7 +13,8 @@ name: CI caches
 # would reach nobody.
 #
 # Five Go families, each one a restore step of ci.yaml's run names, keyed on the Go version the
-# family's own module installs: go-notices (lint's notices step), go-daemon (typecheck, test and
+# family's own module installs: go-notices (lint's notices step), go-daemon (typecheck,
+# daemon-go and
 # pi-legion), go-envoy (envoy-go-checks, envoy-go-race-docs, envoy-go-docs-finalizers,
 # listener-server-change, envoy-e2e-local, envoy-session-stall, and the shard, alone and
 # multiprocess jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser
@@ -71,7 +72,8 @@ env:
   GOPROXY: https://proxy.golang.org|direct
 
 jobs:
-  # go-daemon and go-notices. Both key on packages/daemon/go.mod's Go: ci.yaml's typecheck, test
+  # go-daemon and go-notices. Both key on packages/daemon/go.mod's Go: ci.yaml's typecheck,
+  # daemon-go
   # and pi-legion set Go up from it, and so does lint, whose notices step the go-notices family
   # belongs to, though that step also builds the envoy and infra modules' commands.
   daemon:
@@ -99,8 +101,9 @@ jobs:
           key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
-      # What typecheck and test build: the vet behind the e2e tag, the test binary of every
-      # package, and the race build of the three packages test runs under the detector, whose
+      # What typecheck and daemon-go build: the vet behind the e2e tag, the test binary of every
+      # package, and the race build of the three packages daemon-go runs under the detector,
+      # whose
       # objects are cache entries of their own. Those three are the list
       # .github/scripts/ci_job_reads.py's DAEMON_RACE_PACKAGES holds, which check-ci-filters.sh
       # holds ci.yaml's two steps to, so a package that joins or leaves the detector there is the
@@ -108,7 +111,7 @@ jobs:
       # /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi,
       # uv, container images and a Postgres service, and the build cache this entry holds is what
       # a compile leaves.
-      - name: Build what typecheck and test build of the daemon module
+      - name: Build what typecheck and daemon-go build of the daemon module
         if: steps.go-daemon.outputs.cache-hit != 'true'
         run: |
           go vet -tags e2e ./...

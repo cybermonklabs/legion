@@ -53,7 +53,8 @@ name: CI
 #
 # Caches: no job of this workflow saves an Actions cache entry. setup-go caches nothing here
 # (`cache: false` on every step). The jobs that cache Go restore one of six families with
-# actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
+# actions/cache/restore: go-daemon (typecheck, daemon-go and pi-legion; the test job restored it
+# while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 # listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the shard, alone and
@@ -131,6 +132,7 @@ env:
     {
       "typecheck": "typecheck",
       "test": "test",
+      "daemon-go": "daemon_go_tests",
       "docs": "docs",
       "contracts": "contracts",
       "conflicts-script": "conflicts_script",
@@ -223,9 +225,48 @@ jobs:
     outputs:
       typecheck: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.typecheck }}
       test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test }}
+      # The daemon's Go suite, a job of its own since dispatch://INFRA-1413: the test job used
+      # to carry it behind the output above, so a change to a shell script ran it too.
+      daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_go_tests }}
       # The guides' layout step of the test job, which has a filter of its own: the job's other
       # steps read none of the guides, so a run that changed none of them skips that step.
       guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.guide_layout }}
+      # One output per `*.test.sh` step of the test job: each names that harness and the script
+      # it tests, so the step runs when either changes and skips when neither does. The job's
+      # own filter names every one of these lists, since a step gate decides nothing in a job
+      # that was not selected.
+      release_push_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_push_test }}
+      release_bump_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.release_bump_test }}
+      check_bun_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_version_test }}
+      check_bun_workspace_manifests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_bun_workspace_manifests_test }}
+      check_zod_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_zod_version_test }}
+      check_gh_version_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_gh_version_test }}
+      workflow_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.workflow_paths_test }}
+      check_image_trigger_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_image_trigger_paths_test }}
+      check_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_images_test }}
+      mirror_ci_images_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.mirror_ci_images_test }}
+      check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
+      check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
+      check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
+      check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
+      repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
+      playwright_deps_current_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.playwright_deps_current_test }}
+      select_e2e_proofs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.select_e2e_proofs_test }}
+      go_tagged_tests_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_tagged_tests_test }}
+      ci_ok_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_test }}
+      ci_ok_report_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_report_test }}
+      ci_ok_reconcile_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_ok_reconcile_test }}
+      find_pr_payload_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.find_pr_payload_test }}
+      merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
+      main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
+      dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
+      dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
+      apt_archive_cache_key_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.apt_archive_cache_key_test }}
+      race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
+      disk_watch_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.disk_watch_test }}
+      sessions_import_pods_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.sessions_import_pods_test }}
+      check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
+      check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -692,9 +733,10 @@ jobs:
               - '.github/actions/install-jj/**'
               # install-jj reads the mise version and checksum it installs from here.
               - 'packages/daemon/docker/worker.Dockerfile'
-            # What the test job's two Go steps read together — the plain step, which tests every
-            # package of packages/daemon but the three concurrent ones, and the race step, which
-            # tests those three — so the filter still covers the whole module's closure. The
+            # The daemon-go job: what its two Go steps read together — the plain step, which
+            # tests every package of packages/daemon but the three concurrent ones, and the race
+            # step, which tests those three — so the filter covers the whole module's closure,
+            # and what the Stage 1 proof beside them builds and sources. The
             # packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
             # for internal/daemon/outbox_scratch_dispatch_test.go:353, and what their tests read
             # outside the daemon: contracts' fixtures
@@ -704,12 +746,23 @@ jobs:
             # GitHub App helper internal/api/real_github_test.go:88 sources, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
             # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322).
-            # The root manifest, lockfile and patches the packs resolve through are bun_install's.
-            daemon_go_tests: &daemon_go_tests
+            # The root manifest, lockfile and patches the packs resolve through, and the Bun
+            # that runs them, are bun_install's, named below.
+            #
+            # The list is the one the test job's filter used to name through this anchor while
+            # it gated nothing of its own; it is now the daemon-go job's own filter, so a change
+            # a Go test cannot see no longer runs 1,083 s of them (dispatch://INFRA-1413).
+            daemon_go_tests:
+              - *ci_router
+              - '.github/workflows/ci-job-daemon-go.yaml'
               - *go_workspace
+              - *bun_install
               - 'packages/daemon/**'
               - *daemon_envoy_deps
               - *dispatch_server
+              # internal/intake/redelivered_test.go:269-270 builds ./cmd/listener with
+              # testbuild.EnvoyBinary, beside the Dispatch server dispatch_server covers.
+              - *listener_command
               # The testdata of envoy's internal/contracts, which the daemon compiles.
               - 'packages/envoy/internal/contracts/**'
               - 'packages/contracts/**'
@@ -719,11 +772,26 @@ jobs:
               - 'packages/pi-shared/**'
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'
+              # A daemon Go test does read the skills: the prepack both packs run stages
+              # skills/<name> into the plugin they build (internal/daemon/agentmodels_omp_test.go:175
+              # and promptreferences_omp_test.go:228). Dropping this pattern was tried and
+              # .github/scripts/check-ci-filters.sh refused it, naming 68 files of skills/ under
+              # that read.
               - 'skills/**'
               - 'scripts/e2e/lib/github-apps.sh'
+              # The Stage 1 proof: the script, the rig it sources and the helpers the rig runs.
+              - 'scripts/e2e/stage1-skeleton.sh'
+              - 'scripts/e2e/lib/rig.sh'
+              - 'scripts/e2e/lib/port-file.sh'
+              - 'scripts/e2e/lib/held-port.py'
+              - 'scripts/e2e/lib/built-from.sh'
               - 'deploy/kubernetes/daemon/controller.yaml.example'
               - 'deploy/kubernetes/daemon/legion.yaml.example'
               - 'deploy/kubernetes/operator-route/pod.yml'
+              # The tools its tests refuse to run without, and the NATS images they start.
+              - *omp_install
+              - '.github/actions/install-uv/**'
+              - '.github/actions/pull-test-images/**'
 
             # `go vet -tags e2e ./...` in packages/daemon.
             typecheck:
@@ -791,68 +859,12 @@ jobs:
               # 0.0.0 placeholder and admits the first release. No step of the test job runs that
               # test, so the entry is this job's alone.
               - '.claude-plugin/marketplace.json'
-            # The daemon's tests (every package once: the three concurrent packages under the race
-            # detector, the rest in the plain step, and the daemon
-            # scripts/e2e/stage1-skeleton.sh builds) and every file the job's other steps read.
-            test:
-              - *ci_router
-              - '.github/workflows/ci-job-test.yaml'
-              - *bun_install
-              - *biome
-              - *daemon_go_tests
-              # Two of its steps read this list: verify-build builds and checks the Claude Code
-              # plugin as the release does, and the build-input-list step runs
-              # packages/claude-envoy/tests/build-inputs.test.ts.
-              - *claude_envoy_build
-              # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
-              - *listener_command
-              # Each .github/scripts/*.test.sh runs its checker, through test-lib.sh (and
-              # workflow_paths.py, check-pr-text.sh, release-bump.sh, ci_filter_coverage.py where a
-              # checker sources them); workflow_paths.test.sh runs that path model itself.
-              - '.github/scripts/*'
-              # main-bypass-check.test.sh:198-210 reads the bypass check's own workflow and holds
-              # every run: step of it to a shell with pipefail, and :216-227 holds the decision's
-              # HEAD_SHA and HEAD_MESSAGE to the push payload's head.
-              - '.github/workflows/main-bypass-check.yaml'
-              # mirror-ci-images.test.sh:322-351 builds its ordering fixture from the repository's
-              # own image rows.
-              - '.github/ci-images.yaml'
-              # select-e2e-proofs.test.sh runs the selector over this list and over scripts/e2e/.
-              - '.github/e2e-scripts.json'
-              - 'scripts/third-party-notices.test.ts'
-              - 'scripts/semantic-line-breaks.ts'
-              - 'scripts/semantic-line-breaks.test.ts'
-              - 'scripts/sessions-import-pods.sh'
-              - 'scripts/sessions-import-pods.test.sh'
-              # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
-              # and the Stage 1 proof sources lib/rig.sh (with port-file.sh and held-port.py) and runs
-              # built-from.sh. The e2e libraries and the census script import contracts and
-              # envoy-client, which daemon_go_tests names.
-              - 'scripts/e2e/**'
-              - 'scripts/dispatch/**'
-              - 'scripts/github-apps/**'
-              - 'scripts/sessions/**'
-              # The tools the job installs: jj, mise and Oh My Pi, uv, changie, and the NATS images.
-              - *omp_install
-              - '.github/actions/install-uv/**'
-              - '.github/actions/install-changie/**'
-              - '.github/actions/pull-test-images/**'
-              # The fold-check step renders every fragment of every package
-              # .github/changelog-packages lists, each with its own changie configuration;
-              # release-push.test.sh's "Case: fold-notes renders a package with the shipped
-              # packages/pi-legion/.changie.yaml" copies that configuration and renders it.
-              - '.github/changelog-packages'
-              - 'packages/*/.changie.yaml'
-              - 'packages/*/.changes/unreleased/**'
-            # The guides' layout step of the test job (ci-job-test.yaml's
-            # "Check the guides' semantic line breaks"): the five guides
-            # scripts/semantic-line-breaks.guides.test.ts reads, the checker it spawns and the
-            # test itself. The job's own filter above names none of them, since no other step
-            # of it reads a guide; the Bun install the step leans on is the job's, gated by
-            # that filter.
-            guide_layout:
-              - *ci_router
-              - '.github/workflows/ci-job-test.yaml'
+            # The five guides scripts/semantic-line-breaks.guides.test.ts reads, the checker it
+            # spawns and the test itself: the guide-layout step's filter below is them, and the
+            # test job's filter names them too, since a job's `if:` tests one changes output and
+            # that step runs in no job the test filter did not select. No other step of the job
+            # reads one of them, so the step's own gate is what keeps it off every other change.
+            guide_layout_files: &guide_layout_files
               - 'scripts/semantic-line-breaks.guides.test.ts'
               # The checker the test spawns (its :9 and :16).
               - 'scripts/semantic-line-breaks.ts'
@@ -863,6 +875,364 @@ jobs:
               # The two its first test names (:26-27).
               - 'packages/envoy/AGENTS.md'
               - 'packages/envoy/cmd/dispatch/README.md'
+            # One filter per `*.test.sh` step of the test job: that harness and the script it
+            # tests, so the step runs when either changes and skips when neither does. Each is
+            # anchored and named again by the `test` filter below, which is what selects the job
+            # the steps run in: a job's `if:` may test one changes output only, so the job's own
+            # filter has to match whatever any of its steps' gates match, and the step's gate
+            # then decides which of them run. Every one of them names this file and
+            # ci-job-test.yaml, as every gate does, and the harnesses under .github/scripts name
+            # test-lib.sh, which each of them sources for `check`, `is` and `summary`.
+            # Before these the job's filter carried one pattern, '.github/scripts/*', for all of
+            # them: a change to any one script ran every harness, and 28 of the 66 commits that
+            # touched that directory since 2026-10-01 changed no Go file (dispatch://INFRA-1413).
+            release_push_test: &release_push_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/release-push.test.sh'
+              - '.github/scripts/release-push.sh'
+              # release-push.sh:778 runs release-bump.sh for `version`.
+              - '.github/scripts/release-bump.sh'
+              # Its checkout-before-push case reads the real release workflow (:1005), and its
+              # fold-notes case copies the shipped changie configuration (:1928).
+              - '.github/workflows/release.yaml'
+              - 'packages/pi-legion/.changie.yaml'
+            release_bump_test: &release_bump_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/release-bump.test.sh'
+              - '.github/scripts/release-bump.sh'
+            check_bun_version_test: &check_bun_version_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-bun-version.test.sh'
+              - '.github/scripts/check-bun-version.sh'
+              # :40 symlinks in the grammar the gate reads an image reference with.
+              - '.github/scripts/ci_images.py'
+            check_bun_workspace_manifests_test: &check_bun_workspace_manifests_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-bun-workspace-manifests.test.sh'
+              - '.github/scripts/check-bun-workspace-manifests.sh'
+            check_zod_version_test: &check_zod_version_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-zod-version.test.sh'
+              - '.github/scripts/check-zod-version.sh'
+            check_gh_version_test: &check_gh_version_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-gh-version.test.sh'
+              - '.github/scripts/check-gh-version.sh'
+            workflow_paths_test: &workflow_paths_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/workflow_paths.test.sh'
+              - '.github/scripts/workflow_paths.py'
+            check_image_trigger_paths_test: &check_image_trigger_paths_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-image-trigger-paths.test.sh'
+              - '.github/scripts/check-image-trigger-paths.sh'
+              # :34 symlinks in the path model the script imports.
+              - '.github/scripts/workflow_paths.py'
+            check_ci_images_test: &check_ci_images_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-ci-images.test.sh'
+              - '.github/scripts/check-ci-images.sh'
+              # :90-91 symlink in the path model its sweep walks the tree with and the grammar
+              # it reads a reference with.
+              - '.github/scripts/workflow_paths.py'
+              - '.github/scripts/ci_images.py'
+              # Its last case runs the package mode over this repository's own rows.
+              - '.github/ci-images.yaml'
+            mirror_ci_images_test: &mirror_ci_images_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/mirror-ci-images.test.sh'
+              - '.github/scripts/mirror-ci-images.sh'
+              # :38 runs the gate over the stand-in registry a copy left, and :134 symlinks in
+              # the grammar both scripts read a row with.
+              - '.github/scripts/check-ci-images.sh'
+              - '.github/scripts/ci_images.py'
+              # :322-351 builds its ordering fixture from this repository's own rows.
+              - '.github/ci-images.yaml'
+            check_action_pins_test: &check_action_pins_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-action-pins.test.sh'
+              - '.github/scripts/check-action-pins.sh'
+            check_private_names_test: &check_private_names_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-private-names.test.sh'
+              - '.github/scripts/check-private-names.sh'
+              # :21 runs the guard's other surface, a pull request's text, with it.
+              - '.github/scripts/check-pr-text.sh'
+            check_plugin_names_test: &check_plugin_names_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-plugin-names.test.sh'
+              - '.github/scripts/check-plugin-names.sh'
+            check_release_credentials_test: &check_release_credentials_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-release-credentials.test.sh'
+              - '.github/scripts/check-release-credentials.sh'
+            repo_paths_test: &repo_paths_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/repo-paths.test.sh'
+              - '.github/scripts/repo-paths.sh'
+            playwright_deps_current_test: &playwright_deps_current_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/playwright-deps-current.test.sh'
+              - '.github/scripts/playwright-deps-current.sh'
+            select_e2e_proofs_test: &select_e2e_proofs_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/select-e2e-proofs.test.sh'
+              - '.github/scripts/select-e2e-proofs.sh'
+              # Its last case runs the selector over this repository's own list and the proofs
+              # it names, one row per scripts/e2e/*.sh.
+              - '.github/e2e-scripts.json'
+              - 'scripts/e2e/*.sh'
+            go_tagged_tests_test: &go_tagged_tests_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/go-tagged-tests.test.sh'
+              - '.github/scripts/go-tagged-tests.sh'
+            ci_ok_test: &ci_ok_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/ci-ok.test.sh'
+              - '.github/scripts/ci-ok.sh'
+              # ci-ok.sh:97-142 runs its jq program with `include "ci-ok"`.
+              - '.github/scripts/ci-ok.jq'
+            ci_ok_report_test: &ci_ok_report_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/ci-ok-report.test.sh'
+              - '.github/scripts/ci-ok-report.sh'
+              # What the report runs: the check-run post (:194, and :221,237 of the harness on
+              # its own), the bounded gh reads it sources (:84) and the verdict it reaches (:170).
+              - '.github/scripts/post-check-run.sh'
+              - '.github/scripts/gh-read.sh'
+              - '.github/scripts/ci-ok.sh'
+              - '.github/scripts/ci-ok.jq'
+            ci_ok_reconcile_test: &ci_ok_reconcile_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/ci-ok-reconcile.test.sh'
+              - '.github/scripts/ci-ok-reconcile.sh'
+              # ci-ok-reconcile.sh:80 sources it for its bounded gh reads.
+              - '.github/scripts/gh-read.sh'
+            find_pr_payload_test: &find_pr_payload_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/find-pr-payload.test.sh'
+              - '.github/scripts/find-pr-payload.sh'
+            merge_group_cancels_test: &merge_group_cancels_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/merge-group-cancels.test.sh'
+              - '.github/scripts/merge-group-cancels.sh'
+            main_bypass_check_test: &main_bypass_check_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/main-bypass-check.test.sh'
+              - '.github/scripts/main-bypass-check.sh'
+              # :198-210 holds every run: step of the bypass workflow to a shell with pipefail,
+              # and :216-227 holds the decision's HEAD_SHA and HEAD_MESSAGE to the push payload.
+              - '.github/workflows/main-bypass-check.yaml'
+            dispatch_browser_latest_blobs_test: &dispatch_browser_latest_blobs_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/dispatch-browser-latest-blobs.test.sh'
+              - '.github/scripts/dispatch-browser-latest-blobs.sh'
+            dispatch_browser_samples_test: &dispatch_browser_samples_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/dispatch-browser-samples.test.sh'
+              - '.github/scripts/dispatch-browser-samples.sh'
+            apt_archive_cache_key_test: &apt_archive_cache_key_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/apt-archive-cache-key.test.sh'
+              - '.github/scripts/apt-archive-cache-key.sh'
+            race_memory_test: &race_memory_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/race_memory.test.sh'
+              - '.github/scripts/race_memory.py'
+            disk_watch_test: &disk_watch_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/disk_watch.test.sh'
+              - '.github/scripts/disk_watch.py'
+            # The one harness of the job outside .github/scripts: it carries its own helpers and
+            # sources no test-lib.sh.
+            sessions_import_pods_test: &sessions_import_pods_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - 'scripts/sessions-import-pods.test.sh'
+              - 'scripts/sessions-import-pods.sh'
+            check_ci_filters_test: &check_ci_filters_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-ci-filters.test.sh'
+              # :69 symlinks the script and the three modules it runs on into every fixture.
+              - '.github/scripts/check-ci-filters.sh'
+              - '.github/scripts/ci_filter_coverage.py'
+              - '.github/scripts/ci_workflow_rules.py'
+              - '.github/scripts/workflow_paths.py'
+              # :1945 imports the table to derive the plain step's -run lists, and :2134 holds
+              # the guide's slow-suite list to the jobs the full-ci label gates.
+              - '.github/scripts/ci_job_reads.py'
+              - 'AGENTS.md'
+            check_ts_filters_test: &check_ts_filters_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-ts-filters.test.sh'
+              # :41 symlinks the script, the engine it borrows the changes job's filters from
+              # and the path model both import into every fixture.
+              - '.github/scripts/check-ts-filters.sh'
+              - '.github/scripts/ci_filter_coverage.py'
+              - '.github/scripts/workflow_paths.py'
+
+            # The test job: the Claude Code plugin build, the changelog fold, the script
+            # harnesses above and the Bun suites of scripts/. The daemon's Go tests are the
+            # daemon-go job's now, and daemon_go_tests, which this filter used to name through
+            # its anchor, is that job's own filter.
+            #
+            # It names every harness group above and the guide-layout step's files, because a
+            # job's `if:` tests one changes output and nothing runs in a job that is not
+            # selected: the groups decide which steps run, this filter decides whether the job
+            # they are in runs at all.
+            test:
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - *bun_install
+              - *biome
+              # The workspace of the one go command left here, the listener build
+              # scripts/e2e/lib/held-port.test.ts starts, and of the setup-go that installs the
+              # Go for it (packages/daemon/go.mod).
+              - *go_workspace
+              # Two of its steps read this list: verify-build builds and checks the Claude Code
+              # plugin as the release does, and the build-input-list step runs
+              # packages/claude-envoy/tests/build-inputs.test.ts.
+              - *claude_envoy_build
+              # scripts/e2e/lib/held-port.test.ts:45 builds the real envoy-listener.
+              - *listener_command
+              # Each harness step's own gate, named here so the job runs for the change that
+              # makes one of those gates true. Each of those lists names this file and
+              # ci-job-test.yaml, as every gate filter does, so the flattened list repeats the
+              # two patterns already above; a repeated pattern selects what it selected.
+              - *release_push_test
+              - *release_bump_test
+              - *check_bun_version_test
+              - *check_bun_workspace_manifests_test
+              - *check_zod_version_test
+              - *check_gh_version_test
+              - *workflow_paths_test
+              - *check_image_trigger_paths_test
+              - *check_ci_images_test
+              - *mirror_ci_images_test
+              - *check_action_pins_test
+              - *check_private_names_test
+              - *check_plugin_names_test
+              - *check_release_credentials_test
+              - *repo_paths_test
+              - *playwright_deps_current_test
+              - *select_e2e_proofs_test
+              - *go_tagged_tests_test
+              - *ci_ok_test
+              - *ci_ok_report_test
+              - *ci_ok_reconcile_test
+              - *find_pr_payload_test
+              - *merge_group_cancels_test
+              - *main_bypass_check_test
+              - *dispatch_browser_latest_blobs_test
+              - *dispatch_browser_samples_test
+              - *apt_archive_cache_key_test
+              - *race_memory_test
+              - *disk_watch_test
+              - *sessions_import_pods_test
+              - *check_ci_filters_test
+              - *check_ts_filters_test
+              # The guide-layout step's own files, for that same reason: its gate is
+              # guide_layout below, and a guide-only change has to select this job for it.
+              - *guide_layout_files
+              - 'scripts/third-party-notices.test.ts'
+              - 'scripts/third-party-notices.ts'
+              - 'scripts/semantic-line-breaks.ts'
+              - 'scripts/semantic-line-breaks.test.ts'
+              # `bun test scripts/e2e/lib` scans scripts/e2e/*.sh (lib/script-functions.test.ts:101-104),
+              # and its tests read the daemon sources and fixtures named below. The e2e
+              # libraries and the census script import contracts and envoy-client, which
+              # claude_envoy_build names.
+              - 'scripts/e2e/**'
+              - 'packages/contracts/fixtures/daemon-api/**'
+              - 'packages/daemon/internal/daemon/controller.go'
+              - 'packages/daemon/internal/controller/liveness.go'
+              - 'packages/daemon/internal/supervise/machine.go'
+              - 'packages/daemon/internal/intake/consume.go'
+              - 'packages/daemon/internal/capabilities/testdata/web-search-open-planner.json'
+              - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root.json'
+              - 'packages/daemon/internal/runtime/sandbox/testdata/golden/root-operator-route.json'
+              - 'packages/envoy-client/test/fake-dispatch.ts'
+              - 'scripts/dispatch/**'
+              - 'scripts/github-apps/**'
+              - 'scripts/sessions/**'
+              # The one tool the job still installs: changie, for the fold below.
+              - '.github/actions/install-changie/**'
+              # The fold-check step renders every fragment of every package
+              # .github/changelog-packages lists, each with its own changie configuration;
+              # release-push.test.sh's "Case: fold-notes renders a package with the shipped
+              # packages/pi-legion/.changie.yaml" copies that configuration and renders it.
+              - '.github/changelog-packages'
+              - 'packages/*/.changie.yaml'
+              - 'packages/*/.changes/unreleased/**'
+            # The guides' layout step of the test job (ci-job-test.yaml's
+            # "Check the guides' semantic line breaks"), gated on exactly the files that step
+            # reads, which the group above holds and the job's own filter names too.
+            guide_layout:
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - *guide_layout_files
             # docs/site's lint, typecheck, screenshots and build, with the sources its reference
             # generators and its screenshot harness read. docs-site.yaml holds those steps, and
             # both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
@@ -2028,9 +2398,10 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # lint, typecheck and test are jobs ci-ok condenses; main's ruleset requires none of their
-  # names. Each covers the shipped daemon (packages/daemon, the Go `legion`). Fail-open: when
-  # `changes` did not succeed, typecheck and test run rather than skip. ci-ok fails then anyway
+  # lint, typecheck, test and daemon-go are jobs ci-ok condenses; main's ruleset requires none
+  # of their names. Each covers the shipped daemon (packages/daemon, the Go `legion`). Fail-open:
+  # when `changes` did not succeed, typecheck, test and daemon-go run rather than skip. ci-ok
+  # fails then anyway
   # (ci-ok.sh), so this buys signal: their results while `changes` is broken. A re-run of only the
   # failed jobs can leave the jobs `changes` then selects skipped, and ci-ok fails a selected job
   # that skipped rather than passing with nothing tested: re-run every job instead.
@@ -2046,6 +2417,12 @@ jobs:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
 
+  # The script harnesses, the Claude Code plugin build and the Bun suites of scripts/. Each
+  # `*.test.sh` step runs behind a `changes` output of its own naming that harness and the
+  # script it tests, handed down as an input of the same name
+  # (.github/workflows/ci-job-test.yaml), so a change to one script runs one harness. The job's
+  # own filter names every one of those lists, since a job's `if:` tests one output and a step
+  # gate decides nothing in a job that was not selected.
   test:
     needs: changes
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.test == 'true') }}
@@ -2057,6 +2434,54 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
       guide_layout: ${{ needs.changes.outputs.guide_layout }}
+      release_push_test: ${{ needs.changes.outputs.release_push_test }}
+      release_bump_test: ${{ needs.changes.outputs.release_bump_test }}
+      check_bun_version_test: ${{ needs.changes.outputs.check_bun_version_test }}
+      check_bun_workspace_manifests_test: ${{ needs.changes.outputs.check_bun_workspace_manifests_test }}
+      check_zod_version_test: ${{ needs.changes.outputs.check_zod_version_test }}
+      check_gh_version_test: ${{ needs.changes.outputs.check_gh_version_test }}
+      workflow_paths_test: ${{ needs.changes.outputs.workflow_paths_test }}
+      check_image_trigger_paths_test: ${{ needs.changes.outputs.check_image_trigger_paths_test }}
+      check_ci_images_test: ${{ needs.changes.outputs.check_ci_images_test }}
+      mirror_ci_images_test: ${{ needs.changes.outputs.mirror_ci_images_test }}
+      check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
+      check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
+      check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
+      check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
+      repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
+      playwright_deps_current_test: ${{ needs.changes.outputs.playwright_deps_current_test }}
+      select_e2e_proofs_test: ${{ needs.changes.outputs.select_e2e_proofs_test }}
+      go_tagged_tests_test: ${{ needs.changes.outputs.go_tagged_tests_test }}
+      ci_ok_test: ${{ needs.changes.outputs.ci_ok_test }}
+      ci_ok_report_test: ${{ needs.changes.outputs.ci_ok_report_test }}
+      ci_ok_reconcile_test: ${{ needs.changes.outputs.ci_ok_reconcile_test }}
+      find_pr_payload_test: ${{ needs.changes.outputs.find_pr_payload_test }}
+      merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
+      main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
+      dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
+      dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
+      apt_archive_cache_key_test: ${{ needs.changes.outputs.apt_archive_cache_key_test }}
+      race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
+      disk_watch_test: ${{ needs.changes.outputs.disk_watch_test }}
+      sessions_import_pods_test: ${{ needs.changes.outputs.sessions_import_pods_test }}
+      check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
+      check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
+
+  # The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
+  # Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,
+  # where one filter had to cover both: a change to a shell script, to packages/claude-envoy or
+  # to bun.lock ran 1,083 s (median) of Go tests that could not see it. Fail-open with typecheck
+  # and test above, for the reason their comment gives.
+  daemon-go:
+    needs: changes
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.daemon_go_tests == 'true') }}
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-daemon-go.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   # Builds the documentation site (docs/site) on every pull request and merge group that could
   # change it. No run of this workflow is a push to main: docs-pages.yaml builds and publishes
@@ -2802,6 +3227,7 @@ jobs:
       - ci-images
       - typecheck
       - test
+      - daemon-go
       - docs
       - contracts
       - conflicts-script

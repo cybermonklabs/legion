@@ -955,6 +955,194 @@ GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
 
+# ------------------------------------------------- the test job's script harnesses, one gate each
+# Each `*.test.sh` step of the test job tests one script of this repository, and runs behind a
+# changes output of its own naming that harness and that script. Before this table one pattern,
+# `.github/scripts/*`, stood for all of them on the job's own filter, so a change to any one
+# script ran every harness - and, while the daemon's Go suite was in the same job, 1,083 s
+# (median) of Go tests with them (dispatch://INFRA-1413). The job's filter now names what these
+# gates name, through the anchors ci.yaml holds each of these lists under, so a change to a
+# harness or its subject selects the job and exactly that step's gate is true in it.
+#
+# Every harness under .github/scripts sources test-lib.sh for its `check`, `is` and `summary`,
+# so each of those gates reads it and a change to it runs them all; scripts/sessions-import-pods.test.sh,
+# which is not one of them, carries its own helpers.
+SCRIPTS = ".github/scripts"
+TEST_LIB = f"{SCRIPTS}/test-lib.sh"
+
+
+def harness(filter, step, harness_script, subjects, lib=True):
+    """A gate for one harness step of the test job: the harness itself, test-lib.sh where the
+    harness sources it, and `subjects`, the (path, why) pairs of what else that step reads - the
+    script it tests first among them. The gate is the step's, so its `if:` must test this
+    filter and no other (rule 2)."""
+    entries = [(harness_script, at("test", step))]
+    if lib:
+        entries.append((TEST_LIB, f"{harness_script} sources it for check/is/summary"))
+    return gate(filter, "test", step=step,
+                reads=reads(*entries, *subjects) + CI_SELF + job_self("test"))
+
+
+SCRIPT_TEST_GATES = [
+    harness("release_push_test", "Test release scripts", f"{SCRIPTS}/release-push.test.sh", [
+        (f"{SCRIPTS}/release-push.sh", "the script under test"),
+        (f"{SCRIPTS}/release-bump.sh", "release-push.sh:778 runs it for `version`, and the version cases read its refusals"),
+        (".github/workflows/release.yaml", "release-push.test.sh:1005 reads it for the checkout-before-push case"),
+        ("packages/pi-legion/.changie.yaml", "release-push.test.sh:1928 copies the shipped configuration into its fold-notes fixture"),
+    ]),
+    harness("release_bump_test", "Test the release version bump", f"{SCRIPTS}/release-bump.test.sh", [
+        (f"{SCRIPTS}/release-bump.sh", "the script under test"),
+    ]),
+    harness("check_bun_version_test", "Test the Bun pin check", f"{SCRIPTS}/check-bun-version.test.sh", [
+        (f"{SCRIPTS}/check-bun-version.sh", "the script under test"),
+        (f"{SCRIPTS}/ci_images.py", "check-bun-version.test.sh:40 symlinks it in: the gate reads an image reference with it"),
+    ]),
+    harness("check_bun_workspace_manifests_test", "Test the frozen Bun workspace manifest check",
+            f"{SCRIPTS}/check-bun-workspace-manifests.test.sh", [
+        (f"{SCRIPTS}/check-bun-workspace-manifests.sh", "the script under test"),
+    ]),
+    harness("check_zod_version_test", "Test the zod version check", f"{SCRIPTS}/check-zod-version.test.sh", [
+        (f"{SCRIPTS}/check-zod-version.sh", "the script under test"),
+    ]),
+    harness("check_gh_version_test", "Test the gh version check", f"{SCRIPTS}/check-gh-version.test.sh", [
+        (f"{SCRIPTS}/check-gh-version.sh", "the script under test"),
+    ]),
+    harness("workflow_paths_test", "Test the workflow path model the path checks import",
+            f"{SCRIPTS}/workflow_paths.test.sh", [
+        (f"{SCRIPTS}/workflow_paths.py", "the module under test, symlinked in at workflow_paths.test.sh:29"),
+    ]),
+    harness("check_image_trigger_paths_test", "Test the image trigger path check",
+            f"{SCRIPTS}/check-image-trigger-paths.test.sh", [
+        (f"{SCRIPTS}/check-image-trigger-paths.sh", "the script under test"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-image-trigger-paths.test.sh:34 symlinks in the path model the script imports"),
+    ]),
+    harness("check_ci_images_test", "Test the CI image check", f"{SCRIPTS}/check-ci-images.test.sh", [
+        (f"{SCRIPTS}/check-ci-images.sh", "the script under test"),
+        (f"{SCRIPTS}/workflow_paths.py", "check-ci-images.test.sh:90 symlinks in the path model its sweep walks the tree with"),
+        (f"{SCRIPTS}/ci_images.py", "check-ci-images.test.sh:91 symlinks in the reference grammar it reads a reference with"),
+        (".github/ci-images.yaml", "its last case runs the package mode over this repository's own rows"),
+    ]),
+    harness("mirror_ci_images_test", "Test the CI image mirror", f"{SCRIPTS}/mirror-ci-images.test.sh", [
+        (f"{SCRIPTS}/mirror-ci-images.sh", "the script under test"),
+        (f"{SCRIPTS}/check-ci-images.sh", "mirror-ci-images.test.sh:38 runs the gate over the registry a copy left"),
+        (f"{SCRIPTS}/ci_images.py", "mirror-ci-images.test.sh:134 symlinks in the grammar both scripts read a row with"),
+        (".github/ci-images.yaml", "mirror-ci-images.test.sh:322-351 builds its ordering fixture from this repository's own rows"),
+    ]),
+    harness("check_action_pins_test", "Test the action pin check", f"{SCRIPTS}/check-action-pins.test.sh", [
+        (f"{SCRIPTS}/check-action-pins.sh", "the script under test"),
+    ]),
+    harness("check_private_names_test", "Test the private-name check", f"{SCRIPTS}/check-private-names.test.sh", [
+        (f"{SCRIPTS}/check-private-names.sh", "the script under test"),
+        (f"{SCRIPTS}/check-pr-text.sh", "check-private-names.test.sh:21 runs it too: the pull request's text is the guard's other surface"),
+    ]),
+    harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
+        (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
+    ]),
+    harness("check_release_credentials_test", "Test the release credential check",
+            f"{SCRIPTS}/check-release-credentials.test.sh", [
+        (f"{SCRIPTS}/check-release-credentials.sh", "the script under test"),
+    ]),
+    harness("repo_paths_test", "Test the repository path derivation", f"{SCRIPTS}/repo-paths.test.sh", [
+        (f"{SCRIPTS}/repo-paths.sh", "the script under test"),
+    ]),
+    harness("playwright_deps_current_test", "Test the Playwright dependency list check",
+            f"{SCRIPTS}/playwright-deps-current.test.sh", [
+        (f"{SCRIPTS}/playwright-deps-current.sh", "the script under test"),
+    ]),
+    harness("select_e2e_proofs_test", "Test the e2e proof selector", f"{SCRIPTS}/select-e2e-proofs.test.sh", [
+        (f"{SCRIPTS}/select-e2e-proofs.sh", "the script under test"),
+        (".github/e2e-scripts.json", "its last case runs the selector over this repository's own list"),
+        ("scripts/e2e/*.sh", "that same case: the selector names one row per scripts/e2e/*.sh (select-e2e-proofs.sh:39-40,81-82)"),
+    ]),
+    harness("go_tagged_tests_test", "Test the build-tag test lister", f"{SCRIPTS}/go-tagged-tests.test.sh", [
+        (f"{SCRIPTS}/go-tagged-tests.sh", "the script under test"),
+    ]),
+    harness("ci_ok_test", "Test ci-ok's verdict", f"{SCRIPTS}/ci-ok.test.sh", [
+        (f"{SCRIPTS}/ci-ok.sh", "the script under test"),
+        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh:97-142 runs its program with `jq -L \"$script_dir\"` and `include \"ci-ok\"`"),
+    ]),
+    harness("ci_ok_report_test", "Test ci-ok's report and the check-run post (a stand-in gh)",
+            f"{SCRIPTS}/ci-ok-report.test.sh", [
+        (f"{SCRIPTS}/ci-ok-report.sh", "the script under test"),
+        (f"{SCRIPTS}/post-check-run.sh", "ci-ok-report.sh:194 posts with it, and ci-ok-report.test.sh:221,237 runs it on its own"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-report.sh:84 sources it for its bounded gh reads"),
+        (f"{SCRIPTS}/ci-ok.sh", "ci-ok-report.sh:170 reaches its verdict with it"),
+        (f"{SCRIPTS}/ci-ok.jq", "ci-ok.sh's program includes it"),
+    ]),
+    harness("ci_ok_reconcile_test", "Test the reconciliation of this head's other ci-ok check runs (a stand-in gh)",
+            f"{SCRIPTS}/ci-ok-reconcile.test.sh", [
+        (f"{SCRIPTS}/ci-ok-reconcile.sh", "the script under test"),
+        (f"{SCRIPTS}/gh-read.sh", "ci-ok-reconcile.sh:80 sources it for its bounded gh reads"),
+    ]),
+    harness("find_pr_payload_test", "Test the pull request payload both pr-title checks read (a stand-in gh)",
+            f"{SCRIPTS}/find-pr-payload.test.sh", [
+        (f"{SCRIPTS}/find-pr-payload.sh", "the script under test"),
+    ]),
+    harness("merge_group_cancels_test", "Test the merge-group cancel decision", f"{SCRIPTS}/merge-group-cancels.test.sh", [
+        (f"{SCRIPTS}/merge-group-cancels.sh", "the script under test"),
+    ]),
+    harness("main_bypass_check_test", "Test the main bypass check's decision", f"{SCRIPTS}/main-bypass-check.test.sh", [
+        (f"{SCRIPTS}/main-bypass-check.sh", "the script under test"),
+        (".github/workflows/main-bypass-check.yaml",
+         "main-bypass-check.test.sh:198-210 holds every run: step of the workflow to a shell with pipefail, and "
+         ":216-227 holds the decision's HEAD_SHA and HEAD_MESSAGE to the push payload's head"),
+    ]),
+    harness("dispatch_browser_latest_blobs_test", "Test the browser lane's blob attempt selection",
+            f"{SCRIPTS}/dispatch-browser-latest-blobs.test.sh", [
+        (f"{SCRIPTS}/dispatch-browser-latest-blobs.sh", "the script under test"),
+    ]),
+    harness("dispatch_browser_samples_test", "Test the browser lane's memory and CPU sampler",
+            f"{SCRIPTS}/dispatch-browser-samples.test.sh", [
+        (f"{SCRIPTS}/dispatch-browser-samples.sh", "the script under test"),
+    ]),
+    harness("apt_archive_cache_key_test", "Test the apt archive cache key", f"{SCRIPTS}/apt-archive-cache-key.test.sh", [
+        (f"{SCRIPTS}/apt-archive-cache-key.sh", "the script under test"),
+    ]),
+    harness("race_memory_test", "Test the race memory sampler", f"{SCRIPTS}/race_memory.test.sh", [
+        (f"{SCRIPTS}/race_memory.py", "the module under test"),
+    ]),
+    harness("disk_watch_test", "Test the disk watch", f"{SCRIPTS}/disk_watch.test.sh", [
+        (f"{SCRIPTS}/disk_watch.py", "the module under test"),
+    ]),
+    # The one harness of the job that is not under .github/scripts and sources no test-lib.sh.
+    harness("sessions_import_pods_test", "Test the session import pods script (a stand-in kubectl)",
+            "scripts/sessions-import-pods.test.sh", [
+        ("scripts/sessions-import-pods.sh", "the script under test (scripts/sessions-import-pods.test.sh:11)"),
+    ], lib=False),
+    harness("check_ci_filters_test", "Test the CI filter check", f"{SCRIPTS}/check-ci-filters.test.sh", [
+        (f"{SCRIPTS}/check-ci-filters.sh", "the script under test, symlinked into every fixture (check-ci-filters.test.sh:69)"),
+        (f"{SCRIPTS}/ci_filter_coverage.py", "the engine the fixtures link in beside it"),
+        (f"{SCRIPTS}/ci_workflow_rules.py", "the rules the fixtures link in beside it"),
+        (f"{SCRIPTS}/workflow_paths.py", "the path model the fixtures link in beside it"),
+        (f"{SCRIPTS}/ci_job_reads.py", "check-ci-filters.test.sh:1945 imports this table to derive the plain step's -run lists"),
+        ("AGENTS.md", "check-ci-filters.test.sh:2134 holds the guide's slow-suite list to the jobs the full-ci label gates"),
+    ]),
+    harness("check_ts_filters_test", "Test the TypeScript filter check", f"{SCRIPTS}/check-ts-filters.test.sh", [
+        (f"{SCRIPTS}/check-ts-filters.sh", "the script under test, symlinked into every fixture (check-ts-filters.test.sh:41)"),
+        (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
+        (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
+    ]),
+]
+
+# What every harness step above reads, for the test job's own gate: the job runs each of them, so
+# its filter must select all of them too, or a change to a harness would select no job and the
+# step's gate would be true in a job that never runs.
+SCRIPT_TEST_READS = [read for gate_ in SCRIPT_TEST_GATES for read in gate_.reads]
+
+# The guide-layout step's own reads, declared once: the step gate below is them, and the test
+# job's gate carries them too, for the same reason the harness reads above are carried. A job's
+# `if:` may test one changes output only (ci_filter_coverage refuses a second), so the step's
+# gate decides nothing until the job's own filter selects the job for the same change.
+GUIDE_LAYOUT_READS = reads(
+    ("scripts/semantic-line-breaks.guides.test.ts", at("test", GUIDES_STEP)),
+    ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:9,16 spawns it"),
+    ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES, read by its second and third tests"),
+    ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES"),
+    ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES"),
+    ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:26"),
+    ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:27"),
+)
+
 # docs-pages.yaml builds and publishes main's site in a workflow of its own (its header says why),
 # so its on.push.paths stands in for the docs filter on main.
 PUSH_WORKFLOWS = {"docs": ".github/workflows/docs-pages.yaml"}
@@ -965,12 +1153,15 @@ GATES = [
                  tags="e2e", mode="vet"),
     ], reads=CI_SELF + job_self("typecheck") + setup_go("typecheck", f"{DAEMON}/go.mod")),
 
-    gate("test", "test", runs=[
-        step_run("test", DAEMON_RACE_STEP, DAEMON_RACE_TEXT, DAEMON, DAEMON_RACE_PKGS, race=True),
-        script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion', at("test", "Stage 1 live proof"),
-                   DAEMON, ["./cmd/legion"], mode="build"),
-        script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
-                   at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
+    # The Go daemon's own suite, in a job of its own (.github/workflows/ci-job-daemon-go.yaml):
+    # the plain step over every package of the module but the three concurrent ones and the text
+    # checks, the race step over those three, and the Stage 1 proof, which builds ./cmd/legion
+    # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
+    # closure while it was aliased into the test filter and gated nothing of its own.
+    gate("daemon_go_tests", "daemon-go", runs=[
+        step_run("daemon-go", DAEMON_RACE_STEP, DAEMON_RACE_TEXT, DAEMON, DAEMON_RACE_PKGS, race=True),
+        script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
+                   at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
     ], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
         # pinned, as the envoy-go unit step's is. The Run names the module's packages but the
@@ -978,36 +1169,39 @@ GATES = [
         # claims the three packages this step also leaves out, which are this job's own, while
         # the text checks are the text-check job's, and a Run saying ./... would keep what only
         # their tests read - docs/kubernetes.md - on this job's filter.
-        pinned_step("test", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
+        pinned_step("daemon-go", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
             (DAEMON, packages_but(DAEMON, TEXT_CHECK_PACKAGE),
              "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
         ]),
-    ], reads=CLAUDE_ENVOY_BUILD + reads(
-        (".github/scripts/*", f"{at('test', 'Test release scripts')} and the steps after it: each .github/scripts/*.test.sh sources "
-                              "test-lib.sh and runs its checker (with workflow_paths.py, check-pr-text.sh, ci_filter_coverage.py, "
-                              "ci_job_reads.py, ci_ts_programs.py or release-bump.sh where a checker reads them); "
-                              f"{at('test', 'Test the workflow path model the path checks import')} runs workflow_paths.py itself, "
-                              "the path model those three checks import; and "
-                              f"{at('test', 'Test the pull request payload both pr-title checks read (a stand-in gh)')} runs "
-                              "find-pr-payload.sh, which ci.yaml's pr-title job finds its payload with "
-                              "on a merge group"),
-        (".github/workflows/main-bypass-check.yaml",
-         at("test", "Test the main bypass check's decision") + ": main-bypass-check.test.sh:198-210 reads the "
-         "workflow and holds every run: step of it to a shell with pipefail, and :216-227 holds the decision's "
-         "HEAD_SHA and HEAD_MESSAGE to the push payload's head"),
-        (".github/ci-images.yaml", f"{at('test', 'Test the CI image mirror')}: mirror-ci-images.test.sh:322-351 builds "
-                                   "its ordering fixture from the repository's own rows"),
-        (".github/e2e-scripts.json", f"{at('test', 'Test the e2e proof selector')}: select-e2e-proofs.test.sh runs the "
-                                     "selector over the repository's own list"),
+    ], reads=reads(
+        ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
+        ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:112 sources it"),
+        ("scripts/e2e/lib/port-file.sh", "scripts/e2e/lib/rig.sh:95 sources it"),
+        ("scripts/e2e/lib/held-port.py", "scripts/e2e/lib/rig.sh:136,150 runs it to hold a port for the daemon"),
+        ("scripts/e2e/lib/built-from.sh", "scripts/e2e/stage1-skeleton.sh:145 runs it over the checkout"),
+        (".github/actions/install-uv/**", at("daemon-go", "./.github/actions/install-uv")),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-uv/action.yml:16-17 ARG UV_VERSION/UV_SHA256"),
+        (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
+        (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image"),
+        (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
+      + bun_job("daemon-go") + CI_SELF + job_self("daemon-go")),
+
+    # What is left of the test job once the daemon's Go suite has a job of its own: the Claude
+    # Code plugin build, the changelog fold, about thirty script harnesses - each behind a gate
+    # of its own below (SCRIPT_TEST_GATES), whose reads this gate carries too, since the job
+    # must be selected for the step to run in it - and the Bun suites of scripts/. The one go
+    # command left is the listener build a Bun test starts.
+    gate("test", "test", runs=[
+        script_run("scripts/e2e/lib/held-port.test.ts", 'const build = Bun.spawnSync(["go", "build", "-o", listener, "./cmd/listener"], {',
+                   at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
+    ], reads=CLAUDE_ENVOY_BUILD + SCRIPT_TEST_READS + GUIDE_LAYOUT_READS + reads(
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
-        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,125; scripts/pi-plugin-prepack.sh:93,96 (packed by promptreferences_omp_test.go)"),
+        ("scripts/third-party-notices.ts", "scripts/third-party-notices.test.ts:5,125"),
         ("scripts/semantic-line-breaks.test.ts", at("test", "Test the semantic line-break checker")),
         ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.test.ts:6 spawns it"),
-        ("scripts/sessions-import-pods.test.sh", at("test", "Test the session import pods script (a stand-in kubectl)")),
-        ("scripts/sessions-import-pods.sh", "scripts/sessions-import-pods.test.sh:11"),
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:101-104 scans scripts/e2e/*.sh and lib/*); "
-                           f"{at('test', 'Stage 1 live proof')}: stage1-skeleton.sh sources lib/rig.sh (with port-file.sh, held-port.py) "
-                           f"and runs built-from.sh; {at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
+                           f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:9 (tsc -p scripts/dispatch)"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11
@@ -1025,34 +1219,22 @@ GATES = [
         (f"{DAEMON}/internal/capabilities/testdata/web-search-open-planner.json", "scripts/e2e/lib/stage4b-capabilities.test.ts:13-22"),
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root.json", "scripts/e2e/lib/stage4b-pods.test.ts:22-35"),
         (f"{DAEMON}/internal/runtime/sandbox/testdata/golden/root-operator-route.json", "scripts/e2e/lib/stage4b-pods.test.ts:175-187"),
-        ("packages/pi-shared/src/**", "packages/pi-legion/extensions/legion.ts:17-26 imports @legion/pi-shared/*; both packs bundle it"),
-        ("packages/envoy-client/bin/dispatch.ts", "pi-envoy pack: scripts/pi-plugin-prepack.sh:92 -> packages/envoy-client/scripts/build-dispatch-cli.sh:17"),
-        (".github/actions/install-uv/**", at("test", "./.github/actions/install-uv")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-uv/action.yml:16-17 ARG UV_VERSION/UV_SHA256"),
+        ("packages/pi-shared/src/**", "packages/claude-envoy's build bundles it; scripts/sessions and scripts/dispatch typecheck against it"),
         (".github/actions/install-changie/**", at("test", "./.github/actions/install-changie")),
-        ("packages/pi-legion/.changie.yaml", ".github/scripts/release-push.test.sh's \"Case: fold-notes renders a package with the shipped packages/pi-legion/.changie.yaml\" copies it"),
         (".github/changelog-packages", f"{at('test', FOLD_CHECK_STEP)}: the step reads it as the package list"),
         ("packages/*/.changie.yaml", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders each listed package's fragments with that package's own changie configuration"),
         ("packages/*/.changes/unreleased/**", f"{at('test', FOLD_CHECK_STEP)}: fold-check renders every fragment a listed package holds"),
-        (".github/actions/pull-test-images/**", at("test", "Pull the NATS test container images")),
-        (f"{DAEMON}/internal/testnats/nats.go", f"{at('test', 'Pull the NATS test container images')} const Image"),
-        (f"{ENVOY}/internal/testnats/nats.go", f"{at('test', 'Pull the NATS test container images')} const HubImage"),
     ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11; "
                          "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch)")
-      + install_jj("test") + install_omp("test") + setup_go("test", f"{DAEMON}/go.mod")
+      + setup_go("test", f"{DAEMON}/go.mod")
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test") + CI_SELF + job_self("test")),
 
     # The test job's guide-layout step, gated on a filter of its own: the test spawns the
-    # checker over five guides, and no other step of the job reads one of them.
-    gate("guide_layout", "test", step=GUIDES_STEP, reads=reads(
-        ("scripts/semantic-line-breaks.guides.test.ts", at("test", GUIDES_STEP)),
-        ("scripts/semantic-line-breaks.ts", "scripts/semantic-line-breaks.guides.test.ts:9,16 spawns it"),
-        ("AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES, read by its second and third tests"),
-        ("scripts/e2e/README.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES"),
-        ("docs/kubernetes.md", "scripts/semantic-line-breaks.guides.test.ts:12 GUIDES"),
-        ("packages/envoy/AGENTS.md", "scripts/semantic-line-breaks.guides.test.ts:26"),
-        ("packages/envoy/cmd/dispatch/README.md", "scripts/semantic-line-breaks.guides.test.ts:27"),
-    ) + CI_SELF + job_self("test")),
+    # checker over five guides, and no other step of the job reads one of them. The job's own
+    # filter names them too (GUIDE_LAYOUT_READS above, in the test gate's reads): a job's `if:`
+    # may test one changes output only, so without them a guide-only change selected no job and
+    # this step - the one check that change is about - ran nowhere.
+    gate("guide_layout", "test", step=GUIDES_STEP, reads=GUIDE_LAYOUT_READS + CI_SELF + job_self("test")),
 
 
     # The job ci.yaml gates is docs, and the steps it runs are docs-site.yaml's (at_docs), under
@@ -1604,7 +1786,7 @@ GATES = [
         (".github/scripts/ci_images.py", "both scripts read a row's upstream with it"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
     ) + CI_SELF + job_self("ci-images")),
-]
+] + SCRIPT_TEST_GATES
 
 # One entry per step of ci.yaml that runs a package under a build tag and passes -run: the job
 # whose untagged run of that package the -run leans on, which check-ci-filters.sh holds to running

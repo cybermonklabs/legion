@@ -1,0 +1,226 @@
+name: CI job daemon-go
+
+# The steps of ci.yaml's `daemon-go` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# What runs here is the Go daemon's own tests — the plain step over every package of
+# packages/daemon but the three concurrent ones and the text checks, the race step over those
+# three, and the Stage 1 live proof, which builds ./cmd/legion and boots it against this job's
+# Postgres. They left ci.yaml's `test` job, which runs thirty-two shell-script harnesses and a
+# handful of Bun suites behind one filter: that filter had to cover everything the daemon's Go
+# closure reads, so a change to a shell script or to packages/claude-envoy ran
+# 1,083 s (median) of Go tests that could not see it, and 28 of the 66 commits that touched
+# .github/scripts since 2026-10-01 changed no Go file at all (dispatch://INFRA-1413). With the
+# two suites in jobs of their own each runs on its own inputs: this job's filter is the daemon's
+# Go closure (`daemon_go_tests`, which already stood for exactly this set and gated nothing),
+# and the `test` job's is what its remaining steps read.
+#
+# Everything here is what those three steps need and nothing else:
+#   * the Postgres service and LEGION_TEST_PG_DSN, BROKER_TEST_DATABASE_URL and
+#     LEGION_E2E_PG_DSN — the daemon's unit tests' store, the broker rig its agentsecrets
+#     contract tests drive, and Stage 1's;
+#   * TESTCONTAINERS_RYUK_DISABLED, LEGION_RUN_FUZZ_ITERS and LEGION_KEPT_PROPERTY_RUNS, read by
+#     the testcontainers-backed NATS tests, classify's fuzz tests and the daemon's
+#     keptPropertyEnv;
+#   * tmux, jj, Oh My Pi and uv, each refused-without by a test of this module (the comment on
+#     each step says which), and the NATS images those tests start;
+#   * the user-namespace sysctl internal/launcher's role-namespace tests need, which the race
+#     step runs;
+#   * setup-go and the go-daemon cache restore, this module's build cache. The `test` job keeps a
+#     setup-go of its own — its held-port, CI-filter and build-tag-lister steps still run go —
+#     but no restore: the entry holds what compiling packages/daemon leaves behind, and those
+#     steps compile a scratch module and the envoy listener instead.
+#   * Bun and a frozen install: internal/daemon's promptreferences_omp_test.go:228 and
+#     agentmodels_omp_test.go:175 run `bun pm pack` of packages/pi-envoy and packages/pi-legion,
+#     whose prepack builds each bundle from the installed workspace and t.Fatal without it.
+# Nothing else of the `test` job came: no Bun suite, no Biome and no changie, since no step here
+# runs one.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  daemon-go:
+    runs-on: ubuntu-24.04
+    # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
+    # prints the goroutine dump that names it. A step's worst case is therefore its largest
+    # measured green duration plus its own -timeout: the setup before the plain step is now this
+    # job's alone (no Bun install, no changie, no Bun suite), then that step's 839 s and its 15
+    # minutes, then the race step's 694 s and its 30, then Stage 1 and the report. That is under
+    # 4,000 s; 70 minutes leaves the same headroom the `test` job's 80 left when it carried these
+    # steps (dispatch://INFRA-1052 measured them over the 30 newest counted test jobs of main
+    # push runs).
+    timeout-minutes: 70
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
+      # agentsecrets contract tests drive (brokertest.NewRig skips without
+      # BROKER_TEST_DATABASE_URL), and the Stage 1 script's. Setting LEGION_E2E_PG_DSN is what tells
+      # the script not to start a container of its own — that path is the devbox's.
+      LEGION_TEST_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      BROKER_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      LEGION_E2E_PG_DSN: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+      # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
+      # clean up, and its image (testcontainers/ryuk, on Docker Hub) would be one more registry
+      # pull a test could fail on.
+      TESTCONTAINERS_RYUK_DISABLED: "true"
+      # The fuzz and property counts follow the lane. A pull-request run takes the reduced counts
+      # below; every other lane — a merge group, a dispatched run — takes the empty string, which
+      # every reader treats as unset (classify's run_fuzz_test.go and sender_fuzz_test.go, the
+      # daemon's keptPropertyEnv), so the full counts live in the Go source alone and the queue
+      # still runs them. sender_fuzz_test.go's own count is 2,000 histories of each order already,
+      # so the pull-request value leaves it as it is. The number of seeds falls rather than each
+      # seed's depth: a seed that stops early stops reaching the states the property is about.
+      LEGION_RUN_FUZZ_ITERS: ${{ github.event_name == 'pull_request' && '2000' || '' }}
+      LEGION_KEPT_PROPERTY_RUNS: ${{ github.event_name == 'pull_request' && '8' || '' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # internal/daemon's promptreferences_omp_test.go:228 and agentmodels_omp_test.go:175 pack
+      # packages/pi-envoy and packages/pi-legion with `bun pm pack`, whose prepack builds each
+      # bundle from the installed workspace; both t.Fatal rather than skip when the pack fails.
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/daemon/go.mod
+          cache: false
+
+      # go-daemon, shared with typecheck and pi-legion.
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-daemon-{0}-', runner.os) }}
+
+      # The tmux runtime's tests drive a real tmux server and skip without one, and the daemon
+      # supervises under tmux and refuses to start without it, which is also what the Stage 1
+      # proof's boot needs (scripts/e2e/stage1-skeleton.sh:133-134).
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends tmux
+
+      # The workspace and boundary tests drive a real jj, the one the worker image ships (its
+      # working-copy filters are among what they plant), and the daemon resolves jj at boot and
+      # refuses to start without it.
+      - uses: ./.github/actions/install-jj
+
+      # internal/podsafety's baseline test and the pod agent's argv test run the Oh My Pi the worker
+      # image ships, and refuse on GitHub Actions without one. The pin is read from
+      # .omp-pin, the repository's one copy of it, installed through the mise above
+      # (.github/actions/install-omp).
+      - uses: ./.github/actions/install-omp
+
+      # internal/runtime/sandbox's uv link-mode test installs a wheel with the uv the worker image
+      # ships (ARG UV_VERSION, checked against ARG UV_SHA256), and refuses on GitHub Actions
+      # without one (.github/actions/install-uv).
+      - uses: ./.github/actions/install-uv
+
+      # The daemon's NATS tests start testnats.Image and, for its grant test, Envoy's HubImage
+      # (packages/envoy/testnatsimages), pulled first for the reason the action gives.
+      - name: Pull the NATS test container images
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/daemon/internal/testnats/nats.go Image
+            packages/envoy/internal/testnats/nats.go HubImage
+
+      # internal/launcher's role-namespace tests start each role generation in unprivileged user,
+      # mount, PID and IPC namespaces, as an issue pod's launcher does, and t.Fatal rather than
+      # skip under GITHUB_ACTIONS. Ubuntu 24.04 restricts unprivileged user namespaces with an
+      # AppArmor sysctl, so the job turns it off on its throwaway runner (`|| true`: a runner
+      # image without the key restricts nothing), and the unshare after it is the verdict that
+      # the restriction is gone.
+      - name: Allow unprivileged user namespaces (the launcher's role-namespace tests)
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          unshare --user --map-root-user true
+
+      # The step runs every package of the module except the three the race step below tests and
+      # internal/textcheck, whose tests are the text-check job's: so each of the three runs once
+      # per job, under the detector, and the text checks run once per run of the router, in a
+      # job with no database. `set -o pipefail` is what makes a failed go list, or a pattern
+      # that matches every package, fail the step rather than pass it with nothing tested. The
+      # pattern is built in .github/scripts/ci_job_reads.py from the race step's own package
+      # list and that one package name, so the two steps cannot name different sets.
+      - name: Test the Go daemon
+        run: |
+          set -o pipefail
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m
+        working-directory: packages/daemon
+
+      # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
+      # that share state with the intake's commit hooks and the API, so the packages the lanes
+      # live in run under the race detector once per job, the plain step above leaving them out;
+      # so do the session proxy and the launcher that wires it, whose accept loop, copy pairs,
+      # pair tracking and bounded drain share state across goroutines. internal/record is not
+      # here: the lanes' store is the package's subject, but its product code starts no goroutine
+      # and uses no sync, so the detector had only the package's own test goroutines to watch,
+      # and that cover is what leaving it out gives up. It runs in the plain step instead. The
+      # detector needs cgo, which the runners have gcc for. The lane tests hold a fake clock, so
+      # they are deterministic under it.
+      #
+      # The step carries a package deadline of its own, as the envoy race lanes do: under go
+      # test's ten-minute default, internal/daemon, by far the slowest of the three packages, took
+      # up to 570 s on the green runs of 2026-11-02 and 2026-11-03 and ran the ten minutes out on
+      # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
+      # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
+      # slowest run.
+      - name: Test the concurrent packages under the race detector
+        run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        working-directory: packages/daemon
+
+      # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it
+      # belongs with the Go steps rather than with the script harnesses: it is the daemon's own
+      # code under test, and leaving it behind would keep the service and the Go build in the job
+      # this split exists to shrink.
+      - name: Stage 1 live proof
+        run: bash scripts/e2e/stage1-skeleton.sh
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: daemon-go
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
