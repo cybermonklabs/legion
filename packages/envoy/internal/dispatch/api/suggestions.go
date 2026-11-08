@@ -71,20 +71,21 @@ var (
 	// lexemes' weights (relatedCoordinationRank).
 	relatedKeywordLegs = searchKeywordLegs(relatedCoordinationRank)
 	// relatedKeywordQuery is the check's stage 1: search's keyword query (searchQueryBody) over the
-	// chosen lexemes, with relatedKeywordLegs. Parameters: searchQueryBody's $1-$8, then $9 the
-	// lexemes and $10 their idf.
-	relatedKeywordQuery = relatedQOpener + relatedTermWeights(9) + searchQueryBody(relatedKeywordLegs, "")
+	// chosen lexemes, with relatedKeywordLegs and relatedFusedSQL. Parameters: searchQueryBody's
+	// $1-$8, then $9 the lexemes and $10 their idf.
+	relatedKeywordQuery = relatedQOpener + relatedTermWeights(9) + searchQueryBody(relatedKeywordLegs, relatedFusedSQL, "")
 	// relatedKeywordExcludingQuery is relatedKeywordQuery with the exclusion filter over one more
 	// parameter, $11 the owners the check leaves out (relatedExcludedOwners).
 	relatedKeywordExcludingQuery = relatedQOpener + relatedTermWeights(9) +
-		searchQueryBody(relatedKeywordLegs, relatedExcludedOwners(11))
+		searchQueryBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(11))
 	// relatedMeaningQuery is the check's stage 2: search's meaning query, which fuses the same
 	// keyword legs with the meaning arms, over the same lexemes and the text's embedding.
 	// Parameters: searchQueryMeaningBody's $1-$11, then $12 the lexemes and $13 their idf.
-	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(relatedKeywordLegs, "")
+	relatedMeaningQuery = relatedQOpener + relatedTermWeights(12) +
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, "")
 	// relatedMeaningExcludingQuery is relatedMeaningQuery with the same filter, here over $14.
 	relatedMeaningExcludingQuery = relatedQOpener + relatedTermWeights(12) +
-		searchQueryMeaningBody(relatedKeywordLegs, relatedExcludedOwners(14))
+		searchQueryMeaningBody(relatedKeywordLegs, relatedFusedSQL, relatedExcludedOwners(14))
 	// relatedKeywordStatement and relatedMeaningStatement are what relatedSearch runs.
 	relatedKeywordStatement = relatedStatement{plain: relatedKeywordQuery, excluding: relatedKeywordExcludingQuery}
 	relatedMeaningStatement = relatedStatement{plain: relatedMeaningQuery, excluding: relatedMeaningExcludingQuery}
@@ -121,6 +122,41 @@ func relatedTermWeights(lexemes int) string {
 ),
 `, lexemes, lexemes+1)
 }
+
+// relatedFusedSQL is the "fused" CTE the check's four statements pass the two shared bodies
+// (searchQueryBody, searchQueryMeaningBody) in place of search's own searchFusedSQL: reciprocal
+// rank fusion over pos, the position ranked already numbered each leg's rows by, so a row is
+// worth 1 / (searchFusionK + pos) on the leg that found it and a row both legs found is worth
+// the sum of its two places.
+//
+// The check cannot use search's weighted sum, because under this check the two legs' r are not
+// on one scale. The keyword leg here is ranked by relatedCoordinationRank, a sum of the chosen
+// lexemes' BM25 idf - about 2.3 for one matched lexeme of a small project and higher for more -
+// while a meaning leg's r is a cosine similarity, at most 1 and so at most searchMeaningWeight
+// (0.4) once weighted. searchMeaningWeight was fitted against search's own keyword rank,
+// ts_rank_cd with the length normalisation that maps it onto [0, 1) (searchKeywordLegsSQL),
+// never against a sum of idf. Summed that way, every keyword match outscores every meaning-only
+// match by a factor of five or more, and the check's page is only suggestionSearchDepth rows
+// deep: ten items each holding one chosen word fill it, and an item that means the same but
+// shares no word reaches neither the related suggestions nor the related_checks outcome. Ranks
+// have no such scales - a leg's first row is its first row whatever its r is worth - so the
+// meaning leg's best row is fused level with the keyword leg's best row.
+//
+// Grouping by (kind, id) is right for the keyword-only body too, which has one list and so one
+// row per item in legs: each group is that single row, and the group's score is that row's own
+// 1 / (searchFusionK + pos), which is strictly decreasing in pos and so orders the page exactly
+// as pos does.
+//
+// own_lead is carried although it is always false here: relatedQOpener binds own_keys as the
+// empty array, since no issue key is the whole of a check's text, so no arm's own column is ever
+// true. The page orders by it (searchPageAndTailSQL reads f.own_lead), and the bodies are shared
+// with search, which does set it, so the column has to be here for those statements to run at
+// all.
+const relatedFusedSQL = `fused as (
+  select kind, id, bool_or(own) as own_lead, sum(1.0 / ($8 + pos)) as score
+    from legs group by kind, id
+),
+`
 
 // The check's outcomes and search modes, as Suggestions and related_checks hold them.
 const (

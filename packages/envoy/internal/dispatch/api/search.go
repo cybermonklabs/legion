@@ -278,12 +278,13 @@ var searchKeywordLegsSQL = searchKeywordLegs(func(searchColumn string) string {
 // keyword one above and meaning_ask_candidates - select it.
 const askBlockNodeSQL = `case when exists (select 1 from document_blocks d where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id) then k.block_id end`
 
-// searchFusedSQL is the one score every match is ranked by, shared verbatim by searchQueryBody's
-// and searchQueryMeaningBody's "fused" CTE: one scored list across every kind, rather than five
-// lists of their own merged by the position a row holds in its kind. Each leg contributes its own
-// score - the keyword leg's length-normalised ts_rank_cd (searchKeywordLegsSQL), the meaning
-// leg's cosine similarity - weighted onto the one scale the two can be added on
-// (searchKeywordWeight, searchMeaningWeight), the sum divided by searchFusionK + 1. Grouping by
+// searchFusedSQL is the one score every match of GET /api/v1/search is ranked by, which
+// searchQuery and searchQueryMeaning each pass their body as its "fused" CTE: one scored list
+// across every kind, rather than five lists of their own merged by the position a row holds in
+// its kind. Each leg contributes its own score - the keyword leg's length-normalised ts_rank_cd
+// (searchKeywordLegsSQL), the meaning leg's cosine similarity - weighted onto the one scale the
+// two can be added on (searchKeywordWeight, searchMeaningWeight), the sum divided by
+// searchFusionK + 1. Grouping by
 // (kind, id) is what makes a row both legs found one row scoring the sum of both, which is
 // strictly above what either leg alone gives it, since every leg's own term is positive (a
 // matched tsquery ranks above zero, and a meaning row below searchMeaningFloor never reaches
@@ -295,8 +296,12 @@ const askBlockNodeSQL = `case when exists (select 1 from document_blocks d where
 // order such issues among themselves by their key, which for one number is their project's order
 // (searchPageAndTailSQL).
 //
-// The keyword-only body has one list, so its 'meaning' arm never fires there; the text is shared
-// whole rather than kept as two near-identical copies, as the keyword legs themselves are.
+// The keyword-only body has one list, so its 'meaning' arm never fires there; the one text is
+// passed to both bodies rather than kept as two near-identical copies, as the keyword legs
+// themselves are. The related-item check passes a fused CTE of its own (relatedFusedSQL): its
+// keyword leg is ranked by a sum of idf, not by the normalised ts_rank_cd the weights below were
+// fitted against, so this weighted sum would bury every meaning-only row the check exists to
+// find.
 var searchFusedSQL = fmt.Sprintf(`fused as (
   select kind, id, bool_or(own) as own_lead,
          sum(case list when 'keyword' then %[1]g * r else %[2]g * r end) / ($8 + 1)
@@ -432,7 +437,7 @@ select t.total, t.reachable, r.kind, case when r.owner_artifact_id is null then 
 // searchQOpener's own six from $9: $9 the fallback's rarest words, $10 the words it excludes,
 // $11 the issues the query names by key, $12 status, $13 author, $14 updated_since
 // (searchQueryArguments).
-var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, "")
+var searchQuery = searchQOpener(9) + searchQueryBody(searchKeywordLegsSQL, searchFusedSQL, "")
 
 // searchQOpener opens searchQuery and searchQueryMeaning: their q, the query text read as
 // websearch_to_tsquery, its first term ($4) for the snippet window, the issues the query names by
@@ -487,9 +492,10 @@ func searchKindsCTE(arms, exclude string) string {
 `
 }
 
-// searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs) and without
-// or with an exclusion (searchKindsCTE): every CTE it reads q from and the page.
-func searchQueryBody(keywordLegs, exclude string) string {
+// searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs), fused (the
+// "fused" CTE scoring what the legs matched, searchFusedSQL or relatedFusedSQL) and without or
+// with an exclusion (searchKindsCTE): every CTE it reads q from and the page.
+func searchQueryBody(keywordLegs, fused, exclude string) string {
 	return searchKindsCTE(keywordLegs, exclude) + `ranked as (
   select *, row_number() over (partition by kind order by own desc, r desc, updated_at desc, id) as pos,
          count(*) over (partition by kind) as matches
@@ -498,7 +504,7 @@ func searchQueryBody(keywordLegs, exclude string) string {
 legs as (
   select * from ranked where pos <= $7
 ),
-` + searchFusedSQL + `totals as (
+` + fused + `totals as (
   select (select coalesce(sum(matches), 0) from (select max(matches) as matches from legs group by kind) each_kind) as total,
          (select count(*) from fused) as reachable
 ),
@@ -604,11 +610,12 @@ func (s *server) beginMeaningScan(ctx context.Context) (pgx.Tx, error) {
 // $10 searchMeaningFloor, $11 the query embedder's identity, then searchQOpener's own six from
 // $12: $12 the fallback's rarest words, $13 the words it excludes, $14 the issues the query names
 // by key, $15 status, $16 author, $17 updated_since (searchMeaningQueryArguments).
-var searchQueryMeaning = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, "")
+var searchQueryMeaning = searchQOpener(12) + searchQueryMeaningBody(searchKeywordLegsSQL, searchFusedSQL, "")
 
-// searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs)
-// and without or with an exclusion (searchKindsCTE).
-func searchQueryMeaningBody(keywordLegs, exclude string) string {
+// searchQueryMeaningBody is searchQueryMeaning after its q, over keywordLegs (searchKeywordLegs),
+// fused (searchFusedSQL or relatedFusedSQL, as searchQueryBody takes it) and without or with an
+// exclusion (searchKindsCTE).
+func searchQueryMeaningBody(keywordLegs, fused, exclude string) string {
 	return `meaning_issue_candidates as (
   select i.key as issue_key, i.key as id, i.title as issue_title, i.status as issue_status, i.updated_at,
          1 - (e.embedding <=> $9::vector) as r
@@ -725,7 +732,7 @@ meaning_message as (
 legs as (
   select * from ranked where pos <= $7
 ),
-` + searchFusedSQL + `legs_unique as (
+` + fused + `legs_unique as (
   select distinct on (kind, id) kind, issue_key, owner_artifact_id, artifact_id, id, block_id, covers,
          issue_title, issue_status, owner_project, owner_slug, owner_name, updated_at
     from legs

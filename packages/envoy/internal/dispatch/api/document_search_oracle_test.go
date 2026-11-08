@@ -15,7 +15,8 @@ import "fmt"
 // statement under test changes with it, and the comparison then holds nothing. The cost is that
 // an edit to a part of these statements this change leaves alone has to be copied here too,
 // which is what the equality tests report when it is not - INFRA-1042's one scored list across
-// the kinds (searchFusedSQL, ts_rank_cd's normalisation flag, a page that names no kind) is
+// the kinds (mainFusedSQL for search and mainRelatedFusedSQL for the related-item check,
+// ts_rank_cd's normalisation flag, a page that names no kind) is
 // copied below for exactly that reason, so the only thing these statements still answer
 // differently by is their document arm.
 //
@@ -173,8 +174,31 @@ const mainSearchQOpener = `
 with q as (select websearch_to_tsquery('english', $1) as tsq, $4::text as term, array[upper(btrim($1))]::text[] as own_keys),
 `
 
-// mainSearchQueryBody is main's searchQueryBody.
-func mainSearchQueryBody(keywordLegs string) string {
+// mainFusedSQL is main's fused CTE for search's own statement: the weighted sum of the legs'
+// scores, searchFusedSQL's numbers written out.
+const mainFusedSQL = `fused as (
+  select kind, id,
+         sum(case list when 'keyword' then 1 * r else 0.4 * r end) / ($8 + 1)
+           + case when bool_or(own) then 1 else 0 end as score
+    from legs group by kind, id
+),
+`
+
+// mainRelatedFusedSQL is main's fused CTE for the related-item check's two statements:
+// relatedFusedSQL's reciprocal rank fusion written out. The check's keyword leg is ranked by a
+// sum of idf, which the weighted sum above cannot weigh against a cosine, so copying that sum
+// here instead would hold the check's statement against an oracle scoring its rows by something
+// the check does not run.
+const mainRelatedFusedSQL = `fused as (
+  select kind, id, bool_or(own) as own_lead, sum(1.0 / ($8 + pos)) as score
+    from legs group by kind, id
+),
+`
+
+// mainSearchQueryBody is main's searchQueryBody, over the fused CTE its caller scores with
+// (mainFusedSQL for search's own statement, mainRelatedFusedSQL for the related-item check's),
+// as the package's own searchQueryBody takes one.
+func mainSearchQueryBody(keywordLegs, fused string) string {
 	return `kinds as (` + keywordLegs + `
 ),
 ranked as (
@@ -185,13 +209,7 @@ ranked as (
 legs as (
   select * from ranked where pos <= $7
 ),
-fused as (
-  select kind, id,
-         sum(case list when 'keyword' then 1 * r else 0.4 * r end) / ($8 + 1)
-           + case when bool_or(own) then 1 else 0 end as score
-    from legs group by kind, id
-),
-totals as (
+` + fused + `totals as (
   select (select coalesce(sum(matches), 0) from (select max(matches) as matches from legs group by kind) each_kind) as total,
          (select count(*) from fused) as reachable
 ),
@@ -360,13 +378,13 @@ func mainRelatedCoordinationRank(searchColumn string) string {
 // meaning oracles below them are this release's meaning body over main's keyword legs, for the
 // reason given at the top of this file.
 var (
-	mainSearchQuery        = mainSearchQOpener + mainSearchQueryBody(mainSearchKeywordLegsSQL)
+	mainSearchQuery        = mainSearchQOpener + mainSearchQueryBody(mainSearchKeywordLegsSQL, mainFusedSQL)
 	mainSearchQueryMeaning = mainSearchQOpener + mainSearchQueryMeaningBody(mainSearchKeywordLegsSQL)
 	mainRelatedKeywordLegs = mainSearchKeywordLegs(mainRelatedCoordinationRank)
 	// mainRelatedDocumentKeywordLeg is the document arm of those legs alone, the before side the
 	// measurement holds relatedDocumentKeywordLeg against.
 	mainRelatedDocumentKeywordLeg = mainDocumentKeywordLeg(mainRelatedCoordinationRank)
-	mainRelatedKeywordQuery       = mainRelatedQOpener + mainRelatedTermWeights(9) + mainSearchQueryBody(mainRelatedKeywordLegs)
+	mainRelatedKeywordQuery       = mainRelatedQOpener + mainRelatedTermWeights(9) + mainSearchQueryBody(mainRelatedKeywordLegs, mainRelatedFusedSQL)
 	mainRelatedMeaningQuery       = mainRelatedQOpener + mainRelatedTermWeights(12) + mainSearchQueryMeaningBody(mainRelatedKeywordLegs)
 
 	// searchQueryMeaningOverMainsDocumentArm and relatedMeaningQueryOverMainsDocumentArm are the
@@ -378,8 +396,8 @@ var (
 	// oracle is for; a change to the rest moves both, which main's frozen meaning copy would have
 	// caught and this does not. That is the price of a meaning body whose rows main's own text
 	// cannot see.
-	searchQueryMeaningOverMainsDocumentArm  = searchQOpener(12) + searchQueryMeaningBody(mainSearchKeywordLegsSQL, "")
-	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(mainRelatedKeywordLegs, "")
+	searchQueryMeaningOverMainsDocumentArm  = searchQOpener(12) + searchQueryMeaningBody(mainSearchKeywordLegsSQL, searchFusedSQL, "")
+	relatedMeaningQueryOverMainsDocumentArm = relatedQOpener + relatedTermWeights(12) + searchQueryMeaningBody(mainRelatedKeywordLegs, relatedFusedSQL, "")
 )
 
 // mainRelatedProbeSQL is main's relatedProbeSQL, the fifth statement of R1.

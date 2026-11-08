@@ -186,6 +186,66 @@ func TestRelatedCheckMeaningListsASameMeaningItemWithNoSharedWord(t *testing.T) 
 	}
 }
 
+// The same item behind a full page of keyword matches. The check pages suggestionSearchDepth
+// rows, and ten items each holding one chosen word of the text fill it; the eleventh item holds
+// no word of the text at all and only means the same. It is listed because the check scores its
+// two legs by the rank each gave a row (relatedFusedSQL), under which the meaning leg's first
+// row stands level with the keyword leg's first row. Scored by search's weighted sum
+// (searchFusedSQL) the check cannot list it: that sum weighs the keyword leg's
+// relatedCoordinationRank, a sum of BM25 idf worth about two for one matched lexeme, against a
+// cosine worth at most searchMeaningWeight, so each of the ten outscores the meaning-only item
+// several times over and takes a place in the page ahead of it.
+//
+// The keyword-only run first is what says the page really is crowded: every item it lists is one
+// of the ten, so the meaning-only item is reached by the meaning leg and by nothing else.
+func TestRelatedCheckMeaningListsASameMeaningItemBehindAFullKeywordPage(t *testing.T) {
+	const title, spec = "Nightly backups overrun their window", "The backup job runs past six in the morning."
+	// One word per crowding item, each held by that item alone, so the picker chooses all ten: it
+	// drops a word no item of the project holds and a word more than a tenth of the project holds
+	// (pickRelatedTerms), and these are neither. The text's own words share nothing with the
+	// same-meaning issue's title or spec.
+	words := make([]string, suggestionSearchDepth)
+	for index := range words {
+		words[index] = fmt.Sprintf("zymur%cvex", 'a'+index)
+	}
+	text := "Archive snapshots finish late " + strings.Join(words, " ")
+	embedder := &fakeEmbedder{vectors: map[string][]float32{
+		issueEmbeddingText(title, spec): angledVector(0.9, 2),
+		text:                            queryVector(),
+	}}
+	handler, database, srv := meaningServer(t, embedder)
+	createSuggestionProject(t, handler, "CROWD")
+	crowd := make([]string, 0, len(words))
+	for index, word := range words {
+		crowd = append(crowd, createSearchIssue(t, handler, "CROWD", fmt.Sprintf("Filler %d holding %s", index, word), ""))
+	}
+	// Created last, so its vector is the only one the query is near: every other title is
+	// unmapped and embeds to defaultVector, well under searchMeaningFloor.
+	key := createSearchIssue(t, handler, "CROWD", title, spec)
+	refreshTermStats(t, database, "CROWD")
+	processAllPending(t, database, embedder)
+
+	crowded := srv.relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text, keywordsOnly: true})
+	if crowded.Outcome != "found" || crowded.Search != "keywords_only" || len(crowded.Related) != suggestionRelatedCount {
+		t.Fatalf("the keyword-only check = %+v, want %d items found by keywords only", crowded, suggestionRelatedCount)
+	}
+	for _, owner := range relatedOwnerKeys(crowded.Related) {
+		if !slices.Contains(crowd, owner) {
+			t.Fatalf("the keyword-only check listed %s, want only the %d issues each holding a chosen word (%v): "+
+				"its page is not crowded, so the meaning run below would decide nothing", owner, len(crowd), crowd)
+		}
+	}
+
+	suggestions := srv.relatedCheck(context.Background(), relatedInput{project: "CROWD", text: text})
+	if suggestions.Outcome != "found" || suggestions.Search != "meaning_and_keywords" || suggestions.SearchNote != "" {
+		t.Fatalf("suggestions = %+v, want found by meaning and keywords", suggestions)
+	}
+	if !slices.Contains(relatedOwnerKeys(suggestions.Related), key) {
+		t.Fatalf("related = %v, want %s, which means the same and shares no word, among them though %d items each share one",
+			relatedOwnerKeys(suggestions.Related), key, len(crowd))
+	}
+}
+
 // The meaning stage runs the exclusion too, in the statement it reads the index with: ten
 // excluded issues nearer the text than the keeper fill the window the page takes
 // (suggestionSearchDepth rows), and the check still finds the keeper and still says it searched
