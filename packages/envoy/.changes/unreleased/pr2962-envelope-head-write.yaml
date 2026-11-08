@@ -1,0 +1,5 @@
+kind: Fixed
+body: |-
+  A `pull_request` envelope whose pull request's head row could not be stored is handed back to NATS for redelivery rather than acknowledged, so a database that is briefly unreachable no longer loses that pull request's head, and with it every `before_merge` result measured against that head. Nothing else repaired such a row: the reconcile's passes read the rows that exist.
+
+  The head row and the merge's branch answer are written in one transaction, so the two land together or neither does. The hand-back is bounded: an envelope whose write fails the same way every time is acknowledged after thirty deliveries, with an error naming the pull request. A read of GitHub the App refused is not handed back, since the redelivery would spend the same refusal again.

@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -1162,5 +1165,703 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 	row := readHead(t, ctx, pool, gadgetsRepo, 522)
 	if row.HeadSHA != head || row.IssueKey == nil || *row.IssueKey != issue {
 		t.Fatalf("#522 after the refresh = %+v, want %s at %s: the newer event's facts stand", row, issue, head)
+	}
+}
+
+// A commit the App has already answered for goes on answering while the App cannot read the
+// repository. The stored answer is keyed by a branch, so the branch has to be named before
+// branch_commits can be asked at all, and a check measured against the default branch names
+// none: without the last name this process resolved, the first unreadable moment past the
+// Branches cache's five minutes would turn every such result from current to unknown, although
+// the permanent yes is stored. A commit with no stored answer is unknown there, as it must be:
+// nothing can be asked.
+func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	readable := true
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		if r.PathValue("basehead") == "main..."+landedCommit {
+			mustEncode(t, w, map[string]any{"status": "behind"})
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "diverged"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, asked); answer != BranchCarries {
+		t.Fatalf("a commit on the default branch of a readable repository = %v, want %v", answer, BranchCarries)
+	}
+
+	// GitHub stops answering, and the Branches cache of the default branch goes stale, so the
+	// name can no longer be read. The stored yes still answers under the name already resolved.
+	readable = false
+	later := asked.Add(BranchCommitStaleAfter + time.Minute)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, later); answer != BranchCarries {
+		t.Fatalf("a stored yes while the repository is unreadable = %v, want %v", answer, BranchCarries)
+	}
+	if branches.RepositoryReadable(ctx, client, "acme/widgets", later) {
+		t.Fatal("RepositoryReadable while the App cannot read the repository = true, want false")
+	}
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", unaskedCommit, later); answer != BranchUnknown {
+		t.Fatalf("a commit with no stored answer while the repository is unreadable = %v, want %v", answer, BranchUnknown)
+	}
+
+	// A repository this process never resolved a default branch for has no name to ask the
+	// stored answer about, so it is unknown rather than answered from another repository's.
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/hidden", "", landedCommit, later); answer != BranchUnknown {
+		t.Fatalf("a commit of a repository no read ever named a branch for = %v, want %v", answer, BranchUnknown)
+	}
+}
+
+const (
+	// landedCommit is on acme/widgets' default branch; unaskedCommit is on no branch and is
+	// never asked about while the App can read the repository. mergeCommit is the commit
+	// GitHub makes when a pull request merges, which is no pull request's head and the commit
+	// an `after_merge` result of a squash-merged issue is recorded at.
+	landedCommit  = "9999999999999999999999999999999999999999"
+	unaskedCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	mergeCommit   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+)
+
+// branchCommitsOn is how many answers branch_commits holds about one branch of one repository,
+// whatever commit each is about: how a test says that a write recorded nothing.
+func branchCommitsOn(t *testing.T, ctx context.Context, pool *store.Pool, repo, branch string) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(ctx, `
+		select count(*) from branch_commits where repo = $1 and branch = $2
+	`, repo, branch).Scan(&rows); err != nil {
+		t.Fatalf("count the branch answers stored for %s on %s: %v", repo, branch, err)
+	}
+	return rows
+}
+
+// Recording a merge records its merge commit as on its base branch, for good. GitHub
+// completing the merge is the only proof Dispatch will ever have: in a repository that deletes
+// a branch when its pull request merges and merges by squash, by the time an `after_merge`
+// result of an issue that merged into an integration branch is measured — after that branch
+// has itself landed on the default branch and gone — no compare read can show the commit on
+// the base branch and the default branch holds only a squash of it.
+func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const base = "integration/138"
+	merged := PullRequestHead{
+		Repo: "acme/widgets", Number: 91, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
+		URL: "https://github.com/acme/widgets/pull/91", MergeCommitSHA: mergeCommit,
+	}
+	if err := UpsertPullRequestHead(ctx, pool, merged); err != nil {
+		t.Fatalf("store the head of a merged pull request: %v", err)
+	}
+	stored, found, err := readBranchCommit(ctx, pool, merged.Repo, base, mergeCommit)
+	if err != nil {
+		t.Fatalf("read whether the merge commit is on %s: %v", base, err)
+	}
+	if !found || !stored.OnBranch {
+		t.Fatalf("the merge commit on %s = %v, stored %v; want true, true", base, stored.OnBranch, found)
+	}
+
+	// GitHub answers a merge commit for an open pull request too — the test merge it keeps for
+	// the mergeability check, which is on no branch — and a writer that read no merge commit
+	// has nothing to record. Neither leaves a row, so the one row above is still the only one.
+	open := merged
+	open.Number, open.State, open.MergeCommitSHA = 92, "open", unaskedCommit
+	if err := UpsertPullRequestHead(ctx, pool, open); err != nil {
+		t.Fatalf("store the head of an open pull request: %v", err)
+	}
+	unread := merged
+	unread.Number, unread.MergeCommitSHA = 93, ""
+	if err := UpsertPullRequestHead(ctx, pool, unread); err != nil {
+		t.Fatalf("store the head of a merge whose merge commit nobody read: %v", err)
+	}
+	if rows := branchCommitsOn(t, ctx, pool, merged.Repo, base); rows != 1 {
+		t.Fatalf("answers stored about %s = %d, want only the merge's own", base, rows)
+	}
+}
+
+// A merge recorded under GitHub's own spelling of a repository is answered for the lowercased
+// name the results read asks under. GitHub spells an owner and a repository as their owners do
+// (`Acme/Widgets`) and refs.CanonicalRepo hands a caller's own spelling back where no rename is
+// recorded, while the results read asks under the name repo_projects stores (api's
+// canonicalRepo); branch_commits is keyed by one lowercased name so that the two meet
+// (readBranchCommit). Without it, every squash-merged issue of a repository whose owner writes
+// their name with capitals would read `older` for good once its base branch was deleted, which
+// is the case the seed exists for.
+func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const base = "integration/138"
+	merged := PullRequestHead{
+		Repo: "Acme/Widgets", Number: 94, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
+		URL: "https://github.com/Acme/Widgets/pull/94", MergeCommitSHA: mergeCommit,
+	}
+	if err := UpsertPullRequestHead(ctx, pool, merged); err != nil {
+		t.Fatalf("store the head of a merged pull request: %v", err)
+	}
+
+	// The answer is read through the production path, with a compare read that refuses every
+	// question: the base branch of such a merge is deleted, so a read that reaches GitHub at
+	// all is the failure this test is about, whatever GitHub would then say.
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	branches := &Branches{}
+	answer := branches.CommitOnBranch(ctx, pool, fake.newTestClient(), "acme/widgets", base, mergeCommit, time.Now())
+	if answer != BranchCarries {
+		t.Fatalf("the merge commit on %s, asked for under the lowercased name = %v, want %v", base, answer, BranchCarries)
+	}
+	if spent := compares.Load(); spent != 0 {
+		t.Fatalf("compare reads spent on a commit the merge itself answered for = %d, want 0", spent)
+	}
+}
+
+// withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
+// the way a write fails, and puts it back afterwards. It answers that repair, for the row that
+// needs the table back while it still runs; the cleanup makes it for every other row, and the
+// two are one call, so a row that repairs the table itself does not repair it twice.
+//
+// The run ending does not contain the drop. The database DISPATCH_TEST_DATABASE_URL names is
+// the server's own and outlives the run (deliveryTestPool), and a test binary `go test
+// -timeout` kills never reaches this cleanup at all: the table would then stay missing while
+// schema_migrations still recorded the migration that creates it, and every later run of this
+// package would fail at the truncate of it. What contains it is the harness, which makes such
+// a table again before it migrates (repairDroppedTables). This cleanup is the fast path: it
+// puts the table back while the test that dropped it is still running, so the next test in
+// the same binary finds the database as it expects it.
+//
+// It is the harness's own repair that it runs, rather than a second copy of it: the repair
+// forgets the migration's recorded version, and the Migrate here makes the table again from
+// that migration.
+func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) (restore func()) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
+		t.Fatalf("drop branch_commits: %v", err)
+	}
+	restore = sync.OnceFunc(func() {
+		// The test's own context is cancelled before its cleanups run, so the repair takes one
+		// that is not (context.WithoutCancel).
+		repair := context.WithoutCancel(ctx)
+		repairDroppedTables(t, repair, pool)
+		if err := (&store.Store{Pool: pool}).Migrate(repair); err != nil {
+			t.Fatalf("put branch_commits back: %v", err)
+		}
+	})
+	t.Cleanup(restore)
+	return restore
+}
+
+// A merge whose branch seed cannot be written stores no head row and says so. The seed is the
+// one fact nothing can prove later (UpsertPullRequestHead), so a head row stored beside a lost
+// seed would leave every `after_merge` result of that issue reading `older` for good behind a
+// log line nobody reads: the two go in one transaction, and the caller is handed the error to
+// make of what it will.
+func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	withoutBranchCommits(t, ctx, pool)
+	merged := PullRequestHead{
+		Repo: "acme/widgets", Number: 95, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		BaseRef: "integration/138", State: "merged", AttributionSource: "none", Title: "A change",
+		URL: "https://github.com/acme/widgets/pull/95", MergeCommitSHA: mergeCommit,
+	}
+	if err := UpsertPullRequestHead(ctx, pool, merged); err == nil {
+		t.Fatal("storing a merged head whose branch seed could not be written = nil, want that write's error")
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `
+		select count(*) from pull_request_heads where repo = $1 and number = $2
+	`, merged.Repo, merged.Number).Scan(&rows); err != nil {
+		t.Fatalf("count the stored heads of %s#%d: %v", merged.Repo, merged.Number, err)
+	}
+	if rows != 0 {
+		t.Fatalf("stored heads of %s#%d after the failed write = %d, want none: the pair lands together or not at all",
+			merged.Repo, merged.Number, rows)
+	}
+
+	// A write with nothing to pair runs its one statement on the pool and opens no transaction,
+	// so the table being gone costs it nothing at all.
+	open := merged
+	open.Number, open.State, open.MergeCommitSHA = 96, "open", ""
+	if err := UpsertPullRequestHead(ctx, pool, open); err != nil {
+		t.Fatalf("store the head of an open pull request, which seeds no branch answer: %v", err)
+	}
+}
+
+// An envelope whose head row fails the same way at every attempt is acknowledged once it has
+// had every delivery the cap allows, rather than handed back for ever. A hand-back with a
+// delay leaves the message in the consumer's ack-pending set until it is redelivered, so an
+// envelope handed back without end holds one of the four in-flight slots (intakeMaxAckPending)
+// for the life of the process, and four of them stop the intake being given anything at all.
+//
+// Driven as the hand-back's own test drives it: branch_commits is away, so the transaction
+// that writes a merge's head row and its branch seed together rolls back at every delivery and
+// no attempt can ever store the row. The cap is shrunk to two deliveries, since what is
+// measured here is that there is a cap at all and not the number it is shipped at
+// (headWriteMaxDeliveries).
+//
+// The measure is the consumer's delivery count, read twice: once when the cap has been spent,
+// and again after two whole redelivery delays, which is when the third delivery would have
+// arrived had the envelope been handed back again. An acknowledged message is delivered no
+// more, and the count is the one number no other test's leftovers move for this envelope.
+func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	seedDeliveryProject(t, ctx, pool)
+	withoutBranchCommits(t, ctx, pool)
+	capHeadWriteDeliveriesAt(t, 2)
+
+	natsClient := intakeTestClient(t)
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	awaitBoundDurable(t, natsClient)
+	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
+
+	// A merge, so the seed is written beside the head row and the write is the one that fails.
+	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 9102, map[string]string{
+		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
+		"number": "9102", "author": "octocat", "base_ref": "integration/x",
+		"head_sha":         "3333333333333333333333333333333333333333",
+		"merge_commit_sha": "4444444444444444444444444444444444444444",
+	})
+
+	var info *natsgo.ConsumerInfo
+	waitFor(t, 45*time.Second, func() bool {
+		info = deliveryConsumerInfo(t, natsClient)
+		return info.Delivered.Consumer-before >= 2
+	}, func() string {
+		return fmt.Sprintf("the envelope was delivered %d time(s), though a cap of 2 wants both of them: %+v",
+			info.Delivered.Consumer-before, info)
+	})
+
+	time.Sleep(2 * headWriteRedeliverAfter)
+	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
+		t.Fatalf("deliveries of an envelope whose head row never stores, %s after the cap of 2 was spent = %d, want the 2 the cap allows: it is being handed back for ever",
+			2*headWriteRedeliverAfter, delivered)
+	}
+
+	var stored int
+	if err := pool.QueryRow(ctx, "select count(*) from pull_request_heads where number = 9102").Scan(&stored); err != nil {
+		t.Fatalf("read the head rows: %v", err)
+	}
+	if stored != 0 {
+		t.Fatalf("head rows stored while branch_commits is away = %d, want none", stored)
+	}
+}
+
+// A read of Postgres that failed before the head write is handed back exactly as the write
+// itself is. recordPullRequestHead reads twice before it writes — the repository's canonical
+// name and the attribution's candidates — and in a connection-level outage those are the reads
+// that fail first; the head row of a new pull request is lost whichever step lost it, since no
+// reconcile pass offers a row that was never written. So ErrHeadNotStored marks every failure
+// of that path that making the same attempt again may get past (markHeadNotStored).
+//
+// The two failures it leaves unmarked are here too, since what the sentinel is worth is in the
+// line it draws. A repository name that is not `owner/repo` never reaches markHeadNotStored at
+// all: recordPullRequestHead splits the canonical name for itself, before the attribution, and
+// returns that failure bare, which is the line this case covers; every redelivery of the
+// envelope carries the same name. A rate limit is the one refusal of GitHub the attribution
+// answers with an error at all, and handing every rate-limited envelope back would spend the
+// whole limit over again.
+func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliveryProject(t, ctx, pool)
+	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil)
+	payload := map[string]string{
+		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "9103",
+		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "acme/widgets",
+	}
+
+	// A context already ended is Postgres out of reach: pgx answers the first read with it, as
+	// a pool whose every connection is gone answers every read with its own failure.
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := in.recordPullRequestHead(ended, payload, 9103); !errors.Is(err, ErrHeadNotStored) {
+		t.Fatalf("recording a head whose read of the repository's canonical name failed = %v, want it marked %v so the envelope is handed back",
+			err, ErrHeadNotStored)
+	}
+
+	malformed := map[string]string{
+		"kind": "pr", "action": "opened", "repo": "widgets", "number": "9103",
+		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "widgets",
+	}
+	_, err := in.recordPullRequestHead(ctx, malformed, 9103)
+	switch {
+	case err == nil:
+		t.Fatal("recording a head under a repository name that is not owner/repo = nil, want that name's error")
+	case errors.Is(err, ErrHeadNotStored):
+		t.Fatalf("the split recordPullRequestHead makes for itself was marked %v, want it left bare: the next delivery of the envelope carries the same name",
+			ErrHeadNotStored)
+	}
+
+	limited := &githubapp.RateLimitError{Status: http.StatusForbidden, Wait: time.Minute}
+	if marked := markHeadNotStored(fmt.Errorf("attribute the head of acme/widgets#9103: %w", limited)); errors.Is(marked, ErrHeadNotStored) {
+		t.Fatalf("a rate limit was marked %v, want it left bare: handing every rate-limited envelope back spends the whole limit over again",
+			ErrHeadNotStored)
+	}
+}
+
+// A branch GitHub cannot answer a compare read about is not asked about again at once. A base
+// branch deleted when its pull request merged is the ordinary case here, and a compare read
+// against it answers 404; without the hold, every result commit measured against that branch
+// would spend one refused GitHub call on every read of the Verification tab, for as long as
+// the issue exists.
+func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const gone = "integration/138"
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	for _, at := range []time.Time{asked, asked.Add(BranchCommitStaleAfter / 2)} {
+		if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, at); answer != BranchUnseen {
+			t.Fatalf("a commit of a branch GitHub cannot answer for = %v, want %v", answer, BranchUnseen)
+		}
+	}
+	if got := compares.Load(); got != 1 {
+		t.Fatalf("compare reads within BranchCommitStaleAfter = %d, want 1", got)
+	}
+
+	later := asked.Add(BranchCommitStaleAfter + time.Minute)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, later); answer != BranchUnseen {
+		t.Fatalf("a commit of that branch once the hold is stale = %v, want %v", answer, BranchUnseen)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads once the hold is stale = %d, want 2", got)
+	}
+}
+
+// A compare read GitHub failed to answer holds nothing: the next read asks it again. A 5xx, a
+// rate limit and a timeout are all of a minute's standing, where the hold is of five minutes'
+// and is about a branch rather than about one unlucky call; holding one would make every
+// result measured against that branch read unknown for five minutes over one bad second.
+// Nor is the failure an answer about the commit: it is BranchUnknown, which no later "not on
+// it" may turn into `older` (api/results_currency.go, of).
+func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const branch = "integration/138"
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		if compares.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"message":"Server Error"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "diverged"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, asked); answer != BranchUnknown {
+		t.Fatalf("a commit of a branch GitHub answered 500 about = %v, want %v", answer, BranchUnknown)
+	}
+	soon := asked.Add(time.Second)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, soon); answer != BranchDoesNotCarry {
+		t.Fatalf("the same commit a second later, GitHub answering = %v, want %v", answer, BranchDoesNotCarry)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads = %d, want 2: a failure of GitHub's holds the pair for no time at all", got)
+	}
+}
+
+// A compare read whose caller went away holds nothing either. The results route passes the
+// request's own context (api/results.go, listCheckResults), so a client that disconnects or
+// times out cancels every read still in flight; a hold taken from that would let one abandoned
+// tab turn the branch unknown for five minutes for every other reader.
+func TestACancelledCompareReadHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const branch = "integration/138"
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		mustEncode(t, w, map[string]any{"status": "behind"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	// One read of another branch first, so the installation and its token are already minted
+	// and cached: what the cancelled read below then fails at is the compare itself, which is
+	// the read this test is about.
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "main", landedCommit, asked); answer != BranchCarries {
+		t.Fatalf("warming the installation token: a commit the branch carries = %v, want %v", answer, BranchCarries)
+	}
+
+	abandoned, leave := context.WithCancel(ctx)
+	leave()
+	if answer := branches.CommitOnBranch(abandoned, pool, client, "acme/widgets", branch, mergeCommit, asked); answer != BranchUnknown {
+		t.Fatalf("a compare read whose caller went away = %v, want %v", answer, BranchUnknown)
+	}
+	soon := asked.Add(time.Second)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, soon); answer != BranchCarries {
+		t.Fatalf("the same pair for a caller that stayed = %v, want %v", answer, BranchCarries)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads GitHub answered = %d, want 2: the cancelled read never reached it and held nothing", got)
+	}
+}
+
+// A compare read of the repository's own default branch holds nothing, whatever it is refused
+// with. GitHub answers 403 and 404 for a branch it no longer holds, for a repository the
+// installation has lost, and for a commit the repository does not hold — and only the last of
+// the three can be what is happening here, since branchOf read this repository and GitHub
+// named this branch within the same five minutes, and a repository lost since costs compare
+// reads only until that read is made again and answers nothing. One commit nobody pushed must
+// not hold the branch every `default_branch` result of the repository is measured against.
+func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	for _, sha := range []string{mergeCommit, unaskedCommit} {
+		if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", DefaultBranch, sha, asked); answer != BranchUnseen {
+			t.Fatalf("a commit GitHub answers 404 about on the default branch = %v, want %v", answer, BranchUnseen)
+		}
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads of the default branch = %d, want one for each commit: the pair is never held", got)
+	}
+}
+
+// A refusal of the repository's own default branch holds nothing where the caller spelled that
+// branch out either, and not only where it passed DefaultBranch. An `after_merge` walk asks
+// about the branch the issue merged into and then about the default branch
+// (api/results_currency.go, measuredBranches), and for an issue merged the ordinary way those
+// two steps are one branch under two names; a hold taken under the spelled-out name would
+// answer the default-branch step from it without a read, and every `default_branch` result of
+// the repository, and every `after_merge` result of it no stored row answers, would read
+// unknown for five minutes over one commit the repository does not hold.
+//
+// The first ask is also the cold cache this walk starts from: nothing has resolved
+// acme/widgets' default branch when the named refusal is taken, so a hold is written under
+// `main` that only the ask resolving that name can recognise. That ask must spend a compare
+// read of its own, and must leave the entry nothing will ever read again deleted; the third
+// ask, under the name again and with the default branch resolved by now, must take no hold at
+// all.
+func TestARefusalUnderTheDefaultBranchsOwnNameHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "main", mergeCommit, asked); answer != BranchUnseen {
+		t.Fatalf("a commit GitHub answers 404 about, asked for under the default branch's own name = %v, want %v", answer, BranchUnseen)
+	}
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", DefaultBranch, unaskedCommit, asked); answer != BranchUnseen {
+		t.Fatalf("another commit of that branch, asked for as the default branch = %v, want %v", answer, BranchUnseen)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads = %d, want one for each commit: a refusal under the default branch's own name holds nothing", got)
+	}
+	if got := len(branches.compares); got != 0 {
+		t.Fatalf("hold entries once the default branch's name is resolved = %d, want none: the entry the cold cache left is deleted as the name is recognised", got)
+	}
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "main", landedCommit, asked); answer != BranchUnseen {
+		t.Fatalf("a third commit under the name, the default branch resolved by now = %v, want %v", answer, BranchUnseen)
+	}
+	if got := compares.Load(); got != 3 {
+		t.Fatalf("compare reads once the default branch is resolved = %d, want one for each commit: the branch is held under neither of its names", got)
+	}
+}
+
+// The branch spelled out is read for as the branch resolved is. The pair of a repository's own
+// default branch is never held, on purpose (the test above), so a repository the App has lost
+// would otherwise cost one refused compare read per result commit on every read of the
+// Verification tab for as long as it stays lost — the very cost the hold saves for every other
+// branch, and the reason the default branch is gated on the repository read instead.
+//
+// The caller is the `after_merge` walk of an issue merged the ordinary way: its first step
+// names `main`, the trunk this process resolved on an earlier read. Once the App has lost the
+// repository and the read that named the branch is stale, that step goes through branchOf as
+// the walk's second step does, and answers from the stored row while it stands and
+// BranchUnknown otherwise. What the walk spends is one refused read of the repository per
+// BranchCommitStaleAfter, whatever the number of result commits, and no compare read at all.
+func TestTheDefaultBranchSpelledOutIsGatedByTheRepositoryRead(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	readable := true
+	var compares, repoReads atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		repoReads.Add(1)
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "behind"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	// `main` is resolved while the App can still read the repository, as the default-branch
+	// step of any earlier read of the issue's results resolves it.
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", DefaultBranch, landedCommit, asked); answer != BranchCarries {
+		t.Fatalf("a commit on the default branch of a readable repository = %v, want %v", answer, BranchCarries)
+	}
+	spent := compares.Load()
+
+	// The App loses the repository, and the read that named the branch goes stale.
+	readable = false
+	later := asked.Add(BranchCommitStaleAfter + time.Minute)
+	const walked = 10
+	answers := make([]BranchAnswer, 0, walked)
+	for commit := range walked {
+		answers = append(answers, branches.CommitOnBranch(
+			ctx, pool, client, "acme/widgets", "main", fmt.Sprintf("%040x", commit), later))
+	}
+	if got := compares.Load() - spent; got != 0 {
+		t.Fatalf("compare reads of %d commits named against the lost repository's own default branch = %d, want none: the gate answers before any is spent", walked, got)
+	}
+	if got := repoReads.Load(); got != 2 {
+		t.Fatalf("reads of the repository = %d, want one for the name and one for the loss: the gate costs one per %v", got, BranchCommitStaleAfter)
+	}
+	for commit, answer := range answers {
+		if answer != BranchUnknown {
+			t.Fatalf("commit %d of a lost repository, named against its own default branch = %v, want %v", commit, answer, BranchUnknown)
+		}
+	}
+}
+
+// A compare read that is slow to be refused must not hold a pair a quicker read has been
+// answered about meanwhile. The refusal is the older fact however the two returned, and the
+// answer is the newer one: GitHub can see the branch again, and a hold taken after it would
+// turn every result measured against that branch unknown for five minutes although nothing
+// was wrong with it any more.
+func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const branch = "integration/138"
+	var compares atomic.Int64
+	arrived, release := make(chan struct{}), make(chan struct{})
+	fake := newFakeGitHub(t)
+	// The first compare read is the slow refusal and every read after it is answered, which
+	// orders the race without the handler having to read the commit out of the path.
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		if compares.Add(1) == 1 {
+			close(arrived)
+			<-release
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "behind"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	refused := make(chan BranchAnswer, 1)
+	go func() {
+		refused <- branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, unaskedCommit, asked)
+	}()
+	<-arrived
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, landedCommit, asked.Add(time.Second)); answer != BranchCarries {
+		t.Fatalf("a commit the branch carries, read while the refusal is in flight = %v, want %v", answer, BranchCarries)
+	}
+	close(release)
+	if answer := <-refused; answer != BranchUnseen {
+		t.Fatalf("the read GitHub refused = %v, want %v", answer, BranchUnseen)
+	}
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, asked.Add(2*time.Second)); answer != BranchCarries {
+		t.Fatalf("a third commit of a pair GitHub answered = %v, want %v: the late refusal held nothing", answer, BranchCarries)
+	}
+	if got := compares.Load(); got != 3 {
+		t.Fatalf("compare reads = %d, want 3: the pair was asked about again rather than held", got)
+	}
+}
+
+// What the map of compare holds keeps and what it drops. A pair nothing about which still
+// stands — the hold has run out, and the pair was answered longer ago than the same span, so
+// no read still in flight can have begun before that answer — is dropped as it is read, which
+// is what stops a branch deleted once from costing an entry for the life of the process. An
+// answer of a minute ago is kept, since a read in flight may yet have to lose to it
+// (markUnseen), and the entry goes on the first read past its own span.
+func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
+	branches := &Branches{}
+	pair := repoBranch{repo: "acme/widgets", branch: "integration/138"}
+	asked := time.Now()
+
+	branches.markUnseen(pair, asked)
+	if !branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter/2)) {
+		t.Fatal("a pair held half the span ago reads unheld, want held")
+	}
+	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+		t.Fatal("a pair held past the span reads held, want unheld")
+	}
+	if got := len(branches.compares); got != 0 {
+		t.Fatalf("entries after reading a hold nothing stands for = %d, want none", got)
+	}
+
+	branches.markSeen(pair, asked)
+	if branches.unseenHeld(pair, asked.Add(time.Minute)) {
+		t.Fatal("a pair GitHub answered reads held, want unheld")
+	}
+	if got := len(branches.compares); got != 1 {
+		t.Fatalf("entries after reading a pair answered a minute ago = %d, want the answer kept", got)
+	}
+	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+		t.Fatal("a pair answered past the span reads held, want unheld")
+	}
+	if got := len(branches.compares); got != 0 {
+		t.Fatalf("entries after reading a pair whose answer is older than the span = %d, want none", got)
 	}
 }

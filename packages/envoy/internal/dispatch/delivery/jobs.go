@@ -148,7 +148,7 @@ func jobConsumerConfig() natsgo.ConsumerConfig {
 // deliver acks a job message on receipt, then hands its payload to receive. Acking first is safe:
 // the run's end event (Intake) and the reconcile both read every job of a run, so a process that
 // dies with a read pending loses only the early signal, and a message never waits on GitHub.
-func (j *JobIntake) deliver(_ context.Context, message intakeMessage) {
+func (j *JobIntake) deliver(_ *intakeDelivery, message intakeMessage) {
 	msg := message.msg
 	if err := msg.Ack(); err != nil {
 		slog.Error("dispatch delivery: acknowledge job message", "subject", msg.Subject, "error", err)

@@ -197,8 +197,10 @@ type heldDurable struct {
 	// key reads whether this intake wants a message at all and the key whose goroutine handles it
 	// (intakeKey for the delivery intake, jobKey for the job intake).
 	key func(*natsgo.Msg) (string, *contracts.Envelope, bool)
-	// handle handles one message on its key's goroutine and acknowledges it there.
-	handle func(handling context.Context, message intakeMessage)
+	// handle handles one message on its key's goroutine and answers it there, under the delivery
+	// it arrived on: that is what carries the handler's context and what says whether an answer
+	// of the handler's own is still the hold's to make (intakeDelivery.mayAnswer).
+	handle func(delivery *intakeDelivery, message intakeMessage)
 
 	// hold is the durable's hold while this intake holds it.
 	hold *duty.Hold
@@ -221,7 +223,7 @@ type heldDurable struct {
 // newHeldDurable builds the delivery from config's durable on natsClient, taking its hold and
 // consumer lease on leases, routing each message by key and handing it to handle.
 func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() natsgo.ConsumerConfig,
-	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(context.Context, intakeMessage),
+	key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage),
 ) heldDurable {
 	return heldDurable{
 		nats: natsClient, leases: leases, holder: uuid.New(), throttle: &bindThrottle{},

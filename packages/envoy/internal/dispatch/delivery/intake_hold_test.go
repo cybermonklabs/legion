@@ -196,13 +196,17 @@ func (p *intakeProcess) fetches(number int) int {
 }
 
 // keyedRunnerStopped reports whether this process's intake has stopped the keyed runner of the
-// delivery it is subscribed with. That is the point of its stop at which the messages queued
-// behind a handler still running have been handed back and the runner takes no further one: a
-// handler that returns after it starts nothing else.
-func (p *intakeProcess) keyedRunnerStopped() bool {
-	p.intake.mu.Lock()
-	delivering := p.intake.delivering
-	p.intake.mu.Unlock()
+// delivery it is subscribed with.
+func (p *intakeProcess) keyedRunnerStopped() bool { return keyedRunnerStopped(p.intake) }
+
+// keyedRunnerStopped reports whether intake has stopped the keyed runner of the delivery it is
+// subscribed with. That is the point of its stop at which the messages queued behind a handler
+// still running have been handed back and the runner takes no further one: a handler that
+// returns after it starts nothing else.
+func keyedRunnerStopped(intake *Intake) bool {
+	intake.mu.Lock()
+	delivering := intake.delivering
+	intake.mu.Unlock()
 	if delivering == nil {
 		return false
 	}
