@@ -177,19 +177,9 @@ async function fetchUpstream(commit: string, workDir: string): Promise<Upstream>
 
 if (import.meta.main) {
   const [commit, output] = process.argv.slice(2);
-  if (!commit) {
+  if (!commit || !FULL_SHA.test(commit)) {
     console.error("usage: bun scripts/build-upstream-tarball.ts <commit> [output]");
-    console.error(
-      "  <commit> is a full 40-character lowercase hex sha, not a short sha or a branch name"
-    );
-    process.exit(1);
-  }
-  if (!FULL_SHA.test(commit)) {
-    console.error(`"${commit}" is not a full 40-character lowercase hex commit sha.`);
-    console.error(
-      "  A short sha or a branch name names a ref that can move, and this archive is a pin:"
-    );
-    console.error("  pass the 40-character sha the ref points at.");
+    console.error("  <commit> is the full 40-character lowercase hex sha, and nothing else.");
     process.exit(1);
   }
   const outputPath = resolve(output ?? join(import.meta.dir, "..", `proof-sdk-${commit}.tgz`));

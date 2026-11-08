@@ -157,10 +157,6 @@ test("an executable at 0755 and at 0700 write the same bytes, recorded -rwxr-xr-
   chmodSync(script, 0o700);
   packUpstream({ sourceDir: executableDir, mtime: MTIME, outputPath: executableByOwner });
 
-  // One comparison for both facts, because a flag that drops the execute bit drops it from the
-  // bytes as well: `a+r,go-w` records the 0700 copy as -rwxr--r--, so as a different archive.
-  expect([
-    readFileSync(executableByOwner),
-    modeOf(executableByOwner, "package/src/cli.ts"),
-  ]).toEqual([readFileSync(executableByAll), "-rwxr-xr-x"]);
+  expect(readFileSync(executableByOwner)).toEqual(readFileSync(executableByAll));
+  expect(modeOf(executableByOwner, "package/src/cli.ts")).toBe("-rwxr-xr-x");
 });
