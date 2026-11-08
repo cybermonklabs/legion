@@ -39,9 +39,10 @@ describe("exportJjSessionAttribution", () => {
     dirs.push(dir);
     return dir;
   }
+  // The hang guard the `userConfigChain` afterEach below carries, for the reason recorded there.
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
+  }, 60_000);
   const sessionLine = `[templates]\ncommit_trailers = '"Omp-Session: ${ROOT_ID}"'\n`;
   /** A real directory to scope an overlay to, under a scratch directory the afterEach removes. */
   async function workspace(name = "ws"): Promise<string> {
@@ -308,9 +309,10 @@ describe("exportJjSessionAttribution", () => {
 
 describe("resolvedWorkspace", () => {
   const dirs: string[] = [];
+  // The hang guard the `userConfigChain` afterEach below carries, for the reason recorded there.
   afterEach(async () => {
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-  });
+  }, 60_000);
   async function scratch(): Promise<string> {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-resolve-"));
     dirs.push(dir);
@@ -375,24 +377,38 @@ describe("userConfigChain", () => {
   // runner's limit before either helper could report what it saw. The per-test limit on each row
   // below is the single bound, and the fake jj sleeps long past it, so a wait that is never
   // bounded and a kill that misses the child both end the row at that limit.
-  /** The wrapper's child pid, once it has written it. */
+  /** The wrapper's child pid, once it has written it; warns once at 2 s naming the pidfile it is
+   *  waiting for, so a pidfile that is never written says so before the row's limit. */
   async function pidFrom(pidFile: string): Promise<number> {
+    const start = performance.now();
+    let warned = false;
     for (;;) {
       const pid = await readFile(pidFile, "utf8")
         .then((value) => Number(value.trim()))
         .catch(() => 0);
       if (Number.isInteger(pid) && pid > 0) return pid;
+      if (!warned && performance.now() - start > 2_000) {
+        warned = true;
+        console.warn(`still waiting for the jj wrapper to write ${pidFile} after 2 s`);
+      }
       await Bun.sleep(10);
     }
   }
 
-  /** Returns once signal 0 says the kernel has reaped the child. */
+  /** Returns once signal 0 says the kernel has reaped the child; warns once at 2 s naming the
+   *  pid it is waiting for, so a child the kill missed says so before the row's limit. */
   async function reaped(pid: number): Promise<void> {
+    const start = performance.now();
+    let warned = false;
     for (;;) {
       try {
         process.kill(pid, 0);
       } catch {
         return;
+      }
+      if (!warned && performance.now() - start > 2_000) {
+        warned = true;
+        console.warn(`still waiting for the kernel to reap pid ${pid} after 2 s`);
       }
       await Bun.sleep(10);
     }

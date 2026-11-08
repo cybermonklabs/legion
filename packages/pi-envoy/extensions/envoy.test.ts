@@ -133,8 +133,6 @@ const natsState = {
   heldConnect: undefined as Promise<void> | undefined,
   drainHangs: false,
   drainStarted: false,
-  /** Records that the connection's `drain()` returned, which a hanging drain never does. */
-  drainSettled: false,
   /** Each mocked connection's `status()` readers: a push hands every one of them the status, as
    *  nats.js reports a reconnect to every reader of the connection's status iterator. */
   statusReaders: [] as ((status: { readonly type: string; readonly data: unknown }) => void)[],
@@ -204,7 +202,6 @@ mock.module("nats", () => ({
       drain: async () => {
         natsState.drainStarted = true;
         if (natsState.drainHangs) await Promise.withResolvers<never>().promise;
-        natsState.drainSettled = true;
       },
       // An async iterable of the connection's status events, which a test feeds through
       // `pushNatsStatus`; it ends once the connection is closed.
@@ -489,7 +486,6 @@ afterEach(async () => {
   natsState.realConnect = false;
   natsState.drainHangs = false;
   natsState.drainStarted = false;
-  natsState.drainSettled = false;
   natsState.statusReaders.length = 0;
   // As for `heldConnect`: a parked flush left behind would park every later test's subscribe.
   natsState.heldFlush = undefined;
@@ -1333,10 +1329,15 @@ async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone.
 // The deadline is a hang guard rather than a budget: what can hang here is a condition no
 // listener, relay or resubscribe path ever makes true, which would spin this loop forever.
-// 60_000 sits above every per-test limit in this file except the live-stack rows' 120_000, so a
+// 60_000 sits above the per-test limit of every row in this file but the four that carry
+// 120_000 — the two live-stack freeze rows and the two session_shutdown hang guards — so a
 // stuck row reddens at the runner's limit, which names the test, and never here. The warning at
 // 2_000 keeps the diagnosis the old deadline gave — once per call, not once per poll — while the
-// polling goes on.
+// polling goes on, and from then on each poll also yields a real millisecond: `settle()` alone is
+// 25 `setImmediate` round trips and no delay, so a condition that never holds would spin a core
+// for the rest of the guard, beside the rows still running, long after the runner failed this
+// one at its own limit. The pacing starts only once the wait is already pathological, so a
+// healthy wait is untouched.
 async function until(condition: () => boolean, what: string): Promise<void> {
   const start = performance.now();
   let warned = false;
@@ -1347,6 +1348,7 @@ async function until(condition: () => boolean, what: string): Promise<void> {
       warned = true;
       console.warn(`still waiting for ${what} after 2 s`);
     }
+    if (warned) await Bun.sleep(1);
     await settle();
   }
 }
@@ -16468,11 +16470,10 @@ console.log(JSON.stringify(args));
     natsState.drainHangs = true;
     await fixture.handlers.get("session_shutdown")?.({}, sessionContext("ses_shutdown"));
 
-    // The handler deregistered and returned while the drain was still hanging: one that waits the
-    // drain out never reaches any of these.
+    // The handler deregistered and returned while the drain had started and not returned: one
+    // that waits the drain out reaches neither of these, because it hangs to this row's limit.
     expect(requests).toContain("DELETE /v1/sessions/ses_shutdown");
     expect(natsState.drainStarted).toBe(true);
-    expect(natsState.drainSettled).toBe(false);
     // Oh My Pi kills shutdown handlers at 2 s, so the bounded drain has to finish first: the
     // budget itself is what has to stay under that cap. 2_000 is Oh My Pi's own
     // `SESSION_SHUTDOWN_HANDLER_TIMEOUT_MS`, a literal here because Oh My Pi is not a dependency
@@ -19903,7 +19904,8 @@ describe("a body an event carried only in part", () => {
 
   /** Boots a session subscribed to INFRA-370's topic, pushes the comment event - cut, or the
    *  stand-in when `omitted` - and answers the comment read with `read`. Returns the card its
-   *  agent was prompted with. */
+   *  agent was prompted with. The rows that call it carry a 30 s hang guard, because what can
+   *  hang is a card that is never delivered for the pushed comment event. */
   async function cardForCutComment(
     name: string,
     read: (path: string) => Response | undefined,
@@ -19927,9 +19929,7 @@ describe("a body an event carried only in part", () => {
     if (control === undefined) throw new Error("the issue topic was not subscribed");
 
     control.push(cutCommentEnvelope(topic, omitted));
-    while (fixture.deliveries.length === 0) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
+    await until(() => fixture.deliveries.length > 0, "the cut comment's card to be delivered");
     const card = fixture.deliveries[0]?.content;
     if (card === undefined) throw new Error("no card was delivered for the cut comment");
     return card;
@@ -19951,8 +19951,6 @@ describe("a body an event carried only in part", () => {
     // blank lines (one quoted scalar), and no note, because nothing is missing.
     expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
     expect(card).not.toContain("first part only");
-    // A hang guard rather than a budget: what can hang here is a card that is never delivered
-    // for the pushed comment event.
   }, 30_000);
 
   test("keeps the part it carried, and the note, when that read fails", async () => {
@@ -19967,8 +19965,6 @@ describe("a body an event carried only in part", () => {
     expect(card).toContain(
       `the body is its first part only; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
     );
-    // A hang guard rather than a budget: what can hang here is a card that is never delivered
-    // for the pushed comment event.
   }, 30_000);
 
   test("is prompted with that body for a stand-in the bus left with no body at all", async () => {
@@ -19989,8 +19985,6 @@ describe("a body an event carried only in part", () => {
     expect(reads).toEqual([`/api/v1/comments/${CUT_COMMENT}`]);
     expect(card).toContain(`body: ${JSON.stringify(WHOLE)}`);
     expect(card).not.toContain("too large for the bus");
-    // A hang guard rather than a budget: what can hang here is a card that is never delivered
-    // for the pushed comment event.
   }, 30_000);
 
   test("gives the note for a stand-in whose read fails, having no body to keep", async () => {
@@ -20007,7 +20001,5 @@ describe("a body an event carried only in part", () => {
     expect(card).toContain(
       `this event carries no body: it was too large for the bus; read it whole with GET /api/v1/comments/${CUT_COMMENT}`
     );
-    // A hang guard rather than a budget: what can hang here is a card that is never delivered
-    // for the pushed comment event.
   }, 30_000);
 });
