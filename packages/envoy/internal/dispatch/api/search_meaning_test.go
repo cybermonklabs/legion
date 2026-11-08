@@ -17,10 +17,12 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -129,11 +131,16 @@ func processAllPending(t *testing.T, database *store.Store, embedder embed.Embed
 
 // windowTexts is the text each window of the owner whose key is ownerKey holds, of kind kind, by
 // the window's id suffix: the first block it covers, or "<block id>/p<n>" for one piece of a
-// block too long to hold in one window. A test reads what the indexers built
+// block too long to hold in one window. A test reads what the writers of windows built
 // (itemblocks.Windows: the owner's context, then its blocks' text) rather than spelling it out,
 // and maps the text it finds to the vector the fake embedder should answer for it.
+//
+// It windows every item the block-index tick's window arm is owed first (windowOwedItems): a
+// write records an item's blocks and leaves their windows to that tick (INFRA-988), so a test
+// reading an item's windows straight after the write stands where the tick has not yet run.
 func windowTexts(t *testing.T, database *store.Store, kind, ownerKey string) map[string]string {
 	t.Helper()
+	windowOwedItems(t, database)
 	rows, err := database.Pool.Query(context.Background(),
 		`select id, text_snapshot from embeddings where kind = $1 and split_part(id, '#', 1) = $2`, kind, ownerKey)
 	if err != nil {
@@ -155,6 +162,62 @@ func windowTexts(t *testing.T, database *store.Store, kind, ownerKey string) map
 		t.Fatalf("%s %s holds no window; its blocks are not indexed", kind, ownerKey)
 	}
 	return texts
+}
+
+// windowOwedItems writes the windows of every comment, message and ask the block-index tick's
+// window arm is owed, as that arm writes them (docs.windowItem, refs.WriteItemWindows), each
+// in a transaction of its own. A write of an item records its blocks alone and leaves the
+// windows that stand for them to the tick (INFRA-988); a test that reads those windows is
+// standing after a tick, and this is that tick's window arm over the items.
+func windowOwedItems(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	for _, kind := range []refs.ItemKind{refs.ItemComment, refs.ItemMessage, refs.ItemAsk} {
+		owed, err := refs.ItemsOwedWindows(ctx, database.Pool, kind, "", 500)
+		if err != nil {
+			t.Fatalf("list the %ss owed their windows: %v", kind, err)
+		}
+		for _, id := range owed {
+			tx, err := database.Pool.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin the window arm's transaction: %v", err)
+			}
+			written, err := refs.WriteItemWindows(ctx, tx, kind, id)
+			if err != nil {
+				_ = tx.Rollback(ctx)
+				t.Fatalf("window %s %s: %v", kind, id, err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit the window arm's transaction: %v", err)
+			}
+			if !written {
+				t.Fatalf("the window arm wrote no window for %s %s", kind, id)
+			}
+		}
+	}
+}
+
+// windowOwedOwners runs the block-index tick until its window arm is owed nothing, which is
+// what gives every owner the windows no write writes any more (INFRA-988): an item's and a
+// document's alike, the latter needing the document service the arm reads the stored version
+// through (docs.windowDocument). A test whose subject is what meaning search finds after a
+// write stands one tick after that write, and this is the tick.
+func windowOwedOwners(t *testing.T, deps Deps) {
+	t.Helper()
+	service, ok := deps.Docs.(*docs.Service)
+	if !ok {
+		t.Fatal("the test server holds no document service to run the block-index tick with")
+	}
+	for range 10 {
+		tick, err := service.ReconcileBlockIndex(context.Background(), docs.BlockIndexCursors{}, nil)
+		if err != nil {
+			t.Fatalf("one pass of the block-index reconciliation: %v", err)
+		}
+		if tick.Windows == 0 {
+			return
+		}
+	}
+	t.Fatal("ten passes of the block-index reconciliation still had owners to window")
 }
 
 // embedWindowsAs maps every window of owner ownerKey to vector, so the fake embedder answers it
@@ -540,7 +603,7 @@ func maxBlock(word string) string {
 // agree; a block past either bound had no vector for its tail at all, which is what windows fix.
 func TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole(t *testing.T) {
 	embedder := &recordingEmbedder{fakeEmbedder: &fakeEmbedder{}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "LONG", "Longest bodies", "Body text.")
 	commentBody, messageBody := maxBlock("astrolabe"), maxBlock("sextant")
 	comment := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{"body": commentBody}, "alice")
@@ -551,6 +614,9 @@ func TestACommentAndMessageOfOneLongestBlockReachTheEmbedderWhole(t *testing.T) 
 	if message.Code != http.StatusCreated {
 		t.Fatalf("create message: status=%d body=%s", message.Code, message.Body.String())
 	}
+	// The writes record the blocks; the tick's window arm writes the windows the embedder is
+	// given (INFRA-988).
+	windowOwedOwners(t, deps)
 	processAllPending(t, database, embedder)
 
 	embedder.mu.Lock()
@@ -646,7 +712,7 @@ func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build the Azure client: %v", err)
 	}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: client})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: client})
 	issue := createInteractionIssue(t, handler, "AZUR", "Astrolabe calibration guide", "Keyword body text.")
 
 	degraded := searchResponse(t, handler, "q=astrolabe")
@@ -663,6 +729,9 @@ func TestSearchAndWritesRideOutAnAzureOutage(t *testing.T) {
 	commentID := decodeBody[model.Comment](t, comment).ID
 
 	ctx := context.Background()
+	// The comment's windows are the tick's to write, and it writes them while Azure is down:
+	// a window is a row, not a vector (INFRA-988).
+	windowOwedOwners(t, deps)
 	processAllPending(t, database, client)
 	var embeddedDuringOutage, dead bool
 	commentWindow := "select %s from embeddings where kind = 'comment_block' and split_part(id, '#', 1) = 'comment/' || $1"
@@ -763,7 +832,7 @@ func TestMeaningSearchFindsACommentByItsBestBlock(t *testing.T) {
 func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 	const tail = "Vernier scales are read against the limb."
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "TAIL", "Long block", "Body text.")
 	filler := strings.Repeat("Routine survey notes repeated at length. ", 1+(embed.MaxInputRunes+2000)/40)
 	body := filler + tail + "\n"
@@ -778,6 +847,9 @@ func TestALongBlocksTailIsFoundByMeaning(t *testing.T) {
 	if len(body) <= embed.MaxInputRunes {
 		t.Fatalf("the document is %d characters, want more than embed.MaxInputRunes (%d)", len(body), embed.MaxInputRunes)
 	}
+
+	// The upload records the document's blocks and leaves their windows to the tick.
+	windowOwedOwners(t, deps)
 
 	// The piece holding the tail is the only window mapped to a match: it is a later piece of
 	// one block, so the passage it holds is past where a whole-text row ever reached.
@@ -858,7 +930,7 @@ func uploadSearchDocument(t *testing.T, handler http.Handler, issueKey, name, bo
 // lost. A comment, whose arm is its own, stands beside them as the rest of the page.
 func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	embedder := &fakeEmbedder{vectors: map[string][]float32{"wibbleflorp": queryVector()}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "CROWD", "Crowded windows", "Body text.")
 	// One block per window: a block of exactly the most block text a window holds
 	// (embed's windowTextChars) leaves no room for the one after it.
@@ -872,6 +944,8 @@ func TestMeaningSearchFindsOtherItemsPastOneLongDocumentsWindows(t *testing.T) {
 	short := uploadSearchDocument(t, handler, issue.Key, "short.md", "A short note on the same subject.\n")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "One remark on the same subject."}, "alice")
 
+	// The uploads and the comment record their blocks; their windows are the tick's.
+	windowOwedOwners(t, deps)
 	windows := windowTexts(t, database, "document_block", long.ID)
 	if len(windows) <= contracts.SearchKindDepth {
 		t.Fatalf("the long document holds %d windows, want more than the %d items an arm keeps", len(windows), contracts.SearchKindDepth)

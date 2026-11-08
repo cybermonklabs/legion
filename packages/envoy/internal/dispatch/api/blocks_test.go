@@ -61,10 +61,13 @@ func TestArtifactBlocksReferenceCanonicalMarkdownByteRanges(t *testing.T) {
 // until the block-index tick reaches it.
 func TestTheBlocksRoutesSayWhereMeaningSearchStands(t *testing.T) {
 	embedder := &fakeEmbedder{vectors: map[string][]float32{}}
-	handler, database, _ := newTestServer(t, testServerOptions{embedder: embedder})
+	handler, database, deps := newTestServer(t, testServerOptions{embedder: embedder})
 	issue := createInteractionIssue(t, handler, "EMBD", "Block embedding", "# Heading\n\nSecond paragraph\n")
 	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Alpha.\n\nBeta."}, "alice")
 	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": "One.\n\nTwo."}, "alice")
+	// The writes record the blocks and leave their windows to the block-index tick, which is
+	// where every window read below comes from (INFRA-988).
+	windowOwedOwners(t, deps)
 	documentBlocks := func(step string) []model.ArtifactBlock {
 		t.Helper()
 		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice")
@@ -118,6 +121,7 @@ func TestTheBlocksRoutesSayWhereMeaningSearchStands(t *testing.T) {
 	// An edit leaves the comment's own window waiting again, where the message's, untouched,
 	// stays current.
 	requireEdit(t, "reword", editCommentAs(t, handler, comment.ID, "Alpha reworded.\n\nBeta.", nil, nil))
+	windowOwedOwners(t, deps)
 	for index, block := range itemBlocks("after an edit", "/api/v1/comments/"+comment.ID+"/blocks") {
 		if block.Embedding != model.BlockEmbeddingPending {
 			t.Fatalf("after an edit: the comment's block %d reads embedding %q, want %q", index, block.Embedding, model.BlockEmbeddingPending)

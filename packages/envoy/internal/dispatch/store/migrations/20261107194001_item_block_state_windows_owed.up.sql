@@ -17,7 +17,8 @@
 -- below, so the arm reads the owed rows rather than every row of the state table.
 --
 -- owed_at cannot serve. It is the block index's marker: this function sets it on every write of
--- an item's text and the index clears it (refs.indexedItemState). "A block index is owed" and
+-- an item's text and the index clears it (refs.recordItemIndexed), which leaves this column
+-- standing, since that index writes no window of its own. "A block index is owed" and
 -- "the windows do not stand for the blocks the index holds now" are nearly disjoint sets, so an
 -- arm reading owed_at would take the block arm's backlog and leave a genuinely drifted item
 -- unwindowed for ever.

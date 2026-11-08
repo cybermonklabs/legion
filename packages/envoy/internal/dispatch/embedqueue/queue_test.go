@@ -1447,9 +1447,9 @@ func runHub(t *testing.T, hub *pglisten.Hub) {
 	})
 }
 
-// insertCommentWithWindow writes a comment on issueKey and the one window its indexer writes
-// for it in the same transaction (refs.IndexItem), which is what enqueues it now that the
-// comment's own write-time trigger is gone.
+// insertCommentWithWindow writes a comment on issueKey and the one window the block-index
+// tick's window arm writes for it (refs.WriteItemWindows), which is what enqueues it now that
+// the comment's own write-time trigger is gone.
 func insertCommentWithWindow(t *testing.T, q querier, issueKey, body string) {
 	t.Helper()
 	var comment string

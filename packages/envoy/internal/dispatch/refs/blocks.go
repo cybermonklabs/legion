@@ -168,15 +168,32 @@ func IndexBlocks(
 		return nil, fmt.Errorf("record version %d of %s indexed: %w", version, artifactID, err)
 	}
 	// Migration 0122's trigger marked the document owed when this version's row was inserted;
-	// this transaction's own index settles it.
+	// this transaction's own index settles it. The row it writes is also what owes this
+	// document its windows: the windows of these blocks are not written here, and the state
+	// the window arm compares its stamp against is this version (documentBlockState,
+	// DocumentsOwedWindows), so a version write that moves it leaves the document listed for
+	// that arm, in the same transaction as the blocks the windows will cover. A crash after
+	// this statement therefore leaves the document owed its windows rather than silently
+	// windowless, and no marker of its own is needed.
+	//
+	// What a reader meets for it: a document's windows, and so its hits in meaning search,
+	// appear one reconciliation tick after the write rather than within it, as a comment's do
+	// (indexItemBlocks). The write holds the issue row for its own rows alone: this window
+	// write was 9.7% of an hour's database time over 31,241 calls at a 114.3 ms mean on the
+	// load-test deployment, and the writers queued behind it were waiting on that row
+	// (INFRA-988).
+	// windows_owed_at marks the document owed its windows here, in the transaction that wrote
+	// the blocks those windows will cover, as the item path marks its item
+	// (recordItemIndexed): the window arm reads this marker through its partial index
+	// (DocumentsOwedWindows, migration 20261108070000), and only the statement that writes
+	// the windows clears it (WriteDocumentWindows). It keeps the time it already carries, so
+	// a document owed since an earlier write stays owed from then.
 	if _, err := tx.Exec(ctx, `
-		insert into document_block_versions (artifact_id, version) values ($1, $2)
-		on conflict (artifact_id) do update set version = excluded.version
+		insert into document_block_versions (artifact_id, version, windows_owed_at) values ($1, $2, now())
+		on conflict (artifact_id) do update set version = excluded.version,
+			windows_owed_at = coalesce(document_block_versions.windows_owed_at, excluded.windows_owed_at)
 	`, artifactID, version); err != nil {
 		return nil, fmt.Errorf("record the blocks of %s indexed at version %d: %w", artifactID, version, err)
-	}
-	if err := writeDocumentWindows(ctx, tx, artifactID, markdown, nodes); err != nil {
-		return nil, err
 	}
 	return moved, nil
 }
@@ -232,30 +249,28 @@ func BlockEmbeddingStates(ctx context.Context, q Queryer, kind, ownerKey string)
 	return states, nil
 }
 
-// WriteDocumentWindows writes the windows of document artifactID's blocks, as the version write
-// writes them (IndexBlocks), for the block-index tick's window arm: blocks are the document's
-// blocks in document order, each parent before its children, and markdown the text they index
-// into.
+// WriteDocumentWindows writes the windows of document artifactID's blocks in the caller's
+// transaction, which holds the document's owner row, and stamps the state those blocks are in
+// beside them, so the window arm can tell these windows from ones an older build left behind:
+// blocks are the document's blocks in document order, each parent before its children, and
+// markdown the text they index into. The owner key of a document's windows is its artifact id,
+// and the context of each is the document's own title and the heading above the window
+// (itemblocks.DocumentWindows).
+//
+// It is the one writer of a document's windows. A version write records the blocks and leaves
+// the windows that stand for them to the block-index tick's window arm (IndexBlocks,
+// docs.windowDocument), which windows the stored latest version's markdown - the text the
+// version write indexed - a tick behind that write.
 func WriteDocumentWindows(ctx context.Context, tx pgx.Tx, artifactID, markdown string, blocks []model.ArtifactBlock) error {
 	nodes, _, _ := uniqueBlocks(blocks)
-	return writeDocumentWindows(ctx, tx, artifactID, markdown, nodes)
-}
-
-// writeDocumentWindows writes the windows of the document's blocks (nodes, as uniqueBlocks keeps
-// them) in the caller's transaction, which holds the document's owner row, and stamps the state
-// those blocks are in beside them, so the window arm can tell these windows from ones an older
-// build left behind. The owner key of a document's windows is its artifact id, and the context
-// of each is the document's own title and the heading above the window
-// (itemblocks.DocumentWindows).
-func writeDocumentWindows(ctx context.Context, tx pgx.Tx, artifactID, markdown string, nodes []model.ArtifactBlock) error {
 	var title string
 	if err := tx.QueryRow(ctx, `select name from artifacts where id = $1::uuid`, artifactID).Scan(&title); err != nil {
 		return fmt.Errorf("read the title of %s for its windows: %w", artifactID, err)
 	}
 	return writeWindows(ctx, tx, DocumentWindowKind, artifactID,
 		itemblocks.DocumentWindows(title, documentBlockTexts(markdown, nodes)), blockState{
-			query: `select ` + documentBlockState + ` as block_state
-			          from document_block_versions v where v.artifact_id = $5::uuid`,
+			query: `update document_block_versions v set windows_owed_at = null
+			          where v.artifact_id = $5::uuid returning ` + documentBlockState + ` as block_state`,
 			args: []any{artifactID},
 		})
 }
@@ -280,10 +295,10 @@ func documentBlockTexts(markdown string, nodes []model.ArtifactBlock) []itembloc
 
 // blockState is how one write of an owner's windows (writeWindows) tells that write what state
 // the blocks those windows cover are in: one query returning a single block_state column, which
-// the write runs as a common table expression and stamps beside the windows. An index that
-// settles the owner's own state row writes that row here, returning the state it has just
-// written (indexedItemState), so it pays no round trip for the stamp; a write that settles no
-// such row reads the state the row already holds (storedItemState, and the document's own query
+// the write runs as a common table expression and stamps beside the windows. An item's windows
+// are written by the block-index tick's window arm alone, whose query settles the item's state
+// row here - clearing the marker that listed it - and returns the state that row holds
+// (storedItemState); a document's reads the version its blocks are indexed at (the query
 // above). The query numbers its parameters from $5 and passes their values in args, since
 // writeWindows holds $1 to $4.
 type blockState struct {
@@ -298,13 +313,13 @@ type blockState struct {
 // when none of them changed therefore leaves every row's vector, attempts and wait as they
 // stand, and an owner left with no block loses every window it had.
 //
-// The whole write is one statement, so a document of fifty windows costs one round trip and an
-// index whose state query settles its owner's state row (indexedItemState) pays nothing beyond
-// the round trip it was already sending for that. The windows go through jsonb_to_recordset in
-// the top-level select; the state query, the stamp of what it returns and the delete are common
-// table expressions, and Postgres runs a data-modifying one exactly once and to completion
-// whether or not the select reads it. The delete cannot race the enqueue: it names only ids the
-// new set does not hold, and the enqueue writes only ids it does.
+// The whole write is one statement, so a document of fifty windows costs one round trip, and
+// an item's write settles the marker that listed it in that same round trip (storedItemState).
+// The windows go through jsonb_to_recordset in the top-level select; the state query, the
+// stamp of what it returns and the delete are common table expressions, and Postgres runs a
+// data-modifying one exactly once and to completion whether or not the select reads it. The
+// delete cannot race the enqueue: it names only ids the new set does not hold, and the enqueue
+// writes only ids it does.
 //
 // The delete names the kind twice, as the parameter and in the literal list of every window
 // kind, because a generic plan knows nothing of what the parameter holds: the literal list is
@@ -350,7 +365,7 @@ func writeWindows(ctx context.Context, tx pgx.Tx, kind, ownerKey string, windows
 }
 
 // documentBlockState is the state of a document's blocks that its windows are stamped with
-// (writeDocumentWindows) and read back against (DocumentsOwedWindows): the version they are
+// (WriteDocumentWindows) and read back against: the version they are
 // indexed at, over document_block_versions v. A document owed its first block index holds a
 // null version, which stamps and compares as the empty string, so windowing it once settles it
 // until the index that gives it a version writes its windows again. The state is read from
@@ -360,30 +375,29 @@ const documentBlockState = `coalesce(v.version::text, '')`
 
 // DocumentsOwedWindows lists at most limit documents whose blocks the index holds and whose
 // windows do not stand for those blocks, in artifact id order past after (empty: from the
-// start), for the block-index tick's window arm. A document written before meaning search moved
-// to windows has blocks and no window, and one whose version write failed after its blocks were
-// written has the same. One a build without this change re-indexed during the deploy is the
-// harder case: it keeps the windows of its old text, so holding a window says nothing. The read
-// therefore asks both whether the state its windows were written from
-// (embedding_window_states, migration 20261104010400) is the state its blocks are in now, and
-// whether it holds a window at all, so a window row lost by any other route is written again
-// too. The read walks document_block_versions, one row per document, and probes the other
-// three tables through their keys.
+// start), for the block-index tick's window arm. A document written before meaning search
+// moved to windows has blocks and no window; one whose version write failed after its blocks
+// were written has the same; and every document written since this arm last windowed it is
+// one too, because a version write records the blocks and leaves the windows here
+// (IndexBlocks, INFRA-988).
+//
+// The read is of the marker, windows_owed_at (migration 20261108070000), which is the
+// question written down rather than asked of state, as the items' is (ItemsOwedWindows): the
+// version write and 0122's trigger set it, rebuild-refs reaches it through the re-index, and
+// migration 20261108070100 set it once for every document whose windows were already stale
+// when the column arrived. The one statement that writes a document's windows clears it,
+// beside the stamp of the version those windows were written from (WriteDocumentWindows,
+// writeWindows), so the clear and the windows cannot come apart; that statement's own
+// `dropped` is the only delete of a window row in the server, and a route that removes one
+// otherwise marks its owner here, or this read will not see it.
+//
+// The reading this replaced decided owedness from state - whether a stamp stood at the
+// version the blocks are indexed at, and whether a window row existed at all - which is two
+// index probes for every row of document_block_versions: 112-122 ms a pass with 67,496 buffer
+// hits over the load-test deployment's 9,881 documents, for an answer of no rows, and a tick
+// runs it every 2 s while the arm has a full batch (INFRA-988).
 func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit int) ([]string, error) {
-	rows, err := q.Query(ctx, `
-		select v.artifact_id::text from document_block_versions v
-		where v.artifact_id > $1::uuid
-		  and exists (select 1 from document_blocks b where b.artifact_id = v.artifact_id)
-		  and (not exists (
-			select 1 from embedding_window_states w
-			where w.kind = '`+DocumentWindowKind+`' and w.owner_key = v.artifact_id::text
-			  and w.block_state = `+documentBlockState+`
-		  ) or not exists (
-			select 1 from embeddings e
-			where e.kind = '`+DocumentWindowKind+`' and split_part(e.id, '#', 1) = v.artifact_id::text
-		  ))
-		order by v.artifact_id limit $2
-	`, uuidAfter(after), limit)
+	rows, err := q.Query(ctx, documentsOwedWindowsQuery, uuidAfter(after), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list the documents whose windows do not stand for their blocks: %w", err)
 	}
@@ -393,6 +407,27 @@ func DocumentsOwedWindows(ctx context.Context, q Queryer, after string, limit in
 	}
 	return documents, nil
 }
+
+// documentsOwedWindowsQuery is the statement DocumentsOwedWindows sends: $1 is the id its
+// batch starts after and $2 the most ids it answers. The tests read the statement from here
+// rather than from a copy of it (document_windows_owed_test.go).
+//
+// The driving rows are the marked rows of document_block_versions, read through its partial
+// index on windows_owed_at, whose key is the artifact id: the index holds the owed rows
+// alone, in the order the batch pages by, so the keyset cursor and the limit are both the
+// index's own and the read costs what the arm has to do rather than what the deployment has
+// stored.
+//
+// The semi-join on document_blocks stays, as the items' does: a document an older build wrote
+// is marked and holds no block yet, and windows under no block are not this arm's to write -
+// the owed-document arm indexes it, and that index marks it here again. It is one probe per
+// marked row, not one per row of the table.
+const documentsOwedWindowsQuery = `
+	select v.artifact_id::text from document_block_versions v
+	where v.windows_owed_at is not null
+	  and v.artifact_id > $1::uuid
+	  and exists (select 1 from document_blocks b where b.artifact_id = v.artifact_id)
+	order by v.artifact_id limit $2`
 
 // uuidAfter is a keyset cursor over uuids: the id a batch starts after, or the nil uuid, which
 // is below every uuid a row holds, when a batch starts from the beginning.

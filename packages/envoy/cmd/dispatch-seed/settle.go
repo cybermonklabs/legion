@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // settleOwedWork leaves the database in the state a settled system is in: nothing a Dispatch
-// server starts up and drains. The indexers the seed calls settle most of it as they run -
-// refs.IndexBlocks records the document's blocks at its latest version and refs.IndexItem clears
-// each item's owed_at and stores its body_sha256 - and this settles what is left, then proves the
+// server starts up and drains. The writers the seed calls settle most of it as they run -
+// refs.IndexBlocks records the document's blocks at its latest version, refs.IndexItem clears
+// each item's owed_at and stores its body_sha256, and refs.WriteDocumentWindows and
+// refs.WriteItemWindows write the windows those blocks stand in, which no write of this build
+// writes for itself any more (INFRA-988) - and this settles what is left, then proves the
 // invariant rather than trusting it.
 //
 // A server that drained owed work would rewrite the seeded rows: RunBlockIndexReconciliation
@@ -27,18 +31,23 @@ func (r *seedRun) settleOwedWork(ctx context.Context) error {
 	// project starts with no search_term_totals row, so each takes a full build, whose `drained`
 	// CTE deletes the queue rows its snapshot saw. A truncate added here would only duplicate
 	// that drain.
-	return r.checkNoOwedWork(ctx)
+	if err := r.checkNoOwedWork(ctx); err != nil {
+		return err
+	}
+	return r.checkNoOwedWindows(ctx)
 }
 
 // owedWorkCounts is the five counts that must all be zero for the data set to be settled: the
 // documents owed a block index, the bodies owed a grammar pass, the items owed a block index,
-// the mentions owed an excerpt, and the mentions holding an excerpt older than their document's
-// latest version. The third reads the three state tables the block index reconciliation reads
-// (docs/block_index.go), an ask's parts among them, since every ask is written owed its parts
-// and the seed's own index of them is what clears the mark. The fifth is the one a seed has to
-// be told about: a mention whose excerpt_version is below its document's highest version number
-// is one refs.MarkStaleExcerpts re-owes, and the documents with 28 versions make that the common
-// case for a seed that wrote 1.
+// the mentions owed an excerpt, and the mentions holding an excerpt older than their
+// document's latest version. The third reads the three state tables the block index
+// reconciliation reads (docs/block_index.go), an ask's parts among them, since every ask is
+// written owed its parts and the seed's own index of them is what clears the mark. The fifth
+// is the one a seed has to be told about: a mention whose excerpt_version is below its
+// document's highest version number is one refs.MarkStaleExcerpts re-owes, and the documents
+// with 28 versions make that the common case for a seed that wrote 1. What the block index's
+// window arm is owed is checked beside this, with that arm's own reads
+// (checkNoOwedWindows).
 const owedWorkCounts = `
 	select (select count(*) from document_block_versions where version is null),
 	       (select count(*) from block_grammar_owed),
@@ -59,6 +68,33 @@ func (r *seedRun) checkNoOwedWork(ctx context.Context) error {
 	if blocks|grammar|items|excerpts|stale != 0 {
 		return fmt.Errorf("the seed left owed work: %d documents owed a block index, %d bodies owed a grammar pass, %d items owed a block index, %d mentions owed an excerpt and %d mentions holding an excerpt older than their document's latest version",
 			blocks, grammar, items, excerpts, stale)
+	}
+	return nil
+}
+
+// checkNoOwedWindows proves that the block-index tick's window arm has nothing to do, asked
+// with that arm's own reads rather than with a copy of their predicates
+// (docs.Service.windowDrift). No write of this build writes an owner's embedding windows any
+// more - a version write records a document's blocks and an item's write its own, each leaving
+// the windows to that arm (INFRA-988) - so the seed writes them itself
+// (refs.WriteDocumentWindows, refs.WriteItemWindows) and this is what says it wrote every one
+// of them.
+func (r *seedRun) checkNoOwedWindows(ctx context.Context) error {
+	documents, err := refs.DocumentsOwedWindows(ctx, r.database.Pool, "", 1)
+	if err != nil {
+		return fmt.Errorf("list the documents owed their windows: %w", err)
+	}
+	if len(documents) > 0 {
+		return fmt.Errorf("the seed left document %s owed its embedding windows", documents[0])
+	}
+	for _, kind := range []refs.ItemKind{refs.ItemComment, refs.ItemMessage, refs.ItemAsk} {
+		items, err := refs.ItemsOwedWindows(ctx, r.database.Pool, kind, "", 1)
+		if err != nil {
+			return fmt.Errorf("list the %ss owed their windows: %w", kind, err)
+		}
+		if len(items) > 0 {
+			return fmt.Errorf("the seed left %s %s owed its embedding windows", kind, items[0])
+		}
 	}
 	return nil
 }

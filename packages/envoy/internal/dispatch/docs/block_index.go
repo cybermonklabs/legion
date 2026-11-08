@@ -194,8 +194,9 @@ type liveAheadDocuments map[string]owedDocument
 // stand for their blocks (windowDrift) and one slice of the window owners whose whole-text
 // embeddings rows the windows have replaced (retireWholeText). The item blocks run after the
 // block grammar's items, so an item that batch indexed, blocks included, is no longer owed, and
-// before the windows, so an item the grammar batch indexed, windows included, is no longer
-// listed; the whole grammar's sources run after them, so an item it would index the blocks of
+// before the windows, so an item either batch indexed - which leaves its windows to this arm
+// (refs.recordItemIndexed) - is windowed by this tick rather than the next;
+// the whole grammar's sources run after them, so an item it would index the blocks of
 // again is indexed once by each queue that holds it rather than twice by one. A document that
 // batch owes an index is indexed by the documents batch, which owns that index, in this tick
 // when it was already owed and in the next otherwise. The documents are listed by keyset, so a
@@ -385,19 +386,24 @@ func (s *Service) windowOwners() []windowOwner {
 }
 
 // windowDrift gives windows to at most blockIndexWindowBatch owners whose windows do not stand
-// for their blocks: every document, comment, message and ask written before meaning search
-// moved to windows, any whose write wrote its blocks and failed before its windows, and any a
-// build without this change re-indexed while the deploy rolled, which left the windows of its
-// old text behind (refs.DocumentsOwedWindows, refs.ItemsOwedWindows). It counts them in
+// for their blocks. For a comment, a message and an ask that is every one whose text was
+// written since this arm last windowed it: an item's write records its blocks and leaves their
+// windows here (refs.recordItemIndexed, INFRA-988), so this arm writes every window an item
+// holds, a tick behind the write. A document is the same since its version write stopped
+// windowing its own blocks (refs.IndexBlocks): every document whose version write moved its
+// blocks is listed here, beside one written before meaning search moved to windows, one whose
+// write wrote its blocks and failed before its windows, and one a build without this change
+// re-indexed while the deploy rolled, which left the windows of its old text behind
+// (refs.DocumentsOwedWindows, refs.ItemsOwedWindows). It counts them in
 // tick.Windows, leaves each kind's cursor in tick.Cursor.Windows and reports whether a batch
 // was full.
 //
-// Each owner is windowed as its own indexer windows it, and nothing else is written: a document
-// is read as the server serves it and windowed under its owner row (windowDocument), an item is
-// read as the blocks routes read it and windowed under its own row (windowItem). Either way the
-// write stamps the state the owner's blocks are in, and for an item it clears the marker this
-// arm reads (comment_block_state, message_block_state and ask_block_state's windows_owed_at),
-// so an owner this arm has served is no longer listed.
+// Each owner is windowed from the text its blocks were split from, and nothing else is
+// written: a document is read as the server serves it and windowed under its owner row
+// (windowDocument), an item is read as the blocks routes read it and windowed under its own
+// row (windowItem). Either way the write stamps the state the owner's blocks are in, and for
+// an item it clears the marker this arm reads (comment_block_state, message_block_state and
+// ask_block_state's windows_owed_at), so an owner this arm has served is no longer listed.
 func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, tick *BlockIndexTick) (bool, error) {
 	owners := s.windowOwners()
 	next := make(map[string]string, len(owners))
@@ -435,8 +441,9 @@ func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, ti
 }
 
 // windowItem writes the windows of one comment, message or ask whose windows do not stand for
-// its blocks, in a transaction of its own: it takes the item row, reads the text its blocks
-// were split from and writes the windows of those blocks (refs.WriteItemWindows). It writes no
+// its blocks, which is every item written since this arm last windowed it, in a transaction of
+// its own: it takes the item row, reads the text its blocks were split from and writes the
+// windows of those blocks (refs.WriteItemWindows). It writes no
 // block row and no reference: the index of this item's blocks stands, and only its windows are
 // missing. An item whose stored text no longer splits into the blocks the index holds is marked
 // owed a block index instead, which the transaction commits for the owed arm to act on.
@@ -453,26 +460,34 @@ func (s *Service) windowItem(ctx context.Context, kind refs.ItemKind, id string)
 	return windowed, tx.Commit(ctx)
 }
 
-// windowDocument writes the windows of one document whose blocks hold none, in a transaction of
-// its own: it reads the document the server serves (TextWithBlocks) with no transaction held,
-// then, under the document's owner row, which every version write holds first, writes the
-// windows of those blocks (refs.WriteDocumentWindows). It writes no block row and no reference:
-// the index of this document's blocks stands, and only its windows are missing.
+// windowDocument writes the windows of one document whose windows do not stand for its blocks,
+// in a transaction of its own: it reads the document the server serves (TextWithBlocks) with no
+// transaction held, then, under the document's owner row, which every version write holds
+// first, writes the windows of the stored latest version's blocks
+// (refs.WriteDocumentWindows). It writes no block row and no reference: the index of this
+// document's blocks stands, and only its windows are missing. Since a version write records
+// its blocks and leaves their windows here (refs.IndexBlocks, INFRA-988), this is where every
+// window a document holds is written, a tick behind the write.
 //
-// The live text is windowed only where it is the latest version's text - the document owes no
-// settlement, or its live markdown equals that version's stored markdown byte for byte - as
-// indexOwedDocument indexes it only there: a window of a text no version holds would cover
-// blocks the index does not hold. A document whose live text is ahead keeps no window until its
-// settlement writes the next version, which writes them. A document the server cannot read has
-// no block to window; its blocks came from its version's own markdown and the next version write
-// windows them.
+// What is windowed is the text the version write indexed: the stored markdown of the latest
+// version, whatever the document's settlement state. Where the live text is that markdown
+// byte for byte, the live render's blocks are it. Where it is not - an edit landed that no
+// settlement has written a version for - the version's own rendering is read back and its
+// blocks take the ids the index holds for them, pass by pass, as a closed issue's version is
+// indexed (closedVersionBlocks): a window of a text no version holds would cover blocks the
+// index does not hold, and a document under continuous editing would otherwise keep no window
+// at all until its settlement wrote the next version. A version this build cannot read back is
+// windowed as whole text under no block, as indexOwedDocument indexes it, and a document the
+// server cannot read at all is windowed the same way: its blocks came from its version's own
+// markdown, which is what is embedded.
 func (s *Service) windowDocument(ctx context.Context, artifactID string) (bool, error) {
 	markdown, blocks, err := s.TextWithBlocks(ctx, artifactID)
+	unreadable := false
 	switch {
 	case ctx.Err() != nil:
 		return false, ctx.Err()
 	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
-		return false, nil
+		unreadable = true
 	case err != nil:
 		return false, err
 	}
@@ -488,20 +503,32 @@ func (s *Service) windowDocument(ctx context.Context, artifactID string) (bool, 
 		return false, err
 	}
 	var stored string
-	var pending bool
 	err = tx.QueryRow(ctx, `
-		select v.markdown, exists (select 1 from doc_settlements_pending p where p.artifact_id = $1)
-		from artifact_versions v
+		select v.markdown from artifact_versions v
 		where v.artifact_id = $1 and v.markdown is not null
 		order by v.number desc limit 1
-	`, artifactID).Scan(&stored, &pending)
+	`, artifactID).Scan(&stored)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return false, nil
 	case err != nil:
 		return false, fmt.Errorf("re-read the latest version of %s for its windows: %w", artifactID, err)
-	case pending && markdown != stored:
-		return false, nil
+	}
+	switch {
+	case unreadable || markdown == "" && len(blocks) == 0:
+		markdown, blocks = stored, nil
+	case markdown != stored:
+		indexRows, err := indexedBlocks(ctx, tx, artifactID)
+		if err != nil {
+			return false, err
+		}
+		held, heldBlocks, err := closedVersionBlocks(stored, markdown, blocks, indexRows)
+		if err != nil {
+			slog.Warn("dispatch: block index cannot read back a document version; its windows cover no block",
+				"artifact", artifactID, "error", err)
+			held, heldBlocks = stored, nil
+		}
+		markdown, blocks = held, heldBlocks
 	}
 	if err := refs.WriteDocumentWindows(ctx, tx, artifactID, markdown, blocks); err != nil {
 		return false, err

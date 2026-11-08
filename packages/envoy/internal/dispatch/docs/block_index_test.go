@@ -2023,6 +2023,30 @@ func windowsOf(t *testing.T, database *store.Store, kind, ownerKey string) map[s
 	return windows
 }
 
+// windowTextsOf is the text of each embedding window row of owner ownerKey of kind kind, by id.
+func windowTextsOf(t *testing.T, database *store.Store, kind, ownerKey string) map[string]string {
+	t.Helper()
+	rows, err := database.Pool.Query(context.Background(), `
+		select id, text_snapshot from embeddings where kind = $1 and split_part(id, '#', 1) = $2
+	`, kind, ownerKey)
+	if err != nil {
+		t.Fatalf("read the windows of %s %s: %v", kind, ownerKey, err)
+	}
+	defer rows.Close()
+	windows := map[string]string{}
+	for rows.Next() {
+		var id, text string
+		if err := rows.Scan(&id, &text); err != nil {
+			t.Fatalf("scan a window of %s %s: %v", kind, ownerKey, err)
+		}
+		windows[id] = text
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the windows of %s %s: %v", kind, ownerKey, err)
+	}
+	return windows
+}
+
 // seedItemsWithBlocks writes one comment, one issue message and one ask of CORE-1 and returns
 // their ids, in that order.
 func seedItemsWithBlocks(t *testing.T, database *store.Store) (comment, message, ask string) {
@@ -2066,15 +2090,16 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 	}
 	for kind, owner := range owners {
 		if windows := windowsOf(t, database, kind, owner); len(windows) == 0 {
-			t.Fatalf("%s %s holds no window after its own index", kind, owner)
+			t.Fatalf("%s %s holds no window after the tick that indexed its blocks", kind, owner)
 		}
 	}
-	// Every window row as a build before this change left it: none. An item's state row carries
-	// the marker with it (refs.ItemsOwedWindows), which the migration that added that marker set
-	// once for every item whose windows were already missing, so the two go together here as
-	// they do there; a document's owedness is still read from its state.
+	// Every window row as a build before this change left it: none, and every owner marked, as
+	// a route that removes a window row must mark its owner (refs.ItemsOwedWindows,
+	// refs.DocumentsOwedWindows) and as each marker's backfill marked every owner whose
+	// windows were already missing.
 	if _, err := database.Pool.Exec(ctx, `
 		delete from embeddings where kind in ('document_block', 'comment_block', 'message_block', 'ask_part');
+		update document_block_versions set windows_owed_at = now();
 		update comment_block_state set windows_owed_at = now();
 		update message_block_state set windows_owed_at = now();
 		update ask_block_state set windows_owed_at = now();
@@ -2105,6 +2130,98 @@ func TestAnItemWrittenBeforeThisChangeGetsWindowsFromOnePass(t *testing.T) {
 		if got := windowsOf(t, database, kind, owner); !reflect.DeepEqual(got, windows[kind]) {
 			t.Errorf("the windows of %s %s moved: %v -> %v", kind, owner, windows[kind], got)
 		}
+	}
+}
+
+// A document whose live text is ahead of its latest version, with a settlement pending that
+// will not run, is windowed all the same, and for the text that version holds: the arm reads
+// the stored markdown of the latest version whatever the settlement state, and gives its
+// blocks the ids the index holds for them (windowDocument, closedVersionBlocks).
+//
+// This is what lets a version write leave its windows to the tick (refs.IndexBlocks,
+// INFRA-988). Before it the arm refused such a document - `case pending && markdown !=
+// stored: return false, nil` - which was safe only because the version write had written its
+// windows itself; with the write no longer writing them, that refusal would leave a document
+// under continuous editing with no window at all.
+//
+// The control is that refusal: with it, the last assertion reads
+//
+//	the window arm gave windows to 0 owners (…), want the document
+//
+// and the document is left listed by refs.DocumentsOwedWindows for ever.
+func TestWindowArmWindowsTheStoredVersionOfADocumentWhoseLiveTextIsAhead(t *testing.T) {
+	database, service := blockIndexService(t)
+	ctx := context.Background()
+	const stored = "# Notes\n\nThe stored paragraph.\n"
+	document := createOwedDocument(t, database, service, "", "notes", stored, "")
+	settle(t, database, document)
+	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 {
+		t.Fatalf("first tick = %#v, want the document's blocks indexed", tick)
+	}
+
+	// An edit that no settlement has written a version for: the live text is ahead of version
+	// 1, and the document owes a settlement this service never runs.
+	if err := joinedWrite(service, func(ctx context.Context) error {
+		_, err := service.ReplaceText(ctx, document, stored+"\nThe live paragraph.\n",
+			model.Actor{Kind: "user", ID: "alice"})
+		return err
+	}); err != nil {
+		t.Fatalf("edit the document past its latest version: %v", err)
+	}
+	live, _, err := service.TextWithBlocks(ctx, document)
+	if err != nil {
+		t.Fatalf("read the live text of the document: %v", err)
+	}
+	if !strings.Contains(live, "The live paragraph.") {
+		t.Fatalf("the live text holds no edit: %q", live)
+	}
+	var pending bool
+	if err := database.Pool.QueryRow(ctx,
+		`select exists (select 1 from doc_settlements_pending where artifact_id = $1)`, document,
+	).Scan(&pending); err != nil || !pending {
+		t.Fatalf("the document owes a settlement = %v (%v), want it owing one: this test is for that case", pending, err)
+	}
+	// Its window rows are lost and its owner marked, as a route that removes one must mark it,
+	// so the arm is owed them again while the live text is ahead.
+	if _, err := database.Pool.Exec(ctx,
+		`delete from embeddings where kind = $1 and split_part(id, '#', 1) = $2`,
+		refs.DocumentWindowKind, document); err != nil {
+		t.Fatalf("delete the document's windows: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx,
+		`update document_block_versions set windows_owed_at = coalesce(windows_owed_at, now())
+		 where artifact_id = $1::uuid`, document); err != nil {
+		t.Fatalf("mark the document owed its windows: %v", err)
+	}
+	owed, err := refs.DocumentsOwedWindows(ctx, database.Pool, "", 10)
+	if err != nil {
+		t.Fatalf("list the documents owed their windows: %v", err)
+	}
+	if !slices.Contains(owed, document) {
+		t.Fatalf("the window arm is not owed document %s, which holds no window: %v", document, owed)
+	}
+
+	if tick := reconcileBlockIndex(t, service, ""); tick.Windows != 1 {
+		t.Fatalf("the window arm gave windows to %d owners (%#v), want the document", tick.Windows, tick)
+	}
+	windows := windowTextsOf(t, database, refs.DocumentWindowKind, document)
+	if len(windows) == 0 {
+		t.Fatalf("one pass left document %s unwindowed", document)
+	}
+	held := false
+	for id, text := range windows {
+		if strings.Contains(text, "The live paragraph.") {
+			t.Fatalf("window %s holds the unsettled edit's text, which no version holds: %q", id, text)
+		}
+		held = held || strings.Contains(text, "The stored paragraph.")
+	}
+	if !held {
+		t.Fatalf("no window of document %s holds its stored version's text: %v", document, windows)
+	}
+	if owed, err := refs.DocumentsOwedWindows(ctx, database.Pool, "", 10); err != nil {
+		t.Fatalf("list the documents owed their windows: %v", err)
+	} else if slices.Contains(owed, document) {
+		t.Fatalf("the windowed document %s is still owed its windows: %v", document, owed)
 	}
 }
 
