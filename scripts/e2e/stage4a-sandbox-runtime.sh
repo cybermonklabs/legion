@@ -105,8 +105,9 @@
 #
 # The secrets-* checks are optional and print CHECK <name>: SKIPPED-BLOCKED when
 # unconfigured: LEGION_E2E_AGENT_SECRETS_URL, LEGION_E2E_AGENT_SECRETS_OPERATOR (the email of the
-# person who approves secrets-approval-ask's credential request on the Dispatch credential page
-# during the run), LEGION_E2E_AGENT_SECRETS_AUTO_SHA256, and LEGION_E2E_AGENT_SECRETS_ACCOUNT
+# person running the stage on the broker; the run asks nothing of them, and
+# secrets-approval-ask cancels the one request it makes rather than waiting for an approval),
+# LEGION_E2E_AGENT_SECRETS_AUTO_SHA256, and LEGION_E2E_AGENT_SECRETS_ACCOUNT
 # (<namespace>/<name> of a ServiceAccount of the proof's own, which the broker's
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
 # launcher credential, so logging in as a running daemon's account would take that daemon's). The

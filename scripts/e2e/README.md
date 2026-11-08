@@ -1487,10 +1487,11 @@ Each item below names an input and its default, then what it means.
 
 - `LEGION_E2E_AGENT_SECRETS_OPERATOR` — unset
 
-  the email of the person who approves the run's credential request for `LEGION_E2E_APPROVAL` (the `secrets-approval-ask` check prints `STAGE4A: approve credential request <record> for LEGION_E2E_APPROVAL on the Dispatch credential page as <operator>`).
-  The stage is devbox-attended for that one approval:
-  someone clicks Approve during the run (polled up to 10 minutes; a timeout, denial, or expiry fails that check).
-  The run's own broker login asks no one: it logs in as the daemon does, with a token for `LEGION_E2E_AGENT_SECRETS_ACCOUNT`
+  the email of the person running the stage on the broker.
+  The run asks nothing of them: the value's only effect is that the `secrets-*` checks run at all, and every one of them reports `SKIPPED-BLOCKED` while it is unset.
+  The stage is unattended.
+  `secrets-approval-ask` makes one request for `LEGION_E2E_APPROVAL`, asserts the approver the broker names for it is that secret's single owner and not the shared marker `anyone`, and then cancels its own request, so no card waits on a person and none is left behind.
+  The run's own broker login asks no one either: it logs in as the daemon does, with a token for `LEGION_E2E_AGENT_SECRETS_ACCOUNT`
 
 - `LEGION_E2E_AGENT_SECRETS_ACCOUNT` — unset
 
@@ -1516,12 +1517,12 @@ Each item below names an input and its default, then what it means.
 A dispatch-project development slot cannot host this proof, for three reasons Plan D established:
 its broker verifies tokens of the *staging* cluster's issuer, and the pods this harness launches carry the production cluster's;
 it lives in the staging VPC and cannot reach production Dispatch;
-and it may not run a Dispatch of its own (the GitHub App's credentials cannot cross accounts), so nobody can approve the run's credential request there.
+and it may not run a Dispatch of its own (the GitHub App's credentials cannot cross accounts), so no person could sign in to decide a credential record there.
 Instead the proof runs against the **production broker** with two throwaway secrets in its namespace, tagged (`LEGION_E2E_AUTO`:
 `owner=shared`, `tier=agent`, granted automatically to every pod;
-`LEGION_E2E_APPROVAL`: `owner=shared`, `tier=human`, so a request for it is decided by anyone signed in to Dispatch, the operator included
+`LEGION_E2E_APPROVAL`: `tier=human` under a single owner no person holds, so a request for it stays pending on that owner's page alone and on no signed-in person's
 — a pod has no operator, and the broker's policy names no issue assignee;
-Sami's values seeded after Plan D's apply)
+Sami's values seeded after Plan D's apply, its owner retagged away from `shared` for INFRA-1665)
 — "before any real secret moves" is exactly this state, and it is what spec Acceptance 2's "a live worker pod on a development slot" means here.
 
 Two identities, so the runtime is proven under exactly the RBAC it ships with.
@@ -1698,8 +1699,9 @@ Each item below names a check, then what it does and what it requires.
 
   a request for the approval-gated secret comes back pending with a credential-request record id (ruling 16:
   the secret's owner and tier pick the approver at request time, naming no issue);
-  the harness prints `STAGE4A: approve credential request <record id> for LEGION_E2E_APPROVAL on the Dispatch credential page as <operator>` and polls for up to 10 minutes until the operator's real approval settles it granted (success), denied, or expired (both failures)
-  — always attended, with no cancel-and-cleanup path
+  the approver the broker names for it is `LEGION_E2E_APPROVAL`'s single owner, not the shared marker `anyone`, so the card is on that one owner's page and not on every signed-in person's, and the check's evidence line names the approver it read;
+  the harness then cancels its own request (`agent-secrets cancel <request id>`) and reads the request back `cancelled`
+  — unattended, waiting on nobody and leaving no pending card behind
 
 - `suspend`
 

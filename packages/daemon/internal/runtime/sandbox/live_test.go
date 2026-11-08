@@ -276,12 +276,14 @@ type liveEnv struct {
 	// audience filled in, the operator's pod every launch carries; operatorConfigMap is the run's
 	// copy of the ConfigMap it names.
 	operatorPodFile, operatorConfigMap string
-	// The agent-secrets checks' inputs: the production broker, the email of the person who
-	// approves the run's credential request for LEGION_E2E_APPROVAL, the sha256 of the automatic
-	// rule's dummy value, the checkout's agent-secrets binary, and the token file the script mints
-	// for LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs in with as the daemon does, no
-	// person approving it. Every field here is read with os.Getenv, unlike the rest of liveEnv: unset
-	// is a blocked run of the secrets-* checks, never a refusal to start (secretsBlocked).
+	// The agent-secrets checks' inputs: the production broker, the email of the run's operator on
+	// it, the sha256 of the automatic rule's dummy value, the checkout's agent-secrets binary, and
+	// the token file the script mints for LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the harness logs
+	// in with as the daemon does, no person approving it. No check here waits on a person:
+	// secrets-approval-ask asserts its pending request's approver is one owner rather than the
+	// shared marker and cancels the request itself. Every field here is read with os.Getenv,
+	// unlike the rest of liveEnv: unset is a blocked run of the secrets-* checks, never a refusal
+	// to start (secretsBlocked).
 	agentSecretsURL, agentSecretsOperator, agentSecretsAutoSHA, agentSecretsBin, agentSecretsTokenFile string
 	// The scratch Postgres the script started, which every pod of the run keeps its sessions in:
 	// the file holding its URL at streamAdvertiseHost, which the script also wrote into the

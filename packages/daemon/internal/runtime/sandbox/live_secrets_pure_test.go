@@ -12,11 +12,10 @@ import (
 )
 
 // agentSecretsBlockReason is secretsBlocked's logic: the five broker inputs every secrets-* check
-// needs (the production broker's URL, the email of the person who approves the run's credential
-// request for LEGION_E2E_APPROVAL, the automatic rule's dummy value's hash, the checkout's
-// agent-secrets binary, and the token file the script mints from LEGION_E2E_AGENT_SECRETS_ACCOUNT,
-// which the run logs in with as the daemon does), named for whichever are unset. Empty means the
-// run is not blocked.
+// needs (the production broker's URL, the email of the run's operator on it, the automatic rule's
+// dummy value's hash, the checkout's agent-secrets binary, and the token file the script mints
+// from LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the run logs in with as the daemon does), named
+// for whichever are unset. Empty means the run is not blocked.
 func agentSecretsBlockReason(url, operator, autoSHA, bin, tokenFile string) string {
 	var missing []string
 	for name, value := range map[string]string{
@@ -32,7 +31,7 @@ func agentSecretsBlockReason(url, operator, autoSHA, bin, tokenFile string) stri
 		return ""
 	}
 	slices.Sort(missing)
-	return "no broker for this run: " + strings.Join(missing, ", ") + " unset (the production broker with Plan D's rules, a ServiceAccount its BROKER_SERVICE_LOGINS names, and the person who approves this run's credential request, supply them)"
+	return "no broker for this run: " + strings.Join(missing, ", ") + " unset (the production broker with Plan D's rules, a ServiceAccount its BROKER_SERVICE_LOGINS names, and the run's operator on that broker, supply them)"
 }
 
 // shellJoin quotes args for a POSIX shell -c string, the way (*liveRig).agentSecrets builds the
