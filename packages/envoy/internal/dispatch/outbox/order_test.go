@@ -751,15 +751,82 @@ func (n planNode) walk(visit func(planNode)) {
 	}
 }
 
-// The statement that chooses a batch reads neither the pending subscription commands, which are
-// never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
-// in the table, no node of its plan that reads events removes a row by filter or recheck, none
-// scans events in full, and it runs in under half a millisecond.
-func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
+// explainedPlan is one EXPLAIN of the claim: the plan's root node, and the JSON body the failure
+// messages print.
+type explainedPlan struct {
+	root planNode
+	body []byte
+}
+
+// claimCost is what the claim costs at one backlog size: the rows Postgres read from events while
+// it ran, the ids it returned, and the plans it was explained with.
+type claimCost struct {
+	backlog     int
+	rowsRead    int64
+	seqRead     int64
+	kept        []int64
+	unpublished []int64
+	plans       []explainedPlan
+	fastest     float64
+}
+
+// claimReads runs the claim once on conn, inside a transaction it rolls back, and reports the rows
+// Postgres read from events while it ran: all of them, and the ones a sequential scan read, with
+// the event ids the claim returned. pg_stat_xact_user_tables counts for the whole backend and a
+// rollback keeps the count, so the figure is the difference across the claim rather than the
+// counter itself, and every call must take the same pinned connection.
+func claimReads(t *testing.T, conn *pgxpool.Conn, claim tracedStatement) (rowsRead, seqRead int64, kept []int64) {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	// The view holds no row for events until this transaction has read it, so sum over the rows
+	// it does hold: that answers 0 and 0 rather than no row at all.
+	counters := func() (seq, fetched int64) {
+		if err := tx.QueryRow(ctx, `
+			select coalesce(sum(seq_tup_read), 0), coalesce(sum(idx_tup_fetch), 0)
+			  from pg_stat_xact_user_tables where relname = 'events'
+		`).Scan(&seq, &fetched); err != nil {
+			t.Fatalf("read the rows read from events: %v", err)
+		}
+		return seq, fetched
+	}
+	seqBefore, fetchedBefore := counters()
+	rows, err := tx.Query(ctx, claim.sql, claim.args...)
+	if err != nil {
+		t.Fatalf("run the claim: %v\n%s", err, claim.sql)
+	}
+	// The first column is the event's id. Taking the row's values drains the row set, which the
+	// counters need, and spells out none of the other twenty columns.
+	for rows.Next() {
+		values, err := rows.Values()
+		if err != nil {
+			t.Fatalf("read a claimed event: %v", err)
+		}
+		kept = append(kept, values[0].(int64))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the claimed events: %v", err)
+	}
+	seqAfter, fetchedAfter := counters()
+	return (seqAfter - seqBefore) + (fetchedAfter - fetchedBefore), seqAfter - seqBefore, kept
+}
+
+// measureClaim seeds a database of its own with backlog backed-off events and backlog pending
+// commands, ten events the publisher has sent and ten it has not, and reports what the statement
+// choosing a batch costs there. Each size needs its own database: events.id is a sequence, so rows
+// added to a seeded database after the fresh events carry higher ids, which the plan never walks.
+func measureClaim(t *testing.T, backlog int) claimCost {
+	t.Helper()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)
+	// Postgres takes several statements in one round trip only over the simple protocol, so the
+	// backlog's size goes into the SQL pgx writes rather than into a bound parameter.
 	if _, err := database.Pool.Exec(ctx, `
 		insert into issues (key, project_key, number, title, created_by, rank)
 		select 'O-' || n, 'TT', 100 + n, 'Waiting', '{"kind":"user","id":"alice"}', 'W'
@@ -767,21 +834,23 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 		insert into events (issue_key, seq, type, actor, payload, notify, attempt_count, next_attempt_at)
 		select 'O-' || (n % 50 + 1), n, 'message.created', '{"kind":"user","id":"alice"}', '{"body":"backed off"}', true,
 		       1, now() + interval '1 hour'
-		from generate_series(1, 5000) as n;
+		from generate_series(1, $1) as n;
 		insert into events (issue_key, seq, type, actor, payload, notify)
 		select 'T-1', 100000 + n, 'subscription.remove_requested', '{"kind":"user","id":"alice"}',
 		       '{"session_id":"gone","pending":true}', true
-		from generate_series(1, 5000) as n;
-	`); err != nil {
+		from generate_series(1, $1) as n;
+	`, pgx.QueryExecModeSimpleProtocol, backlog); err != nil {
 		t.Fatalf("seed the backed-off events and the pending commands: %v", err)
 	}
-	fresh := func() {
+	fresh := func() []int64 {
+		ids := make([]int64, 0, 10)
 		for index := range 10 {
-			appendEvent(t, database, broker, model.Event{
+			ids = append(ids, appendEvent(t, database, broker, model.Event{
 				IssueKey: new("T-1"), Type: "message.created", Actor: model.Actor{Kind: "user", ID: "alice"},
 				Payload: model.Message{ID: uuid.NewString(), IssueKey: new("T-1"), Body: fmt.Sprintf("fresh %d", index)},
-			})
+			}).ID)
 		}
+		return ids
 	}
 	fresh()
 	if _, err := database.Pool.Exec(ctx, `analyze events`); err != nil {
@@ -795,11 +864,11 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 		t.Fatal("the scan ran no statement choosing a batch")
 	}
 	claim := claims[0]
-	// Ten more due events, so the statement explained has a batch to choose.
-	fresh()
+	// Ten more due events, so the statement measured and explained has a batch to choose.
+	unpublished := fresh()
 
 	fastest := math.Inf(1)
-	var plan []byte
+	var plans []explainedPlan
 	// The fastest of several runs: the box is small and shared, and a run another test's work
 	// delayed says nothing about the statement.
 	const runs = 20
@@ -808,6 +877,7 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 		if err != nil {
 			t.Fatalf("begin: %v", err)
 		}
+		var plan []byte
 		if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+claim.sql, claim.args...).Scan(&plan); err != nil {
 			_ = tx.Rollback(ctx)
 			t.Fatalf("explain the claim: %v\n%s", err, claim.sql)
@@ -820,20 +890,63 @@ func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
 		if err := json.Unmarshal(plan, &explained); err != nil || len(explained) != 1 {
 			t.Fatalf("decode the plan: %v\n%s", err, plan)
 		}
-		explained[0].Plan.walk(func(node planNode) {
+		plans = append(plans, explainedPlan{root: explained[0].Plan, body: plan})
+		fastest = min(fastest, explained[0].ExecutionTime)
+	}
+	// The measurement comes after the explains, not before them: a pooled connection this
+	// function holds while they run costs each of them about 0.2 ms, 0.65 ms against 0.43 ms
+	// here, and the row below reads that time as the claim's own.
+	conn, err := database.Pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire the connection the counters are read on: %v", err)
+	}
+	defer conn.Release()
+	rowsRead, seqRead, kept := claimReads(t, conn, claim)
+	secondRowsRead, _, _ := claimReads(t, conn, claim)
+	if rowsRead != secondRowsRead {
+		t.Errorf("the claim read %d rows from events on the first run and %d on the second, want one figure twice: a measurement that reads pg_stat_xact_user_tables' counter rather than its difference across the claim gives the second run as twice the first",
+			rowsRead, secondRowsRead)
+	}
+	if rowsRead == 0 && secondRowsRead == 0 {
+		t.Errorf("the claim read 0 rows from events on both runs: track_counts must be on for pg_stat_xact_user_tables to count a row")
+	}
+
+	return claimCost{
+		backlog:     backlog,
+		rowsRead:    rowsRead,
+		seqRead:     seqRead,
+		kept:        kept,
+		unpublished: unpublished,
+		plans:       plans,
+		fastest:     fastest,
+	}
+}
+
+// The statement that chooses a batch reads neither the pending subscription commands, which are
+// never published, nor the backed-off events of owners that have nothing due: with 5,000 of each
+// in the table and again with 20,000, no node of its plan that reads events removes a row by
+// filter or recheck, none scans events in full, and it runs in under half a millisecond.
+func TestTheClaimSkipsPendingCommandsAndBackedOffRows(t *testing.T) {
+	small := measureClaim(t, 5000)
+	big := measureClaim(t, 20000)
+	for _, cost := range []claimCost{small, big} {
+		t.Logf("with %d backed-off events and %d pending commands the claim read %d rows from events, %d of them sequentially, and returned %d of the %d events waiting; it ran in %.3f ms at its fastest of %d:\n%s",
+			cost.backlog, cost.backlog, cost.rowsRead, cost.seqRead, len(cost.kept), len(cost.unpublished),
+			cost.fastest, len(cost.plans), cost.plans[0].body)
+	}
+	if small.fastest >= 0.5 {
+		t.Fatalf("the claim ran in %.3f ms at its fastest, want under 0.5 ms:\n%s", small.fastest, small.plans[0].body)
+	}
+	for _, explained := range slices.Concat(small.plans, big.plans) {
+		explained.root.walk(func(node planNode) {
 			if node.Relation != "events" {
 				return
 			}
 			if node.NodeType == "Seq Scan" || node.RemovedByFilter != 0 || node.RemovedByRecheck != 0 {
 				t.Fatalf("the claim's %s of events (%s) removed %.0f rows by filter and %.0f by recheck, want none:\n%s",
-					node.NodeType, node.Index, node.RemovedByFilter, node.RemovedByRecheck, plan)
+					node.NodeType, node.Index, node.RemovedByFilter, node.RemovedByRecheck, explained.body)
 			}
 		})
-		fastest = min(fastest, explained[0].ExecutionTime)
-	}
-	t.Logf("the claim ran in %.3f ms at its fastest of %d:\n%s", fastest, runs, plan)
-	if fastest >= 0.5 {
-		t.Fatalf("the claim ran in %.3f ms at its fastest, want under 0.5 ms:\n%s", fastest, plan)
 	}
 }
 
