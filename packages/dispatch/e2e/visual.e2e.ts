@@ -103,13 +103,27 @@ for (const route of shotRoutes) {
         await expect(route.ready(page)).toBeVisible();
         await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
-          // Every clock the page draws. A `<time>` carries the relative labels of the Inbox and
-          // the Agents page; the Delivery and Pipeline pages write the moment they answered as
-          // plain text instead ("Generated 11/8/2026, 2:27:03 AM", DeliveryPage.tsx and
-          // PipelinePage.tsx), and a measures card dates its claim the same way, so those two
-          // are masked by the words they begin with. The first two container runs differed on
-          // those pages in that text and nowhere else.
-          mask: [page.locator("time"), page.getByText(/^Generated /), page.getByText(/, as of /)],
+          // Everything on these pages that is not the same twice, and there are two kinds.
+          //
+          // A clock. A `<time>` carries the relative labels of the Inbox and the Agents page;
+          // the Delivery and Pipeline pages write the moment they answered as plain text
+          // instead ("Generated 11/8/2026, 2:27:03 AM", DeliveryPage.tsx and PipelinePage.tsx),
+          // and a measures card dates its claim the same way, so those two are masked by the
+          // words they begin with.
+          //
+          // An identifier the server makes. The Decisions panel prints the id of the spec block
+          // a decision shaped ("Block 0c1f…"), and that is a fresh uuid in every seeded corpus:
+          // unlike an issue's key, which e2e/workspace.ts now writes one at a time so the
+          // numbering is the same twice, a uuid cannot be pinned and is masked instead.
+          //
+          // Each of these was found by reading a diff image of a container run against the run
+          // before it, not by widening the bound until the rows passed.
+          mask: [
+            page.locator("time"),
+            page.getByText(/^Generated /),
+            page.getByText(/, as of /),
+            page.getByText(/^Block [0-9a-f]{8}/),
+          ],
           // MEASURED IN CI: placeholder. This is the zero the measurement starts from
           // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
           // -its-separation-stated-pr2502.md), not a measured bound: the pod this was written in
