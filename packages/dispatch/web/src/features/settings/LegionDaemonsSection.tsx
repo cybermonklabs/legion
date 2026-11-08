@@ -1,8 +1,7 @@
-// The Settings page's Legion section (dispatch://INFRA-1077): which project's state Dispatch
-// reads from which daemon. A project's setting is what brings its Legion view at all - the
-// Issues page's selector reads this same list (`legionSettingsQuery`, `features/project/
-// ProjectPage.tsx`) - so naming a daemon here is how a project gets one, and removing one stops
-// Dispatch reading it while everything already read stays.
+// The Settings page's Legion section (dispatch://INFRA-1077, dispatch://INFRA-979): which daemon
+// serves each project, and beside each one the daemon's own settings with the control that
+// changes them (LegionSettingsPanel). Removing a project's daemon stops Dispatch taking its events
+// while everything already stored stays.
 //
 // The two writes are `PUT` and `DELETE /api/v1/settings/legion/{project}`, classed
 // `scopeDeployment` beside the repository mappings and the Delivery settings: pointing Dispatch
@@ -39,6 +38,7 @@ import {
   settingsTableRow,
   settingsTableWrapper,
 } from "./classes";
+import { LegionDaemonSettings } from "./LegionSettingsPanel";
 import { ProjectSelect } from "./ProjectSelect";
 
 /** A daemon a person named: the project it serves and the base URL its state is read from. */
@@ -215,10 +215,10 @@ export function LegionDaemonsSection(): ReactNode {
         Legion
       </h2>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-        A project whose Legion daemon is named here has a Legion view on its Issues page, drawn from
-        what Dispatch read of that daemon. The address is the daemon&apos;s base URL, with no path:
-        Dispatch reads <code>/legion/v1/state</code> under it. Removing one stops the reading; what
-        was read stays.
+        A project whose Legion daemon is named here takes that daemon&apos;s change events into its
+        issues table. The address is the daemon&apos;s base URL, with no path: Dispatch sends a
+        settings change to <code>/legion/v1/operator/settings</code> under it. Removing one stops
+        taking its events; what was stored stays.
         {human ? "" : " Sign in to name one."}
       </p>
 
@@ -268,7 +268,7 @@ export function LegionDaemonsSection(): ReactNode {
                     </td>
                   </tr>
                 ) : (
-                  settings.data.map((setting) => (
+                  settings.data.flatMap((setting) => [
                     <tr
                       className={settingsTableRow}
                       data-legion-daemon={setting.project}
@@ -299,8 +299,14 @@ export function LegionDaemonsSection(): ReactNode {
                           </button>
                         </td>
                       ) : null}
-                    </tr>
-                  ))
+                    </tr>,
+                    // The daemon's own settings, each with its source, beside its URL.
+                    <tr key={`${setting.project}-settings`}>
+                      <td className="px-4 pb-4" colSpan={human ? 4 : 3}>
+                        <LegionDaemonSettings project={setting.project} />
+                      </td>
+                    </tr>,
+                  ])
                 )}
               </tbody>
             </table>

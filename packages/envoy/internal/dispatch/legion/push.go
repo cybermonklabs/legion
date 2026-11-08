@@ -116,14 +116,18 @@ func ApplyPush(ctx context.Context, pool *store.Pool, push Push) (int64, error) 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// The project's freshness is its newest event or heartbeat. A snapshot carries each value's
+	// own change time, which may be old, so its arrival counts as now; it also clears what it did
+	// not carry at now.
 	var newestAt time.Time
 	for _, event := range push.Events {
 		if event.At.After(newestAt) {
 			newestAt = event.At
 		}
 	}
-	if newestAt.IsZero() {
-		newestAt = time.Now()
+	clearAt := time.Now().UTC()
+	if push.Snapshot || newestAt.IsZero() {
+		newestAt = clearAt
 	}
 	if _, err := tx.Exec(ctx, `
 		insert into legion_pushes (project, generation, last_seq, last_at) values ($1, $2, 0, $3)
@@ -149,7 +153,7 @@ func ApplyPush(ctx context.Context, pool *store.Pool, push Push) (int64, error) 
 	if err != nil {
 		return 0, err
 	}
-	rows := observationsOf(fresh, current, push.Snapshot, newestAt)
+	rows := observationsOf(fresh, current, push.Snapshot, clearAt)
 	if err := writeObservations(ctx, tx, push.Project, rows); err != nil {
 		return 0, err
 	}
@@ -246,10 +250,16 @@ func insertEvents(ctx context.Context, tx pgx.Tx, push Push) ([]PushEvent, error
 	return fresh, nil
 }
 
+// heldValue is a field's newest value and when it took it.
+type heldValue struct {
+	value json.RawMessage
+	at    time.Time
+}
+
 // currentValues is the newest value of every field the project holds.
-func currentValues(ctx context.Context, tx pgx.Tx, project string) (map[fieldKey]json.RawMessage, error) {
+func currentValues(ctx context.Context, tx pgx.Tx, project string) (map[fieldKey]heldValue, error) {
 	rows, err := tx.Query(ctx, `
-		select distinct on (issue_key, field) issue_key, field, value
+		select distinct on (issue_key, field) issue_key, field, value, observed_at
 		from legion_observations where project = $1
 		order by issue_key, field, observed_at desc
 	`, project)
@@ -257,14 +267,14 @@ func currentValues(ctx context.Context, tx pgx.Tx, project string) (map[fieldKey
 		return nil, err
 	}
 	defer rows.Close()
-	current := map[fieldKey]json.RawMessage{}
+	current := map[fieldKey]heldValue{}
 	for rows.Next() {
 		var key fieldKey
-		var value []byte
-		if err := rows.Scan(&key.issue, &key.field, &value); err != nil {
+		var held heldValue
+		if err := rows.Scan(&key.issue, &key.field, &held.value, &held.at); err != nil {
 			return nil, err
 		}
-		current[key] = value
+		current[key] = held
 	}
 	return current, rows.Err()
 }
@@ -282,9 +292,11 @@ func pushedField(key fieldKey) bool {
 }
 
 // observationsOf turns the new events into the rows to write: one per event whose value differs
-// from the field's newest, in seq order, so two changes of one field in one batch both land. A
-// snapshot also clears every pushed field it did not carry, at its newest time.
-func observationsOf(events []PushEvent, current map[fieldKey]json.RawMessage, snapshot bool, snapshotAt time.Time) []timedObservation {
+// from the field's newest, in seq order, so two changes of one field in one batch both land. An
+// event older than the field's newest value (a lost event resent after later ones landed) is
+// written into the history at its own time and leaves the newest value as it is. A snapshot also
+// clears every pushed field it did not carry, at clearAt.
+func observationsOf(events []PushEvent, current map[fieldKey]heldValue, snapshot bool, clearAt time.Time) []timedObservation {
 	newest := maps.Clone(current)
 	var rows []timedObservation
 	set := func(key fieldKey, value json.RawMessage, at time.Time) {
@@ -292,16 +304,22 @@ func observationsOf(events []PushEvent, current map[fieldKey]json.RawMessage, sn
 			value = json.RawMessage("null")
 		}
 		held, ok := newest[key]
-		if ok && jsonEqual(held, value) || !ok && string(value) == "null" {
+		switch {
+		case !ok && string(value) == "null":
+			return
+		case ok && at.Before(held.at):
+			rows = append(rows, timedObservation{fieldKey: key, value: value, at: at})
+			return
+		case ok && jsonEqual(held.value, value):
 			return
 		}
-		newest[key] = value
+		newest[key] = heldValue{value: value, at: at}
 		rows = append(rows, timedObservation{fieldKey: key, value: value, at: at})
 	}
 	settings, sources := map[string]json.RawMessage{}, map[string]json.RawMessage{}
 	if !snapshot {
-		_ = json.Unmarshal(current[fieldKey{AdmissionKey, FieldSettings}], &settings)
-		_ = json.Unmarshal(current[fieldKey{AdmissionKey, FieldSettingSources}], &sources)
+		_ = json.Unmarshal(current[fieldKey{AdmissionKey, FieldSettings}].value, &settings)
+		_ = json.Unmarshal(current[fieldKey{AdmissionKey, FieldSettingSources}].value, &sources)
 	}
 	carried := map[fieldKey]bool{}
 	var settingsAt time.Time
@@ -356,13 +374,13 @@ func observationsOf(events []PushEvent, current map[fieldKey]json.RawMessage, sn
 		return rows
 	}
 	if settingsAt.IsZero() {
-		settingsAt = snapshotAt
+		settingsAt = clearAt
 	}
 	set(fieldKey{AdmissionKey, FieldSettings}, encodeValue(settings), settingsAt)
 	set(fieldKey{AdmissionKey, FieldSettingSources}, encodeValue(sources), settingsAt)
 	for key := range newest {
 		if pushedField(key) && !carried[key] && key.field != FieldSettings && key.field != FieldSettingSources {
-			set(key, json.RawMessage("null"), snapshotAt)
+			set(key, json.RawMessage("null"), clearAt)
 		}
 	}
 	return rows
