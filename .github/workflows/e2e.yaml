@@ -147,14 +147,15 @@ jobs:
           # Both apt phases retry through .github/scripts/ci-retry.sh: five attempts, the last
           # starting 150 s after the first. What bounds an attempt is the inner `sudo timeout`,
           # not `timeout sudo`, so the signal reaches apt-get itself rather than a sudo holding
-          # it — ci.yaml's Playwright step states that rule; retry_fetch's own bound sits five
-          # seconds above it and backstops the sudo alone.
+          # it — .github/scripts/playwright-install.sh states that rule; retry_fetch's own bound
+          # sits five seconds above it and backstops the sudo alone.
           #
-          # 90 s for the index read, which is the bound ci.yaml's Playwright step derives for
-          # this same runner image and these same indexes: the slowest green `apt-get update` of
-          # its window fetched 10.5 MB at 233 kB/s, so 12.9 MB of indexes need 55.4 s there.
+          # 90 s for the index read, which is the bound .github/scripts/playwright-install.sh
+          # derives for this same runner image and these same indexes: the slowest green
+          # `apt-get update` of its window fetched 10.5 MB at 233 kB/s, so 12.9 MB of indexes
+          # need 55.4 s there.
           # 120 s for the package download: a proof installs one package of
-          # .github/e2e-scripts.json (postgresql-client or tmux), a few MB against that step's
+          # .github/e2e-scripts.json (postgresql-client or tmux), a few MB against that script's
           # 51.4 MB, and at the slowest green package rate of the same window, 186 kB/s, even
           # 10 MB needs 54 s. The index read carries `-o APT::Update::Error-Mode=any`, which
           # makes a failed index read fail the command instead of warning and exiting 0: without
@@ -164,8 +165,8 @@ jobs:
             sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
           # Each word is one package name of .github/e2e-scripts.json.
           # The download is the half that retries; the unpack after it takes no network, so an
-          # attempt the bound kills never stops a dpkg run part way (ci.yaml's Playwright step
-          # says why the two are separate).
+          # attempt the bound kills never stops a dpkg run part way
+          # (.github/scripts/playwright-install.sh says why the two are separate).
           # shellcheck disable=SC2086
           retry_fetch "the proof's apt packages" 125 -- \
             sudo timeout 120 apt-get install -y --no-install-recommends -d $PACKAGES

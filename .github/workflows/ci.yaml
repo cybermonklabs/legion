@@ -2681,11 +2681,12 @@ jobs:
       # first. What bounds an attempt is the inner `sudo timeout`, not `timeout sudo`, so the
       # signal reaches apt-get itself rather than a sudo holding it; retry_fetch's own bound sits
       # five seconds above it and backstops the sudo alone. 90 s for the index read, which is the
-      # bound ci.yaml's Playwright step derives for these indexes, and 120 s for one package of a
-      # few megabytes. The unpack after the download takes no network and stays bare, so an
-      # attempt the bound kills never stops a dpkg run part way. The index read carries
-      # `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the command
-      # instead of warning and exiting 0: without it retry_fetch has nothing to retry.
+      # bound .github/scripts/playwright-install.sh derives for these indexes — that apt phase
+      # was a step of this file until cybermonklabs/legion#2891 wrote it as that script — and
+      # 120 s for one package of a few megabytes. The unpack after the download takes no network
+      # and stays bare, so an attempt the bound kills never stops a dpkg run part way. The index
+      # read carries `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the
+      # command instead of warning and exiting 0: without it retry_fetch has nothing to retry.
       # .github/scripts/check-download-retry.sh's rule 5 is the whole reason.
       - name: Install tmux
         # Its own retry arithmetic, so an exhausted phase fails this step by name rather than
