@@ -1264,8 +1264,10 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// an architect to wait and start it again in the same commit. A member a
 				// Dispatch link blocks never reaches this branch, so it is told nothing and
 				// marked nothing, and a later pass tells it once its blockers close. The place
-				// the notice carries is the candidate's own place in this pass's line, which
-				// is the place `admission.waiting` shows (api.WaitingLineView).
+				// the notice carries is the candidate's own place in this pass's line, as the
+				// pass found it, which the notice says is a snapshot: a promotion this same
+				// scan makes can shorten the line before `admission.waiting` is read again,
+				// and the issue's own `waitingLine` is the live place (api.WaitingLineView).
 				if candidate.Kind == record.LineAnswered {
 					if err := a.tellWaitingForSlot(ctx, tx, issue, place+1, len(line)); err != nil {
 						return admitted, released, err
@@ -1516,9 +1518,9 @@ func slotFor(entry record.LineEntry, gate record.TreeGate) bool {
 // A root whose architect holds no claim row of its generation, or whose claim has not taken its
 // Envoy role (supervise.TookRole), is told nothing either: there is no session to read the
 // notice, and the pass after that architect takes its role tells it then. The claim is read as
-// workflow.ReconcileAwaiting reads it, by the architect token of this project, and it is the one
-// read this telling costs: one record.Store.RoleRun per answered root the cap passes over, per
-// pass.
+// workflow.ReconcileAwaiting reads it, by the architect token of this project. An untold wait
+// costs those reads each pass — the Dispatch claim workflow.Unresumable reads, and one
+// record.Store.RoleRun — and a wait already marked costs none of them.
 func (a *Admission) tellWaitingForSlot(ctx context.Context, tx pgx.Tx, issue record.Issue, place, length int) error {
 	if issue.Awaiting == nil || issue.Awaiting.SlotNoticeAt != nil {
 		return nil

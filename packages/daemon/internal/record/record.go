@@ -225,16 +225,20 @@ type Awaiting struct {
 	// notice was written, never that an architect read it.
 	//
 	// The mark belongs to this wait and goes where the wait goes. Nothing clears it on its own.
-	// Six places outside the tests write Issue.Awaiting: admit.promoteHolds's resume,
+	// Nine places outside the tests write Issue.Awaiting. admit.tellWaitingForSlot writes this
+	// field itself, beside the answer, in the transaction that enqueues the notice.
+	// workflow.enterAwaiting builds a fresh Awaiting for each new wait, which is why a new wait
+	// of a root told before carries no mark of the old one. admit.promoteHolds's resume,
 	// admit.readmit, workflow.beginLinger and workflow.leaveUnderOperator clear the wait whole,
-	// so the mark goes with the struct; workflow.itemLeft and workflow.leaveGateOff rewrite a
-	// wait in place and keep whatever the struct already holds. Those two are safe only because
-	// each is reached for an unanswered wait alone, and an unanswered wait carries no mark:
-	// itemLeft returns at once when root.Awaiting.AnsweredAt != nil, and leaveGateOff's caller
-	// answerOpenGates skips an answered wait before it reaches leaveGateOff. A change to either
-	// guard changes this invariant, and would carry one wait's mark into the next wait, whose
-	// architect would then never be told. The stored shape holds the same rule
-	// (issues_awaiting_shape): the mark stands only beside an answer.
+	// so the mark goes with the struct. The last three write through the wait the record already
+	// holds and keep every field they do not name: workflow.answerWait, which is safe because
+	// each of its callers reaches it for an unanswered wait alone, and workflow.itemLeft and
+	// workflow.leaveGateOff, which rewrite the wait's subject in place and are safe for the same
+	// reason — itemLeft returns at once when root.Awaiting.AnsweredAt != nil, and
+	// leaveGateOff's caller answerOpenGates skips an answered wait before it reaches
+	// leaveGateOff. A change to any of those guards changes this invariant, and would carry one
+	// wait's mark into the next wait, whose architect would then never be told. The stored shape
+	// holds the same rule (issues_awaiting_shape): the mark stands only beside an answer.
 	SlotNoticeAt *time.Time
 	Since        EventMark
 }

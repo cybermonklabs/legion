@@ -19,10 +19,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
-	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // testMainEnv makes this package's test binary the real `legion`: with it set, TestMain is main()
@@ -1716,8 +1714,10 @@ func TestPlainStateNamesTheRootsWaitingOnAPerson(t *testing.T) {
 // the true answer for a caller that cannot see the line.
 //
 // The operator's guide prints this line as its sample and says what the count is, so the sample
-// is built here from the state the guide describes and read back out of the guide, and the words
-// the guide uses for the wait are read from the source that declares each. (INFRA-1100.)
+// is built here from the state the guide describes and read back out of the guide. That the
+// guide also names the words of the wait itself is one rule held in one place, workflow's
+// TestTheShippedWordsNameTheWaitingLineNotice, which reads each out of the source that declares
+// it. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 	answered := time.Date(2026, 10, 25, 12, 0, 0, 0, time.UTC)
 	const (
@@ -1758,15 +1758,8 @@ func TestTheShippedWordsNameTheWaitingLineCount(t *testing.T) {
 		t.Fatalf("read %s: %v", guide, err)
 	}
 	sample := awaitingSummary(map[string]api.Issue{"WIDGETS-9": {WaitingOn: &api.WaitingOnView{Kind: "ask", Ask: "7f3c2a10"}}})
-	for _, want := range []string{
-		sample,
-		record.WaitingLineBand,
-		api.WaitingLineField,
-		string(workflow.WaitingForSlotNoticeKind),
-	} {
-		if !strings.Contains(string(body), want) {
-			t.Errorf("running-legion.md does not carry %q", want)
-		}
+	if !strings.Contains(string(body), sample) {
+		t.Errorf("running-legion.md does not carry %q", sample)
 	}
 }
 

@@ -680,12 +680,14 @@ func memorySummary(issues map[string]api.Issue) string {
 // line names (api.WaitingLineView), and each by key with what it waits on and whether, when and by
 // what act it was answered.
 //
-// The second count reads the published line rather than judging the wait a second time: an
-// answered root whose design gate has opened at every gated step resumes at once and takes no
-// slot, so it stands in no line at all, while one whose architect is still writing the spec stands
-// among the issues whose work came back, oldest first. A daemon below contract 56 serves no
-// `waitingLine` on any issue, so the count is 0 against such a daemon, which is the true answer
-// for a caller that cannot see the line.
+// The second count reads the published line rather than judging the wait a second time. An
+// answered root stands in that line, among the issues whose work came back, oldest first
+// (record.Waiting appends every answered root that holds no slot, whatever its design gate
+// says), until the pass that resumes it. Two answered roots are in no line this daemon
+// publishes: one of another Dispatch project, whose line it does not build, and every one of
+// them when the caller is a pod below contract 56, which is served no `waitingLine` on any
+// issue. So the count is 0 against such a daemon, which is the true answer for a caller that
+// cannot see the line.
 func awaitingSummary(issues map[string]api.Issue) string {
 	var keys []string
 	standing := 0

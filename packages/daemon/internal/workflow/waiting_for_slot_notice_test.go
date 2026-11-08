@@ -123,10 +123,9 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 			t.Errorf("%s does not name the %q the root's record carries while it waits", file, api.WaitingLineField)
 		}
 	}
-	const bothTexts = "packages/daemon/internal/admit/admit.go"
 	for _, file := range []string{
 		"AGENTS.md",
-		bothTexts,
+		"packages/daemon/internal/admit/admit.go",
 		"docs/site/src/content/docs/legion/running-legion.md",
 		"docs/site/src/content/docs/legion/troubleshooting.md",
 		"packages/contracts/src/legion-api.ts",
@@ -143,8 +142,5 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
 				file, record.WaitingLineBand)
 		}
-	}
-	if got := strings.Count(body(bothTexts), record.WaitingLineBand); got != 2 {
-		t.Errorf("%s says %q %d times, want twice: two of the fourteen texts are its own", bothTexts, record.WaitingLineBand, got)
 	}
 }

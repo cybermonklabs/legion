@@ -8,16 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -25,8 +22,8 @@ import (
 // cap of one slot, the root whose architect hands its work to a person, and the roots that take
 // that slot while it waits. The project key is a field rather than testProject because nothing of
 // this notice reads it, and TestAnAnsweredRootWithNoSlotIsToldOnce runs the whole case under two
-// keys to prove it; every other helper of this package records issues under testProject, so this
-// one seeds its own.
+// keys to prove it; the package's own seeds name testProject, so this fixture records through
+// their project-taking twins (seedSlottedForProject and the rest).
 type slotWait struct {
 	t         *testing.T
 	pool      *pgxpool.Pool
@@ -53,17 +50,19 @@ func (w *slotWait) next() int64 {
 	return w.seq
 }
 
-// architect is the claim token of issue's root architect, built as workflow.ReconcileAwaiting
-// builds it: the project token, then the token of the issue's architect role.
+// architect is the claim token of issue's root architect under this fixture's project.
 func (w *slotWait) architect(issue string) claim.Token {
 	w.t.Helper()
-	project, err := claim.ProjectToken(w.project)
+	return awaitingArchitectForProject(w.t, w.project, issue)
+}
+
+// projectToken is this fixture's Dispatch project key as the claims and the tree lifecycles
+// carry it.
+func (w *slotWait) projectToken() string {
+	w.t.Helper()
+	token, err := claim.ProjectToken(w.project)
 	if err != nil {
 		w.t.Fatalf("project token of %s: %v", w.project, err)
-	}
-	token, err := claim.NewToken(project, issue, claim.RoleArchitect)
-	if err != nil {
-		w.t.Fatalf("architect token of %s: %v", issue, err)
 	}
 	return token
 }
@@ -77,56 +76,27 @@ func (w *slotWait) issueOf(key, rank, status string, at phase.Phase) record.Issu
 // openLifecycle opens key's tree lifecycle under the workflow's authority, as a promotion does.
 func (w *slotWait) openLifecycle(key string) {
 	w.t.Helper()
-	project, err := claim.ProjectToken(w.project)
-	if err != nil {
-		w.t.Fatalf("project token of %s: %v", w.project, err)
-	}
-	inTx(w.t, w.pool, func(tx pgx.Tx) {
-		if _, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, project, key, treelifecycle.AuthorityWorkflow); err != nil {
-			w.t.Fatalf("open the tree lifecycle of %s: %v", key, err)
-		}
-	})
+	seedLifecycleForProject(w.t, w.pool, w.project, key)
 }
 
 // slotted records key as a running root of this project holding an admission slot, its tree
 // lifecycle open under the workflow (seedSlotted, for a project of this fixture's own).
 func (w *slotWait) slotted(key, rank string) {
 	w.t.Helper()
-	putIssue(w.t, w.pool, w.issueOf(key, rank, "in_progress", phase.Admitted))
-	inTx(w.t, w.pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
-		held, err := records.Slots(ctx, tx)
-		if err != nil {
-			w.t.Fatalf("list slots: %v", err)
-		}
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: key, Index: len(held), AdmittedAt: fixedNow}); err != nil {
-			w.t.Fatalf("put the slot of %s: %v", key, err)
-		}
-	})
-	w.openLifecycle(key)
+	seedSlottedForProject(w.t, w.pool, w.project, key, rank)
 }
 
 // waiting records key as a root of this project waiting in line for its first slot.
 func (w *slotWait) waiting(key, rank string) {
 	w.t.Helper()
-	putIssue(w.t, w.pool, w.issueOf(key, rank, "todo", phase.Admitted))
+	seedWaitingForProject(w.t, w.pool, w.project, key, rank)
 }
 
 // claimArchitect records issue's architect in state, holding a task it has taken: the one standing
 // in which its root may hand work to a person and give its slot back (workflow's owed).
 func (w *slotWait) claimArchitect(issue string, state supervise.ClaimState) {
 	w.t.Helper()
-	if _, err := w.pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session,
-		session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, $2, $3, $3, 'architect', 1, 'ses_architect', '', $4, 0, 0, 0, 0)`,
-		string(w.architect(issue)), w.project, issue, string(state)); err != nil {
-		w.t.Fatalf("record the architect claim of %s: %v", issue, err)
-	}
-	if _, err := w.pool.Exec(context.Background(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at,
-		generation, phase, confirmed_at) values ($1, 'outbox:7', 'Decompose it.', now(), 1, 'admitted', now())`,
-		string(w.architect(issue))); err != nil {
-		w.t.Fatalf("record the architect's task of %s: %v", issue, err)
-	}
+	seedArchitectClaimForProject(w.t, w.pool, w.project, issue, state, true)
 }
 
 // setArchitect moves issue's architect claim to state.
@@ -142,38 +112,27 @@ func (w *slotWait) setArchitect(issue string, state supervise.ClaimState) {
 // row, still with them, and the hand-back itself, which is where the wait begins.
 func (w *slotWait) handBack() {
 	w.t.Helper()
-	at := w.next()
-	inTx(w.t, w.pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
-		if err := records.PutRootAsk(ctx, tx, record.RootAsk{Issue: w.root, Ask: "ask-q", Kind: record.AskQuestion,
-			Open: true, Seq: at, WaitingOn: "human", WaitingOnSeq: at, ByTree: true}); err != nil {
-			w.t.Fatalf("record the question of %s: %v", w.root, err)
-		}
-		if err := records.Declare(ctx, tx, w.root, record.EventMark{Seq: at}); err != nil {
-			w.t.Fatalf("declare the hand-back of %s: %v", w.root, err)
-		}
-	})
+	seedHandBack(w.t, w.pool, w.root, "ask-q", w.next())
+}
+
+// eventID is the id of the next fact this fixture applies: one of its own for each, so no fact
+// is ever taken for one already applied.
+func (w *slotWait) eventID(label string) string {
+	w.facts++
+	return fmt.Sprintf("%s-%d", label, w.facts)
 }
 
 // pass runs one admission pass, the controller's tick, which is the pass that runs on no fact of
 // its own.
 func (w *slotWait) pass(label string) {
 	w.t.Helper()
-	w.facts++
-	if _, err := intake.ApplyFact(context.Background(), w.pool, "controller", fmt.Sprintf("%s-%d", label, w.facts),
-		intake.ControllerTick{}, engineStub{}, w.admission); err != nil {
-		w.t.Fatalf("admission pass %s: %v", label, err)
-	}
+	tick(w.t, w.pool, w.admission, w.eventID(label))
 }
 
 // apply applies fact through the workflow engine and admission, as the daemon's handlers run.
-func (w *slotWait) apply(label string, fact intake.Fact) {
+func (w *slotWait) apply(label string, fact intake.DispatchIssue) {
 	w.t.Helper()
-	w.facts++
-	if _, err := intake.ApplyFact(context.Background(), w.pool, "dispatch", fmt.Sprintf("%s-%d", label, w.facts),
-		fact, w.admission.engine, w.admission); err != nil {
-		w.t.Fatalf("apply %s: %v", label, err)
-	}
+	apply(w.t, w.pool, w.admission, w.eventID(label), fact, w.admission.engine)
 }
 
 // notices is every waiting-for-slot notice the outbox holds for the root, oldest first.
@@ -194,9 +153,8 @@ func (w *slotWait) told() bool {
 func (w *slotWait) architectStartsOf() int {
 	w.t.Helper()
 	starts := 0
-	for _, got := range effects(w.t, w.pool) {
-		if request, ok := got.payload.(record.SuperviseRequest); ok && got.issue == w.root &&
-			request.Role == claim.RoleArchitect && request.Op == "start" {
+	for _, request := range superviseRequests(w.t, w.pool, w.root) {
+		if request.Role == claim.RoleArchitect && request.Op == "start" {
 			starts++
 		}
 	}
@@ -366,33 +324,11 @@ func TestAnAnsweredRootWithNoSlotIsToldOnce(t *testing.T) {
 	}
 }
 
-// line is this project's waiting line, in its order, read as admission reads it.
+// line is this project's waiting line, in its order, read as admission reads it, under this
+// fixture's design gate.
 func (w *slotWait) line() []string {
 	w.t.Helper()
-	var got []string
-	inTx(w.t, w.pool, func(tx pgx.Tx) {
-		records, ctx := record.NewStore(), context.Background()
-		issues, err := records.Issues(ctx, tx)
-		if err != nil {
-			w.t.Fatalf("list issues: %v", err)
-		}
-		held, err := records.Slots(ctx, tx)
-		if err != nil {
-			w.t.Fatalf("list slots: %v", err)
-		}
-		facts, err := record.ReadLineFacts(ctx, tx, records, w.project, issues, w.admission.engine.GatedSteps())
-		if err != nil {
-			w.t.Fatalf("read the line facts: %v", err)
-		}
-		_, _, line, err := blockers.JudgeLine(ctx, tx, records, w.project, issues, held, facts, nil)
-		if err != nil {
-			w.t.Fatalf("judge the waiting line: %v", err)
-		}
-		for _, entry := range line {
-			got = append(got, entry.Issue.Key)
-		}
-	})
-	return got
+	return waitingLine(w.t, w.pool, w.project, w.admission.engine.GatedSteps())
 }
 
 // finishNotices deletes every waiting-for-slot notice of the root from the outbox, as the
@@ -445,12 +381,8 @@ func (w *slotWait) readmit(label, holder string) {
 // leaves the operator's tree alone (workflow's leaveUnderOperator).
 func (w *slotWait) holdTreeByOperator() {
 	w.t.Helper()
-	project, err := claim.ProjectToken(w.project)
-	if err != nil {
-		w.t.Fatalf("project token of %s: %v", w.project, err)
-	}
 	if _, err := w.pool.Exec(context.Background(), `update tree_lifecycles set authority = 'operator' where project = $1 and tree = $2`,
-		project, w.root); err != nil {
+		w.projectToken(), w.root); err != nil {
 		w.t.Fatalf("hold the tree of %s under the operator: %v", w.root, err)
 	}
 }
@@ -459,12 +391,8 @@ func (w *slotWait) holdTreeByOperator() {
 // the root's re-admission opens it rather than waiting on the operator's lifetime.
 func (w *slotWait) releaseTreeToWorkflow() {
 	w.t.Helper()
-	project, err := claim.ProjectToken(w.project)
-	if err != nil {
-		w.t.Fatalf("project token of %s: %v", w.project, err)
-	}
 	if _, err := w.pool.Exec(context.Background(), `delete from tree_lifecycles where project = $1 and tree = $2`,
-		project, w.root); err != nil {
+		w.projectToken(), w.root); err != nil {
 		w.t.Fatalf("release the tree of %s to the workflow: %v", w.root, err)
 	}
 }

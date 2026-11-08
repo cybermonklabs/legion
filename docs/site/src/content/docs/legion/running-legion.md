@@ -941,11 +941,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   The `roots waiting on a person` line counts the roots that gave their admission slot back to
   wait on a person (phase `awaiting_person`), how many of them a person answered and the
   published line still names — each standing
-  among the issues whose work came back, oldest first, since one whose design gate has opened
-  resumes at once, takes no slot and so stands in no line at all — and each by key
+  among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
   with what it waits on (`none` when no root waits). A daemon older than contract 56 serves no
   `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
-  cannot see the line. An
+  cannot see the line, and a root of another Dispatch project, whose line this daemon does not
+  publish, is counted by nobody. An
   unanswered one is in neither admission list, only among the live trees, so without this line the
   capacity it freed looks idle.
   While an answered root waits for its slot, its architect is sent one `waiting-for-slot` notice
