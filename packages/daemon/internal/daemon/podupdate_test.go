@@ -490,6 +490,21 @@ func (r *podUpdateRig) messages() []string {
 	return bodies
 }
 
+// awaitMessages waits for count messages on the issue and returns what it then read. A sweep
+// writes some of its reports inside the tick and leaves others to a claim's own machine, so a
+// read taken the moment the tick returns is right for the first kind and a race for the second:
+// on a loaded machine, running beside the rest of this package, it read nothing where the report
+// was one message away. The test's own count then decides, so an extra message still fails.
+func (r *podUpdateRig) awaitMessages(count int, what string) []string {
+	r.t.Helper()
+	var bodies []string
+	testwait.Eventually(r.t, what, func() bool {
+		bodies = r.messages()
+		return len(bodies) >= count
+	})
+	return bodies
+}
+
 func (r *podUpdateRig) replacements() []fake.Call {
 	return r.rt.CallsOf("ReplacePod")
 }
@@ -970,7 +985,7 @@ func TestPodUpdateWritesOnTheIssueWhenThePodWentWithoutItsRound(t *testing.T) {
 	// it, which is what the next sweep reads once the displaced path has relaunched them.
 	rig.tickBackIn(podUpdateReplacementPod)
 
-	messages := rig.messages()
+	messages := rig.awaitMessages(1, "the issue to be written on for the pod that went")
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written on %d times, want once for the pod that went", len(messages))
 	}
@@ -1064,9 +1079,10 @@ func TestPodUpdateEndsTheRoundAtTheFirstReadOfAGonePod(t *testing.T) {
 	rig.podGone()
 	rig.tick()
 
-	// The message is written inside the sweep, so it is there when the tick returns; the round
-	// ends through each claim's own machine, which is what the wait below is for.
-	messages := rig.messages()
+	// The report is one message away when the tick returns rather than certainly in the store, so
+	// the read waits for it; the round ends through each claim's own machine, which is what the
+	// wait below is for.
+	messages := rig.awaitMessages(1, "the issue to be written on for the pod that went")
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written on %d times at the sweep that read the pod gone, want once for the pod that went", len(messages))
 	}
@@ -1106,7 +1122,7 @@ func TestPodUpdateEndsTheRoundAtTheFirstReadOfAGonePod(t *testing.T) {
 	}
 	rig.tickBackIn(podUpdateReplacementPod)
 
-	if after := rig.messages(); len(after) != 1 {
+	if after := rig.awaitMessages(1, "the issue to be written on for the pod that went"); len(after) != 1 {
 		t.Fatalf("the issue was written on %d times once a worker answered in the pod that replaced the round's own, want the one report the gone read decided", len(after))
 	}
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateSignalledAt != nil {
@@ -2596,7 +2612,7 @@ func TestPodUpdateNamesOnlyTheRoundsOwnMembersAsHavingLostWork(t *testing.T) {
 
 	rig.tick()
 
-	messages := rig.messages()
+	messages := rig.awaitMessages(1, "the issue to be written on for the pod that went")
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written on %d times, want once for the pod that went: %q", len(messages), messages)
 	}
@@ -2893,7 +2909,7 @@ func TestPodUpdateTellsTheIssueOnceOfAWorkerThatAnswersOnlyInTheNewPod(t *testin
 
 	rig.tick()
 
-	messages := rig.messages()
+	messages := rig.awaitMessages(1, "the issue to be written on for the pod that went")
 	if len(messages) != 1 {
 		t.Fatalf("the issue was written on %d times, want once for the pod that went: %q", len(messages), messages)
 	}
@@ -2915,7 +2931,7 @@ func TestPodUpdateTellsTheIssueOnceOfAWorkerThatAnswersOnlyInTheNewPod(t *testin
 	// nothing more: the issue is told once.
 	rig.tick()
 
-	if after := rig.messages(); len(after) != 1 {
+	if after := rig.awaitMessages(1, "the issue to be written on for the pod that went"); len(after) != 1 {
 		t.Fatalf("the issue was written on %d times over two sweeps, want the one report the round's end decided: %q", len(after), after)
 	}
 }
