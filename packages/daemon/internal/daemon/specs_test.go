@@ -275,6 +275,9 @@ func TestTheControllersLaunchIsItsHeadlessPromptAndNoCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
+	// The controller's Env is empty only for a daemon holding none of the stall limits every
+	// launch is told (stallLimitVariables): this specs names no environment to read them from, so
+	// it holds none.
 	s := specs{
 		stateDir: t.TempDir(), project: "s1", prompts: composer, designSteps: config.DesignGateOff.Steps(), repositories: noRepositoriesView,
 		instructions: "/state/deployment-instructions.md", secrets: map[string]string{"ENVOY_TOKEN": "envoy-bearer"},
@@ -631,11 +634,12 @@ func TestSpawnSpecPluginsCoversTheDaemonsControllerToo(t *testing.T) {
 	}
 }
 
-// A phase worker's launch carries the stall limits the daemon's own environment holds, merged
-// into the git identity's variables rather than replacing them or being replaced by them, and
-// carries no stall variable the daemon does not hold: a worker told none of a limit runs on the
-// default its plugin holds (packages/pi-shared/src/stall-limits.ts). Both runtimes forward Env
-// verbatim, so this is where the four reach a pane and a pod alike.
+// A launch carries the stall limits the daemon's own environment holds, merged into the git
+// identity's variables rather than replacing them or being replaced by them, and carries no
+// variable the list does not hold: a session told none of a limit runs on the default its plugin
+// holds (packages/pi-shared/src/stall-limits.ts). The merge sits after SpawnSpec's fork, so the
+// controller's launch is told them as a phase worker's is, and both runtimes forward Env verbatim,
+// so this is where the seven reach a pane and a pod alike.
 func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
@@ -643,15 +647,23 @@ func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
 		t.Fatalf("compose the shipped prompts: %v", err)
 	}
 	held := map[string]string{
-		"LEGION_STALL_REMINDER_MS": "45000",
-		"LEGION_STALL_WAITING_MS":  "900000",
-		"LEGION_STALL_RESUME_MS":   "15000",
+		"LEGION_STALL_CALL_BOUND_MS": "3600000",
+		"LEGION_STALL_CALL_GRACE_MS": "300000",
+		"LEGION_STALL_REMINDER_MS":   "45000",
+		"LEGION_STALL_RESUME_MS":     "15000",
+		"LEGION_STALL_STEP_MS":       "120000",
+		"LEGION_STALL_WAITING_MS":    "900000",
 	}
-	// The fourth, LEGION_STALL_ARCHITECT_AFTER, is one this daemon does not hold: the environment
-	// below answers for the three alone, as a daemon started without it does.
+	// The seventh of the list, LEGION_STALL_ARCHITECT_AFTER, is one this daemon does not hold: the
+	// environment below answers for the six alone, as a daemon started without it does. A name the
+	// list does not hold reaches no launch, whatever that environment says, so it is in the
+	// environment and not in want.
+	environment := maps.Clone(held)
+	environment["LEGION_STALL_NOT_A_LIMIT_MS"] = "7"
+
 	bot := runtime.GitIdentity{Name: "legion-implement[bot]", Email: "9+legion-implement[bot]@users.noreply.github.com"}
 	s := specs{stateDir: t.TempDir(), project: "s1", prompts: composer, repositories: noRepositoriesView,
-		stallLimits: lookup(held),
+		stallLimits: lookup(environment),
 		identity:    func(context.Context, claim.Role, ghrepo.Repository) (runtime.GitIdentity, error) { return bot, nil }}
 	token, err := claim.NewToken("s1", "S1-2", claim.RoleImplementer)
 	if err != nil {
@@ -666,7 +678,17 @@ func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
 	want := maps.Clone(held)
 	maps.Copy(want, bot.Env())
 	if !maps.Equal(spec.Env, want) {
-		t.Errorf("the launch's Env = %v, want the three limits the daemon holds beside the git identity, %v", spec.Env, want)
+		t.Errorf("the worker's Env = %v, want the six limits the daemon holds beside the git identity, %v", spec.Env, want)
+	}
+
+	// The controller's launch is told the same six, and nothing of a worker's git identity: it
+	// works no repository and commits nothing (controllerSpawnSpec).
+	controller, err := s.SpawnSpec(context.Background(), supervise.Claim{Token: claim.ControllerToken("s1"), Project: "s1", Role: claim.RoleController})
+	if err != nil {
+		t.Fatalf("the controller's SpawnSpec: %v", err)
+	}
+	if !maps.Equal(controller.Env, held) {
+		t.Errorf("the controller's Env = %v, want the six limits the daemon holds, %v", controller.Env, held)
 	}
 
 	// A daemon with no GitHub Apps builds no identity, and the limits still reach the launch.
@@ -675,7 +697,7 @@ func TestSpawnSpecCarriesTheStallLimitsTheDaemonHolds(t *testing.T) {
 		t.Fatalf("SpawnSpec with no identity: %v", err)
 	}
 	if !maps.Equal(spec.Env, held) {
-		t.Errorf("the launch's Env with no identity = %v, want the three limits the daemon holds, %v", spec.Env, held)
+		t.Errorf("the worker's Env with no identity = %v, want the six limits the daemon holds, %v", spec.Env, held)
 	}
 }
 

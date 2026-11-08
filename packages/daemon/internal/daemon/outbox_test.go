@@ -2670,11 +2670,24 @@ type outboxClaimStore struct {
 	mu         sync.Mutex
 	claims     map[claim.Token]supervise.Claim
 	deliveries map[claim.Token]supervise.Delivery
+	// refused is the error every claim write answers while it is set, which is how a case drives
+	// a decision the store would not take (the stall backstop's own relaunch).
+	refused error
+}
+
+// refuse sets, or clears, the error this store answers every claim write with.
+func (s *outboxClaimStore) refuse(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refused = err
 }
 
 func (s *outboxClaimStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.refused != nil {
+		return s.refused
+	}
 	if s.claims == nil {
 		s.claims = map[claim.Token]supervise.Claim{}
 	}
@@ -2713,6 +2726,20 @@ func (s *outboxClaimStore) RetireDelivery(ctx context.Context, c supervise.Claim
 	defer s.mu.Unlock()
 	delete(s.deliveries, c.Token)
 	return nil
+}
+
+// PutClaimStep records the step columns alone, as the store's own narrow write does; these
+// tests read none of them.
+func (s *outboxClaimStore) PutClaimStep(_ context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, known := s.claims[token]
+	if !known {
+		return false, nil
+	}
+	c.Step = step
+	s.claims[token] = c
+	return true, nil
 }
 
 func newOutboxSupervisor(t *testing.T, project, stateDir string) (*supervisor, *fake.Runtime) {
