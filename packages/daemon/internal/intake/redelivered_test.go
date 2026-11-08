@@ -17,7 +17,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -37,6 +36,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -166,7 +166,7 @@ func TestADeliveryNATSRefusedIsRedeliveredByTheSweepAndApplied(t *testing.T) {
 		"NATS_URLS=" + natsURL,
 		"DISPATCH_APP_CLIENT_ID=" + redeliveredClientID,
 		"DISPATCH_APP_PEM_B64=" + base64.StdEncoding.EncodeToString([]byte(pemText)),
-		"DISPATCH_GITHUB_API_BASE=" + github.server.URL,
+		"DISPATCH_GITHUB_API_BASE=" + github.url,
 	}
 	output, err := sweep.CombinedOutput()
 	if err != nil {
@@ -455,7 +455,7 @@ type hookDelivery struct {
 // a redelivery re-posts the recorded attempt's body under the same GUID.
 type fakeGitHub struct {
 	t         *testing.T
-	server    *httptest.Server
+	url       string
 	publicKey *rsa.PublicKey
 	clientID  string
 	webhook   string
@@ -475,8 +475,7 @@ func newFakeGitHub(t *testing.T, publicKey *rsa.PublicKey, clientID, webhook str
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /app/hook/deliveries", g.list)
 	mux.HandleFunc("POST /app/hook/deliveries/{id}/attempts", g.attempt)
-	g.server = httptest.NewServer(mux)
-	t.Cleanup(g.server.Close)
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
 	return g
 }
 
@@ -537,7 +536,6 @@ func (g *fakeGitHub) list(w http.ResponseWriter, r *http.Request) {
 	rows := slices.Clone(g.log)
 	g.mu.Unlock()
 	slices.Reverse(rows)
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(rows); err != nil {
 		g.t.Errorf("encode the delivery log: %v", err)
 	}

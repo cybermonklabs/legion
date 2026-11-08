@@ -329,8 +329,8 @@ func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	server := githubtest.Serve(t, githubtest.Spec{Handle: handler.ServeHTTP})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL)
+	base := githubtest.Server(t, githubtest.Spec{Handle: handler.ServeHTTP})
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base)
 	if err != nil {
 		t.Fatalf("new github client: %v", err)
 	}

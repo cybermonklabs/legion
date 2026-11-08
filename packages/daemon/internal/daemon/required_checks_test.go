@@ -453,7 +453,7 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.AwaitingMerge, "retro",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
-	server := githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
+	api := githubtest.Server(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":false}`))
@@ -463,7 +463,7 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 			http.NotFound(w, r)
 		}
 	}})
-	requiredRuntime(pool, server.URL, quietLogger()).readRequiredChecks(context.Background())
+	requiredRuntime(pool, api, quietLogger()).readRequiredChecks(context.Background())
 	got, pr := capturePhase(t, pool)
 	if got != phase.Implementing {
 		t.Fatalf("after the pass the issue is in %s, want implementing: the conflict must withdraw the READY whether or not the rulesets read succeeds", got)

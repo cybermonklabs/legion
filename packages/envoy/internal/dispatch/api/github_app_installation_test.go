@@ -23,10 +23,10 @@ func appInstallationServer(t *testing.T, github http.HandlerFunc) http.Handler {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	upstream := githubtest.Serve(t, githubtest.Spec{Handle: github})
+	upstream := githubtest.Server(t, githubtest.Spec{Handle: github})
 	handler, _, _ := newTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: upstream.URL,
+		githubAPIBase: upstream,
 	})
 	return handler
 }

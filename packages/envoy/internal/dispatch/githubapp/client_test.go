@@ -394,8 +394,8 @@ func newTestClient(t *testing.T, fake *fakeGitHub) *Client {
 	key, pemText := testKeyPEM(t)
 	fake.publicKey = &key.PublicKey
 	fake.clientID = "Iv1.testclient"
-	server := githubtest.Serve(t, githubtest.Spec{Handle: fake.handler().ServeHTTP})
-	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, server.URL)
+	base := githubtest.Server(t, githubtest.Spec{Handle: fake.handler().ServeHTTP})
+	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, base)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}

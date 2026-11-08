@@ -184,7 +184,6 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		// GitHub's own answer to an exhausted rate limit.
 		w.Header().Set("X-RateLimit-Remaining", "0")
 		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10))
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
 		return
@@ -206,7 +205,6 @@ func (f *fakeGitHub) answer(w http.ResponseWriter, r *http.Request, payload any)
 	f.etags[r.URL.RequestURI()] = etag
 	f.mu.Unlock()
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Content-Type", "application/json")
 	if r.Header.Get("If-None-Match") == etag {
 		w.WriteHeader(http.StatusNotModified)
 		return
@@ -219,7 +217,6 @@ func (f *fakeGitHub) answer(w http.ResponseWriter, r *http.Request, payload any)
 // encode writes one JSON answer that carries no ETag: the App endpoints, which no caller reads
 // conditionally.
 func (f *fakeGitHub) encode(w http.ResponseWriter, payload any) {
-	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
 		f.t.Errorf("encode an App answer: %v", err)
 	}
@@ -255,8 +252,8 @@ func queryNumber(values url.Values, name string, fallback int) int {
 func (f *fakeGitHub) client(limits *ratelimit.Store) *githubapp.Client {
 	f.t.Helper()
 	_, text := githubapptest.Key(f.t)
-	server := githubtest.Serve(f.t, githubtest.Spec{Handle: f.serve})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, server.URL, githubapp.WithLimits(limits))
+	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)
 	}

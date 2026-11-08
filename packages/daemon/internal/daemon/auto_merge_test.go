@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,7 +50,7 @@ func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 			var mu sync.Mutex
 			var bearers []string
 			disables := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				defer mu.Unlock()
 				if r.URL.Path != "/graphql" {
@@ -60,19 +59,17 @@ func TestAnAutoMergeDisableRowKeepsOnlyTheAwaitedREADYHeadsArm(t *testing.T) {
 				}
 				bearers = append(bearers, r.Header.Get("Authorization"))
 				body, _ := io.ReadAll(r.Body)
-				w.Header().Set("Content-Type", "application/json")
 				if strings.Contains(string(body), "disablePullRequestAutoMerge") {
 					disables++
 					_, _ = w.Write([]byte(`{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`))
 					return
 				}
 				_, _ = w.Write([]byte(armedPullJSON("ready-head", disables == 0)))
-			}))
-			t.Cleanup(server.Close)
+			}})
 			pool := isolatedOutboxPool(t)
 			records := record.NewStore()
 			seedReadyMerge(t, pool, records, "LEGION-208", tc.seed)
-			runner := mergeRunner(pool, records, server.URL, quietLogger(), time.Now)
+			runner := mergeRunner(pool, records, api, quietLogger(), time.Now)
 			if err := runner.execute(context.Background(), mustOutboxRow(t, "LEGION-208", record.AutoMergeDisable{Number: 42}, time.Now())); err != nil {
 				t.Fatalf("execute the disarm: %v", err)
 			}
@@ -102,11 +99,10 @@ func TestAnAutoMergeDisableRowReadsGitHubBeforeTheRecord(t *testing.T) {
 		Generation: 1, Status: "retro", Rank: "U"})
 	var mu sync.Mutex
 	disables := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
 		body, _ := io.ReadAll(r.Body)
-		w.Header().Set("Content-Type", "application/json")
 		if strings.Contains(string(body), "disablePullRequestAutoMerge") {
 			disables++
 			_, _ = w.Write([]byte(`{"data":{"disablePullRequestAutoMerge":{"clientMutationId":null}}}`))
@@ -122,9 +118,8 @@ func TestAnAutoMergeDisableRowReadsGitHubBeforeTheRecord(t *testing.T) {
 			t.Errorf("commit the READY: %v", err)
 		}
 		_, _ = w.Write([]byte(armedPullJSON("ready-head", true)))
-	}))
-	t.Cleanup(server.Close)
-	runner := mergeRunner(pool, records, server.URL, quietLogger(), time.Now)
+	}})
+	runner := mergeRunner(pool, records, api, quietLogger(), time.Now)
 	if err := runner.execute(context.Background(), mustOutboxRow(t, "LEGION-208", record.AutoMergeDisable{Number: 42}, time.Now())); err != nil {
 		t.Fatalf("execute the disarm: %v", err)
 	}
@@ -577,7 +572,7 @@ func TestAREADYMergeQueuedBeforeTheQueueTimeWarnsFromItsCreatedAt(t *testing.T) 
 func TestAREADYMergeFailureThatIsNoWaitSpendsNoWaitingNotice(t *testing.T) {
 	var mu sync.Mutex
 	broken := true
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		failing := broken
 		mu.Unlock()
@@ -585,17 +580,15 @@ func TestAREADYMergeFailureThatIsNoWaitSpendsNoWaitingNotice(t *testing.T) {
 			http.Error(w, "GitHub is having trouble", http.StatusInternalServerError)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, pullJSON("OPEN", "ready-head", "BLOCKED"))
-	}))
-	t.Cleanup(server.Close)
+	}})
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
 	now := time.Now().UTC()
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
 	clock := now.Add(mergeWaitWarn + time.Minute)
-	runner := mergeRunner(pool, records, server.URL, quietLogger(), func() time.Time { return clock })
+	runner := mergeRunner(pool, records, api, quietLogger(), func() time.Time { return clock })
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("the run GitHub failed: %v", err)
 	}
@@ -635,11 +628,10 @@ func TestAREADYMergeFailureThatIsNoWaitSpendsNoWaitingNotice(t *testing.T) {
 func TestAREADYMergeDisagreementSpendsNoWaitingNotice(t *testing.T) {
 	var mu sync.Mutex
 	disagreeing := true
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		closed := disagreeing
 		mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		if closed {
 			// A close GitHub made just now, whose webhook has not reached the record: a
 			// disagreement the next run reads again, far from the bound that stalls it.
@@ -647,8 +639,7 @@ func TestAREADYMergeDisagreementSpendsNoWaitingNotice(t *testing.T) {
 			return
 		}
 		_, _ = io.WriteString(w, pullJSON("OPEN", "ready-head", "BLOCKED"))
-	}))
-	t.Cleanup(server.Close)
+	}})
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
@@ -658,7 +649,7 @@ func TestAREADYMergeDisagreementSpendsNoWaitingNotice(t *testing.T) {
 	queued := now.Add(-mergeWaitWarn - time.Minute)
 	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: queued}, now))
 	clock := now
-	runner := mergeRunner(pool, records, server.URL, quietLogger(), func() time.Time { return clock })
+	runner := mergeRunner(pool, records, api, quietLogger(), func() time.Time { return clock })
 	if err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("the run GitHub answered as closed: %v", err)
 	}
