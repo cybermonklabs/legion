@@ -1,7 +1,3 @@
-import { Buffer } from "node:buffer";
-import { chmodSync, closeSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { messageFor } from "@legion/envoy-client/errors";
 
 /**
@@ -20,10 +16,16 @@ import { messageFor } from "@legion/envoy-client/errors";
  *  says so. */
 export const SHELL_OUTPUT_MAX = 8_000;
 
-/** Bytes of a command's output read back from its file. Four times the character cut, so the read
- *  always holds more characters than the cut keeps, whatever the encoding costs, and a command
- *  that prints without end costs the session this much memory and no more. */
+/** Bytes of a command's output this module keeps. Four times the character cut, so what is kept
+ *  always holds more characters than the cut keeps, whatever the encoding costs. Past it every
+ *  byte is read and thrown away, so a command that prints without end costs the session this
+ *  much memory and nothing else at all: no file of its own, and no room on the session's disk. */
 const SHELL_OUTPUT_BYTES = 4 * SHELL_OUTPUT_MAX;
+
+/** How long the reads of a stopped command's two streams are given to finish after its process
+ *  group is killed. They end as the pipes close, in milliseconds; this only stops a stream some
+ *  process the command left behind still holds from holding the person's reply. */
+const SHELL_DRAIN_GRACE_MS = 1_000;
 
 const NOTHING_PRINTED = "The command printed nothing.";
 
@@ -50,9 +52,9 @@ export function shellCommandFrom(body: string): string | undefined {
   return body.startsWith("!") ? body.slice(1) : undefined;
 }
 
-/** The shell this module starts: no standard input, and both its output streams on one file
- *  descriptor. */
-type ShellSubprocess = Bun.Subprocess<"ignore", number, number>;
+/** The shell this module starts: no standard input, and a pipe of its own for each output
+ *  stream, which this module reads to its end so the command is never blocked by a full one. */
+type ShellSubprocess = Bun.Subprocess<"ignore", "pipe", "pipe">;
 
 /** Kills every process the command started, which its own process group holds. */
 function killGroup(pid: number): void {
@@ -63,15 +65,49 @@ function killGroup(pid: number): void {
   }
 }
 
-/** The first `SHELL_OUTPUT_BYTES` of the file the command printed to. */
-function readOutput(path: string): string {
-  const fd = openSync(path, "r");
+/**
+ * The first `SHELL_OUTPUT_BYTES` the command printed, from both of its streams in the order they
+ * arrived. Everything past that is read and thrown away rather than kept or written anywhere: a
+ * command that prints without end must cost the session a bounded amount of memory, no file of
+ * its own, and no room on its disk, and must still not be blocked by a pipe nobody empties.
+ */
+class BoundedOutput {
+  readonly #kept = new Uint8Array(SHELL_OUTPUT_BYTES);
+  #length = 0;
+
+  take(chunk: Uint8Array): void {
+    const room = this.#kept.length - this.#length;
+    if (room <= 0) return;
+    const keep = chunk.length <= room ? chunk : chunk.subarray(0, room);
+    this.#kept.set(keep, this.#length);
+    this.#length += keep.length;
+  }
+
+  text(): string {
+    return new TextDecoder().decode(this.#kept.subarray(0, this.#length));
+  }
+}
+
+/** Reads one of the command's streams to its end into `output`. It never throws: a stream the
+ *  kill broke is a stream with nothing left to say, and the command's own answer is what the
+ *  person is waiting for. */
+async function drain(stream: ReadableStream<Uint8Array>, output: BoundedOutput): Promise<void> {
   try {
-    const buffer = Buffer.alloc(SHELL_OUTPUT_BYTES);
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    return new TextDecoder().decode(buffer.subarray(0, read));
+    for await (const chunk of stream) output.take(chunk);
+  } catch {
+    // The pipe ended under us; what was read before it did is what the command said.
+  }
+}
+
+/** Waits for both streams to end, and gives up after `SHELL_DRAIN_GRACE_MS` so a stream some
+ *  process the command left behind still holds cannot hold the person's reply. */
+async function drained(reads: readonly Promise<void>[]): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  const give = setTimeout(resolve, SHELL_DRAIN_GRACE_MS);
+  try {
+    await Promise.race([Promise.all(reads), promise]);
   } finally {
-    closeSync(fd);
+    clearTimeout(give);
   }
 }
 
@@ -81,64 +117,62 @@ function readOutput(path: string): string {
  * and runs in a process group of its own, so nothing it left running outlives it or holds the
  * session.
  *
- * Both streams go to a file in a private directory rather than to a pipe: a pipe would be held
- * open by any process the command left running, and a command that prints without end would cost
- * the session the memory of everything it printed. Only the first `SHELL_OUTPUT_BYTES` are read
- * back, which is always more characters than the cut keeps.
+ * Both streams are pipes this module reads to their end, keeping the first `SHELL_OUTPUT_BYTES`
+ * and throwing the rest away, so `!yes` or `!cat /dev/urandom` costs the session those bytes of
+ * memory and nothing more. It writes no file: an earlier shape pointed both streams at one, which
+ * bounded what was read back and not what was written, and a command printing without end filled
+ * the disk the session runs on. The order of the two streams against each other is the order
+ * their chunks arrive in rather than the order the shell wrote them.
  */
 export async function runShellCommand(
   command: string,
   options: { readonly cwd: string; readonly limitMs: number }
 ): Promise<ShellCommandResult> {
-  const directory = mkdtempSync(join(tmpdir(), "envoy-shell-"));
+  let child: ShellSubprocess;
   try {
-    chmodSync(directory, 0o700);
-    const path = join(directory, "output");
-    const fd = openSync(path, "wx", 0o600);
-    let child: ShellSubprocess;
-    try {
-      child = Bun.spawn(["/bin/sh", "-c", command], {
-        cwd: options.cwd,
-        detached: true,
-        env: process.env,
-        stderr: fd,
-        stdin: "ignore",
-        stdout: fd,
-      });
-    } catch (error) {
-      return {
-        command,
-        cut: false,
-        output: "",
-        status: `The command could not start: ${messageFor(error)}.`,
-      };
-    } finally {
-      closeSync(fd);
-    }
-    let stopped = false;
-    const limit = setTimeout(() => {
-      stopped = true;
-      child.kill("SIGKILL");
-      killGroup(child.pid);
-    }, options.limitMs);
-    try {
-      await child.exited;
-    } finally {
-      clearTimeout(limit);
-      // Whatever the outcome, nothing the command started outlives it.
-      killGroup(child.pid);
-    }
-    const printed = readOutput(path);
-    const cut = printed.length > SHELL_OUTPUT_MAX;
+    child = Bun.spawn(["/bin/sh", "-c", command], {
+      cwd: options.cwd,
+      detached: true,
+      env: process.env,
+      stderr: "pipe",
+      stdin: "ignore",
+      stdout: "pipe",
+    });
+  } catch (error) {
     return {
       command,
-      cut,
-      output: printed.slice(0, SHELL_OUTPUT_MAX).trimEnd(),
-      status: statusOf(child, stopped, options.limitMs),
+      cut: false,
+      output: "",
+      status: `The command could not start: ${messageFor(error)}.`,
     };
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
   }
+  // The reads start before the wait: a pipe nobody empties fills, and a command blocked on a
+  // full one would never reach its own end.
+  const printed = new BoundedOutput();
+  const reads = [drain(child.stdout, printed), drain(child.stderr, printed)];
+  let stopped = false;
+  const limit = setTimeout(() => {
+    stopped = true;
+    child.kill("SIGKILL");
+    killGroup(child.pid);
+  }, options.limitMs);
+  try {
+    await child.exited;
+  } finally {
+    clearTimeout(limit);
+    // Whatever the outcome, nothing the command started outlives it - and the pipes close with
+    // the last process holding them, which is what ends the reads.
+    killGroup(child.pid);
+  }
+  await drained(reads);
+  const output = printed.text();
+  const cut = output.length > SHELL_OUTPUT_MAX;
+  return {
+    command,
+    cut,
+    output: output.slice(0, SHELL_OUTPUT_MAX).trimEnd(),
+    status: statusOf(child, stopped, options.limitMs),
+  };
 }
 
 /** How a command ended, as the one sentence the three texts carry, or undefined for one that
