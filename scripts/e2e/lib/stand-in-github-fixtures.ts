@@ -73,10 +73,12 @@ export interface StandInGitHub {
 }
 
 /** A stand-in GitHub and a temporary directory for the one test file that calls this, with an
- * `afterAll` that stops that server and removes that directory. The server and the directory are
- * process-wide state and a test file is a bun process of its own, so each file calls this once,
- * under a PREFIX of its own for the directory's name, and no file's teardown reaches what another
- * file owns. */
+ * `afterAll` that stops that server and removes that directory. `bun test` runs the files of one
+ * command in one process, one after the other: two files run together printed one pid, and a
+ * value the first set on `globalThis` was there for the second to read. So what keeps the files
+ * apart is this shape rather than the process: each call owns its own port-0 server, its own
+ * temporary directory under a prefix of its own, and its own `afterAll`, so each file calls this
+ * once and no file's teardown reaches what another file owns. */
 export function standInGitHub(prefix: string): StandInGitHub {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   const seen: string[] = [];

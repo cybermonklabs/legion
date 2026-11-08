@@ -178,10 +178,11 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
       `${field} could not run: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  /** Whether the command's output ended within the drain bound below. `end` resolves it too, so
-   * that the kill commandLimitMs makes ends the wait as well: the group kill cannot reach a
-   * descendant that left the group, and the streams it holds would otherwise outlive it. */
-  const drainWait = Promise.withResolvers<boolean>();
+  /** Signals that the run has stopped waiting on the command's output, because the drain bound
+   * below passed or `end` killed the group. `end` resolves it too, so that the kill
+   * commandLimitMs makes ends the wait as well: the group kill cannot reach a descendant that
+   * left the group, and the streams it holds would otherwise outlive it. */
+  const drainWait = Promise.withResolvers<false>();
   let ended = "";
   const end = (why: string) => {
     if (ended !== "") return;
@@ -202,13 +203,14 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
   let stderrBytes = 0;
   let pendingLine = "";
   /** How long this process has spent blocked in its own relay writes, which the drain bound
-   * below does not count against the command. */
+   * below does not count against the command. It and the bound's other durations are read from
+   * performance.now(), the clock no step of the wall clock moves. */
   let blockedMs = 0;
   const relayLine = (line: string) => {
     const clean = redactTokens(line);
-    const before = Date.now();
+    const before = performance.now();
     writeAll(2, clean);
-    blockedMs += Date.now() - before;
+    blockedMs += performance.now() - before;
     stderr += clean;
   };
   const relay = (async () => {
@@ -248,18 +250,30 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
   // bound counts is the wall-clock time since the exit that this process does not spend blocked
   // writing the output on: the relay writes this process's stderr synchronously, so a caller
   // that is behind holds one write for as long as it stays behind, and one 300,008-byte line
-  // relayed into a pipe whose reader slept eight seconds blocked for those eight seconds. What
-  // it does not count is the output itself, the escaped descendant's among it, so a descendant
-  // that prints while it holds the pipes open is failed at the bound like a silent one. The one
-  // wait this leaves unbounded is a caller that stays behind for good, which commandLimitMs, the
-  // 35 minutes the whole command gets, ends along with the command.
+  // relayed into a pipe whose reader slept eight seconds blocked for those eight seconds. Only
+  // the blocked time after the exit is added. A block that ended before the exit has already
+  // pushed the exit itself out by its own length, since the continuation below runs only once
+  // the loop is free, and adding it a second time would hand the descendant another stall to
+  // hold the pipes in: that line written before the exit, against the same eight-second reader,
+  // was failed at 21 seconds where the bound it is held to is 13. What the bound does not count
+  // is the output itself, the escaped descendant's among it, so a descendant that prints while
+  // it holds the pipes open is failed at the bound like a silent one. The one wait this leaves
+  // unbounded is a caller that stays behind for good, which commandLimitMs cannot end: its
+  // timer cannot run while a write holds the thread (writeAll's own comment), and a 3-second
+  // limit against a reader that slept 15 seconds fired at 15, once the reader woke. It ends a
+  // caller that is slow but still reading, between its writes; a caller that stops reading
+  // holds the write, and the run, until the job's own timeout.
   const status = await child.exited;
-  const exitedAt = Date.now();
+  const exitedAt = performance.now();
+  /** What blockedMs held at the exit, which the bound below subtracts so that only the blocks
+   * after the exit count against it. This continuation runs between writes, never inside one,
+   * so the snapshot is exact. */
+  const blockedAtExit = blockedMs;
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
   const armDrain = (ms: number) => {
     drainTimer = setTimeout(() => {
       // blockedMs grows while the timer waits, so a firing that is early re-arms for the rest.
-      const left = exitedAt + drainLimitMs + blockedMs - Date.now();
+      const left = exitedAt + drainLimitMs + (blockedMs - blockedAtExit) - performance.now();
       if (left <= 0) drainWait.resolve(false);
       else armDrain(left);
     }, ms);

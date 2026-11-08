@@ -307,6 +307,32 @@ describe("app-logins.ts", () => {
     expect(JSON.parse(readFileSync(succeeding, "utf8")).implement).toBe("example-implement[bot]");
   }, 30_000);
 
+  // The same eight-second stall, with a whole 300,002-byte line written before the command
+  // exits rather than after it: the relay blocks on that line, the exit is read only once the
+  // reader wakes, and the stall has therefore already pushed the exit out. The bound counts the
+  // blocked time after the exit alone, so a bound that counted this block too would hand the
+  // escaped descendant a second stall to hold the pipes in, and hide its diagnosis for it.
+  test("a reader that falls behind before the exit does not buy an escaped descendant a second stall", async () => {
+    // A bound of its own: the row holds a reader for eight seconds on purpose and then waits out
+    // the five the drain gives the descendant, with room for the twenty-one this row refuses.
+    const escaped = "printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'sleep 40' >&2 & exit 3";
+    const path = config(app("101", escaped), app("202"));
+    const started = Date.now();
+    const printed = await behindReader(
+      `  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
+  echo "exit=$?"`,
+      8
+    );
+    const elapsed = Date.now() - started;
+    expect(printed).toContain("still held its output open");
+    expect(printed.split("\n")).toContain("exit=1");
+    // Thirteen seconds is the stall the exit waits out plus the five the drain bound gives;
+    // twenty-one is that stall counted a second time, as a bound measured from the spawn counts
+    // it. The window takes the first and refuses the second.
+    expect(elapsed, `${elapsed} ms`).toBeGreaterThan(11_000);
+    expect(elapsed, `${elapsed} ms`).toBeLessThan(17_000);
+  }, 30_000);
+
   test("output that is no release, an expired token, or no installation is refused without quoting it", async () => {
     const cases: [string, string][] = [
       [`echo '{"token":"${tokenOf(101)}"'`, "printed no release"],
