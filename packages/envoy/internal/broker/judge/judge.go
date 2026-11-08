@@ -2,15 +2,15 @@
 // human-tier credential request the airlock rules allow it to decide, and leaves every other
 // request for the person who decides it today. It approves or refers, and it never denies.
 //
-// One run is one request. It makes five checks of its own before any model is asked — the rules
-// entry's judge bound, the request's shape and lifetime, the tag policy re-read now, what the
-// session has had withheld from it, and the Dispatch issue the signed reason names — and stops
-// at the first that fails, leaving the request pending with a request.judged row that says which
-// check it was and asking the model nothing. A request that passes all five, and that the
-// machine still shows pending when the run reads its state once more (Runner.stillPending), is
-// put to one model through packages/envoy/agentloop, as data to judge rather than as
-// instructions (D15): approve is written with the approval itself, in one transaction, and
-// refer writes the row alone.
+// One run is one request. It makes six checks of its own before any model is asked — the rules
+// entry's judge bound, the request's shape and lifetime, the tag policy re-read now, whether the
+// secret is an administrator's, what the session has had withheld from it, and the Dispatch
+// issue the signed reason names — and stops at the first that fails, leaving the request pending
+// with a request.judged row that says which check it was and asking the model nothing. A request
+// that passes all six, and that the machine still shows pending when the run reads its state
+// once more (Runner.stillPending), is put to one model through packages/envoy/agentloop, as data
+// to judge rather than as instructions (D15): approve is written with the approval itself, in
+// one transaction, and refer writes the row alone.
 //
 // Nothing a run does is on a caller's path. A run that goes past its budget, and a broker that
 // stops serving under one, write nothing at all, which leaves the request exactly as the hook
@@ -66,13 +66,21 @@ const maxJudgedLifetime = 15 * time.Minute
 // with it.
 const doneStatus = "done"
 
-// The five checks a run makes before the model, in the order it makes them. These are the names
+// The six checks a run makes before the model, in the order it makes them. These are the names
 // a request.judged row calls them by, so a reader of the row and a reader of this package see
 // one set of words.
+//
+// They read from the request outwards: what the rules say of the name, what the request itself
+// asks for, what the policy answers for it now, what the secret is, what this session has had
+// taken back, and last the issue outside the broker the reason names. checkAdmin sits directly
+// after checkPolicy because the two are one read of the machine (Requests.JudgePolicy): the
+// policy's outcome and the secret's admin tag come back together, and the admin refusal is
+// about the secret rather than about the session, which is what checkWithheld is about.
 const (
 	checkRulesJudge = "rules-judge"
 	checkLifetime   = "lifetime"
 	checkPolicy     = "policy"
+	checkAdmin      = "admin"
 	checkWithheld   = "withheld"
 	checkIssue      = "issue"
 )
@@ -92,12 +100,19 @@ type check struct {
 type Requests interface {
 	// JudgePolicy answers, for the enrollment that made a pending request, what the live
 	// policy says about one of its names at this moment: the decision policy.Set.Evaluate
-	// makes for that enrollment's requester, and whether the name is withheld from the
-	// session. The judge asks the machine one question instead of reading the policy
-	// itself, because what a requester is — the person it acts for, the service its
+	// makes for that enrollment's requester, whether the name is withheld from the
+	// session, and whether the secret is an administrator's (policy.Secret.Admin, the
+	// admin: "true" tag). The judge asks the machine one question instead of reading the
+	// policy itself, because what a requester is — the person it acts for, the service its
 	// account still proves, and the names its operator took back from it — is read from the
 	// database and is the machine's to answer (requests.Machine.requester).
-	JudgePolicy(ctx context.Context, enrollmentID, name string) (now policy.Decision, withheld bool, err error)
+	//
+	// The tag comes back beside the decision rather than from a read of the judge's own,
+	// because it is read off the very snapshot the decision was made against: a judge
+	// holding a policy.Set of its own could answer for one snapshot while deciding on
+	// another, and the promise an admin tag makes — that a person approves every release —
+	// is not one to leave to two reads that may disagree.
+	JudgePolicy(ctx context.Context, enrollmentID, name string) (now policy.Decision, withheld, admin bool, err error)
 
 	// JudgeRequestState answers the state a decision would meet now for the record a run
 	// is judging: "pending" for a request still waiting on its person, "expired" for one
@@ -128,7 +143,7 @@ type Options struct {
 	Model    Model
 	// Requests is the machine a verdict is written through.
 	Requests Requests
-	// SkipChecks turns the five checks off as a bar: each is still made and still recorded,
+	// SkipChecks turns the six checks off as a bar: each is still made and still recorded,
 	// and none of them holds a request back, so the model is asked about a request a check
 	// would have stopped. It is the negative control of the judge's own checks and is for
 	// the broker's local stack alone (BROKER_JUDGE_TEST_SKIP_CHECKS).
@@ -200,7 +215,7 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 // expiry are state changes — so LogJudged finds the request and the enrollment it hangs off,
 // and the trail says why a run that cost a Dispatch read decided nothing.
 //
-// It is a gate and not a sixth entry in the checks array. The five checks answer one question —
+// It is a gate and not a seventh entry in the checks array. The six checks answer one question —
 // may the judge decide this request? — and a reader of a row reads them as that one list, which
 // the verification document's check k10 and scripts/judge-check.sh pin by name and in order.
 // This answers another question altogether: is there still a request to decide? Nothing is
@@ -219,7 +234,7 @@ func (r *Runner) stillPending(ctx context.Context, p requests.PendingRequest) st
 	return ""
 }
 
-// beforeTheModel makes the five checks, in order, and builds the data the model would be shown.
+// beforeTheModel makes the six checks, in order, and builds the data the model would be shown.
 // It stops at the first failure, so a request the rules do not let the judge decide costs no
 // Dispatch read and no model call. Under Options.SkipChecks it makes every check all the same,
 // recording each, so the negative control shows the model a request a check would have stopped.
@@ -263,7 +278,7 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		return checks, data
 	}
 
-	now, withheld, err := r.opts.Requests.JudgePolicy(ctx, p.EnrollmentID, name)
+	now, withheld, admin, err := r.opts.Requests.JudgePolicy(ctx, p.EnrollmentID, name)
 	switch {
 	case err != nil:
 		if !add(checkPolicy, false, "the policy could not be re-read: "+err.Error()) {
@@ -275,6 +290,10 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 		}
 	default:
 		add(checkPolicy, true, "")
+	}
+
+	if !add(checkAdmin, !admin, decidedByAPerson(name)) {
+		return checks, data
 	}
 
 	if !add(checkWithheld, !withheld, fmt.Sprintf("%s is withheld from this session", name)) {
@@ -318,7 +337,17 @@ func decidesNothingFor(name string) string {
 	return fmt.Sprintf("the airlock rules let the judge decide nothing for %s", name)
 }
 
-// issue is the fifth check, and the only one that reads anything outside the broker: the signed
+// decidedByAPerson is the sentence the admin check writes, and the one a person reads in the
+// request.judged row of a request the judge left alone for being an administrator's. It says
+// both halves of why nothing happened: what the secret is, and that the promise its tag makes
+// is unconditional — every release of such a credential is approved by a person, and no rules
+// file that gives the judge seconds of the name can undo that (policy.TagAdmin, the broker's
+// concepts document).
+func decidedByAPerson(name string) string {
+	return fmt.Sprintf("%s is an administrator's secret, and a person approves every release of one", name)
+}
+
+// issue is the sixth check, and the only one that reads anything outside the broker: the signed
 // reason names a Dispatch issue key, and Dispatch shows that issue at a status that is not done.
 // What it read goes into data, so the model sees the issue the check passed on; a read that
 // failed still leaves the key there, which is what the negative control shows the model.
@@ -441,14 +470,14 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 			return
 		}
 		// A person decided the request first, it expired, or the current policy moved
-		// while the judge was reading: the session's operator withheld the name (the
-		// guard currentPolicyAdmits makes for the judge alone), the name's owner changed,
-		// or its max-grant fell below the request's lifetime. Each is the ordinary outcome
-		// of losing a race and no fault of the judge's (D10), and the policy's three all
-		// answer record.ErrNotApprover. Any other refusal is one the judge should not have
-		// reached at all. Either way the approval wrote nothing, and the verdict is still
-		// the record of what the judge was asked and what it answered, so it is written on
-		// its own.
+		// while the judge was reading: the session's operator withheld the name or its
+		// owner tagged it an administrator's (the two guards currentPolicyAdmits makes
+		// for the judge alone), the name's owner changed, or its max-grant fell below the
+		// request's lifetime. Each is the ordinary outcome of losing a race and no fault
+		// of the judge's (D10), and the policy's four all answer record.ErrNotApprover.
+		// Any other refusal is one the judge should not have reached at all. Either way
+		// the approval wrote nothing, and the verdict is still the record of what the
+		// judge was asked and what it answered, so it is written on its own.
 		row.notApplied = err
 		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, record.ErrNotApprover) {
 			slog.Info("broker judge: the request was decided, expired or moved out of the judge's policy before the judge's approval landed",

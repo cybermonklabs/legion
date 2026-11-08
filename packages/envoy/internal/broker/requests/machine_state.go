@@ -1525,16 +1525,25 @@ const PolicyDeniedActor = "broker:policy"
 // below the request's lifetime, or that now has one the request names none for, is no one's to
 // approve now, as with a withheld name: the session asks again within it.
 //
-// The model judge is held to one rule of its own, ahead of all of this: it settles no withheld
-// name, however the policy reads that name now. The run made that check itself before it asked
-// a model anything (judge's withheld check), and then spent up to 20 seconds on the model call,
-// so a name the session's operator took back in the meantime would otherwise be the one thing
-// the run checked that this transaction does not check again — every other check it made is
-// made again here or in record.MayJudge. It is hard to reach, since only names granted
-// automatically are withheld and the name must have changed tier while the request waited, and
-// it is one comparison to close. A person's path never reaches the guard: a withheld name a
-// person may approve is still theirs to approve, on the rules below, which are the rules they
-// have always been held to.
+// The model judge is held to two rules of its own, ahead of all of this: it settles no withheld
+// name and no administrator's secret, however the policy reads that name now. The run made both
+// checks itself before it asked a model anything (judge's withheld and admin checks), and then
+// spent up to 20 seconds on the model call, so what either of them read could have changed in
+// those seconds, and this transaction is the boundary where it is read again — every other check
+// the run made is made again here or in record.MayJudge.
+//
+// A withheld name is hard to reach, since only names granted automatically are withheld and the
+// name must have changed tier while the request waited. An admin secret is easier: its owner
+// adds the tag while the model is answering, or a deployment writes a judge entry for a name
+// that already carries it, and the judge's own check — made against the policy snapshot of a
+// moment ago — would be the only thing refusing a credential whose tag promises that a person
+// approves every release of it (policy.TagAdmin). That promise is the secret's and not the rules
+// file's to make, so the author of the rules file cannot undo it here either. Both are one
+// comparison to close.
+//
+// A person's path never reaches either guard: a withheld name a person may approve is still
+// theirs to approve, and an admin secret is approved by the person its owner tag names, both on
+// the rules below, which are the rules they have always been held to.
 //
 // set is the one snapshot the whole decision is made against, the one whose airlock fingerprints
 // the request then records as what it was decided under (decidedUnder), and requested the
@@ -1544,6 +1553,9 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 		for _, g := range requested {
 			if slices.Contains(requester.Withheld, g.name) {
 				return fmt.Errorf("%w: %s is withheld from this session, and the judge settles no withheld name", record.ErrNotApprover, g.name)
+			}
+			if set.Secrets[g.name].Admin {
+				return fmt.Errorf("%w: %s is an administrator's secret, and a person approves every release of one", record.ErrNotApprover, g.name)
 			}
 		}
 	}

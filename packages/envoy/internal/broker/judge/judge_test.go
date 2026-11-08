@@ -21,7 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logtest"
 )
 
-// TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing is each of the five checks in
+// TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing is each of the six checks in
 // turn: the request is left pending, one request.judged row names the check that failed, and the
 // model is never asked. The checks before the issue read stop the run before Dispatch is called
 // at all, which is what keeps a request the rules do not allow from costing a round trip.
@@ -70,6 +70,16 @@ func TestACheckThatFailsLeavesTheRequestPendingAndAsksTheModelNothing(t *testing
 			machine: func(f *fakeRequests) {
 				f.decision = policy.Decision{Outcome: policy.Deny, Reason: policy.ReasonRequesterNotListed}
 			},
+		},
+		{
+			// An administrator's secret: the tag promises that a person approves
+			// every release of one, and the judge is no person. The promise holds
+			// whatever seconds a rules file gives the judge for the name, which is
+			// why this request reaches the admin check at all — its entry has a
+			// judge, its lifetime is inside the bound and the policy approves it.
+			name: "an administrator's secret", want: checkAdmin,
+			wantDetail: "is an administrator's secret, and a person approves every release of one",
+			machine:    func(f *fakeRequests) { f.admin = true },
 		},
 		{
 			name: "a name withheld from the session", want: checkWithheld,
@@ -415,7 +425,7 @@ func TestTheDataInFrontOfTheModelIsTheRequestAndItsIssue(t *testing.T) {
 }
 
 // TestSkipChecksAsksTheModelAboutARequestACheckWouldHaveStopped is the negative control of the
-// five checks: with the switch on, a request that fails one still reaches the model, and the row
+// six checks: with the switch on, a request that fails one still reaches the model, and the row
 // still records which check failed.
 func TestSkipChecksAsksTheModelAboutARequestACheckWouldHaveStopped(t *testing.T) {
 	dispatch, model, machine := newDispatch(t, "doing", testSpec), newModel(t, verdictReply(Approve, "yes")), newRequests()

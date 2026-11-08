@@ -19,9 +19,10 @@
 # under TMPDIR; that two broker processes are started, each with the whole BROKER_AIRLOCK_*
 # block and both on one database; that every broker is given the model judge - the six
 # BROKER_JUDGE_* settings and the metadata host its own credential is minted at; that the
-# judge's three human-tier secrets are in the rules and the store as they must be for it to
-# decide two of them and leave the third; that the banner exports the three stands' records,
-# the route a check sets the model's answer at, and the two issues the Dispatch stand holds;
+# judge's four human-tier secrets are in the rules and the store as they must be for it to
+# decide two of them, leave the third and refuse the administrator's fourth; that the banner
+# exports the three stands' records, the route a check sets the model's answer at, and the two
+# issues the Dispatch stand holds;
 # that one front stands over the two API ports and one over the two proxy ports, and that both
 # brokers name those fronts as their public and proxy URLs; that --keep-values, --no-kind,
 # --idle-seconds and --judge-skip-checks reach the brokers' environment and --one-broker starts
@@ -373,16 +374,22 @@ fi
 printf 'PASS: every broker is given the model judge (model %s at %s, Dispatch %s, its token file, and the metadata server its own credential is minted at)\n' \
   "$judge_model" "$model_url" "$dispatch_url"
 
-# The judged secrets: the rules give the judge seconds of two of them and nothing of the third,
-# and the fake store holds all three at human tier - two the approver's and one owned by
-# nobody - so each waits for a person unless the judge decides it first.
+# The judged secrets: the rules give the judge seconds of three of them and nothing of the
+# fourth, and the fake store holds all four at human tier - three the approver's and one owned
+# by nobody - so each waits for a person unless the judge decides it first. One of the
+# approver's three is an administrator's secret, which the judge must refuse although the rules
+# give it the same seconds: the stack writes that entry on purpose, so a check can see the
+# refusal come from the broker and not from a rules file that left the name out.
 judged_secret="$(exported AIRLOCK_JUDGED_SECRET)"
 unjudged_secret="$(exported AIRLOCK_UNJUDGED_SECRET)"
 shared_secret="$(exported AIRLOCK_SHARED_SECRET)"
+admin_secret="$(exported AIRLOCK_ADMIN_SECRET)"
+admin_max_grant="$(exported AIRLOCK_ADMIN_MAX_GRANT)"
 judge_seconds="$(exported AIRLOCK_JUDGE_SECONDS)"
 fake_secrets="$(exported AIRLOCK_FAKE_SECRETS_FILE)"
 approver="$(exported AIRLOCK_APPROVER)"
-for want in "$judged_secret=$judge_seconds" "$shared_secret=$judge_seconds" "$unjudged_secret=null"; do
+for want in "$judged_secret=$judge_seconds" "$shared_secret=$judge_seconds" \
+  "$admin_secret=$judge_seconds" "$unjudged_secret=null"; do
   name="${want%=*}"
   seconds="${want#*=}"
   got="$(jq -r --arg name "$name" '.secrets[] | select(.name == $name) | .judge // "null"' "$rules_file")"
@@ -391,7 +398,8 @@ for want in "$judged_secret=$judge_seconds" "$shared_secret=$judge_seconds" "$un
     exit 1
   fi
 done
-for want in "airlock-judged-token=$approver" "airlock-unjudged-token=$approver" "airlock-shared-token=shared"; do
+for want in "airlock-judged-token=$approver" "airlock-unjudged-token=$approver" \
+  "airlock-shared-token=shared" "airlock-admin-token=$approver"; do
   name="${want%=*}"
   owner="${want#*=}"
   got="$(jq -r --arg name "$name" '.secrets[] | select(.name | endswith($name)) | "\(.tags.owner) \(.tags.tier) \(.tags.kind // "none") \(.value | length > 0)"' "$fake_secrets")"
@@ -400,8 +408,21 @@ for want in "airlock-judged-token=$approver" "airlock-unjudged-token=$approver" 
     exit 1
   fi
 done
-printf 'PASS: the judge has %s and %s to decide (%s seconds each) and %s to leave alone, all three human tier and one of them owned by nobody\n' \
-  "$judged_secret" "$shared_secret" "$judge_seconds" "$unjudged_secret"
+# The admin secret's own three tags. The policy refuses an administrator's secret that is not
+# human tier, names no requesters or caps no grant (policy.TagRules), so a stack that wrote any
+# of them wrong would not serve the name at all and the check that reads the judge's refusal
+# would be reading a missing secret instead. The list has to name the service the brokers
+# themselves register (BROKER_SERVICES), since that is who the enrolled pod acts for, so the
+# name is read off a broker's own line rather than spelled again here.
+service="$(grep -o 'fake broker: .*' "$log" | grep -o 'services=[^= ]*' | head -n 1 | cut -d= -f2)"
+admin_tags="$(jq -r --arg name "airlock-admin-token" '.secrets[] | select(.name | endswith($name)) | "\(.tags.admin) \(.tags.requesters) \(.tags["max-grant"])"' "$fake_secrets")"
+if [[ "$admin_tags" != "true $approver $service $admin_max_grant" ]]; then
+  echo "FAIL: the store holds the admin secret's tags as [$admin_tags]; want admin true, requesters naming $approver and the stack's service, and a max-grant of $admin_max_grant" >&2
+  exit 1
+fi
+printf 'PASS: the judge has %s, %s and %s to decide (%s seconds each) and %s to leave alone, all four human tier, one of them owned by nobody and one of them an administrator'"'"'s secret the judge must refuse (admin true, requesters %s %s, max-grant %s)\n' \
+  "$judged_secret" "$shared_secret" "$admin_secret" "$judge_seconds" "$unjudged_secret" \
+  "$approver" "$service" "$admin_max_grant"
 
 # What a check needs to drive the judge: the three stands' records, the answer route and the
 # two issues the Dispatch stand holds.

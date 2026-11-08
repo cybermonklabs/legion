@@ -274,10 +274,11 @@ func contentText(t *testing.T, content json.RawMessage) string {
 // test sets and keeps every detail object the judge wrote.
 type fakeRequests struct {
 	mu sync.Mutex
-	// decision, withheld and policyErr are what JudgePolicy answers, and policyAsked the
-	// names it was asked about.
+	// decision, withheld, admin and policyErr are what JudgePolicy answers, and
+	// policyAsked the names it was asked about.
 	decision    policy.Decision
 	withheld    bool
+	admin       bool
 	policyErr   error
 	policyAsked []string
 	// state and stateErr are what JudgeRequestState answers, and stateAsked how many
@@ -301,11 +302,11 @@ func newRequests() *fakeRequests {
 	}
 }
 
-func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.Decision, bool, error) {
+func (f *fakeRequests) JudgePolicy(_ context.Context, _, name string) (policy.Decision, bool, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.policyAsked = append(f.policyAsked, name)
-	return f.decision, f.withheld, f.policyErr
+	return f.decision, f.withheld, f.admin, f.policyErr
 }
 
 func (f *fakeRequests) JudgeRequestState(_ context.Context, _ string) (string, error) {

@@ -16,23 +16,42 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
 // judgeModel is the model deciding in these tests; every judge actor they expect is
 // record.JudgeActor of it.
 const judgeModel = "claude-opus-4-6"
 
+// adminSecretName is the administrator's credential these tests ask for, and adminSecret the
+// secret itself: human tier and the operator's own, carrying the requesters list and the hour's
+// cap the admin tag demands of a secret beside the tag (policy.TagRules, which refuses an admin
+// secret that is agent tier, lists nobody or caps nothing). A test that wants it puts it into
+// its own fixture's store rather than fixtureSecrets holding it, so every other test's policy
+// is the one it has always been.
+const adminSecretName = "ADMIN_CONSOLE_KEY"
+
+func adminSecret() secrets.LocalSecret {
+	s := policytest.ListedSecret(adminSecretName, fixtureOperator, policy.TierHuman, fixtureOperator, "admin-v1")
+	s.Tags[policy.TagAdmin] = policy.AdminTrue
+	return s
+}
+
 // newJudgeFixture is newFixture with airlock rules behind it that let the judge decide up to 900
-// seconds of DEEL_API_KEY, the operator's own human-tier secret, and of SHARED_KEY, the shared
-// one: the two records' approvers are a person's login and record.AnyoneApprover, which is the
-// difference the grant's approver turns on. The chain verifier is rebuilt against those rules,
-// since it holds a judge's approval to the same bound (record.ChainVerifier.JudgeSeconds).
+// seconds of DEEL_API_KEY, the operator's own human-tier secret, of SHARED_KEY, the shared one,
+// and of adminSecretName, the administrator's: the first two records' approvers are a person's
+// login and record.AnyoneApprover, which is the difference the grant's approver turns on, and
+// the third is the entry a deployment must not be able to write its way past, since the rules
+// file is the one thing the admin tag's promise does not answer to. The chain verifier is
+// rebuilt against those rules, since it holds a judge's approval to the same bound
+// (record.ChainVerifier.JudgeSeconds).
 func newJudgeFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 	t.Helper()
 	m, enrollmentID, key, _ := newFixture(t)
 	m.Airlock = airlock.Rules{Secrets: []airlock.SecretRule{
 		{Name: "DEEL_API_KEY", Hosts: []string{"api.deel.example"}, Judge: new(uint32(900))},
 		{Name: "SHARED_KEY", Hosts: []string{"shared.example"}, Judge: new(uint32(900))},
+		{Name: adminSecretName, Hosts: []string{"admin.example"}, Judge: new(uint32(900))},
 	}}
 	m.Chain = NewChainVerifier(m.Store, testAudience, time.Minute, m.Airlock)
 	return m, enrollmentID, key
@@ -420,5 +439,42 @@ func TestTheJudgeSettlesNoWithheldName(t *testing.T) {
 	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
 	if err != nil || person.State != "granted" || person.GrantID == "" {
 		t.Fatalf("the owner's approval of the same withheld name = %+v, %v; want it granted, as it always was", person, err)
+	}
+}
+
+// TestTheJudgeSettlesNoAdminSecret: an admin-tagged secret promises that a person approves every
+// release of it, and the judge is no person. Its run checks the tag itself before it asks a
+// model anything (judge's admin check) and then spends up to twenty seconds on the model call,
+// in which the tag can be added or a rules entry written for a name that already carries it, so
+// the decision transaction checks it again: the judge's approval of such a name is refused,
+// neither granted nor denied, and the request waits for the person who decides it.
+//
+// The rules entry is the point. This fixture's rules give the judge 900 seconds of the name
+// (newJudgeFixture), which is exactly the deployment the defect allowed — a judge entry written
+// for an administrator's secret — and the transaction refuses it all the same: the tag's promise
+// is the secret's, and the author of the rules file cannot undo it.
+//
+// The guard is the judge's alone: the same admin secret, on the same request, is still the
+// owner's to approve, which is the path a person has had all along.
+func TestTheJudgeSettlesNoAdminSecret(t *testing.T) {
+	m, enr, key := newJudgeFixture(t)
+	retag(t, m, adminSecret())
+	req := pendingJudgeable(t, m, enr, key, "INFRA-1353 wants the admin console", 600, adminSecretName)
+
+	dec, err := m.ApplyJudgeDecision(t.Context(), *req.RecordID, judgeModel, map[string]any{"verdict": "approve"})
+	if !errors.Is(err, record.ErrNotApprover) {
+		t.Fatalf("the judge's approval of an administrator's secret = %+v, %v; want record.ErrNotApprover", dec, err)
+	}
+	got := readDecided(t, m, *req.RecordID)
+	if got.events != 0 || got.state != "pending" || got.decidedBy != "" || len(got.approvers) != 0 {
+		t.Fatalf("after the refusal = %+v; want the request untouched and pending", got)
+	}
+	if judged := readJudged(t, m, *req.RecordID); len(judged) != 0 {
+		t.Errorf("request.judged rows = %+v; want none: the transaction wrote nothing", judged)
+	}
+
+	person, err := m.ApplyDecision(t.Context(), *req.RecordID, true, fixtureOperator)
+	if err != nil || person.State != "granted" || person.GrantID == "" {
+		t.Fatalf("the owner's approval of the same administrator's secret = %+v, %v; want it granted, which is the only way one is ever released", person, err)
 	}
 }

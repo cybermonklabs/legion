@@ -4,9 +4,9 @@
 # Runs one before_merge check of the model judge's verification document
 # (dispatch://INFRA-1353/artifact/verification-md) end to end and says whether it passed, so
 # that the implementer and the tester run the same command and read the same evidence. It is
-# scripts/airlock-check.sh for the judge's own six checks - k10, k10b, k10c, k10d, k10e and
-# k10f - and copies that script's shape: the same stack, the same helpers, the same result
-# block.
+# scripts/airlock-check.sh for the judge's own seven checks - k10, k10b, k10c, k10d, k10e,
+# k10f and k10g - and copies that script's shape: the same stack, the same helpers, the same
+# result block.
 #
 # What one run proves is the check's own sentence and nothing wider. The script starts the
 # local stack the check needs (scripts/dev-airlock.sh), drives every case the check names,
@@ -28,7 +28,7 @@
 # called `judge`; here the judge is the thing under test, so the helper is called `assert` and
 # the word "judge" means the broker's model judge throughout.
 #
-# Three things this stack measured shape how the checks below are driven, and each is said
+# Four things this stack measured shape how the checks below are driven, and each is said
 # again in the result block of the check it touches:
 #
 #   - The broker reads BROKER_AIRLOCK_RULES_FILE once, at boot (cmd/broker/main.go: "The file is
@@ -47,11 +47,21 @@
 #   - A grant the judge decided records the *record's* own approver in grants.approver
 #     (requests' decider.grantApprover) and the judge in requests.decided_by. k10e's and k10f's
 #     result blocks say which column each of their sentences is about.
+#   - A refusal the broker makes in its own code, with no setting that turns it off, can be
+#     controlled for only by a broker built from a source tree with that code taken out. k10g's
+#     admin refusal is one: it lives in the judge's sixth check and in the guard
+#     currentPolicyAdmits makes for the judge, and BROKER_JUDGE_TEST_SKIP_CHECKS reaches
+#     neither honestly - it would leave the transaction guard standing, so the request would be
+#     put to the model and the approval then refused, which leaves it pending and proves
+#     nothing, exactly as k10d's control note says of the lifetime comparison. So k10g copies
+#     this module's source to its own work directory, takes the refusal out of both places,
+#     builds a broker from it and runs the same request at that broker, as k10b's control is a
+#     scratch copy of one package with one import added.
 #
 # Usage: packages/envoy/scripts/judge-check.sh <id> [--keep-stack]
-#        <id> is k10, k10b, k10c, k10d, k10e or k10f. --keep-stack leaves the stack and the work
-#        directory up for a person to look at a failure with. --help prints this usage.
-#        A usage error exits 2.
+#        <id> is k10, k10b, k10c, k10d, k10e, k10f or k10g. --keep-stack leaves the stack and
+#        the work directory up for a person to look at a failure with. --help prints this
+#        usage. A usage error exits 2.
 #
 # Needs bash, curl, jq, go and psql. DEV_BROKER_POSTGRES_URL is passed to dev-airlock.sh
 # as it is, so a pod with no container runtime names its test server there. k10b needs no stack
@@ -68,7 +78,7 @@ usage: judge-check.sh <id> [--keep-stack]
 Runs one before_merge check of dispatch://INFRA-1353/artifact/verification-md and prints, for
 each property the check's outcome sentence names, what it expected beside what it got.
 
-  <id>           k10, k10b, k10c, k10d, k10e or k10f
+  <id>           k10, k10b, k10c, k10d, k10e, k10f or k10g
   --keep-stack   leave the stack and this run's work directory up, to look at a failure with
   --help         print this
 
@@ -109,9 +119,9 @@ if [ -z "$CHECK_ID" ]; then
 fi
 
 case "$CHECK_ID" in
-k10 | k10b | k10c | k10d | k10e | k10f) ;;
+k10 | k10b | k10c | k10d | k10e | k10f | k10g) ;;
 *)
-	echo "judge-check: $CHECK_ID is no check of this document; it holds k10, k10b, k10c, k10d, k10e and k10f" >&2
+	echo "judge-check: $CHECK_ID is no check of this document; it holds k10, k10b, k10c, k10d, k10e, k10f and k10g" >&2
 	usage >&2
 	exit 2
 	;;
@@ -309,6 +319,11 @@ broker_env() { # <VAR=value>...
 # file, certificate authority and stand-ins, with the environment the caller adds on top, and
 # answers its API and proxy addresses in EXTRA_API_ADDR and EXTRA_PROXY_ADDR. It is how a control
 # that changes one setting - or one rules entry, through BROKER_AIRLOCK_RULES_FILE - is run.
+#
+# EXTRA_BROKER_BIN is the broker binary it runs, and the stack's own when the caller sets none.
+# k10g sets it: its control is a broker built from a source tree with the admin refusal taken
+# out, which no setting could stand in for, and everything else about that process - the
+# database, the rules file, the fake store, the identities - has to stay the stack's.
 start_extra_broker() { # <name> <VAR=value>...
 	local name="$1"
 	shift
@@ -316,7 +331,7 @@ start_extra_broker() { # <name> <VAR=value>...
 	: >"$log"
 	# Two ports the system picks, so this one never collides with the broker it was copied from.
 	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" "$@"
-	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$log" 2>&1 &
+	"${BROKER_ENV[@]}" "${EXTRA_BROKER_BIN:-$BROKER_BIN}" >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
 	await "the $name broker" 120 "$log" 'airlock proxy listening addr=' "$pid"
@@ -824,7 +839,7 @@ check_k10() {
 	in_verdict="$(judged_field "$in_id" .verdict)"
 	in_reason="$(judged_field "$in_id" .reason)"
 	observe "the in-class row's checks in order: $in_checks; model '$in_model', verdict '$in_verdict', reason '$in_reason'; its actor is '$(judged_actor "$in_id")'"
-	assert "$([ "$one_row" = 0 ] && [ "$named_checks" = 0 ] && [ "$in_rows" = 1 ] && [ "$in_checks" = "rules-judge,lifetime,policy,withheld,issue" ] && [ "$in_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$in_verdict" = approve ] && [ -n "$in_reason" ] && echo 0 || echo 1)" \
+	assert "$([ "$one_row" = 0 ] && [ "$named_checks" = 0 ] && [ "$in_rows" = 1 ] && [ "$in_checks" = "rules-judge,lifetime,policy,admin,withheld,issue" ] && [ "$in_model" = "$AIRLOCK_JUDGE_MODEL" ] && [ "$in_verdict" = approve ] && [ -n "$in_reason" ] && echo 0 || echo 1)" \
 		"each decision has exactly one request.judged row, carrying its checks, the model, the verdict and the reason" \
 		"the in-class decision has $in_rows row with checks $in_checks, model '$in_model', verdict '$in_verdict' and a reason of $(shape "$in_reason") (compared by SHA-256 and length); each of the six refused requests has one row naming the check it stopped at"
 
@@ -1328,6 +1343,134 @@ check_k10f() {
 }
 
 ###############################################################################################
+# k10g
+###############################################################################################
+
+# k10g_control_tree copies this module's source into a tree of its own under the run's work
+# directory and takes the admin refusal out of both places it lives: the judge's sixth check,
+# which stops a run before any model is asked (judge's beforeTheModel), and the guard
+# currentPolicyAdmits makes for the judge inside the decision transaction. The copy leaves out
+# the two large build products at the module root (out/ and the dispatch-e2e binary), which no
+# build of cmd/broker reads, and GOWORK=off below builds it as the module it is rather than
+# through the repository's workspace, so nothing of this run touches go.work.sum.
+#
+# Each edit is checked after it is made. A patch that silently matched nothing would build the
+# very broker this check already has, and the control would then "pass" for the wrong reason:
+# a control is only worth running when it is certain that what it took out was there.
+k10g_control_tree() { # <directory>
+	local dir="$1"
+	mkdir -p "$dir"
+	(cd "$ENVOY_DIR" && tar -cf - --exclude=./out --exclude=./dispatch-e2e --exclude=./node_modules .) | tar -xf - -C "$dir"
+	# The judge's check: the call that reads the tag asks for it no longer, and the check
+	# itself is gone, so a run makes the five it made before this change and the model is
+	# asked about an administrator's secret.
+	perl -0777 -pi -e 's/\tnow, withheld, admin, err :=/\tnow, withheld, _, err :=/;
+		s/\n\tif !add\(checkAdmin, !admin, decidedByAPerson\(name\)\) \{\n\t\treturn checks, data\n\t\}\n//' \
+		"$dir/internal/broker/judge/judge.go"
+	# The transaction's guard, beside the withheld one at the head of currentPolicyAdmits.
+	perl -0777 -pi -e 's/\n\t\t\tif set\.Secrets\[g\.name\]\.Admin \{\n\t\t\t\treturn fmt\.Errorf\("%w: %s is an administrator.s secret, and a person approves every release of one", record\.ErrNotApprover, g\.name\)\n\t\t\t\}\n/\n/' \
+		"$dir/internal/broker/requests/machine_state.go"
+	local in_judge in_transaction
+	in_judge="$(grep -c 'add(checkAdmin' "$dir/internal/broker/judge/judge.go")"
+	in_transaction="$(grep -c 'set.Secrets\[g.name\].Admin' "$dir/internal/broker/requests/machine_state.go")"
+	if [ "$in_judge" != 0 ] || [ "$in_transaction" != 0 ]; then
+		echo "judge-check: the control patch left the admin refusal in the tree ($in_judge in the judge's checks, $in_transaction in the decision transaction); a control built from it would prove nothing" >&2
+		exit 1
+	fi
+}
+
+# k10g_ask asks for the admin secret and reads back everything the check's sentence is about:
+# the request's state, whether the stand was asked, the judged row, and whether any grant was
+# made for that request. The grant is counted in the database rather than read off the status
+# route alone, so "no grant is made" is the rows and not the answer one route gives.
+k10g_ask() { # <ttl> <reason>
+	local mark
+	mark="$(records_count model)"
+	ask "$1" "$2" "$AIRLOCK_ADMIN_SECRET"
+	K10G_ID="$ASK_ID"
+	if [ -z "$K10G_ID" ]; then
+		K10G_STATE="(no request)"
+		K10G_ASKED=0
+		K10G_ROWS=0
+		K10G_FAILED="(no request)"
+		K10G_DETAIL=""
+		K10G_SUMMARY="the broker refused the request: ${ASK_ERR}"
+		K10G_GRANTS=0
+		return
+	fi
+	await_judged "$K10G_ID" 15
+	K10G_STATE="$(request_state "$K10G_ID")"
+	K10G_ASKED="$(($(records_count model) - mark))"
+	K10G_ROWS="$(judged_rows "$K10G_ID")"
+	K10G_FAILED="$(judged_failed_check "$K10G_ID")"
+	K10G_DETAIL="$(judged_field "$K10G_ID" '([.checks[] | select(.passed | not) | .detail] | first)')"
+	K10G_SUMMARY="$(judged_summary "$K10G_ID")"
+	K10G_GRANTS="$(psql_stack -c "select count(*) from grants where request_id='$K10G_ID'")"
+}
+
+check_k10g() {
+	expect "the admin-tagged request stays pending for a person, with the stand-in not asked about it"
+	expect "its request.judged row names the admin refusal, and no grant is made"
+	expect "the negative control, a broker built from a source tree with the admin refusal taken out of the judge's checks and of the decision transaction, grants the same request by judge:<model id>"
+
+	start_stack
+	stack_facts
+	local open="$AIRLOCK_DISPATCH_OPEN_ISSUE"
+	# The stand answers approve to everything from here on, so nothing but the broker's own
+	# refusal can leave this request pending.
+	model_answers '{"verdict":"approve","reason":"approve"}'
+
+	k10g_ask 15m "reach s.airlock.test for $open"
+	local id="$K10G_ID" state="$K10G_STATE" asked="$K10G_ASKED" rows="$K10G_ROWS"
+	local failed="$K10G_FAILED" detail="$K10G_DETAIL" summary="$K10G_SUMMARY" grants="$K10G_GRANTS"
+	cancel_pending
+
+	observe "the admin-tagged secret $AIRLOCK_ADMIN_SECRET (human tier, admin: \"true\", max-grant $AIRLOCK_ADMIN_MAX_GRANT, and a rules entry of judge $AIRLOCK_JUDGE_SECONDS like the judged secret's own), asked for with --ttl 15m and a reason naming the open issue $open: $state, the stand asked $asked time(s), $rows judged row(s), $grants grant(s)"
+	observe "its request.judged row: $summary"
+	assert "$([ "$state" = pending ] && [ "$asked" = 0 ] && echo 0 || echo 1)" \
+		"the admin-tagged request stays pending for a person, and the stand-in is not asked about it" \
+		"it was $state with the stand asked $asked time(s), where the stand answers approve to everything"
+	assert "$([ "$rows" = 1 ] && [ "$failed" = admin ] && contains "is an administrator's secret" "$detail" && [ "$grants" = 0 ] && echo 0 || echo 1)" \
+		"the request.judged row names the admin refusal, and no grant is made" \
+		"it has $rows row whose first failed check is '$failed', reading '$detail', and the request has $grants grant(s)"
+
+	# --- The negative control: the same request at a broker with the refusal taken out. ---
+	local tree="$WORK_DIR/control-src" binary="$WORK_DIR/broker-no-admin-refusal"
+	k10g_control_tree "$tree"
+	local built=0
+	(cd "$tree" && GOWORK=off go build -o "$binary" ./cmd/broker) >"$WORK_DIR/control-build.log" 2>&1 || built=1
+	if [ "$built" != 0 ]; then
+		control "the control broker could not be built from $tree: $(tail -n 3 "$WORK_DIR/control-build.log" | tr '\n' ' ')"
+		fail "negative control: with the admin refusal taken out of both places, the same request is granted by judge:<model id> — the control broker did not build, so the control was not run"
+		stop_stack
+		return
+	fi
+	EXTRA_BROKER_BIN="$binary"
+	start_extra_broker no-admin-refusal
+	EXTRA_BROKER_BIN=""
+	front_backends "$EXTRA_API_ADDR" "$EXTRA_PROXY_ADDR"
+
+	local mark
+	mark="$(records_count model)"
+	ask 15m "reach s.airlock.test for $open" "$AIRLOCK_ADMIN_SECRET"
+	local control_id="$ASK_ID"
+	await_granted "$control_id" 60
+	local control_state="$AWAIT_STATE" control_decider control_asked control_grants
+	control_decider="$(request_decider "$control_id")"
+	control_asked="$(($(records_count model) - mark))"
+	control_grants="$(psql_stack -c "select count(*) from grants where request_id='$control_id'")"
+	front_backends_stack
+
+	control "the control is a broker built from a copy of this module's source under $tree with two deletions and nothing else: the judge's admin check (judge.go, beforeTheModel) and the guard currentPolicyAdmits makes for the judge (machine_state.go). It runs on the stack's own database, rules file, fake store and identities, and the stack's two fronts were pointed at it, so the only difference between the two runs is the refusal itself. BROKER_JUDGE_TEST_SKIP_CHECKS is no control for this check and was not used: it leaves the transaction guard standing, so the request would be put to the model and the approval then refused, and it would stay pending."
+	control "the same --ttl 15m request for $AIRLOCK_ADMIN_SECRET at that broker was $control_state after ${AWAIT_SECONDS}s, decided by '$control_decider', with the stand asked $control_asked time(s) and $control_grants grant(s) made; its judged row: $(judged_summary "$control_id")"
+	assert "$([ "$control_state" = granted ] && [ "$control_decider" = "$JUDGE_ACTOR" ] && [ "$control_asked" -ge 1 ] && echo 0 || echo 1)" \
+		"negative control: with the admin refusal taken out of the judge's checks and of the decision transaction, the same request is granted by judge:<model id>" \
+		"it was $control_state, decided by '$control_decider', where at the stack's own brokers the same request stayed '$state'"
+
+	stop_stack
+}
+
+###############################################################################################
 
 # From here on a step that answers non-zero is a property that did not pass, not the end of the
 # run: a check must report every one of its properties, and a refused request, a command that
@@ -1343,6 +1486,7 @@ k10c) check_k10c ;;
 k10d) check_k10d ;;
 k10e) check_k10e ;;
 k10f) check_k10f ;;
+k10g) check_k10g ;;
 esac
 
 report

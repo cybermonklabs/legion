@@ -511,10 +511,11 @@ var errSourceMoved = errors.New("source moved")
 // never brings back a grant they held while they were off it; they ask again instead.
 var errRequesterNotListed = errors.New("requester not listed")
 
-// JudgePolicy answers what the live policy says about name for the enrollment that asked, and
-// whether that name is withheld from its session: the one question the broker's model judge asks
-// the machine before it decides a pending request (judge.Requests, whose other two methods are
-// the writes a verdict makes — ApplyJudgeDecision and LogJudged, in machine_state.go).
+// JudgePolicy answers what the live policy says about name for the enrollment that asked,
+// whether that name is withheld from its session, and whether the secret is an administrator's:
+// the one question the broker's model judge asks the machine before it decides a pending request
+// (judge.Requests, whose other two methods are the writes a verdict makes — ApplyJudgeDecision
+// and LogJudged, in machine_state.go).
 //
 // It re-reads everything now rather than taking what the request froze. The policy comes from
 // m.Policy.Get(), the snapshot a request made minutes ago may no longer have been decided under,
@@ -528,26 +529,35 @@ var errRequesterNotListed = errors.New("requester not listed")
 // so the two are not one answer: the judge decides no name its session's operator withheld,
 // whatever the policy would otherwise give it.
 //
+// The admin flag is answered beside it for the same sort of reason and off the same snapshot
+// (policy.Secret.Admin, the admin: "true" tag): Evaluate folds the tag into nothing at all — an
+// admin secret is human tier and comes back as the ordinary approval its owner makes — so the
+// outcome alone cannot tell an administrator's credential from any other the owner approves.
+// The judge decides none of them, whatever seconds a rules file gives it for the name, and the
+// one snapshot both answers come off is what keeps the tag and the outcome from being read a
+// policy apart.
+//
 // An enrollment that is no longer live (revoked, or its lease lapsed) is an error carrying
 // pgx.ErrNoRows, never a decision: the judge's check fails and the request waits for its person,
 // where a silent approval would grant a credential to a box that has gone.
-func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (policy.Decision, bool, error) {
+func (m *Machine) JudgePolicy(ctx context.Context, enrollmentID, name string) (policy.Decision, bool, bool, error) {
 	enr, err := m.enrollment(ctx, enrollmentID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return policy.Decision{}, false, fmt.Errorf("enrollment %s is no longer live: %w", enrollmentID, err)
+			return policy.Decision{}, false, false, fmt.Errorf("enrollment %s is no longer live: %w", enrollmentID, err)
 		}
-		return policy.Decision{}, false, err
+		return policy.Decision{}, false, false, err
 	}
 	requester, err := m.requester(ctx, m.Store.Pool, enr)
 	if err != nil {
-		return policy.Decision{}, false, err
+		return policy.Decision{}, false, false, err
 	}
-	decision, err := m.Policy.Get().Evaluate(name, requester)
+	set := m.Policy.Get()
+	decision, err := set.Evaluate(name, requester)
 	if err != nil {
-		return policy.Decision{}, false, err
+		return policy.Decision{}, false, false, err
 	}
-	return decision, slices.Contains(requester.Withheld, name), nil
+	return decision, slices.Contains(requester.Withheld, name), set.Secrets[name].Admin, nil
 }
 
 // JudgeRequestState answers the state a decision on recordID would meet now: the second

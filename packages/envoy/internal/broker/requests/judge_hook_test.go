@@ -148,14 +148,38 @@ func TestANilJudgeIsNoJudge(t *testing.T) {
 // that is not that service's.
 func TestJudgePolicyAnswersTheLivePolicy(t *testing.T) {
 	m, enr, _, approver := newFixture(t)
-	decision, withheld, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY")
-	if err != nil || decision.Outcome != policy.Approval || decision.Approver != approver || withheld {
-		t.Fatalf("JudgePolicy(DEEL_API_KEY) = %+v, withheld %v, %v; want an approval by %s, not withheld", decision, withheld, err, approver)
+	decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY")
+	if err != nil || decision.Outcome != policy.Approval || decision.Approver != approver || withheld || admin {
+		t.Fatalf("JudgePolicy(DEEL_API_KEY) = %+v, withheld %v, admin %v, %v; want an approval by %s, neither withheld nor an administrator's", decision, withheld, admin, err, approver)
 	}
 	// The requester is read from the database and not from the request: this session proves no
 	// service, so the service's own secret is denied it.
-	if decision, withheld, err := m.JudgePolicy(t.Context(), enr, "SERVICE_KEY"); err != nil || decision.Outcome != policy.Deny || withheld {
-		t.Fatalf("JudgePolicy(SERVICE_KEY) for a person's session = %+v, withheld %v, %v; want a deny", decision, withheld, err)
+	if decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, "SERVICE_KEY"); err != nil || decision.Outcome != policy.Deny || withheld || admin {
+		t.Fatalf("JudgePolicy(SERVICE_KEY) for a person's session = %+v, withheld %v, admin %v, %v; want a deny", decision, withheld, admin, err)
+	}
+}
+
+// TestJudgePolicyReportsAnAdminSecret: the admin tag reaches the judge beside the decision, and
+// it is the only way it could reach it — the policy answers an administrator's secret with the
+// ordinary approval its owner makes, exactly as it answers the human-tier secret beside it, so
+// nothing in the outcome tells the two apart. The judge decides none of the first sort, whatever
+// seconds a rules file gives it for the name, and this is the reading its admin check makes.
+func TestJudgePolicyReportsAnAdminSecret(t *testing.T) {
+	m, enr, _, approver := newFixture(t)
+	retag(t, m, adminSecret())
+	decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, adminSecretName)
+	if err != nil || decision.Outcome != policy.Approval || decision.Approver != approver || withheld || !admin {
+		t.Fatalf("JudgePolicy(%s) = %+v, withheld %v, admin %v, %v; want an approval by %s that says the secret is an administrator's", adminSecretName, decision, withheld, admin, err, approver)
+	}
+	// The flag is the secret's own: the human-tier secret the fixture has always served, whose
+	// decision reads the same, is not an administrator's.
+	if decision, _, admin, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY"); err != nil || decision.Outcome != policy.Approval || admin {
+		t.Fatalf("JudgePolicy(DEEL_API_KEY) beside an admin secret = %+v, admin %v, %v; want the same approval and admin false", decision, admin, err)
+	}
+	// A name the policy does not serve is no administrator's secret either, and says so rather
+	// than reading the zero value of a secret that is not there as anything else.
+	if _, _, admin, err := m.JudgePolicy(t.Context(), enr, "NO_SUCH_KEY"); !errors.Is(err, policy.ErrUnknownSecret) || admin {
+		t.Fatalf("JudgePolicy(NO_SUCH_KEY) = admin %v, %v; want policy.ErrUnknownSecret and admin false", admin, err)
 	}
 }
 
@@ -169,18 +193,18 @@ func TestJudgePolicyReportsAWithheldName(t *testing.T) {
 	if err != nil || auto.GrantID == nil {
 		t.Fatalf("Create(AUTO_TOKEN) = %+v, %v; want an automatic grant", auto, err)
 	}
-	if decision, withheld, err := m.JudgePolicy(t.Context(), enr, "AUTO_TOKEN"); err != nil || decision.Outcome != policy.Automatic || withheld {
+	if decision, withheld, _, err := m.JudgePolicy(t.Context(), enr, "AUTO_TOKEN"); err != nil || decision.Outcome != policy.Automatic || withheld {
 		t.Fatalf("JudgePolicy(AUTO_TOKEN) before the withhold = %+v, withheld %v, %v; want automatic and not withheld", decision, withheld, err)
 	}
 	if err := m.RevokeByApprover(t.Context(), *auto.GrantID, operator, record.HumanActor(operator)); err != nil {
 		t.Fatalf("RevokeByApprover: %v", err)
 	}
-	decision, withheld, err := m.JudgePolicy(t.Context(), enr, "AUTO_TOKEN")
+	decision, withheld, _, err := m.JudgePolicy(t.Context(), enr, "AUTO_TOKEN")
 	if err != nil || !withheld || decision.Outcome != policy.Approval {
 		t.Fatalf("JudgePolicy(AUTO_TOKEN) after the operator took it back = %+v, withheld %v, %v; want withheld, and an approval", decision, withheld, err)
 	}
 	// Another name of the same session is untouched: the flag is per name, not per session.
-	if _, withheld, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY"); err != nil || withheld {
+	if _, withheld, _, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY"); err != nil || withheld {
 		t.Fatalf("JudgePolicy(DEEL_API_KEY) after AUTO_TOKEN was withheld = withheld %v, %v; want it not withheld", withheld, err)
 	}
 }
@@ -193,11 +217,11 @@ func TestJudgePolicyRefusesAnEnrollmentThatIsNotLive(t *testing.T) {
 	if _, err := m.Store.Pool.Exec(context.Background(), `update enrollments set revoked_at=now() where id=$1`, enr); err != nil {
 		t.Fatalf("revoke the enrollment: %v", err)
 	}
-	decision, withheld, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY")
-	if !errors.Is(err, pgx.ErrNoRows) || decision.Outcome != "" || withheld {
-		t.Fatalf("JudgePolicy on a revoked enrollment = %+v, withheld %v, %v; want an error carrying pgx.ErrNoRows and no decision", decision, withheld, err)
+	decision, withheld, admin, err := m.JudgePolicy(t.Context(), enr, "DEEL_API_KEY")
+	if !errors.Is(err, pgx.ErrNoRows) || decision.Outcome != "" || withheld || admin {
+		t.Fatalf("JudgePolicy on a revoked enrollment = %+v, withheld %v, admin %v, %v; want an error carrying pgx.ErrNoRows and no decision", decision, withheld, admin, err)
 	}
-	if _, _, err := m.JudgePolicy(t.Context(), "00000000-0000-0000-0000-000000000000", "DEEL_API_KEY"); !errors.Is(err, pgx.ErrNoRows) {
+	if _, _, _, err := m.JudgePolicy(t.Context(), "00000000-0000-0000-0000-000000000000", "DEEL_API_KEY"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("JudgePolicy on an enrollment that was never there = %v; want an error carrying pgx.ErrNoRows", err)
 	}
 }

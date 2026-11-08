@@ -30,8 +30,10 @@
 #     stored secret bound to S with headers and allow of its own; a github-app secret; a
 #     google-login secret; an azure-login secret, kind azure, bound to the Microsoft stand-in
 #     and the stand-in resource host; a stored AWS key pair, kind aws, bound to the AWS
-#     stand-in; and the judge's three human-tier secrets - one the rules give the judge 900
-#     seconds of, one they give it nothing of, and one owned by nobody that anyone approves.
+#     stand-in; and the judge's four human-tier secrets - one the rules give the judge 900
+#     seconds of, one they give it nothing of, one owned by nobody that anyone approves, and one
+#     tagged an administrator's that the rules give the judge 900 seconds of all the same, which
+#     the judge must refuse because the tag says a person approves every release of it.
 #   - TWO broker processes, each with the whole BROKER_AIRLOCK_* block, both on one database and
 #     each on two ports of its own (--one-broker starts one).
 #   - One TCP front over both brokers' API ports and one over both proxy ports
@@ -199,17 +201,28 @@ GITHUB_SECRET="AIRLOCK_GITHUB_APP"
 GOOGLE_SECRET="AIRLOCK_GOOGLE_LOGIN"
 AZURE_SECRET="AIRLOCK_AZURE_LOGIN"
 AWS_SECRET="AIRLOCK_AWS_KEY"
-# The three the model judge decides between. Each is human tier, so each waits for a person
+# The four the model judge is asked about. Each is human tier, so each waits for a person
 # unless the judge decides it first, and each is a plain entry with no kind: what the judge is
 # about is who may approve a request, and a kind's minting is another check's subject.
 # JUDGED_SECRET is the one the rules give the judge seconds of; UNJUDGED_SECRET the one they
 # give it nothing of, which must still wait for its person; SHARED_SECRET the one nobody owns,
-# which anyone signed in approves and which the judge therefore approves in anyone's place.
+# which anyone signed in approves and which the judge therefore approves in anyone's place;
+# ADMIN_SECRET the administrator's credential, which carries the same judge seconds as
+# JUDGED_SECRET and which the judge must refuse all the same - the stack writes exactly the
+# rules file the defect allowed, so a check can see the refusal come from the broker rather
+# than from the absence of an entry.
+#
+# ADMIN_SECRET carries two tags the others do not, because the policy refuses an admin secret
+# without them (policy.TagRules): a requesters list, which must name this stack's own service
+# for the enrolled pod to be allowed to ask at all, and a max-grant of an hour or less, since
+# an administrator's grant is one somebody reviews while it is live.
 JUDGED_SECRET="AIRLOCK_JUDGED_TOKEN"
 UNJUDGED_SECRET="AIRLOCK_UNJUDGED_TOKEN"
 SHARED_SECRET="AIRLOCK_SHARED_TOKEN"
-# The seconds the rules let the judge decide of JUDGED_SECRET and SHARED_SECRET, which is also
-# the longest lifetime a request for either may sign and still be judged.
+ADMIN_SECRET="AIRLOCK_ADMIN_TOKEN"
+ADMIN_MAX_GRANT="1h"
+# The seconds the rules let the judge decide of JUDGED_SECRET, SHARED_SECRET and ADMIN_SECRET,
+# which is also the longest lifetime a request for one of them may sign and still be judged.
 JUDGE_SECONDS=900
 # What the judge is configured with: the model id its verdicts are recorded under
 # (record.JudgeActor writes "judge:<id>"), the protocol the model stand speaks, and the
@@ -224,12 +237,13 @@ JUDGE_DISPATCH_TOKEN="the-stand-in-dispatch-service-account-token"
 # and open nothing; a check compares what a stand-in was sent against them by length and prefix.
 DEMO_VALUE="the-real-airlock-demo-token-9f3a7c"
 SCOPED_VALUE="the-real-airlock-scoped-token-4b1e"
-# The values of the judge's own three secrets, which are stored values like the two above: what
+# The values of the judge's own four secrets, which are stored values like the two above: what
 # a judged grant releases is the same sort of credential, read back by a check from the stand-in
 # the rules bind it to.
 JUDGED_VALUE="the-real-airlock-judged-token-7c2d"
 UNJUDGED_VALUE="the-real-airlock-unjudged-token-5a8b"
 SHARED_VALUE="the-real-airlock-shared-token-2e6f"
+ADMIN_VALUE="the-real-airlock-admin-token-8d41"
 # The session token of the stack's AWS key pair. One string for both halves of the stand: the
 # fake store hands it to the broker as part of the stored value, and --aws-session-token tells
 # the stand-in AWS service to require exactly it, so a call the proxy signed again verifies.
@@ -465,7 +479,8 @@ cat >"$RULES_FILE" <<EOF
   {"name": "$AWS_SECRET", "hosts": ["$AWS_HOST"], "kind": "aws"},
   {"name": "$JUDGED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS},
   {"name": "$UNJUDGED_SECRET", "hosts": ["$S_HOST"]},
-  {"name": "$SHARED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}
+  {"name": "$SHARED_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS},
+  {"name": "$ADMIN_SECRET", "hosts": ["$S_HOST"], "judge": $JUDGE_SECONDS}
 ]}
 EOF
 
@@ -474,15 +489,20 @@ EOF
 # opens nothing. The two stored secrets, the github-app and the google-login secret are owned
 # by the service the enrolled pod runs as, so a request for one is granted at once; the
 # azure-login secret is human tier and owned by the approver, because the broker releases its
-# projected Azure token only for a human-tier name a person approved. The judge's three are
-# human tier too, so each waits for a person: two of them the approver's own, and the third
+# projected Azure token only for a human-tier name a person approved. The judge's four are
+# human tier too, so each waits for a person: three of them the approver's own, and one
 # owned by nobody (the owner tag "shared", policy.OwnerShared), which anyone signed in
-# approves and which the judge therefore approves in anyone's place. ---
+# approves and which the judge therefore approves in anyone's place. The last of the four is
+# the approver's administrator's credential (admin: "true"), which carries the requesters list
+# and the hour's cap that tag demands of a secret: a list naming the approver and this stack's
+# service, since the enrolled pod acts for that service and a list no requester is on is
+# refused before owner and tier are read at all. ---
 jq -n \
   --arg prefix "$SECRETS_PREFIX" --arg kms "$SECRETS_KMS_KEY_ARN" \
   --arg service "$SERVICE" --arg approver "$APPROVER_LOGIN" \
   --arg demo "$DEMO_VALUE" --arg scoped "$SCOPED_VALUE" \
   --arg judged "$JUDGED_VALUE" --arg unjudged "$UNJUDGED_VALUE" --arg shared "$SHARED_VALUE" \
+  --arg admin "$ADMIN_VALUE" --arg maxgrant "$ADMIN_MAX_GRANT" \
   --arg appid "$GITHUB_APP_ID" --rawfile appkey "$GITHUB_APP_KEY_FILE" \
   --arg owner "$GITHUB_OWNER" \
   --arg awskey "$AWS_KEY_ID" --arg awssecret "$AWS_SECRET_KEY" --arg awssession "$AWS_SESSION_TOKEN" \
@@ -511,7 +531,11 @@ jq -n \
      {name: ($prefix + "airlock-unjudged-token"), kms_key_id: $kms,
       tags: {owner: $approver, tier: "human"}, value: $unjudged},
      {name: ($prefix + "airlock-shared-token"), kms_key_id: $kms,
-      tags: {owner: "shared", tier: "human"}, value: $shared}
+      tags: {owner: "shared", tier: "human"}, value: $shared},
+     {name: ($prefix + "airlock-admin-token"), kms_key_id: $kms,
+      tags: {owner: $approver, tier: "human", admin: "true",
+             requesters: ($approver + " " + $service), "max-grant": $maxgrant},
+      value: $admin}
    ]}' >"$FAKE_SECRETS_FILE"
 chmod 600 "$FAKE_SECRETS_FILE"
 printf '%s' "$AZURE_FEDERATED_TOKEN" >"$AZURE_TOKEN_FILE"
@@ -716,6 +740,8 @@ dev-airlock: ready.
   export AIRLOCK_JUDGED_SECRET=$JUDGED_SECRET
   export AIRLOCK_UNJUDGED_SECRET=$UNJUDGED_SECRET
   export AIRLOCK_SHARED_SECRET=$SHARED_SECRET
+  export AIRLOCK_ADMIN_SECRET=$ADMIN_SECRET
+  export AIRLOCK_ADMIN_MAX_GRANT=$ADMIN_MAX_GRANT
   export AIRLOCK_APPROVER=$APPROVER_LOGIN
   export AIRLOCK_SIGNIN_URL=$ISSUER_URL
   export AIRLOCK_ENROLLMENT=$ENROLLMENT_ID
@@ -733,7 +759,11 @@ $BROKER_BANNER
                        and mints its own credential at the metadata stand on $METADATA_ADDRESS.
                        It decides up to $JUDGE_SECONDS seconds of $JUDGED_SECRET and of
                        $SHARED_SECRET (owned by nobody), and nothing of $UNJUDGED_SECRET,
-                       which waits for its person. Ask with
+                       which waits for its person. $ADMIN_SECRET carries the same
+                       $JUDGE_SECONDS seconds in the rules and is an administrator's secret
+                       (admin: "true", requesters $APPROVER_LOGIN and $SERVICE, max-grant
+                       $ADMIN_MAX_GRANT): the judge refuses it before the model and the
+                       decision transaction refuses it again, so a person approves it. Ask with
                        agent-secrets request $JUDGED_SECRET --ttl 10m --reason "<what, naming $DISPATCH_OPEN_ISSUE>"
   approver:            $APPROVER_LOGIN, who approves $AZURE_SECRET on ${API_FRONT_URL}/approve/<record>;
                        the sign-in at $ISSUER_URL signs that person in with no page to fill in,
