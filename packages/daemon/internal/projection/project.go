@@ -88,6 +88,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			UpdateHead:       current.UpdateHead,
 			LastDeathCause:   current.LastDeathCause,
 			LastStartFailure: current.LastStartFailure,
+			// What the daemon last saw this claim's agent do, which the stall backstop and an
+			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
+			Step: api.StepViewOf(current.Step),
 		}
 		// The turn times, and the ready that dates the causes beside them, are absent until the
 		// claim records them, and stay absent for one whose last turn ran before the daemon kept

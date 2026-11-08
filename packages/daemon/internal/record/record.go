@@ -427,10 +427,19 @@ type PhaseRow struct {
 	// --version <n>`, as its task's Handoff line says. Empty and zero for a phase that writes none.
 	HandoffRecord  string
 	HandoffVersion int
-	// Rounds counts the review rounds review_round_cap bounds: a round ends with a review that
-	// requested changes, and nothing else moves this count.
-	Rounds  int
-	Verdict string
+	// Rounds is how many times the issue moved back to an earlier phase while this role held it,
+	// counted on the implementer's row alone (workflow's recordRound): a reviewer's request for
+	// changes, a tester's fail, a worker's backward move, and the move the daemon makes on its own
+	// for a head that conflicts with its base. What review_round_cap bounds is Rounds less
+	// ConflictRounds.
+	Rounds int
+	// ConflictRounds is how many of Rounds were opened while the daemon's record held the pull
+	// request's own head as conflicting with its base (PullRequest.ConflictingHead): a round the
+	// implementer answers with a forward merge, which no reviewer asked for. review_round_cap
+	// compares Rounds - ConflictRounds with the cap, so such a round costs the issue nothing
+	// (workflow's recordRound).
+	ConflictRounds int
+	Verdict        string
 	// Summary is what the role reported with its completion, which the architect is told when the
 	// phase ends.
 	Summary string
@@ -605,6 +614,21 @@ type PullRequest struct {
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
+	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
+	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
+	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
+	// for the head unmergeable on the base branch's own tip (workflow's mergeQueueConflict). A read
+	// that finds the same head mergeable clears it; a read of MergeabilityUnknown, GitHub's answer
+	// for a head sitting in the merge queue, neither writes nor clears it. "" means no head is held
+	// conflicting.
+	//
+	// A backward move made while it is non-empty and equal to HeadSHA is a conflict round, which
+	// review_round_cap does not count (PhaseRow.ConflictRounds): the implementer answers such a
+	// round with a forward merge, which moves HeadSHA and so ends the exemption with no write of
+	// its own. Mergeability beside it cannot carry the fact, because every read rewrites it from
+	// GitHub's answer and that answer is UNKNOWN while the head is queued, so a move made after a
+	// later read would read as no conflict.
+	ConflictingHead string
 	// MergeSHA is the merge commit GitHub reported for the pull request, which the production
 	// check's agent looks for in production: empty until the merge, and for a pull request merged
 	// before the column existed. Nothing fills it later — no compare is left to — so the check's

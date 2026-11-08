@@ -113,6 +113,12 @@ type OperatorClaim struct {
 	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
 	LastStartFailure string     `json:"lastStartFailure,omitempty"`
 	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord, api.StepView),
+	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
+	// These routes are the only surface a controller's record reaches: internal/projection puts
+	// the controller's claim on no issue, so no claim view of the state carries it, and `legion
+	// claims list` is where an operator reads what a stuck controller is doing.
+	Step *StepView `json:"step,omitempty"`
 }
 
 // BudgetsView is the claim's retry counters (`supervise.Budgets`).
@@ -226,7 +232,13 @@ func (r PodUpdateRounds) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-func operatorView(c supervise.Claim) OperatorClaim {
+// operatorView is one claim as every operator route answers it: the claim as the machine or the
+// store holds it, and the step record the store holds. The record is passed on its own because a
+// machine's Claim.Step is the copy it was built with and nothing writes it again (supervise's
+// putStep, store.PutClaimStep): taking it off c would let an answer carry that boot-time copy by
+// forgetting to replace it, so the caller has to say which record it serves (operatorAnswer,
+// list).
+func operatorView(c supervise.Claim, step supervise.StepRecord) OperatorClaim {
 	view := OperatorClaim{
 		Token:       c.Token,
 		Tree:        c.Tree,
@@ -254,6 +266,7 @@ func operatorView(c supervise.Claim) OperatorClaim {
 		LastDeathCause:   c.LastDeathCause,
 		LastStartFailure: c.LastStartFailure,
 		LastReady:        instant(c.LastReady),
+		Step:             StepViewOf(step),
 	}
 	if p := c.Pending; p != nil {
 		view.Pending = &DeliveryView{
@@ -263,6 +276,39 @@ func operatorView(c supervise.Claim) OperatorClaim {
 		}
 	}
 	return view
+}
+
+// operatorAnswer is the answer every operator route about one claim writes: the claim its caller
+// read, with the step record read from the store. The caller passes the claim because the routes
+// do not read one alike — claimRequest reads the machine's published view, which never waits on a
+// launch that holds that machine, where every other route reads Machine.Claim and so waits out
+// the decision it has just made. The record is the fact and the machine's copy is a
+// snapshot of it: the daemon writes every step through a narrow call of its own and never reads
+// one back into the machine's claim (supervise's putStep, store.PutClaimStep), so a machine's
+// copy is the record as it stood when that machine was built — at this daemon's boot, for every
+// claim it re-adopted. These routes are the one surface a controller's record reaches and the
+// ones an operator runs on a worker that has stopped moving, so what they show has to be the
+// record the stall backstop reads rather than that snapshot, which is a call hours old, or none
+// at all, for every claim this daemon took up at boot.
+//
+// A read the store refuses answers the record absent — the `-` the listing already shows for a
+// claim in no open call — and logs the failure at Warn naming the claim and the error.
+//
+// Not a 500: the action the request reports has already landed, its decision made and its claim
+// written, so failing the request over a read beside it would read as a stop, a resume or a retry
+// that did not happen. Not the machine's own copy either: that copy is the boot-time snapshot
+// these routes exist to stop serving, and printing a call hours old as the call a worker is in
+// now is worse than printing none, because an operator reading it would take a worker that has
+// stopped moving for one still at work. An absent record says what the daemon knows: it could
+// not read what that claim's agent last did.
+func (s *server) operatorAnswer(ctx context.Context, c supervise.Claim) OperatorClaim {
+	step, err := s.supervisor.Step(ctx, c.Token)
+	if err != nil {
+		s.log.Warn("api: read the step record of an operator's claim; answering with no record",
+			"claim", c.Token, "error", err)
+		step = supervise.StepRecord{}
+	}
+	return operatorView(c, step)
 }
 
 // instant is a time that may not have happened yet: the zero time is absent on the wire.
@@ -355,7 +401,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusCreated
 	}
 	s.operatorDone(r, token)
-	writeJSON(w, status, operatorView(m.Claim()))
+	writeJSON(w, status, s.operatorAnswer(ctx, m.Claim()))
 }
 
 // drawMemory is the draw of tree's memory group, for the open that creates the tree's lifecycle
@@ -405,7 +451,7 @@ func (s *server) claimRequest(request string, event func(http.ResponseWriter, *h
 			return
 		}
 		s.operatorDone(r, token)
-		writeJSON(w, status, operatorView(m.View().Claim))
+		writeJSON(w, status, s.operatorAnswer(ctx, m.View().Claim))
 	}
 }
 
@@ -497,7 +543,7 @@ func (s *server) forgetSession(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("api: operator forgot session", "claim", token, "session", c.Session, "sessionFile", c.SessionFile)
 	s.operatorDone(r, token)
-	view := operatorView(m.Claim())
+	view := s.operatorAnswer(ctx, m.Claim())
 	view.ForgottenSession, view.ForgottenSessionFile = c.Session, c.SessionFile
 	writeJSON(w, http.StatusOK, view)
 }
@@ -586,7 +632,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("api: the operator retried a phase", "claim", token, "issue", c.Issue, "phase", working, "freshSession", req.FreshSession)
 	s.operatorDone(r, token)
-	writeJSON(w, http.StatusAccepted, operatorView(m.Claim()))
+	writeJSON(w, http.StatusAccepted, s.operatorAnswer(r.Context(), m.Claim()))
 }
 
 // failedOrRetired is whether a claim's state is one the operator's retry acts on through its
@@ -691,7 +737,7 @@ func (s *server) closeTree(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.operatorDone(r, token)
-	writeJSON(w, http.StatusOK, operatorView(root.Claim()))
+	writeJSON(w, http.StatusOK, s.operatorAnswer(ctx, root.Claim()))
 }
 
 // operatorDone logs the one Info line every operator request on a claim that succeeded writes: its
@@ -719,6 +765,16 @@ func treeOthers(claims []supervise.Claim, tree string, root claim.Token) []claim
 // relaunch holds its machine for as long as the runtime waits out its pods, and with many claims
 // one is nearly always relaunching.
 //
+// The step record is the store's either way (supervise.Claim.Step), as it is in every other
+// operator answer (operatorAnswer). It is no part of a machine's state: the daemon writes it
+// through a narrow call of its own as the agent's frames arrive and never reads it back into the
+// machine's claim (supervise's putStep, store.PutClaimStep), so the machine's copy is the record
+// as it stood when that machine was built — at this daemon's boot, for every claim it re-adopted
+// — and taking the view whole would show an operator a call hours out of date, or none at all,
+// for every supervised claim. This route reads the record with the claims it is already reading,
+// where a route about one claim reads that claim's alone. These routes are the one surface a
+// controller's record reaches, so what they show has to be the record the backstop reads.
+//
 // What the last pod-update sweep decided is answered beside them (Options.PodUpdateRounds), and a
 // daemon with no sweep behind it answers the zero record, which says so: an operator who is served
 // no record at all cannot tell a daemon that holds no issue back from one too old to say. Every
@@ -734,10 +790,11 @@ func (s *server) list(w http.ResponseWriter, r *http.Request) {
 	sort.Slice(claims, func(i, j int) bool { return claims[i].Token < claims[j].Token })
 	views := make([]OperatorClaim, len(claims))
 	for i, c := range claims {
+		step := c.Step
 		if m, ok := s.supervisor.Machine(c.Token); ok {
 			c = m.View().Claim
 		}
-		views[i] = operatorView(c)
+		views[i] = operatorView(c, step)
 	}
 	rounds := PodUpdateRounds{}
 	if s.podUpdateRounds != nil {

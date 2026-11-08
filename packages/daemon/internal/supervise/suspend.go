@@ -296,13 +296,16 @@ func (m *Machine) dropHeld() {
 // endHeld is the claim's process found dead, or alive holding an address a process launched now is
 // not handed (repoint), while a suspension is held. Nothing is left to hold the suspension for, so
 // the claim is suspended rather than relaunched, and nothing is charged: died asks before it charges
-// anything. A runtime that cannot stop the process is logged and the claim is suspended all the
-// same, as a failed claim is (fail).
+// anything. A runtime that cannot stop the process is logged and recorded (stopUnconfirmed) and the
+// claim is suspended all the same, as a failed claim is (fail): the claim runs nothing either way,
+// and a process the runtime would not stop goes on holding what it runs on, which is the owner of
+// a stalled worker's to hear (the daemon's stallBackstopRecord).
 func (m *Machine) endHeld(ctx context.Context) error {
 	request := *m.held
 	m.dropHeld()
 	incarnation := m.claim.Locator.Incarnation
 	if err := m.endProcess(ctx); err != nil {
+		m.stopUnconfirmed = true
 		m.log.Error("supervise: could not stop the process with the runtime; suspending its claim anyway",
 			"incarnation", incarnation, "error", err)
 	}

@@ -80,6 +80,15 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // push landed between GitHub's answer and this apply, so the verdict is about a tree the record
 // has moved past, and an approval must never advance on it. Nothing is lost by dropping it - that
 // push is itself a fact that asks for a read of the head it left (askMergeState).
+//
+// Whatever the read decides, it is also the judgement the conflict-round exemption is read from
+// (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
+// own head conflicting, a MERGEABLE read of that same head releases it, and an UNKNOWN read,
+// which is what GitHub answers for a head sitting in the merge queue, leaves the mark as it is -
+// GitHub has not computed an answer, so there is nothing to record and nothing to take back. The
+// mark is a second column rather than a reading of Mergeability because every read rewrites that
+// one from GitHub's answer: the UNKNOWN of a read on the ladder that follows would lose the
+// conflict, and the next round at the conflicting head would count.
 func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMergeability) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
 	if err != nil || pr == nil {
@@ -96,8 +105,17 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 		base = fact.Base
 	}
 	prior := *pr
-	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" {
-		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved = fact.Mergeable, fact.MergeState, base, ""
+	conflicting := pr.ConflictingHead
+	switch fact.Mergeable {
+	case record.MergeabilityConflicting:
+		conflicting = pr.HeadSHA
+	case record.MergeabilityMergeable:
+		if conflicting == pr.HeadSHA {
+			conflicting = ""
+		}
+	}
+	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" || pr.ConflictingHead != conflicting {
+		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead = fact.Mergeable, fact.MergeState, base, "", conflicting
 		if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
@@ -807,20 +825,42 @@ func (e *Engine) recordPass(ctx context.Context, tx pgx.Tx, issue string) error 
 }
 
 // recordRound counts the implementer one more review round, which only a review that requested
-// changes ends, and tells the architect once the rounds reach review_round_cap.
-func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string) error {
+// changes ends, and, when the round is one the cap counts, posts the cap's message and its
+// pr-blocked notice once the counted rounds reach review_round_cap.
+//
+// What the cap reads is Rounds less the rounds a conflict with the base caused
+// (classify.ConflictRound, record.PhaseRow.ConflictRounds). A round opened while the record holds
+// the pull request's own head as conflicting is answered by the implementer's forward merge,
+// whatever else was asked of it, so it costs the issue nothing - which is what
+// dispatch://INFRA-1442 asked for, on a tree that reached the cap on three rounds of which two
+// were conflicts. Rounds rises for both kinds, so the record keeps what the issue spent beside
+// what it was excused, and the message names both numbers: an architect woken by it reads how
+// many rounds were counted against the cap and how many were not.
+//
+// A move that raised the conflict count posts neither the message nor the notice, whatever the
+// counted rounds stand at: it leaves that number as the round before it left it, and a notice is
+// itself a way of counting, waking the architect to decide a round nobody spent. The counted
+// round that reached the cap posted it, and the next counted round posts it again, naming the
+// conflict rounds as they stand then.
+func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	row.Rounds++
+	conflict := pr != nil && classify.ConflictRound(*pr)
+	if conflict {
+		row.ConflictRounds++
+	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
-	if row.Rounds < e.cfg.ReviewRoundCap {
+	counted := row.Rounds - row.ConflictRounds
+	if conflict || counted < e.cfg.ReviewRoundCap {
 		return nil
 	}
-	message := fmt.Sprintf("Issue reached review_round_cap=%d.", e.cfg.ReviewRoundCap)
+	message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",
+		e.cfg.ReviewRoundCap, counted, row.ConflictRounds)
 	if err := e.enqueue(ctx, tx, issue, record.MessagePost{Body: message}); err != nil {
 		return err
 	}

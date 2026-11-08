@@ -1100,9 +1100,19 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // decode as (DecodeOutboxPayload). `ready-refused` is not one of them: READY went with the
 // daemon's merge, so nothing writes the kind, and migration 20261029120800 deletes every row an older
 // daemon left carrying it, in the same migration that drops the four merge kinds from this list.
+//
+// `worker-stalled` is what the daemon's stall backstop did to a worker whose agent stopped
+// stepping, with the task it was serving still owed (internal/daemon's backstopStalledTurns),
+// which is a fact of that worker's issue and so the issue's architect's to read, as
+// `worker-died` is. What it did is usually the turn ended and the session brought back; where
+// the wake pacing parked the relaunch, it is the task taken back with that launch queued and
+// the stalled process still running until the launch's turn, which the notice names. The notice
+// says what became of that stalled process as well, where the end let it go: that it was
+// stopped, or that the runtime did not confirm the stop and it may be running still
+// (internal/daemon's stallBackstopEnds, stallStopClause).
 func validNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case "phase-finished", "worker-died", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused", "design-approved", "design-changes-requested", "carried-gate-opened", "child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted", "session-lost", "session-store-fault":
+	case "phase-finished", "worker-died", "worker-stalled", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused", "design-approved", "design-changes-requested", "carried-gate-opened", "child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted", "session-lost", "session-store-fault":
 		return true
 	default:
 		return false

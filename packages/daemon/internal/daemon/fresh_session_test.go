@@ -68,6 +68,9 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 		t.Fatalf("seed the issue's admission slot: %v", err)
 	}
 	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
+	// The operator's claim route answers the claim's step record, which the supervisor reads from
+	// the store itself (supervisor.Step), so this rig's supervisor holds the test database's own.
+	sup.store = openOutboxStore(t, pool)
 	sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
 	sup.OnDurableState((&workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)

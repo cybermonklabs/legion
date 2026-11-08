@@ -1138,6 +1138,14 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
+	// the store has refused, by claim, waiting for the next sweep to write them
+	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
+	// one and the sweep writes it. Nothing of it goes in the store, as the pod-update sweep's
+	// own pace does not (podUpdateOpenings), and one claim owes at most one: a later stall of
+	// the same claim carries the record its owner wants.
+	backstopMu   sync.Mutex
+	backstopOwed map[claim.Token]stallNoticeOwed
 
 	cancel context.CancelFunc
 	// draining is the worker stream's life and what the API's routes run their decisions on
@@ -1342,12 +1350,17 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PodUpdateRetask:    cfg.PodUpdateRetask,
 	}
 	stopping, beginStop := context.WithCancel(context.Background())
-	return &supervision{
+	supervisionOf := &supervision{
 		cfg: cfg, log: log, plan: p, stream: listener, runtime: rt, supervisor: sup, tokens: tokens, claims: claims,
 		reports: reportsOfClaims(reports, claims), reportStore: st,
 		cancel: cancel, draining: draining, endDrain: endDrain, decided: api.NewRouteDecisions(),
 		stopping: stopping, beginStop: beginStop,
-	}, nil
+	}
+	// The machines' report of a stalled turn they ended goes to supervision, which is built
+	// after their deps: the one callback whose receiver is supervision itself, set here before
+	// any machine exists, as the workflow sets enqueue where it attaches.
+	sup.deps.StallBackstopped = supervisionOf.stallBackstopped
+	return supervisionOf, nil
 }
 
 // cleanSessionStop is what a machine calls once a probe has judged a claim's agent process gone
@@ -1725,9 +1738,11 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 // reconcileOrphans ends, every sweep interval, whatever the runtime holds that belongs to none of
 // the claims the daemon has not retired, once it has idled past the grace, re-posts StalePlugin
 // for every live claim whose contract still differs — the retry a relaunch the boot pass
-// (refreshStalePlugins) could not complete needs — and carries every update round a step
-// (reconcilePodUpdates). Both ride the sweep because it is the one periodic pass that already
-// reads every claim, rather than running a timer of their own.
+// (refreshStalePlugins) could not complete needs — carries every update round a step
+// (reconcilePodUpdates), and ends the turn of every claim whose agent has stopped stepping
+// (backstopStalledTurns). All three ride the sweep because it is the one periodic pass that
+// already reads every claim, rather than running a timer of their own; its minute is far below
+// the smallest backstop bound a configuration can hold.
 func (s *supervision) reconcileOrphans(ctx context.Context) {
 	ticker := time.NewTicker(s.plan.orphanSweep)
 	defer ticker.Stop()
@@ -1749,6 +1764,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		}
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
+		s.backstopStalledTurns(ctx, claims)
 	}
 }
 

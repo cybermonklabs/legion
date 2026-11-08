@@ -1030,14 +1030,16 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// carrying commit that pass's key, answered as already received instead of refused as a handoff
 	// not written anew. The round is the review's alone — it counts the review rounds
 	// review_round_cap bounds, so only a review that requested changes moves it, and a send-back
-	// for anything else leaves it where it stands.
+	// for anything else leaves it where it stands. The pull request goes with the round because
+	// the cap reads it: a round opened while the record holds this head as conflicting with its
+	// base is a conflict round, which review_round_cap does not count (recordRound).
 	if movesBack(issue.Phase, row.To) {
 		if err := e.recordPass(ctx, tx, issue.Key); err != nil {
 			return err
 		}
 	}
 	if trigger == TriggerReviewRejected {
-		if err := e.recordRound(ctx, tx, issue.Key); err != nil {
+		if err := e.recordRound(ctx, tx, issue.Key, pr); err != nil {
 			return err
 		}
 	}

@@ -308,13 +308,17 @@ Legion uses GitHub's own review mechanisms rather than labels:
   unnoticed.
 - **Review threads** close one by one, and only once the thread's opener (or, for a thread a bot
   opened, Legion's reviewer) accepts the reply.
-- One limit flags a loop: after `review_round_cap` rounds (three by default) the daemon posts a
-  message on the issue and tells the architect; it stops no worker. At the round cap the architect
-  decides, in the turn the notice wakes, whether to narrow the next rounds, split work off (into a
-  sibling child, or, on a root, an ask whether the rest needs an issue of its own), or let
-  converging rounds run, and posts that decision on the issue. Every move back to an earlier phase
-  counts a round: a tester's fail, a review's request for changes, a worker's move back, and the
-  daemon's own move when the head starts conflicting with its base.
+- One limit flags a loop: after `review_round_cap` counted rounds (three by default) the daemon
+  posts a message on the issue and tells the architect; it stops no worker. At the round cap the
+  architect decides, in the turn the notice wakes, whether to narrow the next rounds, split work
+  off (into a sibling child, or, on a root, an ask whether the rest needs an issue of its own), or
+  let converging rounds run, and posts that decision on the issue. Every move back to an earlier
+  phase counts a round: a tester's fail, a review's request for changes, a worker's move back, and
+  the daemon's own move when the head starts conflicting with its base. A move made while the
+  record holds the head conflicting with its base is a conflict round, which `review_round_cap`
+  does not count: the implementer answers such a round with a forward merge, which no reviewer
+  asked for, and the cap's message names both numbers, the rounds counted and the conflict rounds
+  left out.
 
 ## The merge
 
@@ -345,6 +349,14 @@ waits for, merge again at the head it re-reads, send the issue back with `reques
 when the head itself must change, or tell the architect what no worker can do — a repository
 setting or an App permission only a person can change. A head that starts conflicting with its
 base sends the issue back to `implementing` from `merging` as it does from any later phase.
+
+A merge queue that takes the pull request out for a conflict says which conflict it was in the
+pull request's merge state, which GitHub computes once the entry is no longer queued. A head
+GitHub still merges conflicted with an entry queued ahead of it rather than with the base, so the
+merger enqueues that head once more and no further, says so on the issue, and the issue stays in
+`merging`. A head GitHub reports dirty conflicts with the base itself and goes back to
+`implementing`; a merge state GitHub answers unknown is asked again on the merger's own backoff
+for up to five minutes and then read the same way.
 
 What closes the issue is the daemon's own reading of the merged pull request, by GitHub's webhook
 or by its own read: it writes `done`, whether the merger's completion arrived before that or after
@@ -425,3 +437,19 @@ its registration deadline, so the three tries of `launch_failure_limit`'s defaul
 seconds at least, never the moment one fault lasts. The wait logs `supervise: waiting before the
 next launch` with its length. The try it waits for is stored, with the charge, before the wait
 begins, so a daemon stop during it forgives nothing; the next boot launches the claim again.
+
+**What the daemon records of every worker.** Each agent's claim carries a step record: when the
+daemon last saw that agent step, when the turn that step belongs to began, and the tool call it is
+in — the tool, the call id the stream's start and end frames pair by, when the call started and,
+once it has, when it ended, with the arguments' length and a fingerprint of them, never their
+text, since a shell command routinely holds a credential. It is what says a worker mid-turn is
+still moving, and a call that carries a start and no end is the shape a turn that stopped moving
+leaves behind. The daemon's own backstop reads that record and nothing else before it ends such a
+turn (`worker_stall_backstop_hours` in
+[legion.yaml](/legion/legion/running-legion/#legionyaml)), and a person reads the same record
+three ways: `legion state`'s `agents in a tool call` line, which names each claim in an open call
+by issue and role ([Observe](/legion/legion/running-legion/#observe)); `legion claims list`, whose
+last column is that call for each claim, the project controller's — which is on no issue, and so
+on no part of the `legion state` line — included; and `GET /legion/v1/state`, the bytes
+`legion state --json` prints, under `issues.<KEY>.architect.step` and
+`issues.<KEY>.workers.<role>.claim.step`.

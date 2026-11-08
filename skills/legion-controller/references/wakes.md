@@ -118,6 +118,52 @@ architect's last message on the root issue. When you find none, or it is gone, r
 fresh budgets). When it stays, park the tree (`set_status` the root to `backlog`) and say why on
 the issue, because a relaunch would fail the same way.
 
+## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", reason}`)
+
+The daemon's stall backstop acted on a stalled turn of the tree's architect: its agent had not
+stepped for longer than the `worker_stall_backstop_hours` the deployment gives that role, and most
+often the daemon ended the turn and brought the same session back on a new process. You get a copy
+only for a tree's own architect, because every other notice of the tree goes to that architect and
+nobody inside the tree is left to read this one; the architect is told on its issue as well. The
+`reason` is the record the daemon read: when the agent last stepped and how long ago that was, the
+bound it passed, when the turn began, and the last call the daemon saw, with its tool, its call
+id, when it started and whether it ended — never a call's arguments, whose text the daemon keeps
+in no column. It says what the daemon did as well, which is not always a relaunch: where the
+daemon's wake pacing parked the replacement, the task was taken back and the launch that replaces
+the stalled process is queued, due at the moment the notice names; the daemon made no stop of
+that process and the claim records it still. The launch's turn may start nothing, or not the
+launch the park queued — a suspension waiting for the claim, a refused lifecycle recheck, the
+tree's close, a take-back the store refuses at the turn itself, a launch whose own write or start
+the daemon cannot make, and an
+operator's task that runs the launch early are among the things that can change it; where a
+suspension was already waiting for that turn, the suspension ran instead of a replacement and the
+claim is suspended with nothing queued for it, waiting on a resume; where the launch that replaces
+the process has not started, either its write was refused and the daemon retries it at its probe
+interval, or the daemon's own shutdown cut the launch short and the daemon's next start takes it up;
+and where every try at that
+launch was refused, the claim has failed and nothing relaunches it. The notice says which, and no
+second notice follows it: where it names a parked launch, the `wakesWaiting` list of `read_state`
+is what says whether that launch is still waiting its turn.
+
+The notice says what became of the stalled process itself, for every end: that the daemon made no
+stop of it and the claim records it still, which is the parked end; that it was stopped; or that
+the runtime did not confirm the stop, in which case that process may be running still and holding
+what it runs on.
+A stop the runtime would not make is a finding to put to a person, with the notice in it, because
+the daemon stops that process again only at its next launch of that claim or at its next restart.
+
+Nothing was charged to the claim for the stall itself, and on every end but the failed one
+nothing failed either: the task that architect was serving is still owed to it, and the notice
+names what its return waits on — the parked launch's turn, the retried launch, or a resume — no
+issue was held, and no status moved.
+Do nothing to the tree — park nothing, re-admit nothing, set no status — and start nothing. A
+notice that names the failed end is the exception: that architect's claim is failed, its
+`worker-died` reaches you as any other does, and you answer that notice as its own section says.
+One copy comes per stall, so an architect that stalls again
+and again sends one each time: that is a finding to put to a person
+([Findings](skill://legion-controller/SKILL.md#findings-and-the-issues-you-file)), with the
+records you were sent in it.
+
 ## `update-stalled on <KEY>` (`{kind: "update-stalled", reason, update}`)
 
 An update round over the issue's pod, or over one claim's own process, is not finishing. Handle

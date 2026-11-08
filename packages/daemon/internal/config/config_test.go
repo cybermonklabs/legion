@@ -239,6 +239,9 @@ func defaultsFor(port int) Config {
 		PodUpdateNotice:      4 * time.Hour,
 		ReviewRoundCap:       3,
 		ControllerLaunch:     ControllerLaunchOperator,
+		// The worker stall-watch numbers this daemon's own environment sets, which noEnv sets
+		// none of: the plugin's own defaults, which the backstop's floor is computed from.
+		StallLimits: StallLimits{CallGrace: StallCallGrace, Step: StallStep},
 	}
 }
 
@@ -1118,6 +1121,14 @@ func TestLoadRefuses(t *testing.T) {
 		{
 			name: "the registration deadline past the timer bound",
 			body: minimalFile + "worker_boot_timeout_seconds: 2147483\nworker_boot_registration_deadline_intervals: 2\n",
+			want: "worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most 2147483",
+		},
+		{
+			// A count carries no bound of its own, so the product is judged by division: this
+			// many intervals times the default 120-second timeout is a negative number of
+			// seconds, which a multiplied check would have found at most the bound.
+			name: "the registration deadline's intervals wrap the product",
+			body: minimalFile + "worker_boot_registration_deadline_intervals: 9223372036854775807\n",
 			want: "worker_boot_timeout_seconds * worker_boot_registration_deadline_intervals must be at most 2147483",
 		},
 		{

@@ -356,8 +356,11 @@ func TestAConflictingHeadSendsTheIssueBackToImplementingFromEveryLaterPhase(t *t
 			if task := implementerTask(t, pool); !strings.Contains(task, want) || !strings.Contains(reason, want) || from != tc.from || status != "in_progress" {
 				t.Fatalf("task %q, notice %q from %q, status %q; want both to say %q, from %s, and the issue in_progress", task, reason, from, status, want, tc.from)
 			}
-			if pass := implementerPass(t, pool); pass != 1 {
-				t.Fatalf("pass = %d, want the return to implementing counted", pass)
+			// The return is a pass and no review round: the implementer answers a conflict with a
+			// forward merge nobody asked it for, so it costs the issue nothing against
+			// review_round_cap.
+			if pass, rounds := implementerPass(t, pool), implementerRounds(t, pool); pass != 1 || rounds != 0 {
+				t.Fatalf("pass = %d, rounds = %d; want the return to implementing counted as a pass and as no round against review_round_cap", pass, rounds)
 			}
 		})
 	}

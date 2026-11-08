@@ -475,7 +475,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, verdict, summary, last_handoff, decision, completed_at, assignment from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff, decision, completed_at, assignment from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -503,17 +503,17 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the review decision: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, verdict, summary, last_handoff,
+	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, verdict, summary, last_handoff,
 		decision, completed_at, assignment)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
-		rounds = excluded.rounds, verdict = excluded.verdict,
+		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at, assignment = excluded.assignment`,
-		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.Verdict, phase.Summary, phase.LastHandoff,
-		decision, phase.CompletedAt, phase.Assignment,
+		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
+		phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt, phase.Assignment,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -525,8 +525,8 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var phase PhaseRow
 	var role, token string
 	var decision []byte
-	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.Verdict, &phase.Summary, &phase.LastHandoff,
-		&decision, &phase.CompletedAt, &phase.Assignment); err != nil {
+	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
+		&phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt, &phase.Assignment); err != nil {
 		return PhaseRow{}, err
 	}
 	phase.CompletedAt = phase.CompletedAt.UTC()
@@ -543,7 +543,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 	head_arrived_at, failing, cancelled, check_runs,
 	generation, snapshot, pushes, head_moves, head_run, review_seen, review_seen_at, state,
-	checked_head, mergeability, merge_state, merge_sha`
+	checked_head, mergeability, merge_state, conflicting_head, merge_sha`
 
 func (s *Postgres) PullRequest(ctx context.Context, tx pgx.Tx, issue string) (*PullRequest, error) {
 	pr, err := scanPullRequest(tx.QueryRow(ctx, "select "+pullRequestColumns+" from pull_requests where issue = $1", issue))
@@ -700,9 +700,9 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
 		head_arrived_at, failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
-		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, merge_sha,
+		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, conflicting_head, merge_sha,
 		fix_attempts, blocked_attempts, head_counted)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, 0, 0, '')
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
@@ -712,13 +712,13 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		pushes = excluded.pushes, head_moves = excluded.head_moves, head_run = excluded.head_run,
 		review_seen = excluded.review_seen,
 		review_seen_at = excluded.review_seen_at, state = excluded.state, checked_head = excluded.checked_head,
-		mergeability = excluded.mergeability,
-		merge_state = excluded.merge_state, merge_sha = excluded.merge_sha`,
+		mergeability = excluded.mergeability, merge_state = excluded.merge_state,
+		conflicting_head = excluded.conflicting_head, merge_sha = excluded.merge_sha`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
 		pr.HeadArrivedAt, failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
-		pr.Mergeability, pr.MergeState, pr.MergeSHA,
+		pr.Mergeability, pr.MergeState, pr.ConflictingHead, pr.MergeSHA,
 	)
 	if err != nil {
 		return fmt.Errorf("put pull request for %s: %w", pr.Issue, err)
@@ -1113,7 +1113,12 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		// not: its checks settlement is of a head nobody has judged since, and the review round's
 		// decision goes with the phases below, and so does its head run, whose replay would put the
 		// old generation's judgement back. Its pushes stay, each a fact about two commits, and so
-		// does its newest review, which orders every review it will have.
+		// does its newest review, which orders every review it will have. So does conflicting_head,
+		// the head the daemon last judged conflicting with its base: like mergeability beside it,
+		// it is GitHub's answer about that head and that base, which a new generation of the
+		// issue's work does not make false. A head that still does not merge still does not merge,
+		// and the count it excuses starts again with the rounds below, so nothing of the old
+		// generation's counting survives it.
 		"update pull_requests set head_run = null, checked_head = '', failing = '[]'::jsonb, " +
 			"cancelled = '[]'::jsonb, check_runs = '[]'::jsonb where " + where,
 		"delete from design_gates where " + where,
@@ -1126,7 +1131,7 @@ func clearGeneration(ctx context.Context, tx pgx.Tx, where, issues, key, describ
 		// The assignment goes with the run too: the start that re-enters the phase mints the next
 		// one, and until it does the cleared row names none, which the completion route reads as
 		// nothing to compare rather than as a mismatch to refuse.
-		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, verdict = '', summary = '', decision = null, " +
+		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, verdict = '', summary = '', decision = null, " +
 			"assignment = '' where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
@@ -1142,7 +1147,7 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
 		&pr.HeadArrivedAt, &failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
-		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.MergeSHA); err != nil {
+		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.ConflictingHead, &pr.MergeSHA); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal(failing, &pr.Failing); err != nil {
