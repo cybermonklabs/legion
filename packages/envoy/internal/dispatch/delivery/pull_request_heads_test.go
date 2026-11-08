@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -1332,18 +1334,26 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 }
 
 // branchCommitsMigration is the migration that creates branch_commits, which
-// withoutBranchCommits replays to put the table back.
+// withoutBranchCommits and the harness's own repair both replay to put the table back
+// (droppableTables, repairDroppedTables).
 const branchCommitsMigration = 20261107234701
 
 // withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
 // the way a write fails, and puts it back afterwards.
 //
-// Dropping it is contained: deliveryTestPool migrates and truncates the database
-// DISPATCH_TEST_DATABASE_URL names, which is one run's own and holds nothing another run or
-// the server reads. It is put back by this test rather than by the next one's harness, since
-// that harness's Migrate skips every version schema_migrations already records: forgetting the
-// version and migrating again creates the table exactly as the migration does, where a `create
-// table` written out here would be a second copy of it to keep in step.
+// The run ending does not contain the drop. The database DISPATCH_TEST_DATABASE_URL names is
+// the server's own and outlives the run (deliveryTestPool), and a test binary `go test
+// -timeout` kills never reaches this cleanup at all: the table would then stay missing while
+// schema_migrations still recorded the migration that creates it, and every later run of this
+// package would fail at the truncate of it. What contains it is the harness, which makes such
+// a table again before it migrates (repairDroppedTables). This cleanup is the fast path: it
+// puts the table back while the test that dropped it is still running, so the next test in
+// the same binary finds the database as it expects it.
+//
+// Both repairs forget the version and migrate again rather than writing the `create table`
+// out here: Migrate skips every version schema_migrations already records, so forgetting it
+// makes the table exactly as the migration does, where a copy written here would be a second
+// one to keep in step with it.
 func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
@@ -1395,6 +1405,117 @@ func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
 	open.Number, open.State, open.MergeCommitSHA = 96, "open", ""
 	if err := UpsertPullRequestHead(ctx, pool, open); err != nil {
 		t.Fatalf("store the head of an open pull request, which seeds no branch answer: %v", err)
+	}
+}
+
+// An envelope whose head row fails the same way at every attempt is acknowledged once it has
+// had every delivery the cap allows, rather than handed back for ever. A hand-back with a
+// delay leaves the message in the consumer's ack-pending set until it is redelivered, so an
+// envelope handed back without end holds one of the four in-flight slots (intakeMaxAckPending)
+// for the life of the process, and four of them stop the intake being given anything at all.
+//
+// Driven as the hand-back's own test drives it: branch_commits is away, so the transaction
+// that writes a merge's head row and its branch seed together rolls back at every delivery and
+// no attempt can ever store the row. The cap is shrunk to two deliveries, since what is
+// measured here is that there is a cap at all and not the number it is shipped at
+// (headWriteMaxDeliveries).
+//
+// The measure is the consumer's delivery count, read twice: once when the cap has been spent,
+// and again after two whole redelivery delays, which is when the third delivery would have
+// arrived had the envelope been handed back again. An acknowledged message is delivered no
+// more, and the count is the one number no other test's leftovers move for this envelope.
+func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	seedDeliveryProject(t, ctx, pool)
+	withoutBranchCommits(t, ctx, pool)
+	capHeadWriteDeliveriesAt(t, 2)
+
+	natsClient := intakeTestClient(t)
+	startIntake(t, newIntake(natsClient, pool, deliveryTestLeases(t, pool),
+		newFakeGitHub(t).newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool)))
+	awaitBoundDurable(t, natsClient)
+	before := deliveryConsumerInfo(t, natsClient).Delivered.Consumer
+
+	// A merge, so the seed is written beside the head row and the write is the one that fails.
+	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 9102, map[string]string{
+		"kind": "pr", "action": "closed", "merged": "true", "repo": "acme/widgets",
+		"number": "9102", "author": "octocat", "base_ref": "integration/x",
+		"head_sha":         "3333333333333333333333333333333333333333",
+		"merge_commit_sha": "4444444444444444444444444444444444444444",
+	})
+
+	var info *natsgo.ConsumerInfo
+	waitFor(t, 45*time.Second, func() bool {
+		info = deliveryConsumerInfo(t, natsClient)
+		return info.Delivered.Consumer-before >= 2
+	}, func() string {
+		return fmt.Sprintf("the envelope was delivered %d time(s), though a cap of 2 wants both of them: %+v",
+			info.Delivered.Consumer-before, info)
+	})
+
+	time.Sleep(2 * headWriteRedeliverAfter)
+	if delivered := deliveryConsumerInfo(t, natsClient).Delivered.Consumer - before; delivered != 2 {
+		t.Fatalf("deliveries of an envelope whose head row never stores, %s after the cap of 2 was spent = %d, want the 2 the cap allows: it is being handed back for ever",
+			2*headWriteRedeliverAfter, delivered)
+	}
+
+	var stored int
+	if err := pool.QueryRow(ctx, "select count(*) from pull_request_heads where number = 9102").Scan(&stored); err != nil {
+		t.Fatalf("read the head rows: %v", err)
+	}
+	if stored != 0 {
+		t.Fatalf("head rows stored while branch_commits is away = %d, want none", stored)
+	}
+}
+
+// A read of Postgres that failed before the head write is handed back exactly as the write
+// itself is. recordPullRequestHead reads twice before it writes — the repository's canonical
+// name and the attribution's candidates — and in a connection-level outage those are the reads
+// that fail first; the head row of a new pull request is lost whichever step lost it, since no
+// reconcile pass offers a row that was never written. So ErrHeadNotStored marks every failure
+// of that path that making the same attempt again may get past (markHeadNotStored).
+//
+// The two failures it leaves unmarked are here too, since what the sentinel is worth is in the
+// line it draws. A repository name that is not `owner/repo` is malformed in the envelope
+// itself, so every redelivery of it carries the same name; a rate limit is the one refusal of
+// GitHub the attribution answers with an error at all, and handing every rate-limited envelope
+// back would spend the whole limit over again.
+func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	seedDeliveryProject(t, ctx, pool)
+	in := newIntake(nil, pool, nil, newFakeGitHub(t).newTestClient(), events.NewBroker(), nil)
+	payload := map[string]string{
+		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "9103",
+		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "acme/widgets",
+	}
+
+	// A context already ended is Postgres out of reach: pgx answers the first read with it, as
+	// a pool whose every connection is gone answers every read with its own failure.
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := in.recordPullRequestHead(ended, payload, 9103); !errors.Is(err, ErrHeadNotStored) {
+		t.Fatalf("recording a head whose read of the repository's canonical name failed = %v, want it marked %v so the envelope is handed back",
+			err, ErrHeadNotStored)
+	}
+
+	malformed := map[string]string{
+		"kind": "pr", "action": "opened", "repo": "widgets", "number": "9103",
+		"head_sha": landedCommit, "head_ref": "legion/INFRA-1691", "head_repo": "widgets",
+	}
+	_, err := in.recordPullRequestHead(ctx, malformed, 9103)
+	switch {
+	case err == nil:
+		t.Fatal("recording a head under a repository name that is not owner/repo = nil, want that name's error")
+	case errors.Is(err, ErrHeadNotStored):
+		t.Fatalf("a malformed repository name was marked %v, want it left bare: the next delivery of the envelope carries the same name",
+			ErrHeadNotStored)
+	}
+
+	limited := &githubapp.RateLimitError{Status: http.StatusForbidden, Wait: time.Minute}
+	if marked := markHeadNotStored(fmt.Errorf("attribute the head of acme/widgets#9103: %w", limited)); errors.Is(marked, ErrHeadNotStored) {
+		t.Fatalf("a rate limit was marked %v, want it left bare: handing every rate-limited envelope back spends the whole limit over again",
+			ErrHeadNotStored)
 	}
 }
 

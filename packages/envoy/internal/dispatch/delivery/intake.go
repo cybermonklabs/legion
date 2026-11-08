@@ -1,10 +1,13 @@
 // Intake (LEGION-567): a Dispatch server consumer of the GitHub events Envoy already relays over
 // NATS (`notifications.github.>`), for live updates between the five-minute reconcile's passes.
 // Every write here goes through the same upsert functions reconcile uses (store.go), so a NATS
-// redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate -- and intake
-// never relies on NATS redelivery for correctness: a GitHub call that fails here is logged and
-// the message is still acked, because the reconcile that runs every five minutes is the actual
-// catch-up mechanism ("a missed event appears by the next five-minute reconcile", LEGION-567).
+// redelivery or a reconcile re-reading the same fact is a no-op, not a duplicate. A GitHub call
+// that fails here is logged and the message is still acked, because the reconcile that runs
+// every five minutes is the actual catch-up mechanism ("a missed event appears by the next
+// five-minute reconcile", LEGION-567). The one failure that mechanism does not cover is a pull
+// request's head row that was never written, which no pass can offer because the passes read
+// the rows that exist: that envelope is handed back to NATS for a bounded number of
+// redeliveries instead (ErrHeadNotStored, Intake.deliver, headWriteMaxDeliveries).
 package delivery
 
 import (
@@ -922,18 +925,29 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // reconcile. Its writes are the upserts reconcile makes too, so redoing what had in fact
 // finished just before the stop gave it up writes the same facts again.
 //
-// The other message it does not acknowledge is one whose pull request's head row could not be
-// stored at all (ErrHeadNotStored, handlePullRequestEnvelope): no reconcile pass catches that
-// up, because the passes read the rows that exist (ListStalePullRequestHeads), so an
-// acknowledged envelope loses that pull request's head for good and with it every
-// `before_merge` result measured against it. It is handed straight back to NATS rather than
-// through the delivery (redeliverAfter): the hold giveBack takes is for the stop, and this
-// message wants redelivering now, to this same process, which still holds the durable and
-// still routes that key to the one goroutine it is on. The delay is what keeps a failure that
-// repeats from spinning: the write is the same write each time, so asking again within the
-// second would buy nothing and spend the consumer's in-flight slots doing it. The write is
+// The other message it does not acknowledge, for as many deliveries as the bound below
+// allows, is one whose pull request's head row could not be stored at all (ErrHeadNotStored,
+// handlePullRequestEnvelope): no reconcile pass catches that up, because the passes read the
+// rows that exist (ListStalePullRequestHeads), so an acknowledged envelope loses that pull
+// request's head for good and with it every `before_merge` result measured against it. It is
+// handed straight back to NATS rather than through the delivery (redeliverAfter): the hold
+// giveBack takes is for the stop, and this message wants redelivering now, to this same
+// process, which still holds the durable and still routes that key to the one goroutine it is
+// on. The delay is what keeps a failure that repeats from spinning: the write is the same
+// write each time, so asking again within the second would buy nothing. The write is
 // idempotent (both its statements are `on conflict … do update`), so a redelivery of an
 // envelope whose write had in fact landed writes the same pair again.
+//
+// It is handed back a bounded number of times and then acknowledged, with an Error naming the
+// envelope and the deliveries it spent (headWriteMaxDeliveries): a message handed back with a
+// delay stays in the consumer's ack-pending set for the whole of that delay, so a write that
+// fails the same way every time would hold one of the four in-flight slots
+// (intakeMaxAckPending) for ever. The count is the server's own, read off the message
+// (Msg.Metadata, NumDelivered), so it is the count of this envelope's deliveries and not of
+// this process's attempts at it. A message carrying no such metadata is not a JetStream
+// message, so no count can cap it; it is handed back rather than acknowledged, since the
+// whole argument of this path is that nothing else writes that row, and a hand-back the ack
+// wait bounds is the safer of the two answers.
 //
 // The stop's two answers go through the delivery rather than straight to NATS, and for one
 // reason: the
@@ -983,8 +997,15 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
 	case errors.Is(err, ErrHeadNotStored):
+		delivered, spent := headWriteDeliveriesSpent(msg)
+		if spent {
+			slog.Error("dispatch delivery: a pull request's head row could not be stored in the deliveries allowed; acknowledging the envelope, whose pull request now has no head row until a later `pull_request` event for it, or the read-through a recorded result makes, writes one",
+				"subject", msg.Subject, "deliveries", delivered, "error", err)
+			return
+		}
 		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
-			"subject", msg.Subject, "redeliver_after", headWriteRedeliverAfter, "error", err)
+			"subject", msg.Subject, "delivery", delivered, "deliveries_allowed", headWriteMaxDeliveries,
+			"redeliver_after", headWriteRedeliverAfter, "error", err)
 		handBack = true
 		return
 	case err != nil:
@@ -1001,14 +1022,66 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 // headWriteRedeliverAfter is how long NATS waits before handing back an envelope whose pull
 // request's head row could not be stored (deliver). It is not zero because the write that
 // failed is the same write each time: a plain Nak would have the server redeliver at once, and
-// a database that is refusing writes would then spin the consumer against it, with four such
-// envelopes holding every in-flight slot it has (intakeMaxAckPending). Ten seconds is short
-// beside the five minutes of the reconcile this message cannot wait for, and long enough that
-// a hundred redeliveries of one envelope cost a quarter of an hour rather than a second.
-var headWriteRedeliverAfter = 10 * time.Second
+// a database that is refusing writes would then spin the consumer against it as fast as the
+// round trip allows.
+//
+// What the delay does not do is give the in-flight slot back. A delayed Nak leaves the message
+// in the consumer's ack-pending set — nats-server's processNak moves that pending entry's
+// timestamp and nothing else — so one such envelope holds one of the four slots
+// (intakeMaxAckPending) for every second it is waiting to come round again, and four of them
+// hold all four. Bounding that is headWriteMaxDeliveries' work, not this constant's: ten
+// seconds only sets the rate, which is short beside the five minutes of the reconcile this
+// message cannot wait for, and long enough that the cap's whole run of redeliveries is
+// measured in minutes rather than in round trips.
+const headWriteRedeliverAfter = 10 * time.Second
 
-// redeliverAfter hands msg back to the server for redelivery in after, logging a Nak that
-// fails: the ack wait (intakeAckWait) then redelivers it, later than asked but not never.
+// headWriteMaxDeliveries is how many deliveries one envelope whose head row could not be
+// stored gets before deliver acknowledges it and logs the loss. Without it there is no bound
+// at all: the durable sets no MaxDeliver, and a delayed Nak holds the message in the
+// consumer's ack-pending set, so a write that fails the same way every time is redelivered
+// every headWriteRedeliverAfter for ever and holds an in-flight slot throughout. Four such
+// envelopes stop the intake outright, and everything behind them — every other pull request
+// and every workflow run — waits on a row nothing was ever going to write.
+//
+// Thirty is where the two costs it sits between cross. Too few, and a database away for a
+// minute loses a head row that nothing else repairs: a minute is six deliveries at
+// headWriteRedeliverAfter, and an outage is counted in minutes rather than in seconds, so a
+// cap of five or ten would throw away heads that waiting a little longer was always going to
+// write. Too many, and four envelopes hold the consumer's whole in-flight window for longer
+// than the thing that catches every other failure up. At thirty deliveries and a ten-second
+// delay, one envelope's hand-backs are 29 × 10 s = 4 min 50 s of wall clock, plus what each
+// refused attempt itself spends, which is milliseconds for a write Postgres refuses outright.
+// So the window is held for about five minutes at the worst — the reconcile's own period,
+// which is already the longest any other failure of this intake waits — and a database away
+// for anything up to that still gets the head row written.
+//
+// A var so a test can shrink it, as intakeMessageTimeout and intakeMaxAckPending are vars for
+// the same reason: thirty deliveries of one envelope is five minutes no test should spend.
+var headWriteMaxDeliveries uint64 = 30
+
+// headWriteDeliveriesSpent reports how many times the server has delivered msg and whether
+// that is every delivery headWriteMaxDeliveries allows a head write to fail in.
+//
+// A message whose metadata cannot be read is not a JetStream message at all (Msg.Metadata
+// answers an error for one with no JetStream reply subject). No count can be read from it and
+// so no cap can be applied, and the answer is "not spent": the caller hands it back, which is
+// the answer that keeps the head row's one chance of being written, and the ack wait bounds a
+// hand-back the server never takes.
+func headWriteDeliveriesSpent(msg *natsgo.Msg) (delivered uint64, spent bool) {
+	meta, err := msg.Metadata()
+	if err != nil {
+		slog.Error("dispatch delivery: read how often the envelope whose head row was not stored has been delivered",
+			"subject", msg.Subject, "error", err)
+		return 0, false
+	}
+	return meta.NumDelivered, meta.NumDelivered >= headWriteMaxDeliveries
+}
+
+// redeliverAfter hands msg back to the server for redelivery in after — at once where after is
+// zero, which is the same message to the server, since nats.go adds a delay to the negative
+// acknowledgement only for a delay above zero (Msg.NakWithDelay, js.go) — and logs a hand-back
+// the server refused: the ack wait (intakeAckWait) then redelivers it, later than asked but
+// not never.
 func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
 	if err := msg.NakWithDelay(after); err != nil {
 		slog.Error("dispatch delivery: hand a message back for redelivery",
@@ -1023,15 +1096,7 @@ func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
 func acknowledge(msg *natsgo.Msg) {
 	if err := msg.Ack(); err != nil {
 		slog.Error("dispatch delivery: acknowledge message", "subject", msg.Subject, "error", err)
-		negativelyAcknowledge(msg)
-	}
-}
-
-// negativelyAcknowledge hands msg back to the server for redelivery at once, logging a Nak that
-// fails: the ack wait then redelivers it.
-func negativelyAcknowledge(msg *natsgo.Msg) {
-	if err := msg.Nak(); err != nil {
-		slog.Error("dispatch delivery: negatively acknowledge message", "subject", msg.Subject, "error", err)
+		redeliverAfter(msg, 0)
 	}
 }
 
@@ -1042,10 +1107,17 @@ func negativelyAcknowledge(msg *natsgo.Msg) {
 // the one failure this hands the envelope back for (delivery.ErrHeadNotStored): nothing else
 // repairs a head row that was never stored, since the reconcile's passes read the rows that
 // exist, and both statements behind that write are `on conflict … do update`, so the
-// redelivery writes the same pair. Every other failure of it — a read of GitHub the App
-// refused, a rate limit the attribution hit — is logged and the merge handling goes on, as
-// before: the row is written either way or the reconcile's own pass reads it again, and
-// handing every rate-limited envelope back would spend the whole limit over again.
+// redelivery writes the same pair. That covers the write itself and the two reads of Postgres
+// before it, the repository's canonical name and the attribution (recordPullRequestHead).
+// Two other failures of it are logged here and the merge handling goes on from them. A rate
+// limit the attribution hit leaves no row either, and no pass offers a row that was never
+// written, but it is acknowledged all the same: handing every rate-limited envelope back
+// would spend the whole limit over again, and the next `pull_request` event of that pull
+// request — a synchronize, a label, the merge — writes the row the limit cost this one. A
+// repository name that is not `owner/repo` is malformed in the envelope itself, so the same
+// envelope delivered again fails on the same name. A read of GitHub the App refused for any
+// other reason is no failure of this write at all: the row is written from the envelope
+// alone, incomplete and unstamped, and the reconcile's own pass reads it again.
 // Only a merge (action "closed", merged "true") does anything for the delivery timeline
 // after that; its author and excluded-repository checks run on the envelope's own fields, so a
 // merge by anyone outside the population costs no GitHub call of its own. It reports whether
@@ -1332,11 +1404,17 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	}
 }
 
+// errMalformedRepo is a repository name that is not `owner/repo`. It is a sentinel because a
+// caller that must decide whether making its work again could get past a failure has to tell
+// this one from the database's: a name this malformed is malformed in whatever delivered it,
+// and the next delivery carries the same name (markHeadNotStored).
+var errMalformedRepo = errors.New("malformed repository")
+
 // splitRepo splits "owner/repo" into its two segments.
 func splitRepo(repoFull string) (owner, repo string, err error) {
 	parts := strings.SplitN(repoFull, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("malformed repository %q: want owner/repo", repoFull)
+		return "", "", fmt.Errorf("%w %q: want owner/repo", errMalformedRepo, repoFull)
 	}
 	return parts[0], parts[1], nil
 }

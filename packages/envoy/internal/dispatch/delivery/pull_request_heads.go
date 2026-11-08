@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -77,16 +76,46 @@ func PullRequestHeadState(action string, merged bool) string {
 	return "closed"
 }
 
-// ErrHeadNotStored marks a failure to write a pull request's head row, as against a failure to
-// attribute one: the first is a write that can simply be made again, and nothing else in
-// Dispatch repairs a head row that was never stored — the reconcile's passes read the rows
-// that exist (ListStalePullRequestHeads), so a row no write ever made is offered to nothing.
-// The `pull_request` envelope's handler tests for it and hands the envelope back for delivery
-// rather than acking it, since both of the statements behind it are `on conflict … do update`
-// and a redelivery writes the same pair (Intake.handlePullRequestEnvelope). A read of GitHub
-// the App refused is not this: it is answered by the reconcile's own next pass, and handing
-// every rate-limited envelope back would spend the whole limit over again.
+// ErrHeadNotStored marks a failure that left a pull request's head row unwritten and that
+// making the same attempt again may get past, as against a failure to attribute one: nothing
+// else in Dispatch repairs a head row that was never stored — the reconcile's passes read the
+// rows that exist (ListStalePullRequestHeads), so a row no write ever made is offered to
+// nothing. The `pull_request` envelope's handler tests for it and hands the envelope back for
+// redelivery rather than acking it (Intake.handlePullRequestEnvelope, Intake.deliver), up to
+// headWriteMaxDeliveries deliveries of it, since both of the statements behind the write are
+// `on conflict … do update` and a redelivery writes the same pair.
+//
+// It marks every database failure on the way to that write and not the write alone, because
+// they all end the same way and a connection-level outage reaches the earlier ones first. The
+// envelope's path to the write is two reads and the write: the canonical name of the
+// repository (refs.CanonicalRepo) and the attribution's own read of the issues its candidates
+// name (headAttribution, through resolveAttributionCandidates). A head row lost because
+// Postgres refused the first of those is as lost as one lost at the insert, so
+// recordPullRequestHead marks all three (markHeadNotStored).
+//
+// Two failures of that path are deliberately left unmarked, because no redelivery mends
+// either. A read of GitHub the App refused is answered by the reconcile's own next pass, and
+// handing every rate-limited envelope back would spend the whole limit over again — the rate
+// limit is the only refusal of GitHub that comes back as an error at all, since attributeHead
+// logs every other one at Debug and writes an incomplete row. And a repository name that is
+// not `owner/repo` (splitRepo, errMalformedRepo) is malformed in the envelope itself, so the
+// same envelope delivered again carries the same malformed name.
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
+
+// markHeadNotStored marks err as ErrHeadNotStored unless it is one of the two failures that
+// sentinel's doc comment leaves unmarked: a rate limit (githubapp.AsRateLimit), and a
+// repository name that is not `owner/repo` (errMalformedRepo). Everything else the steps
+// before the head write answer is Postgres refusing a read, which is the fault the sentinel is
+// for.
+func markHeadNotStored(err error) error {
+	if _, limited := githubapp.AsRateLimit(err); limited {
+		return err
+	}
+	if errors.Is(err, errMalformedRepo) {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+}
 
 // UpsertPullRequestHead writes one pull request's head row. An event older than the one the row
 // already holds changes nothing: GitHub redelivers and the reconcile reads concurrently, so the
@@ -193,18 +222,11 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullReque
 // rollback here can be undoing and far inside any caller's own patience.
 const headWriteRollback = 2 * time.Second
 
-// Execer is what a write in this package needs of its connection: the pool, or a transaction
-// already open on it, which the head row and the branch answer its merge seeds are written
-// inside (UpsertPullRequestHead). It is the write side of Querier (groups.go), which the reads
-// of this package take for the same reason.
-type Execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
 // upsertHeadRow is the head row's own statement, which UpsertPullRequestHead's doc comment
-// explains in full: it is here, on an Execer, so that one statement runs on the pool where it
-// is the whole write and inside the transaction where the merge's branch answer goes with it.
-func upsertHeadRow(ctx context.Context, db Execer, head PullRequestHead) error {
+// explains in full: it is here, on a refs.Execer — the pool, or a transaction already open on
+// it — so that one statement runs on the pool where it is the whole write and inside the
+// transaction where the merge's branch answer goes with it.
+func upsertHeadRow(ctx context.Context, db refs.Execer, head PullRequestHead) error {
 	_, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
@@ -789,11 +811,19 @@ func ReadThroughCommitPulls(
 // written under a name a repository was renamed away from. It is also what the head is held to:
 // an envelope keyed by an old name carries a `head_repo` GitHub spells under the new one, and
 // comparing those two would make every such pull request a fork's (headInOwnRepository).
+//
+// Three of the four steps here can fail, and each failure is marked, or left bare, by what a
+// redelivery of the envelope would do with it (markHeadNotStored, ErrHeadNotStored). The
+// canonical read and the attribution are reads of Postgres before any row is written, so a
+// failure of either loses the head row exactly as a refused insert does and both are marked;
+// the attribution's own two exceptions, a rate limit and a malformed repository name, are not,
+// and neither is the malformed name this function splits for itself, since the next delivery
+// of the same envelope carries the same name and would fail on it again.
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) ([]string, error) {
 	given := payload["repo"]
 	repoFull, err := refs.CanonicalRepo(ctx, in.pool, given)
 	if err != nil {
-		return nil, err
+		return nil, markHeadNotStored(err)
 	}
 	owner, repo, err := splitRepo(repoFull)
 	if err != nil {
@@ -806,7 +836,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 			HeadRef: payload["head_ref"],
 		}, payload["head_repo"], number)
 	if err != nil {
-		return nil, err
+		return nil, markHeadNotStored(err)
 	}
 	// The envelope is itself a fresh read of the head, so the row is stamped read and the
 	// reconcile does not spend three GitHub calls re-reading what the event just delivered —

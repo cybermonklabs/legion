@@ -33,7 +33,9 @@ func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
 
 // deliveryTestPool opens a real Postgres pool from DISPATCH_TEST_DATABASE_URL, migrates it, and
 // returns it; a test that needs it skips (not fails) when the variable is unset, matching every
-// other Postgres-backed test in this module's convention.
+// other Postgres-backed test in this module's convention. The database is the server's own and
+// outlives the run, so it is repaired before it is migrated (repairDroppedTables) and truncated
+// rather than created afresh.
 func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	t.Helper()
 	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
@@ -47,6 +49,7 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	}
 	t.Cleanup(pgxPool.Close)
 	pool := store.NewPool(pgxPool)
+	repairDroppedTables(t, ctx, pool)
 	st := &store.Store{Pool: pool}
 	if err := st.Migrate(ctx); err != nil {
 		t.Fatalf("Migrate: %v", err)
@@ -63,6 +66,82 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 		}
 	}
 	return pool, ctx
+}
+
+// droppableTables are the tables a test of this package drops to make a write of one fail the
+// way a write fails, each under the version of the migration that creates it.
+//
+// A test that drops one puts it back itself (withoutBranchCommits), which is the fast path and
+// the ordinary one. This map is for the run that never got to its cleanup: `go test -timeout`
+// kills the binary outright, and the table is then missing from a database that is the
+// server's own and outlives the run, while schema_migrations still records the migration that
+// creates it. Nothing would make it again — Migrate applies the versions the table does not
+// record — so every later run of this package would fail at the truncate above, until someone
+// repaired the database by hand.
+var droppableTables = map[int64]string{branchCommitsMigration: "branch_commits"}
+
+// repairDroppedTables forgets the recorded version of every droppable table the database is
+// missing, so the Migrate that follows creates it again exactly as its migration does, rather
+// than from a second copy of that `create table` kept here and in step by hand.
+//
+// It reads the table from the catalogue (to_regclass answers null for a name that is no
+// relation) rather than trying a read of it and reading the failure, since a failed statement
+// of this kind aborts nothing here but would have to be told apart from a database that is
+// unreachable. A database that has no schema_migrations at all is a fresh one with no version
+// recorded and nothing dropped, and there is nothing to forget.
+func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	var migrated bool
+	if err := pool.QueryRow(ctx, "select to_regclass('schema_migrations') is not null").Scan(&migrated); err != nil {
+		t.Fatalf("look for schema_migrations: %v", err)
+	}
+	if !migrated {
+		return
+	}
+	for version, table := range droppableTables {
+		var present bool
+		if err := pool.QueryRow(ctx, "select to_regclass($1::text) is not null", table).Scan(&present); err != nil {
+			t.Fatalf("look for %s: %v", table, err)
+		}
+		if present {
+			continue
+		}
+		if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", version); err != nil {
+			t.Fatalf("forget the migration of %s, which a run that died left dropped: %v", table, err)
+		}
+	}
+}
+
+// A table a test dropped and never put back is made again by the next deliveryTestPool, so the
+// run after the one `-timeout` killed mid-test runs against the schema its migrations describe.
+// Without that repair the table stays missing while schema_migrations records its version, and
+// every later run of this package fails at the truncate of it.
+//
+// The drop here has no cleanup of its own on purpose: what is under test is that the harness
+// repairs a database nobody put back, and the second deliveryTestPool is what leaves the
+// database as the next test finds it.
+func TestTheHarnessMakesAgainATableADeadRunLeftDropped(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
+		t.Fatalf("drop branch_commits as a run killed mid-test leaves it: %v", err)
+	}
+
+	next, nextCtx := deliveryTestPool(t)
+	var rows int
+	if err := next.QueryRow(nextCtx, "select count(*) from branch_commits").Scan(&rows); err != nil {
+		t.Fatalf("read branch_commits from the harness that should have made it again: %v", err)
+	}
+	if rows != 0 {
+		t.Fatalf("branch_commits holds %d rows after being made again, want the empty table its migration makes", rows)
+	}
+	var recorded bool
+	if err := next.QueryRow(nextCtx,
+		"select exists(select 1 from schema_migrations where version = $1::bigint)", branchCommitsMigration).Scan(&recorded); err != nil {
+		t.Fatalf("read whether the branch_commits migration is recorded again: %v", err)
+	}
+	if !recorded {
+		t.Fatalf("schema_migrations does not record %d after the repair, so the next Migrate would make the table a second time", branchCommitsMigration)
+	}
 }
 
 // deliveryTestLeases is the lease pool an intake reconciles its durable under (duty.Exclusive on
@@ -253,6 +332,17 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	messageTimeout := intakeMessageTimeout
 	intakeMessageTimeout = 5 * time.Second
 	t.Cleanup(func() { intakeMessageTimeout = messageTimeout })
+}
+
+// capHeadWriteDeliveriesAt shrinks headWriteMaxDeliveries to deliveries for one test, the way
+// shrinkIntakeFlowControl shrinks the message timeout: the shipped cap of thirty, at
+// headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a test of the
+// cap measures is that there is one at all, which two deliveries show as well as thirty.
+func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
+	t.Helper()
+	was := headWriteMaxDeliveries
+	headWriteMaxDeliveries = deliveries
+	t.Cleanup(func() { headWriteMaxDeliveries = was })
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and

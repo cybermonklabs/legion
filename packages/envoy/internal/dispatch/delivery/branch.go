@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -538,10 +539,10 @@ func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, s
 // lowercased repository readBranchCommit reads by: the one key this table has, and the reason
 // it has one, are that comment's.
 //
-// It takes an Execer rather than the pool, so the same statement runs on the pool for a
+// It takes a refs.Execer rather than the pool, so the same statement runs on the pool for a
 // compare read's answer (CommitOnBranch) and inside a transaction for a merge's permanent yes,
 // which commits with the head row it was learned from or not at all (UpsertPullRequestHead).
-func writeBranchCommit(ctx context.Context, db Execer, repoFull, branch, sha string, onBranch bool, now time.Time) error {
+func writeBranchCommit(ctx context.Context, db refs.Execer, repoFull, branch, sha string, onBranch bool, now time.Time) error {
 	_, err := db.Exec(ctx, `
 		insert into branch_commits (repo, branch, sha, on_branch, checked_at)
 		values (lower($1), $2, $3, $4, $5)
