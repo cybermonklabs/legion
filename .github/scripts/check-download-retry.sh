@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Every download this repository's CI makes retries, and one rule holds that retry
 # (dispatch://INFRA-1545, R2). This check is the enforcement half: nothing else refuses a fetch
-# added with no retry, a retry below the floor, an attempt with no time bound, or a second copy of
-# the retry loop.
+# added with no retry, a retry below the floor, an attempt with no time bound, a second copy of
+# the retry loop, or a fetch whose failure the pipeline around it swallows.
 #
 # THE FLOOR (R1): at least 5 attempts, the last starting at least 120 seconds after the first, and
 # each attempt bounded in time, so an attempt against a host that accepts the connection and then
@@ -172,6 +172,43 @@
 #      after 5 minutes.` instead of naming the site and its attempts, which is the loud failure
 #      the retry exists to give. GitHub's granularity is the minute, so a whole minute is the
 #      smallest margin that can be written.
+#
+#   9. In a step whose shell leaves `pipefail` off, a fetch that is not the last command of its
+#      pipeline is refused. A workflow `run:` that names no shell runs under GitHub's own
+#      default, `/usr/bin/bash -e {0}`: errexit on, pipefail off, and a pipeline's status is
+#      then its last command's alone. So `curl -fsSL <url> | tar -xz` exits 0 when curl got a
+#      504 and tar unpacked nothing, and a `retry_fetch` around that pipeline reads that 0 and
+#      never retries: the site reads retried here and is unprotected in fact. It is the class of
+#      curl without `--fail` (rule 1), of `apt-get update` without its error mode (rule 5) and
+#      of `mise x` running a decoy (rule 7) — a command that reports success having fetched
+#      nothing. The cure is to read the fetch's own status: write the pipeline as two commands,
+#      with the fetch's output in a file or a variable, or give the step a shell that sets
+#      `-o pipefail`.
+#
+#      Which steps the rule reaches is read rather than assumed, because the answer is each
+#      step's own: its `shell:`, else its job's `defaults.run.shell`, else the workflow's, and a
+#      value of `bash` — which GitHub expands to `bash --noprofile --norc -eo pipefail {0}` — or
+#      a custom command line writing `pipefail` itself takes that step out of the rule. So it
+#      reaches every workflow `run:` of this tree but main-bypass-check.yaml's one step, which
+#      names `shell: bash` on purpose and whose own test holds it to that shell, and it reaches
+#      no composite action's step: GitHub requires one to name a shell, and all eleven here name
+#      `bash`. A *.sh under .github/scripts/ is outside it as well, each setting its own `-o
+#      pipefail`, and so is a Dockerfile RUN, which names no step's shell and whose pipelines
+#      are rule 3's business. Measured in run 42386541065's job logs: 63 steps at
+#      `/usr/bin/bash -e {0}`.
+#
+#      No site in the tree is refused by this rule today, and three lines look as though they
+#      would be. Both pipeline spellings count: `|`, and `|&`, which is bash's pipe of standard
+#      error beside standard output and loses the fetch's status the same way. `||` is neither
+#      of them but a logical OR, and it sets nothing — which is what ci.yaml's `cancel-started`
+#      step and dequeued.yaml's `cancel-dequeued` write, each ending a line with `gh api
+#      --silent --method POST … ||`, and what the scanner tells from a `|` by the character
+#      after it. release-envoy-listener.yaml's `if ! legacy_source=$(gh api …)` is the third
+#      line, and it reads that fetch's own status, which is what this rule asks for.
+#
+#      A site this rule refuses that another rule refuses too is one `::error` and not two. The
+#      sentence is appended to that site's own refusal, so a reader counts one refused site
+#      rather than two annotations on one line of one file.
 #
 # THE EXCEPTIONS, which are R2's four and no others. Each is a site this repository refuses to
 # retry on purpose. Each one written out as an entry of EXEMPTIONS below must match something: an
@@ -485,13 +522,15 @@ def probe_spans(text: str) -> list[tuple[int, int]]:
 
 class Command:
     """One simple command of a shell body: its words, the line it starts on, the character offset
-    it starts at, and the innermost loop it sits in."""
+    it starts at, the innermost loop it sits in, and whether a `|` is what ended it — which says
+    its status is not the pipeline's, and so is rule 9's question."""
 
     def __init__(self, words: list[str], line: int, offset: int) -> None:
         self.words = words
         self.line = line
         self.offset = offset
         self.loop: int | None = None
+        self.piped = False
 
 
 class Scanner:
@@ -541,10 +580,12 @@ class Scanner:
         if brace:
             self.end_command()
 
-    def end_command(self) -> None:
+    def end_command(self, piped: bool = False) -> None:
         self.end_word()
         if self.words:
-            self.commands.append(Command(self.words, self.command_line, self.command_offset))
+            command = Command(self.words, self.command_line, self.command_offset)
+            command.piped = piped
+            self.commands.append(command)
         self.words = []
         self.redirect_target = False
         self.open_command = False
@@ -625,7 +666,12 @@ class Scanner:
                 while text[i + 1:i + 2] in ("<", ">", "&", "|"):
                     i += 1
             elif char in ";&|\n":
-                self.end_command()
+                # A `|` that ends this command pipes its output into the next one, and the
+                # pipeline's status is that next one's where pipefail is off (rule 9). `|&`
+                # pipes standard error with it and is as much a pipeline; the `&` of it then
+                # ends a command with no words, which adds none. `||` is a logical OR and no
+                # pipeline at all, and its second `|` ends a wordless command the same way.
+                self.end_command(char == "|" and after != "|")
             elif char in " \t":
                 self.end_word()
             else:
@@ -889,13 +935,15 @@ def apt_error_mode(words: list[str]) -> bool:
 
 class Site:
     """One network fetch: where it is, what verb it uses, what retries it, what bounds each of
-    its attempts, and what it is in. `silent` marks rule 7's shape instead: a `mise x`, `mise
+    its attempts, and what it is in. `piped` is rule 9's: the fetch sits left of a `|` in a
+    shell that leaves pipefail off, so the pipeline's status is its last command's and this
+    fetch's failure is not read. `silent` marks rule 7's shape instead: a `mise x`, `mise
     exec`, `mise up` or `mise upgrade` with a retry around it, which is no fetch to hold to the
     floor but a retry to refuse."""
 
     def __init__(self, path: str, line: int, verb: str, step: str, words: list[str],
                  retry: str | None, bounded: bool, loop: int | None, bound: int | None = None,
-                 silent: bool = False) -> None:
+                 silent: bool = False, piped: bool = False) -> None:
         self.path = path
         self.line = line
         self.verb = verb
@@ -906,6 +954,7 @@ class Site:
         self.loop = loop
         self.bound = bound
         self.silent = silent
+        self.piped = piped
 
 
 def arithmetic_of(site: Site) -> int:
@@ -952,14 +1001,21 @@ def commands_of(body: str,
     return commands, structure(commands), probe_spans(text)
 
 
-def sites_of(path: str, body: str, first_line: int, step: str) -> list[Site]:
-    """Every fetch of one shell body."""
+def sites_of(path: str, body: str, first_line: int, step: str,
+             pipefail: bool = True) -> list[Site]:
+    """Every fetch of one shell body. `pipefail` is whether the shell that runs it sets `-o
+    pipefail`: where it does, a pipeline carries the failure of every command in it and rule 9
+    has nothing to refuse. That is the default, because a *.sh and a Dockerfile RUN are read
+    with no step's `shell:` to ask about and each sets its own flags."""
     commands, function_loop, probes = commands_of(body, first_line)
     found: list[Site] = []
     for command in commands:
         if any(start <= command.offset < end for start, end in probes):
             continue
         found += sites_of_command(path, command, function_loop, step)
+    if pipefail:
+        for site in found:
+            site.piped = False
     return unpacks_dropped(found)
 
 
@@ -1009,6 +1065,9 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
         for sub in inner:
             sub.line = command.line
             sub.offset = command.offset
+            # A `bash -c '…' | tar` pipes the interpreter, so a fetch inside it loses its own
+            # status the same way a fetch written in the pipeline would.
+            sub.piped = sub.piped or command.piped
             found += sites_of_command(path, sub, function_loop, step, retry, bounded, depth + 1,
                                       bound)
         return found
@@ -1020,7 +1079,8 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
         verb, rest = held
         _, _, inner_bound, inner_seconds = reduce_words(rest)
         return [Site(path, command.line, verb, step, rest, retry, bounded or inner_bound,
-                     function_loop[name], bound if bound is not None else inner_seconds)]
+                     function_loop[name], bound if bound is not None else inner_seconds,
+                     piped=command.piped)]
     silent = silent_verb_of(words)
     if silent:
         # Rule 7. A bare one is no fetch this check holds to anything; a retried one is the
@@ -1028,7 +1088,7 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
         if not retry:
             return []
         return [Site(path, command.line, silent, step, words, retry, bounded, command.loop,
-                     bound, silent=True)]
+                     bound, silent=True, piped=command.piped)]
     verb = verb_of(words)
     if not verb:
         return []
@@ -1037,7 +1097,8 @@ def sites_of_command(path: str, command: Command, function_loop: dict[str, int],
     if verb == "curl" and retry is None:
         # curl makes the attempts itself, and `--max-time` is what bounds each one of them.
         bound = curl_bound(words) or bound
-    return [Site(path, command.line, verb, step, words, retry, bounded, command.loop, bound)]
+    return [Site(path, command.line, verb, step, words, retry, bounded, command.loop, bound,
+                 piped=command.piped)]
 
 
 def loopback_only(words: list[str]) -> bool:
@@ -1186,25 +1247,46 @@ def local_action(uses: object) -> str | None:
     return action_by_directory.get(uses[2:].rstrip("/"))
 
 
-def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mapping]]:
+def defaults_shell(holder: object) -> object:
+    """The `defaults.run.shell` a workflow or one of its jobs sets, or None."""
+    if not isinstance(holder, Mapping):
+        return None
+    defaults = holder.get("defaults")
+    run = defaults.get("run") if isinstance(defaults, Mapping) else None
+    return run.get("shell") if isinstance(run, Mapping) else None
+
+
+def sets_pipefail(shell: object) -> bool:
+    """Whether a step's shell sets `-o pipefail`, which is rule 9's question. `bash` is the one
+    keyword GitHub expands to a pipefail shell, `bash --noprofile --norc -eo pipefail {0}`; a
+    custom command line writes the option itself; and everything else — `sh`, `pwsh`, `python`,
+    a shell named by a path, and a step that names none at all — leaves it off."""
+    if not isinstance(shell, str):
+        return False
+    return shell.strip() == "bash" or "pipefail" in shell
+
+
+def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mapping, object]]:
     """The steps of a workflow's jobs and of a composite action's `runs`, each with the job it
-    sits in (None in an action) and the name a problem calls it by."""
+    sits in (None in an action), the name a problem calls it by, and the shell it runs under:
+    its own `shell:`, else its job's `defaults.run.shell`, else the workflow's."""
     found = []
-    holders: list[tuple[str | None, object]] = []
+    holders: list[tuple[str | None, object, object]] = []
+    fallback = defaults_shell(document)
     runs = document.get("runs")
     if isinstance(runs, Mapping):
-        holders.append((None, runs.get("steps")))
+        holders.append((None, runs.get("steps"), fallback))
     for name, job in (document.get("jobs") or {}).items():
         if isinstance(job, Mapping):
-            holders.append((name, job.get("steps")))
-    for job, steps in holders:
+            holders.append((name, job.get("steps"), defaults_shell(job) or fallback))
+    for job, steps, shell in holders:
         if not isinstance(steps, list):
             continue
         for step in steps:
             if not isinstance(step, Mapping):
                 continue
             name = step.get("name") or step.get("id") or "-"
-            found.append((job, str(name), step))
+            found.append((job, str(name), step, step.get("shell") or shell))
     return found
 
 
@@ -1217,12 +1299,13 @@ for path in workflows + actions:
     if not isinstance(document, Mapping):
         continue
     credentialed = credentialed_jobs(path, document)
-    for job, name, step in steps_of(path, document):
+    for job, name, step, shell in steps_of(path, document):
         cost = 0
         called: set[str] = set()
         if isinstance(step.get("run"), str):
             called = scripts_called(step["run"])
-            for site in sites_of(path, step["run"], step.lines.get("run", 0), name):
+            for site in sites_of(path, step["run"], step.lines.get("run", 0), name,
+                                 sets_pipefail(shell)):
                 cost += arithmetic_of(site)
                 if job in credentialed:
                     exempted.append(site)
@@ -1358,8 +1441,14 @@ for path in DOCKERFILES:
 
 # ---------------------------------------------------------------- the verdict
 
+
+def where_of(site: Site) -> str:
+    """How a refusal names a site: its verb, and the step it sits in where it is a step's."""
+    return f"`{site.verb}`" + (f" in step '{site.step}'" if site.step != "-" else "")
+
+
 for site in sites:
-    where = f"`{site.verb}`" + (f" in step '{site.step}'" if site.step != "-" else "")
+    where = where_of(site)
     dockerfile = site.path in DOCKERFILES
     if site.silent:
         problem(site.path, site.line,
@@ -1431,6 +1520,32 @@ for site in sites:
         problem(site.path, site.line,
                 f"{where} is retried and no attempt of it is bounded in time. Give `retry_fetch` "
                 "a per-attempt bound in seconds.")
+
+# Rule 9: a fetch left of a `|` in a step whose shell leaves pipefail off. The pipeline's status
+# is its last command's there, so the fetch's own failure is the one thing the step never reads.
+for site in sites:
+    if not site.piped or site.silent:
+        continue
+    refusal = (
+        f"{where_of(site)} is not the last command of its pipeline, and this step's shell "
+        "leaves `pipefail` off: a workflow `run:` that names no shell runs under GitHub's "
+        "`/usr/bin/bash -e {0}`, where a pipeline's status is its last command's alone. So "
+        "`curl … | tar -xz` exits 0 when the fetch got a 504 and the unpack read nothing, and "
+        "a `retry_fetch` around that pipeline reads that 0 and never retries: the site reads "
+        "retried and is unprotected in fact. Read the fetch's own status: write the pipeline "
+        "as two commands, with the fetch's output in a file or a variable, or give the step "
+        "`shell: bash`, which GitHub expands to `bash --noprofile --norc -eo pipefail {0}`."
+    )
+    # One site, one annotation: a fetch this rule refuses is often refused by rule 1 as well,
+    # and two `::error` lines at one line of one file read as two sites rather than as one
+    # site's two faults.
+    opening = f"::error file={site.path},line={site.line}::"
+    for index, line in enumerate(problems):
+        if line.startswith(opening):
+            problems[index] = f"{line} {refusal}"
+            break
+    else:
+        problem(site.path, site.line, refusal)
 
 # Rule 2: a loop that holds a fetch is a copy of the one helper. Not in a Dockerfile, whose
 # canonical definition is itself a loop and which carries no helper file to copy.

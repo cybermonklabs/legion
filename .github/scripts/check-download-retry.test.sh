@@ -2,8 +2,9 @@
 # Tests for `check-download-retry.sh`: every network fetch of this repository's CI retries at
 # R1's floor, an `apt-get update` fails rather than warns when an index read fails so that the
 # retry has something to retry, a `mise x` carries no retry at all because it exits 0 when it
-# cannot resolve the tool, one rule holds that retry, and the four exceptions R2 lists are the
-# only sites left bare (dispatch://INFRA-1545, R2).
+# cannot resolve the tool, a fetch left of a `|` in a step whose shell leaves pipefail off is
+# refused because the pipeline's status is its last command's, one rule holds that retry, and
+# the four exceptions R2 lists are the only sites left bare (dispatch://INFRA-1545, R2).
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script into it, so the script under test is the file CI runs. Every fixture starts from the
@@ -789,5 +790,191 @@ root=$(fixture bad-argument)
 run_check "$root" --everything
 check "exits 2" "$(is "$status" 2)"
 check "says what it takes" "$(contains "$out" 'this check takes no argument')"
+
+# Rule 9. A workflow `run:` that names no shell runs under GitHub's `/usr/bin/bash -e {0}`:
+# errexit on, pipefail off, so a pipeline's status is its last command's and a fetch left of a
+# `|` can fail with the step exiting 0. The retry around such a pipeline sees that 0 and never
+# retries, which is the hole these cases close.
+echo "case: a retried fetch left of a pipe in a workflow run"
+root=$(fixture piped-retry)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line and the step" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=9::.curl. in step .Install changie. is not the last command of its pipeline')"
+check "says whose status the step reads" \
+  "$(contains "$out" "a pipeline's status is its last command's alone")"
+check "says the retry around it never retries" "$(contains "$out" 'never retries')"
+check "names the cure" "$(contains "$out" 'write the pipeline as two commands')"
+check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: a bare fetch left of a pipe is refused for the pipeline as well as the floor"
+root=$(fixture piped-bare-curl)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        run: |
+          curl -fsSL https://example.com/changie.tar.gz | tar -xz -C /usr/local/bin changie
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the missing floor" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=8::.curl. in step .Install changie. fetches without the floor')"
+check "names the pipeline too, not only the missing retry" \
+  "$(contains "$out" 'is not the last command of its pipeline')"
+check "the two faults of one site are one annotation" \
+  "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: the same piped fetch in a composite action passes, since its shell sets pipefail"
+root=$(fixture piped-action)
+mkdir -p "$root/.github/actions/install-thing"
+cat > "$root/.github/actions/install-thing/action.yml" <<'YAML'
+name: Install the thing
+description: Installs the thing through a shell that carries the fetch's failure.
+runs:
+  using: composite
+  steps:
+    - name: Install the thing
+      shell: bash
+      run: |
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
+        retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/thing.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a workflow's gh api with a logical OR after it is no pipeline"
+root=$(fixture logical-or)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel the runs this push started
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the force-cancel" 30 -- gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/1/force-cancel" ||
+            echo "failed"
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a fetch that is the last command of its pipeline passes"
+root=$(fixture piped-last)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read what this job downloads
+        run: |
+          echo x | xargs curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o out
+          cat urls.txt | curl -fsSL --retry 7 --retry-all-errors --max-time 60 -K - -o out2
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "the curl at the end of its pipeline is a site like any other" \
+  "$(contains "$out" '^.github/workflows/case.yaml	9	curl	Read what this job downloads$')"
+
+echo "case: a workflow step that names shell bash carries the fetch's failure and passes"
+root=$(fixture piped-step-shell)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        shell: bash
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a workflow whose defaults.run.shell names bash passes"
+root=$(fixture piped-workflow-defaults)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job whose defaults.run.shell names sh is refused, since sh sets no pipefail"
+root=$(fixture piped-job-defaults)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: sh
+    steps:
+      - name: Install changie
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line and the step" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=12::.curl. in step .Install changie. is not the last command of its pipeline')"
+
+echo "case: a retried fetch left of a pipe that carries standard error too is refused"
+root=$(fixture piped-stderr)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz |& tar -xz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line and the step" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=9::.curl. in step .Install changie. is not the last command of its pipeline')"
+check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
 
 summary "check-download-retry.sh"
