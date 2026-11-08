@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +51,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -410,17 +410,14 @@ func (r *noRequiredChecksLive) waitSettled(issue noRequiredChecksIssue, head str
 // reads at most every requiredChecksInterval. A read and the decision it makes commit together.
 func (r *noRequiredChecksLive) waitRequired(issue noRequiredChecksIssue, want []string) {
 	r.t.Helper()
-	deadline := time.Now().Add(noRequiredChecksRead)
 	var last record.PullRequest
-	for time.Now().Before(deadline) {
+	if !testwait.Holds(noRequiredChecksRead, 500*time.Millisecond, func() bool {
 		last = r.stored(issue)
-		if last.Required != nil && slices.Equal(last.Required, want) {
-			return
-		}
-		time.Sleep(500 * time.Millisecond)
+		return last.Required != nil && slices.Equal(last.Required, want)
+	}) {
+		r.t.Fatalf("the daemon's pass did not record %s as requiring %v within %s: the store holds %v (nil is a set never read); GitHub stand-in reads it left unanswered: %v",
+			issue.base, want, noRequiredChecksRead, last.Required, r.github.unanswered())
 	}
-	r.t.Fatalf("the daemon's pass did not record %s as requiring %v within %s: the store holds %v (nil is a set never read); GitHub stand-in reads it left unanswered: %v",
-		issue.base, want, noRequiredChecksRead, last.Required, r.github.unanswered())
 }
 
 // holdsWithoutNotice watches issue for liveSettle, failing if it leaves want or its
@@ -533,9 +530,7 @@ type noRequiredChecksPull struct {
 func newNoRequiredChecksGitHub(t *testing.T) *noRequiredChecksGitHub {
 	t.Helper()
 	g := &noRequiredChecksGitHub{t: t, pulls: map[int]noRequiredChecksPull{}, requires: map[string][]string{}}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
 	return g
 }
 
@@ -573,7 +568,6 @@ func (g *noRequiredChecksGitHub) unanswered() []string {
 func (g *noRequiredChecksGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return

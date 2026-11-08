@@ -35,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -875,7 +876,7 @@ func (r *idleWakeRig) logged(msg string, attributes map[string]string) int {
 // and the daemon's, which this rig prints on its way out.
 const idleRigDeadlineMargin = 5 * time.Second
 
-// Every wait of this rig carries a span of its own, one of those below, and idleRigDeadline
+// Every wait of this rig carries a span of its own, one of those below, and idleRigWaiting
 // clamps it by the run's own deadline. The spans are what the work behind each wait takes on a
 // loaded runner with nine pods, nine launchers, a nats-server, a Postgres and an Envoy listener
 // on it; they are the bound a fault is reported at, so a release that never happens is a
@@ -919,34 +920,17 @@ const (
 // four times a second it does not.
 const idleRigPoll = idleRigTick
 
-// idleRigDeadline is when a wait of this rig gives up: within from now, or the test binary's own
-// deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
+// idleRigWaiting waits for condition until it holds or the wait gives up, asking it once every
+// pace, and fails naming what it waited for. The bound is within from now, or the test binary's
+// own deadline less the margin above when that is sooner, which is the clamp testwait.Eventually
 // makes (internal/testwait). A run whose remaining deadline is shorter than the span — a package
 // `-timeout` smaller than it, or a run far enough in that less than the span is left — fails the
 // wait rather than the binary, and a run with no deadline at all (`go test -timeout 0`) fails it
-// at the span itself.
-func idleRigDeadline(t *testing.T, within time.Duration) time.Time {
-	t.Helper()
-	deadline := time.Now().Add(within)
-	if testDeadline, ok := t.Deadline(); ok && testDeadline.Add(-idleRigDeadlineMargin).Before(deadline) {
-		return testDeadline.Add(-idleRigDeadlineMargin)
-	}
-	return deadline
-}
-
-// idleRigWaiting waits for condition until that deadline, asking it once every pace, and fails
-// naming what it waited for. idleRigEventually and idleRigUntil are this loop, each at the pace
-// its callers need.
+// at the span itself. idleRigEventually and idleRigUntil are this wait, each at the pace its
+// callers need.
 func idleRigWaiting(t *testing.T, within time.Duration, what string, pace time.Duration, condition func() bool) {
 	t.Helper()
-	deadline := idleRigDeadline(t, within)
-	for time.Now().Before(deadline) {
-		if condition() {
-			return
-		}
-		time.Sleep(pace)
-	}
-	t.Fatalf("timed out waiting for %s", what)
+	testwait.WithinPolling(t, testwait.Bounded(t, within, idleRigDeadlineMargin), pace, what, condition)
 }
 
 // idleRigEventually waits for condition within the given span, failing with what it waited for.

@@ -349,6 +349,10 @@ A session is its owner's own when its operator is the owner: the owner approved 
 it enrolled under. A pod has no operator, so a pod asking for a person's agent-tier secret sends it
 to that person for approval.
 
+Every row that sends a secret for approval needs the request to carry a reason: a request with
+none is denied instead of being put to a person
+([Requests and grants](#requests-and-grants)).
+
 An owner may also be a service the broker is configured with. `BROKER_SERVICES` binds each
 service's name to the Kubernetes service accounts its pods run as, one entry per account, for
 example `legion-daemon=system:serviceaccount:legion:legion-worker`. A service's own sessions are the
@@ -447,13 +451,22 @@ a list. A secret with no list writes the same bytes into the digest that it alwa
 ## Requests and grants
 
 A session asks for one or more secrets by name in a **request**, signed with its key and carrying a
-reason of at most 400 characters. The broker evaluates every name
+reason of at most 400 characters; a request that reaches a person must carry one.
+The broker evaluates every name
 (`packages/envoy/internal/broker/requests/machine_state.go`):
 
 - A name the policy does not serve, even after the reread above, refuses the whole request with
   `UNKNOWN_SECRET`, and nothing is recorded.
 - A name the policy denies denies the whole request; nothing is ever half-granted. Only a service's
   secret, asked for by anyone but that service, is denied.
+- A request that reaches a person needs a reason. Where a name's answer would be an approval —
+  a human-tier secret, a secret the session's operator withheld from it, or a person's
+  `tier=agent` secret another session asked for — and the request's reason is empty once its
+  spaces are trimmed, that name is denied instead, and one such name denies the whole request.
+  The session reads `<NAME>: a reason is necessary; ask again with --reason` after
+  `was denied: `, and the command exits 77. A request every name of which is granted at once
+  reaches nobody, so it needs no reason, and a machine login, which is always signed with an
+  empty reason, never passes this way.
 - Names that need approval must all need the same approver, else the request is refused
   `MIXED_APPROVERS`; request them separately.
 - A **kind secret** has `kind=github-app`, `kind=google-login` or `kind=google-service-account`,
@@ -518,7 +531,8 @@ reason of at most 400 characters. The broker evaluates every name
   for longer is no one's to approve (`NOT_APPROVER`), so its session cancels it and asks again
   within the bound.
 - When every name is automatic, the request is granted at once.
-- Otherwise it is **pending**, and the broker writes a credential-request record for the approver to
+- Otherwise it is **pending**: the request carries a reason, and the broker writes a
+  credential-request record for the approver to
   decide. A session has at most one pending request for each secret: an identical request from the
   same session while one is pending (the same names and the same lifetime, or none) joins it
   rather than asking twice, and any other request naming one of its secrets, with or without

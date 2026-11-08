@@ -200,7 +200,7 @@ const windowKinds = `('document_block', 'comment_block', 'message_block', 'ask_p
 // embeddings_window_owner's partial predicate and reach the owner's rows through that index.
 //
 // It lives here, with the writes of the rows it reads, so the list of window kinds is held in
-// one place: this package's windowKinds, migration 20261102233625's index predicate and the
+// one place: this package's windowKinds, migration 20261102233630's index predicate and the
 // column the two of them name.
 func BlockEmbeddingStates(ctx context.Context, q Queryer, kind, ownerKey string) (map[string]string, error) {
 	rows, err := q.Query(ctx, `

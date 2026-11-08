@@ -139,9 +139,9 @@ export default defineConfig({
       "@legion/proof-editor": fileURLToPath(
         new URL("../../proof-editor/src/lib.ts", import.meta.url)
       ),
-      // proof-sdk's package.json publishes only its built dist through `exports`, so the
-      // editor's upstream imports name a path its own `exports` hides. Same mapping as
-      // packages/proof-editor/tsconfig.json, which is what Bun and tsc read.
+      // The upstream package declares no main, no module, no types, no exports and no files,
+      // so it publishes no entry point at all and the editor's upstream imports reach its
+      // src/ by path. Same mapping as packages/proof-editor/tsconfig.json, which Bun and tsc read.
       "proof-sdk-upstream/src": fileURLToPath(
         new URL("../../proof-editor/node_modules/proof-sdk-upstream/src", import.meta.url)
       ),
