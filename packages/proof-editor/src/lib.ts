@@ -356,7 +356,16 @@ function installCollabCursorsWhenReady(
       const cursorPlugin = collabCursorPlugin(awareness);
       const nextPlugins = view.state.plugins.concat(cursorPlugin);
       ctx.set(prosePluginsCtx, nextPlugins);
+      // The peer cursors are installed over a document the reader may already be writing in,
+      // and ProseMirror draws it again for the new plugin set: that draw replaces the DOM
+      // their caret stands in, and since neither the document nor the editor's own selection
+      // changed by it, nothing writes the selection back
+      // (`progressive-build.ts`'s adoption says what that costs the reader). `focus()` is
+      // ProseMirror's own way to put it back from the editor's state, asked for only where
+      // the reader was in the editor to begin with.
+      const theReaderWasInIt = view.hasFocus();
       view.updateState(view.state.reconfigure({ plugins: nextPlugins }));
+      if (theReaderWasInIt && !view.isDestroyed) view.focus();
     } catch (error) {
       console.warn('[@sjawhar/proof-editor] failed to install yCursor plugin', error);
     }

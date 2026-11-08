@@ -58,7 +58,7 @@
  * writes at a stale index.
  */
 import type { Fragment, Node as ProseMirrorNode, Schema } from "@milkdown/kit/prose/model";
-import type { Transaction } from "@milkdown/kit/prose/state";
+import { TextSelection, type Transaction } from "@milkdown/kit/prose/state";
 import type { EditorView } from "@milkdown/kit/prose/view";
 import { initProseMirrorDoc, updateYFragment, ySyncPluginKey } from "y-prosemirror";
 import type * as Y from "yjs";
@@ -288,12 +288,38 @@ export async function buildTheDocumentInBatches({
     return made.doc.content;
   };
 
-  /** Puts a change of the document's own in the editor: never undoable, and marked as
-   *  `_forceRerender`'s own transaction is, so no plugin reads it as a reader's edit and
-   *  nothing writes it back to the Yjs document it came from. */
+  /**
+   * Puts a change of the document's own in the editor: never undoable, marked as
+   * `_forceRerender`'s own transaction is, so no plugin reads it as a reader's edit and
+   * nothing writes it back to the Yjs document it came from, and leaving the reader's
+   * selection exactly where they left it.
+   *
+   * Why the selection is carried by hand. A transaction maps the selection through its own
+   * steps with a forward bias (`Transaction.selection`, `StepMap.map` with `assoc` 1), which
+   * is right for a person's own typing - the caret follows what they just wrote - and wrong
+   * for every write this module makes, because none of them is theirs: content put in at the
+   * caret is the rest of their own document arriving, and it belongs after them. Under the
+   * forward bias the first batch left the editor's selection at the end of the batch rather
+   * than at the document's start, each batch after it carried a caret standing at the end of
+   * the built run to the end of the blocks just appended, and ProseMirror wrote that
+   * selection over the reader's own caret the moment it changed (`selectionToDOM`, run from
+   * `EditorView.updateState`). The reader's next keystroke then landed against a caret they
+   * had not put there: typed into the block the build had just finished instead of the one
+   * they had clicked in, or one character behind their own word, which the editor then wrote
+   * to the Yjs document and the server kept (dispatch://INFRA-341, R11).
+   *
+   * A caret and a selected range are carried this way; a node selection is left to the
+   * transaction's own mapping, which keeps it a node selection.
+   */
   const change = (edit: (tr: Transaction) => void): void => {
     const tr = view.state.tr;
+    const kept = view.state.selection;
     edit(tr);
+    if (tr.docChanged && kept instanceof TextSelection) {
+      const $anchor = tr.doc.resolve(tr.mapping.map(kept.anchor, -1));
+      const $head = tr.doc.resolve(tr.mapping.map(kept.head, -1));
+      tr.setSelection(TextSelection.between($anchor, $head, -1));
+    }
     view.dispatch(
       tr.setMeta("addToHistory", false).setMeta(ySyncPluginKey, { isChangeOrigin: true })
     );
@@ -346,10 +372,10 @@ export async function buildTheDocumentInBatches({
    *
    * What goes into the editor is the smallest range of that block that differs
    * (`Fragment.findDiffStart` and `findDiffEnd`, ProseMirror's own), never the whole block, so
-   * the reader's cursor is carried over that range by the transaction's own mapping: a caret
-   * after another person's insert moves along with their words, and one before it does not
-   * move at all. A block whose node type has changed under them is the one case with nothing
-   * to map through, and it is replaced whole.
+   * the reader's cursor is carried over that range by `change`: a caret after another
+   * person's insert moves along with their words, and one before it, or standing exactly
+   * where they began writing, does not move at all. A block whose node type has changed under
+   * them is the one case with nothing to map through, and it is replaced whole.
    */
   const redraw = (index: number): void => {
     const block = fragment.get(index) as Block | undefined;
@@ -500,7 +526,20 @@ export async function buildTheDocumentInBatches({
     await endOfTask();
     if (view.isDestroyed) return;
     stopWatching();
+    // The adoption reconfigures the editor's whole plugin set, and ProseMirror draws the
+    // document again for it (`EditorView.updateState`). That draw replaces the DOM nodes the
+    // reader's caret stands in; neither the document nor the editor's own selection changed
+    // by it, so ProseMirror writes no selection back afterwards, and the browser is left with
+    // the caret collapsed at the start of the block they were writing in. Their next
+    // keystroke was then read off that caret and applied there - a word's characters driven
+    // into the front of the block in the order that undid each of them - and the editor wrote
+    // the result to the Yjs document, where the server kept it (dispatch://INFRA-341, R11).
+    // `focus()` is ProseMirror's own way to write the DOM selection back from the editor's
+    // state, which still holds the reader's place, and it is asked for only where the reader
+    // was in the editor to begin with.
+    const theReaderWasInIt = view.hasFocus();
     adopt(meta.mapping);
+    if (theReaderWasInIt && !view.isDestroyed) view.focus();
   } finally {
     stopWatching();
   }
