@@ -174,6 +174,28 @@ const holdsNoToken = (text: string) => {
 };
 
 describe("app-logins.ts", () => {
+  // The token command the two rows below both run, and the failure line the helper ends on when
+  // it fails: its whole stderr is quoted there, so that line is about a megabyte long, written
+  // in one go before the exit.
+  const noisy = "printf '%01000000d' 0 >&2; printf 'END-OF-STDERR\\n' >&2; exit 3";
+  const failure = `app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 3): ${"0".repeat(1_000_000)}END-OF-STDERR`;
+  /** Asserts that the last line of `printed` is the whole of that failure, by length and by both
+   * ends: a mismatch between two megabyte-long lines prints no diff anyone can read. */
+  const expectFailureLine = (printed: string) => {
+    const last = printed.trimEnd().split("\n").at(-1) ?? "";
+    expect(last.length).toBe(failure.length);
+    expect(last.slice(0, 120)).toBe(failure.slice(0, 120));
+    expect(last.slice(-40)).toBe(failure.slice(-40));
+  };
+  /** What one shell group prints when its own stdout and stderr meet a reader that sleeps
+   * `stall` seconds before it reads a byte: `body`'s output, in the order the group wrote it. */
+  const behindReader = async (body: string, stall: number) => {
+    const shell = `{\n${body}\n} 2>&1 | { sleep ${stall}; cat; }`;
+    const child = Bun.spawn(["bash", "-c", shell], { stdout: "pipe", stderr: "pipe" });
+    const [printed] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    return printed;
+  };
+
   test("prints each App's bot login from GraphQL's viewer, proved by GET /apps/<slug> under its own token", async () => {
     seen.length = 0;
     const { code, stdout, stderr } = await run(config(app("101"), app("202")));
@@ -256,35 +278,28 @@ describe("app-logins.ts", () => {
   });
 
   test("a token command whose newline-delimited stderr exceeds the cap is killed", async () => {
-    const noisy =
+    const overCap =
       "i=0; while [ \"$i\" -lt 257 ]; do printf '%04095d\\n' 0 >&2; i=$((i + 1)); done; exit 3";
-    const { code, stderr } = await run(config(app("101", noisy), app("202")));
+    const { code, stderr } = await run(config(app("101", overCap), app("202")));
     expect(code).toBe(1);
     expect(stderr.slice(-1000)).toContain("wrote more than 1048576 bytes to stderr");
   });
 
-  // A token command that fails under the cap has the whole of its stderr quoted in the failure,
-  // so the line this process ends on is about a megabyte long, written in one go with nothing
-  // after it but the exit. An exit that does not wait for that write discards most of it, and
-  // the caller is left with the command's noise and no reason for the run's failure.
+  // An exit that does not wait for that megabyte-long write discards most of it, and the caller
+  // is left with the command's noise and no reason for the run's failure.
   test("the failure a token command's stderr is quoted in reaches the caller whole, and last", async () => {
-    const noisy = "printf '%01000000d' 0 >&2; printf 'END-OF-STDERR\\n' >&2; exit 3";
     const { code, stderr } = await run(config(app("101", noisy), app("202")));
     expect(code).toBe(1);
-    const failure = `app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 3): ${"0".repeat(1_000_000)}END-OF-STDERR`;
-    // By length and by both ends: a mismatch between two megabyte-long lines prints no diff
-    // anyone can read.
-    const last = stderr.split("\n").at(-1) ?? "";
-    expect(last.length).toBe(failure.length);
-    expect(last.slice(0, 120)).toBe(failure.slice(0, 120));
-    expect(last.slice(-40)).toBe(failure.slice(-40));
+    expectFailureLine(stderr);
   });
 
   // The relay write sits inside the `for await` over the child's stderr, so an `EPIPE` it let out
   // would reject that loop's promise, leave runTokenCommand through its `Promise.all`, and reach
   // the `catch` that writes its diagnosis to the same dead descriptor and throws again: a caller
   // that stopped reading stderr would get a stack trace and the wrong exit code where the helper
-  // promises the logins and exit 0, and lib/github-apps.sh's check_github_apps reads both.
+  // promises the logins and exit 0, and lib/github-apps.sh's check_github_apps reads both. The
+  // row guards the synchronous writer this pull request puts there rather than a regression it
+  // fixes: `main`'s helper passes it too (measured).
   test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
     const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
     const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
@@ -299,37 +314,31 @@ describe("app-logins.ts", () => {
     expect(JSON.parse(stdout).implement).toBe("example-implement[bot]");
   });
 
-  // A stage proof runs many bun commands in one shell group, and the first read of
-  // `process.stderr` sets `O_NONBLOCK` on the open pipe fd 2 is. The flag belongs to the pipe
-  // rather than to the process, and bun leaves it set when it exits, so every later writer on
-  // that pipe inherits it
-  // (docs/solutions/testing/bun-console-log-drops-what-a-full-non-blocking-pipe-cannot-take-and-exits-0.md).
-  // `writeSync` raises `EAGAIN` there where a blocking descriptor waits, so this locks that the
-  // helper's megabyte-long failure still reaches a caller whole on a descriptor an earlier bun
-  // left non-blocking, rather than ending after 66,381 bytes with a stack trace in its place.
+  // A stage proof runs many bun commands in one shell group, and bun leaves `O_NONBLOCK` set on
+  // the pipe that fd 2 names when it exits, so a later writer on that pipe meets `EAGAIN` where
+  // a blocking descriptor waits (writeAll's comment in app-logins.ts holds the mechanism and
+  // what letting the `EAGAIN` out cost). What this row adds: the megabyte-long failure reaches
+  // such a caller whole, rather than ending after 66,381 bytes with a stack in its place.
   test("the failure reaches a caller whose fd 2 an earlier bun left non-blocking, whole", async () => {
-    const noisy = "printf '%01000000d' 0 >&2; printf 'END-OF-STDERR\\n' >&2; exit 3";
+    // A bound of its own: the row holds the reader for a second on purpose.
     const path = config(app("101", noisy), app("202"));
     // Only the first bun's stdout is redirected: a `2>/dev/null` on it would flip a descriptor
     // of its own and leave this pipe blocking, and the row would then prove nothing (measured).
-    // Both runs are in one group, so one reader that stalls holds the pipe for both, and the
-    // group prints fd 2's flags so the row refuses to pass when a later bun stops setting them.
-    const shell = `{
-  bun -e 'process.stderr' >/dev/null
+    // Both runs share the group, so the flag the first bun leaves is the one the helper writes
+    // under, and the printed flags refuse the row when a later bun stops setting them.
+    const printed = await behindReader(
+      `  bun -e 'process.stderr' >/dev/null
   sed -n 's/^flags:/fd2 flags:/p' /proc/self/fdinfo/2
-  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
-} 2>&1 | { sleep 1; cat; }`;
-    const child = Bun.spawn(["bash", "-c", shell], { stdout: "pipe", stderr: "pipe" });
-    const [printed] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-    const lines = printed.trimEnd().split("\n");
-    expect(lines.find((line) => line.startsWith("fd2 flags:"))).toMatch(/\b04001$/);
-    const failure = `app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 3): ${"0".repeat(1_000_000)}END-OF-STDERR`;
-    // By length and by both ends, for the reason the row above gives.
-    const last = lines.at(-1) ?? "";
-    expect(last.length).toBe(failure.length);
-    expect(last.slice(0, 120)).toBe(failure.slice(0, 120));
-    expect(last.slice(-40)).toBe(failure.slice(-40));
-    // A bound of its own: the row holds the reader for a second on purpose.
+  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null`,
+      1
+    );
+    const flags =
+      printed.split("\n").find((line) => line.startsWith("fd2 flags:")) ?? "fd2 flags: none";
+    const bits = Number.parseInt(flags.slice("fd2 flags:".length).trim(), 8);
+    // The `O_NONBLOCK` bit alone, since another flag on the pipe is no business of this row's.
+    // The line read is part of the assertion, so a failure names the flags it was given.
+    expect(`${flags} O_NONBLOCK=${(bits & 0o4000) === 0o4000}`).toBe(`${flags} O_NONBLOCK=true`);
+    expectFailureLine(printed);
   }, 30_000);
 
   test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
@@ -346,25 +355,23 @@ describe("app-logins.ts", () => {
   // stdout and stderr meet a reader that sleeps eight seconds, three past the bound, and whose
   // token command prints 300,000 bytes with no newline until a descendant writes one half a
   // second later: the relay issues one write far larger than the 64 KiB pipe, and that write
-  // blocks until the reader wakes. Where the bound measured wall-clock time from the exit, both
-  // shapes came back as `token_command exited while a process it started still held its output
-  // open`, in place of the exit 3 and the stderr the one shape has and the release the other
-  // released, and the succeeding shape exited 1 where it exits 0.
+  // blocks until the reader wakes. Where the bound measured wall-clock time from the exit, that
+  // block spent it: both shapes came back as `token_command exited while a process it started
+  // still held its output open` and exit 1, the failing shape losing the exit 3 and the stderr
+  // quoted in it, and the succeeding shape losing the release it printed and its exit 0.
   test("a reader that falls behind still gets the token command's own verdict", async () => {
     // A bound of its own: the row holds a reader for eight seconds on purpose.
     const held = "printf 'denied-%0300000d' 0 >&2; (sleep 0.5; printf '\\n' >&2) &";
     const failing = join(dir, "behind-failing.json");
     const succeeding = join(dir, "behind-succeeding.json");
     // Both shapes at once, so the row costs one stall rather than two.
-    const stalled = async (command: string, out: string) => {
+    const stalled = (command: string, out: string) => {
       const path = config(app("101", command), app("202"));
-      const shell = `{
-  bun "${script}" --roles implement "${path}" "${standIn}" >"${out}"
-  echo "exit=$?"
-} 2>&1 | { sleep 8; cat; }`;
-      const child = Bun.spawn(["bash", "-c", shell], { stdout: "pipe", stderr: "pipe" });
-      const [printed] = await Promise.all([new Response(child.stdout).text(), child.exited]);
-      return printed;
+      return behindReader(
+        `  bun "${script}" --roles implement "${path}" "${standIn}" >"${out}"
+  echo "exit=$?"`,
+        8
+      );
     };
     const [bad, good] = await Promise.all([
       stalled(`${held} exit 3`, failing),

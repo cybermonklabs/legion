@@ -134,12 +134,13 @@ export function redactTokens(text: string): string {
  * Every other failure ends the write, `EPIPE` among them, as does a write that takes none of a
  * non-empty buffer: there is nowhere to put the rest and no second channel to complain on, and
  * the exit code the caller reads is the part of the contract that still holds. So nothing here
- * throws, since a throw out of the relay rejects its promise before anything handles it, which
- * kills this process with a stack and leaves a token command's process group alive. Nothing
- * bounds the wait either, and nothing can, since a deadline inside this loop would never fire
- * against a write that blocks: a reader that stalls forever used to make the helper exit after
- * five seconds with its own diagnosis truncated, and now makes it wait under the job's own
- * timeout, with the evidence the helper exists to print kept whole. */
+ * throws, since a throw out of the relay prints its stack with nothing yet awaiting it and then
+ * reaches the `catch` by way of the `Promise.all` that later takes it, which exits 1 where the
+ * caller was promised the logins and exit 0. Nothing bounds the wait either, and nothing can,
+ * since a deadline inside this loop would never fire against a write that blocks: a reader that
+ * stalls holds this write for as long as it stalls, and the evidence the helper exists to print
+ * reaches it whole. Which of this file's bounds such a reader can still reach is in the comment
+ * above `await child.exited`. */
 function writeAll(fd: number, text: string): void {
   const bytes = Buffer.from(text, "utf8");
   for (let written = 0; written < bytes.length; ) {
