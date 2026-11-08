@@ -42,9 +42,10 @@ const (
 	// OutboxKindGatedStepsPublish is the one kind whose row belongs to no issue: its issue column
 	// holds the bare project key (GatedStepsPublish).
 	OutboxKindGatedStepsPublish OutboxKind = "gated_steps_publish"
+	OutboxKindClaimRelease      OutboxKind = "claim_release"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on three lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that
@@ -63,12 +64,17 @@ const (
 // lane's architect notices are ordered among themselves and one of them waits
 // for as long as its architect holds no role (the daemon's errNoticeWaits): a role told that its
 // phase ended must hear it while that is news, not after whatever its tree's architect is owed.
+// The claim lane runs the release of an issue's Dispatch claim (claim_release) on a lane of its
+// own, because that row may wait up to an hour on a holder that has not stopped, and an hour of
+// waiting on one issue's claim must delay no status write and no notice of that same issue, which
+// is what a place on the board lane would cost it.
 type OutboxLane string
 
 const (
 	LaneLifecycle   OutboxLane = "lifecycle"
 	LaneBoard       OutboxLane = "board"
 	LaneRoleMessage OutboxLane = "role_message"
+	LaneClaim       OutboxLane = "claim"
 )
 
 // laneKinds is each lane's kinds in the order LaneKinds lists them. Every OutboxKind is in exactly
@@ -77,6 +83,7 @@ var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindIssueBranch, OutboxKindAutoMergeDisable, OutboxKindReadyMerge, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
 	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindMergeQueuePublish, OutboxKindGatedStepsPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded},
+	LaneClaim:       {OutboxKindClaimRelease},
 }
 
 // LaneOf is the lane that runs kind.
@@ -159,6 +166,14 @@ type StatusWrite struct {
 }
 
 func (StatusWrite) OutboxKind() OutboxKind { return OutboxKindDispatchStatus }
+
+// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
+// it carries. The holder and the issue's record are read when the row runs, not when it is
+// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
+// the row on their own, with no generation or holder to fence it.
+type ClaimRelease struct{}
+
+func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
 // marker.
@@ -1052,6 +1067,12 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindClaimRelease:
+		value := ClaimRelease{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	default:
 		return nil, fmt.Errorf("decode outbox row %d: unknown kind %q", row.ID, row.Kind)
 	}
@@ -1082,7 +1103,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" {
 			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
 		}
-	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound:
+	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")

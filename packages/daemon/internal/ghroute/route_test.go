@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
 
 // ghHelpDir holds the real gh's help of each command the resolver's tests read, saved from gh
@@ -752,9 +752,9 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 	}
 	// One home for every fixture of this test: each command reads the repository it is given and
 	// the identity Isolated supplies, and nothing of the home but that.
-	fixture := fixtureenv.Isolated(t.TempDir())
+	fixture := fixturegit.Isolated(t, t.TempDir())
 	for _, args := range [][]string{
-		{"init", "-q"},
+		fixturegit.InitWorkTree("", "")[1:],
 		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
 		{"config", "remote.origin.pushurl", "https://github.com/acme/pushed.git"},
 		{"remote", "add", "upstream", "gh:sjawhar/legion"},
@@ -763,18 +763,13 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 		{"config", "remote.upstream.promisor", "true"},
 		{"config", "remote.upstream.partialclonefilter", "blob:none"},
 	} {
-		command := exec.Command("git", args...)
 		// ReadGitRemotes reads the process's working directory, so the fixture runs in the same
 		// directory by name rather than inheriting whatever the process has, and it carries an
 		// environment of its own rather than the test process's. The two t.Setenv lines above are
 		// not for this git: ReadGitRemotes runs in-process, in the test binary, and reads them
 		// there, while fixtureenv.Isolated keeps this git off any repository, configuration or
 		// credential a GIT_ variable planted back after the guard could name.
-		command.Dir = repository
-		command.Env = fixture
-		if out, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
+		fixture.Run(repository, append([]string{"git"}, args...)...)
 	}
 	remotes, err := ReadGitRemotes()
 	want := []Remote{
@@ -808,21 +803,16 @@ func TestReadGitRemotesRefusesALineGhReadsOtherwise(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			repository := t.TempDir()
 			t.Chdir(repository)
-			config := [][]string{{"init", "-q"}, {"remote", "add", "origin", tc.url}}
+			config := [][]string{fixturegit.InitWorkTree("", "")[1:], {"remote", "add", "origin", tc.url}}
 			if tc.filter != "" {
 				config = append(config, []string{"config", "remote.origin.promisor", "true"}, []string{"config", "remote.origin.partialclonefilter", tc.filter})
 			}
-			fixture := fixtureenv.Isolated(t.TempDir())
+			fixture := fixturegit.Isolated(t, t.TempDir())
 			for _, args := range config {
-				command := exec.Command("git", args...)
 				// The fixture configures the repository ReadGitRemotes reads, which is the
 				// directory this case chdirs into, named here rather than inherited, and its
 				// environment is its own too, for the reason the test above gives.
-				command.Dir = repository
-				command.Env = fixture
-				if out, err := command.CombinedOutput(); err != nil {
-					t.Fatalf("git %v: %v: %s", args, err, out)
-				}
+				fixture.Run(repository, append([]string{"git"}, args...)...)
 			}
 			if remotes, err := ReadGitRemotes(); err == nil || !strings.Contains(err.Error(), "git remote -v printed") || !strings.Contains(err.Error(), "evilown") {
 				t.Errorf("ReadGitRemotes = %+v, %v; want the line naming evilown refused", remotes, err)

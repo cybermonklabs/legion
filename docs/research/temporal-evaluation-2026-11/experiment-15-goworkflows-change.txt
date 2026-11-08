@@ -1,0 +1,63 @@
+Experiment 15, go-workflows: a change against a recorded run.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+library: github.com/cschleiden/go-workflows v1.4.2
+database: legion_golib_eval
+schema: exp15_28934_911168
+versioning-api-in-the-library: none: go-workflows has no workflow.Version and no patch; its FAQ says to rely on side-by-side deployments, and to use queues to route instances to the workers that can run them
+recorded-code: plan, implement, wait for a person, deliver
+changed-code: plan, review, implement, wait for a person, deliver: one new activity in the middle
+workflow-task-lock-this-run-used: 6s
+recorded-instance: exp15-unguarded-1794091118244949700
+sql-recorded-history: 8: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted ActivityScheduled WorkflowTaskStarted ActivityCompleted
+sql-recorded-instances: state=Active(0) queue=exp15-unguarded-change locked_until=null sticky_until=2026-11-07T22:38:40.479903Z worker=exp15-old-deployment completed_at=null
+steps-performed-while-recording: 4
+recorded-step: step=plan instance=exp15-unguarded-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.357530857Z
+recorded-step: step=plan instance=exp15-side-by-side-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.38872565Z
+recorded-step: step=implement instance=exp15-unguarded-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.39144035Z
+recorded-step: step=implement instance=exp15-side-by-side-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.48111783Z
+old-deployment-stopped-before-the-change: true
+recorded-run-woken-under-the-changed-code: true
+what-the-changed-code-did-to-the-recorded-run: it ended the recorded run without finishing it: the changed code ran the inserted activity against a history that did not have it, the replay error went into the run's WorkflowExecutionFinished event, and the steps after the insertion point never ran -- the signal and the inserted activity's result were left undelivered in pending_events
+steps-the-recorded-run-performed-in-the-end: plan implement review
+inserted-activity-ran-against-the-recorded-run: true
+already-recorded-activity-run-again-by-the-changed-code: none
+recorded-run-reached-its-last-step: false
+error-the-library-logged: none
+workflow-tasks-the-changed-code-failed-in-14s: 0
+workflow-task-locks-taken-on-the-run-in-that-window: 1
+state-the-run-is-left-in: Finished(2)
+sql-after-the-change-finish-event-attributes: {"error":{"message":"previous workflow execution scheduled different type of activity: implement, review"}}
+sql-after-the-change-instances: state=Finished(2) queue=exp15-unguarded-change locked_until=null sticky_until=2026-11-07T22:38:42.524635Z worker=exp15-changed-deployment completed_at=2026-11-07T22:38:40.524635Z
+sql-after-the-change-history: 11: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowTaskStarted ActivityScheduled WorkflowExecutionFinished
+sql-after-the-change-pending_events: 2: SignalReceived ActivityCompleted -- events left undelivered because the instance was already finished when they arrived
+history-the-old-code-recorded-is-still-its-prefix: true
+history-rows-before-the-change: 8
+history-rows-after-the-change: 11
+steps-performed-by-the-changed-code-on-the-recorded-run: 1
+is-the-history-corrupted: no: the rows the old code recorded are still the run's history, in order, and the changed code appended to them rather than rewriting them -- what the change cost is the rest of the run, not the record of what it did
+changed-deployment-stopped: true
+side-by-side-recorded-run-finished-under-the-old-code: true
+sql-side-by-side-instances: state=Finished(2) queue=exp15-side-by-side locked_until=null sticky_until=2026-11-07T22:38:42.977614Z worker=exp15-old-deployment-kept completed_at=2026-11-07T22:38:40.977614Z
+sql-side-by-side-history: 14: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowTaskStarted SignalReceived ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowExecutionFinished
+new-run-under-the-changed-code-finished: true
+sql-new-run-history: 17: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted ActivityScheduled WorkflowTaskStarted ActivityCompleted ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowTaskStarted SignalReceived ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowExecutionFinished
+step-line: step=plan instance=exp15-unguarded-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.357530857Z
+step-line: step=plan instance=exp15-side-by-side-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.38872565Z
+step-line: step=implement instance=exp15-unguarded-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.39144035Z
+step-line: step=implement instance=exp15-side-by-side-1794091118244949700 pid=28934 at=2026-11-07T22:38:38.48111783Z
+step-line: step=review instance=exp15-unguarded-1794091118244949700 pid=28934 at=2026-11-07T22:38:40.53507095Z
+step-line: step=deliver instance=exp15-side-by-side-1794091118244949700 pid=28934 at=2026-11-07T22:38:40.939674823Z
+step-line: step=plan instance=exp15-new-1794091118244949700 pid=28934 at=2026-11-07T22:38:41.217918885Z
+step-line: step=review instance=exp15-new-1794091118244949700 pid=28934 at=2026-11-07T22:38:41.239419709Z
+step-line: step=implement instance=exp15-new-1794091118244949700 pid=28934 at=2026-11-07T22:38:41.256152798Z
+step-line: step=deliver instance=exp15-new-1794091118244949700 pid=28934 at=2026-11-07T22:38:41.49570141Z
+steps-the-old-code-ran-for-its-recorded-run: plan implement deliver
+steps-the-new-code-ran-for-a-new-run: plan review implement deliver
+side-by-side-cost: two deployments and a queue per version, for as long as the oldest unfinished run lives: the library offers nothing that lets one deployment run both shapes
+limit: one inserted activity, one recorded run per treatment, on one PostgreSQL: it shows what an unguarded change does to a run that recorded the old shape and that side-by-side deployment carries such a run to the end, not how a fleet rolls out, and not what a change that only reorders or renames would do
+schema-dropped: exp15_28934_911168
+experiment 15: PASS

@@ -358,7 +358,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	// administrator's Google service-account grant, the owner approves it, and the token the
 	// broker mints carries exactly the Workspace scopes the secret lists.
 	t.Run("a pod of legion-daemon is granted GCP_ADMIN by its owner and reads a token of exactly its scopes", func(t *testing.T) {
-		code, stdout, stderr := daemonPod.run(t, cli, base, "request", requesterGCPAdmin, "--ttl", requesterTTL)
+		code, stdout, stderr := daemonPod.run(t, cli, base, "request", requesterGCPAdmin, "--ttl", requesterTTL,
+			"--reason", "the daemon pod needs its owner's admin grant")
 		if code != cliExitPending {
 			t.Fatalf("agent-secrets request %s as a pod of %s exited %d, want %d (pending): the list names the pod's service, and an admin secret is human tier, so it is the owner's to approve and never an automatic grant\nstdout: %s\nstderr: %s",
 				requesterGCPAdmin, requesterDaemonService, code, cliExitPending, stdout, stderr)
@@ -453,7 +454,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	// tier alone, exactly as it was before the requesters tag existed.
 	var openRecordID string
 	t.Run("a secret with no requesters is still an approval request to its owner", func(t *testing.T) {
-		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterOpenSecret)
+		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterOpenSecret,
+			"--reason", "checking a secret with no requesters still waits for its owner")
 		if code != cliExitPending {
 			t.Fatalf("agent-secrets request %s as %s exited %d, want %d (pending): a secret with no requesters reaches its owner as it always has\nstdout: %s\nstderr: %s",
 				requesterOpenSecret, jason, code, cliExitPending, stdout, stderr)
@@ -478,7 +480,8 @@ func TestRequesterRuleEndToEnd(t *testing.T) {
 	// The approver's own path, which no other row reaches: a request that was pending while the
 	// list still named its person, approved after the list dropped them.
 	t.Run("approving a pending request the list no longer allows records a policy denial", func(t *testing.T) {
-		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterAzureAdmin, "--ttl", requesterTTL)
+		code, stdout, stderr := jasonSession.run(t, cli, base, "request", requesterAzureAdmin, "--ttl", requesterTTL,
+			"--reason", "checking an approval after the list drops the requester")
 		if code != cliExitPending {
 			t.Fatalf("agent-secrets request %s as %s exited %d, want %d (pending): the list still names jason, and the secret is sami's to approve\nstdout: %s\nstderr: %s",
 				requesterAzureAdmin, jason, code, cliExitPending, stdout, stderr)

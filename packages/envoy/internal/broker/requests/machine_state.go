@@ -412,7 +412,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
-	e, err := evaluate(set, names, requester)
+	e, err := evaluate(set, names, requester, obj.Reason)
 	if err != nil {
 		return Request{}, err
 	}
@@ -436,7 +436,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	r := newRequest{
 		id: uuid.NewString(), enrollmentID: enrollmentID, reason: obj.Reason, state: e.state,
 		approver: e.approver, rulesVersion: set.Version, sessionID: sessionID, lifetime: lifetime, decisions: e.decisions,
-		requester: requester, denials: e.denials,
+		requester: requester, denials: e.denials, unexplained: e.unexplained,
 	}
 	// Both branches end the same way — commit, then the one grant-log line for the request.created
 	// audit row insertRequest wrote — so only how req is produced differs between them.
@@ -569,24 +569,33 @@ func formatGrantDuration(duration time.Duration) string {
 
 // evaluation is one pass of the policy over a request's names. approver is set when a name needs
 // approval, and then names the one approver every such name has. denials are the denied names
-// the policy named a reason for, in the request's own name order: the request row records them
+// a reason was named for, in the request's own name order: the request row records them
 // as its decision_detail (newRequest.decisionDetail), so a refused session is told which secret
-// refused it and why instead of only that something did.
+// refused it and why instead of only that something did. A name the policy would have put to an
+// approver is a denial here, policy.ReasonNoReason, when the request carries no reason.
+// unexplained is set when some name was denied with no reason to name, which decisionDetail has
+// its own fixed sentence for.
 type evaluation struct {
-	decisions []SecretDecision
-	denials   []denial
-	state     string // granted, denied or pending
-	approver  string
+	decisions   []SecretDecision
+	denials     []denial
+	state       string // granted, denied or pending
+	approver    string
+	unexplained bool
 }
 
-// denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason).
+// denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason,
+// or policy.ReasonNoReason for a name this pass denied for want of a reason).
 // A deny the policy cannot name a reason for makes no denial at all, since there is nothing to
-// tell the session beyond the refusal itself.
+// tell the session beyond the refusal itself; it sets evaluation.unexplained instead.
 type denial struct{ name, reason string }
 
-// evaluate is the policy's answer for each of names to requester.
-func evaluate(set *policy.Set, names []string, requester policy.Requester) (evaluation, error) {
+// evaluate is the policy's answer for each of names to requester, read against the request's own
+// reason. A name whose outcome would be an approval is denied instead, policy.ReasonNoReason,
+// when reason is empty once trimmed: nobody is asked to approve work the record does not
+// describe.
+func evaluate(set *policy.Set, names []string, requester policy.Requester, reason string) (evaluation, error) {
 	e := evaluation{decisions: make([]SecretDecision, 0, len(names)), state: "granted"}
+	reasonless := strings.TrimSpace(reason) == ""
 	denied := false
 	for _, name := range names {
 		d, err := set.Evaluate(name, requester)
@@ -598,7 +607,13 @@ func evaluate(set *policy.Set, names []string, requester policy.Requester) (eval
 			denied = true
 			if d.Reason != "" {
 				e.denials = append(e.denials, denial{name: name, reason: d.Reason})
+			} else {
+				e.unexplained = true
 			}
+		case d.Outcome == policy.Approval && reasonless:
+			denied = true
+			d.Outcome = policy.Deny
+			e.denials = append(e.denials, denial{name: name, reason: policy.ReasonNoReason})
 		case d.Outcome == policy.Approval:
 			if e.approver != "" && e.approver != d.Approver {
 				return evaluation{}, ErrMixedApprovers
@@ -622,9 +637,11 @@ type newRequest struct {
 	id, enrollmentID, reason, state, approver, rulesVersion, sessionID, recordID string
 	lifetime                                                                     *int
 	decisions                                                                    []SecretDecision
-	// denials are the denied names the policy named a reason for (evaluation.denials), which
-	// decisionDetail turns into the row's decision_detail.
-	denials []denial
+	// denials are the denied names a reason was named for (evaluation.denials), which
+	// decisionDetail turns into the row's decision_detail, as it does unexplained: whether some
+	// other name was denied with no reason to name.
+	denials     []denial
+	unexplained bool
 	// requester is the session as the policy saw it when this very request was decided
 	// (Machine.requester), so the request.created audit row names the person and the service the
 	// decision was made under rather than whoever a second read would answer later.
@@ -643,20 +660,22 @@ func (r newRequest) names() []string {
 }
 
 // decisionDetail is the row's decision_detail, which Create also answers as the request's own
-// Detail: for a denied request, each denied name the policy named a reason for as
+// Detail: for a denied request, each denied name a reason was named for as
 // "<NAME>: <reason>", several joined with "; " in the request's own name order, and the fixed
-// text of every deny the policy cannot name when it named none, so such a refusal reads as it
-// always has. Every other state records none: only a denial has something to explain.
+// text of every deny the policy cannot name whenever one occurred, last, so such a refusal reads
+// as it always has and a session told to ask again with a reason is not left to find that its
+// second ask is refused too. Every other state records none: only a denial has something to
+// explain.
 func (r newRequest) decisionDetail() string {
 	if r.state != "denied" {
 		return ""
 	}
-	if len(r.denials) == 0 {
-		return "policy denies at least one requested secret"
+	parts := make([]string, 0, len(r.denials)+1)
+	for _, d := range r.denials {
+		parts = append(parts, d.name+": "+d.reason)
 	}
-	parts := make([]string, len(r.denials))
-	for i, d := range r.denials {
-		parts[i] = d.name + ": " + d.reason
+	if r.unexplained || len(parts) == 0 {
+		parts = append(parts, "policy denies at least one requested secret")
 	}
 	return strings.Join(parts, "; ")
 }

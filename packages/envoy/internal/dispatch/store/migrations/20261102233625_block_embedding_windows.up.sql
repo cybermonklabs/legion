@@ -7,9 +7,10 @@
 -- through embeddings_enqueue_window below, in the transaction that writes the owner's block
 -- rows.
 --
--- This migration takes embeddings' ACCESS EXCLUSIVE lock alone, for its short transaction, and
--- never while waiting for another table's: it widens one check, adds one column with no
--- default, creates one index and one function, and rewrites no row.
+-- This migration takes embeddings' ACCESS EXCLUSIVE lock alone for catalog changes: it widens
+-- one check, adds a nullable column without a default and creates one function, reading and
+-- rewriting no row. The owner lookup index is built separately and concurrently in
+-- 20261102233630, after the four independent trigger drops.
 --
 -- The kinds the windows are written under, beside the five the release before this one writes
 -- and reads: document_block, comment_block and message_block for a window of a document's, a
@@ -34,19 +35,6 @@ alter table embeddings add constraint embeddings_kind_check check (
 -- of these blocks, the one whose own text ranks highest for the query, so a reader is shown the
 -- passage that matched rather than the whole item.
 alter table embeddings add column covers text[];
-
--- A window's id is <owner key>#<the first block it covers>, so the owner key is the id up to the
--- first #. Each indexer, having written its owner's windows, deletes the owner's window rows
--- the new set does not name, with this statement:
---
---   delete from embeddings
---   where kind = $1 and split_part(id, '#', 1) = $2 and id <> all($3)
---
--- which is what this index serves: its key is what that statement filters on, and split_part is
--- immutable, so an expression index can hold it. It is partial over the window kinds alone,
--- because a whole-text row's id holds no # and no such delete names it.
-create index embeddings_window_owner on embeddings (kind, split_part(id, '#', 1))
-  where kind in ('document_block', 'comment_block', 'message_block', 'ask_part');
 
 -- embeddings_enqueue_window is embeddings_enqueue (0151) with the covers column written beside
 -- the text: the same hash of the text alone, so rewriting an owner's windows when none of them
