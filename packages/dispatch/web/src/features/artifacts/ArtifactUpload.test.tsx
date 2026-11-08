@@ -172,6 +172,44 @@ test("the first upload of a name has no base to name, and names none", async () 
   }
 });
 
+// The base the dashboard reads for itself can be behind the live document by the time the upload
+// lands — an agent writing that document, or another person uploading it — which is the race the
+// base exists to catch, and the dashboard is now a caller that meets it. What the person reads
+// then is whatever the server wrote, and the server writes for a caller holding the `dispatch`
+// command: a person uploading in the browser has no command to run and no token to paste, so the
+// row must say the document changed under them and what to do in the dashboard.
+test("a refused upload tells the person the document changed, not a command to run", async () => {
+  const ownerArtifactText = spyOn(api, "ownerArtifactText").mockResolvedValue({
+    markdown: "# Notes\n",
+    token: "sha256:stale-notes",
+    version: 1,
+  });
+  const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
+    // The sentence the server sends, read from a live Dispatch at this head:
+    // POST /api/v1/issues/CORE-11/artifacts with a base behind the live document.
+    new ApiError(409, {
+      code: "PRECONDITION_FAILED",
+      error:
+        "document edit precondition failed: document changed; read the document with " +
+        "`dispatch doc-read`, which prints `Document token: sha256:…`, and upload again naming " +
+        'that token as `--precondition-json \'{"document":"sha256:…"}\'`',
+    })
+  );
+  const view = renderHarness();
+
+  try {
+    await uploadNotes(ownerArtifactText);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("changed");
+    expect(alert.textContent).not.toContain("dispatch doc-read");
+    expect(alert.textContent).not.toContain("--precondition-json");
+  } finally {
+    view.unmount();
+    uploadArtifact.mockRestore();
+    ownerArtifactText.mockRestore();
+  }
+});
+
 // Dispatch stored the file and lost its answer (`409 KEY_COMMITTED`): the staged file and its
 // summary go, the row says what was stored, and the row's Upload is the picker again, so a second
 // press sends nothing.
