@@ -146,12 +146,23 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // until the reference graph answers, and the words replace it
     // (`web/src/features/refs/MarkdownPreview.tsx`). Both states were shot. The words are the
     // spec block `e2e/review-seed.ts` points the decision at.
-    ready: (page) => [
-      page.getByRole("status", { name: "connected" }),
-      page
-        .locator("[data-margin-item]")
-        .getByText("One command, a seeded corpus, a signed-in browser."),
-    ],
+    //
+    // The margin is a column beside the document from 1280 px and a bottom sheet below it, shut
+    // until a button opens it (`packages/dispatch/AGENTS.md`, "Phone acceptance"), so the card
+    // is on the screen at a desktop width and nowhere narrower. The phone row of this page
+    // waits on the dot alone, as the Inbox row waits on its heading alone.
+    ready: (page) => {
+      const connected = page.getByRole("status", { name: "connected" });
+      const wideEnoughForMargin = (page.viewportSize()?.width ?? 0) >= 1280;
+      return wideEnoughForMargin
+        ? [
+            connected,
+            page
+              .locator("[data-margin-item]")
+              .getByText("One command, a seeded corpus, a signed-in browser."),
+          ]
+        : [connected];
+    },
   },
   {
     kind: "reviewed",
