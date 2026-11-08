@@ -610,8 +610,13 @@ func TestTheInformersWatchOnTheirClientsAndALaunchsRequestsGoThroughTheRequests(
 // that covered the queue would end the request where it stands, so the queue is what the row
 // reads — the hold the limiter itself imposed (heldLast), which must outlast the timeout for the
 // request's success to say anything — and not the span of the call, which also carries a loopback
-// round trip a loaded machine makes slow. The timeout is a second for the same reason: the round
-// trip is to end well inside it whatever the machine is doing, so only the queue can spend it.
+// round trip a loaded machine makes slow. The timeout is a second rather than the 50 ms it was
+// so that an ordinary round trip ends well inside it and only the queue can spend it. That is a
+// wider bound, not independence from the machine: it is the product's own timeout rather than a
+// wall clock this test chose, and it is proven at the load this row is sized for - two and eight
+// busy loops on these cores, 30 runs of 30 - while starvation past that (thirty-two loops, eight
+// times the cores) can still spend a second on the round trip, which is outside what the row
+// claims rather than a mode it rules out.
 func TestARequestsTimeoutStartsOnceTheClientsLimiterLetsItGo(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
