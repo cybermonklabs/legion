@@ -118,8 +118,8 @@ WORKSPACES = root_workspaces()
 
 
 def bun_job(job, workflow=CI):
-    """.github/actions/setup-bun and a frozen `bun install`. No bunfig.toml at the root and no
-    .npmrc anywhere; packages/dispatch/bunfig.toml is read only by bun test there."""
+    """.github/actions/setup-bun and a frozen `bun install`. No Bun configuration file and no
+    .npmrc anywhere."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
@@ -127,6 +127,8 @@ def bun_job(job, workflow=CI):
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:50-59 patchedDependencies"),
+        ("packages/proof-editor/proof-sdk-*.tgz",
+         f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
           for w in WORKSPACES],
     )
@@ -1022,7 +1024,7 @@ GATES = [
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:111-112"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:2-5 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
-        (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them"),
+        (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF),
 
     # The browser suite, every row of it: the shard legs, the three `-alone` projects, the
@@ -1351,6 +1353,18 @@ GATES = [
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
       + setup_go("ci-filters", f"{DAEMON}/go.mod") + CI_SELF),
+
+    # The proof-sdk-offline job: a frozen install behind a proxy that answers 504 for every host
+    # the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used, which proves the
+    # install reaches none of them. It reads what any frozen install reads (bun_job: setup-bun,
+    # the manifests, the lockfile, the patches and the tarball the proof editor installs
+    # proof-sdk-upstream from), the proxy program its first step starts, and this file.
+    gate("proof_sdk_offline", "proof-sdk-offline", reads=reads(
+        (".github/scripts/ci-fault-proxy.py",
+         f"{at('proof-sdk-offline', 'Start the fault proxy over the old proof-sdk route')} runs it; "
+         f"the hosts it faults (the job's FAULT_HOSTS) and the log its refusals are counted from "
+         f"are that step's arguments"),
+    ) + bun_job("proof-sdk-offline") + CI_SELF),
 
     # The ci-images job: the copy, and the package mode of the image gate, which reads ghcr.io.
     # These are the files that decide what those two steps do. The gate's tree mode is a step of

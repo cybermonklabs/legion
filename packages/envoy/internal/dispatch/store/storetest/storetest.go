@@ -4,7 +4,7 @@
 // import it; Go cannot share test-only code across packages.
 //
 // Open clones each database from a template this test process migrates once. Running every
-// migration, each in its own committed transaction, is most of the Postgres work a test would
+// migration in its declared execution mode is most of the Postgres work a test would
 // otherwise do, so a package's wall time would scale with its test count times the speed of the
 // Postgres it runs against; a clone costs one create database.
 //
