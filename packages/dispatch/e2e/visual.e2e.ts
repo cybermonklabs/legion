@@ -121,7 +121,11 @@ for (const route of shotRoutes) {
         // and the third is what two container runs of this corpus disagreed about
         // (`waitForRouteSettled`).
         await waitForRouteSettled(page, route);
-        await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
+        // `soft`, so a row that fails in light still shoots dark and reports both. A hard
+        // assertion throws out of the `SCHEMES` loop, so a change that moved both schemes was
+        // reported as one, and the reader fixed light, re-ran, and met dark the round after.
+        // It also costs one screenshot on a failing row only, which a failing row can afford.
+        await expect.soft(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
           // The one thing on these pages that is not the same twice and cannot be waited for:
           // the moment the page answered. A `<time>` carries the relative labels of the Inbox

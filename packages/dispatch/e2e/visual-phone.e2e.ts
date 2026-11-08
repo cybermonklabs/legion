@@ -74,7 +74,9 @@ for (const route of phoneRoutes) {
         // still resolving itself, as `e2e/visual.e2e.ts` waits and for the reason
         // `waitForRouteSettled` gives.
         await waitForRouteSettled(page, route);
-        await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
+        // `soft`, as `e2e/visual.e2e.ts` and for the reason it gives there: a hard assertion
+        // that fails in light never shoots dark, so the row reports half of what it found.
+        await expect.soft(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
           // Everything that is not the same twice, as `e2e/visual.e2e.ts` masks it and for the
           // reasons it gives there.

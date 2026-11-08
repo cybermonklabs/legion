@@ -2410,6 +2410,19 @@ a class literal in `web/src/theme/classes.ts` together with its paired swatch, o
 `slate-700` drops the offline pill below AA and reddens the unit step, and a control whose
 earlier step is red hides the reading it exists to take.
 
+Two more things that cost runs here, both measured rather than reasoned. **The literal must be
+one the shot set actually draws.** `surfaceMutedStrongBg` moved with its paired swatch compared
+clean over all 22 rows in the container: that composite lives in `Chip`, `Pill`, `Avatar` and
+the issue header, none of which the seeded corpus puts on a shot page where it shows. The shell's
+own background did the same, because its children paint over it. So a control is read as a
+measurement with a zero: a run that reports no difference has not shown the gate is deaf, only
+that the colour was not on screen. **And the host cannot read these baselines at all** - they are
+the pinned container's rendering, which is what each spec's `SKIP_REASON` says, and the skip is
+defeated by setting `DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change
+whatever, fails every row at thousands of pixels. Every figure a control of this layer reports
+comes from a container run, and the way to know the rig is honest is to run it once with nothing
+changed.
+
 A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
 disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
 entry by its `name`, the selector axe reported for the node, the reason in a sentence a reviewer
