@@ -1716,6 +1716,30 @@ describe("EnvoyClient", () => {
       }).unregisterSession({ sessionID: "ses_closed" })
     ).rejects.toThrow("the secrets broker did not answer");
   });
+
+  // The deadline is AbortSignal.timeout's, on the platform's clock, which no fake timer moves:
+  // the row holds the request until its signal aborts and reads no clock to see that a short
+  // deadline gave up first. Nothing answers the request, so a client left on its own timing
+  // spends two attempts of LISTENER_CALL_TIMEOUT_MS with LISTENER_CALL_RETRY_DELAY_MS between
+  // them and runs past 10 s, while the 50 ms this one is configured for spends two of those with
+  // the same wait between, a third of a second of wall clock on any machine. The row's 5 s limit
+  // is what catches the difference, and it stays on the row, below the suite's 30 s default, for
+  // exactly that reason.
+  test("gives up a call at the deadline its configuration names", async () => {
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      timeoutMs: 50,
+      fetch: async (_input, init) => {
+        const signal = init?.signal;
+        if (signal === undefined || signal === null) throw new Error("no deadline was set");
+        const aborted = Promise.withResolvers<never>();
+        signal.addEventListener("abort", () => aborted.reject(signal.reason), { once: true });
+        return aborted.promise;
+      },
+    });
+    const failure = await client.getRole("reviewer").catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+  }, 5_000);
 });
 
 describe("newClientInstanceID", () => {

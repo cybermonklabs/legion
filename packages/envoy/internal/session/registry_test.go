@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // setupNATS connects t to the package's shared NATS server, in the JetStream account testnats.URL
@@ -856,16 +857,7 @@ func (kv *historyFailSessionKeyValue) History(string, ...natsgo.WatchOpt) ([]nat
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if condition() {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for observable state")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	testwait.WithinPolling(t, timeout, testwait.Poll, "observable state", condition)
 }
 
 func waitForSessionEviction(t *testing.T, reg *SessionRegistry, sessionID string, timeout time.Duration) {
@@ -884,22 +876,7 @@ func captureSessionRegistryLogs(t *testing.T) *lockedBuffer {
 	return &logs
 }
 
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (b *lockedBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(p)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
-}
+type lockedBuffer = logtest.Buffer
 
 // TestMain removes the NATS server the package's tests share (testnats.Main).
 func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }

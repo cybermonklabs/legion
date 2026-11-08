@@ -510,7 +510,7 @@ func idleRigDeliveredOnce(t *testing.T, rig *idleWakeRig, issue idleRigIssue, me
 
 // idleRigUntil is idleRigEventually at a sender's pace: a second between attempts, so a retry
 // loop that is itself a wake does not send a hundred of them a second. Its span is its caller's,
-// clamped by the run's own deadline as idleRigEventually's is (idleRigDeadline).
+// clamped by the run's own deadline as idleRigEventually's is (idleRigWaiting).
 func idleRigUntil(t *testing.T, within time.Duration, what string, attempt func() bool) {
 	t.Helper()
 	idleRigWaiting(t, within, what, time.Second, attempt)

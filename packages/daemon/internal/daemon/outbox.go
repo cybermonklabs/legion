@@ -579,7 +579,11 @@ func retryBackoff(attempts int) time.Duration {
 // refuses where it still stands (ghautomerge.Refused), whose pull request GitHub has shown closed
 // or at another head than the record awaits for longer than ghautomerge.LagBound at now
 // (ghautomerge.Lagging.Stalled), or whose arm or merge-queue entry someone else removed without a
-// merge (ghautomerge.Removed), which a retry must not undo. A claim release is the shared
+// merge (ghautomerge.Removed), which a retry must not undo. The merge queue's own removal for a
+// conflict reaches this only as the *Removed the row decided it to be
+// (ghautomerge.ConflictRemoval.Ended, the daemon's conflictRemoval): the ConflictRemoval itself is
+// no *Removed and ends nothing, since a conflict with an entry ahead of it in the queue is
+// submitted once more rather than ended. A claim release is the shared
 // Dispatch rule whole: its executor answers both of Dispatch's 409s as waits of its own before
 // this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
 // purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the

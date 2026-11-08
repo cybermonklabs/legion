@@ -8,6 +8,25 @@ This package has no release of its own, so nothing renders its changelog entries
 readable as the fragment file that holds it, under `.changes/unreleased/`. `CHANGELOG.md` is the
 history before that and stops where the fragments begin.
 
+## Running the suite
+
+`bun run test` runs the suite with `--timeout 30000`, because Bun's own per-test default is
+5,000 ms and nothing here wrote it, sized it or explained it. On a busy machine that default is a
+limit on a row's work rather than on a hang: measured in a 2-CPU pod under 16 busy loops
+(8 x nproc), `dispatch-cwd.test.ts`'s row that kills a child ignoring SIGTERM reached 5,000.89 ms
+and failed, where it costs 0.14 s idle and 0.31 s with its own file alone. A row that hangs still
+fails the suite; it takes 30 s to say so rather than 5 s.
+
+Bun reads that number from the command line alone. `bunfig.toml` has no `[test] timeout` key, a
+preload that calls `jest.setTimeout` governs the first test file of a run only, and
+`BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test` here
+still runs under Bun's 5,000 ms, and every row whose own work reaches half of that carries its own
+limit as the third argument to `test`, with what can hang and the two costs that sized it written
+beside it. Each row's comment is the record of its own number.
+
+A row whose limit is a bound on work rather than a hang guard says so beside its number, and a row
+whose limit must stay below something the row must not wait out says that too.
+
 ## Inbound delivery
 
 `renderInbound(raw, sessionID, subject?)` accepts an additive Envoy envelope and returns a TOON
