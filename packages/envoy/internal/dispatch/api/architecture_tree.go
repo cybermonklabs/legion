@@ -108,8 +108,8 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
 	// The trees are filled before the answer is written, and the store of what the table did
-	// not hold runs once it is.
-	defer reader.resolve()()
+	// not hold runs on a goroutine of its own, beside the rest of the request.
+	reader.resolve()
 	answer.ArchitectureTree = tree
 	WriteJSON(w, http.StatusOK, answer)
 }

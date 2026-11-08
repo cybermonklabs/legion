@@ -146,6 +146,6 @@ func (s *server) listMyAnswers(w http.ResponseWriter, r *http.Request) {
 			reader.text(&row.Reply.BodyTree, row.Reply.Body)
 		}
 	}
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, response)
 }

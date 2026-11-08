@@ -45,19 +45,6 @@ func varyOnDisplayTrees(handler http.HandlerFunc) http.HandlerFunc {
 // DisplayLatest, the one mode a list is read in).
 var displayTreeBuilds singleflight.Group
 
-// displayTree is the tree a cut of a stored text is shown as, or nil for an empty text, which
-// needs none: a snippet, a first line, a thread subject (contracts.OneLineSummary). A cut is
-// read where it stands and never registered with a request's reader, because nothing stores a
-// row for it - asking the table would be a query for a text no writer stores, and storing it
-// would be a row no reader takes. Every whole stored text goes through the reader instead
-// (displayTreeReader).
-func displayTree(markdown string) json.RawMessage {
-	if markdown == "" {
-		return nil
-	}
-	return builtDisplayTree(pmdoc.TextSum(markdown), markdown, pmdoc.DisplayLatest)
-}
-
 // builtDisplayTree is the tree of a text whose sum its caller already holds, read once however
 // many goroutines want it. A mode other than the latest one is read outside the singleflight:
 // its one reader is a past version's own text, which no list repeats and no second shaper asks

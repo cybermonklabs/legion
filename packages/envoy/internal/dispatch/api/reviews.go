@@ -301,7 +301,7 @@ func (s *server) listArtifactReviews(w http.ResponseWriter, r *http.Request) {
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
 	reads := artifactReviewReads(reviews, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
 }
 

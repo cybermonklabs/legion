@@ -64,7 +64,7 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("key"))
 	reads := artifactReads(artifacts, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
 }
 
@@ -728,7 +728,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
 	read := artifactRead{Artifact: artifact}
 	read.shape(reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -771,7 +771,7 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 		reader := s.readDisplayTrees(r.Context(), true, artifact.ID)
 		var tree json.RawMessage
 		reader.text(&tree, markdown)
-		defer reader.resolve()()
+		reader.resolve()
 		if tree != nil {
 			answer["markdown_tree"] = tree
 		}
@@ -915,9 +915,10 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		//
 		// No write stores that mode - every writer stores the latest one, and the two modes read
 		// one text into two different trees - so this read is where a version's tree first
-		// reaches the table: it reads the table, and stores what the table did not hold once
-		// the answer is written. A version is read again far more often than it is written,
-		// which is what makes the first read's store worth its one statement.
+		// reaches the table: it reads the table, and stores what the table did not hold on a
+		// goroutine of its own, beside the rest of the request. A version is read again far
+		// more often than it is written, which is what makes the first read's store worth its
+		// one statement.
 		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r), artifact.ID)
 		answer := struct {
 			Markdown     string          `json:"markdown"`
@@ -925,7 +926,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			model.Version
 		}{Markdown: markdown, Version: version}
 		reader.text(&answer.MarkdownTree, markdown)
-		defer reader.resolve()()
+		reader.resolve()
 		WriteJSON(w, http.StatusOK, answer)
 		return
 	}

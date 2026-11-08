@@ -108,7 +108,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), query.ID)
 			answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: []model.GraphEdge{}}
 			answer.Node.shape(reader)
-			defer reader.resolve()()
+			reader.resolve()
 			WriteJSON(w, http.StatusOK, answer)
 			return
 		}
@@ -156,7 +156,7 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), query.ID)
 	answer := graphReferencesRead{Node: graphNodeRead{GraphNode: node}, Edges: edges}
 	answer.Node.shape(reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, answer)
 }
 

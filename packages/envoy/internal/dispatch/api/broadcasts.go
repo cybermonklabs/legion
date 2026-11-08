@@ -653,7 +653,7 @@ func (s *server) listBroadcasts(w http.ResponseWriter, r *http.Request) {
 	for index := range summaries {
 		summaries[index].attachTrees(reader)
 	}
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, summaries)
 }
 
@@ -698,7 +698,8 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 		return broadcastRead{}, err
 	}
 	// The body, every recipient's message and every reply under them are one read of the stored
-	// trees, and what the table did not hold is stored behind the answer.
+	// trees, and what the table did not hold is stored on a goroutine of its own, beside the
+	// rest of the request.
 	reader := s.readDisplayTrees(ctx, trees, id)
 	read.attachTrees(reader)
 	recipients, err := s.loadBroadcastRecipients(ctx, read.ID, reader)
@@ -706,7 +707,7 @@ func (s *server) readBroadcast(ctx context.Context, id string, trees bool) (broa
 		return broadcastRead{}, err
 	}
 	read.Recipients = recipients
-	defer reader.resolve()()
+	reader.resolve()
 	return read, nil
 }
 

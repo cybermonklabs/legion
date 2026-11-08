@@ -619,7 +619,7 @@ func (s *server) readIssue(ctx context.Context, key string, trees bool) (issueDe
 	reader := s.readDisplayTrees(ctx, trees, key)
 	read.Artifacts = artifactReads(artifacts, reader)
 	read.OpenAsks = issueOpenAsksOf(asks, replies, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	return read, nil
 }
 

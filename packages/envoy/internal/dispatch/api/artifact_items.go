@@ -31,7 +31,7 @@ func (s *server) listArtifactAsks(w http.ResponseWriter, r *http.Request) {
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("id"))
 	reads := askReads(asks, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
 }
 
@@ -91,6 +91,6 @@ func (s *server) listArtifactEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("id"))
 	attachEventTrees(events, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, events)
 }

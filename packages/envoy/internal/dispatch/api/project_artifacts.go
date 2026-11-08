@@ -38,7 +38,7 @@ func (s *server) listProjectArtifacts(w http.ResponseWriter, r *http.Request) {
 	}
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), r.PathValue("key"))
 	reads := artifactReads(artifacts, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, reads)
 }
 

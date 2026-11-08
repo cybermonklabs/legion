@@ -607,12 +607,12 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	// Where each ask hit stands is read for this route alone: the write-time suggestions share
 	// the ranking (runFusedSearch) but never show it. TookMS counts the read.
 	started := time.Now()
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), searchText)
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r), "search")
 	if err := s.attachAskStates(r.Context(), s.deps.Store.Pool, response.Results, reader); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	defer reader.resolve()()
+	reader.resolve()
 	response.TookMS += time.Since(started).Milliseconds()
 	WriteJSON(w, http.StatusOK, response)
 }

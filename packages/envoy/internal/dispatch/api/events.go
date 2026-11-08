@@ -99,7 +99,7 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	// them, reads their stored trees in one query and fills what the table did not hold.
 	reader := s.readDisplayTrees(r.Context(), trees, r.PathValue("key"))
 	attachEventTrees(events, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
 		s.writeHandlerError(w, err)

@@ -248,7 +248,7 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 	reader := served.readDisplayTrees(held, true, "a read-only transaction")
 	read := commentRead{Comment: model.Comment{Body: body}}
 	read.shape(reader)
-	reader.resolve()()
+	reader.resolve()
 	if read.BodyTree == nil {
 		t.Errorf("the shaping inside the read-only transaction answered no tree of %q", body)
 	}

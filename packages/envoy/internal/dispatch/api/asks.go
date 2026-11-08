@@ -775,7 +775,7 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, rows)
 }
 
@@ -895,7 +895,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	}}
 	read.Ask.Ask = ask
 	read.Ask.shape(reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, read)
 }
 

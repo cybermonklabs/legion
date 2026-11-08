@@ -50,7 +50,7 @@ var errNoPool = errors.New("texttrees: no database pool")
 // Tree is one text's display tree ready to store: the sum the row is keyed by (pmdoc.TextSum)
 // and the bytes of the reading. A caller that has just read a text for display holds both
 // already - a read fills its answer's fields from them - so it stores them as they stand
-// (StoreTreesFor) rather than handing the text back to be hashed and looked up again.
+// (Table.StoreTrees) rather than handing the text back to be hashed and looked up again.
 type Tree struct {
 	Sum  [32]byte
 	Tree json.RawMessage
@@ -74,15 +74,6 @@ func StoreFor(ctx context.Context, st *store.Store, mode pmdoc.DisplayMode, text
 		return nil
 	}
 	return For(st).Store(ctx, mode, texts...)
-}
-
-// StoreTreesFor is StoreFor for trees their caller has already read (api's display tree reader
-// stores the misses of its one query this way): the same policy, and no text read a second time.
-func StoreTreesFor(ctx context.Context, st *store.Store, mode pmdoc.DisplayMode, trees []Tree) error {
-	if len(trees) == 0 || store.HoldsPooledConnection(ctx) {
-		return nil
-	}
-	return For(st).StoreTrees(ctx, mode, trees)
 }
 
 // Store reads each of texts for display in mode and stores the trees (StoreTrees).

@@ -799,7 +799,7 @@ func (s *server) hydrateMessageThreads(ctx context.Context, roots []model.Messag
 		reads[index].Message.shape(reader)
 		reads[index].Replies = shapedMessages(replies[root.ID], reader)
 	}
-	defer reader.resolve()()
+	reader.resolve()
 	return reads, nil
 }
 

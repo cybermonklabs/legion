@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
@@ -133,7 +134,9 @@ func TestTheAskReadShapesRegisterEveryAskText(t *testing.T) {
 }
 
 // requireTreesOfAskTexts states that trees holds the tree of every text askTextsByPath names,
-// under that text's path, and nothing else.
+// under that text's path, and nothing else. The tree wanted is the reading a request's reader
+// makes of a text the table held no row for (builtDisplayTree), which is what every one of the
+// three paths above answers.
 func requireTreesOfAskTexts(t *testing.T, what string, trees map[string]json.RawMessage) {
 	t.Helper()
 	for path, text := range askTextsByPath {
@@ -142,7 +145,7 @@ func requireTreesOfAskTexts(t *testing.T, what string, trees map[string]json.Raw
 			t.Errorf("%s holds no tree at %q, the path of %q", what, path, text)
 			continue
 		}
-		if want := displayTree(text); !bytes.Equal(tree, want) {
+		if want := builtDisplayTree(pmdoc.TextSum(text), text, pmdoc.DisplayLatest); !bytes.Equal(tree, want) {
 			t.Errorf("%s holds %s at %q, want the tree of %q, %s", what, tree, path, text, want)
 		}
 	}

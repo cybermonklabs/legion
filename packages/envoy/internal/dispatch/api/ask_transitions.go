@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 type askTransition struct {
@@ -386,14 +387,10 @@ func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, tra
 	}
 	s.publish(ctx, events...)
 	// What the transition wrote: an answer's own words, and the reason a resolution recorded.
-	// Which of the two the ask holds is the transition's, so both are read from the ask it left.
-	var written []string
-	if ask.Answer != nil && ask.Answer.Text != nil {
-		written = append(written, *ask.Answer.Text)
-	}
-	if ask.Resolution != nil {
-		written = append(written, ask.Resolution.Reason)
-	}
+	// Which of the two the ask holds is the transition's, so both are read from the ask it left,
+	// through the one walk of an ask's stored texts (texttrees.VisitAskTexts), so a text added
+	// to that walk is stored by this write too.
+	written := texttrees.AppendAskTexts(nil, texttrees.AskContent{Answer: ask.Answer, Resolution: ask.Resolution})
 	s.storeDisplayTrees(ctx, ask.ID, written...)
 	return ask, nil
 }

@@ -174,6 +174,6 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		// front of.
 		asks[index].shape(reader)
 	}
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, asks)
 }

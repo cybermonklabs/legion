@@ -76,7 +76,7 @@ func (s *server) answerCommentList(w http.ResponseWriter, r *http.Request, owner
 	}
 	reader := s.readDisplayTrees(r.Context(), trees, name)
 	reads := commentReads(comments, reader)
-	defer reader.resolve()()
+	reader.resolve()
 	encoded, err := encodeListAnswer(reads)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -203,7 +203,7 @@ func (s *server) getComment(w http.ResponseWriter, r *http.Request) {
 	}{Replies: commentReads(replies, reader)}
 	read.Comment.Comment = comments[0]
 	read.Comment.shape(reader)
-	defer reader.resolve()()
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, read)
 }
 
