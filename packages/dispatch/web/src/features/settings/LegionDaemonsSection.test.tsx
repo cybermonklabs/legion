@@ -1,18 +1,29 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import {
+  type FakeLiveSockets,
+  installFakeLiveSockets,
+  snapshotFrame,
+} from "../../__tests__/live-socket-harness";
 import { ApiError, api } from "../../api/client";
-import type { AuthenticatedUser, LegionSetting } from "../../api/types";
+import type { AuthenticatedUser, LegionBoardResponse, LegionSetting } from "../../api/types";
+import { dangerText, successText } from "../../theme/classes";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 
 /** Every spy a test installed, put back when it ends, so one test's identity or answers are
  *  never the next one's. */
 const spies: { mockRestore(): void }[] = [];
 
+let sockets: FakeLiveSockets;
+beforeEach(() => {
+  sockets = installFakeLiveSockets();
+});
 afterEach(() => {
   cleanup();
+  sockets.restore();
   for (const spy of spies.splice(0)) spy.mockRestore();
 });
 
@@ -187,4 +198,269 @@ test("a reader who is not a person is shown the daemons and offered no control",
   expect(section.queryByLabelText("Legion project")).toBeNull();
   expect(section.queryByRole("button", { name: "Save Legion daemon" })).toBeNull();
   expect(section.queryByRole("button", { name: "Remove the Legion daemon of ACME" })).toBeNull();
+});
+
+// The settings control beside each daemon's URL (dispatch://INFRA-979; moved from the removed
+// Legion view): the settings and their sources ride the project's board answer.
+
+/** A board answer with no cards, carrying `overrides` (the settings and their sources). */
+function board(overrides: Partial<LegionBoardResponse> = {}): LegionBoardResponse {
+  return {
+    columns: [],
+    computed_at: "2026-11-03T05:04:00Z",
+    header: {
+      queue_length: 0,
+      read_at: "2026-11-03T05:03:30Z",
+      read_error: null,
+      read_ok: true,
+      slot_cap: 4,
+      slots_in_use: 2,
+      trees: 2,
+    },
+    project: "ACME",
+    setting_sources: {},
+    settings: {},
+    ...overrides,
+  };
+}
+
+/** Renders the section with ACME's daemon named, and answers the control's board subscription
+ *  with `body`. */
+async function renderControl(body: LegionBoardResponse, human = true) {
+  await renderSection(legionServer([setting]), human);
+  await waitFor(() => expect(sockets.sockets.length).toBeGreaterThan(0));
+  const socket = sockets.latest();
+  act(() => socket.open());
+  const frame = await waitFor(() => socket.subscribed("legion"));
+  act(() => socket.receive(snapshotFrame(frame.sub, body)));
+  await screen.findByText("ACME daemon settings");
+}
+
+const SETTINGS = {
+  settings: { admission_cap: 4, instructions: "work/instructions.md" },
+  setting_sources: {
+    admission_cap: { at: "2026-11-02T09:00:00Z", by: "bob", source: "route" as const },
+    instructions: { at: "2026-10-20T00:00:00Z", by: null, source: "file" as const },
+  },
+};
+
+test("the settings panel shows each setting's value and where it came from", async () => {
+  await renderControl(board(SETTINGS));
+
+  const cap = document.querySelector('[data-legion-setting="admission_cap"]');
+  expect(cap?.querySelector("[data-legion-setting-value]")?.textContent).toBe("4");
+  expect(cap?.querySelector('[data-legion-setting-source="route"]')?.textContent).toContain(
+    "Changed here by bob"
+  );
+  const instructions = document.querySelector('[data-legion-setting="instructions"]');
+  expect(instructions?.querySelector("[data-legion-setting-value]")?.textContent).toBe(
+    '"work/instructions.md"'
+  );
+  expect(instructions?.querySelector('[data-legion-setting-source="file"]')?.textContent).toContain(
+    "configuration file"
+  );
+});
+
+test("a daemon that has not sent its settings says so rather than showing an empty table", async () => {
+  await renderControl(board());
+
+  expect(document.querySelector("[data-legion-settings-empty]")?.textContent).toContain(
+    "The daemon has not sent its settings yet"
+  );
+});
+
+// The relay answers the daemon's own body, which keys each verdict by path under `settings`
+// (`LegionSettingsChangeResponse` in @legion/contracts/legion-api, the daemon's
+// api.SettingsChangeResponse): a fake answering a flat map of paths is a fake no daemon matches,
+// which is why the shape is a contract type both ends read. The client hands the panel that
+// body with `recorded`, whether the daemon wrote the change into its own store
+// (`putLegionProjectSettings`).
+test("a change goes to the relay route and shows what the daemon did with the key", async () => {
+  const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
+    recorded: true,
+    settings: { admission_cap: { applied: "at-once" } },
+  });
+  try {
+    await renderControl(board(SETTINGS));
+
+    const input = screen.getByLabelText("New value for admission_cap") as HTMLInputElement;
+    expect(input.value).toBe("4");
+    fireEvent.change(input, { target: { value: "6" } });
+    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+
+    expect(await screen.findByText("Applied at once")).toBeDefined();
+    expect(put).toHaveBeenCalledWith("ACME", { admission_cap: 6 }, expect.anything());
+    // The row shows the new value, and that it came from here, by the person who changed it.
+    const cap = document.querySelector('[data-legion-setting="admission_cap"]');
+    await waitFor(() =>
+      expect(cap?.querySelector("[data-legion-setting-value]")?.textContent).toBe("6")
+    );
+    expect(cap?.querySelector('[data-legion-setting-source="route"]')?.textContent).toContain(
+      "Changed here by alice"
+    );
+  } finally {
+    put.mockRestore();
+  }
+});
+
+test("a refused key shows the daemon's reason and leaves the value as it was", async () => {
+  const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
+    recorded: true,
+    settings: { admission_cap: { refused: "a running issue holds a slot" } },
+  });
+  try {
+    await renderControl(board(SETTINGS));
+
+    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
+      target: { value: "1" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+
+    expect(await screen.findByText("Refused: a running issue holds a slot")).toBeDefined();
+    const cap = document.querySelector('[data-legion-setting="admission_cap"]');
+    await waitFor(() =>
+      expect(cap?.querySelector("[data-legion-setting-value]")?.textContent).toBe("4")
+    );
+  } finally {
+    put.mockRestore();
+  }
+});
+
+// The daemon's third verdict: it took the value into its own settings and could not carry it
+// into the thing that holds a copy of it (`failed`, the daemon's internal/api/settings_route.go).
+// The change was made, so the row keeps the new value as an applied one does — and the answer is
+// a failure, never the success an applied verdict reads as: the holder the caller asked to reach
+// kept what it had.
+//
+// The verdict's `holder` is not that holder and is never shown. The daemon sets it to the row's
+// named holder whether or not that holder is the one that failed, and a path several things hold
+// is answered for all of them (`config.Row.Also`); the holder that failed is named inside
+// `failed`, which the daemon writes as `<holder>: <error>`. So the fixture below names a
+// `holder` the failure does not, and the row must not show it.
+test("a key the daemon could not carry into what holds it reads as a failure, not a success", async () => {
+  const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
+    recorded: true,
+    settings: {
+      instructions: {
+        failed: "launch-specs: read /etc/legion/instructions.md: no such file or directory",
+        holder: "api-server",
+        old: '"work/instructions.md"',
+        new: '"/etc/legion/instructions.md"',
+      },
+    },
+  });
+  try {
+    await renderControl(board(SETTINGS));
+
+    fireEvent.change(screen.getByLabelText("New value for instructions"), {
+      target: { value: '"/etc/legion/instructions.md"' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change instructions" }));
+
+    const answer = await screen.findByRole("alert");
+    expect(answer.textContent).toContain("what holds it kept the old one: launch-specs:");
+    expect(answer.textContent).toContain("no such file or directory");
+    expect(answer.textContent).not.toContain("api-server");
+    expect(answer.className).toContain(dangerText);
+    expect(answer.className).not.toContain(successText);
+    const instructions = document.querySelector('[data-legion-setting="instructions"]');
+    await waitFor(() =>
+      expect(instructions?.querySelector("[data-legion-setting-value]")?.textContent).toBe(
+        '"/etc/legion/instructions.md"'
+      )
+    );
+  } finally {
+    put.mockRestore();
+  }
+});
+
+// The backend's own refusal is the other half of D12's gate: the control is offered to any
+// signed-in person, and a caller whose credential names one project is refused the write, which
+// `scopeDeployment` answers `403 PROJECT_SCOPE_DEPLOYMENT`. A `503` is not this test's refusal:
+// the keyed write retries every 5xx under its key until Dispatch decides it (`retriesUnderKey`),
+// so a daemon that cannot be reached is tried again rather than shown.
+test("a refusal Dispatch itself made lands on the row it was made from", async () => {
+  const put = spyOn(api, "putLegionProjectSettings").mockRejectedValue(
+    new ApiError(403, {
+      code: "PROJECT_SCOPE_DEPLOYMENT",
+      error: "this request's credential may write project ACME and nothing else",
+    })
+  );
+  try {
+    await renderControl(board(SETTINGS));
+
+    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
+      target: { value: "6" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+
+    expect(
+      await screen.findByText(/this request's credential may write project ACME/)
+    ).toBeDefined();
+    const cap = document.querySelector('[data-legion-setting="admission_cap"]');
+    await waitFor(() =>
+      expect(cap?.querySelector("[data-legion-setting-value]")?.textContent).toBe("4")
+    );
+  } finally {
+    put.mockRestore();
+  }
+});
+
+// The daemon applied the change and could not record it in its own store: it answers its own
+// verdicts with a 500, which Dispatch relays unchanged (the daemon's
+// internal/api/settings_route.go, its `config.NotRecorded` arm) and the client hands the panel
+// as `recorded: false`. The change took effect, so the row must not go back to the old value
+// and must not read as a failure; what the panel says is that the daemon is running on the new
+// value and a restart puts back the old one.
+test("a change the daemon applied and could not record stays applied on the row, and says what a restart undoes", async () => {
+  const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
+    recorded: false,
+    settings: { admission_cap: { applied: "at-once" } },
+  });
+  try {
+    await renderControl(board(SETTINGS));
+
+    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
+      target: { value: "6" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+
+    const answer = await screen.findByText(/running on the new value but could not record it/);
+    expect(answer.textContent).toContain("Applied at once");
+    expect(screen.queryByText(/Couldn't change admission_cap/)).toBeNull();
+    const cap = document.querySelector('[data-legion-setting="admission_cap"]');
+    await waitFor(() =>
+      expect(cap?.querySelector("[data-legion-setting-value]")?.textContent).toBe("6")
+    );
+    expect(cap?.querySelector('[data-legion-setting-source="route"]')?.textContent).toContain(
+      "Changed here by alice"
+    );
+  } finally {
+    put.mockRestore();
+  }
+});
+
+test("a value that is not JSON is refused here, and nothing is sent", async () => {
+  const put = spyOn(api, "putLegionProjectSettings");
+  try {
+    await renderControl(board(SETTINGS));
+
+    fireEvent.change(screen.getByLabelText("New value for admission_cap"), {
+      target: { value: "six" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change admission_cap" }));
+
+    expect(await screen.findByText(/That is not JSON/)).toBeDefined();
+    expect(put).not.toHaveBeenCalled();
+  } finally {
+    put.mockRestore();
+  }
+});
+
+test("a reader who is not a person is shown the settings and offered no control", async () => {
+  await renderControl(board(SETTINGS), false);
+
+  expect(document.querySelector('[data-legion-setting="admission_cap"]')).not.toBeNull();
+  expect(screen.queryByLabelText("New value for admission_cap")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Change admission_cap" })).toBeNull();
 });

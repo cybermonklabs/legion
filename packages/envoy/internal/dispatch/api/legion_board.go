@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"slices"
@@ -229,6 +230,8 @@ type legionBoardDaemonRead struct {
 	at      time.Time
 	ok      bool
 	failure *string
+	// pushed is a freshness taken from the daemon's pushed events rather than from a read.
+	pushed bool
 }
 
 // legionBoardIssue is one issue the board may show: the newest observation of each field the
@@ -283,6 +286,14 @@ func (s *server) readLegionBoard(ctx context.Context, project string) (*legionBo
 
 // readDaemonRead reads the newest read of the project's daemon, the freshness the header shows.
 func (p *legionBoardPopulation) readDaemonRead(ctx context.Context, pool *store.Pool) error {
+	// A project whose daemon pushes its changes (legion_events.go) is as fresh as its newest event
+	// or heartbeat; legionBoardCompute marks it stale past legion.StaleAfter.
+	if at, pushed, err := legion.PushFreshness(ctx, pool, p.project); err != nil {
+		return err
+	} else if pushed {
+		p.read = &legionBoardDaemonRead{at: at, ok: true, pushed: true}
+		return nil
+	}
 	var read legionBoardDaemonRead
 	err := pool.QueryRow(ctx, `
 		select read_at, ok, error
@@ -648,6 +659,10 @@ func legionBoardCompute(p *legionBoardPopulation, now time.Time) legionBoardResp
 	if read := p.read; read != nil {
 		at := read.at.UTC()
 		header.ReadAt, header.ReadOK, header.ReadError = &at, read.ok, read.failure
+		if read.pushed && now.Sub(at) > legion.StaleAfter {
+			failure := fmt.Sprintf("no event or heartbeat from the daemon for %d s", int(now.Sub(at).Seconds()))
+			header.ReadOK, header.ReadError = false, &failure
+		}
 	}
 	// Both blocks are objects, empty rather than null, so a page reads one shape whether or not a
 	// read has recorded them.

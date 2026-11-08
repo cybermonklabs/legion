@@ -44,7 +44,6 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { claimIsTakeable } from "../issue/ClaimChip";
-import { LegionSettingsPanel } from "../legion/LegionSettingsPanel";
 import { useAgentText } from "../refs/AgentName";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { useKeymap } from "../shell/keymap";
@@ -578,14 +577,6 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           hasLegion={hasLegion}
           board={legion.data}
         />
-        {hasLegion && legion.data ? (
-          <details>
-            <summary className={`cursor-pointer text-sm ${textSecondaryOnCanvas}`}>
-              Legion settings
-            </summary>
-            <LegionSettingsPanel board={legion.data} />
-          </details>
-        ) : null}
 
         <IssueTableToolbar table={table} />
 

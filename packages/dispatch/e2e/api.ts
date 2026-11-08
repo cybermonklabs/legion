@@ -347,6 +347,18 @@ export function deleteRepoProject(repo: string, login = "alice"): Promise<void> 
   return request<void>(`/api/v1/settings/repo-projects/${repo}`, "DELETE", {}, { login });
 }
 
+export function postLegionEvents(
+  input: {
+    project: string;
+    generation: string;
+    snapshot?: boolean;
+    events: readonly { seq: number; at: string; kind: string; issue?: string; value: unknown }[];
+  },
+  options: ApiOptions = {}
+): Promise<{ last_seq: number }> {
+  return request<{ last_seq: number }>("/api/v1/legion/events", "POST", input, options);
+}
+
 /** Mints a personal agent token for `login`; the returned bearer acts for that human. */
 export async function mintAgentToken(name: string, login: string): Promise<string> {
   const minted = await request<{ token: string }>(

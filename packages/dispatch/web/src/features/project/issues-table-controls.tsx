@@ -537,7 +537,6 @@ export function IssueTableStatus({
                     <time dateTime={board.header.read_at}>
                       {new Date(board.header.read_at).toLocaleString()}
                     </time>
-                    ; the last daemon read failed
                   </>
                 ) : (
                   "Legion data is stale: the daemon has never answered"

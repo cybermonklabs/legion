@@ -362,6 +362,8 @@ func routeBody(method, pattern string) (limit int64, tooLarge *apiError) {
 		return keyedBodyMax, errUploadTooLarge
 	case route == handoffWriteRoute:
 		return handoffRequestLimit, errHandoffTooLarge
+	case route == legionEventsRoute:
+		return legionEventsRequestLimit, errLegionEventsTooLarge
 	default:
 		return maxJSONRequestBytes, errJSONTooLarge
 	}

@@ -83,6 +83,16 @@ export function ageOf(iso: string): string {
   const days = (Date.now() - new Date(iso).getTime()) / 86_400_000;
   return days < 1 ? "Today" : days < 7 ? "This week" : days < 30 ? "This month" : "Older";
 }
+export function formatPhaseTime(since: string | null, nowMs: number): string {
+  if (since === null) return "—";
+  const sinceMs = Date.parse(since);
+  if (Number.isNaN(sinceMs)) return "—";
+  const minutes = Math.floor(Math.max(0, nowMs - sinceMs) / 60_000);
+  if (minutes < 60) return `${minutes} m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ${minutes % 60} m`;
+  return `${Math.floor(hours / 24)} d ${hours % 24} h`;
+}
 export type EpicAncestor = Pick<IssueSummary, "key" | "parent" | "status" | "labels" | "title">;
 export function buildItems(
   issues: readonly IssueSummary[],

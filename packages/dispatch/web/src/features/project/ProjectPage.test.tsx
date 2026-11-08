@@ -9,7 +9,6 @@ import {
   within,
 } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
-
 import { installFakeLiveSockets } from "../../__tests__/live-socket-harness";
 import { ApiError, api } from "../../api/client";
 import type { ArchitectureSource, InboxRow } from "../../api/types";
@@ -521,17 +520,21 @@ test("the Lanes toggle lives in Board view only and persists per signed-in user"
   }
 });
 
-test("a project that names no Legion daemon is offered no Legion view", async () => {
-  const page = renderPage("/projects/CORE");
+// dispatch://INFRA-979: the issues table carries the Legion columns, so the project page offers
+// no Legion view of its own, even for a project that names a daemon, and a stored `legion`
+// preference from before reads as the List.
+test("a project that names a Legion daemon is offered no Legion view, and a stored Legion preference reads as the List", async () => {
+  const viewKey = "dispatch.project.issue-view:alice";
+  window.localStorage.setItem(viewKey, "legion");
+  const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    // The read has answered - with another project's setting, and none of this project's.
-    await waitFor(() => expect(page.listLegionSettings).toHaveBeenCalled());
-    expect(screen.getByRole("button", { name: "List" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
     expect(screen.getByRole("button", { name: "Board" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
   } finally {
     page.restore();
+    window.localStorage.removeItem(viewKey);
   }
 });
 

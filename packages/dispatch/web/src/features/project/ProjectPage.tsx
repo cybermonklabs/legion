@@ -4,12 +4,7 @@ import type { ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
-import {
-  legionSettingsQuery,
-  projectArchitectureSourcesQuery,
-  projectsQuery,
-  whoAmIQuery,
-} from "../../api/queries";
+import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
 import {
@@ -25,7 +20,6 @@ import {
 } from "../../theme/classes";
 import { ArchitecturePage } from "../architecture/ArchitecturePage";
 import { BlockedOnYou } from "../inbox/BlockedOnYou";
-import { LegionView } from "../legion/LegionView";
 import { buildProjectPath, parseProjectPath } from "../refs/routes";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
@@ -44,26 +38,23 @@ const tabs: readonly TabDefinition<ProjectTab>[] = [
   { id: "documents", label: "Documents" },
 ];
 
-/** Which view of a project's issues is on screen. `legion` is offered only for a project that
- *  names a Legion daemon (`GET /api/v1/settings/legion`); a stored preference naming it on a
- *  project without one falls back to the list rather than showing an empty view. */
-type IssueView = "list" | "board" | "legion";
+/** Which view of a project's issues is on screen. */
+type IssueView = "list" | "board";
 
 /** The order `v` cycles the views in, which is the order the selector draws them. */
-const issueViews = ["list", "board", "legion"] as const;
+const views = ["list", "board"] as const;
 
 const issueViewLabels: Record<IssueView, string> = {
   list: "List",
   board: "Board",
-  legion: "Legion",
 };
 
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
-  const [storedView, setIssueView] = useUserPreference<IssueView>(
+  const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",
-    (stored) => (stored === "board" || stored === "legion" ? stored : "list"),
+    (stored) => (stored === "board" ? stored : "list"),
     (view) => view
   );
   const [showEdges, setShowEdges] = useUserPreference(
@@ -95,25 +86,13 @@ export function ProjectPage(): ReactNode {
     enabled: projectKey !== undefined,
   });
   const hasSource = (sources.data?.length ?? 0) > 0;
-  // Which projects name a Legion daemon: one deployment-wide read, shared with the Delivery
-  // page's Legion section. A project that names none has no Legion view at all, so a stored
-  // preference naming it falls back to the list.
-  const legionSettings = useQuery(legionSettingsQuery());
-  const hasLegion =
-    projectKey !== undefined &&
-    (legionSettings.data ?? []).some((setting) => setting.project === projectKey);
-  // PROTOTYPE (prototype/legion-table): the Legion columns live in the issues table, so the
-  // separate Legion board is not offered; INFRA-979's prototype/legion-push removes it outright.
-  const views: readonly IssueView[] = issueViews.filter((view) => view !== "legion");
-  const issueView: IssueView = storedView === "legion" ? "list" : storedView;
-  void hasLegion;
   useKeymapScope("project");
   useKeymap("project", [
     {
       id: "toggle-view",
       keys: "v",
-      label: hasLegion ? "Toggle List / Board / Legion" : "Toggle List / Board",
-      run: () => setIssueView(views[(views.indexOf(issueView) + 1) % views.length] ?? "list"),
+      label: "Toggle List / Board",
+      run: () => setIssueView(issueView === "list" ? "board" : "list"),
       when: () => route?.kind === "issues",
     },
   ]);

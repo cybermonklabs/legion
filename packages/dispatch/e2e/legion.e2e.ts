@@ -1,5 +1,5 @@
-// The Legion view on the project Issues page, its settings control, the Settings page's own
-// Legion daemon field, the live push, `/pipeline` and the Delivery page's chart controls
+// The Settings page's Legion daemon field, the project page having no Legion view of its own
+// (dispatch://INFRA-979), `/pipeline` and the Delivery page's chart controls
 // (dispatch://INFRA-1077, acceptance A1). Every spec is tagged `@legion`, so `--grep @legion`
 // runs this file's work and nothing else.
 //
@@ -8,11 +8,10 @@
 // Dispatch's relay, so that spec stands a fake daemon up and reads what reached it.
 import { expect, test } from "@playwright/test";
 
-import { baseUrl, userHeaders } from "./api";
+import { baseUrl, postLegionEvents, userHeaders } from "./api";
 import { PIPELINE_SECTION_URL, seedPipelineFixture } from "./delivery-seed";
 import {
   LEGION_PROJECT,
-  pushLegionObservation,
   seedLegionFixture,
   seedLegionMetricsCorpus,
   seedLegionProject,
@@ -66,7 +65,7 @@ test("the issues table shows the daemon's phases and issue facts @legion @phone"
   }
 });
 
-test("the settings control changes the admission cap of a daemon @legion @phone", async ({
+test("the Settings page's control changes the admission cap of a daemon @legion @phone", async ({
   browser,
 }) => {
   const daemon = await startFakeLegionDaemon({ admission_cap: { applied: "at-once" } });
@@ -75,8 +74,8 @@ test("the settings control changes the admission cap of a daemon @legion @phone"
   const page = await context.newPage();
 
   try {
-    await page.goto(`/projects/${LEGION_PROJECT}`);
-    await page.getByText("Legion settings", { exact: true }).click();
+    // The control sits in the project's Legion setting on the Settings page (dispatch://INFRA-979).
+    await page.goto("/settings");
 
     // Each setting with its value and where it came from, as the daemon reports them.
     const cap = page.locator('[data-legion-setting="admission_cap"]');
@@ -121,7 +120,7 @@ test("the settings control changes the admission cap of a daemon @legion @phone"
 // the old value is named inside `failed`, which the daemon writes as `<holder>: <error>`
 // (internal/daemon/holders.go). So the row proves the other half too — the text names what the
 // daemon's text names, never the row's holder.
-test("the panel shows a failed verdict as a failure and keeps the new value @legion @phone", async ({
+test("the Settings page's control shows a failed verdict as a failure and keeps the new value @legion @phone", async ({
   browser,
 }) => {
   const daemon = await startFakeLegionDaemon({
@@ -137,8 +136,7 @@ test("the panel shows a failed verdict as a failure and keeps the new value @leg
   const page = await context.newPage();
 
   try {
-    await page.goto(`/projects/${LEGION_PROJECT}`);
-    await page.getByText("Legion settings", { exact: true }).click();
+    await page.goto("/settings");
     const cap = page.locator('[data-legion-setting="admission_cap"]');
     await expect(cap.locator("[data-legion-setting-value]")).toHaveText("4");
 
@@ -194,12 +192,14 @@ test("a project without a Legion setting gains phase columns when Settings names
     await page.getByRole("button", { name: "Save Legion daemon" }).click();
     expect((await saved).status()).toBe(200);
 
-    // The view the setting brought.
+    // The project page offers no Legion view of its own (dispatch://INFRA-979): the issues
+    // table carries the Legion columns.
     await page.goto(`/projects/${LEGION_PROJECT}`);
     await expect(page.getByRole("button", { name: "Phase", exact: true })).toBeVisible();
     await expect(page.locator('[data-issue-row="ACME-1"] [data-legion-phase]')).toContainText(
       "Implementing"
     );
+    await expect(page.getByRole("button", { name: "Legion" })).toHaveCount(0);
   } finally {
     await context.close();
     await daemon.close();
@@ -286,7 +286,24 @@ test("a live push moves an issue's phase without reloading the table @legion @ph
     await page.goto(`/projects/${LEGION_PROJECT}`);
     const phase = page.locator('[data-issue-row="ACME-1"] [data-legion-phase]');
     await expect(phase).toContainText("Implementing");
-    await pushLegionObservation("ACME-1", "phase", '"testing"');
+    expect(
+      await postLegionEvents(
+        {
+          project: LEGION_PROJECT,
+          generation: "e2e-legion",
+          events: [
+            {
+              seq: 1,
+              at: new Date().toISOString(),
+              kind: "phase",
+              issue: "ACME-1",
+              value: "testing",
+            },
+          ],
+        },
+        { as: "agent" }
+      )
+    ).toEqual({ last_seq: 1 });
     await expect(phase).toContainText("Testing", { timeout: 15000 });
   } finally {
     await context.close();

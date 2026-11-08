@@ -17,13 +17,19 @@ import { ClaimChip } from "../issue/ClaimChip";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
-import { formatPhaseTime } from "../legion/lib/format";
 import { AgentName } from "../refs/AgentName";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
-import { AGES, ageOf, type Item, matchesFilters, priorityName } from "./issues-table-model";
+import {
+  AGES,
+  ageOf,
+  formatPhaseTime,
+  type Item,
+  matchesFilters,
+  priorityName,
+} from "./issues-table-model";
 import { issueIsUnread, UnreadDot } from "./UnreadDot";
 
 declare module "@tanstack/react-table" {

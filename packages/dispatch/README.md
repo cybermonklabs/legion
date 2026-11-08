@@ -29,10 +29,11 @@ including time in phase, and offer Slot, Roles in a turn and CI verdict in Colum
 default). Phase groups and sorts in the workflow order the board route supplies; its queue
 positions replace Dispatch-derived positions. Each column uses the table's searchable filters.
 The bar counts each issue under its Legion phase, or under its Dispatch status when it has no
-phase, and shows the daemon's slots in use against its cap and last read. A failed read keeps
-the known rows and marks the Legion data stale with its read time and error. Stored daemon
-events update the columns, groups and bar through `/ws/live`, without a reload or a second
-daemon reader. Legion settings remain available in the disclosure above the table. Projects
+phase, and shows the daemon's slots in use against its cap and last update. When no event or
+heartbeat has arrived for 120 seconds, the bar keeps the known rows and marks the Legion data
+stale since that update. `POST /api/v1/legion/events` updates columns, groups and the bar through
+`/ws/live`, without a reload or a second
+daemon reader. The daemon settings control is on the Settings page. Projects
 without a Legion setting have no Legion columns and keep Dispatch-derived queue positions.
 
 The stored-observation browser coverage is `e2e/issues-table-legion.e2e.ts`, alongside

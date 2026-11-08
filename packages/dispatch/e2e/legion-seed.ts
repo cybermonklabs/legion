@@ -1,12 +1,5 @@
-// The Legion view's e2e fixture, written straight into Postgres: the board reads only what the
-// sampler recorded of a project's daemon (`legion_settings`, `legion_reads`,
-// `legion_observations`), so these are the rows a minute of reading would have left, without a
-// daemon to read. One module, so the view's spec and anything that comes after it read one board.
-//
-// A sampler pass that fires while a spec runs cannot disturb what these spec assert: a pass writes
-// a `legion_reads` row, which only the header's freshness line reads, and an observation only
-// where a value moved — and the fake daemon here answers no state at all, so every pass of it
-// fails and leaves every observation where it is.
+// Stored-observation fixtures for the Legion table and metrics. Live changes use the same
+// POST /api/v1/legion/events boundary as a daemon; the fake below serves its settings route.
 //
 // acme/widgets-shaped placeholders throughout (AGENTS.md: "This repository is public").
 import { createServer, type Server } from "node:http";
@@ -97,6 +90,8 @@ export async function seedLegionProject(): Promise<void> {
        ('ACME-5', '${LEGION_PROJECT}', 5, 'Held by a blocker', 'todo', 3, ${SEED_ACTOR}, 'Y')`,
     `INSERT INTO legion_reads (project, read_at, ok, error, bytes)
        VALUES ('${LEGION_PROJECT}', now() - interval '20 seconds', true, null, 4096)`,
+    `INSERT INTO legion_pushes (project, generation, last_seq, last_at)
+       VALUES ('${LEGION_PROJECT}', 'e2e-legion', 0, now() - interval '20 seconds')`,
     `INSERT INTO legion_observations (project, issue_key, field, value, observed_at) VALUES ${OBSERVATIONS.map(
       (observation) =>
         `('${LEGION_PROJECT}', '${observation.issue}', '${observation.field}', '${observation.value.replaceAll("'", "''")}'::jsonb, now() - interval '${observation.ago}')`
@@ -192,23 +187,6 @@ export async function seedLegionMetricsCorpus(): Promise<void> {
     observed(child, "phase", '"implementing"', "36 hours"),
     observed(child, "phase", '"merging"', "30 hours"),
     observed(child, "phase", '"done"', "24 hours")
-  );
-}
-
-/** What a read of the daemon a minute later leaves behind: the value it found for one field, and
- *  the announcement on `legion.StateChannel` that wakes every open board of the project
- *  (`packages/envoy/internal/dispatch/legion/store.go`). `value` is the field's JSON. */
-export async function pushLegionObservation(
-  issue: string,
-  field: string,
-  value: string
-): Promise<void> {
-  await sql(
-    `INSERT INTO legion_reads (project, read_at, ok, error, bytes)
-       VALUES ('${LEGION_PROJECT}', now(), true, null, 4096)`,
-    `INSERT INTO legion_observations (project, issue_key, field, value, observed_at)
-       VALUES ('${LEGION_PROJECT}', '${issue}', '${field}', '${value.replaceAll("'", "''")}'::jsonb, now())`,
-    `SELECT pg_notify('dispatch_legion_state', '${LEGION_PROJECT}')`
   );
 }
 

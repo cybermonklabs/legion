@@ -585,8 +585,8 @@ When `GET /api/v1/settings/legion` names the project, the List subscribes to `le
 Phase is visible by default; Slot, Roles in a turn and CI verdict start hidden, and all four reuse the table's column filters and sorting.
 A configured project awaiting its board has no derived queue fallback.
 The bar counts each issue once under its board phase or, without one, its Dispatch status, and shows the board header's slot use, cap and read time.
-A failed read keeps the last known facts and explicitly marks Legion data stale since the recorded read time, including the server's error.
-The Legion settings disclosure uses that same board answer; no second daemon reader or separate Legion view is offered.
+When the board reports no event or heartbeat for 120 seconds, the bar keeps the last known facts and marks Legion data stale since the recorded update time, including the server's error.
+The daemon settings control is on the Settings page, not the issues table; no second daemon reader or separate Legion view is offered.
 Without a Legion setting the table omits these columns and ignores their URL controls, preserving its Dispatch-derived queue.
 
 Below 1280 px, `styles.css` makes ordinary links inline-flex for touch targets. The title link fills its cell, and its text is a shrinkable inner span with the two-line clamp and word wrapping. Clamping the link itself does not survive that shared display rule and can let a long title widen underneath neighboring pinned cells.

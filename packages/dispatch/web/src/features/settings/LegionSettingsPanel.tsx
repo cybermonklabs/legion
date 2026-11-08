@@ -1,4 +1,5 @@
-// The Legion view's settings panel: the daemon's own `legion.yaml`, as it reports it, with where
+// The settings control in a project's Legion setting on the Settings page (dispatch://INFRA-979,
+// moved here from the removed Legion view): the daemon's own `legion.yaml`, as it reports it, with where
 // each value came from — its configuration file, or a change someone made here, with who made it
 // and when. Dispatch models none of the values: they ride from the daemon as JSON and go back as
 // JSON (`GET /api/v1/legion/board`'s `settings` and `setting_sources`).
@@ -36,15 +37,19 @@ import {
   textSecondaryOnCanvas,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsMonoInput,
   settingsSubmitButton,
   settingsTableHead,
   settingsTableRow,
   settingsTableWrapper,
-} from "../settings/classes";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { describeSettingSource, describeVerdict, formatSettingValue } from "./lib/format";
+} from "./classes";
+import {
+  describeSettingSource,
+  describeVerdict,
+  formatSettingValue,
+} from "./legion-settings-format";
 
 /** What one key of a change ended as, on the row it was made from: the daemon's verdict, that
  *  verdict where the daemon applied the change and could not record it, a refusal Dispatch
@@ -103,6 +108,20 @@ function withSettingAsItWas(
     settings: withEntry(board.settings, key, previous?.settings[key]),
     setting_sources: withEntry(board.setting_sources, key, previous?.setting_sources[key]),
   };
+}
+
+/** The settings control of one project's Legion setting: the project's board answer, which
+ *  carries the settings and their sources as the daemon last sent them, and the panel over it. */
+export function LegionDaemonSettings({ project }: { readonly project: string }): ReactNode {
+  const board = useQuery(legionBoardQuery({ kind: "legion", project }));
+  if (board.data === undefined) {
+    return (
+      <p className={`text-sm ${textMutedOnCanvas}`}>
+        {board.isError ? "Couldn't load this daemon's settings." : "Loading the daemon's settings…"}
+      </p>
+    );
+  }
+  return <LegionSettingsPanel board={board.data} />;
 }
 
 /** The daemon's settings, each with its value and where that value came from, and — for a signed
@@ -220,9 +239,9 @@ export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResp
   };
 
   return (
-    <section aria-labelledby={headingId} className="mt-6" data-legion-settings>
+    <section aria-labelledby={headingId} data-legion-settings>
       <h3 className={`text-base font-semibold ${textPrimaryOnCanvas}`} id={headingId}>
-        Daemon settings
+        {project} daemon settings
       </h3>
       <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
         {project}&apos;s <code>legion.yaml</code> as the daemon reports it, with where each value
@@ -232,7 +251,7 @@ export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResp
       </p>
       {keys.length === 0 ? (
         <p className={`mt-4 text-sm ${textMutedOnCanvas}`} data-legion-settings-empty>
-          No read of this daemon has recorded its settings yet.
+          The daemon has not sent its settings yet.
         </p>
       ) : (
         <div className={settingsTableWrapper}>
@@ -269,7 +288,7 @@ export function LegionSettingsPanel({ board }: { readonly board: LegionBoardResp
                       {key}
                     </th>
                     <td
-                      className={`px-3 py-2 font-mono ${textPrimaryOnSurface}`}
+                      className={`max-w-md break-all px-3 py-2 font-mono ${textPrimaryOnSurface}`}
                       data-legion-setting-value={key}
                     >
                       {value}

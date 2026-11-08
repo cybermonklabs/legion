@@ -1,11 +1,6 @@
 import { expect, type Page, test } from "@playwright/test";
-import { patchIssue } from "./api";
-import {
-  pushLegionObservation,
-  seedLegionFixture,
-  seedLegionProject,
-  startFakeLegionDaemon,
-} from "./legion-seed";
+import { patchIssue, postLegionEvents } from "./api";
+import { seedLegionFixture, seedLegionProject, startFakeLegionDaemon } from "./legion-seed";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -135,7 +130,24 @@ test("phase-or-status bar and slot cap move live with a stored Legion event @pho
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) navigations.push(frame.url());
     });
-    await pushLegionObservation("ACME-1", "phase", '"reviewing"');
+    expect(
+      await postLegionEvents(
+        {
+          project: "ACME",
+          generation: "e2e-legion",
+          events: [
+            {
+              seq: 1,
+              at: new Date().toISOString(),
+              kind: "phase",
+              issue: "ACME-1",
+              value: "reviewing",
+            },
+          ],
+        },
+        { as: "agent" }
+      )
+    ).toEqual({ last_seq: 1 });
     await expect(row(page, "ACME-1").locator("[data-legion-phase]")).toContainText("Reviewing");
     await expect(page.getByRole("button", { name: /^Collapse Reviewing, 1 issue$/ })).toBeVisible();
     await expect(page.getByRole("button", { name: /^Collapse Implementing,/ })).toHaveCount(0);
@@ -163,15 +175,16 @@ test("failed board read marks Legion data stale and names when it was read @phon
 }) => {
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);
-  await sql(`UPDATE legion_reads SET read_at = now() - interval '121 seconds', ok = false,
-    error = 'No daemon event or heartbeat for 120 seconds' WHERE project = 'ACME'`);
+  await sql(
+    `UPDATE legion_pushes SET last_at = now() - interval '121 seconds' WHERE project = 'ACME'`
+  );
   const context = await asUser(browser, "alice");
   try {
     const page = await context.newPage();
     await page.goto("/projects/ACME/issues");
     const stale = page.locator("[data-legion-read-error]");
     await expect(stale).toContainText("Legion data is stale since");
-    await expect(stale).toContainText("No daemon event or heartbeat for 120 seconds");
+    await expect(stale).toContainText("no event or heartbeat from the daemon for");
     await expect(stale.locator("time")).toHaveAttribute("datetime", /T/);
     await expect(row(page, "ACME-1").locator("[data-legion-phase]")).toContainText("Implementing");
   } finally {
@@ -200,5 +213,78 @@ test("a project without Legion keeps the Dispatch queue and ignores Legion URL c
     await expect(page.locator("[data-legion-slots]")).toHaveCount(0);
   } finally {
     await context.close();
+  }
+});
+
+test("a pushed daemon batch updates phase, queue, slot, roles, CI and cap without reload @phone", async ({
+  browser,
+}) => {
+  const daemon = await startFakeLegionDaemon({});
+  await seedLegionFixture(daemon.url);
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.goto("/projects/ACME/issues");
+    await expect(row(page, "ACME-4").getByText("#1", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Columns", exact: true }).click();
+    for (const name of ["Slot", "Roles in a turn", "CI verdict"])
+      await page.getByRole("checkbox", { name, exact: true }).check();
+    await page.keyboard.press("Escape");
+    const navigations: string[] = [];
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) navigations.push(frame.url());
+    });
+    const at = new Date().toISOString();
+    expect(
+      await postLegionEvents(
+        {
+          project: "ACME",
+          generation: "e2e-legion",
+          events: [
+            { seq: 1, at, kind: "phase", issue: "ACME-1", value: "reviewing" },
+            { seq: 2, at, kind: "slot", issue: "ACME-1", value: 3 },
+            {
+              seq: 3,
+              at,
+              kind: "claim_state",
+              issue: "ACME-1",
+              value: { role: "implementer", state: "idle" },
+            },
+            {
+              seq: 4,
+              at,
+              kind: "claim_state",
+              issue: "ACME-1",
+              value: { role: "reviewer", state: "working" },
+            },
+            { seq: 5, at, kind: "checks_verdict", issue: "ACME-1", value: "green" },
+            {
+              seq: 6,
+              at,
+              kind: "waiting_line",
+              value: {
+                cap: 6,
+                active: ["ACME-1", "ACME-2"],
+                waiting: ["ACME-3", "ACME-4"],
+                trees: ["ACME-1", "ACME-2"],
+                blocked: [{ issue: "ACME-5", blockedBy: ["ACME-1"] }],
+              },
+            },
+          ],
+        },
+        { as: "agent" }
+      )
+    ).toEqual({ last_seq: 6 });
+    await expect(row(page, "ACME-1").locator("[data-legion-phase]")).toContainText("Reviewing");
+    await expect(row(page, "ACME-1").locator('[data-legion-fact="slot"]')).toHaveText("3");
+    await expect(row(page, "ACME-1").locator('[data-legion-fact="roles"]')).toHaveText("reviewer");
+    await expect(row(page, "ACME-1").locator('[data-legion-fact="checks"]')).toHaveText("green");
+    await expect(row(page, "ACME-3").getByText("#1", { exact: true })).toBeVisible();
+    await expect(row(page, "ACME-4").getByText("#2", { exact: true })).toBeVisible();
+    await expect(page.locator("[data-legion-slots]")).toHaveText("2 of 6 slots in use");
+    expect(navigations).toEqual([]);
+  } finally {
+    await context.close();
+    await daemon.close();
   }
 });

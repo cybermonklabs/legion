@@ -5,6 +5,7 @@ import {
   countIssueStates,
   defaultView,
   facetCounts,
+  formatPhaseTime,
   matchesFilters,
   matchesSearch,
   mergeMembers,
@@ -310,4 +311,19 @@ test("the bar counts each issue once, under its Legion phase or its Dispatch sta
     { id: "implementing", label: "Implementing", column: "phase", count: 1 },
     { id: "todo", label: "Todo", column: "status", count: 1 },
   ]);
+});
+
+test("time in phase preserves elapsed units and unknown or future entry times", () => {
+  const now = Date.now();
+  for (const [minutes, expected] of [
+    [59, "59 m"],
+    [60, "1 h 0 m"],
+    [1439, "23 h 59 m"],
+    [1440, "1 d 0 h"],
+  ] as const) {
+    expect(formatPhaseTime(new Date(now - minutes * 60_000).toISOString(), now)).toBe(expected);
+  }
+  expect(formatPhaseTime(null, now)).toBe("—");
+  expect(formatPhaseTime("not a date", now)).toBe("—");
+  expect(formatPhaseTime(new Date(now + 60_000).toISOString(), now)).toBe("0 m");
 });

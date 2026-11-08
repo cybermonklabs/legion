@@ -41,7 +41,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
-	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
@@ -783,11 +782,8 @@ func main() {
 
 	go architecture.Run(ctx, appCtx.Architecture(), leases)
 
-	// dispatch://INFRA-1077: each project whose legion_settings row names a Legion daemon has its
-	// `GET /legion/v1/state` read once a minute from one replica, under the `legion-state` lease,
-	// and every value that moved recorded. It is a timer and not a woken loop for the reason the
-	// delivery reconcile below is: a remote daemon announces nothing Dispatch can listen for.
-	go legion.RunSampler(ctx, database.Pool, leases)
+	// dispatch://INFRA-979 prototype: the Legion daemon pushes its changes to
+	// POST /api/v1/legion/events, so the 60 s sampler of each daemon's state no longer runs.
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
