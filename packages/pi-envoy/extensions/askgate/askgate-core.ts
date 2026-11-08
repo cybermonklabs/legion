@@ -164,15 +164,16 @@
 //     match refuses in either mode and always does. An allow, a rebuttal or a trip resets the
 //     target, every thing on it.
 //   - no-model-role / skipped: neither `@askgate` (modelRoles.askgate) nor `@default` resolves, or
-//     the session's primary model is on another provider than the gate's. Nothing is rendered or
+//     the session's primary model is on a provider that does not bill the gate model's account
+//     (`sameAccount`, below). Nothing is rendered or
 //     sent. With no model role the call is refused in both modes, naming the roles to set; it never
-//     counts toward the halt, since a halt would let the writes out. Another provider lets it run,
+//     counts toward the halt, since a halt would let the writes out. Another account lets it run,
 //     with an argv-only marker, as a halt does: no review stands behind its bytes, so the CLI
 //     checks no file of it.
 //   - verdict: `@askgate` is asked once, else `@default`, raced against the deadline. A model
 //     that answers with an error (a provider 404 or 5xx) hands the request to the next model of
 //     the role's retry.fallbackChains, as omp resolves it for the role in use (`fallbackModels`),
-//     within the same deadline and on the primary's provider only; the entry records the model
+//     within the same deadline and on the gate model's own account only; the entry records the model
 //     that answered as `model` and each one that failed first in `failedModels`. Its
 //     system prompt is askgate-system.md and rules.md, nothing else. The user message
 //     (askgate-request.md) carries the agent under review as data: its system prompt and the
@@ -356,8 +357,8 @@ const SHUTDOWN_GRACE_MS = 1_000;
 const SHUTDOWN_WAIT_MS = 1_500;
 /**
  * The outcomes of a call the gate let through without a verdict and without deciding on its
- * arguments: the gate's own failure, a stop it took, its halt, or a session whose model is on
- * another provider. No review stands behind the bytes, so the command the agent wrote runs as
+ * arguments: the gate's own failure, a stop it took, its halt, or a session whose model is on an
+ * account the gate's model is not billed to. No review stands behind the bytes, so the command the agent wrote runs as
  * written, and its marker binds the argv alone: a file an earlier call of the same message changes
  * still posts, since there is no reviewed copy for it to differ from.
  */
@@ -547,6 +548,27 @@ export interface GateRecordEntry {
 }
 /** A model as the gate passes it around: the fork's full Model, of which the core reads only these. */
 export type GateModel = { provider: string; id: string };
+/**
+ * Whether a transcript may go from a session on provider `primary` to a model on provider `gate`:
+ * whether the two providers bill one account. The gate's rule is the account, not the vendor and
+ * not the provider id — a session must never be reviewed by a model another account pays for,
+ * and a session whose own account also serves the gate's model loses nothing by being reviewed.
+ *
+ * One provider id is always its own account. Two differing ids are one account only where the
+ * operator says so, by naming both in `shared` (`askgate.sharedAccountProviders`). So a machine
+ * that configures nothing hands an empty list here and gets the plain provider-id comparison the
+ * gate made before this setting existed, and a list that names only one of the two decides
+ * nothing. A session with no model at all (`primary` undefined) is on no account and is skipped.
+ */
+export function sameAccount(
+  primary: string | undefined,
+  gate: string,
+  shared: readonly string[]
+): boolean {
+  if (primary === undefined) return false;
+  if (primary === gate) return true;
+  return shared.includes(primary) && shared.includes(gate);
+}
 export interface CompleteRequest {
   ctx: unknown;
   model: unknown;
@@ -595,6 +617,14 @@ interface Deps {
    * off. Bound in the entry to omp's own chain resolution.
    */
   fallbackModels: (ctx: GateCtx, primary: GateModel, role: GateRole) => readonly GateModel[];
+  /**
+   * The provider ids an operator has declared to bill one account
+   * (`askgate.sharedAccountProviders` in omp's config), read when asked. Two different provider
+   * ids are one account only when this list holds both, so an empty list — what a machine that
+   * configures nothing gives — makes every comparison below the plain provider-id comparison the
+   * gate made before the setting existed.
+   */
+  sharedAccountProviders: () => readonly string[];
   /** The primary's context as its model sees it: the fork's buildSessionContext over this session's branch. */
   contextMessages: (ctx: GateCtx) => readonly Message[];
   /** The runner's ceiling for a tool_call handler: extensionHandlers.toolCallTimeoutMs, read when asked. */
@@ -2220,7 +2250,7 @@ const UNREVIEWED_CAUSE: Partial<Record<GateEntry["outcome"], string>> = {
   // cell that keeps running after the user's stop reads it on its call's own result.
   abandoned: "its call or its run ended before the review answered",
   shutdown: "the session shut down before the review answered",
-  skipped: "this session's model is on another provider than the gate's",
+  skipped: "this session's model is on a provider that does not bill the gate model's account",
   halted:
     "AskGate is paused for this session after three calls without a verdict, and reviews no Dispatch write until the session changes",
 };
@@ -2774,12 +2804,23 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       }
       return undefined;
     };
+    /**
+     * Whether this session's model is on an account the gate's model is not billed to, which is
+     * the `skipped` outcome. With no gate model there is no account to compare against, so a
+     * session that has a model of its own counts as off it and one that has none does not, which
+     * is what this comparison said before accounts were read at all.
+     */
+    const offGateAccount = (ctx: GateCtx): boolean => {
+      const gate = resolveRole(ctx)?.model.provider;
+      if (gate === undefined) return ctx.model?.provider !== undefined;
+      return !sameAccount(ctx.model?.provider, gate, deps.sharedAccountProviders());
+    };
 
     /**
      * One call to the gate's model: appends its prompts to OMP_ASKGATE_DUMP under `label`, then walks
      * `chain` under the call's one stop, which its deadline is armed on. The charter check and the
      * rules check each make one of these, on the same chain and the same stop, so a session is asked
-     * on one provider and both calls end together. `user` is rendered here, once the gate knows it
+     * within one account and both calls end together. `user` is rendered here, once the gate knows it
      * will ask.
      */
     const walk = async (
@@ -2980,17 +3021,21 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
 
       if (closing) return givenUp(base.verdictMode, "shutdown");
       const { role, model } = resolved;
-      // A session routed off the gate's provider keeps its transcript there: nothing is rendered or sent.
-      if (ctx.model?.provider !== model.provider)
+      // A session on an account the gate's model is not billed to keeps its transcript on that
+      // account: nothing is rendered or sent.
+      const shared = deps.sharedAccountProviders();
+      if (!sameAccount(ctx.model?.provider, model.provider, shared))
         return pass("skipped", { reason: `primary on ${ctx.model?.provider ?? "no model"}` });
       // Raced from handler entry, so each render of this call counts against the runner's ceiling too.
       const deadlineMs = callDeadlineMs();
       stop.arm(Math.max(0, deadlineMs - (deps.now() - started)));
       // A model that answers with an error hands the request to the next one in the role's chain, inside
-      // the same deadline. Only models on the primary's provider are asked: the transcript stays there.
+      // the same deadline. Only models on the primary's own account are asked: the transcript stays there.
       const chain = [
         model,
-        ...deps.fallbackModels(ctx, model, role).filter((next) => next.provider === model.provider),
+        ...deps
+          .fallbackModels(ctx, model, role)
+          .filter((next) => sameAccount(next.provider, model.provider, shared)),
       ];
       // Both calls read one rendering of the agent under review, the newer of them reusing it.
       let rendered: { primarySystemPrompt: string; transcript: string } | undefined;
@@ -3535,7 +3580,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
               if ("cause" in run) decision = givenUp(mode, run.cause);
               else if ("unreadable" in run) {
                 if (halted) decision = pass("halted");
-                else if (ctx.model?.provider !== resolveRole(ctx)?.model.provider)
+                else if (offGateAccount(ctx))
                   decision = pass("skipped", {
                     reason: `primary on ${ctx.model?.provider ?? "no model"}`,
                   });
@@ -3675,7 +3720,7 @@ export function createAskGate(deps: Deps): (pi: Pi) => void {
       }
       // A review, or a pass the gate took over the dry run's arguments (a rebuttal, a breaker
       // trip), binds those arguments and the files' digests; a call no verdict stands behind (a
-      // halt and another provider among them) is argv-only. The mint reads the command the
+      // halt and another account among them) is argv-only. The mint reads the command the
       // handler finally returns, the override comment put back, whose argv is what bash hands the
       // CLI. A call this entry already refused mints nothing: no command of it runs.
       let minted: ToolCallResult;
