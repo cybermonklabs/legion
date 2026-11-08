@@ -3,7 +3,6 @@ package main
 import (
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,15 +41,18 @@ const bootProbeDeadline = `msg="dispatch: register this server process" ` +
 // past the warm bound, and the process must still register, serve, and answer that first
 // /healthz 200.
 //
-// Each step below reddens its own way. Step two reads the listening line, which comes after
+// Each step below reddens its own way. Step two waits for the listening line, which comes after
 // joinRegistry, so a boot that died at the probe - or at any step before it, every one of which
 // dials through the same slow proxy - never reaches it: narrow the probe's bound to Healthy's
-// two seconds and the process exits 1 before it serves anything, and this step fails with
-// bootProbeDeadline. Step three reads /healthz once, never polling, since a poll hides the
-// defect this row is here for: delete the probe and the health pool's first read is that
-// handler's own, which pays the three-second dial inside the two-second warm bound, so it
-// answers 503 with db false. Step four requires that no probe of that pool failed, so a 200 that
-// followed a failed probe cannot pass as a warm read. Step five reads the registration line for
+// two seconds and the process exits 1 before it serves anything, and this step fails with the
+// whole output; the hint beside it names bootProbeDeadline when that output holds it. Step
+// three reads /healthz once, never polling, since a poll hides the defect this row is here for:
+// delete the probe and the health pool's first read is that handler's own, which pays the
+// three-second dial inside the two-second warm bound, so it answers 503 with db false. Step
+// four requires that the process logged no failed probe of that pool. That is what step three's
+// one read already shows, and it is here for the row this one could be turned back into: a step
+// three that polled would read the 200 of a second poll and pass, and step four would still
+// redden, since the first poll logged its failure. Step five reads the registration line for
 // the log it names, so a reader of a later failure sees which step the boot got past.
 func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *testing.T) {
 	migrated := storetest.Open(t)
@@ -66,32 +68,16 @@ func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *t
 	// waiting on the one before it, and every other step it takes is as slow as the machine is.
 	// So the row waits on a hang guard instead, far from the 9.6-9.8 s the boot took here, which
 	// fails only a process that never serves at all.
-	listening := `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(process.port)
-	hangGuard := 2 * time.Minute
-	deadline := time.Now().Add(hangGuard)
-serving:
-	for !process.logged(listening) {
-		select {
-		case <-process.Exited:
-			// Exited closes only once the output is whole, so these reads are final.
-			if process.logged(listening) {
-				break serving
-			}
-			// A probe that ran out of its bound exits the process with 1 before it serves
-			// anything, so this is where that failure arrives: name it, rather than leaving the
-			// reader to find the line in the output.
-			if strings.Contains(process.Output.String(), bootProbeDeadline) {
-				t.Fatalf("the boot probe ran out of its bound at a dial of %s:\n%s",
-					bootProbeDialDelay, process.Output.String())
-			}
-			t.Fatalf("Dispatch exited before it served anything:\n%s", process.Output.String())
-		default:
+	//
+	// A probe that ran out of its bound exits the process with 1 before it serves anything, so
+	// the wait below fails with an output holding bootProbeDeadline: this names that failure,
+	// rather than leaving the reader to find the line.
+	defer func() {
+		if t.Failed() && strings.Contains(process.Output.String(), bootProbeDeadline) {
+			t.Logf("the boot probe ran out of its bound at a dial of %s", bootProbeDialDelay)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("Dispatch did not log that it serves within %v:\n%s", hangGuard, process.Output.String())
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	}()
+	process.waitForLog(t, 2*time.Minute, process.listeningLine())
 
 	status, health := process.health(t)
 	if status != http.StatusOK || !health.DB {
