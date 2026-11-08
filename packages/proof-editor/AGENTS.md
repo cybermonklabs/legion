@@ -16,10 +16,35 @@ commit stays the audit source however far the fork line moves. `src/directive-fa
 from micromark-extension-directive 4.0.0 instead, and `src/html-flow.ts` from
 micromark-core-commonmark 2.0.3.
 
-The upstream modules this package imports at runtime come from the git dependency, pinned at
-**dc6a852b2ab45463dc9d3d17762235450c8ff0d6** on the fork's cleaned `library` line. Moving that
-pin changes nothing in the table; it changes what `node_modules/proof-sdk-upstream` holds, and
-`tests/upstream-pin.test.ts` is what checks it.
+The upstream modules this package imports at runtime are pinned at
+**dc6a852b2ab45463dc9d3d17762235450c8ff0d6** on the fork's cleaned `library` line, and they come
+from `proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz`, the tarball committed beside this
+file, which `package.json` installs as `"proof-sdk-upstream": "file:./proof-sdk-<commit>.tgz"`.
+It used to be a `github:` dependency, so every `bun install` — every CI job's and both image
+builds' — fetched those sources from api.github.com, and a bad minute there failed jobs that
+read nothing else of GitHub. Moving the pin changes nothing in the table below; it changes what
+`node_modules/proof-sdk-upstream` holds, and `tests/upstream-pin.test.ts` is what checks that.
+
+To move the pin to a new commit, in this order:
+
+1. Run `bun run build-upstream-tarball <commit>`, which writes `proof-sdk-<commit>.tgz` beside
+   `package.json`.
+2. Delete the old tarball. The `.gitignore` entry that tracks it is a glob, so a forgotten one
+   stays tracked, and `tests/one-upstream-tarball.test.ts` fails until the directory holds
+   exactly one.
+3. Change `package.json`'s `proof-sdk-upstream` value to `file:./proof-sdk-<new commit>.tgz`.
+   That value is the one place the file's name is written in full.
+4. Run `bun install`, which rewrites `bun.lock` and the `sha512` it records for the dependency.
+5. Run `bun run upstream-declarations`, which rewrites `upstream/`.
+6. Update this file's own references to the old commit.
+
+Nothing else names the file. The `.gitignore` negation `!packages/proof-editor/proof-sdk-*.tgz`
+and the eight path patterns that select on the tarball — the three filter lists of
+`.github/workflows/ci.yaml` (`bun_install`, `envoy_smoke`, `worker_image`),
+`.github/workflows/docs-pages.yaml`, `.github/workflows/release.yaml`, the `bun_job` reads of
+`.github/scripts/ci_job_reads.py`, and the `COPY` line of
+`packages/daemon/docker/worker.Dockerfile` and of `packages/envoy/docker/Dockerfile` — are each
+the glob `packages/proof-editor/proof-sdk-*.tgz`, so a new name needs no edit in any of them.
 
 | File | What it is |
 | --- | --- |
@@ -283,8 +308,10 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 
 Everything `src/` imports as `proof-sdk-upstream/src/…` — the mark plugins, the mark popover,
 `editor/schema/{proof-marks,code-block-ext,frontmatter}`, `formats/*` — still belongs to the fork
-and comes from a git dependency pinned to that same commit. Three resolvers reach it, and each
-needs telling, because proof-sdk's `package.json` `exports` publishes only its built `dist`:
+and comes from the committed tarball, which packs that same commit's `src/`. Three resolvers
+reach it, and each needs telling, because the upstream manifest at this pin declares no `main`,
+no `module`, no `types`, no `exports` and no `files`: the package publishes no entry point at
+all, so each consumer reaches `src/` by path:
 
 | Consumer | Mechanism |
 | --- | --- |
@@ -334,8 +361,8 @@ fails: it reads the Dark Reader fix where it lives, renders each proof mark, red
 replacement in a happy-dom view, rejects an insert split by another, comments twice over one word,
 round-trips that through markdown and deletes one of the two, and renders one diagram of every
 Mermaid type while still refusing a flowchart that ends in an arrow. Moving the pin changes the
-package dependency, `bun.lock`, `upstream/` and this file's source audit references; no Bun patch
-applies to this source.
+tarball, the package dependency, `bun.lock`, `upstream/` and this file's source audit references;
+no Bun patch applies to this source.
 
 ## No build step
 
@@ -346,10 +373,11 @@ TypeScript, Vite compiles it. There is no `dist` and nothing to build before usi
 ## Commands
 
 ```bash
-bun run test                   # the moved suites through src/tests/harness.ts, plus tests/
-bun run typecheck              # tsc against tsconfig.check.json (src/, tests/ and scripts/)
-bun run lint                   # Biome over the package; the root biome.json turns it off for the copy
-bun run upstream-declarations  # rewrite upstream/ from the pinned sources (only a moved pin needs it)
+bun run test                    # the moved suites through src/tests/harness.ts, plus tests/
+bun run typecheck               # tsc against tsconfig.check.json (src/, tests/ and scripts/)
+bun run lint                    # Biome over the package; the root biome.json turns it off for the copy
+bun run upstream-declarations   # rewrite upstream/ from the pinned sources (only a moved pin needs it)
+bun run build-upstream-tarball  # write proof-sdk-<commit>.tgz beside package.json for the commit given
 ```
 
 ## Conventions

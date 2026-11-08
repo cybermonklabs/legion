@@ -1,5 +1,5 @@
 /**
- * Raising the upstream pin is the four-step procedure in `packages/proof-editor/AGENTS.md`, whose
+ * Raising the upstream pin is the six-step procedure in `packages/proof-editor/AGENTS.md`, whose
  * second step deletes the tarball the old pin packed. Nothing makes that step happen: the
  * `.gitignore` line tracking the archive is a glob, `!packages/proof-editor/proof-sdk-*.tgz`,
  * written as one so the eight path patterns across the workflows and the two Dockerfiles need no
