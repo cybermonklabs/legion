@@ -568,9 +568,9 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	//
 	// A field every row leaves at zero is compared zero to zero, and proves nothing of the field:
 	// the comparison below would pass on a publish that dropped it. So the pr-blocked row carries
-	// a Resends of 1, a count below the re-hold cap (the daemon's noticeReholdDelays holds three
-	// delays), and that field stays in the comparison rather than beside the three set aside. The
-	// daemon reads this count off the published payload and nowhere else: it is what stops the
+	// a Resends of 1, since any non-zero value puts the field in the comparison, and it stays
+	// there rather than beside the three set aside. The daemon reads this count off the published
+	// payload and nowhere else: it is what stops the
 	// re-holds at the cap, and what picks the next copy's delay (the daemon's reholdNotice,
 	// notice_exceptions.go). A Published that zeroed it would re-hold every architect notice for
 	// ever, and every check above would stay green.

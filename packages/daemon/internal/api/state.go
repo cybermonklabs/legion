@@ -448,8 +448,8 @@ type Issue struct {
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the wait;
-// the root then waits in admission's waiting line for its slot,
-// among the issues whose work came back, oldest first, and never first in the whole line.
+// the root then waits in admission's waiting line for its slot, among the issues whose work came
+// back, oldest first.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`

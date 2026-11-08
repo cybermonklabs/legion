@@ -262,8 +262,8 @@ const legionSlotView = z.object({
   lentTo: issueKey.optional(),
 });
 
-/** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 at the front
- * of the line, and `length`, how long that list was at this read. It says where the issue stands,
+/** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
+ * in the line, and `length`, how long that list was at this read. It says where the issue stands,
  * not what holds it, which `admission.blocked` names. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive(),
@@ -327,8 +327,7 @@ export const LEGION_WAIT_ANSWERS = [
 /** The fields every `waitingOn` shape shares: `since`, Dispatch's time of the hand-back the wait
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
  * (`answeredBy` names how, not always by a person), when the root waits in admission's waiting
- * line for its slot,
- * among the issues whose work came back, oldest first, and never first in the whole line. */
+ * line for its slot, among the issues whose work came back, oldest first. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),

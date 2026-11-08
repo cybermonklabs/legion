@@ -316,7 +316,7 @@ person closed the question), `turn` (a session handed it back to the agent's tur
 approval on a deployment that gates no step, or when the last gated step was taken out of
 `gates.design` while the root waited on it. The root stands in `admission.waiting`
 among the issues whose work came back, oldest first, and resumes itself there: at once, holding
-no slot, once its design gate has ever opened, and at the next free slot while its
+no slot, once its design gate has opened at every gated step, and at the next free slot while its
 architect is still writing the first design. While it waits for that slot, `waitingLine` on the
 issue gives its place in the line and the line's length, and its architect, while its session is
 live and holds its Envoy role, is sent one `waiting-for-slot` notice saying where the root stands

@@ -698,13 +698,14 @@ const gatedStepsContract = 55
 const retiredStrandedContract = 56
 
 // stallRecordContract is the daemon contract that added each claim view's `step`, what the daemon
-// last saw that claim's agent do (dispatch://INFRA-1274): a plugin before it reads the state with
-// a strict schema that knows no such key and refuses the whole body for it.
+// last saw that claim's agent do (dispatch://INFRA-1274). A plugin before it is served the state
+// without the key: one built before sjawhar/legion#2788 reads it with a strict schema and would
+// refuse the whole body for a key it does not name, and one built after strips the key instead.
 //
 // It is 57 because that is the number DaemonAPIVersion took at the bump this record forced: main
-// holds 56, INFRA-1480's retired stranded state, which carries no step record, so this branch
-// took the first number above it. It is this daemon's own contract, so every pod at it is served
-// the record and only a pod still running an older plugin is not.
+// held 56, INFRA-1480's retired stranded state, which carries no step record, so that branch took
+// the first number above it. This daemon's own contract is never below it, so a pod at or above
+// 57 is served the record and only a pod still running an older plugin is not.
 const stallRecordContract = 57
 
 // waitingLineContract is the daemon contract that added each waiting issue's place in the line

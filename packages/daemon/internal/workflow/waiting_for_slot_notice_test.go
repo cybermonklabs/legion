@@ -92,7 +92,7 @@ func TestTheOutboxTakesAWaitingForSlotNotice(t *testing.T) {
 // The waiting line's two new words and the one fragment that states its order are shipped text,
 // so each is read from the source it is declared in rather than written out again here: the
 // notice's kind (WaitingForSlotNoticeKind), the name the place carries on the wire
-// (api.WaitingLineField) and the part of the line an answered root stands in
+// (api.WaitingLineField) and where the line puts an issue whose work came back
 // (record.WaitingLineBand).
 //
 // The first nine files are everything a root's architect and an operator read about a root whose
@@ -101,31 +101,33 @@ func TestTheOutboxTakesAWaitingForSlotNotice(t *testing.T) {
 // else: that each file names the notice and the field, so no shipped text forgot the new words.
 // Whether the sentence around a name is true is a reader's to judge, never this loop's: green
 // here is coverage, never correctness. The thirteen below them carry the fourteen texts that
-// state where the line puts an answered root — admit.go carries two of them — and each had said
-// such a root goes first, which record.Waiting does not do: it stands in the line's first part,
-// oldest first. (INFRA-1100.)
+// state where the line puts an issue whose work came back — admit.go carries two of them — and
+// the loop over them reads the fragment's presence, again nothing more. That loop and the ban
+// below read a file through one helper that puts its prose on a single line, so a text wrapped
+// across a line break reads as one written out on a single line. (INFRA-1100.)
 //
-// The third loop is the ban those corrections needed, over every file either list names. Presence
-// alone let a false sentence through: AGENTS.md carried record.WaitingLineBand word for word in a
-// sentence about a root's own first phase, two lines below a sentence that said an answered root
-// went before every issue whose first phase had yet to start, which record/project.go's Waiting
-// does not do — it puts an answered root and a root's own first phase in the same part of the
-// line, each timed and sorted oldest first — and the presence check passed on the neighbouring
-// sentence's words.
+// The rule those texts keep, and this test with them: a text states the placement,
+// record.WaitingLineBand, with a tree root's own first phase placed at the moment its gate
+// opened, and never the position that placement gives an issue, which depends on what else waits
+// (record.Waiting, record/project.go). The third loop is the ban that rule needed, over every
+// file either list names. Presence alone let a position claim through: AGENTS.md carried
+// record.WaitingLineBand word for word in a sentence about a root's own first phase, two lines
+// below a sentence that claimed a position for an issue whose work came back, and the presence
+// check passed on the neighbouring sentence's words. The ban reads that same one-line text,
+// lower-cased.
 //
-// What the ban proves: no file of either list carries the wording that puts an issue first for
-// having its work come back. What it does not prove: whether what a file says instead is true,
-// which stays a reader's to judge; a wrong wording nobody has written yet, since the list holds
-// the phrases these texts used and no more; and a banned phrase wrapped across a line break,
-// since each line is read on its own.
+// What the ban proves: no file of either list carries one of the four wordings that claim a
+// position. What it does not prove: whether what a file says instead is true, which stays a
+// reader's to judge; and a wrong wording nobody has written yet, since the list holds the
+// phrases these texts used and no more.
 //
 // It bans rather than judges because the judgement is fuzzy and a plain substring is not.
-// Whether a sentence denies the line's order or merely defines the ordinal 1 is a reading, and
-// the program that tried it here was a sentence parser with two escape hatches — about 170 lines
-// of guesswork — which this repository does not keep: a programmatic gate checks what a program
+// Whether a sentence claims a position or merely defines the ordinal 1 is a reading, and the
+// program that tried it here was a sentence parser with two escape hatches — about 170 lines of
+// guesswork — which this repository does not keep: a programmatic gate checks what a program
 // checks easily and leaves the fuzzy reading to the agent who writes the text. The ban needs no
-// escape hatch because the five honest sentences that defined the ordinal now say `1 being first
-// in the line` and the like instead.
+// escape hatch because its phrases are narrow enough to leave running-legion.md's honest
+// definition of the ordinal, `1 being first in the line`, standing.
 func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 	body := func(file string) string {
@@ -135,6 +137,25 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 			t.Fatalf("read %s: %v", file, err)
 		}
 		return string(text)
+	}
+	// The same file with its prose on one line: every line loses a leading run of whitespace and
+	// the comment markers these files carry, and the words are joined by single spaces. A
+	// fragment wrapped inside a `//` or ` * ` comment is the same wording, and a read that left
+	// the markers in would see `work came // back` and report a true text as false.
+	collapsed := func(file string) string {
+		t.Helper()
+		var words []string
+		for _, line := range strings.Split(body(file), "\n") {
+			line = strings.TrimLeft(line, " \t")
+			for _, marker := range []string{"//", "*", "#"} {
+				if rest, found := strings.CutPrefix(line, marker); found {
+					line = rest
+					break
+				}
+			}
+			words = append(words, strings.Fields(line)...)
+		}
+		return strings.Join(words, " ")
 	}
 	naming := []string{
 		"packages/daemon/internal/prompts/roles/architect-root.md",
@@ -172,18 +193,18 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 		}
 	}
 	for _, file := range band {
-		if !strings.Contains(body(file), record.WaitingLineBand) {
+		if !strings.Contains(collapsed(file), record.WaitingLineBand) {
 			t.Errorf("%s states where the waiting line puts an answered root without saying it stands %q",
 				file, record.WaitingLineBand)
 		}
 	}
-	// Lower case, since the line is lower-cased before the comparison: a sentence that opens on
+	// Lower case, since the text is lower-cased before the comparison: a sentence that opens on
 	// one of these is banned as the one that carries it mid-sentence is.
 	banned := []string{
 		"front of the waiting line",
 		"front of the line",
 		"front of the whole line",
-		"ahead of every issue",
+		"never first in",
 	}
 	read := make(map[string]bool, len(naming)+len(band))
 	for _, list := range [][]string{naming, band} {
@@ -192,22 +213,16 @@ func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 				continue
 			}
 			read[file] = true
-			for number, line := range strings.Split(body(file), "\n") {
-				lower := strings.ToLower(line)
-				for _, phrase := range banned {
-					if !strings.Contains(lower, phrase) {
-						continue
-					}
-					t.Errorf("%s:%d says %q, which no file this test lists may say: no issue stands at the "+
-						"front of this line for having its work come back. An answered root stands %q, by the "+
-						"later of its answer and its tree's gate opening, in the same part of the line as a "+
-						"root's own first phase, and that part is sorted oldest first (record.Waiting, "+
-						"record/project.go). This bans the wording in the files above and nowhere else: a true "+
-						"sentence about an issue reaching the front — workflow/effects.go's ChildStartedNotice "+
-						"says `it reached the front of the waiting line and took an admission slot` of a child "+
-						"the line has just promoted — belongs in a file neither list names.",
-						file, number+1, phrase, record.WaitingLineBand)
+			text := strings.ToLower(collapsed(file))
+			for _, phrase := range banned {
+				if !strings.Contains(text, phrase) {
+					continue
 				}
+				t.Errorf("%s says %q, which no file this test lists may say: such a text states where "+
+					"the line puts an issue — %q, a tree root's own first phase placed at the moment its "+
+					"gate opened — and never the position that gives it, which depends on what else "+
+					"waits (record.Waiting, record/project.go).",
+					file, phrase, record.WaitingLineBand)
 			}
 		}
 	}

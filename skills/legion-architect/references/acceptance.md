@@ -225,7 +225,7 @@ If you are that child's architect:
   decompose nothing, and read the root's phase from the catch-up (for a root `held`, the phase its
   `held` notice names). Before `awaiting_merge`, register your spec with `register_gate`: your
   merger's READY waits for its approval.
-  That registration's approval request waits with the person like any other, but it returns no admission slot: a root your catch-up calls `handed_over` stands at a carried worker phase, which holds its slot, and a root at a phase never waits on a person.
+  That registration's approval request waits with the person like any other, but it returns no admission slot: a root your catch-up calls `handed_over` stands at a phase it carried, never `admitted`, and only a root at `admitted` waits on a person.
   The slot rule below is for a root of your own at `admitted`, not for this one.
   When that `design-approved` arrives, release and start
   nothing: the workers are already running. A child carried in `accepting` is yours to accept. In

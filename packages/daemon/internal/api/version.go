@@ -741,7 +741,7 @@ package api
 // own number again at the next merge rather than from this line.)
 //
 // 58: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
-// issue stands in `admission.waiting`: its `place`, 1 at the front of the line, and the `length`
+// issue stands in `admission.waiting`: its `place`, 1 being first in the line, and the `length`
 // of that list at this read (`api.WaitingLineView`). It is present only for an issue the list
 // names, so a slot holder and an issue the line does not carry have no such key, and the wire
 // carries no place for an issue that stands in no line. It says where the issue stands, not what
