@@ -14,6 +14,7 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { blockId } from "./editor";
+import { sql } from "./psql";
 import type { ReviewSeed } from "./review-routes";
 import { seedWorkspace, workspaceSessions } from "./workspace";
 
@@ -62,6 +63,24 @@ export async function seedReviewRoutes(): Promise<ReviewSeed> {
   // which only updates that one row's job names before writing the Pipeline's runs.
   await seedDeliveryFixture();
   await seedPipelineRows();
+
+  // The freshness rows of the Delivery and the Pipeline pages, pinned to the verdict a
+  // reconcile pass reaches here. Nothing seeds a GitHub App for `acme/widgets`, so every pass
+  // this server runs against the corpus fails with exactly the error written below, and a
+  // failed pass leaves `last_reconcile_at` null and overwrites `last_error` with it
+  // (`delivery/reconcile.go`, `store.go`'s `RecordReconcileError`). What is not fixed is
+  // WHETHER a pass has run: the first tick is jittered across the five-minute interval
+  // (`delivery.ReconcileInterval`), so one run of these pages read "PRs never checked" and the
+  // next, ninety seconds later, read "PRs never checked: the GitHub App is not installed on
+  // acme/widgets" - eight lines of difference across the two pages, and two labels of
+  // different widths, which no mask can cover and no wait can settle inside a row. Writing the
+  // verdict here makes both reads the same whether a pass has run or not, as
+  // `e2e/delivery.e2e.ts` writes it for the same reason.
+  await sql(
+    `UPDATE delivery_settings
+       SET last_error = 'the GitHub App is not installed on acme/widgets'
+     WHERE singleton`
+  );
 
   const requirements = await createIssueArtifact(issue, {
     content: REQUIREMENTS,

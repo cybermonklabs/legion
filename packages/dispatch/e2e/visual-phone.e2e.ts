@@ -16,7 +16,13 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { phoneShotNames, type ReviewedRoute, type ReviewSeed, shotRoutes } from "./review-routes";
+import {
+  phoneShotNames,
+  type ReviewedRoute,
+  type ReviewSeed,
+  shotRoutes,
+  waitForRouteSettled,
+} from "./review-routes";
 import { withAlice } from "./users";
 import { workspaceSessions } from "./workspace";
 
@@ -55,12 +61,19 @@ for (const route of phoneRoutes) {
     }
     const seed = JSON.parse(readFileSync(seedPath, "utf8")) as ReviewSeed;
     await withAlice(browser, async (page) => {
+      // The page's clock, pinned a minute after the corpus was written, as `e2e/visual.e2e.ts`
+      // pins it and for the reason it gives there: a relative label is its time against
+      // `Date.now()`, and a mask cannot settle it because the mask follows the label's width.
+      if (seed.seededAt !== undefined) {
+        await page.clock.install({ time: new Date(Date.parse(seed.seededAt) + 60_000) });
+      }
       await page.goto(route.path(seed));
       for (const colorScheme of SCHEMES) {
         await page.emulateMedia({ colorScheme });
-        // Before the shot, so no baseline is taken of a loading skeleton or a 404, either of
-        // which would compare clean against itself for ever after.
-        await expect(route.ready(page)).toBeVisible();
+        // Before the shot, so no baseline is taken of a loading skeleton, a 404 or a page
+        // still resolving itself, as `e2e/visual.e2e.ts` waits and for the reason
+        // `waitForRouteSettled` gives.
+        await waitForRouteSettled(page, route);
         await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
           // Everything that is not the same twice, as `e2e/visual.e2e.ts` masks it and for the

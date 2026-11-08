@@ -156,7 +156,10 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     project: "CORE",
     title: "Broadcast recipients keep their send order",
   });
-  const snooze = await createIssue({ project: "CORE", title: "Snooze an Inbox row until tomorrow" });
+  const snooze = await createIssue({
+    project: "CORE",
+    title: "Snooze an Inbox row until tomorrow",
+  });
   const folds = await createIssue({ project: "CORE", title: "Agents page freshness folds" });
   const phone = await createIssue({ project: "CORE", title: "Phone layout of the review sheet" });
   const retracted = await createIssue({
@@ -164,6 +167,14 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     title: "A retracted ask stays in history",
   });
   const rotate = await createIssue({ project: "OPS", title: "Rotate the agent token" });
+  // Before the patch below, not after the whole seed: the ask the workflow issue's spec
+  // declares is written by the document service on its own, some time after `createIssue`
+  // answered, and the patch writes an event of its own against the same issue. Each lands with
+  // the sequence number of the moment it happened, and the Activity tab is that sequence
+  // newest first, so without this the "asked" and "updated the issue" rows swapped places
+  // between two runs of the drift probe. Waiting here puts the ask before the patch in every
+  // run.
+  await waitForSpecAsk(workflow.key);
   await Promise.all([
     patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }),
     patchIssue(broadcastOrder.key, { status: "needs_review" }),
@@ -276,7 +287,6 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     actor(sessionIds.planner)
   );
 
-  await waitForSpecAsk(workflow.key);
   return {
     asks: {
       answered: answered.id,
