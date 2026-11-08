@@ -30,6 +30,7 @@
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import type { EditArtifactResponse, EditOp } from "@legion/contracts";
 import {
   createHandoff,
   createIssue,
@@ -73,6 +74,11 @@ const mid: Design = {
     "The migration renames the bucket in place and keeps its old name, with `pulumi.Alias`.",
 };
 
+/** The three designs, in the order the plan writes them: this list is what a file the session
+ *  wrote is read against and what the summary counts, so a fourth design is never counted as
+ *  `wrote-other`. */
+const designs: readonly Design[] = [early, standing, mid];
+
 /** The project the staged issue is filed under. The daemon's own token for a claim is this key
  *  in lower case, which is what the pane the shell composes is launched for. */
 const projectKey = "DRIVE";
@@ -82,11 +88,13 @@ const versionsAtStart = 8;
 const standingFrom = 4;
 /** How many `plan` handoff records the issue holds. */
 const handoffRecords = 6;
-/** The plan.md version the handoff record the task's line names cites, and the version the
- *  newest handoff record cites: the pointer the task carries is the stale one. */
+/** The plan.md version the handoff record the task's line names cites. The newest record cites
+ *  `versionsAtStart` instead: the pointer the task carries is the stale one. */
 const citedByTaskHandoff = 1;
 
-/** What the shell and the later steps read of the seed. */
+/** What the shell and the later steps read of the seed. `project` and
+ *  `newestHandoffCitesPlanVersion` are the staging's own record for a reader of a past run:
+ *  nothing reads them back. */
 interface Seed {
   readonly issue: string;
   readonly project: string;
@@ -171,6 +179,26 @@ function writeJson(file: string, value: unknown): void {
   writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`);
 }
 
+/** One edit of plan.md, refused when it did not apply every op or did not mint `version`, whose
+ *  summary is that version's own. The e2e client types the answer as `{ applied }` alone, so the
+ *  contract's own type is what reads the minted version. `whose` names the edit in the refusal,
+ *  which a failed run keeps as its evidence. */
+async function editPlan(
+  artifact: string,
+  ops: EditOp[],
+  version: number,
+  whose: string
+): Promise<void> {
+  const edited = (await editArtifact(
+    artifact,
+    { ops, summary: `revision ${version}` },
+    { as: "agent" }
+  )) as EditArtifactResponse;
+  if (edited.applied !== ops.length || edited.version?.number !== version) {
+    fail(`${whose} applied ${JSON.stringify(edited)}`);
+  }
+}
+
 /** The plan's text at `revision`, carrying `design`. Every version is this text: an edit moves
  *  the marker, and the two design changes replace the one sentence. The plan holds two tasks,
  *  and each one asks for the design's own call in a file of its own: a worker that reads the
@@ -235,22 +263,13 @@ The bucket serves the same objects from the new account.
   const plan = upload.artifact.id;
   if (upload.artifact.slug !== "plan-md") fail(`the plan uploaded as ${upload.artifact.slug}`);
   for (let version = 2; version <= versionsAtStart; version += 1) {
-    const ops: { find: string; op: "replace"; with: string }[] = [
+    const ops: EditOp[] = [
       { find: `PLANREV-${version - 1}`, op: "replace", with: `PLANREV-${version}` },
     ];
     if (version === standingFrom) {
       ops.push({ find: early.sentence, op: "replace", with: standing.sentence });
     }
-    const edited = (await editArtifact(
-      plan,
-      { ops, summary: `revision ${version}` },
-      {
-        as: "agent",
-      }
-    )) as { applied: number; version?: { number: number } };
-    if (edited.applied !== ops.length || edited.version?.number !== version) {
-      fail(`the edit to plan.md version ${version} applied ${JSON.stringify(edited)}`);
-    }
+    await editPlan(plan, ops, version, `the edit to plan.md version ${version}`);
   }
   // The newest record cites the newest version, and the record the task's line names cites the
   // first: the two answers the drive is about are both on the issue before the session starts.
@@ -314,9 +333,16 @@ function transcript(runDir: string): string | undefined {
   return newest === undefined ? undefined : path.join(dir, newest);
 }
 
+/** One entry of the session's transcript, as the watcher and the score read it. */
+interface Entry {
+  readonly type?: string;
+  readonly timestamp?: string;
+  readonly message?: unknown;
+}
+
 /** Every entry of the transcript, skipping a last line a live session has half written. */
-function entries(file: string): { type?: string; timestamp?: string; message?: unknown }[] {
-  const read: { type?: string; timestamp?: string; message?: unknown }[] = [];
+function entries(file: string): Entry[] {
+  const read: Entry[] = [];
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (line === "") continue;
     try {
@@ -330,9 +356,9 @@ function entries(file: string): { type?: string; timestamp?: string; message?: u
 
 /** Every read of the plan's text in the transcript, oldest first: a tool result whose own text
  *  carries a `PLANREV-<n>` marker, which only a version of plan.md holds. */
-function planReads(file: string): PlanRead[] {
+function planReads(parsed: readonly Entry[]): PlanRead[] {
   const reads: PlanRead[] = [];
-  for (const entry of entries(file)) {
+  for (const entry of parsed) {
     const message = entry.message as { role?: string } | undefined;
     if (entry.type !== "message" || message?.role !== "toolResult") continue;
     const versions = [...JSON.stringify(message).matchAll(/PLANREV-(\d+)/g)].map((match) =>
@@ -349,9 +375,9 @@ function planReads(file: string): PlanRead[] {
 
 /** When the session last wrote to its transcript: the time the run is scorable against, since a
  *  version that lands after it reached no turn of the session's. */
-function lastWroteAt(file: string): string {
+function lastWroteAt(parsed: readonly Entry[]): string {
   let last = "";
-  for (const entry of entries(file)) {
+  for (const entry of parsed) {
     if (typeof entry.timestamp === "string" && entry.timestamp > last) last = entry.timestamp;
   }
   return last;
@@ -365,7 +391,7 @@ async function advance(runDir: string, boundSeconds: number): Promise<void> {
   let firedAt = "";
   while (Date.now() < deadline) {
     const file = transcript(runDir);
-    const first = file === undefined ? undefined : planReads(file)[0];
+    const first = file === undefined ? undefined : planReads(entries(file))[0];
     if (first !== undefined) {
       trigger = "plan-read";
       firedAt = first.at;
@@ -374,20 +400,15 @@ async function advance(runDir: string, boundSeconds: number): Promise<void> {
     await Bun.sleep(250);
   }
   const noticedAt = new Date().toISOString();
-  const applied = (await editArtifact(
+  await editPlan(
     seeded.planArtifact,
-    {
-      ops: [
-        { find: `PLANREV-${seeded.versionsAtStart}`, op: "replace", with: `PLANREV-${version}` },
-        { find: standing.sentence, op: "replace", with: mid.sentence },
-      ],
-      summary: `revision ${version}`,
-    },
-    { as: "agent" }
-  )) as { applied: number; version?: { number: number } };
-  if (applied.applied !== 2 || applied.version?.number !== version) {
-    fail(`the mid-session edit applied ${JSON.stringify(applied)}`);
-  }
+    [
+      { find: `PLANREV-${seeded.versionsAtStart}`, op: "replace", with: `PLANREV-${version}` },
+      { find: standing.sentence, op: "replace", with: mid.sentence },
+    ],
+    version,
+    "the mid-session edit"
+  );
   await createPlanReview(seeded.planArtifact, version);
   const landed: Advance = {
     design: mid.name,
@@ -405,7 +426,7 @@ async function advance(runDir: string, boundSeconds: number): Promise<void> {
 function wroteDesign(file: string): { wrote: string; design: string } {
   if (!existsSync(file)) return { design: "none", wrote: "none" };
   const written = readFileSync(file, "utf8");
-  const found = [early, standing, mid].filter((design) => written.includes(design.call));
+  const found = designs.filter((design) => written.includes(design.call));
   if (found.length === 1) return { design: found[0].name, wrote: found[0].call };
   if (found.length === 0) return { design: "none", wrote: "none" };
   return { design: "several", wrote: found.map((design) => design.call).join("+") };
@@ -448,8 +469,9 @@ function score(runDir: string, arm: string, run: string, attempt: number): void 
   const landed = readJson<Advance>(path.join(runDir, "advance.json"));
   const file = transcript(runDir);
   if (file === undefined) fail(`the session under ${runDir}/sess wrote no transcript`);
-  const reads = planReads(file);
-  const sessionLastWroteAt = lastWroteAt(file);
+  const parsed = entries(file);
+  const reads = planReads(parsed);
+  const sessionLastWroteAt = lastWroteAt(parsed);
   // The first task's file is the one the row records, the second task's the one it scores: the
   // second is written after a read of the plan between the two tasks would have happened.
   const first = wroteDesign(path.join(runDir, "note.txt"));
@@ -491,7 +513,7 @@ function summarize(arm: string, runDirs: readonly string[]): void {
     `wrote-mid=${counted((row) => row.design === mid.name)}`,
     `wrote-standing=${counted((row) => row.design === standing.name)}`,
     `wrote-early=${counted((row) => row.design === early.name)}`,
-    `wrote-other=${counted((row) => !["early", "mid", "standing"].includes(row.design))}`,
+    `wrote-other=${counted((row) => !designs.some((design) => design.name === row.design))}`,
     `designs-differ=${counted((row) => row.designsDiffer)}`,
     `start-only-read=${counted((row) => row.startOnly)}`,
     `read-after-the-change=${counted((row) => row.reads.some((read) => read.at > row.landedAt))}`,

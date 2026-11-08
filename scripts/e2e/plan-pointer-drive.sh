@@ -30,13 +30,13 @@
 #      reads it before that file is written;
 #   3. the implementer's pane prompt, composed from the arm's daemon module;
 #   4. the session: `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`,
-#      `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*` and `PI_SESSION_*` variable of this shell
-#      unset, `OMP_SESSION_STORAGE=file`, and the staged server as its own Dispatch. Its task is
-#      an ordinary implementing assignment whose `Handoff:` line is the one the daemon renders
-#      (packages/daemon/internal/workflow/effects.go), naming plan version 1 and nothing else: it
-#      asks for the plan's two tasks, each one's line written to a file of the run's own, and for
-#      the round's `implement` handoff body, written to a third, which a worker with no workspace
-#      can all do and which the role prompt reads the plan again before;
+#      `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID`
+#      variable of this shell unset, `OMP_SESSION_STORAGE=file`, and the staged server as its own
+#      Dispatch. Its task is an ordinary implementing assignment whose `Handoff:` line is the one
+#      the daemon renders (packages/daemon/internal/workflow/effects.go), naming plan version 1
+#      and nothing else: it asks for the plan's two tasks, each one's line written to a file of
+#      the run's own, and for the round's `implement` handoff body, written to a third, which a
+#      worker with no workspace can all do and which the role prompt reads the plan again before;
 #   5. the watcher, which writes plan.md version 9 - the second design change, with the plan
 #      review's approval of it - the moment the session's first read of the plan's text appears in
 #      the transcript, and at its bound when no such read appears;
@@ -105,6 +105,12 @@ evidence=''
 timeout_hook=''
 # shellcheck source-path=SCRIPTDIR source=lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+
+# createdb and dropdb read PGHOSTADDR and connect to the address it holds, while the loopback
+# check below reads the DSN's host alone: an inherited PGHOSTADDR would make and force-drop
+# databases on another server. The `compgen -e` sweep further down makes the session's
+# environment, not this shell's.
+unset PGHOSTADDR
 
 runs=1
 base_commit=''
@@ -228,7 +234,9 @@ case "$db_host" in
 esac
 [ -n "$omp" ] || fail "LEGION_OMP_PATH is required: it names the Oh My Pi binary each session runs"
 [ -x "$omp" ] || fail "LEGION_OMP_PATH=$omp is not an executable file"
-for tool in bun go git jj psql createdb dropdb curl dispatch; do
+# python3 and openssl are the Dispatch server's own: packages/dispatch/e2e/run-server.sh holds
+# the port with scripts/e2e/lib/held-port.py and mints a throwaway App key with `openssl genrsa`.
+for tool in bun go git jj createdb dropdb curl dispatch python3 openssl; do
   command -v "$tool" >/dev/null || fail "$tool is not on PATH"
 done
 [ -n "$gh_path" ] || gh_path=$(command -v gh) ||
@@ -303,7 +311,6 @@ run_attempt() {
   pass
 
   begin "$run dispatch"
-  : >"$run_dir/logs/dispatch.log"
   DATABASE_URL=$(database_url "$database") FAKE_ENVOY_PORT=1 FAKE_GITHUB_PORT=1 \
     DISPATCH_E2E_AGENT_SECRETS_URL='' \
     start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
@@ -335,6 +342,8 @@ run_attempt() {
   # shell itself turns it into the prompt file: no regular expression reads it.
   eval "args=( $(cat "$run_dir/arg.txt") )" ||
     fail "the composed argument in $run_dir/arg.txt is no shell word list"
+  [ "${#args[@]}" -eq 2 ] ||
+    fail "the composed argument in $run_dir/arg.txt is ${#args[@]} shell word(s), not the two the composer answers with: --append-system-prompt and the prompt"
   [ "${args[0]}" = "--append-system-prompt" ] ||
     fail "the composed argument starts with '${args[0]}', not --append-system-prompt"
   printf '%s' "${args[1]}" >"$run_dir/prompt.txt"
