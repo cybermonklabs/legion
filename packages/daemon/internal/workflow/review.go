@@ -695,8 +695,9 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	return false, nil
 }
 
-// recordRound counts the implementer one round for a move back to an earlier phase, and posts the
-// cap's message and its pr-blocked notice once the counted rounds reach review_round_cap.
+// recordRound counts the implementer one round for a move back to an earlier phase, and, when the
+// round is one the cap counts, posts the cap's message and its pr-blocked notice once the counted
+// rounds reach review_round_cap.
 //
 // Rounds rises for every backward move, whatever its cause: a completion's key is built from it
 // (api/handoff.go's handoffPosition), so two passes through one phase that counted the same
@@ -708,20 +709,27 @@ func (e *Engine) settleRound(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // round, which is what dispatch://INFRA-1442 found on a tree that reached it on three rounds of
 // which two were conflicts. The message names both numbers, so an architect woken by it reads
 // how many rounds were counted against the cap and how many were excused.
+//
+// A move that raised the conflict count posts neither the message nor the notice, whatever the
+// counted rounds stand at: it leaves that number as the round before it left it, and a notice is
+// itself a way of counting, waking the architect to decide a round nobody spent. The counted
+// round that reached the cap posted it, and the next counted round posts it again, naming the
+// conflict rounds as they stand then.
 func (e *Engine) recordRound(ctx context.Context, tx pgx.Tx, issue string, pr *record.PullRequest) error {
 	row, err := e.phaseRow(ctx, tx, issue, claim.RoleImplementer)
 	if err != nil {
 		return err
 	}
 	row.Rounds++
-	if pr != nil && classify.ConflictRound(*pr) {
+	conflict := pr != nil && classify.ConflictRound(*pr)
+	if conflict {
 		row.ConflictRounds++
 	}
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return err
 	}
 	counted := row.Rounds - row.ConflictRounds
-	if counted < e.cfg.ReviewRoundCap {
+	if conflict || counted < e.cfg.ReviewRoundCap {
 		return nil
 	}
 	message := fmt.Sprintf("Issue reached review_round_cap=%d: %d rounds counted, %d conflict rounds not counted.",

@@ -15,11 +15,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// The two heads a conflict round runs between: the head the daemon judged conflicting with its
-// base, and the head the implementer's forward merge leaves, which answers it.
+// The heads a conflict round runs between: the head the daemon judged conflicting with its base,
+// the head the implementer's forward merge leaves, which answers it, and the head a second
+// forward merge leaves, after the issue has reached the cap.
 const (
 	conflictedHead = "conflicted-head"
 	mergedHead     = "merged-head"
+	remergedHead   = "remerged-head"
 )
 
 // conflictRoundEngine drives the merge queue's own returns (MergeQueueRole) under a
@@ -98,6 +100,12 @@ func standsIn(t *testing.T, pool *pgxpool.Pool, at phase.Phase, status string) {
 // and the reviewer's request for changes at the new head is the first counted round since: the
 // mark no longer equals the recorded head, so nothing excuses it, it is the third counted round,
 // and the cap's message names both numbers.
+//
+// The issue then stands at the cap, where a conflict round still counts in no way: it posts no
+// second message and no second pr-blocked notice, since a notice is how a round counts - the
+// architect is woken to decide it - and the counted number the round leaves is the one the
+// message already on the issue names. The counted round after it posts the cap again, with the
+// numbers as they stand then.
 func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	pool := migratedPool(t)
 	engine := conflictRoundEngine()
@@ -193,6 +201,49 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 	if len(messages) != 1 || messages[0] != want || blocked != 1 {
 		t.Fatalf("the cap posted %q and %d pr-blocked notices, want one message %q and one notice", messages, blocked, want)
 	}
+
+	// The issue now stands at the cap. A conflict round made there counts in no way either: it
+	// posts nothing, because the counted number it leaves is the one the message above already
+	// names, and a second pr-blocked notice would wake the architect to decide a round nobody
+	// spent.
+	if result := apply("mergeability:LEGION-208:conflicting-at-"+mergedHead,
+		intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", Mergeable: record.MergeabilityConflicting}); result.Refusal != nil {
+		t.Fatalf("the conflicting read at the merged head = %+v", result.Refusal)
+	}
+	standsIn(t, pool, phase.Testing, "testing")
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+	if result := apply("tester-failed:LEGION-208:"+mergedHead, intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
+		Role: claim.RoleTester, Claim: "test-claim", Summary: "the base's change is not in the head", Verdict: "fail",
+		HandoffRecord: "test-at-" + mergedHead, HandoffVersion: 1}); result.Refusal != nil {
+		t.Fatalf("a tester round failed at the conflicting merged head = %+v", result.Refusal)
+	}
+	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 8 || conflicts != 5 {
+		t.Fatalf("rounds = %d of which %d conflict rounds, want 8 and 5: a conflict round made at the cap is excused like the others", rounds, conflicts)
+	}
+	if messages, blocked := capPosts(t, pool); len(messages) != 1 || blocked != 1 {
+		t.Fatalf("the conflict round made at the cap posted %q and %d pr-blocked notices, want only the one message and the one notice the counted round before it wrote", messages, blocked)
+	}
+
+	// The next counted round posts the cap again, naming both numbers as they stand then.
+	if result := apply("forward-merge:LEGION-208:"+remergedHead, intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42,
+		Branch: "legion/LEGION-208", Before: mergedHead, Sender: "implementer", HeadSHA: remergedHead,
+		UpdatedAt: time.Date(2026, 9, 24, 1, 0, 0, 0, time.UTC)}); result.Refusal != nil {
+		t.Fatalf("the implementer's second forward merge = %+v", result.Refusal)
+	}
+	standsIn(t, pool, phase.Reviewing, "needs_review")
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", HandoffCommit: "review-2"})
+	if result := apply("changes-requested:LEGION-208:"+remergedHead, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42,
+		State: "changes_requested", CommitID: remergedHead, HeadSHA: remergedHead, Author: testReviewApp}); result.Refusal != nil {
+		t.Fatalf("the reviewer's second request for changes = %+v", result.Refusal)
+	}
+	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 9 || conflicts != 5 {
+		t.Fatalf("rounds = %d of which %d conflict rounds, want 9 and the same 5: the reviewer's round is counted", rounds, conflicts)
+	}
+	again := "Issue reached review_round_cap=3: 4 rounds counted, 5 conflict rounds not counted."
+	messages, blocked = capPosts(t, pool)
+	if len(messages) != 2 || messages[1] != again || blocked != 2 {
+		t.Fatalf("the counted round after the conflict round posted %q and %d pr-blocked notices, want a second message %q and a second notice", messages, blocked, again)
+	}
 }
 
 // What ends the exemption, and what does not. The mark is the head the daemon last judged
@@ -203,13 +254,24 @@ func TestAConflictRoundCountsAgainstNoCap(t *testing.T) {
 // GitHub answers for a head sitting in the merge queue, and the two-minute pass writes that answer
 // over the conflict within two minutes of it.
 //
+// The mark the return the merge queue's own state makes writes (mergeQueueConflict) is cleared
+// the same way, though the record read MERGEABLE when it was written: GitHub answers MERGEABLE
+// for the pull request while its queue entry reads UNMERGEABLE, so the clearing read says of
+// GitHub's answer exactly what the record already holds, and reaches the workflow all the same
+// (daemon's readRequiredChecks).
+//
 // Every row makes its move back from testing, where no READY head exists at all: the fact the
 // exemption reads is the pull request's own recorded head, not the head some READY awaits, so a
 // tester's round at a conflicting head is excused like any other.
 func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// clearing is what happens between the conflicting read and the move back; no fact at all
+		// stored is the mergeability the record holds when the head is marked conflicting, and
+		// marking is the fact that marks it: no fact at all for the two-minute pass's own
+		// CONFLICTING read, which is what every row but the merge queue's return is marked by.
+		stored  record.Mergeability
+		marking intake.Fact
+		// clearing is what happens between the mark and the move back; no fact at all
 		// for the row that pins a tester's round at the conflicting head as excused.
 		clearing intake.Fact
 		// head is the pull request's recorded head when the tester's round is failed, and excused
@@ -219,6 +281,14 @@ func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 	}{
 		{
 			name:     "a read that judges the same head mergeable",
+			clearing: intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", Mergeable: record.MergeabilityMergeable},
+			head:     conflictedHead,
+		},
+		{
+			name:   "a read that judges the same head mergeable after the merge queue's return marked it",
+			stored: record.MergeabilityMergeable,
+			marking: intake.MergeQueueConflict{Issue: "LEGION-208", Number: 42, Head: conflictedHead,
+				Reason: "the head conflicts with main: GitHub's merge queue reports its entry unmergeable while the entry is built on main's own tip base-tip; merge main forward"},
 			clearing: intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", Mergeable: record.MergeabilityMergeable},
 			head:     conflictedHead,
 		},
@@ -245,16 +315,19 @@ func TestAConflictRoundCountsAgainstNoCapUntilTheMarkIsCleared(t *testing.T) {
 			apply := applyFacts(t, pool, conflictRoundEngine())
 			standsIn(t, pool, phase.AwaitingMerge, "retro")
 			seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion",
-				Number: 42, Branch: "legion/LEGION-208", HeadSHA: conflictedHead})
+				Number: 42, Branch: "legion/LEGION-208", HeadSHA: conflictedHead, Mergeability: tc.stored})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleMerger, Claim: "merge-claim",
 				HandoffCommit: conflictedHead, Summary: "READY #42 at " + conflictedHead + " for LEGION-208"})
-			if result := apply("mergeability:LEGION-208:conflicting",
-				intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", Mergeable: record.MergeabilityConflicting}); result.Refusal != nil {
-				t.Fatalf("the conflicting read = %+v", result.Refusal)
+			marking := tc.marking
+			if marking == nil {
+				marking = intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main", Mergeable: record.MergeabilityConflicting}
+			}
+			if result := apply("marking:LEGION-208", marking); result.Refusal != nil {
+				t.Fatalf("the fact that marks the head conflicting = %+v", result.Refusal)
 			}
 			if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 1 || conflicts != 1 {
-				t.Fatalf("after the conflicting read rounds = %d of which %d conflict rounds, want one of each", rounds, conflicts)
+				t.Fatalf("after the head is marked conflicting rounds = %d of which %d conflict rounds, want one of each", rounds, conflicts)
 			}
 			if tc.clearing != nil {
 				if result := apply("clearing:LEGION-208", tc.clearing); result.Refusal != nil {

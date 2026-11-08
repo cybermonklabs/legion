@@ -418,27 +418,44 @@ func TestAFailedRequiredWorkflowSendsTheWorkBack(t *testing.T) {
 // in testing, reviewing, retro or merging, where nothing moves yet, and the first read after the
 // issue reaches awaiting_merge has to catch it then, with no change in the GitHub answer to key
 // off.
+//
+// A read that finds a head mergeable is applied too while the record holds that same head
+// conflicting, whatever mergeability the record stores beside it: that read is what clears the
+// mark the conflict-round exemption is read from (record.PullRequest.ConflictingHead), and the
+// return the merge queue's own state makes writes that mark while the record already reads
+// MERGEABLE, where no change in GitHub's answer ever follows to carry the clearing read in.
 func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		state        string
-		stored       record.Mergeability
-		mergeability record.Mergeability
-		want         phase.Phase
+		name  string
+		state string
+		// stored and conflicting are what the record holds before the pass: GitHub's mergeability
+		// as the last read of it found it, and the head the daemon last judged conflicting with
+		// its base.
+		stored      record.Mergeability
+		conflicting string
+		// mergeability and wantConflicting are what the record holds after the pass, and want is
+		// the phase the issue is left in.
+		mergeability    record.Mergeability
+		wantConflicting string
+		want            phase.Phase
 	}{
-		{"conflicting", "false", "", record.MergeabilityConflicting, phase.Implementing},
-		{"not yet computed", "null", "", record.MergeabilityUnknown, phase.AwaitingMerge},
-		{"mergeable", "true", "", record.MergeabilityMergeable, phase.AwaitingMerge},
-		{"conflict already recorded", "false", record.MergeabilityConflicting, record.MergeabilityConflicting, phase.Implementing},
+		{name: "conflicting", state: "false", mergeability: record.MergeabilityConflicting, wantConflicting: "code", want: phase.Implementing},
+		{name: "not yet computed", state: "null", mergeability: record.MergeabilityUnknown, want: phase.AwaitingMerge},
+		{name: "mergeable", state: "true", mergeability: record.MergeabilityMergeable, want: phase.AwaitingMerge},
+		{name: "conflict already recorded", state: "false", stored: record.MergeabilityConflicting,
+			mergeability: record.MergeabilityConflicting, wantConflicting: "code", want: phase.Implementing},
+		{name: "a mergeable read of the head the record holds conflicting", state: "true",
+			stored: record.MergeabilityMergeable, conflicting: "code",
+			mergeability: record.MergeabilityMergeable, want: phase.AwaitingMerge},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.AwaitingMerge, "retro",
 				record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
-			if tc.stored != "" {
-				if _, err := pool.Exec(context.Background(), "update pull_requests set mergeability = $1 where issue = 'CAPTURE-1'", string(tc.stored)); err != nil {
-					t.Fatalf("seed the stored mergeability: %v", err)
-				}
+			if _, err := pool.Exec(context.Background(),
+				"update pull_requests set mergeability = $1, conflicting_head = $2 where issue = 'CAPTURE-1'",
+				string(tc.stored), tc.conflicting); err != nil {
+				t.Fatalf("seed the mergeability and the conflicting head the record holds: %v", err)
 			}
 			w := requiredRuntime(pool, mergeableStandIn(t, tc.state).URL, quietLogger())
 			w.readRequiredChecks(context.Background())
@@ -448,6 +465,9 @@ func TestTheRequiredChecksPassCatchesAHeadThatStartsConflictingWithItsBase(t *te
 			}
 			if pr.Mergeability != tc.mergeability {
 				t.Fatalf("recorded mergeability = %q, want %q", pr.Mergeability, tc.mergeability)
+			}
+			if pr.ConflictingHead != tc.wantConflicting {
+				t.Fatalf("the record holds %q conflicting, want %q: a read finding the marked head mergeable clears the mark", pr.ConflictingHead, tc.wantConflicting)
 			}
 			if tc.want != phase.Implementing {
 				return
