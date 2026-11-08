@@ -404,6 +404,12 @@ func TestCapturedApprovedReviewFlowsThroughConsumeToAccepting(t *testing.T) {
 	}
 }
 
+// The round that reaches review_round_cap is posted on the Dispatch issue once and told to the
+// architect once, as a pr-blocked notice. The message names both halves of what the cap read:
+// how many of the implementer's rounds were counted against it, and how many conflict rounds
+// were not, so an architect woken by it can tell a loop of rejected work from a base branch that
+// kept moving (dispatch://INFRA-1442). Here no round was a conflict round, so the second number
+// is none, and the third rejection reaches the cap on its own.
 func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
@@ -419,6 +425,18 @@ func TestReviewRoundCapPostsOneMessageAndNoticeForTheThirdRound(t *testing.T) {
 	assertOutboxKinds(t, pool, []string{"dispatch_message", "notice", "dispatch_status", "supervise", "notice"})
 	if rounds := implementerRounds(t, pool); rounds != 3 {
 		t.Fatalf("implementer rounds = %d, want 3", rounds)
+	}
+	want := "Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted."
+	messages, blocked := capPosts(t, pool)
+	if len(messages) != 1 || messages[0] != want || blocked != 1 {
+		t.Fatalf("the cap posted %q and %d pr-blocked notices, want one message %q and one notice", messages, blocked, want)
+	}
+	var reason string
+	if err := pool.QueryRow(ctx, "select payload->>'reason' from outbox where kind = 'notice' and payload->>'kind' = 'pr-blocked'").Scan(&reason); err != nil {
+		t.Fatalf("read the architect's pr-blocked notice: %v", err)
+	}
+	if reason != want {
+		t.Fatalf("the pr-blocked notice reads %q, want %q: the architect reads the same two numbers", reason, want)
 	}
 }
 

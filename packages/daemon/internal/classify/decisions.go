@@ -1144,6 +1144,19 @@ func ConflictWithdrawsReady(pr record.PullRequest) bool {
 	return pr.State == record.PullRequestOpen && pr.Mergeability == record.MergeabilityConflicting
 }
 
+// ConflictRound says whether a backward move made now is a round a conflict with the base caused:
+// the record holds the pull request's own recorded head as conflicting
+// (record.PullRequest.ConflictingHead), whichever read judged it so and whatever fact is making
+// the move. The exemption keys on that mark rather than on the cause, because every way back out
+// of a conflicting head is the same round of work - the return the merge queue's own state makes,
+// the conflict the two-minute pass finds, a reviewer's request for changes, a worker's backward
+// move, a tester's fail - and the implementer answers each of them with one forward merge. That
+// merge moves the recorded head, the mark no longer equals it, and the next rejection counts,
+// which is how the exemption ends without a write of its own.
+func ConflictRound(pr record.PullRequest) bool {
+	return pr.ConflictingHead != "" && pr.ConflictingHead == pr.HeadSHA
+}
+
 // DesignGateEventKind is the Dispatch artifact observation that changes a registered gate.
 type DesignGateEventKind string
 

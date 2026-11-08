@@ -710,7 +710,37 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 57: INFRA-956 -- fix-attempt counting gone. `legion.yaml` no longer takes `max_fix_attempts`,
+// 57: dispatch://INFRA-1274 -- every claim view carries `step`, what the daemon last saw that
+// claim's agent do: `at`, when the daemon received that step, `turnStartedAt`, when the turn it
+// belongs to began, the `tool` and `callId` of the call the agent is in, that call's `argsBytes`
+// and `argsHash` — its arguments' length and an eight-byte fingerprint of them, never their text,
+// since a shell command routinely holds a credential — and its `startedAt` and `endedAt`. It is on
+// the claim views of `GET /legion/v1/state` and on the operator's `legion claims list` (api's
+// StepView, ClaimView.Step and OperatorClaim.Step), absent for a claim whose agent has neither
+// begun a turn nor made a call the daemon saw, and a call carrying `startedAt` and no `endedAt` is
+// the shape a turn that stopped moving leaves behind. A strict reader before 57 knows no such key
+// and refuses the whole state body for it, so the route serves a caller whose pod's claims record
+// a contract below 57 the state with no `step` at all (api's stateFor, withoutStallRecord), as it
+// serves a caller below 56 one whose claims nothing will wake name no retired claim, a caller
+// below 55 one with no gated steps, a caller below 53 one with no `wakesWaiting` and a caller
+// below 49 one with no memory group. The key is left off that body rather than
+// emptied, so it is left off the body a pod whose claims cannot be read is served as well, which
+// may be a pod at this contract. 57 also brings the three numbers a deployment moves a session's
+// watch on its own tool calls with — LEGION_STALL_CALL_BOUND_MS, LEGION_STALL_CALL_GRACE_MS and
+// LEGION_STALL_STEP_MS — in the environment of every pane and of every pod's worker container,
+// the controller's among them (`internal/daemon/specs.go`'s stallLimitVariables, merged into
+// `spec.Env` after SpawnSpec's fork, which a pane's `-e` pairs and a pod launcher's start command
+// carry verbatim): a session told none of them runs on the defaults its plugin holds. This change
+// adds the store migration the record is kept in, `20261107052815_claim_step_record`. (53 is the
+// contract this branch declared at its bump; main has since landed the optional production check
+// at 54, INFRA-1272's design-gate steps at 55 and INFRA-1480's retired stranded state at 56, none
+// of which carries the claim step record or the stall numbers, so this branch takes 57, above
+// them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
+// own number again at the next merge rather than from this line.)
+//
+// 58: INFRA-956 -- fix-attempt counting gone. `legion.yaml` no longer takes `max_fix_attempts`,
 // and a file carrying it loads with a warning naming the removal, which boot logs and
 // `legion start --check-config` prints, rather than a refusal, so the settings block of
 // `GET /legion/v1/state` no longer carries `max_fix_attempts` and `api.Settings` no longer
@@ -719,7 +749,7 @@ package api
 // now sends the work back to the implementer every time it stands, however many came before,
 // and the architect decides when to stop; no pull request is marked blocked and no `pr-blocked`
 // notice is published for a count. `packages/contracts/src/legion-api.ts` mirrors both
-// removals, and its reader of the settings block is loose, so a plugin before 57 reads a state
+// removals, and its reader of the settings block is loose, so a plugin before 58 reads a state
 // without `max_fix_attempts` — but its strict pull-request reader refuses one without
 // `fixAttempts`, and every worker's `read_record` parses the state through it, which is what
 // this number is for: the boot gate and `legion probe-image` hold plugin and daemon equal, so
@@ -769,15 +799,16 @@ package api
 // `provider_error_note`) and the claim's run of such turns (`claims.provider_error_run`). The
 // removal ships none; `fix_attempts`, `blocked_attempts` and `head_counted` stay as stopped
 // columns that nothing reads, each given its zero on an insert (`record`'s PutPullRequest).
-// (This branch took 47, then 48, then 50, then 52, then 54, then 55, then 56, as main's own
-// changes took each number before it: main merged the idle-pod release at 48 while this branch
-// was open, landed the memory group at 49, the admission cap over the issues at work at 51, the
-// pane issue key at 52, INFRA-976's wake pacing at 53 and INFRA-809's production-check decision
-// at 54 (sjawhar/legion#2855), each release declaring its number without these shapes,
-// INFRA-1272's design-gate steps landed as 55 (cybermonklabs/legion#2848), and INFRA-1480's
-// retired stranded state has since landed as 56 (cybermonklabs/legion#2919), so this change
-// takes the number above them all, as
+// (This branch took 47, then 48, then 50, then 52, then 54, then 55, then 56, then 57, as main's
+// own changes took each number before it: main merged the idle-pod release at 48 while this
+// branch was open, landed the memory group at 49, the admission cap over the issues at work at
+// 51, the pane issue key at 52, INFRA-976's wake pacing at 53 and INFRA-809's production-check
+// decision at 54 (sjawhar/legion#2855), each release declaring its number without these shapes,
+// INFRA-1272's design-gate steps landed as 55 (cybermonklabs/legion#2848), INFRA-1480's retired
+// stranded state landed as 56 (cybermonklabs/legion#2919), and INFRA-1274's claim step record
+// has since landed as 57 (cybermonklabs/legion#2922), so this change takes the number above them
+// all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
+// says. main held 57 at the forward merge that renumbered this entry, 49a8ae28a072; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 57
+const DaemonAPIVersion = 58

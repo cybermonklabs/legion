@@ -90,6 +90,23 @@ const schemas: Record<string, z.ZodType> = {
   // installed plugin (`internal/api/version.go`), and the plugin's own test pins its manifest's
   // `legion.daemonApiVersion` to it.
   "version.json": z.strictObject({ daemonApiVersion: z.number().int().positive() }),
+  // Nor this one: the numbers a worker's own stall watch runs on, written from the daemon's
+  // copies of them (`internal/config/stalldefaults.go`) so that
+  // `packages/pi-shared/src/stall-limits.test.ts` can hold the plugin's own numbers — the one
+  // source — to the numbers the daemon computes its backstop floor from. The three defaults are
+  // `src/stall-limits.ts`'s; `declaredDeadlineMostMs` is the hour the host clamps a call's own
+  // declared deadline to (`src/stall-watchdog.ts`, DECLARED_DEADLINE_MOST_MS), the other half of
+  // that floor.
+  "stall-defaults.json": z.strictObject({
+    callGraceMs: z.number().int().positive(),
+    callBoundMs: z.number().int().positive(),
+    stepMs: z.number().int().positive(),
+    declaredDeadlineMostMs: z.number().int().positive(),
+    callBoundMsByRole: z.record(
+      z.enum([...LEGION_ROLES, "controller"]),
+      z.number().int().nonnegative()
+    ),
+  }),
 };
 
 function fixture(name: string): unknown {
@@ -756,6 +773,65 @@ test("the state golden carries a worker's handoff record", () => {
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
   planner.handoffRecord = undefined;
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// The state shows what the daemon last saw a claim's agent do: the turn it is in, the call it is
+// in, and the length and fingerprint of that call's arguments, never their text. A call still
+// open carries `startedAt` and no `endedAt`, which is the shape a turn that stopped moving
+// leaves behind; a claim whose agent has not stepped carries no `step` at all, as does every
+// claim view served to a pod below contract 57.
+test("the state golden carries what the daemon last saw an agent do", () => {
+  const state = fixture("state.json") as {
+    issues: Record<
+      string,
+      {
+        architect?: { step?: Record<string, unknown> };
+        workers: Record<string, { claim: { step?: Record<string, unknown> } }>;
+      }
+    >;
+  };
+  const implementer = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  const architect = state.issues["LEGION-208"]?.architect;
+  if (implementer === undefined || architect === undefined) {
+    throw new Error("state fixture lacks LEGION-208's architect and implementer");
+  }
+  expect(implementer.step).toEqual({
+    at: "2026-09-22T09:17:12Z",
+    turnStartedAt: "2026-09-22T09:16:30Z",
+    tool: "bash",
+    callId: "toolu_impl_11",
+    argsBytes: 128,
+    argsHash: "9b2e45c0d1f8a673",
+    startedAt: "2026-09-22T09:17:12Z",
+  });
+  expect(architect.step?.endedAt).toBe("2026-09-22T09:16:58Z");
+
+  implementer.step = { argsBytes: 0 };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = { tool: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  implementer.step = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// The only surface a controller's record reaches is the operator's claim listing: the state puts
+// the controller's claim on no issue, so no claim view of it can carry one.
+test("an operator's claim carries what the daemon last saw its agent do", () => {
+  const claim = fixture("operator-claim.json") as { step?: Record<string, unknown> };
+  expect(claim.step).toEqual({
+    at: "2026-09-22T09:31:22Z",
+    turnStartedAt: "2026-09-22T09:31:06Z",
+    tool: "eval",
+    callId: "toolu_impl_209_4",
+    argsBytes: 412,
+    argsHash: "c40d9e1b7a52f368",
+    startedAt: "2026-09-22T09:31:22Z",
+  });
+
+  claim.step = { argsBytes: -1 };
+  expect(LegionOperatorClaimResponse.safeParse(claim).success).toBeFalse();
+  claim.step = undefined;
+  expect(LegionOperatorClaimResponse.safeParse(claim).error?.issues ?? []).toEqual([]);
 });
 
 // An architect's backward move names the issue it moves from accepting; a phase worker's may
@@ -1647,7 +1723,7 @@ test("the state golden names the wakes the pacing holds, and the key may be abse
 // `worker_boot_timeout_seconds` and its GitHub Apps' ids and installations with no key, a
 // Stage 3 state carries the defaults, the one typed key is a positive integer, the rest rides
 // loosely, and the block cannot be dropped: a plugin from before the field refuses the state.
-// `max_fix_attempts` rode here until contract 57 removed the key.
+// `max_fix_attempts` rode here until contract 58 removed the key.
 test("the state golden carries the daemon's settings with no credential, and the block cannot be dropped", () => {
   const state = LegionStateResponse.parse(fixture("state.json"));
   expect(state.settings.max_fix_attempts).toBeUndefined();

@@ -91,9 +91,10 @@ func decodeAnswer(answer []byte, into any) error {
 }
 
 // printClaim is the one line a claim prints as: token, role, issue, state, generation, the plugin
-// contract its registration declared (0 when none is recorded), and the update round the claim is
+// contract its registration declared (0 when none is recorded), the update round the claim is
 // in with the head its worker reported when it answered (`-` for a claim in no round, and `-` for
-// a head no worker has reported yet). A claim whose idle pod the daemon released prints
+// a head no worker has reported yet), and the tool call its agent is in (openCallWord). A claim
+// whose idle pod the daemon released prints
 // `suspended:released` for its state (claimStateWord): it is not a suspension anyone is waiting
 // to lift — its next delivery resumes it in a pod of its own — so an operator reading the list
 // must not read it as one.
@@ -189,8 +190,33 @@ func issuesOrNone(name string, issues []string) string {
 }
 
 func writeClaimLine(w io.Writer, c api.OperatorClaim) {
-	fmt.Fprintf(w, "%s %s %s %s %d %d %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), c.Generation, c.PluginContract,
-		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead))
+	fmt.Fprintf(w, "%s %s %s %s %d %d %s %s %s\n", c.Token, c.Role, c.Issue, claimStateWord(c), c.Generation, c.PluginContract,
+		orNone(c.UpdateRound), quotedOrNone(c.UpdateHead), quotedOrNone(openCallWord(c.Step)))
+}
+
+// openCallWord is the tool call a claim's agent is in, as the line prints it: the tool, the call
+// id the stream's start and end frames pair by, and when the daemon received the start. It is
+// empty for a claim in no open call — one whose last call ended, and one whose agent has not
+// stepped at all — which the line prints as `-`.
+//
+// A call the host backgrounded is an ended call here, and its command may still be running: Oh
+// My Pi backgrounds a plain foreground shell command that has not returned in about a minute, or
+// at once when a steering message reaches the turn, ending the call with no error and handing
+// the job to the agent, which is a `tool_execution_end` on
+// the stream like any other (measured 2026-11-08 in the plugin's own live proof,
+// legion-stall-watchdog-omp.test.ts). So this column says what the agent is parked in, which is
+// what a stalled turn is read from, and never what is running on the worker's machine.
+//
+// A call still open is the one shape a stalled turn leaves behind (api.StepView), and this is
+// where an operator reads a controller's: internal/projection puts the controller's claim on no
+// issue, so `legion state` never shows one. The call's arguments are not here and are in no
+// column of any surface: the daemon keeps their length and a fingerprint alone, because a shell
+// command routinely holds a credential (supervise.StepRecord).
+func openCallWord(step *api.StepView) string {
+	if step == nil || step.StartedAt == nil || step.EndedAt != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s %s since %s", step.Tool, step.CallID, step.StartedAt.UTC().Format(time.RFC3339))
 }
 
 // claimStateWord is the claim's state as the line prints it: `suspended:released` for a claim the
@@ -214,7 +240,8 @@ func orNone(value string) string {
 // quotedOrNone is a field a worker supplies, as the line prints it: Go-quoted, so a newline or any
 // other control character in it is an escape rather than another row of this listing. The head a
 // worker reports when it answers an update round is its own word, which nothing verifies
-// (api.OperatorClaim.UpdateHead).
+// (api.OperatorClaim.UpdateHead), and the tool and call id of the call its agent is in are the
+// agent's own, as its stream's frames named them (openCallWord).
 func quotedOrNone(value string) string {
 	if value == "" {
 		return "-"

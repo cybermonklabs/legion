@@ -133,6 +133,13 @@ func (s *supervisor) Claims(ctx context.Context) ([]supervise.Claim, error) {
 	return ofProject(claims, s.project), nil
 }
 
+// Step is one claim's step record as the store holds it, for the operator routes that answer one
+// claim (api.Supervisor): no machine carries it, since the daemon writes every step through a
+// narrow call of its own (supervise's putStep).
+func (s *supervisor) Step(ctx context.Context, token claim.Token) (supervise.StepRecord, error) {
+	return s.store.ClaimStep(ctx, token)
+}
+
 // restore builds the machine of every claim the store held at boot, and reports the claims whose
 // launch the last daemon began and never finished: live with no locator — launching, its process,
 // if one opened at all, never recorded, or in any later live state a daemon wrote with no process
@@ -352,6 +359,9 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		return supervise.StreamTurnStart{Claim: ev.Claim, DeliveryID: ev.DeliveryID}, nil
 	case stream.TurnEnd:
 		return supervise.StreamTurnEnd{Claim: ev.Claim}, nil
+	case stream.ToolStep:
+		return supervise.StreamToolStep{Claim: ev.Claim, Tool: ev.Tool, CallID: ev.CallID,
+			ArgsBytes: ev.ArgsBytes, ArgsHash: ev.ArgsHash, End: ev.End, ConnSequence: ev.ConnSequence}, nil
 	case stream.PromptResult:
 		return supervise.StreamPromptResult{Claim: ev.Claim, DeliveryID: ev.DeliveryID,
 			AgentInvoked: ev.AgentInvoked, Error: ev.Error, Retryable: ev.Retryable,
@@ -373,6 +383,8 @@ func claimOf(ev supervise.Event) claim.Token {
 	case supervise.StreamTurnStart:
 		return ev.Claim
 	case supervise.StreamTurnEnd:
+		return ev.Claim
+	case supervise.StreamToolStep:
 		return ev.Claim
 	case supervise.StreamPromptResult:
 		return ev.Claim

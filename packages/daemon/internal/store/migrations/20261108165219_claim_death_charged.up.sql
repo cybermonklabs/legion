@@ -7,9 +7,8 @@
 -- the runtime reports that process gone, and the report that is read again is the daemon's own
 -- orphan sweep, over a claim a refused or parked relaunch left standing over its dead process.
 -- The release this upgrades from kept that decision in memory, so the sweep's first report after
--- a restart charged the death a second time: two deaths for one dead process, which walks the
--- claim to the deaths limit and fails the worker in the very window the claim is waiting to be
--- relaunched out of.
+-- a restart charged the death a second time; what a second charge costs such a claim is
+-- supervise.Claim.DeathCharged's.
 --
 -- False for every row the table already holds, and nothing backfills it. There is nothing to read
 -- a backfill from: the release this upgrades from recorded the charge nowhere, and false is
@@ -20,4 +19,12 @@
 -- A claim that records no process carries false, because the charge goes with the process it was
 -- made for (supervise's letGo), and so does a claim whose process a later report found running
 -- again: that process is alive, so the death a report of it finds next is a death of its own.
+--
+-- Rolling the image back needs no restore of the database: supervise's claims.go is the only
+-- reader and writer of this column, and the release before it names it in no statement, so an
+-- upsert of that release leaves whatever the column last held. A stored true survives the
+-- relaunch that release makes and stands over the process it starts, and a daemon of this
+-- release rolled forward again reads it back: that process's first death is charged nothing,
+-- until a report that finds the process running clears the flag (supervise's judge). It is one
+-- death at most, and the claim is relaunched for that death as it would be for one charged.
 alter table claims add column death_charged boolean not null default false;

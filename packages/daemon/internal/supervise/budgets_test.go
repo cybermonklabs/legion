@@ -81,9 +81,8 @@ func TestAnAgentThatDiesWithWorkOutstandingIsFailedAtTheLimit(t *testing.T) {
 // they have reported it gone, so that report is the sweep's (the daemon's reconcileOrphans).
 //
 // The rows are the three the second charge decides. Over a claim's first death it only
-// miscounts; over the death its budget would run out on it fails the worker, in the very window
-// both recovery doors read such a claim in and promise the relaunch to (Claim.ProcessGone,
-// api's refuseProcessGone). The negative control for those two is the charge made again: the
+// miscounts; over the death its budget would run out on it costs the claim what
+// Claim.DeathCharged states. The negative control for those two is the charge made again: the
 // second row's claim then comes out failed, with its deaths at the limit, for one dead process.
 //
 // The third row is the death that had nothing to charge, which is as much a decision made as a
@@ -166,20 +165,15 @@ func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 // again from the store alone, so what that store holds of the death already charged is the
 // whole of what the sweep's first report after the restart reads (Claim.DeathCharged, died).
 //
-// The walk charges the claim's deaths up to one below the limit, so the row measures the end
-// the second charge brings rather than a count: charged again, this claim is failed for a crash
-// loop it never had — in the window it is waiting to be relaunched out of — and its task is left
-// for a person to find. The negative control is the record kept in memory alone: the claim then
-// comes out of the restart failed, with its deaths at the limit, for one dead process.
+// The walk charges the claim's deaths up to one below the limit, so the row measures the end a
+// second charge brings rather than a count, and what that end costs is Claim.DeathCharged's.
+// The negative control is the record kept in memory alone: the claim then comes out of the
+// restart failed, with its deaths at the limit, for one dead process.
 //
-// The uncertain pass is what puts the charged count in the store before the restart. The window
-// this claim stands in is written by no step of its own — the refusal keeps the claim exactly as
-// it stands and a parked relaunch writes nothing until its turn — so the claim is written by
-// whatever decision comes next, and the commonest of those is the sweep's own next pass finding
-// a runtime that cannot answer (judge's uncertain verdict). This daemon writes the charge with
-// the count where it charges it, so the pass changes nothing for it; the release before it wrote
-// neither, and the pass is what leaves that release a stored count to charge a second death
-// against.
+// The store is read where the charge is made, before the restart, so the same control reaches
+// the write itself: died writes the charge with the count it charged, before the relaunch it
+// raises, and no step of this window writes the claim after it — the refusal keeps the claim
+// exactly as it stands, and a parked relaunch writes nothing until its turn.
 func TestADeathChargedBeforeARestartIsNotChargedAgainAfterIt(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	h := newHarness(t)
@@ -205,8 +199,7 @@ func TestADeathChargedBeforeARestartIsNotChargedAgainAfterIt(t *testing.T) {
 	h.wantState(StateWorking)
 	h.wantBudgets(Budgets{Deaths: limit - 1})
 
-	// The sweep's next pass reaches a runtime that cannot answer for that same process.
-	h.observe(runtime.Uncertain)
+	// died wrote the charge with the count it charged, before the relaunch it raised.
 	stored := h.store.load(testToken)
 	if stored.Budgets.Deaths != limit-1 || !stored.DeathCharged {
 		t.Fatalf("the stored claim carries %d deaths with DeathCharged %v, want %d with the charge recorded: the restart reads this and nothing else",
@@ -226,6 +219,40 @@ func TestADeathChargedBeforeARestartIsNotChargedAgainAfterIt(t *testing.T) {
 	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: limit - 1})
 	h.wantState(StateLaunching)
 	h.relaunched()
+}
+
+// A report that finds the claim's process running clears the charge in the store, and that
+// write is the only thing that keeps the clear over a running process (judge, reportedProcess):
+// the window a refused relaunch leaves the claim in is written by no step of its own, so a
+// clear made in memory alone dies with the daemon that made it. The negative control is the
+// clear left unwritten: the restart after it reads a charge for a process that is running, and
+// the death that process dies next is read as a death already charged and charged nothing,
+// which is a crash loop the deaths limit no longer bounds (Claim.DeathCharged).
+func TestAReportThatFindsTheProcessRunningClearsTheStoredCharge(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+
+	// The claim both recovery doors read: standing over the process a report found dead, with
+	// that death's decision recorded and the relaunch it raised refused.
+	dead := h.locator()
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+
+	// A restart builds the claim from the store alone, so it is the stored charge that stands.
+	h.restart()
+	if restored := h.claim(); !restored.DeathCharged {
+		t.Fatalf("the restored claim carries DeathCharged %v, want the charge the store holds", restored.DeathCharged)
+	}
+
+	// The sweep's next pass finds that same process running after all.
+	h.observe(runtime.Alive)
+
+	if stored := h.store.load(testToken); stored.DeathCharged {
+		t.Fatal("the stored claim still carries the charge of a process that is running, want it cleared: the death that process dies next is a death of its own")
+	}
 }
 
 // A death whose take-back write the store refused is charged at the report that does take the
@@ -275,6 +302,65 @@ func TestADeathWhoseTakeBackWriteFailedIsChargedAtTheReportThatTakesItBack(t *te
 	if stored := h.store.load(testToken); stored.State != StateFailed || stored.Pending == nil {
 		t.Fatalf("stored claim %s with pending %+v, want it failed at the deaths limit with its task kept",
 			stored.State, stored.Pending)
+	}
+}
+
+// The worker's own stall watch ends its process as the last step of its ladder, and only where
+// the turn it was stuck in is still running, so the claim still owes its task: the daemon reads
+// that exit as a death with work outstanding and charges it (chargeDeath, bounded by
+// launch_failure_limit). A stall the relaunched worker walks straight back into would end the
+// process again, which is why the plugin counts its own exits and stops at a cap one below that
+// limit (`STALL_EXIT_CAP`, `packages/pi-shared/src/stall-watchdog.ts`, kept in the state
+// directory by `packages/pi-legion/src/stall-exits.ts`). This is the daemon's side of that
+// pairing: a worker that spends the whole of its cap is relaunched on its own session every
+// time, with the task re-sent and still owed, and the claim is live for its owner to read; the
+// death at the limit — the one the plugin's cap never reaches — fails the claim instead, with
+// the task kept.
+func TestAWorkerThatEndsItselfForAStallIsRelaunchedToItsCapAndFailedAtTheDeathLimit(t *testing.T) {
+	// stallExitCap is the plugin's STALL_EXIT_CAP: how often the ladder's third step ends the
+	// worker's process before it ends nothing further and tells its owner instead.
+	const stallExitCap = 2
+	limit := testLimits().LaunchFailures
+	if stallExitCap >= limit {
+		t.Fatalf("the plugin ends its own process %d times for a stall and the claim fails at %d deaths: "+
+			"a stall that repeats would fail the very claim that cap exists to keep live", stallExitCap, limit)
+	}
+
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
+	h.must(StreamTurnStart{Claim: testToken})
+
+	for exit := 1; exit <= stallExitCap; exit++ {
+		h.observe(runtime.Gone) // the ladder's third step, in the turn of the stuck call
+		h.relaunched()
+
+		h.wantBudgets(Budgets{Deaths: exit})
+		resent := h.wantPrompts(1 + exit)[exit]
+		if want := interruptedTask + "implement the plan"; resent.Message != want {
+			t.Fatalf("stall exit %d: the task was re-sent as %q, want %q", exit, resent.Message, want)
+		}
+		if p := h.pending(); p.ID != resent.DeliveryID || !p.ConfirmedAt.IsZero() {
+			t.Fatalf("stall exit %d: pending %+v, want the re-sent task still owed", exit, p)
+		}
+		h.must(StreamTurnStart{Claim: testToken}) // the relaunched worker walks into the same stall
+		h.wantState(StateWorking)
+	}
+	h.wantCalls("Spawn", 1) // every relaunch resumed the claim's own session
+
+	for death := stallExitCap + 1; death < limit; death++ {
+		h.observe(runtime.Gone)
+		h.relaunched()
+		h.must(StreamTurnStart{Claim: testToken})
+	}
+	h.observe(runtime.Gone)
+
+	h.wantState(StateFailed)
+	h.wantBudgets(Budgets{Deaths: limit})
+	stored := h.store.load(testToken)
+	if stored.State != StateFailed || stored.Pending == nil {
+		t.Errorf("stored claim %s with pending %+v, want it failed at %d deaths with its task kept",
+			stored.State, stored.Pending, limit)
 	}
 }
 

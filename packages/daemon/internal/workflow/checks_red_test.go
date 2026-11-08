@@ -494,8 +494,11 @@ func TestAConflictingMergeabilityInAwaitingMergeSendsTheTreeBackToImplementing(t
 			if task := implementerTask(t, pool); !strings.Contains(task, want) || !strings.Contains(reason, want) || from != phase.AwaitingMerge || status != "in_progress" {
 				t.Fatalf("task %q, notice %q from %q, status %q; want both to say %q, from awaiting_merge, and the issue in_progress", task, reason, from, status, want)
 			}
-			if rounds := implementerRounds(t, pool); rounds != 1 {
-				t.Fatalf("rounds = %d, want the return to implementing counted", rounds)
+			// The round the conflict opened keeps its number, since a completion's key is built
+			// from it, and the cap counts rounds less the conflict rounds, so this one costs the
+			// implementer nothing against review_round_cap.
+			if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != 1 || conflicts != 1 {
+				t.Fatalf("rounds = %d, conflict rounds = %d; want the return to implementing counted as a round the cap does not count", rounds, conflicts)
 			}
 			if len(published) != 1 || published[0].Role != "merge-queue" || !strings.Contains(published[0].Packet, "READY withdrawn") || !strings.Contains(published[0].Packet, want) {
 				t.Fatalf("merge queue publishes %v, want one to merge-queue withdrawing the READY and saying %q", published, want)

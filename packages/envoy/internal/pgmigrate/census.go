@@ -18,14 +18,13 @@ import (
 // statements lock the tables they name for as long as they run - a validating constraint scans
 // the whole table under ACCESS EXCLUSIVE - so a table this large is a migration that needs
 // another shape (CONCURRENTLY, batches), which is what the refusal forces. One constant, no
-// per-migration override; raising it is a reviewed edit when a real table crosses it. The one
-// exemption is by statement kind, not by migration: a migration made only of statements that
-// change the catalog or the transaction's own settings and read no row (catalogOnlyStatements,
-// as Postgres's own parser reads them)
-// holds its lock for a time that does not grow with the table, so the limit does not apply to it;
-// its table's size is still read and reported, and its lock holders still refuse it. Census does
-// not count the rows of a table above the limit: the refusal is already decided, or the migration
-// reads no row, and an exact count of that much data during a deploy is load for nothing.
+// per-migration override; raising it is a reviewed edit when a real table crosses it. Exemptions
+// are by statement shape, never by migration name: catalogOnlyStatements read no existing row,
+// so their lock window does not grow with the table; a marked single concurrent index build
+// scans rows without holding off ordinary writes. Enabled DDL event triggers disable both
+// exceptions because they run code of their own. Sizes and lock holders are still reported,
+// holders still refuse, and no table above the limit is counted: an exact count that large
+// during a deploy is load for nothing.
 const CensusTableLimit int64 = 1 << 30
 
 // CensusLongTransaction is how long a transaction holding a lock on a table a pending migration
@@ -84,6 +83,10 @@ type MigrationCensus struct {
 	// them does its work in the catalog (tableSizeExemption) and no enabled event trigger runs on
 	// them (ddlEventTriggersQuery), so CensusTableLimit does not apply to it; empty otherwise.
 	TableSizeExemption string
+	// ConcurrentIndex is a validated, marked single non-unique CREATE INDEX CONCURRENTLY. Its table
+	// scans do not hold off ordinary writes, so the size limit does not apply; holder and
+	// census checks still do. Enabled DDL event triggers disable this exception too.
+	ConcurrentIndex bool
 	// exemptionVoided says, for a refusal on size, why a migration whose statements alone would be
 	// exempt is not: the event triggers that run on them. Empty otherwise.
 	exemptionVoided string
@@ -135,9 +138,9 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 // refuse and no holder to wait on, so Census checks nothing there (Report.Fresh).
 //
 // It refuses (MigrationCensus.Refusals, not an error):
-//   - a table the migration names above TableLimit, unless every statement of the migration only
-//     changes the catalog (tableSizeExemption), or a table it touches that the census cannot read
-//     within LockTimeout or the statement timeout;
+//   - a table the migration names above TableLimit, unless its statements only change the
+//     catalog (tableSizeExemption) or it is a marked single concurrent index build; or a table
+//     the census cannot read within LockTimeout or the statement timeout;
 //   - a lock holder on a touched table that would hold the migration past LockTimeout
 //     (holderRefusal): a transaction at least LongTransaction old, one whose age Postgres hides
 //     from the census's role or does not record (track_activities off), or an autovacuum Postgres
@@ -228,6 +231,15 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 			entry.TableSizeExemption = kinds
 		} else if kinds != "" {
 			entry.exemptionVoided = fmt.Sprintf("its statements are only %s, which would exempt it from the limit, but the enabled event triggers %s run code of their own on them", kinds, ddlEventTriggers)
+		}
+		if migration.NonTransactional {
+			if _, err := concurrentIndex(migration.SQL); err == nil {
+				if ddlEventTriggers == "" {
+					entry.ConcurrentIndex = true
+				} else {
+					entry.exemptionVoided = "enabled event triggers " + ddlEventTriggers + " run code of their own on the concurrent index build"
+				}
+			}
 		}
 		if len(report.Pending) == 0 && len(unrecorded) > 0 {
 			entry.refuse("%s records no version, yet the database holds %s: the runner would apply every migration from this one over it", versionTable, someTables(unrecorded))
@@ -481,7 +493,7 @@ func censusTable(ctx context.Context, tx pgx.Tx, touched TouchedTable, options C
 	err = nested.QueryRow(ctx, "select pg_total_relation_size($1::oid)", oid).Scan(&table.Bytes)
 	if err == nil && touched.Through == "" {
 		if table.Bytes > options.TableLimit {
-			if entry.TableSizeExemption == "" {
+			if entry.TableSizeExemption == "" && !entry.ConcurrentIndex {
 				size, limit := sizesAbove(table.Bytes, options.TableLimit)
 				reason := fmt.Sprintf("%s is %s, above the %s a table a migration touches may be", name, size, limit)
 				if entry.exemptionVoided != "" {
@@ -998,6 +1010,9 @@ func (r *Report) Write(w io.Writer) {
 				fmt.Fprintf(w, "census: %s touches %s: not read, %s; locks held by other sessions: %s\n", name, touches, table.Unread, holders)
 			case table.Through != "":
 				fmt.Fprintf(w, "census: %s touches %s: %s; locks held by other sessions: %s\n", name, touches, humanBytes(table.Bytes), holders)
+			case table.Bytes > r.TableLimit && entry.ConcurrentIndex:
+				size, limit := sizesAbove(table.Bytes, r.TableLimit)
+				fmt.Fprintf(w, "census: %s touches %s: %s, above the %s limit; its single CREATE INDEX CONCURRENTLY runs outside a transaction without holding off ordinary writes, so the limit does not apply and its rows were not counted; locks held by other sessions: %s\n", name, touches, size, limit, holders)
 			case table.Bytes > r.TableLimit && entry.TableSizeExemption != "":
 				size, limit := sizesAbove(table.Bytes, r.TableLimit)
 				fmt.Fprintf(w, "census: %s touches %s: %s, above the %s limit, from which the migration is exempt because its statements are only %s, which change the catalog or the transaction's own settings and read no row, so its rows were not counted; locks held by other sessions: %s\n",

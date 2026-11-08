@@ -30,7 +30,7 @@ import (
 const (
 	wantCompactionReaches   = "A compaction reaches a claim whose agent is ready or idle"
 	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is ready or idle, and one that is suspended, stopped or failed"
-	wantAskAgainLater       = "Ask again later; `legion claims list` shows its state"
+	wantAskAgainLater       = "Ask again later; `read_state` (`legion claims list`) shows its state"
 )
 
 // inATurnRefusal is the sentence both recoveries give a claim stored working that neither the

@@ -180,6 +180,8 @@ func (e *Engine) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.pullRequestMissing(ctx, tx, fact)
 	case intake.MergeFailed:
 		return e.mergeFailed(ctx, tx, fact)
+	case intake.MergeQueueConflict:
+		return e.mergeQueueConflict(ctx, tx, fact)
 	case intake.ClaimReady:
 		return e.claimReady(ctx, tx, fact)
 	case intake.ClaimFailed:
@@ -900,9 +902,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// own for a red CI verdict or a head that conflicts with its base. The round tells each pass
 	// through a phase from the last (api/handoff.go): a pass that counted none would give a
 	// completion reporting the last pass's carrying commit that pass's key, answered as already
-	// received instead of refused as a handoff not written anew.
+	// received instead of refused as a handoff not written anew. The pull request goes with it
+	// because the cap reads it: a move made while the record holds this head as conflicting with
+	// its base is a conflict round, which review_round_cap does not count (recordRound).
 	if movesBack(issue.Phase, row.To) {
-		if err := e.recordRound(ctx, tx, issue.Key); err != nil {
+		if err := e.recordRound(ctx, tx, issue.Key, pr); err != nil {
 			return err
 		}
 	}

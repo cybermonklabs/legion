@@ -55,13 +55,19 @@ const (
 	claimUnsettled = "CLAIM_UNSETTLED"
 )
 
-// askAgainLater is how every refusal of either recovery ends. A refusal says what the claim is
-// doing when it is given and what the caller may do, and nothing of what the next report, turn,
-// hold or relaunch will make of it: each of those ends is the machine's to decide when it comes,
-// and a sentence that named one of them sent callers back for states that never arrived
-// (dispatch://INFRA-956, round 23). So the caller is sent to the list the state is published on
-// rather than to a moment.
-const askAgainLater = "Ask again later; `legion claims list` shows its state"
+// askAgainLater is how the refusals that send the caller back end: a claim in a turn, a claim
+// between states, and a claim a suspension is held over. The two that send the caller to
+// another operation instead do not end this way — a stopped claim and the project's own
+// controller are named what starts them again (claimNotRunning, NOT_THE_CONTROLLER,
+// startsAgainName). A refusal says what the claim is doing when it is given and what the
+// caller may do, and nothing of what the next report, turn, hold or relaunch will make of it:
+// each of those ends is the machine's to decide when it comes, and a sentence that named one
+// of them sent callers back for states that never arrived. So the caller is sent to the list
+// the state is published on rather than to a moment, in both the forms its two callers have:
+// the controller reads `read_state`, the only door it holds a grant for, and the operator runs
+// `legion claims list` (freshSessionName spells its own operation both ways for the same
+// reason).
+const askAgainLater = "Ask again later; `read_state` (`legion claims list`) shows its state"
 
 // freshSessionReason is what the suspension of a live claim records as its cause.
 const freshSessionReason = "a fresh session was asked for"
@@ -72,8 +78,10 @@ const freshSessionReason = "a fresh session was asked for"
 // to the project's own controller (controllerClaim), cutsTheTurn is what the refusal of a
 // claim stored working says the operation would do to a turn of that claim that is running
 // (refuseInATurn), and reaches is the states the operation does reach, which every refusal
-// gives as a sentence of its own: it is the one thing a refused caller can act on, since the
-// claim's state is published and this says which door that state belongs to (askAgainLater).
+// that ends in askAgainLater gives as a sentence of its own, bar the held suspension's, which
+// names both doors' states in its own words (refuseHeldSuspension): it is the one thing a
+// refused caller can act on, since the claim's state is published and this says which door
+// that state belongs to (askAgainLater).
 type controllerOp struct {
 	name             string
 	notTheController string
