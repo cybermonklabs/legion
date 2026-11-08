@@ -921,11 +921,10 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 			hungCommitReturned, hungCloseReturned := false, false
 			// Each trial runs in a function of its own so that what it defers goes back where it
 			// came from at the end of that trial, not at the end of the subtest: a defer written
-			// in the loop below would hold forty transactions open until the subtest returned,
-			// and a t.Fatalf in the middle of a trial would leave that trial's transaction open
-			// for good. storetest.Open closes the pool in its own cleanup, and Pool.Close returns
-			// only once every connection in use has come back, so a transaction left open there
-			// wedges the cleanup and the subtest never prints its result.
+			// in the loop below would hold forty transactions open until the subtest returned.
+			// storetest.Open closes the pool in its own cleanup, and Pool.Close returns only once
+			// every connection in use has come back, so a transaction left open there wedges the
+			// cleanup and the subtest never prints its result.
 			runTrial := func(trial int) bool {
 				number := 100 + trial
 				artifactID := createIssueDocument(t, database, number, markdown(paragraphs, "before"))
@@ -941,8 +940,7 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				// which -race reports as a data race. Only the subtest's own goroutine ever
 				// touches the flag -- it sets it before the goroutine starts, clears it once a
 				// value has arrived on committed, and reads it in the deferred release, which
-				// runs on that same goroutine -- so a plain bool says all there is to say and an
-				// atomic would claim a sharing that is not there.
+				// runs on that same goroutine -- so the flag needs no atomic.
 				committing := false
 				defer func() {
 					if committing {
