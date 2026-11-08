@@ -135,8 +135,9 @@ issue pod, on the issue's own disk, by the issue's roles together.
 
 **The worked case, and the one a role actually meets: the Dispatch e2e stack.** A change to
 `packages/dispatch` is proved in the pod by driving the specs it touches, one spec a command
-(`bun run e2e -- e2e/<one spec file>`); the whole browser suite runs in CI's `dispatch-browser` job on the
-pull request. One spec needs the same stack as all of them: a Postgres with pgvector. On a digest
+(`bun run e2e -- e2e/<one spec file>`); CI's `dispatch-browser` job runs the browser suite, its
+two projects on the pull request and every project in the merge queue. One spec needs the same
+stack as all the specs: a Postgres with pgvector. On a digest
 carrying `legion-testpg`, use the pod's own server
 (`skill://legion-worker/references/tools.md#the-database-your-tests-use`) and
 unpack nothing. On a digest without it, the way

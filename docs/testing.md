@@ -214,11 +214,10 @@ go test -timeout 20m ./internal/dispatch/api
 
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
-CI's `envoy-go` job runs it that way, alone and before the module's other packages
-(`.github/workflows/ci-job-envoy-go.yaml`, which holds that job's steps), and
-`envoy-go-race-api`, the race job that runs that package by itself, gives it 30 minutes
-(`ci-job-envoy-go-race-api.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which
-gives it 60.
+CI runs that package under `-race` in `envoy-go-race-api`, the job that runs it by itself, which
+gives it 30 minutes (`.github/workflows/ci-job-envoy-go-race-api.yaml`, which holds that job's
+steps); `envoy-go` leaves it out of its unit step, and `text-checks` runs its eleven source-guard
+tests by name. `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
