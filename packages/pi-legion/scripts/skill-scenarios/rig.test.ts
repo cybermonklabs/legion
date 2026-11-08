@@ -831,7 +831,8 @@ describe("judge-omp", () => {
     mkdirSync(path.join(work, "runs"), { recursive: true });
     omp = path.join(freshDir("judge-omp-bin"), "omp");
     // The stand-in writes everything through the one file the judge may write, answer.json: argv
-    // (one word a line), then `env` lines, then one line per probe (`<name> allowed|denied`).
+    // (one word a line), then `env` lines, then one line per probe (`<name> allowed|denied`), then
+    // one `mode <name> <bits>` line per key path, which only a judge holding the key can read.
     writeFileSync(
       omp,
       `#!/bin/bash
@@ -859,9 +860,10 @@ fi
   probe gateway-base-url grep -q 'baseUrl: https://gateway.internal.example/anthropic' "$HOME/.omp/profiles/$OMP_PROFILE/agent/models.yml"
   probe token-is-jwt bash -c '[[ "$("$1")" =~ ^eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$ ]]' - "$key"
   probe dbus-set test -n "\${DBUS_SESSION_BUS_ADDRESS:-}"
+  printf 'mode %s\\n' "key-dir $(stat -c %a /opt/key 2>/dev/null || echo none)" \\
+    "token $(stat -c %a /opt/key/token 2>/dev/null || echo none)"
   [ -z "\${SEEK:-}" ] || echo "seek $(find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name 'leak-*' -print 2>/dev/null | head -1)"
 } >"$PWD/answer.json"
-sleep "\${SLEEP:-0}"
 echo judged
 exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
 `,
@@ -899,6 +901,22 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
       .split("\n")
       .filter((line) => line.startsWith(`${kind} `))
       .map((line) => line.slice(kind.length + 1));
+  /**
+   * A judge's exit code, and whether the rig refused: any line of its stderr starting
+   * `skill-scenarios: `, the prefix note() and fail() give every word of the rig's own. Equality
+   * against the whole stderr string read a byte from docker, getent, mise or flock as a failed
+   * row; what a row is about is that the judge ran and the rig refused nothing. A result that is
+   * not clean carries the stderr that was read, so a failing row still names what went wrong; a
+   * clean result reports no stderr.
+   */
+  const judged = (result: { exitCode: number; stderr: Buffer }) => {
+    const stderr = result.stderr.toString();
+    const refused = stderr.split("\n").some((line) => line.startsWith("skill-scenarios: "));
+    const clean = !refused && result.exitCode === 0;
+    return { code: result.exitCode, refused, stderr: clean ? "" : stderr };
+  };
+  /** What `judged` reads back from a judge that ran and a rig that refused nothing. */
+  const judgedCleanly = { code: 0, refused: false, stderr: "" };
 
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
@@ -907,10 +925,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     () => {
       const dir = judgeDir();
       const result = judge("ste", dir);
-      expect({ code: result.exitCode, stderr: result.stderr.toString() }).toEqual({
-        code: 0,
-        stderr: "",
-      });
+      expect(judged(result)).toEqual(judgedCleanly);
       expect(recorded(dir, "argv")).toEqual([
         "/opt/omp/omp",
         "-p",
@@ -1074,10 +1089,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         const dir = gatewayDir();
         const before = mintCount();
         const result = gatewayJudge("ste", dir);
-        expect({ code: result.exitCode, stderr: result.stderr.toString() }).toEqual({
-          code: 0,
-          stderr: "",
-        });
+        expect(judged(result)).toEqual(judgedCleanly);
         expect(mintCount() - before).toBeLessThanOrEqual(1);
         expect(recorded(dir, "env")).toEqual([
           `PWD=${dir}`,
@@ -1103,28 +1115,16 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       }
     );
 
-    // Catches: a token directory or file that others can read while the judge runs. The stand-in
-    // omp sleeps 2 s, so a watcher sees the files while they exist.
+    // Catches: a token directory or file that others can read while the judge runs. The modes
+    // are the judge's own reading of them from inside the container, recorded while it ran
+    // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
+    // for nothing now, so there is no window for a watcher to look through, and a row that
+    // waited for one would be waiting on a sleep.
     test.skipIf(skip)("the token file is the owner's alone while the judge runs", () => {
       const dir = gatewayDir();
-      const seen = path.join(gatewayWork, `seen-mode-${jobs}`);
-      const watcher = Bun.spawn(
-        [
-          "bash",
-          "-c",
-          'for _ in $(seq 400); do [ -f "$1/token" ] && { stat -c %a "$1" "$1/token" >"$2"; exit 0; }; sleep 0.05; done',
-          "-",
-          `${dir}.key`,
-          seen,
-        ],
-        { stdout: "ignore", stderr: "ignore" }
-      );
-      const result = gatewayJudge("bare", dir, {
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${gatewayWork} SLEEP=2`,
-      });
-      watcher.kill();
-      expect(result.exitCode).toBe(0);
-      expect(readFileSync(seen, "utf8").split("\n").filter(Boolean)).toEqual(["700", "600"]);
+      const result = gatewayJudge("bare", dir);
+      expect(judged(result)).toEqual(judgedCleanly);
+      expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
       expect(existsSync(`${dir}.key`)).toBe(false);
     });
 
