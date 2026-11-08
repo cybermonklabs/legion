@@ -2231,6 +2231,76 @@ over real time - that no request happens within a second - needs no such project
 cannot make that claim false. A project whose dependency has a failing row does not run at all,
 so a red run leaves these rows unrun rather than measured beside a retry.
 
+## Accessibility and visual review
+
+Two layers read one list of pages, `e2e/review-routes.ts`: an accessibility pass that runs on
+every pull request and a containerised visual review that runs on the full lane. Each entry of
+that table carries the router path it stands for, the URL to open against `e2e/review-seed.ts`'s
+corpus, the locator that says the page is drawn, and which of the two layers reviews it, so the
+count of pages each covers is a program's answer rather than a sentence here.
+
+`e2e/accessibility.e2e.ts` opens every page of that table's scan set, in light and in dark, and
+scans each with `@axe-core/playwright` at `wcag2a`, `wcag2aa`, `wcag21a` and `wcag21aa` - WCAG
+2.0 and 2.1 at levels A and AA, and no best-practice rule, since a best practice is not a
+conformance failure and this gate refuses a pull request. One row per page reads both schemes,
+a reset, a seed and a sign-in paid once rather than twice, and each (route, scheme) prints an
+`A11Y …` line with its counts by impact and attaches the whole axe result to the report. A row
+fails on any serious or critical finding no exclusion entry covers. The rows are untagged, so
+`chromium` runs them and the pass reaches every pull request. What axe decides is the part of
+WCAG a program can decide, which is a minority of it: a keyboard journey that has to end
+somewhere sensible, a reading order a person judges, a label that is present and wrong rather
+than missing, a focus order that is legal and useless - none of those are findings, and all of
+them stay the work of the browser rows that drive the page. A green accessibility pass says no
+machine-decidable conformance failure, never that the page is usable without a mouse.
+
+A finding this gate lets through is an entry of `e2e/accessibility-exclusions.ts`, never a
+disabled rule or a quiet filter. An entry names the axe rule id, the `e2e/review-routes.ts`
+entry by its `name`, the selector axe reported for the node, the reason in a sentence a reviewer
+can judge, and the `dispatch://KEY` that owns the fix; the gate matches a finding to an entry on
+the first three. It also fails on an entry that matched nothing in the rows that ran, judged per
+worker over the routes that worker scanned (`test.afterAll`), so an entry left behind by a fix
+cannot sit there hiding the regression it once accepted. An entry is written only where the fix
+would change what another row of the suite claims - where the accessible page and the behaviour
+the product was asked for disagree - and that is a product judgement, so it goes to the
+architect with the rule, the DOM and the rows it would move, and is written once the architect
+has answered. Every other finding is fixed in `web/src`, in the change that found it.
+
+`e2e/visual.e2e.ts` and `e2e/visual-phone.e2e.ts` compare the same table's shot set against
+committed baselines, in light and in dark, at the 1280x800 desktop width and, for the pages a
+phone width draws differently (`phoneShotNames`), again on an iPhone 13. Which pages are shot
+and which are excluded is `e2e/review-routes.ts` and nowhere else - each excluded entry carries
+the reason it is not reviewed, a redirect, a live socket, a layout the seed cannot make still -
+and `e2e/__tests__/review-routes.test.ts` is what keeps that list honest: it holds every entry
+to a route of the router through `e2e/two-builds-routes.ts` and refuses a router route that no
+entry reviews or excludes with a reason, so a page `web/src/app.tsx` adds is reviewed or
+written off, never silently unreviewed. `toHaveScreenshot` detects a change against a file
+somebody committed; it binds no element to the swatch `web/src/theme/classes.ts` names for it,
+which is why `e2e/theme.e2e.ts` keeps one computed-colour row on the pull-request lane.
+
+Both projects run inside the pinned Playwright image and nowhere else, because a baseline a
+person takes and a baseline CI compares must be the same rendering, and a host's browser build,
+fonts and GPU stack are not the image's. `e2e/visual-run.sh` is the one command: it seeds on the
+host, where `psql` is, starts the container and runs those two projects in it. Run it through
+the harness from this package, and give it `--update-snapshots` to take the baselines again:
+
+```sh
+bun e2e/run.ts -- e2e/visual-run.sh --update-snapshots
+```
+
+Outside that container the rows reach the runner and every one of them skips itself, since
+`DISPATCH_E2E_VISUAL_SEED` is unset.
+
+A baseline lives at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and is committed. It is
+the one file a spec of this suite reads that is not under `testInfo.outputPath()`, and the
+reason is what it is for: an output of a row is a debugging artefact the workflow uploads when
+the row fails, while a baseline is an input a person reads in a review and a reviewer approves
+as part of the diff. The path template drops the `{platform}` segment Playwright's default adds,
+since every shot is taken in that one pinned Linux image and the segment would say the same
+thing on every file. A route this layer gains has no baseline until a run writes one, which this
+package's pods, having no container runtime, cannot do: the full lane's `visual` job uploads
+what it wrote as `dispatch-browser-visual-<attempt>`, and that is how a new baseline reaches the
+pull request.
+
 ## Phone acceptance
 
 The `iphone` Playwright project uses Chromium with the iPhone 13 viewport,
