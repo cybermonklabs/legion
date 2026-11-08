@@ -138,14 +138,15 @@ pg_client() {
 # the digest is what changes whenever the set changes.
 #
 # It reads under the advisory lock Dispatch's migration runner holds for each migration
-# (internal/dispatch/store/store.go, migrationLockKey): two statements of one psql session, the
-# try for the key and then the read, so a migration transaction still in flight, one a stopped
-# image sent its commit for included, ends before the read takes its snapshot, the versions come
-# back ordered by the database, and the key is still held as they do. The session's end releases
-# it. One statement could not take the key and read behind it: a statement's snapshot is taken
-# when it starts, before its own one-time filter calls pg_try_advisory_lock, so its read would
-# still be of the schema as it stood before the migration committed (measured on PostgreSQL
-# 18.6).
+# (internal/dispatch/store/store.go, migrationLockKey): one psql session runs a script that tries
+# for the key and then, only once the try was granted, reads the versions, so a migration
+# transaction still in flight, one a stopped image sent its commit for included, ends before the
+# read takes its snapshot, the versions come back ordered by the database, and the key is still
+# held as they do (measured on PostgreSQL 18.6: while the read runs, the reading backend is the
+# one session holding the key in that database). The session's end releases it. One statement
+# could not take the key and read behind it: a statement's snapshot is taken when it starts,
+# before its own one-time filter calls pg_try_advisory_lock, so its read would still be of the
+# schema as it stood before the migration committed (measured too).
 #
 # It polls the key rather than waiting for it, because any blocking wait on this key deadlocks
 # against the runner that holds it. A backend blocked on a lock keeps the snapshot its statement
@@ -153,20 +154,33 @@ pg_client() {
 # building an index concurrently and a waiter on the key wait for each other (PostgreSQL 18.6,
 # SQLSTATE 40P01). The runner polls for the same reason (store.go, lockMigrations). So each try is
 # a psql session of its own, with no statement open between two tries: a try refused the key
-# answers f and takes nothing, the read that follows it in that session is of no account and is
-# dropped with the rest of the answer, and the next try follows a second later as a fresh session
-# holding nothing. Once the deadline passes with the key still held the read fails, and the
-# caller refuses to deploy rather than wait for ever.
+# answers f, takes nothing and reads nothing at all, and the next try follows a second later as a
+# fresh session holding nothing. The \if is what keeps the read out of a refused try, and it is
+# no nicety: a read that ran behind a held key can fail — a first boot holds the key before
+# schema_migrations is committed, and the runner's one-time widening ALTER TABLE makes the read
+# wait out its lock_timeout — and under ON_ERROR_STOP=1 that failure ends psql non-zero, which
+# would end this read in its caller rather than try the key again. Once the deadline passes with
+# the key still held the read fails, and the caller refuses to deploy rather than wait for ever.
 #
 # psql's stderr is dropped, since its diagnostics can quote the connection; a failure prints
 # nothing and returns psql's status, or 1 for an answer that is no list of versions.
 schema_applied() {
-  local sql_try sql_read answer versions line count max digest deadline
-  sql_try="select pg_try_advisory_lock(8150001)"
-  sql_read="select version from schema_migrations order by version"
+  local sql answer versions line count max digest deadline
+  # The script reaches psql on its standard input, since \gset and \if are psql's own and -c
+  # takes SQL alone. The here-document is the container shell's, so no part of the script is an
+  # argument of any process.
+  sql="psql -X -q -At -v ON_ERROR_STOP=1 -f - \"\$DATABASE_URL\" <<'PSQL'
+set lock_timeout = 30000;
+select pg_try_advisory_lock(8150001) as got \\gset
+\\echo :got
+\\if :got
+select version from schema_migrations order by version;
+\\endif
+PSQL
+"
   deadline=$((SECONDS + 60))
   while true; do
-    answer=$(pg_client 60 "psql -X -q -At -v ON_ERROR_STOP=1 -c \"set lock_timeout = 30000\" -c \"$sql_try\" -c \"$sql_read\" \"\$DATABASE_URL\"" 2>/dev/null) ||
+    answer=$(pg_client 60 "$sql" 2>/dev/null) ||
       return
     [[ "$answer" == t || "$answer" == t$'\n'* ]] && break
     # f: another session holds the key. Any other answer is none of this read's.
