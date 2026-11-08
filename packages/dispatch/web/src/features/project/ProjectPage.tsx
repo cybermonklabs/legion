@@ -102,10 +102,11 @@ export function ProjectPage(): ReactNode {
   const hasLegion =
     projectKey !== undefined &&
     (legionSettings.data ?? []).some((setting) => setting.project === projectKey);
-  const views: readonly IssueView[] = hasLegion
-    ? issueViews
-    : issueViews.filter((view) => view !== "legion");
-  const issueView: IssueView = storedView === "legion" && !hasLegion ? "list" : storedView;
+  // PROTOTYPE (prototype/legion-table): the Legion columns live in the issues table, so the
+  // separate Legion board is not offered; INFRA-979's prototype/legion-push removes it outright.
+  const views: readonly IssueView[] = issueViews.filter((view) => view !== "legion");
+  const issueView: IssueView = storedView === "legion" ? "list" : storedView;
+  void hasLegion;
   useKeymapScope("project");
   useKeymap("project", [
     {
