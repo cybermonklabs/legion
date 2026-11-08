@@ -1,4 +1,4 @@
-import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste and a drop of files, an IME composition key, a key and an edit into the control a send holds disabled, the same-batch pairs inside act, and the hand-made beforeinput an edit's blocks are followed by
@@ -11,6 +11,7 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
+import type { AgentText } from "../refs/AgentName";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
@@ -18,7 +19,7 @@ import {
   SendStoppedError,
 } from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
-import { MentionComposer, reconcileMentions } from "./MentionComposer";
+import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
@@ -138,6 +139,23 @@ function holdControls(): HTMLFieldSetElement {
     throw new Error("expected composer control fieldset");
   return controls;
 }
+
+/** The picker reads the issue's collaborators when it opens, for the roles no live agent holds,
+ *  and a read no handler answers fails its test. Every row that opens the picker is answered here
+ *  with the empty collaborator list a page drew before those options existed; the rows that are
+ *  about a stopped role answer it themselves with `collaboratorsAnswer`. */
+let collaboratorsRead: Mock<typeof api.getIssueCollaborators>;
+beforeEach(() => {
+  collaboratorsRead = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+});
+afterEach(() => {
+  collaboratorsRead.mockRestore();
+});
 
 test("a comment without a surviving mention preserves /btw and omits delivery", async () => {
   const user = userEvent.setup();
@@ -833,6 +851,203 @@ test("the mention picker draws each agent with its state and no link", async () 
     expect(listbox.querySelector("a")).toBeNull();
   } finally {
     view.unmount();
+    listAgents.mockRestore();
+  }
+});
+
+/** One collaborators answer in the order the server sends it (the contract's: the registry's
+ *  agents by role in workflow order and then newest first, then the rest newest first) - the
+ *  planner, the reviewer role's newest session and the one it replaced, then a session with no
+ *  registry entry. */
+const collaboratorsAnswer = {
+  agents: [
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: null,
+        replaced_by: null,
+        role: "planner",
+        role_token: "legion-planner",
+        started_at: "2026-10-26T00:00:00Z",
+      },
+      reasons: [],
+      session_id: "old-planner",
+      title: "Old planner",
+    },
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: null,
+        replaced_by: null,
+        role: "reviewer",
+        role_token: "legion-p-core-1-reviewer",
+        started_at: "2026-10-26T02:00:00Z",
+      },
+      reasons: [],
+      session_id: "new-reviewer",
+      title: "New reviewer",
+    },
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: "2026-10-26T02:00:00Z",
+        replaced_by: "new-reviewer",
+        role: "reviewer",
+        role_token: "legion-p-core-1-reviewer",
+        started_at: "2026-10-26T01:00:00Z",
+      },
+      reasons: [],
+      session_id: "old-reviewer",
+      title: "Old reviewer",
+    },
+    {
+      kind: "session",
+      last_at: "2026-10-26T03:00:00Z",
+      legion: null,
+      reasons: ["posted"],
+      session_id: "helper",
+      title: "Helper",
+    },
+  ],
+  issue_key: "CORE-1",
+  legion_registry: "ok",
+  people: [],
+} as const;
+
+/** The naming the picker does outside React: no stopped session is in the registry cache, so each
+ *  name falls back to the title the collaborators read stamped on it. */
+const storedNames: Pick<AgentText, "sessionText"> = {
+  sessionText: (_sessionId, storedTitle) => storedTitle ?? "",
+};
+
+// The picker offers each of the issue's Legion roles no live agent holds, once, under "Not
+// running", drawn by its newest session and addressed to the role.
+test("the picker offers a stopped role once under Not running and sends it as a role mention", async () => {
+  const user = userEvent.setup();
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  // The live planner holds `legion-planner`, so only the reviewer role is not running.
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
+    expect(collaborators).toHaveBeenCalledWith("CORE-1");
+    const options = within(stopped).getAllByRole("option");
+    expect(options.map((option) => option.getAttribute("aria-label"))).toEqual([
+      "legion-p-core-1-reviewer",
+    ]);
+    expect(options[0]?.textContent).toContain("New reviewer · reviewer · not running");
+    expect(options[0]?.querySelector('[data-agent-name="new-reviewer"]')).not.toBeNull();
+
+    await user.click(within(stopped).getByRole("option", { name: "legion-p-core-1-reviewer" }));
+    await waitFor(() => expect(field.value).toBe("@legion-p-core-1-reviewer"));
+    await user.click(field);
+    await user.paste(" please look");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(createComment).toHaveBeenCalledWith(
+        "CORE-1",
+        {
+          body: "@legion-p-core-1-reviewer please look",
+          delivery: "steer",
+          mentions: [{ target: "role:legion-p-core-1-reviewer" }],
+        },
+        keyedAttempt
+      )
+    );
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// The case this feature exists for: every agent of the issue has stopped, so the picker holds the
+// "Not running" group alone. It must not say no agent matches underneath the list it is showing.
+test("a picker holding only stopped roles does not say no agent matches", async () => {
+  const user = userEvent.setup();
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
+  const { view } = renderComposer({ agents: [] });
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
+    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
+    expect(within(stopped).getAllByRole("option").length).toBeGreaterThan(0);
+    expect(screen.queryByText("No live agents match.")).toBeNull();
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+  }
+});
+
+// The rule the "Not running" options follow: a role a live agent holds is the live options'
+// (never offered twice), and a role is offered once by its newest session whatever replaced it.
+// A live list whose state is unknown is the caller's case, which the picker test below proves.
+test("stopped role options leave out held roles and name each role once", () => {
+  const reviewerOnly = stoppedRoleOptions([planner], collaboratorsAnswer.agents, storedNames);
+  expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
+    ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
+  ]);
+  // The holder the filter matches and the detail tooltip names: that session's own name.
+  expect(reviewerOnly.map((option) => option.holder)).toEqual(["New reviewer"]);
+  // Nobody live holds either role: both, in the order the server sent them (planner, reviewer).
+  expect(
+    stoppedRoleOptions([worker], collaboratorsAnswer.agents, storedNames).map(
+      (option) => option.target
+    )
+  ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
+  // A session the live list names is no stopped option, whatever roles it claims: offered here it
+  // would draw its own `Running` mark inside the "Not running" group.
+  expect(
+    stoppedRoleOptions(
+      [{ ...worker, session_id: "new-reviewer" }],
+      collaboratorsAnswer.agents,
+      storedNames
+    ).map((option) => option.target)
+  ).toEqual(["role:legion-planner"]);
+});
+
+// The composer reads the live list itself when its host supplies none: until that read lands, or
+// once it fails, the picker shows no "Not running" option beside the unknown live state.
+test("the picker adds no stopped option while the live agents list failed", async () => {
+  const user = userEvent.setup();
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
+  const listAgents = spyOn(api, "listAgents").mockRejectedValue(new Error("listener down"));
+  const { view } = renderComposer();
+
+  try {
+    const field = screen.getByLabelText("Comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("@");
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
+    await waitFor(() => expect(listAgents).toHaveBeenCalled());
+    // Both reads have answered - the collaborators with a stopped reviewer, the live list with
+    // its failure - before the picker is read.
+    await act(async () => {
+      await collaborators.mock.results[0]?.value;
+      await Promise.allSettled(listAgents.mock.results.map((result) => result.value));
+    });
+    await screen.findByText("Could not load live agents — Envoy listener unreachable.");
+    expect(within(listbox).queryByRole("group", { name: "Not running" })).toBeNull();
+    expect(within(listbox).queryAllByRole("option")).toHaveLength(0);
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
     listAgents.mockRestore();
   }
 });
