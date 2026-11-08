@@ -199,6 +199,7 @@ COPY packages/proof-editor/package.json packages/proof-editor/package.json
 # registry fetch: the upstream editor sources, which the install below reads from the context.
 COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
 COPY packages/dispatch/package.json packages/dispatch/package.json
+COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
 RUN bun install --frozen-lockfile
