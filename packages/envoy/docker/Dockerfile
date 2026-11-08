@@ -26,20 +26,6 @@ RUN set -eu; \
       exit 1; \
     fi
 
-# Both fetches of this RUN retry: five attempts, the fifth starting 150 s after the first, each
-# attempt under a bound of its own. 120 s for the index read, a few megabytes from the Debian
-# mirror; 300 s for the package set, which fetches and unpacks python3, make and g++. `rm -rf`
-# fetches nothing and stays bare. Every apt bound in this file is that pair, for that reason.
-# Each `apt-get update` in this file also carries `-o APT::Update::Error-Mode=any`, which makes a
-# failed index read fail the command instead of warning and exiting 0: without it the retry has
-# nothing to retry. .github/scripts/check-download-retry.sh's rule 5 is the whole reason.
-RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
-  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
-  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
-    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
-    && retry 300 "apt-get install" apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
@@ -69,20 +55,44 @@ RUN set -- packages/proof-editor/proof-sdk-*.tgz; [ -e "$1" ] || set --; \
     || { echo "the build context holds $# entries matching packages/proof-editor/proof-sdk-*.tgz, want one regular file" >&2; exit 1; }
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
+# What this stage installs, because the SPA build and the contract codegen that follow read no
+# more: packages/dispatch, packages/contracts, packages/proof-editor, and the root workspace,
+# which supplies what scripts/third-party-notices.ts imports (that script is imported by
+# packages/dispatch/web/vite.config.ts). Every manifest is still copied above: the lockfile
+# resolves against all of them. Each pattern begins with ./ because Bun reads a pattern
+# without one as a package name, and the three packages are named @sjawhar/dispatch,
+# @legion/contracts and @legion/proof-editor. Remove `--filter './'` and `bun run build:web`
+# below fails with `Cannot find package 'spdx-expression-parse'`.
+# --frozen-lockfile stays immediately after install:
+# .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
+# flag written between the two takes this install out of that check's sight, silently.
+# --ignore-scripts skips the lifecycle script of every package installed here. better-sqlite3 is
+# the reason for it: under Bun that package's install script ends in node-gyp compiling it from
+# source (oven-sh/bun#4290), and the stage would then need python3, make and g++ for a module
+# the image never ships, which packages/proof-editor reaches through proof-sdk and nothing
+# copies out of this stage.
 # The one fetch of this layer, and the largest in the file: Bun reads every dependency the root
 # lockfile pins from the npm registry, tens of megabytes of tarballs, so an attempt gets 600 s.
 RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
   [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
   sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
-    && retry 600 "bun install" bun install --frozen-lockfile
+    && retry 600 "bun install" bun install --frozen-lockfile --ignore-scripts \
+    --filter './' \
+    --filter './packages/dispatch' \
+    --filter './packages/contracts' \
+    --filter './packages/proof-editor'
 
 COPY packages/contracts packages/contracts
 COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
 # The SPA build writes dist/THIRD_PARTY_NOTICES.txt with this (packages/dispatch/web/vite.config.ts).
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
-RUN cd packages/contracts && bun run gen:go
-RUN cd packages/dispatch && bun run build:web
+# The stage ends with its working directory at /repo/packages/dispatch, which reaches nothing:
+# every later stage copies out of it by absolute path (`COPY --from=web /repo/…`).
+WORKDIR /repo/packages/contracts
+RUN bun run gen:go
+WORKDIR /repo/packages/dispatch
+RUN bun run build:web
 
 # Go version must match go.mod.
 # ghcr.io/cybermonklabs/legion/ci, the copy of golang:1.27.3-alpine (.github/ci-images.yaml)

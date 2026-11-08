@@ -180,8 +180,8 @@ ARG PGDG_KEY_SHA256=0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e
 FROM ghcr.io/cybermonklabs/legion/ci@sha256:1846adf22496bd711036aae8be147e57bdebbaea2e5264e3e0b5af1db187d9a4 AS plugin
 WORKDIR /repo
 # jq: the same version and omp.extensions rewrites release.yaml's pi_envoy_build and pi_legion_build jobs run.
-# python3/make/g++: native devDependencies in the workspace lockfile (mirrors
-# packages/envoy/docker/Dockerfile).
+# python3/make/g++: under Bun, better-sqlite3's install script in the install below ends in
+# node-gyp compiling it from source (oven-sh/bun#4290), and node-gyp needs all three.
 # Both fetches of this RUN retry: five attempts, the fifth starting 150 s after the first, each
 # attempt under a bound of its own. 120 s bounds an apt index read everywhere in this file, a few
 # megabytes from the Debian mirror, and a package set gets 300 s — except runtime-base's set,
