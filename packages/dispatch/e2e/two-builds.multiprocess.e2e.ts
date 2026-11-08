@@ -143,11 +143,14 @@ const session: FakeSession = {
 /** The text each seeded thing shows, which its route's landmark finds. */
 const shown = {
   agentReply: "The release notes are read.",
+  check: "Every route is served by both processes.",
   child: "Split the rollout",
   comment: "The rollout waits on the canary.",
+  decision: "Serve each build's assets from either process",
   document: "The handbook explains the rollout.",
   issue: "Roll out two builds",
   issueArtifact: "These notes track the rollout.",
+  planTask: "Pin the assets to the other process.",
   spec: "Both builds serve every page.",
 };
 
@@ -233,6 +236,24 @@ async function seedEveryRoute(): Promise<Seeded> {
     content: `# Rollout notes\n\n${shown.issueArtifact}\n`,
     name: "rollout-notes.md",
   });
+  // The issue's three role documents, so the Verification, Plan and Decisions tabs each draw
+  // their own content rather than the empty state that says the document is missing. Each of
+  // those tabs is a chunk of its own (`features/issue/IssuePage.tsx`), asked for from the
+  // address that opens it (`importTheOpenTab` in `web/src/app.tsx`).
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is proved.\n\n:::check{#c-rollout surface="browser" run="bun run e2e:multiprocess"}\n${shown.check}\n:::\n`,
+    name: "verification.md",
+  });
+  await createIssueArtifact(issue.key, {
+    content: `How ${issue.key} is built.\n\n:::plan_task{#t-rollout}\n${shown.planTask}\n:::\n`,
+    name: "plan.md",
+  });
+  // An agent's decision nobody has kept, which the Decisions tab lists under the reader's
+  // review (`decisions_test.go`: an `agent` decision with no Keep is `waiting_review`).
+  await createIssueArtifact(issue.key, {
+    content: `## ${shown.decision}\n\nChosen so either process can serve either build's page.\n`,
+    name: "decisions.md",
+  });
   const document = await createProjectDocument("CORE", {
     content: `# Handbook\n\n${shown.document}\n`,
     name: "handbook.md",
@@ -287,12 +308,23 @@ async function seedEveryRoute(): Promise<Seeded> {
   };
 }
 
+/** What a reader does on a page the walk has opened, for a part of the shell that no address
+ *  carries: the Inbox drawer and the create-issue dialog are each a chunk of their own that the
+ *  shell asks for the first time the reader opens it (`features/shell/deferred-shell.ts`), so
+ *  the walk opens them the way they are opened - a press on the control that offers them. */
+interface Opens {
+  readonly press: (page: Page) => Promise<void>;
+  readonly shows: (page: Page) => readonly Locator[];
+}
+
 /** One page load of the walk: the route of `walkRoutes` it opens, the address, what on the page
- *  shows the route rendered its own content, and the lazy pieces that content needed. */
+ *  shows the route rendered its own content, what a reader then opens on it, and the lazy
+ *  pieces that content needed. */
 interface Visit {
   readonly route: WalkRoutePath;
   readonly url: string;
   readonly shows: (page: Page) => readonly Locator[];
+  readonly opens?: Opens;
   readonly loads?: readonly LazyPiece[];
 }
 
@@ -329,7 +361,20 @@ function visits(seed: Seeded): readonly Visit[] {
       ],
       url: "/answers",
     },
-    { route: "/agents", shows: (page) => [heading(page, "Agents")], url: "/agents" },
+    {
+      // The rail's Peek opens the Inbox over whatever page is open, which is where the drawer's
+      // chunk is asked for. Every page but the Inbox itself offers it (`features/sidebar`), and
+      // this is the first of the walk's that does.
+      loads: ["inbox-drawer"],
+      opens: {
+        press: (page) =>
+          page.getByRole("button", { name: "Peek at the inbox without leaving this page" }).click(),
+        shows: (page) => [page.getByTestId("inbox-drawer")],
+      },
+      route: "/agents",
+      shows: (page) => [heading(page, "Agents")],
+      url: "/agents",
+    },
     {
       // The preview is the headless renderer's: without it the bold is literal asterisks.
       loads: ["headless-markdown"],
@@ -434,6 +479,45 @@ function visits(seed: Seeded): readonly Visit[] {
       url: `${issue}/activity`,
     },
     {
+      // Each of the four tabs below is a chunk of its own, asked for from the address that
+      // opens it (`importTheOpenTab` in `web/src/app.tsx`), so each needs an address of its own
+      // here: a walk that opened only the Spec, Conversation, Children, Artifacts and Activity
+      // tabs asked the other build's process for none of them.
+      // The document itself is the editor's, as on the Spec tab; the connection dot is not,
+      // since a role document's tab draws no toolbar to hold one (`RoleDocumentPanel`).
+      loads: ["editor"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.getByTestId("verification-check"),
+        documentEditor(page).filter({ hasText: shown.check }),
+      ],
+      url: `${issue}/verification`,
+    },
+    {
+      loads: ["editor"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page.getByTestId("plan-task"),
+        documentEditor(page).filter({ hasText: shown.planTask }),
+      ],
+      url: `${issue}/plan`,
+    },
+    {
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .getByRole("region", { exact: true, name: "Waiting for your review" })
+          .getByRole("heading", { name: shown.decision }),
+      ],
+      url: `${issue}/decisions`,
+    },
+    {
+      // Alice filed the issue and commented on it, so she is one of the people who worked it.
+      route: "/issues/:key/*",
+      shows: (page) => [page.getByRole("region", { exact: true, name: "People" })],
+      url: `${issue}/collaborators`,
+    },
+    {
       // A project with an architecture source opens on its Architecture tab.
       route: "/projects/:key",
       shows: (page) => [
@@ -479,7 +563,17 @@ function visits(seed: Seeded): readonly Visit[] {
       shows: (page) => [heading(page, "Enter machine login code")],
       url: "/credentials/machine",
     },
-    { route: "/settings", shows: (page) => [heading(page, "Settings")], url: "/settings" },
+    {
+      // The rail's New issue opens the create dialog, which is where its chunk is asked for.
+      loads: ["create-issue-dialog"],
+      opens: {
+        press: (page) => page.getByRole("button", { name: "New issue" }).click(),
+        shows: (page) => [page.getByRole("dialog", { name: "Create issue" })],
+      },
+      route: "/settings",
+      shows: (page) => [heading(page, "Settings")],
+      url: "/settings",
+    },
     {
       // ECharts draws the timeline on a canvas it creates inside the chart's host.
       loads: ["echarts"],
@@ -583,13 +677,22 @@ async function walk(
   try {
     for (const visit of planned) {
       problems = [];
-      const shows = visit.shows(page);
+      let shows = visit.shows(page);
       try {
         awaitingCommit = true;
         await page.goto(visit.url);
         // A failed asset ends the visit at once: the landmark it keeps from rendering would
         // only add a timeout.
         await expect.poll(async () => problems.length > 0 || (await allVisible(shows))).toBe(true);
+        if (problems.length === 0 && visit.opens !== undefined) {
+          // The page is up, so the control the reader presses is on it; what the press opens is
+          // what this visit waits for from here.
+          await visit.opens.press(page);
+          shows = visit.opens.shows(page);
+          await expect
+            .poll(async () => problems.length > 0 || (await allVisible(shows)))
+            .toBe(true);
+        }
         if (problems.length === 0) {
           await expect(page.locator("#root")).not.toBeEmpty();
           await expect.poll(() => pending.size).toBe(0);

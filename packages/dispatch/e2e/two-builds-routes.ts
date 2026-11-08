@@ -43,6 +43,10 @@ export type WalkRoutePath = (typeof walkRoutes)[number]["path"];
 
 /** The chunks a page loads only once it needs them, each named by what shows it has run. */
 export const lazyPieces = {
+  "create-issue-dialog":
+    "the create-issue dialog (features/issue/CreateIssueDialog.tsx), which the shell mounts " +
+    "while it is open and a reader opens from the rail's New issue or `c` " +
+    "(features/shell/deferred-shell.ts)",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
   editor:
     "the document editor, @legion/proof-editor and its stylesheet (features/doc/editor.ts), " +
@@ -51,6 +55,10 @@ export const lazyPieces = {
   "headless-markdown":
     "the headless Markdown renderer, @legion/proof-editor/headless, which every page warms at " +
     "boot (features/refs/markdown-engine.ts)",
+  "inbox-drawer":
+    "the Inbox as a peek over the open page (features/inbox/InboxDrawer.tsx), which the shell " +
+    "mounts while it is open and a reader opens from the rail's Peek or `i` " +
+    "(features/shell/deferred-shell.ts)",
   "markdown-worker":
     "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
     "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +
