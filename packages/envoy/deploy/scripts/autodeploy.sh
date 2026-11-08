@@ -137,28 +137,51 @@ pg_client() {
 # on a schema it never ran against. The max and the count are there for a reader of a log line;
 # the digest is what changes whenever the set changes.
 #
-# It first takes the advisory lock Dispatch's migration runner holds for each migration
-# (internal/dispatch/store/store.go, migrationLockKey), in a statement of its own, so a migration
-# transaction still in flight, one a stopped image sent its commit for included, ends before the
-# read takes its snapshot; the versions then come back in one statement, ordered by the database.
+# It reads under the advisory lock Dispatch's migration runner holds for each migration
+# (internal/dispatch/store/store.go, migrationLockKey): one statement takes the key and reads the
+# versions only if it got it, in that one psql session, so a migration transaction still in
+# flight, one a stopped image sent its commit for included, ends before the read takes its
+# snapshot, the versions come back ordered by the database, and the key is still held as they do.
+# The session's end releases it.
+#
+# It polls the key rather than waiting for it, because any blocking wait on this key deadlocks
+# against the runner that holds it. A backend blocked on a lock keeps the snapshot its statement
+# took, and CREATE INDEX CONCURRENTLY waits for every snapshot older than its own, so a holder
+# building an index concurrently and a waiter on the key wait for each other (PostgreSQL 18.6,
+# SQLSTATE 40P01). The runner polls for the same reason (store.go, lockMigrations). So each try is
+# a psql session of its own, with no statement open between two tries: a try refused the key
+# matches no row, prints nothing and takes nothing, and the next one follows a second later. Once
+# the deadline passes with the key still held the read fails, and the caller refuses to deploy
+# rather than wait for ever.
+#
 # psql's stderr is dropped, since its diagnostics can quote the connection; a failure prints
 # nothing and returns psql's status, or 1 for an answer that is no list of versions.
 schema_applied() {
-  local versions line count max digest
-  # shellcheck disable=SC2016 # $DATABASE_URL expands in the container's shell, from its environment
-  versions=$(pg_client 60 'psql -X -q -At -v ON_ERROR_STOP=1 -c "set lock_timeout = 30000" -c "select pg_advisory_lock(8150001)" -c "select version from schema_migrations order by version" "$DATABASE_URL"' 2>/dev/null) ||
-    return
+  local sql answer versions line count max digest deadline
+  sql="select 'granted' || coalesce((select E'\n' || string_agg(version::text, E'\n' order by version) from schema_migrations), '') where pg_try_advisory_lock(8150001)"
+  deadline=$((SECONDS + 60))
+  while true; do
+    answer=$(pg_client 60 "psql -X -q -At -v ON_ERROR_STOP=1 -c \"set lock_timeout = 30000\" -c \"$sql\" \"\$DATABASE_URL\"" 2>/dev/null) ||
+      return
+    [[ "$answer" == granted || "$answer" == "granted"$'\n'* ]] && break
+    # No row at all: another session holds the key. Any other answer is none of this read's.
+    [[ -z "$answer" ]] || return 1
+    ((SECONDS < deadline)) || return 1
+    sleep 1
+  done
+  versions="${answer#granted}"
+  versions="${versions#$'\n'}"
   count=0
   max=0
   digest=""
-  while IFS= read -r line; do
-    # pg_advisory_lock returns void, which prints as an empty line; a version never does.
-    [[ -z "$line" ]] && continue
-    [[ "$line" =~ ^[0-9]+$ ]] || return 1
-    digest+="$line"$'\n'
-    count=$((count + 1))
-    max="$line"
-  done <<<"$versions"
+  if [[ -n "$versions" ]]; then
+    while IFS= read -r line; do
+      [[ "$line" =~ ^[0-9]+$ ]] || return 1
+      digest+="$line"$'\n'
+      count=$((count + 1))
+      max="$line"
+    done <<<"$versions"
+  fi
   digest=$(printf '%s' "$digest" | sha256sum) || return 1
   printf '%s-%s-%s\n' "$max" "$count" "${digest%% *}"
 }

@@ -26,7 +26,7 @@ EOF
   # level. A migration applied below the highest one changes the set and leaves max(version) where
   # it was.
   seq 1 112 >"$schema"
-  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held"
+  rm -f "$schema.up" "$schema.running" "$schema.candidate" "$schema.held" "$schema.key"
   touch "$schema.running"
   : >"$log"
   : >"$argv"
@@ -196,8 +196,36 @@ if [[ "${AUTODEPLOY_TEST_SCHEMA_UNREADABLE:-}" == 1 ||
   ("${AUTODEPLOY_TEST_SCHEMA_UNREADABLE_AFTER_UP:-}" == 1 && -e "$AUTODEPLOY_TEST_SCHEMA.up") ]]; then
   exit 2
 fi
+# The migration advisory key, as the server holds it. $schema.key, holding a number above zero,
+# stands for another session holding the key; every statement that reaches for it takes one off
+# that number, so the key comes free after that many tries. A try (pg_try_advisory_lock) refused
+# the key matches no row and prints nothing. A blocking wait (pg_advisory_lock) on a held key ends
+# as the real server ends it, with a diagnostic on stderr and a non-zero status: the deadlock
+# (SQLSTATE 40P01) between a waiter, which keeps its statement's snapshot, and a holder building
+# an index concurrently, which waits for every older snapshot.
+key_held() {
+  local remaining
+  [[ -s "$AUTODEPLOY_TEST_SCHEMA.key" ]] || return 1
+  remaining=$(<"$AUTODEPLOY_TEST_SCHEMA.key")
+  ((remaining > 0)) || return 1
+  printf '%s\n' "$((remaining - 1))" >"$AUTODEPLOY_TEST_SCHEMA.key"
+}
 case "$*" in
-  *'pg_advisory_lock(8150001)'*'from schema_migrations'*) printf '\n' ;;
+  *'pg_try_advisory_lock(8150001)'*'from schema_migrations'*)
+    printf 'unexpected read of schema_migrations before the key: %s\n' "$*" >&2
+    exit 3
+    ;;
+  *'from schema_migrations'*'pg_try_advisory_lock(8150001)'*)
+    key_held && exit 0
+    printf 'granted\n'
+    ;;
+  *'pg_advisory_lock(8150001)'*'from schema_migrations'*)
+    if key_held; then
+      printf 'psql: error: ERROR:  deadlock detected\npsql: detail: SQLSTATE 40P01\n' >&2
+      exit 1
+    fi
+    printf '\n'
+    ;;
 esac
 # The versions as `order by version` returns them.
 sort -n "$AUTODEPLOY_TEST_SCHEMA"
@@ -262,8 +290,8 @@ if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]
   fail 'deployer did not record the set of migrations old-image runs against'
 fi
 if [[ $(grep -c "^pg_dump -Fc $url_without_password\$" "$argv") -ne 1 ]] ||
-  [[ $(grep -c "^psql .*pg_advisory_lock(8150001).*from schema_migrations.* $url_without_password\$" "$argv") -ne 2 ]]; then
-  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, the read after the runner lock'
+  [[ $(grep -c "^psql .*from schema_migrations.*pg_try_advisory_lock(8150001).* $url_without_password\$" "$argv") -ne 2 ]]; then
+  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, the read under the runner key'
 fi
 # Each client container runs under an init that passes on a signal, so `timeout` ends it.
 if [[ $(grep -c '^docker run ' "$argv") -ne 3 || $(grep -c '^docker run --init ' "$argv") -ne 3 ]]; then
@@ -403,6 +431,31 @@ if [[ "$output" != *"could not read the schema version"*"not deploying new-image
   fail 'deployer did not stop before deploying when the schema version was unreadable'
 fi
 
+# A key another session holds does not make the read wait on it: a blocking wait deadlocks against
+# a migration runner building an index concurrently under that key, so the read tries the key,
+# reads nothing while it is held, and tries again. Here the key is held against the first two
+# tries; the third takes it, and the deploy runs as it does with a free key.
+fresh_env
+printf '2\n' >"$schema.key"
+if output=$(deploy_once); then
+  fail 'deployer did not fail after the origin check rejected the deployment behind a held key'
+fi
+no_secret 'the held migration key'
+if [[ $(<"$schema.key") -ne 0 ]]; then
+  fail 'deployer did not try the held migration key more than once'
+fi
+# Four psql runs: two refused the key, the third read the set, and one more after the stop. An
+# empty answer taken for the applied set would record 0 versions and refuse the rollback.
+if [[ $(grep -c "^psql .*from schema_migrations.*pg_try_advisory_lock(8150001).* $url_without_password\$" "$argv") -ne 4 ]] ||
+  [[ "$output" != *"rolling back to old-image"* ]] || [[ "$output" == *"could not read the schema version"* ]] ||
+  [[ "$output" == *"refusing to roll back"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]; then
+  fail 'deployer did not poll the held migration key and deploy once it came free'
+fi
+# Nothing in the run waits on the key inside the database.
+if grep -qF 'select pg_advisory_lock(' "$argv"; then
+  fail 'deployer waited on the migration key in a blocking statement, which deadlocks the migration runner'
+fi
+
 # Both URL loops below run under en_US.UTF-8, where bash's [[ =~ ]] ranges such as [a-z] and
 # [0-9] also match non-ASCII characters, so a grammar that left the locale in force would accept
 # what it should refuse. The control needs that locale installed and widening the ranges.
@@ -502,4 +555,4 @@ fi
 if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_TAG=old-image"* ]]; then
   fail 'deployer persisted the failed image tag after a pull failure'
 fi
-printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, credential and pull-retry cases: PASS'
+printf '%s\n' 'autodeploy --once rollback, schema-set refusal (out-of-order migration and old-form record included), stop-first, migration-key polling, credential and pull-retry cases: PASS'
