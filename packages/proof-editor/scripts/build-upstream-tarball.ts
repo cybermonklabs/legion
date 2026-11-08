@@ -47,6 +47,13 @@ const HEADERS = {
   accept: "application/vnd.github+json",
 };
 
+/**
+ * A commit argument names one tree and one file name, so it is a full sha and nothing else: a
+ * short sha or a branch name names a ref that can move, and `proof-sdk-<ref>.tgz` would then
+ * hold whatever that ref pointed at on the day it was built.
+ */
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
 /** What `packUpstream` writes and where it reads it from. */
 export interface PackOptions {
   /** The upstream tree: the directory holding `src/`, `package.json` and `LICENSE`. */
@@ -97,16 +104,20 @@ function members(sourceDir: string): string[] {
 
 /**
  * Writes the gzipped tar: `package/src/**`, `package/package.json` and `package/LICENSE`, in that
- * sorted order and nothing else, each entry stamped with `mtime`, owned by `0:0` and readable by
- * all and writable by none but its owner.
+ * sorted order and nothing else, each entry stamped with `mtime`, owned by `0:0`, readable by
+ * all, writable by none but its owner, and executable by all where it is executable by anybody.
  *
  * tar is handed the member list rather than the directory, so the order is this process's sorted
  * one rather than the filesystem's, and no directory entry, no stray file beside the three and no
- * `.` entry can reach the archive. `--mode=a+r,go-w` fixes the permission bits, which tar
+ * `.` entry can reach the archive. `--mode=a+rX,go-w` fixes the permission bits, which tar
  * otherwise records as it finds them on disk — and it finds what the builder's umask left when
  * the upstream tarball was extracted, so without it the archive is a function of that umask as
- * well as of the source tree. `--format=ustar` carries no atime or ctime, and `gzip -n` no
- * name or timestamp, so the only dates in the output are the ones passed in.
+ * well as of the source tree. `X` is tar's conditional execute bit, set only where the member is
+ * already executable for somebody: a 0644 member stays 0644 and a 0755 member stays 0755,
+ * whatever the umask left — a plain `a+r,go-w` would pack the same 0755 member as 0744 under a
+ * umask that cleared its group and other execute bits. `--format=ustar` carries no atime or
+ * ctime, and `gzip -n` no name or timestamp, so the only dates in the output are the ones passed
+ * in.
  */
 export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): void {
   const names = members(sourceDir);
@@ -124,7 +135,7 @@ export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): voi
         "--files-from=-",
         "--transform=s|^|package/|",
         `--mtime=${mtime}`,
-        "--mode=a+r,go-w",
+        "--mode=a+rX,go-w",
         "--owner=0",
         "--group=0",
         "--numeric-owner",
@@ -168,6 +179,17 @@ if (import.meta.main) {
   const [commit, output] = process.argv.slice(2);
   if (!commit) {
     console.error("usage: bun scripts/build-upstream-tarball.ts <commit> [output]");
+    console.error(
+      "  <commit> is a full 40-character lowercase hex sha, not a short sha or a branch name"
+    );
+    process.exit(1);
+  }
+  if (!FULL_SHA.test(commit)) {
+    console.error(`"${commit}" is not a full 40-character lowercase hex commit sha.`);
+    console.error(
+      "  A short sha or a branch name names a ref that can move, and this archive is a pin:"
+    );
+    console.error("  pass the 40-character sha the ref points at.");
     process.exit(1);
   }
   const outputPath = resolve(output ?? join(import.meta.dir, "..", `proof-sdk-${commit}.tgz`));

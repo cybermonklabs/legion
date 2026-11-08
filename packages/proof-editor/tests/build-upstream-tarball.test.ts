@@ -70,6 +70,13 @@ function listing(archive: string): string[] {
   return result.stdout.trimEnd().split("\n");
 }
 
+/** The mode `tar --list --verbose` records for one member of an archive. */
+function modeOf(archive: string, member: string): string {
+  const line = listing(archive).find((entry) => entry.endsWith(` ${member}`));
+  if (line === undefined) throw new Error(`${archive} holds no ${member}`);
+  return line.split(/\s+/)[0];
+}
+
 test("two runs over one source tree write the same bytes", () => {
   expect(readFileSync(second)).toEqual(readFileSync(first));
 });
@@ -126,4 +133,34 @@ test("every member is recorded as -rw-r--r--, whatever its mode on disk", () => 
   for (const line of listing(first)) {
     expect(line.split(/\s+/)[0]).toBe("-rw-r--r--");
   }
+});
+
+test("an executable at 0755 and at 0700 write the same bytes, recorded -rwxr-xr-x", () => {
+  // Its own tree again, and the only one holding an executable: the shared fixture is all 0600
+  // files, so the case above has nothing to say about the bit this one is about.
+  const executableDir = join(workDir, "executable");
+  mkdirSync(join(executableDir, "src"), { recursive: true });
+  const script = join(executableDir, "src", "cli.ts");
+  writeFileSync(script, "#!/usr/bin/env bun\nexport const cli = 3;\n");
+  writeFileSync(join(executableDir, "src", "lib.ts"), "export const lib = 1;\n");
+  writeFileSync(join(executableDir, "package.json"), '{ "name": "proof-sdk" }\n');
+  writeFileSync(join(executableDir, "LICENSE"), "MIT\n");
+  for (const name of ["src/lib.ts", "package.json", "LICENSE"]) {
+    chmodSync(join(executableDir, name), 0o644);
+  }
+
+  const executableByAll = join(workDir, "executable-by-all.tgz");
+  chmodSync(script, 0o755);
+  packUpstream({ sourceDir: executableDir, mtime: MTIME, outputPath: executableByAll });
+
+  const executableByOwner = join(workDir, "executable-by-owner.tgz");
+  chmodSync(script, 0o700);
+  packUpstream({ sourceDir: executableDir, mtime: MTIME, outputPath: executableByOwner });
+
+  // One comparison for both facts, because a flag that drops the execute bit drops it from the
+  // bytes as well: `a+r,go-w` records the 0700 copy as -rwxr--r--, so as a different archive.
+  expect([
+    readFileSync(executableByOwner),
+    modeOf(executableByOwner, "package/src/cli.ts"),
+  ]).toEqual([readFileSync(executableByAll), "-rwxr-xr-x"]);
 });
