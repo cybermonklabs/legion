@@ -114,10 +114,29 @@ const (
 // (searchRowFilters) in the arm itself, so a filtered search reads its own matches as deep as
 // any other search reads, rather than a page of unfiltered ones with the rest struck out.
 //
-// The issue arm matches an issue the query names by key as well as one q.tsq finds
-// (q.own_keys, searchOwnIssueKeys): a key is indexed with its project ('infra' <-> '-1042'), so
-// the number alone, or a space where the hyphen is, matches no issue's vector, and the issue a
-// person asked for would be absent from the answer rather than first in it.
+// The issue arm is two arms, not one: the issues q.tsq finds, and the issues the query names by
+// key (q.own_keys, searchOwnIssueKeys). A key is indexed with its project ('infra' <-> '-1042'),
+// so the number alone, or a space where the hyphen is, matches no issue's vector, and the issue
+// a person asked for would be absent from the answer rather than first in it - but the two are
+// different access paths, and one predicate ORing them together is a join filter rather than an
+// index condition, which is what left issues_search unread while every other arm's index was
+// read (INFRA-1042). The cost of that was the whole table detoasted on every search once an
+// issue's own spec went into issues.search (migration 20261105145242_issues_search_spec): 8.5 kB
+// a row against 190 bytes, 36 MB of out-of-line values the planner prices at nothing, ~33 ms on
+// every query. Split, the vector match is `i.search @@ q.tsq` alone, the shape the comment, ask,
+// message and document arms already take, and the planner reads issues_search for it.
+//
+// The two arms are disjoint, so the union is `union all` and no issue is listed twice: the
+// vector arm leaves out every issue the key arm answers (`not (i.key = any(q.own_keys))`), and
+// an issue matched both ways comes from the key arm alone, with the own flag and the ts_rank_cd
+// rank it had when one arm carried both. own is therefore a constant per arm - false on the
+// vector arm, true on the key arm - rather than a test. The key arm reads the keys themselves
+// (unnest) and joins issues on its primary key, so a search naming no issue walks no row of
+// issues at all and one naming an issue reads that issue by key. Both arms carry q's project
+// narrowing and q's three filters, as the one arm did.
+//
+// Neither arm reads q.own_keys as anything but an array: it is never null (searchOwnIssueKeys
+// answers '{}', relatedQOpener binds '{}'), which `not (... = any(...))` and unnest both need.
 //
 // Column shape after kind, list: issue_key, owner_artifact_id, artifact_id, id, block_id,
 // window_id, covers, issue_title, issue_status, owner_project, owner_slug, owner_name,
@@ -136,9 +155,17 @@ func searchKeywordLegs(rank func(searchColumn string) string) string {
          null::text as window_id, null::text[] as covers,
          i.title as issue_title, i.status as issue_status,
          null::text as owner_project, null::text as owner_slug, null::text as owner_name, i.updated_at,
-         i.key = any(q.own_keys) as own, ` + rank("i.search") + ` as r
+         false as own, ` + rank("i.search") + ` as r
     from issues i, q
-   where (i.search @@ q.tsq or i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)` +
+   where i.search @@ q.tsq and not (i.key = any(q.own_keys)) and ($2 = '' or i.project_key = $2)` +
+		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
+  union all
+  select 'issue', 'keyword', i.key, null::uuid, null::uuid, i.key, null::text,
+         null::text, null::text[],
+         i.title, i.status, null::text, null::text, null::text, i.updated_at,
+         true, ` + rank("i.search") + `
+    from q, unnest(q.own_keys) as named(key), issues i
+   where i.key = named.key and ($2 = '' or i.project_key = $2)` +
 		searchRowFilters("i.status", "i.created_by", "i.updated_at") + `
   union all
 ` + searchDocumentKeywordLeg(rank) + `

@@ -95,6 +95,96 @@ func TestSearchLeadsWithTheIssueTheQueryNamesInEveryForm(t *testing.T) {
 	})
 }
 
+// The issue arm is two arms - the issues q.tsq finds and the issues the query names by key
+// (searchKeywordLegs) - and an issue both arms would answer is listed once, not twice. Typing a
+// key is exactly that case: the key is a lexeme of the issue's own vector, so the query matches
+// it by words as well as naming it, and a union that did not make its two arms disjoint would
+// put the issue on the page twice and count it twice in the total.
+//
+// The issue citing that key in its title is the other row: it matches by words alone, ranks
+// behind the issue the query names, and makes the total two rather than one, so a duplicate
+// would read as three.
+func TestSearchListsAnIssueItsKeyAndItsWordsBothMatchOnce(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	named := createInteractionIssue(t, handler, "SRCH", "Navigation instruments", "").Key
+	citing := createSearchIssue(t, handler, "SRCH", named+" follow-up", "")
+
+	// Both arms really do answer this issue: without the vector match the union has nothing to
+	// list twice and the test decides nothing.
+	var matchesItsOwnKey bool
+	if err := database.Pool.QueryRow(ctx,
+		`select search @@ websearch_to_tsquery('english', $2) from issues where key = $1`,
+		named, named).Scan(&matchesItsOwnKey); err != nil {
+		t.Fatalf("read whether %s's vector matches its own key: %v", named, err)
+	}
+	if !matchesItsOwnKey {
+		t.Fatalf("%s's vector does not match its own key, so this query names the issue one way only", named)
+	}
+
+	body := searchResponse(t, handler, url.Values{"q": {named}}.Encode())
+	listed := 0
+	for _, result := range body.Results {
+		if result.Kind == "issue" && result.ID == named {
+			listed++
+		}
+	}
+	if listed != 1 {
+		t.Fatalf("%s is on the page %d times, want once: the two arms of the issue leg are disjoint:\n%#v",
+			named, listed, body.Results)
+	}
+	if len(body.Results) != 2 || body.Results[0].ID != named || body.Results[1].ID != citing {
+		t.Fatalf("results = %#v, want %s then %s and nothing else", body.Results, named, citing)
+	}
+	if body.Total != 2 {
+		t.Fatalf("total = %d, want 2: the issue the query names and the issue citing it, each counted once",
+			body.Total)
+	}
+}
+
+// An issue the query names by key is answered by the key arm alone, with no word of the query
+// matching its vector: that is what the key arm is for. The key with a space where the hyphen is
+// matches nothing, because a key is indexed with its project ('srch' <-> '-1042') and the number
+// on its own is a lexeme no vector holds, and the issue still leads the page.
+func TestSearchAnswersTheIssueAKeyNamesWhenItsWordsMatchNothing(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "SRCH", "name": "SRCH project",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project SRCH: status=%d body=%s", response.Code, response.Body.String())
+	}
+	// A four-digit number, as the key-forms test above seeds one: the issue's number is its
+	// project's next, and the space form of a one-digit key matches the key's own parts.
+	if _, err := database.Pool.Exec(ctx,
+		"update projects set next_number = 1042 where key = 'SRCH'"); err != nil {
+		t.Fatalf("move SRCH to number 1042: %v", err)
+	}
+	named := createSearchIssue(t, handler, "SRCH", "Navigation instruments", "")
+	if named != "SRCH-1042" {
+		t.Fatalf("seeded issue is %q, want SRCH-1042", named)
+	}
+
+	const spaced = "SRCH 1042"
+	var matchesTheWords bool
+	if err := database.Pool.QueryRow(ctx,
+		`select search @@ websearch_to_tsquery('english', $2) from issues where key = $1`,
+		named, spaced).Scan(&matchesTheWords); err != nil {
+		t.Fatalf("read whether %s's vector matches %q: %v", named, spaced, err)
+	}
+	if matchesTheWords {
+		t.Fatalf("%s's vector matches %q, so the key arm is not what would answer it", named, spaced)
+	}
+
+	body := searchResponse(t, handler, url.Values{"q": {spaced}}.Encode())
+	if len(body.Results) != 1 || body.Results[0].Kind != "issue" || body.Results[0].ID != named {
+		t.Fatalf("results = %#v, want %s alone", body.Results, named)
+	}
+	if body.Total != 1 {
+		t.Fatalf("total = %d, want 1", body.Total)
+	}
+}
+
 // The page a person searches from names a project, and that project is what a bare issue number
 // means there - but searching from a project page searches everything, as searching from
 // anywhere does. number_project carries that page's project as the context the number is read

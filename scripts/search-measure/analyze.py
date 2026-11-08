@@ -51,13 +51,21 @@ FLOORS = {
 ABSENT_CEILING = {1: 0.05}
 # LATENCY_BUDGET is what one keyword-path search may cost, in milliseconds of the server's own
 # took_ms, read off the serial run - one request at a time, which is how a person's search is
-# served. These two numbers are this tree's earlier measurement of that path on a fixture of
-# production's size, not a target anybody set: 28 ms at the median and 237 ms at the 95th
-# percentile, against the 1,034 ms a hybrid round costs (BASELINE_SERIAL). The run they were read
-# off passes them by construction, as every floor above does; what makes them a check is the run
-# after a change, where an embedding call crept back into the keystroke path or a leg stopped
-# using its index and the median went from tens of milliseconds to hundreds.
-LATENCY_BUDGET = {"p50": 28.0, "p95": 237.0}
+# served. It is not the command bar's own latency: a case here is a whole sentence of 8 to 183
+# words, median 77, where the bar type-aheads on the first few a person has typed, and a query's
+# cost grows with the lexemes in it. See the README's section on the budget for what the number
+# is and is not.
+#
+# These two are the highest p50 and the highest p95 of the three serial runs this tree made
+# after INFRA-1042, each rounded up to the next whole millisecond, on a fixture of production's
+# size carrying each issue's whole spec in issues.search: 45 ms at the median and 350 ms at the
+# 95th percentile, against the 1,034 ms a hybrid round costs (BASELINE_SERIAL). The three runs
+# read 44, 31 and 32 ms at the median and 348, 208 and 296 ms at the 95th, on a machine shared
+# with other work, so the bound is the worst of them and every run this tree made passes it by
+# construction, as every floor above does. What makes it a check is the run after a change: the
+# same cases on the same fixture read 79 ms at the median while the issue arm was taking a
+# sequential scan of issues instead of reading issues_search, and a budget of 45 refuses that.
+LATENCY_BUDGET = {"p50": 45.0, "p95": 350.0}
 # DEFECT_DEPTHS are the depths the kind-1 defect is held to: the issue's own document on the page
 # while the issue itself is not, which is the defect this measurement was made for. Its ceiling is
 # exactly zero at every one of them, because the fix is that an issue carries its spec's words in

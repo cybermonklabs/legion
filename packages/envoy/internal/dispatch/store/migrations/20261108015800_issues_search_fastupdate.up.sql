@@ -1,0 +1,39 @@
+-- 20261108015800_issues_search_fastupdate.up.sql — issues_search carries no pending list, so the
+-- planner can price it.
+--
+-- INFRA-1042: the keyword search's issue arm never read issues_search. A GIN index created with
+-- the default fastupdate batches new entries into a pending list, and every scan of the index
+-- must read that whole list before it reads anything else. The planner charges for it: measured
+-- on a fixture of production's size, a scan of issues_search for a lexeme no row holds read 232
+-- buffers and was costed 986.21, against 911.61 for a sequential scan of issues, so the planner
+-- took the sequential scan on every search. The same 4,369 rows under the same index freshly
+-- built, with nothing pending, were costed 17.21 and read 4 buffers.
+--
+-- The list is why the price changed when it did. 20261105145242 put each issue's whole spec in
+-- issues.search and re-indexed every stored issue, which is 8.5 kB a row against 190 bytes
+-- before: the sequential scan now detoasts 36 MB on every single search, ~33 ms the planner
+-- charges nothing for, and the re-index itself left a pending list of 1.86 MB behind it.
+--
+-- fastupdate off makes each write update the index itself instead of batching. Issues are
+-- searched far more often than they are written - a keystroke searches, a spec edit writes, and
+-- this column is written by a trigger on spec edits - so the cost lands where there is slack and
+-- the saving lands on the path a person waits on.
+--
+-- Setting the option stops entries being added to the list; it does not empty the list already
+-- there, which otherwise waits for the next autovacuum. gin_clean_pending_list moves those
+-- entries into the index, so a database that has been running picks the fix up at deploy. It
+-- takes ROW EXCLUSIVE on the index and the time it takes grows with the pending list, which
+-- gin_pending_list_limit bounds (4 MB by default), never with the table.
+--
+-- The alter writes one catalog row and takes ACCESS EXCLUSIVE on the index alone - no lock at all
+-- on issues - so a read of the table waits for nothing and a read through this index waits for
+-- the instant the statement lasts. Neither statement reads or rewrites a row. Neither is one of
+-- the statement kinds the census exempts from its table-size limit (pgmigrate
+-- catalogOnlyStatements admits create function, create trigger, their drops and set, and names
+-- alter table as a kind that never belongs there), so the limit applies and the census names
+-- issues, which is 106 MB with its index and its TOAST, far below the 1 GiB bound.
+--
+-- Its identifier is the UTC moment it was written, as `migrationid` requires of every migration
+-- past the numbered series, which closed at 0161 (cmd/dispatch/README.md, "Database migrations").
+alter index issues_search set (fastupdate = off);
+select gin_clean_pending_list('issues_search');
