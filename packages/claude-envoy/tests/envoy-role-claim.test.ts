@@ -10,7 +10,6 @@ import type {
   ChannelTopicSubscription,
 } from "../src/channel-forwarder"
 import {
-  CHANNEL_CAPABILITIES,
   type ChannelNotification,
   type ChannelNotifier,
   type ChannelSession,
@@ -31,6 +30,7 @@ import {
   recordingClient,
   scratchState,
   sessionOptions,
+  testCapabilities,
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
@@ -114,7 +114,7 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
       identity: new SessionIdentity("ses_current", "/tmp"),
       connection: new IdleNats(),
       notifier,
-      capabilities: CHANNEL_CAPABILITIES,
+      capabilities: testCapabilities,
       client,
       heartbeatMs: 25,
       configFile: { path: join(stateDirectory, "envoy.json"), error: null },
@@ -158,7 +158,7 @@ test("the record a remembered role writes names this process, so another one tel
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 60_000,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
