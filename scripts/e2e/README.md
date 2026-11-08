@@ -1383,15 +1383,27 @@ land in `inbox.jsonl` under the stand-in controller's session.
 - A7: a question to the resumed, running architect reaches its conversation and the daemon logs no
   `answers:` line; then, suspended again, a question whose loop model call the proxy holds while
   the claim is resumed is dropped and forwarded (`... the answer is dropped and the question
-  forwarded`, started), reaches the running architect, and nothing is appended or posted.
-- A8: one envelope sent twice, then again across a restart, gets one reply (`handed off again`
-  logged); a kill -9 the moment the reply lands, a restart and a redelivery still one reply; a
-  question to the planner sent as the replaced tester's session gets the planner's answer, which
-  creates no question for the tester; a person's edit of A1's comment, on the open root issue (a
-  closed issue refuses every comment edit, `409 ISSUE_CLOSED`), creates none for the architect.
+  forwarded`, started), reaches the running architect, and nothing is appended or posted. Appended
+  is counted as a delta over the architect's conversation — the `legion-answer` marker entries an
+  append ends with, counted before the question and again after — because this architect was
+  answered before (A1 appended an exchange to the same conversation), so the count must not move,
+  not be zero.
+- A8: one envelope sent three times under one idempotency key, the third after a restart: the
+  listener publishes a hand-off for each send, every hand-off carries the envelope's dedupe key as
+  its MsgId (`legion.handoff.<dedupe key>:<subject>`, `cmd/listener/legion_handoff.go`), so the
+  stream stores one copy. One reply on the asker's topic across the three, and the restarted
+  daemon logs no `answers:` line naming that question at all — neither an answer nor a
+  `handed off again`, the question having never been handed to it a second time. A kill -9 the
+  moment the reply lands, a restart and a redelivery still one reply; a question to the planner
+  sent as the replaced tester's session gets the planner's answer, which creates no question for
+  the tester; a person's edit of A1's comment, on the open root issue (a closed issue refuses
+  every comment edit, `409 ISSUE_CLOSED`), creates none for the architect.
 - A9: two questions at once are answered in order; the resumed architect's first captured request
-  holds each question and each answer (the first line of the message the asker received) once,
-  and its turn quotes both.
+  holds each question once, and its conversation holds exactly one appended exchange per question
+  — the `legion-answer` marker entry naming that question id, which each reply carries in its
+  `<!-- legion-answer:<id> -->` marker. The exchange is counted there and not by the answer's own
+  words in the request, because an architect that answered the same thing itself before it stopped
+  holds those words in its own earlier turns. Its turn after the resume quotes both answers.
 - A10 (Claude Code leg): the pre-change reviewer answered twice within the cache lifetime: the
   first request's effort equals the transcript's last `effort`, every thinking signature in the
   transcript appears byte for byte in it, the second answer's cost line reads `cacheReadTokens >

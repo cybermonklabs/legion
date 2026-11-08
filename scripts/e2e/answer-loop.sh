@@ -1775,9 +1775,26 @@ resume_agent() {
     soft_wait 120 "$1's session to be live in the listener" session_live "${agent[$store:$1.session]}"
 }
 
+# answer_question_id REPLY prints the question id of the loop's answer REPLY: the id in the
+# `<!-- legion-answer:<id> -->` marker every reply the loop posts carries (intake.AnswerMarker).
+# A reply carrying no marker, and no reply at all, print nothing.
+answer_question_id() { grep -oE 'legion-answer:[0-9a-f]+' <<<"$1" | head -1 | cut -d: -f2 || true; }
+# appended_exchanges NAME [QUESTION_ID]: how many exchanges the loop appended to NAME's
+# conversation, all of them or QUESTION_ID's alone. Every append ends in the marker entry naming
+# the question it answered, a `legion-answer` custom entry in an Oh My Pi session
+# (conversation/omp.AnswerEntryType) and a `legion-answer` line in a Claude Code transcript
+# (conversation/claude.AnswerLineType). The model never sees that entry and no agent writes one,
+# so it counts the loop's appends where the question's or the answer's own words cannot: an agent
+# that was asked the same thing before it stopped holds those words itself.
+appended_exchanges() {
+  conversation_text "$1" | jq -R -s --arg q "${2:-}" '[split("\n")[] | fromjson?
+    | select((.type == "custom" and .customType == "legion-answer" and ($q == "" or (.data.questionId? // "") == $q))
+      or (.type == "legion-answer" and ($q == "" or (.questionId? // "") == $q)))] | length'
+}
+
 check_a7() {
   criterion A7 "a question to a running agent reaches it alone; a resume during generation appends nothing and forwards the question" || return 0
-  local token=${agent[$store:architect.token]} label=daemon-$store before after sent event n first_ok=0 second_ok=0
+  local token=${agent[$store:architect.token]} label=daemon-$store before after sent event n appended_before appended_after first_ok=0 second_ok=0
   if ! resume_agent architect; then
     record_result A7 FAIL "the architect did not run again"
     return 0
@@ -1794,6 +1811,7 @@ check_a7() {
     record_result A7 FAIL "the architect was not suspended, or its session stayed live"
     return 0
   fi
+  appended_before=$(appended_exchanges architect)
   n=$(proxy_count "$label")
   hold_at "$label" "$n"
   sent=$(envoy_ask session "${agent[$store:architect.session]}" in-order-2)
@@ -1811,12 +1829,13 @@ check_a7() {
   soft_wait 300 "the answer to be dropped and the question forwarded" dropped || true
   soft_wait 300 "the running architect to receive the forwarded question" delivered || true
   note "the loop: $(boot_log | jq -s -c '[.[] | select((.msg | startswith("answers:")) and (.session // "") == "'"${agent[$store:architect.session]}"'") | {msg, state, started}] | .[-6:]')"
-  note "the running architect holds the forwarded question: $(delivered && echo yes || echo no); legion-answer entries: $(conversation_text architect | grep -c '"customType":"legion-answer"' || true); replies on the asker's topic: $(inbox_replies "$event")"
-  dropped && delivered && [ "$(inbox_replies "$event")" = 0 ] && ! conversation_text architect | grep -qF '"customType":"legion-answer"' && second_ok=1
+  appended_after=$(appended_exchanges architect)
+  note "the running architect holds the forwarded question: $(delivered && echo yes || echo no); the exchanges appended to its conversation: $appended_before → $appended_after; replies on the asker's topic: $(inbox_replies "$event")"
+  dropped && delivered && [ "$(inbox_replies "$event")" = 0 ] && [ "$appended_after" = "$appended_before" ] && second_ok=1
   if [ "$first_ok$second_ok" = 11 ]; then
-    record_result A7 PASS "the running architect alone took the first question (no answers line); the second, its claim started mid-answer, was dropped and forwarded with nothing appended or posted"
+    record_result A7 PASS "the running architect alone took the first question (no answers line); the second, its claim started mid-answer, was dropped and forwarded with no exchange appended (still $appended_after) and nothing posted"
   else
-    record_result A7 FAIL "running agent alone $first_ok, started mid-answer forwarded with nothing appended $second_ok (1 = shown)"
+    record_result A7 FAIL "running agent alone $first_ok, started mid-answer forwarded with no exchange appended $second_ok (1 = shown; the appended exchanges went $appended_before → $appended_after)"
   fi
   suspend_agent architect || true
 }
@@ -1827,22 +1846,45 @@ answers_lines() {
   boot_log | jq -s --arg m "$1" --arg s "${2:-}" --arg st "${3:-}" \
     '[.[] | select(.msg == $m and ($s == "" or .session == $s) and ($st == "" or .state == $st))] | length'
 }
+# question_lines QUESTION: how many lines of this boot's daemon log name QUESTION, whatever the
+# `answers:` message. Zero says the boot was handed nothing of it at all.
+question_lines() {
+  boot_log | jq -s --arg q "$1" '[.[] | select((.msg | startswith("answers:")) and .question == $q)] | length'
+}
+# listener_handoffs EVENT: how many hand-offs the listener published for the envelope EVENT (its
+# "listener handed a message to its legion daemon" lines). Each is published with the envelope's
+# dedupe key in its MsgId, `legion.handoff.<dedupe key>:<subject>`, so however many are published
+# for one key the stream stores one message (cmd/listener/legion_handoff.go).
+listener_handoffs() {
+  jq -R -s --arg e "$1" \
+    '[split("\n")[] | fromjson? | select(.msg == "listener handed a message to its legion daemon" and .event_id == $e)] | length' \
+    "$evidence/logs/listener.log"
+}
 
 check_a8() {
   criterion A8 "one question delivered twice, across a restart and across a kill just after its answer posted, gets one answer; the loop's own answer and an edit are not answered" || return 0
-  local planner=${agent[$store:planner.session]} key=a8-$run_tag key3=a8-kill-$run_tag sent event event3 again posted_before own_before edit_before ok_twice=0 ok_kill=0 ok_own=0 ok_edit=0
+  local planner=${agent[$store:planner.session]} key=a8-$run_tag key3=a8-kill-$run_tag sent resend resent event event3 qid again taken codes handoffs replies posted_before own_before edit_before ok_twice=0 ok_kill=0 ok_own=0 ok_edit=0
+  # One envelope sent three times under one idempotency key, the third after a restart. The
+  # listener hands each send off, and every hand-off carries the envelope's dedupe key as its
+  # MsgId, so the stream stores one copy: the daemon is handed the question once and answers it
+  # once, and the restarted daemon is handed nothing — no second hand-off for it to log as handed
+  # off again, and no second answer.
   sent=$(envoy_ask session "$planner" unanswerable "$key")
   event=${sent#* }
-  envoy_ask session "$planner" unanswerable "$key" >/dev/null
+  resend=$(envoy_ask session "$planner" unanswerable "$key")
   soft_wait 240 "the answer" inbox_reply "$event" || true
   stop_daemon
   start_daemon "$daemon_bin" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
-  envoy_ask session "$planner" unanswerable "$key" >/dev/null
-  soft_wait 60 "the restarted daemon to take the hand-off again" more_than 0 answers_lines "answers: question handed off again; not answered again" "$planner" || true
-  sleep 20
+  resent=$(envoy_ask session "$planner" unanswerable "$key")
+  sleep 60
+  qid=$(answer_question_id "$(inbox_reply "$event" || true)")
   again=$(answers_lines "answers: question handed off again; not answered again" "$planner")
-  note "one envelope three times, the third across a restart: replies $(inbox_replies "$event"); handed off again after the restart: $again"
-  [ "$(inbox_replies "$event")" = 1 ] && [ "$again" -ge 1 ] && ok_twice=1
+  taken=$(question_lines "$qid")
+  codes="${sent%% *} ${resend%% *} ${resent%% *}"
+  handoffs="$(listener_handoffs "$event") $(listener_handoffs "${resend#* }") $(listener_handoffs "${resent#* }")"
+  replies=$(($(inbox_replies "$event") + $(inbox_replies "${resend#* }") + $(inbox_replies "${resent#* }")))
+  note "one envelope three times (listener $codes), the third across a restart: hand-offs published for the three sends $handoffs; replies on the asker's topic $replies; the restarted daemon's lines naming the question $qid: $taken, of them handed off again $again"
+  [ "$codes" = "200 200 200" ] && [ "$handoffs" = "1 1 1" ] && [ "$replies" = 1 ] && [ -n "$qid" ] && [ "$taken" = 0 ] && [ "$again" = 0 ] && ok_twice=1
   # A kill just after the answer posted: the asker's inbox is polled every tenth of a second and the
   # daemon killed the moment the reply lands, then the same envelope is delivered again.
   sent=$(envoy_ask session "$planner" unanswerable "$key3")
@@ -1880,7 +1922,7 @@ check_a8() {
     [ "$(answers_lines "answers: question" "${agent[$store:architect.session]}")" = "$edit_before" ] && ok_edit=1
   fi
   if [ "$ok_twice$ok_kill$ok_own$ok_edit" = 1111 ]; then
-    record_result A8 PASS "one envelope delivered three times across a restart: one answer; killed just after the post and delivered again: one answer; the loop's own answer and an edit were not answered"
+    record_result A8 PASS "one envelope sent three times under one key, the third across a restart: each send handed off, the stream stored one copy, one answer and nothing handed to the restarted daemon; killed just after the post and delivered again: one answer; the loop's own answer and an edit were not answered"
   else
     record_result A8 FAIL "twice and restart $ok_twice, kill after post $ok_kill, own answer unanswered $ok_own, edit unanswered $ok_edit (1 = shown)"
   fi
@@ -1895,7 +1937,7 @@ occurrences() { grep -oF -- "$2" <<<"$1" | wc -l || true; }
 
 check_a9() {
   criterion A9 "two questions at once are answered in order, and the resumed agent holds both once and carries on from them" || return 0
-  local token=${agent[$store:architect.token]} t1 t2 s1 s2 e1 e2 first reply m request a1 a2 counts
+  local token=${agent[$store:architect.token]} t1 t2 s1 s2 e1 e2 first reply m request q1 q2 counts
   t1="$(question_text in-order-1) (question in-order-1 of run $run_tag, A9)"
   t2="$(question_text in-order-2) (question in-order-2 of run $run_tag, A9)"
   s1=$(envoy_ask_text session "${agent[$store:architect.session]}" "$t1")
@@ -1908,8 +1950,8 @@ check_a9() {
     return 0
   }
   first=$(jq -s -r --arg a "In Reply To: $e1" --arg b "In Reply To: $e2" '[.[] | select((.text | contains($a)) or (.text | contains($b)))] | .[0].text' "$evidence/inbox.jsonl")
-  a1=$(inbox_message "$e1" | awk 'NR == 1 { first = substr($0, 1, 60) } END { print first }')
-  a2=$(inbox_message "$e2" | awk 'NR == 1 { first = substr($0, 1, 60) } END { print first }')
+  q1=$(answer_question_id "$(inbox_reply "$e1")")
+  q2=$(answer_question_id "$(inbox_reply "$e2")")
   note "answers: 1: $(inbox_message "$e1" | head -c 200 | tr '\n' ' ') | 2: $(inbox_message "$e2" | head -c 200 | tr '\n' ' ')"
   m=$(proxy_count agents)
   resume_agent architect || true
@@ -1917,17 +1959,17 @@ check_a9() {
   soft_wait 300 "the resumed architect's first model call" more_than "$m" proxy_count agents || true
   soft_wait 600 "the resumed architect's turn" claim_is "$token" '.state == "idle" and .pending == null' || true
   request=$(first_request_after agents "$m")
-  counts="question 1 $(occurrences "$request" "in-order-1 of run $run_tag, A9"), question 2 $(occurrences "$request" "in-order-2 of run $run_tag, A9"), answer 1 $(occurrences "$request" "$(jq -Rr @json <<<"$a1" | sed 's/^"//; s/"$//')"), answer 2 $(occurrences "$request" "$(jq -Rr @json <<<"$a2" | sed 's/^"//; s/"$//')")"
+  counts="question 1 $(occurrences "$request" "in-order-1 of run $run_tag, A9"), question 2 $(occurrences "$request" "in-order-2 of run $run_tag, A9"), exchange 1 $(appended_exchanges architect "$q1"), exchange 2 $(appended_exchanges architect "$q2")"
   reply=$(conversation_text architect | jq -R -r 'fromjson? | select(.type == "message" and .message.role == "assistant") | [.message.content[]? | .text? // empty] | join(" ")' | tail -1)
   note "the first reply on the asker's topic answers question 1: $(grep -qF "In Reply To: $e1" <<<"$first" && echo yes || echo no)"
-  note "the resumed architect's first request (agents, after ordinal $m) holds: $counts"
+  note "the resumed architect's first request (agents, after ordinal $m) holds each question, and its conversation the exchange appended for each (questions $q1 and $q2): $counts"
   note "the resumed architect: $(head -c 400 <<<"$reply" | tr '\n' ' ')"
   suspend_agent architect || true
-  if grep -qF "In Reply To: $e1" <<<"$first" && [ "$counts" = "question 1 1, question 2 1, answer 1 1, answer 2 1" ] &&
+  if grep -qF "In Reply To: $e1" <<<"$first" && [ -n "$q1" ] && [ -n "$q2" ] && [ "$counts" = "question 1 1, question 2 1, exchange 1 1, exchange 2 1" ] &&
     answer_holds after-resume "$reply" >/dev/null; then
-    record_result A9 PASS "answered one after the other; the resumed architect's first request held each question and answer once, and it quoted both"
+    record_result A9 PASS "answered one after the other; the resumed architect's first request held each question once, its conversation holds one appended exchange per question, and it quoted both answers"
   else
-    record_result A9 FAIL "out of order, or the first request did not hold each exchange once ($counts), or the resumed agent did not carry on from them"
+    record_result A9 FAIL "out of order, or the first request did not hold each question once, or the conversation does not hold one appended exchange per question ($counts), or the resumed agent did not carry on from them"
   fi
 }
 
