@@ -8,8 +8,8 @@
 # the same literal, and a refusal names the source that served the bytes.
 #
 # Each row's `version` agrees with the pin that decides which version a job installs:
-# `version=` in .github/actions/install-crane/action.yml for crane,
-# `version=` in .github/actions/install-changie/action.yml for changie,
+# for crane and changie the row is the pin itself, since install-crane and install-changie hold
+# no version of their own and install the version this row names,
 # `ARG MISE_VERSION` of packages/daemon/docker/worker.Dockerfile for mise,
 # `ARG JJ_TOOL` of that same file for jj,
 # and .bun-version for the three bun rows.
