@@ -121,14 +121,17 @@ jobs:
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/dispatch/docs
         working-directory: packages/envoy
       # Everything the three race jobs run is left out here, since they run it under the detector,
-      # and so is internal/integration, which the integration step below tests. The pattern is
-      # built in .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built
-      # from, so what this step leaves out and what the lane runs cannot drift apart. What is left
-      # is the rest of the module, the two longest packages of it (the API's and the documents
-      # service's) now among the ones the lane runs, so its 20 minutes are ample.
+      # and so is internal/integration, which the integration step below tests, and
+      # internal/textcheck, whose tests are the text-check job's: that job runs them in a job
+      # with no database and no Bun, and a change to only what they read must not start this
+      # one. The pattern is built in .github/scripts/ci_job_reads.py from the same list those
+      # jobs' own steps are built from, so what this step leaves out and what the other jobs run
+      # cannot drift apart. What is left is the rest of the module, the two longest packages of
+      # it (the API's and the documents service's) now among the ones the lane runs, so its 20
+      # minutes are ample.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m
         working-directory: packages/envoy
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.

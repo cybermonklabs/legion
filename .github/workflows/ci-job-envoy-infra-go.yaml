@@ -72,8 +72,19 @@ jobs:
       - name: Vet envoy-infra, its live-test tags included
         run: go vet -tags pulumilive,natslive ./...
         working-directory: packages/envoy/infra
+      # Every package of the module except internal/textcheck, whose tests are the text-check
+      # job's: a change to only what they read must not start this job, and they must not run
+      # twice. `go test ./...` cannot say "but one package", so the step lists the packages and
+      # drops that one before go test sees them, as the envoy and daemon lanes do;
+      # `set -o pipefail` is what makes a failed go list, or a pattern that matches every
+      # package, fail the step rather than pass it with nothing tested. The pattern is built in
+      # .github/scripts/ci_job_reads.py from the package name the text-check job's own steps are
+      # built from. The vet step above still compiles the text checks, which keeps them
+      # compiling as the module changes.
       - name: Unit test envoy-infra
-        run: go test -count=1 ./...
+        run: |
+          set -o pipefail
+          go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
         working-directory: packages/envoy/infra
       - name: Live tests of envoy-infra against nats-server (natslive)
         # gcp's live tests build helm, nats-server, the config reloader and the exporter with go

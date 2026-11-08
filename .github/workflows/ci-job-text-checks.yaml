@@ -1,0 +1,101 @@
+name: CI job text-checks
+
+# The steps of ci.yaml's `text-checks` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. Every filter of the `changes` job names ci.yaml today, so a
+# change to that one file runs every job; once this job's filter names this file instead, a
+# change to these steps selects this job alone.
+#
+# What runs here is the tests whose subject is text: a guide's wording against the code it
+# pins, a file copied from one tree to another, the imports a package may have, and the
+# Dispatch API's six source guards, which read the module's own source. None of them starts a
+# server, a container or a database, so none of them belongs in a Postgres-backed product
+# suite, where it waited behind that suite's fixtures and ran again on every change to the
+# module. Each module keeps its own package of them, internal/textcheck, and this job runs
+# those three packages and the guards' eleven tests; the three product lanes leave exactly
+# those out of their own runs (.github/scripts/ci_job_reads.py's TEXT_CHECK_PACKAGE and
+# TEXT_CHECK_TESTS build both sides), so each of these tests runs once per run of the router.
+#
+# packages/envoy/infra is a module of its own, with a go.work of its own binding it and
+# packages/envoy, so its text checks run from inside that directory rather than through the
+# root workspace.
+#
+# -count=1 on every call: these tests read files outside their own modules - a guide under
+# docs/, a skill under skills/, the committed extract beside the code it pins - and Go's test
+# cache keys on neither, so a cached pass would say nothing about the text as it now stands.
+#
+# The job restores no Actions cache. The six Go cache families ci.yaml's header lists are each
+# filled for a job that builds a whole module's binaries or test binaries, and this job builds
+# four packages: measured here, its four calls take 4 minutes 4 seconds with an empty build
+# cache and 34 seconds with a warm one, which is less than the download and extraction of any
+# of those families would cost it. setup-go caches nothing either (`cache: false`), as in every
+# job of ci.yaml.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+# A `|` between proxy entries makes a go command fall through to the next source after ANY error,
+# where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
+# proxy.golang.org reset a download mid-stream and turned a Go lane red on a module whose hash
+# go.sum already holds (sjawhar/legion#2512); with `|direct` the command fetches the same bytes
+# straight from the source and checks them against go.sum, so this is a second path, not a weaker
+# check.
+env:
+  GOPROXY: https://proxy.golang.org|direct
+
+jobs:
+  text-checks:
+    runs-on: ubuntu-24.04
+    # Three times the cold measurement in the header, which is what a runner that restores no
+    # build cache does on every run.
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # All three modules pin the same Go in their go.mod, so one install serves the three
+      # directories below; packages/envoy's is the one this reads.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - name: Check the text packages/envoy pins
+        run: go test -count=1 ./internal/textcheck/
+        working-directory: packages/envoy
+      - name: Check the text packages/envoy/infra pins
+        run: go test -count=1 ./internal/textcheck/
+        working-directory: packages/envoy/infra
+      - name: Check the text packages/daemon pins
+        run: go test -count=1 ./internal/textcheck/
+        working-directory: packages/daemon
+      # The API's six source guards read the module's source and open no database, so they run
+      # here rather than in the job that carries Postgres for that package. They sit in the
+      # package they guard, beside its Postgres-backed tests, so this step selects them by name:
+      # the list is generated in .github/scripts/ci_job_reads.py from TEXT_CHECK_TESTS, the same
+      # declaration that leaves exactly these eleven out of envoy-go's plain step, so a guard
+      # test added or renamed reaches both or fails the ci-filters job naming this step. The
+      # package's other tests skip without DISPATCH_TEST_DATABASE_URL, and -run keeps this step
+      # from even building their fixtures' work.
+      - name: Test the Dispatch API's source guards (no database)
+        run: go test -count=1 -run '^(TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestEveryReviewReadOrdersByReviewOrder|TestNoForUpdateOnOwnerTables|TestOnlyTheBrokerInsertsEvents|TestOnlyWriteReviewWritesReviews|TestTheKeyedWriteGuardSeesWhatItGuards|TestTheReviewOrderGuardReadsBothOrders|TestTheReviewWriterPatternsReadEveryNameOfTheTable|TestTheReviewWriterScanFindsAnIdentifierNamingTheTable)$' ./internal/dispatch/api
+        working-directory: packages/envoy
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: text-checks
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

@@ -511,18 +511,84 @@ FINALIZERS_STEP = "Test the document service under the cleanup detector"
 FINALIZERS_SCRIPT = "GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m ./internal/dispatch/docs/"
 
 
+# ---------------------------------------------------------------- the text checks
+# The package each of the three modules keeps the tests whose subject is text in: a guide's
+# wording, a file copied from one tree to another, the imports a package may have. The
+# text-check job runs those three packages, and the three product lanes leave them out of their
+# own runs, so each of those tests runs once and in a job with no database. The name is written
+# here once and every one of those six steps is built from it, so a package that moves cannot
+# stay compiled into a lane that no longer means to run it.
+TEXT_CHECK_PACKAGE = "internal/textcheck"
+
+
+def has_go_files(directory: Path) -> bool:
+    """Whether a `./<directory>/...` pattern names any package at all: a .go file under it, in a
+    directory the go command does not pass over (go_skips_dir). `go list` answers a pattern that
+    names none with a warning and no package, so packages_but() leaves such a directory out."""
+    for current, subdirs, names in os.walk(directory):
+        here = Path(current)
+        subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(here, s))
+        if any(n.endswith(".go") for n in names):
+            return True
+    return False
+
+
+def packages_but(root: str, excluded: str) -> list:
+    """The `go list` patterns that together name every package `./...` names in the module at
+    `root` but the one at `excluded`: a `/...` pattern for each directory the excluded package
+    is not under, and, for each directory it is under, that directory's own package where it has
+    one. A step that pipes `go list ./...` through a `grep -Ev` tests exactly these, so the Run
+    standing for it names them rather than the superset `./...`. The superset is what the
+    envoy-go unit step's Run and the test job's plain one said while the only thing they left out
+    was a package another job of the same filter ran; it cannot stand once the excluded package
+    is another job's, since the closure of `./...` carries that package's RULES - the files only
+    its tests read - onto this job's filter, and a change to one of them would go on starting a
+    job that no longer runs the test that reads it."""
+    base, target = Path(root), Path(root) / excluded
+    if not target.is_dir():
+        raise ValueError(f"{target} is no directory, so no lane can be leaving it out; follow the package, "
+                         "or drop the call")
+    found = []
+
+    def walk(here: Path):
+        if any(entry.name.endswith(".go") for entry in here.iterdir() if entry.is_file()):
+            found.append("./" if here == base else f"./{here.relative_to(base).as_posix()}/")
+        for name in sorted(d.name for d in here.iterdir() if d.is_dir() and not go_skips_dir(here, d.name)):
+            child = here / name
+            if child == target:
+                continue
+            if target.is_relative_to(child):
+                walk(child)
+            elif has_go_files(child):
+                found.append(f"./{child.relative_to(base).as_posix()}/...")
+
+    walk(base)
+    return found
+
+
+# envoy-infra's plain run, which leaves the text checks out the way the other two lanes leave
+# theirs out: `go test ./...` cannot name "every package but one", so the step lists the module's
+# packages and drops that one before go test sees them. `set -o pipefail` is what makes a failed
+# go list fail the step rather than pass it with nothing tested.
+INFRA_PLAIN_STEP = "Unit test envoy-infra"
+INFRA_PLAIN_SCRIPT = f"""\
+set -o pipefail
+go list ./... | grep -Ev '/{TEXT_CHECK_PACKAGE}$' | xargs go test -count=1"""
+
+
 # The three packages the test job's race step runs, and which its plain step therefore leaves out.
 # One list: both step texts below are built from it, and check-ci-filters.sh fails when either step
 # in ci.yaml differs from the text built here, so the two steps cannot name different sets.
 # internal/record is not among them: its product code starts no goroutine and uses no sync, so the
 # detector has nothing of the package to find there. Its own tests do start goroutines, and the
-# cover the detector gave those is what this trade gives up.
+# cover the detector gave those is what this trade gives up. The plain step leaves out one more
+# package than the race step runs, the text checks, which are the text-check job's.
 DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher"]
 DAEMON_RACE_STEP = "Test the concurrent packages under the race detector"
 DAEMON_RACE_PKGS = [f"./{p}/" for p in DAEMON_RACE_PACKAGES]
 DAEMON_RACE_TEXT = "go test -count=1 -race -timeout 30m " + " ".join(DAEMON_RACE_PKGS)
 DAEMON_PLAIN_STEP = "Test the Go daemon"
-DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES) + ")$"
+DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]) + ")$"
 DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
 go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m"""
@@ -579,14 +645,15 @@ def race_step(job):
     return step_run(job.job, job.step, text, ENVOY, pkgs, race=True)
 
 
-# The unit step runs the module less two things: the lane's packages, which the three race jobs
-# run under the detector, and internal/integration, which envoy-go's integration step runs. Its
-# `grep -Ev` is `/integration`, then, in the lane's own order, each package in the form go list's
-# import paths need - a tree matching the package and everything under it, any other the package
-# alone.
+# The unit step runs the module less three things: the lane's packages, which the three race jobs
+# run under the detector, internal/integration, which envoy-go's integration step runs, and the
+# text checks, which the text-check job runs. Its `grep -Ev` is `/integration`, then the text
+# checks, then, in the lane's own order, each package in the form go list's import paths need - a
+# tree matching the package and everything under it, any other the package alone.
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
-    ["/integration"] + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
+    ["/integration", f"/{TEXT_CHECK_PACKAGE}$"]
+    + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages])
 UNIT_TEST_SCRIPT = f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | xargs go test -count=1 -timeout 20m"
 
 
@@ -817,6 +884,27 @@ RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
 RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
 
 
+# The text-check job: the three modules' text checks, and the eleven tests of the Dispatch API's
+# six source guards. The guards read the module's source and no database, so they belong here
+# rather than in the Postgres-backed suites, and they are the one thing here the job cannot name
+# by package: their package holds the API's own Postgres-backed tests too, so the step selects
+# them by name. The -run list is built from TEXT_CHECK_TESTS, the same declaration that leaves
+# exactly those eleven out of envoy-go's plain step, so neither step can lose a guard test or
+# run one twice. Each call passes -count=1: these packages read files outside their own modules,
+# which Go's test cache keys on neither, so a cached pass would say nothing about the text as it
+# now stands.
+TEXT_CHECK_JOB = "text-checks"
+TEXT_CHECK_PKG = f"./{TEXT_CHECK_PACKAGE}/"
+TEXT_CHECK_TEXT = f"go test -count=1 {TEXT_CHECK_PKG}"
+TEXT_CHECK_STEPS = {ENVOY: "Check the text packages/envoy pins", INFRA: "Check the text packages/envoy/infra pins",
+                    DAEMON: "Check the text packages/daemon pins"}
+GUARD_PACKAGE = "./internal/dispatch/api"
+GUARD_STEP = "Test the Dispatch API's source guards (no database)"
+GUARD_SCRIPT = ("go test -count=1 -run "
+                f"'^({'|'.join(sorted(name for names in TEXT_CHECK_TESTS.values() for name in names))})$' "
+                f"{GUARD_PACKAGE}")
+
+
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
 BUILD_BINARIES = "docs/site/scripts/build-binaries.sh"
 DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch"
@@ -857,11 +945,14 @@ GATES = [
                    at("test", "bun test scripts/e2e/lib"), ENVOY, ["./cmd/listener"], mode="build"),
     ], exact=[
         # check-ci-filters.sh reduces only a one-line go test, so the step's whole script is
-        # pinned, as the envoy-go unit step's is. A Run cannot name "./... but the four", so the
-        # entry declares the superset ./..., as the envoy-go unit step's does; the race step's Run
-        # above is what claims the four.
+        # pinned, as the envoy-go unit step's is. The Run names the module's packages but the
+        # text checks (packages_but), rather than the superset ./...: the race step's Run above
+        # claims the three packages this step also leaves out, which are this job's own, while
+        # the text checks are the text-check job's, and a Run saying ./... would keep what only
+        # their tests read - docs/kubernetes.md - on this job's filter.
         pinned_step("test", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
-            (DAEMON, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
+            (DAEMON, packages_but(DAEMON, TEXT_CHECK_PACKAGE),
+             "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
         ]),
     ], reads=CLAUDE_ENVOY_BUILD + reads(
         (".github/scripts/*", f"{at('test', 'Test release scripts')} and the steps after it: each .github/scripts/*.test.sh sources "
@@ -1156,11 +1247,15 @@ GATES = [
             (ENVOY, [f"./{under}"], f"go test -run of what the race build cannot run in ./{under}", {})
             for under in RACE_IMPOSSIBLE_PACKAGES
         ]),
-        # ./... but the race lane's packages and internal/integration, which the integration step
-        # tests: a Run cannot name "./... but those", so the entry declares the superset ./...,
-        # which over-declares and so keeps this gate's wide patterns justified.
+        # The module but the race lane's packages, internal/integration, which the integration
+        # step tests, and the text checks, which the text-check job runs. The Run names the
+        # packages the step is left with (packages_but) rather than the superset ./...: the
+        # first two sets are claimed by Runs of jobs this gate's own wide patterns already
+        # cover, while the text checks are another job's, and a Run saying ./... would keep
+        # what only their tests read - docs/kubernetes.md - on this job's filter.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
-            (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
+            (ENVOY, packages_but(ENVOY, TEXT_CHECK_PACKAGE),
+             "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
         ]),
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, and the
         # one test of internal/bus that needs a real server image. The rest of internal/testnats
@@ -1209,8 +1304,16 @@ GATES = [
     gate("envoy_infra_go", "envoy-infra-go", runs=[
         step_run("envoy-infra-go", "Vet envoy-infra, its live-test tags included", "go vet -tags pulumilive,natslive ./...", INFRA, ["./..."],
                  tags="pulumilive,natslive", mode="vet"),
-        step_run("envoy-infra-go", "Unit test envoy-infra", "go test -count=1 ./...", INFRA, ["./..."]),
     ], exact=[
+        # The module but the text checks, which the text-check job runs: `go test ./...` cannot
+        # say "but one package", so the step lists the packages and drops that one, and is
+        # pinned whole as the other two lanes' plain steps are. The vet step above still
+        # compiles the text checks, and must: vetting them keeps them compiling, and a vet run
+        # reads none of the files a test of theirs reads.
+        pinned_step("envoy-infra-go", INFRA_PLAIN_STEP, INFRA, INFRA_PLAIN_SCRIPT, [
+            (INFRA, packages_but(INFRA, TEXT_CHECK_PACKAGE),
+             "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
+        ]),
         # One go test per package, each running only what the natslive tag adds to it.
         pinned_step("envoy-infra-go", INFRA_NATSLIVE_STEP, INFRA, INFRA_NATSLIVE_SCRIPT, [
             (INFRA, [pkg], f"go test -tags natslive {pkg}", {"tags": "natslive"})
@@ -1223,6 +1326,25 @@ GATES = [
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
     ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + CI_SELF + job_self("envoy-infra-go")),
+
+    # The text-check job: one `go test` of each module's text checks, in that module's own
+    # directory, and the Dispatch API's source guards by name. Two workspaces meet here - the
+    # root go.work binds packages/daemon and packages/envoy, packages/envoy/infra's own binds
+    # itself and packages/envoy - so each Run's workspace names the module files it reads. No
+    # Bun and no database: nothing here starts either.
+    gate("text_checks", TEXT_CHECK_JOB, runs=[
+        step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[ENVOY], TEXT_CHECK_TEXT, ENVOY, [TEXT_CHECK_PKG]),
+        step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[INFRA], TEXT_CHECK_TEXT, INFRA, [TEXT_CHECK_PKG]),
+        step_run(TEXT_CHECK_JOB, TEXT_CHECK_STEPS[DAEMON], TEXT_CHECK_TEXT, DAEMON, [TEXT_CHECK_PKG]),
+    ], exact=[
+        # The eleven guard tests by name: a -run is outside the simple form, so the step is
+        # pinned whole. A -run moves no closure - the whole package compiles whichever tests the
+        # run selects - so the Run is the plain go test of the package, which is why this gate
+        # reads everything the API's tests read.
+        pinned_step(TEXT_CHECK_JOB, GUARD_STEP, ENVOY, GUARD_SCRIPT, [
+            (ENVOY, [GUARD_PACKAGE], f"go test -run of the API's eleven source guards in {GUARD_PACKAGE}", {}),
+        ]),
+    ], reads=setup_go(TEXT_CHECK_JOB, f"{ENVOY}/go.mod") + CI_SELF + job_self(TEXT_CHECK_JOB)),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one

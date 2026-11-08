@@ -304,14 +304,17 @@ jobs:
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           unshare --user --map-root-user true
 
-      # The step runs every package of the module except the three the race step below tests, so
-      # each of those runs once per job, under the detector. `set -o pipefail` is what makes a
-      # failed go list, or a pattern that matches every package, fail the step rather than pass it
-      # with nothing tested.
+      # The step runs every package of the module except the three the race step below tests and
+      # internal/textcheck, whose tests are the text-check job's: so each of the three runs once
+      # per job, under the detector, and the text checks run once per run of the router, in a
+      # job with no database. `set -o pipefail` is what makes a failed go list, or a pattern
+      # that matches every package, fail the step rather than pass it with nothing tested. The
+      # pattern is built in .github/scripts/ci_job_reads.py from the race step's own package
+      # list and that one package name, so the two steps cannot name different sets.
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher)$' | xargs go test -count=1 -timeout 15m
+          go list ./... | grep -Ev '/(internal/daemon|internal/sessionproxy|internal/launcher|internal/textcheck)$' | xargs go test -count=1 -timeout 15m
         working-directory: packages/daemon
 
       # The outbox's lane registry, lease renewal and held clock are the daemon's first goroutines
