@@ -47,3 +47,4 @@ jobs:
           job: contracts
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
+# selection probe: one CI job definition file
