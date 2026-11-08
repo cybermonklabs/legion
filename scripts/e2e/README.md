@@ -264,7 +264,9 @@ Each item below names a script, then what it proves.
 
   a Legion phase worker whose task line names a stale plan-handoff pointer builds from the issue's `plan.md` as it stands (dispatch://INFRA-2038), over two arms that differ in the implementer's role prompt alone:
   the head arm's is composed from this checkout's `packages/daemon`, the control's from the daemon module of the commit `--base-commit` names, taken with `git archive`, and both are composed by the daemon's own composer.
-  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions whose design changed after the version the accepted handoff cites, six `plan` handoff records, and the plan approved at the first version — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes a ninth plan version under that session the moment it first reads the plan, and prints a row naming every plan version it read and when, which design it wrote, the trigger and both plan-read times.
+  Each run stages one issue on a Dispatch server and a database of its own — a `plan.md` at eight versions whose design changed after the version the accepted handoff cites, six `plan` handoff records, and the plan approved at the first version — runs one real headless Oh My Pi session on the composed prompt with the daemon's own task line, writes a ninth plan version under that session the moment it first reads the plan, and prints a row naming the staging it came from, every plan version it read and when, which design it wrote, the trigger and both plan-read times.
+  `--tasks 1` stages a plan of one task, which begins after that ninth version lands, so a worker that reads the plan once cannot reach it and the new text's effect is visible.
+  `--tasks 2`, the default, stages a plan of two tasks, where a worker that reads the plan again between them reaches the ninth version: this staging measures how often a worker reads the plan again when no text tells it to.
   A reproduction and a control, never a rate.
   A model and a loopback PostgreSQL; no daemon, no cluster, no GitHub
 
@@ -4183,12 +4185,18 @@ The issues, pull requests, slots and the claims the boot relaunches are seeded t
 
 ```sh
 LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-  LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh [--runs <n>] [--base-commit <rev>]     # → "plan pointer drive: PASS in <n>s", exit 0
+  LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh \
+  [--runs <n>] [--tasks <1|2>] [--base-commit <rev>]     # → "plan pointer drive: PASS in <n>s", exit 0
 ```
 
 dispatch://INFRA-2038's live proof that a Legion phase worker whose task line names a stale plan-handoff pointer builds from the issue's `plan.md` as it stands.
 A grep over the prompt files says the words changed;
 only a session says what an agent reading them writes, and only a control says the change caused it ([`docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md`](../../docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md)).
+
+`--tasks` chooses one of two stagings, and each staging is run on both arms.
+`--tasks 1` stages a plan of one task, the scored one, which begins after the mid-session version lands: a worker that reads the plan once cannot reach that version, so this staging is where the new text's effect is visible.
+`--tasks 2`, the default, stages a plan of two tasks, where a worker that reads the plan again between them reaches the mid-session version: this staging measures how often a worker reads the plan again when no text tells it to.
+Every other part of a run is the same in both.
 
 The two arms differ in one thing, the implementer's role prompt:
 
@@ -4209,6 +4217,7 @@ Its inputs:
 | `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
 | `LEGION_GH_PATH` | optional: the real `gh` the composer is told; the first `gh` on `PATH` otherwise, which the composer refuses when it is a script |
 | `--runs <n>` | how many runs each arm makes, default 1; three or more is what a reading needs |
+| `--tasks <n>` | how many tasks the staged plan holds, 1 or 2, default 2: `1` is the staging whose only task begins after the mid-session version lands, `2` the staging where a worker that reads the plan again between the two tasks reaches that version |
 | `--base-commit <rev>` | the control's commit, default `jj log -r 'trunk()'` of this checkout |
 | `PLAN_POINTER_DRIVE_TRIGGER_SECONDS` | the watcher's bound, default 120 |
 | `PLAN_POINTER_DRIVE_SESSION_SECONDS` | each session's bound, default 900 |
@@ -4220,23 +4229,24 @@ Each attempt of a run stages its own world and reads one row off it:
 | :--- | :--- |
 | `<arm>-<n> try <k> database` | `createdb` on that server |
 | `<arm>-<n> try <k> dispatch` | the e2e harness's Dispatch on it ([`packages/dispatch/e2e/run-server.sh`](../../packages/dispatch/e2e/run-server.sh), its fakes at port 1 and no secrets broker, as pi-legion's skill-scenario rig starts it), on the port the kernel chose, read from its own `msg="dispatch: listening"` line; its agent bearer is the pinned `e2e-token` |
-| `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of two tasks at eight versions whose design changes at version 4, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), and the plan review's approval at version 1, so "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are three different answers |
+| `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of one task or two, as `--tasks` says, at eight versions whose design changes at version 4, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), and the plan review's approval at version 1, so "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are three different answers |
 | `<arm>-<n> try <k> prompt` | the arm's prompt, composed as above |
 | `<arm>-<n> try <k> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` |
-| `<arm>-<n> try <k> task` | the task line, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names a file for each of the plan's two tasks, a third for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
+| `<arm>-<n> try <k> task` | the task line, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names one file for each task the staged plan holds, one more for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
 | `<arm>-<n> try <k> session` | one real headless session, `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), the staged server as its Dispatch and an Envoy address nothing listens on, the watcher beside it writing plan.md version 9 — the second design change, with the plan review's approval of it — the moment the session's first read of the plan's text reaches the transcript, or at its bound when no such read does |
-| `<arm>-<n> try <k> row` | the attempt's row, from the transcript and the two files the session wrote |
+| `<arm>-<n> try <k> row` | the attempt's row, from the transcript and the file of each task the session wrote |
 
-Each design names one call — `pulumi.Import` at version 1, `aws.s3.BucketV2` from version 4, `pulumi.Alias` at the version written mid-session — and each of the plan's two tasks tells the implementer to write that call to a file of its own, `note: <call>` for the first task and `adopt: <call>` for the second.
-The row says which design the session built from by reading those two files, never by reading what the session said.
-The second task's file is the one the summary counts, because a worker that reads the plan again between the two tasks reads it before that file is written.
+Each design names one call — `pulumi.Import` at version 1, `aws.s3.BucketV2` from version 4, `pulumi.Alias` at the version written mid-session — and each task of the staged plan tells the implementer to write that call to a file of its own.
+With two tasks the first task's file carries `note: <call>` and the second `adopt: <call>`, and the second file is the one the summary counts, because a worker that reads the plan again between the two tasks reads it before that file is written.
+With one task the plan holds that scored task alone, so the session writes `adopt: <call>` and no first file: the row's `first-wrote` and `first-design` read `none` and its `designs-differ` reads `no`.
+The row says which design the session built from by reading those files, never by reading what the session said.
 Every version of `plan.md` carries a `PLANREV-<version>` marker, which is how a tool result in the transcript says which version the session read, and how the watcher tells a read of the plan from any other command.
-A row names the arm, the run, which attempt of it wrote the row, the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, every plan read with its time, the trigger and the times it fired and the version landed, the call each of the two files holds, and three judgements:
+A row names the arm, the run, which attempt of it wrote the row, the staging it came from (`tasks=1` or `tasks=2`), the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, every plan read with its time, the trigger and the times it fired and the version landed, the call each task's file holds, and three judgements:
 `designs-differ=yes` when the two files name different designs, which is the plan read again between the two tasks, `start-only-read=yes` when every plan read of the session's is older than the mid-session version's landing, and `scorable=no` when that version landed after the session stopped writing.
 An unscorable attempt is neither a pass nor a failure, since no turn of its session saw the new version.
 The shell prints one line for it, with the two times, and makes the run again, up to `PLAN_POINTER_DRIVE_ATTEMPTS` attempts.
 A run whose every attempt is unscorable fails.
-One `summary` line per arm counts the kept rows, one per run, and its `attempts=` is how many sessions that arm ran, the discarded attempts included.
+One `summary` line per arm names the staging too and counts the kept rows, one per run, and its `attempts=` is how many sessions that arm ran, the discarded attempts included.
 The work directory under `TMPDIR` is kept and printed either way, since the transcripts, prompts, task lines and rows in it are the evidence;
 only the extracted base tree is removed.
 
@@ -4245,7 +4255,7 @@ no daemon runs, so that the task line it writes is the line a daemon sends is th
 the session holds no `legion` tool, no jj workspace and no GitHub, so it completes no phase, opens no pull request and records nothing on the issue;
 Envoy is an address nothing listens on, so no role topic, message or notice reaches the session;
 and `skill://legion-worker` resolves to the `skills/legion-worker/SKILL.md` installed on the box, never this checkout's, so a change to that file is read by this drive rather than driven by it.
-A run whose two files name the same design does not say whether the session read the plan again, only that the second file carries no newer design.
+With `--tasks 2`, a run whose two files name the same design does not say whether the session read the plan again, only that the second file carries no newer design.
 Two arms over a few runs are a reproduction and a control, not a rate.
 
 ## envoy-session-delivery.sh

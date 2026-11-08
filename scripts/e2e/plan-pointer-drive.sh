@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # The live proof that a Legion phase worker whose task line names a stale plan-handoff pointer
-# builds from the issue's `plan.md` as it stands (dispatch://INFRA-2038). One staged case is run
-# twice, as two arms that differ in one thing: the implementer's role prompt. The head arm
-# composes it from this checkout's own `packages/daemon`, with the change's new text; the base arm
+# builds from the issue's `plan.md` as it stands (dispatch://INFRA-2038). `--tasks` chooses one
+# of two stagings, and each staging is run twice, as two arms that differ in one thing: the
+# implementer's role prompt. The head arm composes it from this checkout's own `packages/daemon`,
+# with the change's new text; the base arm
 # composes it from the daemon module of the commit `--base-commit` names, taken with `git archive`
 # into the run's own work directory, which is the control that carries no such text. Both arms
 # compose through the daemon's own composer (`workerPane`,
@@ -10,6 +11,15 @@
 # the daemon would send it, and the whole `--append-system-prompt` argument is turned into the
 # prompt file by the shell rather than by a regular expression
 # (docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md).
+#
+# The two stagings answer two different questions:
+#
+#   --tasks 1  the staged plan holds one task, the scored one, and the mid-session version lands
+#              before that task begins. A worker that reads the plan once cannot reach the new
+#              version, so this staging is where the new text's effect is visible.
+#   --tasks 2  the staged plan holds two tasks, and a worker that reads the plan again between
+#              them reaches the new version. This staging measures how many workers read the
+#              plan again when no text tells them to.
 #
 # Each run stages one issue on a Dispatch server and a database of its own, runs one real headless
 # Oh My Pi session against it, and moves the plan under that session while it works. One attempt
@@ -23,27 +33,31 @@
 #      plan.md version 1 and the sixth version 8, and the plan review's approval at version 1, so
 #      "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are
 #      different answers. Each design names one call - `pulumi.Import`, `aws.s3.BucketV2`, and
-#      `pulumi.Alias` at the version written mid-session - and each of the plan's two tasks is to
-#      write that call to a file, so the score reads an artifact rather than prose about one. The
-#      first task's file carries `note: <call>` and the second `adopt: <call>`. The second is the
-#      file the row scores, because a worker that reads the plan again between the two tasks
-#      reads it before that file is written;
+#      `pulumi.Alias` at the version written mid-session - and each task of the plan is to write
+#      that call to a file, so the score reads an artifact rather than prose about one. With
+#      --tasks 2 the first task's file carries `note: <call>` and the second `adopt: <call>`. The
+#      second is the file the row scores, because a worker that reads the plan again between the
+#      two tasks reads it before that file is written. With --tasks 1 the plan holds that scored
+#      task alone and its file carries `adopt: <call>`, so no first task's file is written and
+#      the row's first-wrote and first-design read `none` with designs-differ `no`;
 #   3. the implementer's pane prompt, composed from the arm's daemon module;
 #   4. the session: `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`,
 #      `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*`, `PI_SESSION_*` and `PI_TOOL_CALL_ID`
 #      variable of this shell unset, `OMP_SESSION_STORAGE=file`, and the staged server as its own
 #      Dispatch. Its task is an ordinary implementing assignment whose `Handoff:` line is the one
 #      the daemon renders (packages/daemon/internal/workflow/effects.go), naming plan version 1
-#      and nothing else: it asks for the plan's two tasks, each one's line written to a file of
-#      the run's own, and for the round's `implement` handoff body, written to a third, which a
-#      worker with no workspace can all do and which the role prompt reads the plan again before;
+#      and nothing else: it asks for each task of the plan, each one's line written to a file of
+#      the run's own, and for the round's `implement` handoff body, written to one more file,
+#      which a worker with no workspace can all do and which the role prompt reads the plan again
+#      before;
 #   5. the watcher, which writes plan.md version 9 - the second design change, with the plan
 #      review's approval of it - the moment the session's first read of the plan's text appears in
 #      the transcript, and at its bound when no such read appears;
-#   6. the run's row: every plan version the session read and when, the design each of the two
-#      files names, read off the files, whether the two differ, the task line the session was
-#      given, the version the accepted handoff record cites, the trigger, and the times the
-#      trigger fired and the version landed.
+#   6. the run's row: which staging it came from (tasks=1 or tasks=2), every plan version the
+#      session read and when, the design each task's file names, read off the files, whether the
+#      two differ, the task line the session was given, the version the accepted handoff record
+#      cites, the trigger, and the times the trigger fired and the version landed. The summary
+#      line of each arm names the staging too.
 #
 # An attempt whose mid-session version landed after the session stopped writing is unscorable: no
 # turn of the session saw the new version, so the attempt is neither a pass nor a failure. The
@@ -52,21 +66,23 @@
 # whose every attempt is unscorable fails.
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
-#     LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh [--runs <n>] [--base-commit <rev>]
+#     LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh \
+#     [--runs <n>] [--tasks <1|2>] [--base-commit <rev>]
 #
 # LEGION_TEST_PG_DSN is required and names a loopback PostgreSQL server this run creates databases
 # on; its own database is never written. LEGION_OMP_PATH is required and names the Oh My Pi binary
 # the sessions run, which must reach a model. --runs is how many runs each arm makes (default 1;
-# three or more is what a reading needs). --base-commit is the commit the control's daemon module
-# is taken from (default `jj log -r 'trunk()'`); `git archive` takes `packages/daemon` and
+# three or more is what a reading needs). --tasks is how many tasks the staged plan holds, 1 or
+# 2 (default 2, the staging a bare run makes). --base-commit is the commit the control's daemon
+# module is taken from (default `jj log -r 'trunk()'`); `git archive` takes `packages/daemon` and
 # `packages/envoy` of it, the second because `packages/daemon/go.mod` replaces
 # `github.com/sjawhar/envoy` with `../envoy` and the composer runs `go run` in that module.
 # PLAN_POINTER_DRIVE_TRIGGER_SECONDS (120) is the watcher's bound,
 # PLAN_POINTER_DRIVE_SESSION_SECONDS (900) each session's, and PLAN_POINTER_DRIVE_ATTEMPTS (3)
 # how many attempts one run makes before an unscorable run fails. The run refuses to start - no
 # database, no server, no session - when LEGION_TEST_PG_DSN is unset or names a host that is not
-# loopback, when LEGION_OMP_PATH is not executable, or when either arm's daemon module is
-# missing.
+# loopback, when LEGION_OMP_PATH is not executable, when --tasks is neither 1 nor 2, or when
+# either arm's daemon module is missing.
 #
 # Each run's database is dropped when the run ends, and the teardown drops every database the run
 # made, on success and on failure: the PostgreSQL server is a shared one. The work directory under
@@ -80,9 +96,9 @@
 # is an address nothing listens on, so no role topic and no message reach the session; and
 # `skills/legion-worker/SKILL.md` is the one this box has installed for a session's `skill://`
 # read, never the checkout's, so a change to that file is read by this drive rather than driven by
-# it. A run whose two files name the same design does not say whether the session read the plan
-# again: it says only that the second file carries no newer design. Two arms over a few runs are
-# a reproduction and a control, not a rate.
+# it. With --tasks 2, a run whose two files name the same design does not say whether the session
+# read the plan again: it says only that the second file carries no newer design. Two arms over a
+# few runs are a reproduction and a control, not a rate.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -113,6 +129,8 @@ timeout_hook=''
 unset PGHOSTADDR
 
 runs=1
+# How many tasks the staged plan holds. 2 is what a bare run makes.
+tasks=2
 base_commit=''
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -125,6 +143,15 @@ while [ $# -gt 0 ]; do
       runs=${1#--runs=}
       shift
       ;;
+    --tasks)
+      [ $# -ge 2 ] || fail "--tasks takes how many tasks the staged plan holds, 1 or 2"
+      tasks=$2
+      shift 2
+      ;;
+    --tasks=*)
+      tasks=${1#--tasks=}
+      shift
+      ;;
     --base-commit)
       [ $# -ge 2 ] || fail "--base-commit takes the commit the control's daemon module is taken from"
       base_commit=$2
@@ -134,7 +161,7 @@ while [ $# -gt 0 ]; do
       base_commit=${1#--base-commit=}
       shift
       ;;
-    *) fail "unknown argument '$1': this script takes --runs <n> and --base-commit <rev>" ;;
+    *) fail "unknown argument '$1': this script takes --runs <n>, --tasks <1|2> and --base-commit <rev>" ;;
   esac
 done
 
@@ -255,10 +282,15 @@ base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null
 case "$runs" in
   '' | *[!0-9]* | 0*) fail "--runs takes a count from 1 up, not '$runs'" ;;
 esac
+case "$tasks" in
+  1 | 2) ;;
+  *) fail "--tasks takes 1 or 2, not '$tasks': the staged plan holds one task or two" ;;
+esac
 case "$attempts" in
   '' | *[!0-9]* | 0*) fail "PLAN_POINTER_DRIVE_ATTEMPTS takes a count from 1 up, not '$attempts'" ;;
 esac
 note "PostgreSQL $db_host:$db_port as $db_user, $runs run(s) per arm, up to $attempts attempt(s) each"
+note "the staged plan holds $tasks task(s)"
 note "head arm $head_module, base arm $base_sha"
 pass
 
@@ -326,7 +358,7 @@ run_attempt() {
 
   begin "$run seed"
   PLAYWRIGHT_BASE_URL=$dispatch_url E2E_AGENT_TOKEN=e2e-token \
-    bun "$root/scripts/e2e/plan-pointer-drive.ts" seed "$run_dir" ||
+    bun "$root/scripts/e2e/plan-pointer-drive.ts" seed "$run_dir" "$tasks" ||
     fail "the staged issue was not seeded on $dispatch_url"
   issue=$(json_field issue "$run_dir/seed.json") || fail "the seed names no issue"
   title=$(json_field title "$run_dir/seed.json") || fail "the seed names no title"
@@ -372,10 +404,17 @@ run_attempt() {
   begin "$run task"
   # The `Handoff:` line is the one the daemon renders (task, effects.go): the phase's word, the
   # version the daemon accepted, and the command that reads that version. Nothing else in the task
-  # names a plan version, and nothing in it says the plan can have moved.
-  printf 'Continue %s. Issue: %s. Phase: implementing. Handoff: plan version 1 (dispatch handoff-read --issue %s --phase plan --version 1). This box carries no workspace, no jj and no GitHub for this issue, so your round is the plan'"'"'s two tasks and your own record of them: write task 1'"'"'s line to %s with the write tool, then write task 2'"'"'s line to %s with the write tool, then write your `implement` handoff body to %s with the write tool. Record nothing with dispatch and open no pull request: the round ends when the three files are written.\n' \
-    "$title" "$issue" "$issue" "$run_dir/note.txt" "$run_dir/adoption.txt" "$run_dir/implement.json" \
-    >"$run_dir/task.txt"
+  # names a plan version, and nothing in it says the plan can have moved. The task names one file
+  # for each task the staged plan holds, and one more for the `implement` handoff body.
+  if [ "$tasks" -eq 1 ]; then
+    printf 'Continue %s. Issue: %s. Phase: implementing. Handoff: plan version 1 (dispatch handoff-read --issue %s --phase plan --version 1). This box carries no workspace, no jj and no GitHub for this issue, so your round is the plan'"'"'s one task and your own record of it: write task 1'"'"'s line to %s with the write tool, then write your `implement` handoff body to %s with the write tool. Record nothing with dispatch and open no pull request: the round ends when the two files are written.\n' \
+      "$title" "$issue" "$issue" "$run_dir/adoption.txt" "$run_dir/implement.json" \
+      >"$run_dir/task.txt"
+  else
+    printf 'Continue %s. Issue: %s. Phase: implementing. Handoff: plan version 1 (dispatch handoff-read --issue %s --phase plan --version 1). This box carries no workspace, no jj and no GitHub for this issue, so your round is the plan'"'"'s two tasks and your own record of them: write task 1'"'"'s line to %s with the write tool, then write task 2'"'"'s line to %s with the write tool, then write your `implement` handoff body to %s with the write tool. Record nothing with dispatch and open no pull request: the round ends when the three files are written.\n' \
+      "$title" "$issue" "$issue" "$run_dir/note.txt" "$run_dir/adoption.txt" "$run_dir/implement.json" \
+      >"$run_dir/task.txt"
+  fi
   note "task: $(cat "$run_dir/task.txt")"
   pass
 
