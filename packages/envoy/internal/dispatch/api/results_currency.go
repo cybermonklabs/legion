@@ -10,10 +10,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// results_currency.go says whether each recorded result still speaks for the work as it stands.
-// It holds no policy of its own: what GitHub is asked, how long an answer is believed and what
-// is written back are delivery's (delivery/default_branch.go, delivery/commit_pull_reads.go,
-// delivery.HeadAttributedTo, delivery.ReadThroughCommitPulls), and what lives here is one memo
+// results_currency.go says whether each recorded result still speaks for the work as it
+// stands, and which branch each check is measured against. It holds no policy about GitHub:
+// what is asked, how long an answer is believed and what is written back are delivery's
+// (delivery/branch.go, delivery/commit_pull_reads.go, delivery.HeadAttributedTo,
+// delivery.ReadThroughCommitPulls), and what lives here is the choice of branch and one memo
 // per read, so a tab listing twenty results against a handful of commits costs a handful of
 // round trips.
 
@@ -27,49 +28,84 @@ import (
 // result against its parent's check current; a child carrying part of a parent's requirement
 // proves it with a check of its own whose `serves` names that requirement.
 //
-// An `after_merge` or `default_branch` result is current while its commit is on the default
-// branch of the check's issue's resolved repository and the words match.
+// An `after_merge` result is current while its commit is on the branch the check's issue's pull
+// request merged into — the base branch of the newest merged pull request attributed to that
+// issue (delivery.BaseBranchMergedFor) — and the words match. An issue whose work merged into
+// an integration branch has reached that branch and no other, so a commit that branch carries
+// is what proves it, where the repository's default branch answers nothing about the work until
+// the integration branch itself lands. Where Dispatch knows of no merge of that issue, the
+// repository's default branch answers instead, which is every issue merged the ordinary way and
+// every issue whose merge Dispatch was never told of.
+//
+// A `default_branch` result is current while its commit is on the default branch of the check's
+// issue's resolved repository and the words match, whatever branch the pull request merged
+// into. That is the whole of the difference between the two `when`s, and it is why a check that
+// must speak for the trunk is written `default_branch` rather than `after_merge`.
 //
 // Where Dispatch cannot see the repository the check's issue resolves to — it resolves to none,
 // the App is installed on none that covers it, or a read failed — the answer is unknown and the
 // commit is shown with neither mark, whatever the check's `when`: nothing can have taught
 // Dispatch that commit's pull request, so "no head" is no evidence that the work has moved on.
-// Dispatch's own failed read is unknown for the same reason: a database hiccup must not make a
-// reviewer refuse an approval.
+// Dispatch's own failed read is unknown for the same reason, the read of the branch an issue's
+// pull request merged into among them: a database hiccup must not make a reviewer refuse an
+// approval.
 //
-// The repository each issue resolves to, whether the App can read it, the pull request heads of
-// each issue-and-commit pair, the stored heads of each repository-and-commit pair and GitHub's
-// answer about each commit are each read once per read of the results. Across reads, a
-// repository's default branch, a commit's answer and the last read-through of a commit's pull
-// requests are held by delivery (server.defaultBranches, default_branch_commits and
-// server.commitPulls).
+// The repository each issue resolves to, whether the App can read it, the branch each issue's
+// pull request merged into, the pull request heads of each issue-and-commit pair, the stored
+// heads of each repository-and-commit pair and GitHub's answer about each repository, branch
+// and commit are each read once per read of the results. The branch is in that last key, and
+// not the repository and the commit alone, because one issue's Verification document may hold
+// an `after_merge` check and a `default_branch` check with a result at the same commit: two
+// questions, with two answers, that one key for both would collapse into whichever was asked
+// first. Across reads, a repository's default branch, a commit's place on a branch and the last
+// read-through of a commit's pull requests are held by delivery (server.branches,
+// branch_commits and server.commitPulls).
 type currencyReader struct {
-	server      *server
-	repos       map[string]*string
-	readable    map[string]bool
-	heads       map[[2]string]bool
-	storedHeads map[[2]string]bool
-	commits     map[[2]string]commitAnswer
+	server       *server
+	repos        map[string]*string
+	readable     map[string]bool
+	baseBranches map[string]baseBranchAnswer
+	heads        map[[2]string]bool
+	storedHeads  map[[2]string]bool
+	commits      map[[3]string]commitAnswer
 }
 
-// commitAnswer is what delivery said about one commit: whether it is on the default branch, and
-// whether Dispatch could say at all.
+// commitAnswer is what delivery said about one commit: whether the branch asked about carries
+// it, and whether Dispatch could say at all.
 type commitAnswer struct {
-	onDefault bool
-	known     bool
+	onBranch bool
+	known    bool
+}
+
+// baseBranchAnswer is what Dispatch holds about the merge of one issue: the branch its newest
+// merged pull request merged into, "" where it holds no merge of that issue at all, and
+// whether the read answered. The failed read is kept apart from the empty branch because they
+// part the two ways: a read that failed is the unknown currency, while no merge found is
+// measured against the repository's default branch. One flag for both would turn a database
+// fault into a verdict about the work.
+type baseBranchAnswer struct {
+	branch string
+	read   bool
 }
 
 func newCurrencyReader(s *server) *currencyReader {
 	return &currencyReader{
 		server: s, repos: map[string]*string{}, readable: map[string]bool{},
-		heads: map[[2]string]bool{}, storedHeads: map[[2]string]bool{},
-		commits: map[[2]string]commitAnswer{},
+		baseBranches: map[string]baseBranchAnswer{},
+		heads:        map[[2]string]bool{}, storedHeads: map[[2]string]bool{},
+		commits: map[[3]string]commitAnswer{},
 	}
 }
 
 // of is the currency of one of a check's results. It reads that one result and that one check:
 // what the check's other results hold counts for nothing here, since a result is measured
 // against the work as it stands and never against another result (headOf).
+//
+// The check's `when` picks what the result is measured against: the pull request heads of the
+// check's own issue for a `before_merge` check, the branch that issue's pull request merged
+// into for an `after_merge` one, and the repository's default branch for a `default_branch`
+// one. The issue measured against is the check's, never the one the result was recorded on,
+// which is the rule headOf keeps for a pull request head and this arm keeps for a merge.
 func (c *currencyReader) of(ctx context.Context, check model.CheckBlock, result model.CheckResult) string {
 	if check.When == checkWhenBeforeMerge {
 		atHead, known := c.headOf(ctx, result)
@@ -90,11 +126,19 @@ func (c *currencyReader) of(ctx context.Context, check model.CheckBlock, result 
 	if repo == nil {
 		return model.CurrencyUnknown
 	}
-	onDefault, known := c.onDefaultBranch(ctx, *repo, result.CommitSHA)
+	branch := ""
+	if check.When == checkWhenAfterMerge {
+		merged, read := c.baseBranchMergedFor(ctx, result.CheckIssueKey)
+		if !read {
+			return model.CurrencyUnknown
+		}
+		branch = merged
+	}
+	onBranch, known := c.onBranch(ctx, *repo, branch, result.CommitSHA)
 	if !known {
 		return model.CurrencyUnknown
 	}
-	if onDefault && check.SHA256 == result.CheckSHA256 {
+	if onBranch && check.SHA256 == result.CheckSHA256 {
 		return model.CurrencyCurrent
 	}
 	return model.CurrencyOlder
@@ -233,7 +277,7 @@ func (c *currencyReader) headStoredAt(ctx context.Context, repo, sha string) boo
 // are made on.
 //
 // The canonical name is taken here, before anything asks GitHub, because everything downstream
-// takes this answer: the results read's repositoryReadable and onDefaultBranch, and the record
+// takes this answer: the results read's repositoryReadable and onBranch, and the record
 // route's refusal of a commit the repository does not hold and its read-through of the pull
 // requests GitHub names for that commit (results.go, refuseUnknownCommit and
 // readThroughPullRequests). An issue recorded under a name that was renamed away would
@@ -245,9 +289,9 @@ func (c *currencyReader) headStoredAt(ctx context.Context, repo, sha string) boo
 // refusal and a currency mark come to name different repositories.
 //
 // It answers a repository whether or not the deployment holds an App key, because the currency
-// reader needs it for an answer that asks GitHub nothing: onDefaultBranch answers from the
-// default_branch_commits row Dispatch already holds while that row stands, with no call at all
-// (delivery.CommitOnDefaultBranch), and a nil here would turn every such answer unknown. The
+// reader needs it for an answer that asks GitHub nothing: onBranch answers from the
+// branch_commits row Dispatch already holds while that row stands, with no call at all
+// (delivery.Branches.CommitOnBranch), and a nil here would turn every such answer unknown. The
 // record route makes the no-App-key check at its own call site, where every use of the answer
 // is a GitHub round trip.
 func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) *string {
@@ -289,19 +333,47 @@ func (c *currencyReader) repositoryReadable(ctx context.Context, issueKey string
 	if readable, memoized := c.readable[*repo]; memoized {
 		return readable
 	}
-	readable := c.server.defaultBranches.RepositoryReadable(ctx, c.server.deps.GitHub, *repo, time.Now())
+	readable := c.server.branches.RepositoryReadable(ctx, c.server.deps.GitHub, *repo, time.Now())
 	c.readable[*repo] = readable
 	return readable
 }
 
-// onDefaultBranch is delivery's answer about one commit, read once per read of the results.
-func (c *currencyReader) onDefaultBranch(ctx context.Context, repo, sha string) (bool, bool) {
-	memo := [2]string{repo, sha}
-	if answer, memoized := c.commits[memo]; memoized {
-		return answer.onDefault, answer.known
+// baseBranchMergedFor is the branch the check's issue's newest merged pull request merged into
+// (delivery.BaseBranchMergedFor), read once per read of the results, and whether the read
+// answered at all. An issue Dispatch holds no merge of answers the empty branch, which
+// CommitOnBranch reads as the repository's default branch.
+//
+// The memo keeps a failed read as it keeps an answered one, so a second result of the same
+// issue neither reads again nor is quietly measured against the default branch because the
+// first read failed. The key is the issue alone: the branch an issue's work merged into is a
+// fact about that issue, not about any one result or commit of it.
+func (c *currencyReader) baseBranchMergedFor(ctx context.Context, issueKey string) (string, bool) {
+	if answer, memoized := c.baseBranches[issueKey]; memoized {
+		return answer.branch, answer.read
 	}
-	onDefault, known := c.server.defaultBranches.CommitOnDefaultBranch(
-		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, sha, time.Now())
-	c.commits[memo] = commitAnswer{onDefault: onDefault, known: known}
-	return onDefault, known
+	branch, found, err := delivery.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey)
+	if err != nil {
+		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "error", err)
+	}
+	if !found {
+		branch = ""
+	}
+	answer := baseBranchAnswer{branch: branch, read: err == nil}
+	c.baseBranches[issueKey] = answer
+	return answer.branch, answer.read
+}
+
+// onBranch is delivery's answer about one commit of one branch, read once per read of the
+// results. An empty branch is the repository's default branch, which delivery resolves; it is
+// in the memo's key all the same, since the two questions an `after_merge` and a
+// `default_branch` check ask about one commit have two answers.
+func (c *currencyReader) onBranch(ctx context.Context, repo, branch, sha string) (bool, bool) {
+	memo := [3]string{repo, branch, sha}
+	if answer, memoized := c.commits[memo]; memoized {
+		return answer.onBranch, answer.known
+	}
+	onBranch, known := c.server.branches.CommitOnBranch(
+		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, branch, sha, time.Now())
+	c.commits[memo] = commitAnswer{onBranch: onBranch, known: known}
+	return onBranch, known
 }
