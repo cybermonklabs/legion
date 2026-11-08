@@ -2332,7 +2332,7 @@ other half: it refuses a row that runs twice in one engine, viewport, origin
 and server-process count.
 
 `@phone` is not the suite's only tag.
-`e2e/legion.e2e.ts`'s six specs carry `@legion`, which no project greps:
+Every spec of `e2e/legion.e2e.ts` carries `@legion`, which no project greps:
 it is how a person runs the Legion view's and the Settings page's Legion
 field's browser work and nothing else,
 `bunx playwright test --config e2e/playwright.config.ts --grep @legion`.
