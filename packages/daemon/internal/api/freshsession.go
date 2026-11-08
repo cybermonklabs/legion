@@ -39,13 +39,17 @@ type FreshSessionResponse struct {
 const (
 	// claimInATurn: cutting a running turn off would lose the turn that may be the one ending
 	// the run of provider errors, so both recoveries refuse a claim in one (refuseInATurn). A
-	// claim a suspension is held over takes this code as well: it is stored working, as a claim
-	// in a turn is, and what differs is the wait, which its own sentence says
-	// (refuseHeldSuspension).
+	// claim stored working that a suspension is held over takes this code as well: it is
+	// stored working, as a claim in a turn is, and what differs is the wait, which its own
+	// sentence says (refuseHeldSuspension).
 	claimInATurn = "CLAIM_IN_A_TURN"
 	// claimUnsettled: a claim between states has no settled agent for either recovery to act on
 	// — one queued, one with a launch in flight, and one stored working under a launch the wake
 	// pacing parks, which waits for that launch as much as the other two (refuseParkedRelaunch).
+	// A claim a suspension is held over that is not stored working takes it too: the hold is
+	// held for a launch that has not reached ready and the claim has no settled agent either,
+	// which is the code such a claim was refused with before the hold was read at all
+	// (refuseHeldSuspension).
 	claimUnsettled = "CLAIM_UNSETTLED"
 )
 
@@ -215,11 +219,17 @@ func roleList() string {
 // cannot — the controller asks for a fresh session and a compaction, never a resume, so such a
 // worker would stand until an operator resumed it.
 //
-// Two states and one claim are refused. A claim in a turn is refused because suspending it would
-// cut that turn off, and the turn may be the one that ends the run; the caller is told to ask
-// again after it, and so is a claim that entered a turn between the read below and the machine's
-// lock, whose suspension the machine refuses rather than holds (suspendForFreshSession). A claim
-// a suspension is held over has a refusal of its own (refuseHeldSuspension).
+// Two states, one hold and one claim are refused. A claim in a turn is refused because
+// suspending it would cut that turn off, and the turn may be the one that ends the run; the
+// caller is told to ask again after it, and so is a claim that entered a turn between the read
+// below and the machine's lock, whose suspension the machine refuses rather than holds
+// (suspendForFreshSession). A claim a suspension is held over has a refusal of its own, in
+// whatever state the hold found it (refuseHeldSuspension): the hold is read before the state,
+// because a start run against such a claim would be run against a claim that is being stopped.
+// What this route would otherwise do to it is worse than a late answer: the suspension it runs
+// as the operator lets the held request go with the process (supervise's letGo), so the
+// operator's own suspend, answered 202 and still waiting, would be dropped unrun and the
+// worker started again in a new session.
 //
 // A claim between states — queued, with a launch in flight, or stored working under a launch
 // the wake pacing parks — is refused because it has no settled agent to stop: its suspension
@@ -242,8 +252,8 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	}
 	view := m.View()
 	switch {
-	case c.State == supervise.StateWorking && view.SuspensionHeld:
-		return 0, "", refuseHeldSuspension(w, token, freshSessionOp)
+	case view.SuspensionHeld:
+		return 0, "", refuseHeldSuspension(w, token, c.State, freshSessionOp)
 	case c.State == supervise.StateWorking && relaunchWaits(view):
 		return 0, "", refuseParkedRelaunch(w, token, freshSessionOp)
 	case c.State == supervise.StateWorking:
@@ -318,35 +328,49 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 }
 
 // refuseHeldSuspension is the refusal of a claim a suspension is held over (supervise's
-// holdSuspension), which both recoveries give whatever the claim is stored working under: a
-// turn, a compaction, or the process a launch the wake pacing parked will replace. Neither
-// operation reaches a working claim, and both switches read the hold first, because what such a
-// claim waits for is the hold's end rather than a turn's or a compaction's.
+// holdSuspension), which both recoveries give in whatever state the hold found the claim. A
+// claim stored working is the commonest: it is working for a turn, for a compaction, or over
+// the process a launch the wake pacing parked will replace. A hold is as live before the agent
+// is ready, where it is held for a launch that has not registered and stands through
+// shim_connected and registered until the agent's ready runs it (supervise's
+// holdSuspendUntilReady, ready), and it stands over a ready or idle claim whose stop the
+// runtime refused, waiting on the retry at the probe interval (supervise's suspendHeld). Both
+// switches read the hold before the state, because what such a claim waits for is the hold's
+// end rather than a turn's, a compaction's or a launch's.
 //
 // What that end leaves is not one state, and that is the whole of what this sentence may
 // promise. The hold runs as a suspension at the end of the turn or the compaction (supervise's
-// suspendHeld), at a parked launch's turn instead of launching (supervise's wakeNow, endHeld),
-// at a death or a repoint of the process while it is held (supervise's died, repoint, endHeld),
-// and at the hold's own deadline mid-turn (supervise's suspendAtTimeout). It is dropped unrun,
-// the claim running on, when a start is run against a hold of the daemon's own — a newer
-// workflow start, which only an operator's hold waits out (supervise's StartedBy, dropHeld) —
-// and it goes with the claim at the close or the stop that retires it and the failure that
-// fails it (supervise's letGo). So no hold's landing is this sentence's to promise: a start
-// drops the daemon's and the turn then ends as any other turn does, a close or a failure takes
-// any hold, and a caller told to ask again once the claim is suspended waits for a state those
-// ends never bring.
+// suspendHeld), at the agent's ready (supervise's ready), at a parked launch's turn instead of
+// launching (supervise's wakeNow, endHeld), at a death or a repoint of the process while it is
+// held (supervise's died, repoint, endHeld), and at the hold's own deadline mid-turn
+// (supervise's suspendAtTimeout). It is dropped unrun, the claim running on, when a start is
+// run against a hold of the daemon's own — a newer workflow start, which only an operator's
+// hold waits out (supervise's StartedBy, dropHeld) — and it goes with the claim at the close
+// or the stop that retires it and the failure that fails it (supervise's letGo). So no hold's
+// landing is this sentence's to promise: a start drops the daemon's and the turn then ends as
+// any other turn does, a close or a failure takes any hold, and a caller told to ask again
+// once the claim is suspended waits for a state those ends never bring.
 //
-// The sentence therefore names the one thing every one of those ends shares — the claim stops
-// working — and then splits by what it is once it has. A fresh session is what reaches the
-// suspended, stopped or failed claim the ends that take the process leave (startsAgain), and
-// the asking operation is what reaches the ready or idle one a dropped hold leaves, so the
-// refusal names both (freshSessionName, controllerOp). The code is the turn's, because the
-// claim is stored working exactly as a claim in a turn is (claimInATurn). It always reports
-// false, so a caller returns it as its own answer.
-func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
-	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
-		"%s has a suspension held over it, and %s reaches no claim that is working. The hold ends by itself, and not always in a suspension: a start the daemon runs against the claim drops a hold of the daemon's own, and the end of the claim's process takes any hold with it. Ask again once %s is no longer working: %s reaches it if it is suspended, stopped or failed by then, and %s if it is ready or idle",
-		token, op.name, token, freshSessionName, op.name))
+// The sentence therefore names the one thing every one of those ends shares — the hold ends,
+// of itself — and then splits by what the claim is once it has. A fresh session is what
+// reaches the suspended, stopped or failed claim the ends that take the process leave
+// (startsAgain), and the asking operation is what reaches the ready or idle one a dropped hold
+// leaves, so the refusal names both (freshSessionName, controllerOp).
+//
+// The code follows the claim rather than the hold, so no caller's answer changes for a state
+// that was refused before this refusal read the hold at all: a claim stored working takes the
+// turn's code, as a claim in a turn does, and one that is not takes the code of a claim
+// between states, which is what the unsettled default gave a claim still coming up
+// (claimInATurn, claimUnsettled). It always reports false, so a caller returns it as its own
+// answer.
+func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, op controllerOp) bool {
+	code := claimUnsettled
+	if state == supervise.StateWorking {
+		code = claimInATurn
+	}
+	writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
+		"%s has a suspension held over it, and %s reaches no claim a suspension waits over. The hold ends by itself, and not always in a suspension: a start the daemon runs against the claim drops a hold of the daemon's own, and the end of the claim's process takes any hold with it. Ask again once the hold has ended: %s reaches %s if it is suspended, stopped or failed by then, and %s if it is ready or idle",
+		token, op.name, freshSessionName, token, op.name))
 	return false
 }
 

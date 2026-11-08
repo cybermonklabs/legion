@@ -25,11 +25,11 @@ import (
 var ErrCompactInstructions = errors.New("a compaction carries custom instructions, so Oh My Pi writes its summary as text rather than snapcompact's images")
 
 // ErrCompactNotTaken is a compaction nothing was asked for: the claim could not be written as
-// working, it lost its process between the take and the ask, its shim is not connected, or a
-// launch the wake pacing holds waits its turn to replace the process its session runs on, so
-// the daemon had nothing to ask through or nothing worth asking (compactStart). The claim is
-// where the request found it and no task was sent, where every other outcome gives the claim
-// back and sends the task it owes (compactEnded).
+// working, it lost its process between the take and the ask, its shim is not connected, a
+// launch the wake pacing holds waits its turn to replace the process its session runs on, or a
+// suspension is held over the claim, so the daemon had nothing to ask through or nothing worth
+// asking (compactStart). The claim is where the request found it and no task was sent, where
+// every other outcome gives the claim back and sends the task it owes (compactEnded).
 var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, so nothing was asked of its session")
 
 // ErrCompactNotEnded is a compaction whose end the store would not write: Oh My Pi answered and
@@ -51,6 +51,21 @@ var ErrCompactNotEnded = errors.New("the compaction ended and the claim could no
 // (sendPending), but a claim its death failed and one a held suspension stopped each run again
 // only when an operator retries or resumes them, and the task waits for that.
 var ErrCompactProcessGone = errors.New("the claim lost its process while its session was being compacted, so it was not given back and the task it owes was not sent")
+
+// ErrCompactSuspended is a compaction whose end found a suspension held over the claim: one
+// that arrived while Oh My Pi wrote the summary, which the machine holds as it holds a
+// suspension that arrives in a turn (holdSuspension). The compaction ran and its end was the
+// claim's own, so this is neither ErrCompactProcessGone nor a store that would not write
+// (ErrCompactNotEnded); what it is is a claim the end did not give back. The hold runs there
+// and the claim is suspended, or the claim is working for a turn Oh My Pi started under the
+// compaction and the hold runs at that turn's end instead (compactEnded). Either way the task
+// the claim owes was not sent, and it goes when the claim's agent runs again — for an
+// operator's hold, when an operator resumes it.
+//
+// It is the end's answer rather than a failure of it, as ErrSuspendHeld is the answer of a
+// suspension the machine holds: nothing of the claim is left half written, and the caller is
+// told what the claim is rather than that the compaction worked (api's compact).
+var ErrCompactSuspended = errors.New("a suspension held over the claim ended its compaction, so the claim was not given back and the task it owes was not sent")
 
 // compacting is the compaction a claim is in: the connection it runs over and the generation it
 // was taken at. Those two, and the claim recording a compaction at all, are what the end of a
@@ -94,16 +109,18 @@ type compacting struct {
 // provider-error turns back to zero (compactEnded). A take that did not happen at all is
 // ErrCompactNotTaken or a *RefusedError, and leaves the claim where it was with its task unsent.
 //
-// A compaction that ran and did not end is neither, and the end's own answer is what tells the
-// two apart: ErrCompactNotEnded is the end the store would not write, and ErrCompactProcessGone
-// the end the machine judged no longer the claim's own — the process it ran over found gone
-// under it, or the claim moved past the generation it was taken at (ownsCompaction). That
-// judgement is made under the machine's lock, where the claim cannot move under it, and it is
-// the whole of what is read here: nothing of the claim is read from this side of the lock,
-// where a relaunch the end itself raises would be taken for the process the compaction lost
-// (afterTurn's refreshPlugin). Each leaves the owed task unsent, and each says so in the
-// daemon's own words: what Oh My Pi answered such a compaction goes to the log rather than to
-// the caller, which no model's words reach through (api's reasonBound).
+// A compaction that ran and did not end is none of those, and the end's own answer is what
+// tells them apart: ErrCompactNotEnded is the end the store would not write,
+// ErrCompactProcessGone the end the machine judged no longer the claim's own — the process it
+// ran over found gone under it, or the claim moved past the generation it was taken at
+// (ownsCompaction) — and ErrCompactSuspended the end that found a suspension held over the
+// claim and gave it back to that hold rather than to its agent. That judgement is made under
+// the machine's lock, where the claim cannot move under it, and it is the whole of what is
+// read here: nothing of the claim is read from this side of the lock, where a relaunch the end
+// itself raises would be taken for the process the compaction lost (afterTurn's
+// refreshPlugin). Each leaves the owed task unsent, and each says so in the daemon's own
+// words: what Oh My Pi answered such a compaction goes to the log rather than to the caller,
+// which no model's words reach through (api's reasonBound).
 func (m *Machine) Compact(ctx context.Context, customInstructions string) error {
 	if strings.TrimSpace(customInstructions) == "" {
 		return ErrCompactInstructions
@@ -134,6 +151,17 @@ func (m *Machine) Compact(ctx context.Context, customInstructions string) error 
 		// compactEnded ran: the claim is back and the task it owes has gone again, so what this
 		// answers is the compaction itself.
 		return err
+	}
+	if errors.Is(endErr, ErrCompactSuspended) {
+		// The end ran and a suspension held over the claim took it: the claim is suspended, or
+		// working for a turn whose end suspends it, and nothing was sent (compactEnded). What
+		// Oh My Pi made of the compaction itself goes to the log, as it does for an end that
+		// did not run: the caller is told what became of the claim.
+		if err != nil {
+			m.log.Warn("supervise: the compaction a held suspension ended was itself refused or unanswered",
+				"generation", run.generation, "error", err)
+		}
+		return ErrCompactSuspended
 	}
 	if err != nil {
 		m.log.Warn("supervise: the compaction whose end did not run was itself refused or unanswered",
@@ -235,6 +263,18 @@ func (m *Machine) compactionLostProcess() {
 // (ErrCompactNotTaken): the claim is left exactly where the request found it, nothing is asked
 // and nothing is sent, and its caller answers 409 COMPACTION_FAILED carrying the sentence this
 // returns (api's compact).
+//
+// A claim a suspension is held over is taken for nothing either, whatever state the hold found
+// it in. The take reaches a ready or idle claim, and either can carry a hold: a stop the
+// runtime refused at the agent's ready leaves the claim ready with the hold intact, and one it
+// refused at a turn's end leaves it idle with the hold intact, each retried at the probe
+// interval (ready, turnEnded, suspendHeld). What such a claim waits for is the hold's end, and
+// that end stops its process more often than not: the compaction would spend ten minutes of a
+// model on a session the hold is about to take, and its own end would hand the claim to that
+// hold rather than back to its agent (ErrCompactSuspended). It is answered as the two above
+// are, a take that did not happen, and the sentence says what the api door's own refusal of a
+// held claim says: the hold ends by itself, and the claim takes a compaction again if it is
+// ready or idle then (api's refuseHeldSuspension).
 func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	conn, ok := m.deps.Conns.Conn(m.claim.Token)
 	if !ok {
@@ -248,6 +288,11 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 		// No refusal of the claim's state either: a launch the pacing holds is about to let this
 		// process go, so there is nothing of its session worth asking.
 		return errors.New("a launch waits its turn to replace the claim's process, so nothing is asked of its session")
+	}
+	if m.held != nil {
+		// No refusal of the claim's state either: the state takes a compaction, and what stops
+		// this one is the suspension waiting over the claim.
+		return errors.New("a suspension is held over the claim, so nothing is asked of a session that hold may stop; the hold ends by itself, and the claim takes a compaction again if it is ready or idle then")
 	}
 	if m.claim.Pending != nil && (m.send != nil || m.resultPending()) {
 		m.log.Info("supervise: the compaction aborts the turn this task's prompt is running; the task goes back to waiting",
@@ -296,6 +341,14 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // turn, and that turn's end gives the claim back and sends the owed task (turnEnded). Idling
 // the claim here would send the owed task into a running turn and leave the daemon reading the
 // agent as free while it works.
+//
+// A suspension held over the claim is the one end that gives the claim back to nothing, and it
+// says so to whoever asked for the compaction (ErrCompactSuspended). The hold runs here, as
+// the turn's end runs it, and leaves the claim suspended with its process stopped; where a
+// turn is running it is left to that turn's end, and the claim is working for it. Neither is a
+// claim back on the task it owes, and that task is unsent either way, so an answer of nil —
+// which its caller reads as the claim back and its task gone again (Machine.Compact, api's
+// CompactResponse) — would be false of both.
 func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	ended := ev.(CompactEnded)
 	// The fence let this end through, so the claim holds the compaction it names (ownsCompaction).
@@ -310,7 +363,13 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 	if run.inTurn {
 		// The claim stays working and keeps whatever is held for a turn's end, the suspension
 		// among it: this is not that end.
-		return m.persist(ctx)
+		if err := m.persist(ctx); err != nil {
+			return err
+		}
+		if m.held != nil {
+			return ErrCompactSuspended
+		}
+		return nil
 	}
 	if m.held != nil {
 		// A suspension that arrived while the compaction ran was held for it, as one that
@@ -322,7 +381,7 @@ func compactEnded(m *Machine, ctx context.Context, ev Event) error {
 			m.claim.State = run.back
 			return errors.Join(err, m.persist(ctx))
 		}
-		return nil
+		return ErrCompactSuspended
 	}
 	m.claim.State = run.back
 	if err := m.persist(ctx); err != nil {

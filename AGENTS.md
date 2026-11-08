@@ -193,7 +193,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 - `legion claims compact --operator-token-file <file> --claim <token>`
 
   The recovery to try before a fresh session for a claim whose provider keeps refusing its session: the daemon has Oh My Pi write a text summary of that session and then sends the claim whatever task it owed again, so the session, its workspace and everything the worker knows of its issue stay and only the transcript gets shorter;
-  it reaches a claim whose agent is running and in no turn, a root architect included, and refuses a suspended, stopped or failed claim naming `--fresh-session`, a claim in a turn, a claim whose launch is in flight, and a claim whose role runs on Claude Code, which has no Oh My Pi session;
+  it reaches a claim whose agent is running and in no turn, a root architect included, and refuses a suspended, stopped or failed claim naming `--fresh-session`, a claim in a turn, a claim whose launch is in flight, a claim a suspension is held over, which that hold may stop rather than give back, a claim left working under a relaunch the daemon's wake pacing parked, and a claim whose role runs on Claude Code, which has no Oh My Pi session;
   a compaction Oh My Pi refused or skipped is printed with its reason rather than failing the command, because the claim is back and whatever task it owed has gone again all the same
 
 - `legion restart <team>`

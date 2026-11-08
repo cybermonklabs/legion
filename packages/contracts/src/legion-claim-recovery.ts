@@ -40,8 +40,10 @@ const nonEmptyString = z.string().min(1);
  * `CLAIM_NOT_RUNNING` for a suspended, stopped or failed claim, which runs no session at all and
  * which `fresh_session` reaches; `CLAIM_NOT_ON_OMP` for a role running on Claude Code, which has
  * no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end the daemon
- * could not write, and a claim that lost its process while its session was being compacted, none
- * of which gave the claim back. A registered claim is the compaction's `CLAIM_UNSETTLED` and no
+ * could not write, a claim that lost its process while its session was being compacted, and an
+ * end a suspension held over the claim took, which suspends the claim instead. None of those
+ * four gave the claim back, so none sent the task it owes. A registered claim is the
+ * compaction's `CLAIM_UNSETTLED` and no
  * refusal at all for `fresh_session`. */
 export const LegionClaimRequest = z.strictObject({
   grantId: nonEmptyString,

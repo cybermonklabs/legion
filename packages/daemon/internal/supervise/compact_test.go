@@ -484,6 +484,54 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 	}
 }
 
+// What that same claim records once the launch's turn has come and the turn's own lifecycle
+// recheck refused it: the refusal keeps the process the claim records and the wake is spent,
+// so nothing waits over the claim and nothing will end the turn it is not in (runWake,
+// relaunchRefused). The next report of that process raises a relaunch again, and until one
+// does the claim stands stored working over a process that is gone.
+//
+// This case is here for what the claim does not record. State, the compaction in flight, the
+// suspension held and the wake waiting are the whole of what either recovery door reads of a
+// working claim (api's refuseState, freshSession), and a claim genuinely in a turn reads the
+// same in all four, so both doors answer such a claim "is in a turn, ask again after the turn
+// ends". No fact of this claim tells the two apart. One would have to be written where the
+// refusal leaves the claim (relaunchRefused), and this test is what a round that writes it
+// changes.
+func TestAParkedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn(t *testing.T) {
+	notices := 0
+	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
+	dead := h.locator()
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+	queueAhead(h, 1)
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	release()
+	if err := <-compacted; !errors.Is(err, ErrCompactProcessGone) {
+		t.Fatalf("a compaction whose claim's relaunch waits its turn answered %v, want ErrCompactProcessGone", err)
+	}
+	h.m.Wait()
+
+	// The store cannot answer the lifecycle recheck when the launch's turn comes, which is the
+	// refusal that keeps the process and clears by itself (unansweredCheckLaunchStore).
+	h.m.deps.Store = &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	h.advance(waiting.At.Sub(h.clock.Now()))
+
+	h.wantState(StateWorking)
+	view := h.m.View()
+	if view.WakeWaiting != nil {
+		t.Fatalf("the claim names wake %+v, want none: the turn ran and its launch was refused", view.WakeWaiting)
+	}
+	if view.Compacting || view.SuspensionHeld {
+		t.Fatalf("the claim reports Compacting %v and a suspension held %v, want neither", view.Compacting, view.SuspensionHeld)
+	}
+	if got := view.Locator; got == nil || *got != dead {
+		t.Fatalf("the claim records %+v, want the dead process the refusal kept, %+v", got, dead)
+	}
+}
+
 // A displacement the pacing parks the relaunch of is the same loss: the process the compaction
 // ran over is gone, however the daemon recovers the claim, so its end gives the claim back
 // nothing and the owed task waits for the wake's turn. The drop is made where the runtime's
@@ -691,6 +739,129 @@ func TestACompactionAHeldSuspensionStoppedGivesTheClaimBackNothing(t *testing.T)
 	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
 		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
 	}
+}
+
+// An operator's suspension that arrives under the compaction and lands at its end leaves the
+// claim suspended with its process stopped and the task it owes unsent, so the compaction
+// answers what became of the claim rather than nil: nil is the claim back and its task gone
+// again, which its caller reports as a recovery that worked (ErrCompactSuspended, api's
+// CompactResponse). Only the operator's resume starts such a claim again, and the task goes
+// then.
+func TestACompactionAHeldSuspensionEndsSaysTheClaimWasNotGivenBack(t *testing.T) {
+	notices := 0
+	h := ladderStuck(t, &notices)
+	owed := h.pending().ID
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+
+	held := RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator is draining the daemon"}
+	if err := h.handle(held); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the suspension answered %v, want it held for the compaction's end", err)
+	}
+	release()
+
+	if err := <-compacted; !errors.Is(err, ErrCompactSuspended) {
+		t.Fatalf("a compaction whose end ran the held suspension answered %v, want ErrCompactSuspended", err)
+	}
+	h.m.Wait()
+	h.wantState(StateSuspended)
+	if got := h.claim().SuspendedBy; got != SuspendedByOperator {
+		t.Fatalf("the claim is suspended by %q, want the operator whose hold ended the compaction", got)
+	}
+	h.wantPrompts(ladderSends)
+	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	}
+}
+
+// A turn Oh My Pi started under the compaction keeps the claim working at the compaction's end,
+// and a suspension held meanwhile runs at that turn's end instead (turnEnded). The claim is
+// back on neither its agent nor its task — the hold stops it when the turn is over — so the
+// compaction says so as the end that runs the hold itself does: the two endings differ in when
+// the stop lands and in nothing the answer may promise.
+func TestACompactionThatEndsInATurnUnderAHeldSuspensionSaysTheClaimWasNotGivenBack(t *testing.T) {
+	notices := 0
+	h := ladderStuck(t, &notices)
+	owed := h.pending().ID
+	release := h.conn.HoldCompact()
+	compacted := make(chan error, 1)
+	go func() { compacted <- h.m.Compact(h.ctx, testCompactInstructions) }()
+	waitForCompacting(t, h)
+
+	h.must(StreamTurnStart{Claim: h.token})
+	held := RequestSuspend{Claim: h.token, By: SuspendedByOperator, Reason: "the operator is draining the daemon"}
+	if err := h.handle(held); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("the suspension answered %v, want it held for the turn's end", err)
+	}
+	release()
+
+	if err := <-compacted; !errors.Is(err, ErrCompactSuspended) {
+		t.Fatalf("a compaction that ended in a turn under a held suspension answered %v, want ErrCompactSuspended", err)
+	}
+	h.m.Wait()
+	h.wantState(StateWorking)
+	if got := h.claim(); !got.SuspensionHeld || got.Compacting {
+		t.Fatalf("the claim holds %v and reports Compacting %v, want the hold kept for the turn's end and the compaction over",
+			got.SuspensionHeld, got.Compacting)
+	}
+	h.wantPrompts(ladderSends)
+	if got := h.pending(); got.ID != owed || !got.ConfirmedAt.IsZero() {
+		t.Fatalf("the claim holds %+v, want the task %s still owed and unconfirmed", got, owed)
+	}
+
+	// The turn's end is where that hold lands, and the claim is suspended with the task still
+	// owed: what the compaction answered is what became of it.
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+
+	h.wantState(StateSuspended)
+	h.wantPrompts(ladderSends)
+}
+
+// A compaction asked for over a claim a suspension is already held over is taken for nothing:
+// the hold's end stops the process more often than not, so the ten minutes of a model reading
+// the transcript would be spent on a session that is about to go, and the compaction's own end
+// would hand the claim to that hold rather than back to its agent. The claim is left exactly
+// where the request found it, which here is ready with the operator's hold intact — a
+// ready-time stop the runtime refused, waiting on its retry at the probe interval.
+func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
+	h := newHarness(t)
+	suspendedBy(h, SuspendedByDaemon)
+	h.must(RequestRuleResume{Claim: testToken, Reason: "it owns its issue's phase"})
+	if err := h.handle(RequestSuspend{Claim: testToken, Reason: "the operator suspended it", By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+		t.Fatalf("operator suspend during launch = %v, want ErrSuspendHeld", err)
+	}
+	h.connect()
+	h.register()
+	h.rt.FailSuspend(errors.New("the runtime refused the stop"))
+	if err := h.handle(RequestReady{Claim: testToken, Generation: h.generation(), Session: session}); err == nil {
+		t.Fatal("ready with a failed operator suspend succeeded, want the runtime failure")
+	}
+	if got := h.claim(); got.State != StateReady || !got.SuspensionHeld {
+		t.Fatalf("after the failed ready-time stop %+v, want ready with the operator hold intact", got)
+	}
+	h.rt.FailSuspend(nil)
+
+	err := h.m.Compact(h.ctx, testCompactInstructions)
+
+	if !errors.Is(err, ErrCompactNotTaken) {
+		t.Fatalf("a compaction of a claim a suspension is held over answered %v, want ErrCompactNotTaken", err)
+	}
+	h.m.Wait()
+	if asked := h.conn.Compactions(); len(asked) != 0 {
+		t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
+	}
+	h.wantState(StateReady)
+	if got := h.claim(); !got.SuspensionHeld || got.SuspensionHeldBy != SuspendedByOperator || got.Compacting {
+		t.Fatalf("the refused claim holds %v by %q and reports Compacting %v, want the operator's hold and no compaction",
+			got.SuspensionHeld, got.SuspensionHeldBy, got.Compacting)
+	}
+
+	// The hold's own retry is what the claim was left waiting for, and it lands.
+	h.advance(testProbe)
+
+	h.wantState(StateSuspended)
 }
 
 // restartedMidCompaction is the daemon that stopped while one of its claims was being compacted,

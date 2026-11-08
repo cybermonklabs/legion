@@ -569,27 +569,59 @@ func suspensionHeldOverACompaction(t *testing.T, h *harness) claim.Token {
 	return token
 }
 
-// heldSuspensionCase is one claim a suspension is held over, named by what the claim is stored
-// working under and by who asked for the hold. Every door answers all of them with one
+// suspensionHeldOverALaunchThatHasNotRegistered is the hold that is live before the agent is:
+// the operator's suspend reaches a claim whose launch is in flight, and the machine holds it
+// for the agent's ready rather than stopping a process that is still coming up (supervise's
+// holdSuspendUntilReady). Such a claim is launching rather than working, and the hold lands at
+// its ready before the claim is ever published ready (supervise's ready), so a caller told to
+// ask again when the claim is ready or idle would wait for a state the hold itself keeps it
+// from.
+func suspensionHeldOverALaunchThatHasNotRegistered(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("the suspend of the launching claim = %d, want the 202 of one held for the agent's ready; body %s",
+			recorder.Code, recorder.Body)
+	}
+	m, _ := h.supervisor.Machine(token)
+	view := m.View()
+	if view.State != supervise.StateLaunching || !view.SuspensionHeld {
+		t.Fatalf("the claim is %s holding %v, want the launching claim with the operator's suspension held",
+			view.State, view.SuspensionHeld)
+	}
+	return token
+}
+
+// heldSuspensionCase is one claim a suspension is held over, named by what the claim was doing
+// when the hold arrived and by who asked for the hold. Every door answers all of them with one
 // sentence, which is what these rows are for: neither door reads what the hold's end will
 // bring, and the ends differ — the operator's hold lands as a suspension at every one of them,
 // and a start the daemon runs against the claim drops the daemon's own and leaves the claim
 // running (api's refuseHeldSuspension). A refusal true of one of those rows alone sends the
 // caller back for a state the others never reach.
+//
+// code is the refusal's own, which follows the claim rather than the hold: a claim stored
+// working takes the turn's, and one still coming up under a hold held for its launch takes the
+// code of a claim between states, which is the code that claim was refused with before either
+// door read the hold (api's refuseHeldSuspension).
 type heldSuspensionCase struct {
 	name  string
+	code  string
 	start func(t *testing.T, h *harness) claim.Token
 }
 
 func heldSuspensionCases() []heldSuspensionCase {
 	cases := []heldSuspensionCase{
-		{"a turn of the claim's own", suspensionHeldOverATurn},
-		{"a turn under the daemon's own hold", suspensionHeldOverATurnByTheDaemon},
-		{"a compaction in flight", suspensionHeldOverACompaction},
+		{"a turn of the claim's own", claimInATurn, suspensionHeldOverATurn},
+		{"a turn under the daemon's own hold", claimInATurn, suspensionHeldOverATurnByTheDaemon},
+		{"a compaction in flight", claimInATurn, suspensionHeldOverACompaction},
+		{"a launch that has not registered", claimUnsettled, suspensionHeldOverALaunchThatHasNotRegistered},
 	}
 	for _, cause := range parkedRelaunchCauses() {
 		cases = append(cases, heldSuspensionCase{
 			name: "a relaunch parked by " + cause.name,
+			code: claimInATurn,
 			start: func(t *testing.T, h *harness) claim.Token {
 				return suspensionHeldOverTheParkedRelaunch(t, h, cause.observation)
 			},
@@ -601,23 +633,25 @@ func heldSuspensionCases() []heldSuspensionCase {
 // heldSuspensionRefusal is the sentence both recoveries give a claim a suspension is held over,
 // with the asking operation's own name in it (api's refuseHeldSuspension, controllerOp).
 func heldSuspensionRefusal(token claim.Token, operation string) string {
-	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim that is " +
-		"working. The hold ends by itself, and not always in a suspension: a start the daemon runs against " +
-		"the claim drops a hold of the daemon's own, and the end of the claim's process takes any hold with " +
-		"it. Ask again once " + string(token) + " is no longer working: fresh_session (`legion claims retry " +
-		"--fresh-session`) reaches it if it is suspended, stopped or failed by then, and " + operation +
-		" if it is ready or idle"
+	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim a " +
+		"suspension waits over. The hold ends by itself, and not always in a suspension: a start the daemon " +
+		"runs against the claim drops a hold of the daemon's own, and the end of the claim's process takes " +
+		"any hold with it. Ask again once the hold has ended: fresh_session (`legion claims retry " +
+		"--fresh-session`) reaches " + string(token) + " if it is suspended, stopped or failed by then, and " +
+		operation + " if it is ready or idle"
 }
 
-// A suspension held over the claim is read ahead of every other window a working claim can be
-// in, because what such a claim waits for is the hold's end rather than a turn's or a
-// compaction's: neither "ask again once it is running" nor "ask again after the turn ends"
-// names a wait that comes for it. What the refusal may say of that end is only that the claim
-// stops working, since the end itself differs — an operator's hold lands as a suspension at a
-// turn's end, at a compaction's, at a parked relaunch's turn and at the operator's deadline,
-// and a start the daemon runs against the claim drops the daemon's own and leaves it running.
-// So the refusal names both operations by the state each reaches, and both recoveries say so
-// of every row (api's refuseHeldSuspension).
+// A suspension held over the claim is read ahead of every other window the claim can be in,
+// because what such a claim waits for is the hold's end rather than a turn's, a compaction's
+// or a launch's: neither "ask again once it is running" nor "ask again after the turn ends"
+// names a wait that comes for it. What the refusal may say of that end is only that the hold
+// ends, since the end itself differs — an operator's hold lands as a suspension at a turn's
+// end, at a compaction's, at a parked relaunch's turn, at the agent's ready and at the
+// operator's deadline, and a start the daemon runs against the claim drops the daemon's own
+// and leaves it running. So the refusal names both operations by the state each reaches, and
+// both recoveries say so of every row (api's refuseHeldSuspension). The code each row takes
+// is the claim's own, so the answer a state was refused with before either door read the hold
+// is the answer it is refused with now.
 func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {
 		for _, door := range compactDoors() {
@@ -627,7 +661,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
 					heldSuspensionRefusal(token, "a compaction"))
 			})
 		}
@@ -638,13 +672,163 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
-				wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
+				wantFreshSessionRefusal(t, recorder, http.StatusConflict, held.code,
 					heldSuspensionRefusal(token, "a fresh session"))
 				if m, _ := h.supervisor.Machine(token); !m.View().SuspensionHeld {
 					t.Errorf("the refused claim holds no suspension, want the one the refusal left held")
 				}
 			})
 		}
+	}
+}
+
+// suspensionHeldOverAReadyAgent is the one held claim the machine's own take reaches: the
+// operator's suspend was held for the agent's ready (supervise's holdSuspendUntilReady), and
+// the stop that ready ran was refused by the runtime, which leaves the claim ready with the
+// hold intact and the stop retried at the probe interval (supervise's ready, suspendHeld). The
+// claim is not working, so neither door's switch over the published view is reached for it:
+// the compaction's refusal is the machine's (supervise's compactStart), and the fresh
+// session's is its own door's (api's freshSession).
+func suspensionHeldOverAReadyAgent(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
+	if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
+		t.Fatalf("the suspend of the launching claim = %d, want the 202 of one held for the agent's ready; body %s",
+			recorder.Code, recorder.Body)
+	}
+	h.runtime.FailSuspend(errors.New("the runtime refused the stop"))
+	registered := h.registered(h.bootToken(token), "ses_implementer")
+	if recorder := h.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
+		ClaimToken: token, SessionID: "ses_implementer", Secret: registered.Secret, Generation: 1,
+	}, nil); recorder.Code == http.StatusNoContent {
+		t.Fatal("the ready whose held stop the runtime refused answered 204, want the runtime's failure")
+	}
+	// The runtime answers again from here, so the hold is one that lands: its retry at the
+	// probe interval stops the process, which is what every request below is asked over.
+	h.runtime.FailSuspend(nil)
+	m, _ := h.supervisor.Machine(token)
+	view := m.View()
+	if view.State != supervise.StateReady || !view.SuspensionHeld {
+		t.Fatalf("the claim is %s holding %v, want the ready claim with the operator's suspension held",
+			view.State, view.SuspensionHeld)
+	}
+	return token
+}
+
+// A compaction of a ready claim a suspension is held over is taken for nothing, and the answer
+// is the machine's: the state takes a compaction, so no refusal of the state is made, and what
+// stops this one is the hold (supervise's compactStart). Taken, the compaction would spend ten
+// minutes of a model on a session the hold is about to stop, and its own end would hand the
+// claim to that hold rather than back to its agent — answered 200 all the while, which tells
+// an operator the worker is back and its owed task has gone.
+func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
+	for _, door := range compactDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := suspensionHeldOverAReadyAgent(t, h)
+			conn := connected(h, token)
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			if recorder.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body %s", recorder.Code, recorder.Body)
+			}
+			var failure Failure
+			decodeInto(t, recorder, &failure)
+			// The sentence is the machine's own, which Machine.Compact answers joined to
+			// supervise.ErrCompactNotTaken, as it answers every take that did not happen.
+			held := "a suspension is held over the claim, so nothing is asked of a session that hold may stop; " +
+				"the hold ends by itself, and the claim takes a compaction again if it is ready or idle then"
+			if failure.Code != compactionFailed || !strings.Contains(failure.Error, held) {
+				t.Fatalf("the refusal is %+v, want %s carrying %q", failure, compactionFailed, held)
+			}
+			if asked := conn.Compactions(); len(asked) != 0 {
+				t.Fatalf("Oh My Pi was asked %+v, want nothing: the claim was never taken", asked)
+			}
+			m, _ := h.supervisor.Machine(token)
+			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
+				t.Errorf("the refused claim is %s holding %v, want the ready claim with its hold, as the request found it",
+					view.State, view.SuspensionHeld)
+			}
+			if after := h.stored(token); after.Session != "ses_implementer" {
+				t.Errorf("the refused claim records session %q, want the session it had", after.Session)
+			}
+		})
+	}
+}
+
+// The other door answers the same claim in its own words rather than starting it: a fresh
+// session suspends a ready claim as the operator and then resumes it, and the suspension it
+// runs lets the held request go with the process (supervise's letGo), so the operator's own
+// suspend — answered 202 and still waiting on its retry — would be dropped unrun and the
+// worker started again in a new session.
+func TestAFreshSessionOfAReadyClaimUnderAHeldSuspensionIsRefused(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := suspensionHeldOverAReadyAgent(t, h)
+			launches := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn"))
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				heldSuspensionRefusal(token, "a fresh session"))
+			m, _ := h.supervisor.Machine(token)
+			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
+				t.Errorf("the refused claim is %s holding %v, want the ready claim with the operator's own hold, still waiting on its retry",
+					view.State, view.SuspensionHeld)
+			}
+			if after := h.stored(token); after.Session != "ses_implementer" {
+				t.Errorf("the refused claim records session %q, want the session it had", after.Session)
+			}
+			if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != launches {
+				t.Errorf("the runtime was asked for %d launches, want the %d made before the refusal", got, launches)
+			}
+		})
+	}
+}
+
+// A suspension that arrives while the session is being compacted is held for the compaction's
+// end, and that end runs it: the claim is suspended with its process stopped and the task it
+// owes unsent, which only the operator's resume starts again. The compaction says so rather
+// than answering 200 — the answer that promises the claim is back and whatever task it owed
+// has gone again (CompactResponse) — so a controller reads a recovery that did not land and
+// an operator is not told a stopped worker is running.
+func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *testing.T) {
+	for _, door := range compactDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := idleOnTheLadder(t, h)
+			conn := connected(h, token)
+			owed := h.stored(token).Pending.ID
+			release := conn.HoldCompact()
+			answered := make(chan *httptest.ResponseRecorder, 1)
+			go func() { answered <- door.ask(t, h, "LEGION-209", claim.RoleImplementer) }()
+			waitForCompacting(t, h, token)
+
+			if recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/suspend", nil); recorder.Code != http.StatusAccepted {
+				t.Fatalf("the suspend of the claim being compacted = %d, want the 202 of one held for the compaction's end; body %s",
+					recorder.Code, recorder.Body)
+			}
+			release()
+
+			wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed,
+				string(token)+"'s session was compacted, and a suspension held over the claim ended that "+
+					"compaction rather than the claim coming back: it was not given back, and the task it owes "+
+					"goes when its agent runs again")
+			settled(h, token)
+			after := h.stored(token)
+			if after.State != supervise.StateSuspended || after.SuspendedBy != supervise.SuspendedByOperator {
+				t.Errorf("the claim is %s suspended by %q, want it suspended by the operator whose hold ended the compaction",
+					after.State, after.SuspendedBy)
+			}
+			if after.Pending == nil || after.Pending.ID != owed {
+				t.Errorf("the claim holds %+v, want the task %s it still owes", after.Pending, owed)
+			}
+			if prompts := conn.Prompts(); len(prompts) != 0 {
+				t.Errorf("the connection was sent %#v, want nothing: the claim was not given back", prompts)
+			}
+		})
 	}
 }
 
