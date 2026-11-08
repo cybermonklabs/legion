@@ -412,7 +412,7 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
-	e, err := evaluate(set, names, requester)
+	e, err := evaluate(set, names, requester, obj.Reason)
 	if err != nil {
 		return Request{}, err
 	}
@@ -569,9 +569,10 @@ func formatGrantDuration(duration time.Duration) string {
 
 // evaluation is one pass of the policy over a request's names. approver is set when a name needs
 // approval, and then names the one approver every such name has. denials are the denied names
-// the policy named a reason for, in the request's own name order: the request row records them
+// a reason was named for, in the request's own name order: the request row records them
 // as its decision_detail (newRequest.decisionDetail), so a refused session is told which secret
-// refused it and why instead of only that something did.
+// refused it and why instead of only that something did. A name the policy would have put to an
+// approver is a denial here, policy.ReasonNoReason, when the request carries no reason.
 type evaluation struct {
 	decisions []SecretDecision
 	denials   []denial
@@ -579,20 +580,26 @@ type evaluation struct {
 	approver  string
 }
 
-// denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason).
+// denial is one denied name of a request and the rule behind the deny (policy.Decision.Reason,
+// or policy.ReasonNoReason for a name this pass denied for want of a reason).
 // A deny the policy cannot name a reason for makes no denial at all, since there is nothing to
 // tell the session beyond the refusal itself.
 type denial struct{ name, reason string }
 
-// evaluate is the policy's answer for each of names to requester.
-func evaluate(set *policy.Set, names []string, requester policy.Requester) (evaluation, error) {
+// evaluate is the policy's answer for each of names to requester, read against the request's own
+// reason. A name whose outcome would be an approval is denied instead, policy.ReasonNoReason,
+// when reason is empty once trimmed: nobody is asked to approve work the record does not
+// describe.
+func evaluate(set *policy.Set, names []string, requester policy.Requester, reason string) (evaluation, error) {
 	e := evaluation{decisions: make([]SecretDecision, 0, len(names)), state: "granted"}
+	reasonless := strings.TrimSpace(reason) == ""
 	denied := false
 	for _, name := range names {
 		d, err := set.Evaluate(name, requester)
 		if err != nil {
 			return evaluation{}, err
 		}
+		outcome := d.Outcome
 		switch {
 		case d.Outcome == policy.Deny:
 			denied = true
@@ -600,12 +607,18 @@ func evaluate(set *policy.Set, names []string, requester policy.Requester) (eval
 				e.denials = append(e.denials, denial{name: name, reason: d.Reason})
 			}
 		case d.Outcome == policy.Approval:
+			if reasonless {
+				denied = true
+				outcome = policy.Deny
+				e.denials = append(e.denials, denial{name: name, reason: policy.ReasonNoReason})
+				break
+			}
 			if e.approver != "" && e.approver != d.Approver {
 				return evaluation{}, ErrMixedApprovers
 			}
 			e.approver = d.Approver
 		}
-		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, AirlockDigest: set.Secrets[name].AirlockDigest})
+		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: outcome, Source: d.Source, AirlockDigest: set.Secrets[name].AirlockDigest})
 	}
 	switch {
 	case denied:
