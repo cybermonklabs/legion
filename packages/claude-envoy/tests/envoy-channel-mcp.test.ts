@@ -3,6 +3,7 @@ import { mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract"
+import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { modSocketPath } from "../hooks/mod-protocol"
@@ -43,6 +44,9 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
           machine_id: "test",
           dir: "/tmp",
           topics: body.topics,
+          // Every stand-in listener answers the session's own consumer
+          // (`@legion/envoy-client/test/subscribe-answer`).
+          delivery: consumerDelivery(body.session_id),
         })
       }
       if (request.method === "DELETE") return new Response(null, { status: 200 })
@@ -146,6 +150,7 @@ test("the session advertises its delivery modes for a mod that polls and never s
           machine_id: "test",
           dir: "/tmp",
           topics: body.topics,
+          delivery: consumerDelivery(body.session_id),
         })
       }
       if (request.method === "DELETE") return new Response(null, { status: 200 })
