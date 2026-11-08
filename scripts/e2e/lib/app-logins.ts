@@ -95,6 +95,11 @@ const outputLimit = 1 << 20;
 /** How long one token command may run here: a review App's first grant waits on a person, and
  * `agent-secrets` waits 30 minutes for a decision by default. */
 const commandLimitMs = 35 * 60 * 1000;
+/** How long the command's output may go without progress once the command itself has exited,
+ * before the run gives up on a descendant that is holding the pipes open. It bounds idle time
+ * rather than time since the exit, so a relay write that blocks against a reader that is behind
+ * re-arms it instead of spending it. */
+const drainIdleLimitMs = 5000;
 /** The GitHub token forms, which a command's stderr may carry and no log or error may. */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
 /** A GitHub account login: what a release may name an installation by (internal/appauth,
@@ -190,13 +195,19 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
   let stderr = "";
   let stderrBytes = 0;
   let pendingLine = "";
+  /** When either stream last delivered or took bytes, which the drain bound counts from. */
+  let lastProgress = Date.now();
   const relayLine = (line: string) => {
     const clean = redactTokens(line);
     writeAll(2, clean);
+    // The write is synchronous and may have blocked for as long as the caller was behind, which
+    // is progress: the bound below counts from here, not from before it.
+    lastProgress = Date.now();
     stderr += clean;
   };
   const relay = (async () => {
     for await (const chunk of child.stderr) {
+      lastProgress = Date.now();
       if (ended !== "") continue;
       stderrBytes += chunk.byteLength;
       if (stderrBytes > outputLimit) {
@@ -218,6 +229,7 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
   let size = 0;
   const collect = (async () => {
     for await (const chunk of child.stdout) {
+      lastProgress = Date.now();
       size += chunk.length;
       if (size > outputLimit) {
         end(`printed more than ${outputLimit} bytes, which no release is`);
@@ -227,11 +239,29 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
     }
   })();
   // The command's own process may exit while a descendant that left its process group still holds
-  // the pipes open, which the group kill cannot reach: the streams get five seconds to end after
-  // the exit, then the run fails rather than wait on them.
+  // the pipes open, which the group kill cannot reach: once the streams have gone
+  // drainIdleLimitMs without delivering anything the run fails rather than wait on them. The
+  // bound counts idle time rather than wall-clock time since the exit because the relay writes
+  // this process's stderr synchronously, so a caller that is behind blocks the relay for as long
+  // as it stays behind: one 300,007-byte line relayed into a pipe whose reader slept eight
+  // seconds blocked for those eight seconds, and a bound measured from the exit spent itself on
+  // that block and replaced the command's own exit 3 and quoted stderr with `exited while a
+  // process it started still held its output open`. A write that completes is progress and
+  // re-arms the bound, so a slow reader can no longer reach it; it does still count against
+  // commandLimitMs, the 35 minutes the whole command gets, which no reader a stage proof runs
+  // this under can plausibly stretch a write past.
   const status = await child.exited;
+  lastProgress = Date.now();
   const drainWait = Promise.withResolvers<boolean>();
-  const drainTimer = setTimeout(() => drainWait.resolve(false), 5000);
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  const armDrain = (ms: number) => {
+    drainTimer = setTimeout(() => {
+      const idle = Date.now() - lastProgress;
+      if (idle >= drainIdleLimitMs) drainWait.resolve(false);
+      else armDrain(drainIdleLimitMs - idle);
+    }, ms);
+  };
+  armDrain(drainIdleLimitMs);
   const drained = await Promise.race([
     Promise.all([relay, collect]).then(() => true),
     drainWait.promise,

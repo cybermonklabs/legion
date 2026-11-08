@@ -341,6 +341,42 @@ describe("app-logins.ts", () => {
     expect(Date.now() - started).toBeLessThan(30_000);
   }, 30_000);
 
+  // The drain bound exists for a descendant that holds the pipes open after the command exits, so
+  // it must not count this process's own blocked writes. Each shape here is one group whose
+  // stdout and stderr meet a reader that sleeps eight seconds, three past the bound, and whose
+  // token command prints 300,000 bytes with no newline until a descendant writes one half a
+  // second later: the relay issues one write far larger than the 64 KiB pipe, and that write
+  // blocks until the reader wakes. Where the bound measured wall-clock time from the exit, both
+  // shapes came back as `token_command exited while a process it started still held its output
+  // open`, in place of the exit 3 and the stderr the one shape has and the release the other
+  // released, and the succeeding shape exited 1 where it exits 0.
+  test("a reader that falls behind still gets the token command's own verdict", async () => {
+    // A bound of its own: the row holds a reader for eight seconds on purpose.
+    const held = "printf 'denied-%0300000d' 0 >&2; (sleep 0.5; printf '\\n' >&2) &";
+    const failing = join(dir, "behind-failing.json");
+    const succeeding = join(dir, "behind-succeeding.json");
+    // Both shapes at once, so the row costs one stall rather than two.
+    const stalled = async (command: string, out: string) => {
+      const path = config(app("101", command), app("202"));
+      const shell = `{
+  bun "${script}" --roles implement "${path}" "${standIn}" >"${out}"
+  echo "exit=$?"
+} 2>&1 | { sleep 8; cat; }`;
+      const child = Bun.spawn(["bash", "-c", shell], { stdout: "pipe", stderr: "pipe" });
+      const [printed] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+      return printed;
+    };
+    const [bad, good] = await Promise.all([
+      stalled(`${held} exit 3`, failing),
+      stalled(`${held} cat ${join(dir, "release-101.json")}`, succeeding),
+    ]);
+    expect(bad).toContain("failed (exit 3): denied-");
+    expect(bad).not.toContain("still held its output open");
+    expect(bad.split("\n")).toContain("exit=1");
+    expect(good.split("\n")).toContain("exit=0");
+    expect(JSON.parse(readFileSync(succeeding, "utf8")).implement).toBe("example-implement[bot]");
+  }, 30_000);
+
   test("output that is no release, an expired token, or no installation is refused without quoting it", async () => {
     const cases: [string, string][] = [
       [`echo '{"token":"${tokenOf(101)}"'`, "printed no release"],
