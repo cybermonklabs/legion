@@ -476,7 +476,8 @@ func suspensionHeldOverTheParkedRelaunch(t *testing.T, h *harness, observation r
 // the turn's end rather than cutting the turn off (supervise's holdSuspension). That end lands
 // the suspension, as the operator's stop deadline does when the turn outlasts it, and the claim
 // it leaves is suspended — the landing the parked window has, brought by a turn's end rather
-// than by a launch's turn.
+// than by a launch's turn. It is the operator's hold that lands so; the daemon's own is the
+// row below (suspensionHeldOverATurnByTheDaemon).
 func suspensionHeldOverATurn(t *testing.T, h *harness) claim.Token {
 	t.Helper()
 	token := readyImplementer(t, h)
@@ -497,6 +498,36 @@ func suspensionHeldOverATurn(t *testing.T, h *harness) claim.Token {
 	if view.WakeWaiting != nil {
 		t.Fatalf("the pacing holds %+v over the claim, want nothing held: this window is the suspension on its own",
 			*view.WakeWaiting)
+	}
+	return token
+}
+
+// suspensionHeldOverATurnByTheDaemon is the same turn under the hold whose end is not a
+// suspension: the daemon's own suspend — its issue left the workflow, or its tree lingers —
+// reaches the claim in a turn, and the machine holds it exactly as it holds the operator's
+// (supervise's holdSuspension). What follows differs. A start run against the claim drops a
+// hold of the daemon's own rather than waiting it out, so the turn ends as any other turn does
+// and leaves the claim idle, with nothing held and no Suspend asked of the runtime (supervise's
+// StartedBy, dropHeld, TestAStartRunAgainstTheClaimDropsTheSuspensionWaitingForItsTurn), which
+// is what TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted drives. A claim told
+// to ask again once it is suspended would wait for a state that end never brings, so the
+// refusal names what every hold's end shares instead (api's refuseHeldSuspension).
+func suspensionHeldOverATurnByTheDaemon(t *testing.T, h *harness) claim.Token {
+	t.Helper()
+	token := readyImplementer(t, h)
+	m, _ := h.supervisor.Machine(token)
+	if err := m.Handle(h.ctx, supervise.StreamTurnStart{Claim: token}); err != nil {
+		t.Fatalf("start %s's turn: %v", token, err)
+	}
+	err := m.Handle(h.ctx, supervise.RequestSuspend{
+		Claim: token, Reason: "the daemon's suspension reached the claim in a turn", By: supervise.SuspendedByDaemon})
+	if !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatalf("the daemon's suspend of the claim in a turn = %v, want the ErrSuspendHeld of one held", err)
+	}
+	view := m.View()
+	if view.State != supervise.StateWorking || !view.SuspensionHeld || view.SuspensionHeldBy != supervise.SuspendedByDaemon {
+		t.Fatalf("the claim is %s holding %v by %q, want the working claim with the daemon's suspension held",
+			view.State, view.SuspensionHeld, view.SuspensionHeldBy)
 	}
 	return token
 }
@@ -539,11 +570,12 @@ func suspensionHeldOverACompaction(t *testing.T, h *harness) claim.Token {
 }
 
 // heldSuspensionCase is one claim a suspension is held over, named by what the claim is stored
-// working under. Every door answers all of them with one sentence, which is what these rows are
-// for: the landing is what a held suspension has whether or not a launch is parked over it, and
-// a refusal true only of the parked window leaves the commonest case — an operator's suspend
-// during an ordinary turn — told to ask again after the turn ends, which is a claim the
-// compaction refuses as soon as that end comes (api's refuseHeldSuspension).
+// working under and by who asked for the hold. Every door answers all of them with one
+// sentence, which is what these rows are for: neither door reads what the hold's end will
+// bring, and the ends differ — the operator's hold lands as a suspension at every one of them,
+// and a start the daemon runs against the claim drops the daemon's own and leaves the claim
+// running (api's refuseHeldSuspension). A refusal true of one of those rows alone sends the
+// caller back for a state the others never reach.
 type heldSuspensionCase struct {
 	name  string
 	start func(t *testing.T, h *harness) claim.Token
@@ -552,6 +584,7 @@ type heldSuspensionCase struct {
 func heldSuspensionCases() []heldSuspensionCase {
 	cases := []heldSuspensionCase{
 		{"a turn of the claim's own", suspensionHeldOverATurn},
+		{"a turn under the daemon's own hold", suspensionHeldOverATurnByTheDaemon},
 		{"a compaction in flight", suspensionHeldOverACompaction},
 	}
 	for _, cause := range parkedRelaunchCauses() {
@@ -568,22 +601,24 @@ func heldSuspensionCases() []heldSuspensionCase {
 // heldSuspensionRefusal is the sentence both recoveries give a claim a suspension is held over,
 // with the asking operation's own name in it (api's refuseHeldSuspension, controllerOp).
 func heldSuspensionRefusal(token claim.Token, operation string) string {
-	return string(token) + " has a suspension held over it, and it lands by itself at the first end that comes " +
-		"for it: the end of the turn or the compaction the claim is working under, the turn of a relaunch the " +
-		"wake pacing parked, or the operator's deadline. What that leaves is a suspended claim rather than a " +
-		"running one, so " + operation + " does not reach it while the suspension is held; ask again once " +
-		string(token) + " is suspended, which is when fresh_session (`legion claims retry --fresh-session`) reaches it"
+	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim that is " +
+		"working. The hold ends by itself, and not always in a suspension: a start the daemon runs against " +
+		"the claim drops a hold of the daemon's own, and the end of the claim's process takes any hold with " +
+		"it. Ask again once " + string(token) + " is no longer working: fresh_session (`legion claims retry " +
+		"--fresh-session`) reaches it if it is suspended, stopped or failed by then, and " + operation +
+		" if it is ready or idle"
 }
 
-// A suspension held over the claim is read ahead of every other window, because the end that
-// comes for the claim lands that suspension: the claim comes out suspended, so neither "ask
-// again once it is running" nor "ask again after the turn ends" names a wait that comes for it.
-// What comes by itself is the suspension, at whichever of its ends is first, and both
-// recoveries say so of a turn of the claim's own and of a compaction in flight as much as of
-// each of the three verdicts that park a relaunch. The suspended claim that landing leaves is
-// the one fresh_session reaches, which is why the refusal names fresh_session for the
-// compaction as much as for the fresh session itself (api's refuseHeldSuspension).
-func TestARecoveryRefusedUnderAHeldSuspensionSaysTheSuspensionLands(t *testing.T) {
+// A suspension held over the claim is read ahead of every other window a working claim can be
+// in, because what such a claim waits for is the hold's end rather than a turn's or a
+// compaction's: neither "ask again once it is running" nor "ask again after the turn ends"
+// names a wait that comes for it. What the refusal may say of that end is only that the claim
+// stops working, since the end itself differs — an operator's hold lands as a suspension at a
+// turn's end, at a compaction's, at a parked relaunch's turn and at the operator's deadline,
+// and a start the daemon runs against the claim drops the daemon's own and leaves it running.
+// So the refusal names both operations by the state each reaches, and both recoveries say so
+// of every row (api's refuseHeldSuspension).
+func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing.T) {
 	for _, held := range heldSuspensionCases() {
 		for _, door := range compactDoors() {
 			t.Run(held.name+": "+door.name, func(t *testing.T) {
@@ -610,6 +645,43 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheSuspensionLands(t *testing.T
 				}
 			})
 		}
+	}
+}
+
+// The daemon's hold is the one that ends in no suspension at all: a newer workflow start drops
+// it, the turn then ends as any other does, and what the caller is left with is an idle claim
+// the compaction reaches. A caller told to ask again once the claim is suspended waits for that
+// state for as long as the claim runs, in the one window the compaction exists to recover from,
+// so the refusal tells it to ask again once the claim is no longer working.
+func TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted(t *testing.T) {
+	h := compactHarness(t, nil)
+	token := suspensionHeldOverATurnByTheDaemon(t, h)
+	conn := connected(h, token)
+	m, _ := h.supervisor.Machine(token)
+
+	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
+
+	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
+		heldSuspensionRefusal(token, "a compaction"))
+	if err := m.StartedBy(h.ctx, 42); err != nil {
+		t.Fatalf("the start run against the held claim: %v", err)
+	}
+	if err := m.Handle(h.ctx, supervise.StreamTurnEnd{Claim: token}); err != nil {
+		t.Fatalf("end %s's turn: %v", token, err)
+	}
+	if view := m.View(); view.State != supervise.StateIdle || view.SuspensionHeld {
+		t.Fatalf("the turn's end left the claim %s holding %v, want it idle with the daemon's hold dropped",
+			view.State, view.SuspensionHeld)
+	}
+
+	second := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
+
+	if answer := decodeCompaction(t, second); !answer.Compacted {
+		t.Fatalf("the compaction of the claim the turn left idle answered %+v, want it compacted", answer)
+	}
+	settled(h, token)
+	if got := len(conn.Compactions()); got != 1 {
+		t.Fatalf("Oh My Pi was asked for %d compactions, want the one the idle claim took", got)
 	}
 }
 

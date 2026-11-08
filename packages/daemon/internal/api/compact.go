@@ -139,7 +139,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     fresh session instead (refuseInATurn). A claim already being compacted is in no turn, so
 //     it is told so in its own words: the compaction in flight is what it waits for. A claim a
 //     suspension is held over is read ahead of both, whatever it is stored working under,
-//     because its wait is that suspension landing rather than a turn's or a compaction's end
+//     because its wait is the hold's end and not a turn's or a compaction's
 //     (refuseHeldSuspension);
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
 //     flight, and one stored working under a launch the daemon's wake pacing parks, which is
@@ -221,9 +221,9 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		if errors.As(err, &refused) {
 			// The machine takes no compaction in the state it names: a claim in a turn, one
 			// already being compacted, one whose relaunch waits its paced turn, one a
-			// suspension is held over while that relaunch waits, one whose agent is not
-			// running, one between states. The answer is written from that state and the
-			// published view (refuseState).
+			// suspension is held over whatever it is working under (refuseHeldSuspension),
+			// one whose agent is not running, one between states. The answer is written from
+			// that state and the published view (refuseState).
 			return CompactResponse{}, refuseState(w, token, refused.State, m.View())
 		}
 		// Oh My Pi refused or skipped the compaction, the wait for it ran out, or the transport
@@ -256,11 +256,11 @@ func boundReason(text string) string {
 // refuseState is the refusal the machine answered a compaction with, in the words of the state
 // that refusal names (supervise.RefusedError.State). view is the claim as its machine last
 // published it, for the things the state alone does not say: whether a suspension is held over
-// the claim, which is the wait its own sentence names (supervise.Claim.SuspensionHeld,
+// the claim, which its own refusal answers ahead of the rest (supervise.Claim.SuspensionHeld,
 // refuseHeldSuspension), whether a working claim is working because its session is being
 // compacted rather than because a turn is (supervise.Claim.Compacting), and whether a launch
-// waits its paced turn over it (relaunchWaits). It always reports false, so a caller returns it
-// as its own answer.
+// waits its paced turn over it, which the order below reaches with no suspension held
+// (relaunchWaits). It always reports false, so a caller returns it as its own answer.
 func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
 	case state == supervise.StateWorking && view.SuspensionHeld:
