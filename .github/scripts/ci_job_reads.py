@@ -773,8 +773,12 @@ TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
 TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
 TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before the fault"
 TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
-TOOL_JJ_BYTE_STEP = "Change the last byte of the jj binary inside mise's install directory"
+TOOL_JJ_SEED_STEP = "Seed mise's install of jj with the staged binary, one byte changed"
 TOOL_BUN_BYTE_STEP = "Change the last byte of the installed Bun"
+# The step of the tool-fallback-arm job the reads below cite, beside the fault step that job
+# shares with the one above: the reading of the Bun this runner holds, which the rig makes
+# against the bun-linux-aarch64 row.
+TOOL_ARM_READ_STEP = "Read the Bun the release asset served"
 
 # docs-pages.yaml builds and publishes main's site in a workflow of its own (its header says why),
 # so its on.push.paths stands in for the docs filter on main.
@@ -1408,7 +1412,8 @@ GATES = [
         (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
                                         "bytes through it, and the two steps above source it for a row's fields"),
         (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
-                                              "of this job that drives the proof does; this job is its only caller"),
+                                              "of this job that drives the proof does; this job and tool-fallback-arm "
+                                              "are its only callers"),
         (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
                                               "of GitHub's release assets"),
         (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "
@@ -1420,11 +1425,33 @@ GATES = [
         (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
         (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
         (".github/actions/setup-bun/**", at("tool-fallback", "./.github/actions/setup-bun")),
-        (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_BYTE_STEP)} reads ARG JJ_TOOL to ask "
-                                               "mise where it installed jj, and .github/actions/install-jj reads "
-                                               "that ARG and the mise row's own pin from the same file"),
+        (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_SEED_STEP)}: the rig reads ARG JJ_TOOL "
+                                               "to name mise's own install directory for that tool, and "
+                                               ".github/actions/install-jj reads that ARG and the mise row's own pin "
+                                               "from the same file"),
         (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
                          ".github/actions/setup-bun installs the Bun it pins"),
+    ) + CI_SELF),
+
+    # The tool-fallback-arm job: the same two halves of the Bun install on an arm64 runner, the
+    # one architecture no other job of this repository installs a tool on. It runs no go command
+    # either, and reads less than the job above: the action, the version it pins, the manifest
+    # row the action and the rig both read, the helper that reads it, and the rig and the fault
+    # proxy that put the release hosts out of reach.
+    gate("tool_fallback_arm", "tool-fallback-arm", reads=reads(
+        (".github/actions/setup-bun/**", at("tool-fallback-arm", "./.github/actions/setup-bun")),
+        (".bun-version", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)}: the rig holds what bun answers to the "
+                         "version that file pins, and .github/actions/setup-bun installs the Bun it pins"),
+        (".github/ci-tools.yaml", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)}: the rig reads the "
+                                  "bun-linux-aarch64 row's version and digest, as the action reads that row to "
+                                  "verify what it installed"),
+        (".github/scripts/ci-tools.sh", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)}: the rig reads that row "
+                                        "through it, which is the PyYAML read this job proves the arm64 runner can "
+                                        "make"),
+        (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback-arm', TOOL_ARM_READ_STEP)} runs it, as the fault "
+                                              "and probe steps of this job do"),
+        (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback-arm', TOOL_FAULT_STEP)}: the rig starts it in "
+                                              "front of GitHub's release assets"),
     ) + CI_SELF),
 ]
 

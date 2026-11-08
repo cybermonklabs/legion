@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# The rig of .github/workflows/ci.yaml's `tool-fallback` job, the live proof that every tool
-# install of this repository reads the second source .github/ci-tools.yaml names when the first
-# source does not serve the bytes, and that no unverified byte is ever installed
-# (dispatch://INFRA-1873).
-# That job is this script's only caller, and it is this script's own exercise: every verb below
-# either prints a reading the job is judged on or refuses the job itself, so a rig that
-# misbehaves is a job that fails, and the job runs on every change that touches what it proves
-# (the `tool_fallback` filter of the `changes` job names this file among them).
+# The rig of .github/workflows/ci.yaml's `tool-fallback` and `tool-fallback-arm` jobs, the live
+# proof that every tool install of this repository reads the second source .github/ci-tools.yaml
+# names when the first source does not serve the bytes, and that no unverified byte is ever
+# installed (dispatch://INFRA-1873).
+# Those two jobs are this script's only callers, and it is this script's own exercise: every
+# verb below either prints a reading a job is judged on or refuses the job itself, so a rig that
+# misbehaves is a job that fails, and both jobs run on every change that touches what they prove
+# (the `tool_fallback` filter of the `changes` job names this file among them, and the
+# `tool_fallback_arm` filter is that list itself).
 # A second source nothing exercises rots, and this repository's own principle is that testing
 # means booting and running it, so the rig is part of the proof rather than a test beside it.
 #
-# THE VERBS, in the order the job runs them.
+# THE VERBS, in the order the `tool-fallback` job runs them; `tool-fallback-arm` runs
+# `start-fault`, `probe` and `installed-bun`.
 #
 #   origin-start
 #       Writes a small python3 HTTP origin to $RUNNER_TEMP/ci-tools-proof/origin.py, starts it on
@@ -52,6 +54,13 @@
 #       Prints the reading and returns non-zero where the two do not agree, so the step that
 #       runs it keeps its own list of the tools that answered wrongly.
 #
+#   installed-bun <row>
+#       The bun on this job's PATH, read against that row: the machine, what `bun --version`
+#       answers, the path `command -v bun` gives, the sha256 of that file, and the row's own
+#       version and digest.
+#       It refuses the job where the version is not the one .bun-version pins or the binary is
+#       not that row's bytes, and it is what the arm64 job's two halves are read by.
+#
 #   corrupt [row…]
 #       Writes the control file the origin reads, with those rows or with none, and prints what
 #       it wrote.
@@ -61,20 +70,44 @@
 #       file for the whole job, and a case that did not empty it would read the case before it.
 #
 #   flip-last-byte <file>
-#       Changes the last byte of that file and prints its sha256 afterwards, for the two cases
-#       whose corrupted payload is a binary already installed on the runner rather than
-#       something the origin serves.
+#       Changes the last byte of that file and prints its sha256 afterwards, for the cases whose
+#       corrupted payload is a binary on the runner rather than something the origin serves.
 #
-#   report <case> --outcome <the step's outcome> --expect <fail|pass>
+#   payload-path <row>
+#       The file `stage` wrote this row's own pinned bytes to, which is the name the origin
+#       serves them under on its ghcr route.
+#       A case that must put those bytes on the runner copies them from there, so this rig's own
+#       directory layout is named here and in no step of the job.
+#       Only a row whose second source is the ghcr copy has such a file: an npm row's payload is
+#       the tarball that registry serves, and the binary is a member inside it.
+#
+#   seed-mise-jj <file>
+#       Writes that file as the jj binary inside mise's own install directory for the tool
+#       packages/daemon/docker/worker.Dockerfile pins, which is where
+#       .github/actions/install-jj reads an installed jj from, and prints the path and the
+#       file's sha256.
+#       Measured in this issue's pod: with
+#       `$MISE_DATA_DIR/installs/github-sjawhar-jj/<version>/jj` in place as a file of mode 0755
+#       and nothing else there, `mise install github:sjawhar/jj@<version>` exits 0 without
+#       reaching the network — "installed but not activated" is its whole output — and
+#       `mise x github:sjawhar/jj@<version> -- sh -c 'command -v jj'` prints that path.
+#       The jj-primary case uses it because a live `mise install` inside the fault is the thing
+#       that made this job red during an outage: jj's release asset is on the host the fault
+#       holds, so a case about the bytes mise installed would spend the outage downloading
+#       through a 504, and the job that proves the outage survivable would fail in it.
+#
+#   report <case> --outcome <the step's outcome> --row <row>
 #          [--expect-source <name>] [--expect-untried <name>]
 #       Prints the case, the outcome the install step reached, the lines the origin logged for
 #       this case and the lines the fault proxy logged for it, and then decides the case.
 #       It is this verb, and not the install step, that passes or fails the job: every install
 #       step of a case carries `continue-on-error: true`, so the job reads each case rather than
 #       stopping at the first install that refuses.
-#       It fails when the outcome is not the expected one, when `--expect-source` names a source
-#       this case's reading does not, and when `--expect-untried` names a source the origin
-#       served for this case's row after all.
+#       Every case of this job is a refusal, so the outcome it holds the step to is `failure`;
+#       the row the case is about is given rather than worked out of the case's name.
+#       It fails when the step did not fail, when `--expect-source` names a source this case's
+#       reading does not, and when `--expect-untried` names a source the origin served for this
+#       case's row after all.
 #
 # HOW `--expect-source` IS READ.
 # A composite action writes its refusal to the job's log, and no later step can read that log, so
@@ -518,6 +551,49 @@ version_answers() {
   return 1
 }
 
+# ---------------------------------------------------------------- installed-bun
+
+# installed_bun <row>: the bun on this job's PATH read against that row, which is how a job on a
+# runner architecture this repository proves nothing else on says which Bun it got.
+# It prints the machine, what `bun --version` answers, the path `command -v bun` gives, the
+# sha256 of that file, and the row's own version and digest, and it refuses the job where the
+# version is not the one .bun-version pins or the binary is not that row's bytes.
+#
+# The row a reader wants is the one .github/actions/setup-bun chose from `uname -m`, and no step
+# can read that out of the action: a composite action's step outputs are its own. It is read
+# from the binary instead. That action held what it installed to the row it chose, this verb
+# holds the same file to the row named here, and one file has one sha256, so two passing
+# readings name one row — the three bun rows of .github/ci-tools.yaml do not share the aarch64
+# row's digest.
+installed_bun() {
+  [ "$#" -eq 1 ] || die "installed-bun takes the row this runner's bun must be, and this call gave $#"
+  local row=$1 bun digest version pinned printed read_back problems=0
+  digest=$(ci_tools_digest "$row")
+  version=$(ci_tools_field "$row" version)
+  pinned=$(tr -d '[:space:]' < "$root/.bun-version")
+  bun=$(command -v bun) || bun=""
+  [ -n "$bun" ] ||
+    die "installed-bun: no bun is on this job's PATH, so neither source of the $row row installed one"
+  printed=$("$bun" --version)
+  read_back=$(sha256sum -- "$bun")
+  read_back=${read_back%% *}
+
+  note "the bun this $(uname -m) runner holds, read against the $row row"
+  echo "  bun --version answers $printed, and .bun-version pins $pinned"
+  echo "  command -v bun gives $bun, whose sha256 is $read_back"
+  echo "  the $row row pins version $version and sha256 $digest"
+  if [ "$printed" != "$pinned" ]; then
+    echo "::error::ci-tools-proof: the bun at $bun answers $printed, and .bun-version pins $pinned, so this runner installed another Bun than the one this repository locks." >&2
+    problems=$((problems + 1))
+  fi
+  if [ "$read_back" != "$digest" ]; then
+    echo "::error::ci-tools-proof: the bun at $bun is sha256 $read_back, and the $row row pins $digest, so the bytes on this runner are not the ones that row names." >&2
+    problems=$((problems + 1))
+  fi
+  [ "$problems" -eq 0 ] || exit 1
+  echo "  the bun on this runner is the $row row's pinned binary"
+}
+
 # ---------------------------------------------------------------- corrupt
 
 corrupt() {
@@ -547,7 +623,8 @@ corrupt() {
 # It is the origin's own corruption rule (write_origin above) applied to a file on the runner
 # rather than to a body in memory: the smallest edit that moves the sha256 of the whole file,
 # and the one that leaves an archive's own framing alone until the digest is read.
-# The two cases whose corrupted bytes are a binary a third party already installed use it.
+# The cases whose corrupted bytes are a binary on the runner rather than a body the origin
+# serves use it.
 flip_last_byte() {
   [ "$#" -eq 1 ] || die "flip-last-byte takes a file, and this call gave $#"
   python3 - "$1" <<'PY'
@@ -562,24 +639,56 @@ PY
   sha256sum "$1"
 }
 
-# ---------------------------------------------------------------- report
+# ---------------------------------------------------------------- payload-path
 
-# case_row <case>: the row a case is about, read from the case's own name.
-# A case is named `<row>-primary` or `<row>-second-source`, and a name no row carries is the
-# first row of that family, which is how `bun` names the x64 row every runner of this job takes.
-case_row() {
-  local name=$1 row
-  row=${name%-primary}
-  row=${row%-second-source}
-  if ci_tools_field "$row" digest > /dev/null 2>&1; then
-    printf '%s\n' "$row"
-    return 0
-  fi
-  case $row in
-    bun) printf 'bun-linux-x64\n' ;;
-    *) die "report: the case '$name' names no row of .github/ci-tools.yaml" ;;
-  esac
+# payload_path <row>: the file `stage` wrote this row's own pinned bytes to, which is the name
+# the origin serves them under on its ghcr route (payload_names above writes both names).
+# A case that must put those bytes on the runner copies them from there, so this rig's own
+# directory layout is named here and in no step of .github/workflows/ci.yaml.
+payload_path() {
+  [ "$#" -eq 1 ] || die "payload-path takes a row, and this call gave $#"
+  local row=$1 second
+  second=$(ci_tools_field "$row" second_source)
+  [ "$second" = ghcr-mirror ] ||
+    die "payload-path: no payload holds the pinned bytes of '$row' on their own; its second source is '${second:-nothing}', whose payload is the archive that service serves"
+  printf '%s/sha256:%s\n' "$payload" "$(ci_tools_digest "$row")"
 }
+
+# ---------------------------------------------------------------- seed-mise-jj
+
+# seed_mise_jj <file>: that file as the jj binary inside mise's own install directory for the
+# tool packages/daemon/docker/worker.Dockerfile pins, which is where .github/actions/install-jj
+# reads an installed jj from.
+# Measured in this issue's pod: with that one file in place as mode 0755 and nothing else in the
+# directory, `mise install github:sjawhar/jj@<version>` exits 0 without reaching the network —
+# "installed but not activated" is its whole output — and
+# `mise x github:sjawhar/jj@<version> -- sh -c 'command -v jj'` prints that path.
+# The jj-primary case is about the bytes mise installed and not about mise's fetch, and a live
+# `mise install` inside the fault is what made this job red during an outage: jj's release asset
+# is on the host the fault holds, so that install would spend the outage downloading through a
+# 504 and the job that exists to prove the outage survivable would fail in it.
+# Seeding the directory takes the download out of the case and leaves the reading it is about
+# where it was.
+seed_mise_jj() {
+  [ "$#" -eq 1 ] || die "seed-mise-jj takes the file to seed mise's install with, and this call gave $#"
+  local file=$1 dockerfile="$root/packages/daemon/docker/worker.Dockerfile" jj_tool version dir
+  [ -f "$file" ] || die "seed-mise-jj: there is no file at '$file' to seed mise's install with"
+  jj_tool=$(sed -n 's/^ARG JJ_TOOL=//p' "$dockerfile")
+  [ -n "$jj_tool" ] || die "seed-mise-jj: $dockerfile names no ARG JJ_TOOL"
+  version=${jj_tool##*@}
+  [ "$version" != "$jj_tool" ] ||
+    die "seed-mise-jj: the ARG JJ_TOOL '$jj_tool' names no version after an @, so this rig cannot name mise's install directory for it"
+  dir="${MISE_DATA_DIR:-$HOME/.local/share/mise}/installs/github-sjawhar-jj/$version"
+  # The directory holds this one file and nothing else, which is what the measurement above was
+  # taken on: a half-written install an earlier `mise install` left behind is not that reading.
+  rm -rf "$dir"
+  mkdir -p "$dir"
+  install -m 0755 -- "$file" "$dir/jj"
+  note "mise's install of $jj_tool is now $dir/jj"
+  sha256sum -- "$dir/jj"
+}
+
+# ---------------------------------------------------------------- report
 
 # case_lines <log> <key>: the lines that log gained since this case's `corrupt` marked it.
 case_lines() {
@@ -613,7 +722,7 @@ route_of() {
 
 report() {
   [ "$#" -ge 1 ] || die "report takes a case name and its expectations"
-  local name=$1 outcome="" expect="" expect_source="" expect_untried=""
+  local name=$1 outcome="" row="" expect_source="" expect_untried=""
   shift
   while [ "$#" -gt 0 ]; do
     case $1 in
@@ -621,8 +730,8 @@ report() {
         outcome=$2
         shift 2
         ;;
-      --expect)
-        expect=$2
+      --row)
+        row=$2
         shift 2
         ;;
       --expect-source)
@@ -637,24 +746,18 @@ report() {
     esac
   done
   [ -n "$outcome" ] || die "report: --outcome is required"
-  case $expect in
-    fail | pass) ;;
-    *) die "report: --expect is fail or pass, and this call gave '${expect:-nothing}'" ;;
-  esac
+  [ -n "$row" ] || die "report: --row is required"
+  ci_tools_field "$row" digest > /dev/null ||
+    die "report: '$row' is no row of .github/ci-tools.yaml"
   [ -f "$mark" ] ||
     die "report: the case '$name' called no corrupt verb, so this rig cannot tell its lines from another case's"
-  local row wanted problems=0
-  row=$(case_row "$name")
-  if [ "$expect" = fail ]; then
-    wanted=failure
-  else
-    wanted=success
-  fi
+  # Every case of this job is a refusal, so this is the one outcome a case is held to.
+  local wanted=failure problems=0
 
   local served asked
   served=$(case_lines "$origin_log" origin)
   asked=$(case_lines "$fault_log" fault)
-  note "case $name, on row $row: the install step's outcome was $outcome, and this case expects it to $expect"
+  note "case $name, on row $row: the install step's outcome was $outcome, and this case is the proof that it refuses"
   echo "  what the origin served for this case:"
   if [ -n "$served" ]; then
     sed 's/^/    /' <<<"$served"
@@ -703,7 +806,7 @@ report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|start-fault|probe|version-answers|corrupt|flip-last-byte|report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|start-fault|probe|version-answers|installed-bun|corrupt|flip-last-byte|payload-path|seed-mise-jj|report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
@@ -711,8 +814,11 @@ case $verb in
   start-fault) start_fault "$@" ;;
   probe) probe "$@" ;;
   version-answers) version_answers "$@" ;;
+  installed-bun) installed_bun "$@" ;;
   corrupt) corrupt "$@" ;;
   flip-last-byte) flip_last_byte "$@" ;;
+  payload-path) payload_path "$@" ;;
+  seed-mise-jj) seed_mise_jj "$@" ;;
   report) report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, probe, version-answers, corrupt, flip-last-byte, report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, probe, version-answers, installed-bun, corrupt, flip-last-byte, payload-path, seed-mise-jj, report)" ;;
 esac
