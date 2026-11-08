@@ -34,10 +34,12 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   head that closes them, since READY reads the round's first approval and the daemon's compare
   above it is gone. The reviewer leaves each text finding as the inline review thread it already
   wrote, publishes that head and those threads to the implementer's role topic once its own
-  completion is accepted, the implementer fixes the text and pushes it once in its own live
-  session while you read the issue, and the reviewer then resolves each thread, approves the
-  head the fix landed on and publishes that head to your role topic. **Hold `sign_off` until
-  that message arrives**, and accept on that second approval, reading it on GitHub yourself.
+  `read_record` shows the issue in `accepting` — not merely once its completion is accepted,
+  since the round ends on the review fact too — the implementer fixes the text and pushes it
+  once in its own live session while you read the issue, and the reviewer then resolves each
+  thread, approves the head the fix landed on and publishes that head to your role topic.
+  **Hold `sign_off` until that message arrives**, and accept on that second approval, reading
+  it on GitHub yourself.
   Where you doubt the reviewer's call between a text and a behavioural finding, read the threads
   yourself and send the issue back with `request_backward_move` rather than accepting; a thread
   the fix cannot close reaches you the same way (*A review thread that cannot be closed*, below).

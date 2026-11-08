@@ -1174,7 +1174,7 @@ function toldArchitect(entries: SessionEntry[], threads: z.infer<typeof Threads>
  *                the issue (`moved`), no review approved the head, and the finding reached the
  *                architect, the one role that can move the issue for it (`told`). A submitted
  *                `REQUEST_CHANGES` is reported (`requested`) and is no substitute: submitted in
- *                `accepting`, the daemon records it and moves nothing. The negative control,
+ *                `accepting`, the daemon records none of it and moves nothing. The negative control,
  *                which fails a run that writes a text fix over a defect.
  *                This condition has been wrong twice, and the record is kept here. It first
  *                required that no review was submitted at all, which forbade the reviewer to
