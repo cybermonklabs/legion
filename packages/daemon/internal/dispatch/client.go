@@ -151,6 +151,17 @@ func (c *HTTPClient) SetStatusAt(ctx context.Context, issue Issue, status string
 	return response.issue(), nil
 }
 
+// ReleaseClaim clears the issue's Dispatch claim through DELETE /api/v1/issues/{key}/claim, as
+// the daemon's own session. The actor body is required, not an extra: Dispatch's route decodes
+// the request and refuses one that carries no Content-Type: application/json, which request sets
+// only for a non-nil body. Every other daemonWrite field is omitempty, so what goes over the wire
+// is the actor alone, which is all the route accepts. Dispatch answers 409 ISSUE_CLAIMED when
+// this caller may not release the holder, and 409 CLAIM_CONTENDED when the holder changed twice
+// while the request ran, so nothing was applied.
+func (c *HTTPClient) ReleaseClaim(ctx context.Context, key string) error {
+	return c.request(ctx, http.MethodDelete, "/api/v1/issues/"+url.PathEscape(key)+"/claim", daemonWrite{Actor: daemonActor(key)}, nil)
+}
+
 // PutGatedSteps publishes the deployment's design-gate steps onto project's row through PUT
 // /api/v1/projects/{key}/gated-steps, as the daemon's own session, the actor every write of this
 // client carries. The list is always sent, empty for a deployment that gates nothing: Dispatch

@@ -267,6 +267,7 @@ func (d *pilotDispatch) PostMessage(context.Context, string, string) error { ret
 func (d *pilotDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
 }
+func (d *pilotDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *pilotDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
@@ -321,6 +322,7 @@ func (d *filteringDispatch) PostMessage(context.Context, string, string) error {
 func (d *filteringDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
 }
+func (d *filteringDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *filteringDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }

@@ -263,6 +263,9 @@ func (d *blockingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue
 func (d *blockingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("blockingDispatch takes no hand-over")
 }
+func (d *blockingDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("blockingDispatch releases no claim")
+}
 func (d *blockingDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *blockingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
@@ -443,6 +446,9 @@ func (d *refusingDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue
 func (d *refusingDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("refusingDispatch takes no hand-over")
 }
+func (d *refusingDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("refusingDispatch releases no claim")
+}
 func (d *refusingDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *refusingDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
@@ -491,6 +497,9 @@ func (d *boardDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, s
 }
 func (d *boardDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return errors.New("boardDispatch takes no hand-over")
+}
+func (d *boardDispatch) ReleaseClaim(context.Context, string) error {
+	return errors.New("boardDispatch releases no claim")
 }
 func (d *boardDispatch) PostMessage(context.Context, string, string) error { return nil }
 func (d *boardDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {

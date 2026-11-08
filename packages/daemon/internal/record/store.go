@@ -733,6 +733,14 @@ func (s *Postgres) SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, sessi
 	return claims, nil
 }
 
+func (s *Postgres) SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error) {
+	var claims bool
+	if err := tx.QueryRow(ctx, "select exists (select 1 from claims where session = $1 and session <> '')", session).Scan(&claims); err != nil {
+		return false, fmt.Errorf("read the claims of session %s: %w", session, err)
+	}
+	return claims, nil
+}
+
 // keptCounts is the validity rule as SQL: the claim and the hold a kept row carries count only
 // while they stand in the same tree as the row's own issue. row is the kept row's alias and owner
 // the alias of the issues row of its issue, which is where the tree it is owed to is read. A void

@@ -169,6 +169,7 @@ func (d *outboxDispatch) HandOver(_ context.Context, issue dispatch.Issue, statu
 	}
 	return d.statusErr
 }
+func (d *outboxDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *outboxDispatch) PostMessage(_ context.Context, _ string, body string) error {
 	d.messages = append(d.messages, body)
 	return d.postErr

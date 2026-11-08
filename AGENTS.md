@@ -836,8 +836,8 @@ the daemon sets it `todo` with the label in one Dispatch write, and the write's 
 A child that never started is handed over too, carrying no run, whatever held it where it stood — an unfinished Dispatch issue, an ancestor the daemon had accepted, or one that closed during the linger:
 the expiry reads the child's own state rather than the reason it waited, so every member the tree leaves in the workflow at `todo` and `admitted` becomes a root of its own.
 A child a person has taken out of the workflow, and one the architect has filed and not released, is in no such state and stays where it is.
-A root that does not stay `done` through its linger, one a person or a controller parked, hands over only a child standing at `awaiting_merge` whose pull request is still open and whose own status is in the workflow:
-the linger's start disarmed that pull request, only a new READY arms it again, and the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, its merger writes that READY, and its merge closes it.
+A root that does not stay `done` through its linger, one a person or a controller parked, hands over only a child standing at `merging` whose pull request is still open and whose own status is in the workflow:
+the daemon re-admits no root left parked, so the child comes back in `merging` under a tree of its own, and its merger merges the head it reads, whose merge closes it.
 Park such a child too when its merge should wait with its parked root.
 A child whose old root had no gate (cleared by a reopen in its linger) carries none:
 its architect registers its own spec while the child is before its merge (after that the work is already through every gate), and decomposes nothing anew, since its workers already run their phases.
@@ -937,6 +937,11 @@ Between boots nothing re-reads a waiting root's asks:
 if the event of a person's answer never reaches the daemon, the root waits until any newer act of a person on any ask of the root, or a review of its spec, reaches it, or until the daemon's next boot, whose catch-up applies the root's event log after its cursor (the site's troubleshooting page, "A tree waits on a person").
 
 A root parked out of the workflow (`backlog`, `icebox`) runs nothing, and its architect is suspended or gone.
+Its park releases its Dispatch claim as well: the daemon queues that release as a `claim_release` outbox row whenever it takes an issue out of the workflow without closing it, since Dispatch releases a claim at a close alone.
+The release takes only a claim held by a session the daemon records in that issue's own tree, leaving a person's claim, a session of another tree, and a holder no claims row accounts for each where it stands.
+A tree the operator holds is left alone as well, whoever holds the claim, since its claims are the operator's to release with the rest of its cleanup, as its pod and its workspaces are.
+A boot releases the ones parked before, one release for each issue of its listing that still carries a claim while the daemon's own record says it stopped.
+The boot's pass makes no operator test of its own, so it queues a row for such a tree too, and the executor ends that row when it runs, on the reading current then.
 A person's spec decision on it (an approval, a changes request, or an approval carried to a child's new tree) that the daemon could not deliver to its architect, and a person's answer, resolution or reply on an ask of its issues (one that gives the turn to the agent, or one under a closed ask), goes to the controller as `parked-decision`, once per decision.
 One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
 The daemon keeps the newest decision per Dispatch reference, under the issue it was decided on, never under a root: the tree that owes the person an answer is the tree that issue stands in now, so a child a linger hands to Legion, a parked child a person's todo orphans, a grandchild handed over beside its parent and a queued root admission adopts into a live tree each take what was decided on them with them, in any order, with nothing to move.
@@ -961,7 +966,7 @@ The machinery's notices to a stopped tree (a child's status or close, a dead wor
 **Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, each step one document of the root issue a human approves at a version in Dispatch:
 `decisions` the issue's decisions document, `criteria` its Verification document, `spec` its primary document.
 The default is the single step `spec`, which the word `root-issues` also means, and the empty list, which the word `off` also means, gates nothing.
-The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's READY and the start of a released child until a person approves that step's document.
+The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person approves that step's document.
 Once the spec's decision blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
 — or at registration itself, when Dispatch already shows the human approved that version before the architect registered (the daemon reads the approval; it never writes one).
 One request with `--include-verification` covers the spec and the Verification document, so it opens the `criteria` and the `spec` step together, each registered on its own document.

@@ -54,7 +54,8 @@ const (
 	messageReadSkew = 5 * time.Second
 	// waitWarnAttempts is when a waiting row is logged as a warning: past the backoff's climb to
 	// its cap, a wait of about two minutes, what it waits on is not ending on its own, and an
-	// operator should look.
+	// operator should look. A wait that ends on its own (routineWait) stays debug at every
+	// attempt.
 	waitWarnAttempts = 7
 	// issueBranchTimeout bounds one issue_branch row's GitHub calls, its token's mint with them:
 	// the row runs on its issue's lifecycle lane, one row at a time, so a call GitHub never
@@ -229,13 +230,14 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 		if errors.Is(err, wait.ErrWaiting) {
 			// A wait is not a failure (wait.ErrWaiting): a held notice, a suspension or start held
 			// for a turn, a task behind the claim's pending delivery, a tree's cleanup reservation,
-			// or a close waiting for its stops. The row runs again on its backoff, logged when it
-			// first waits and as a warning once it has waited long.
+			// a close waiting for its stops, or a claim release Dispatch has yet to allow. The row
+			// runs again on its backoff, logged when it first waits and as a warning once it has
+			// waited long, unless the wait ends on its own.
 			level := slog.LevelDebug
 			switch {
 			case row.Attempts == 0:
 				level = slog.LevelInfo
-			case row.Attempts >= waitWarnAttempts:
+			case row.Attempts >= waitWarnAttempts && !routineWait(err):
 				level = slog.LevelWarn
 			}
 			r.log.Log(ctx, level, "outbox row waits", "row", row.ID, "kind", row.Kind, "issue", row.Issue,
@@ -345,6 +347,16 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		follow = func(tx pgx.Tx) error { return r.records.Enqueue(scoped, tx, notice) }
 		told = func() {
 			r.log.Error("outbox Dispatch message refused and dropped; its architect is told", "row", row.ID, "issue", row.Issue, "error", cause)
+		}
+	case record.ClaimRelease:
+		// Nobody is told: the claim stands where it was, which is the state the daemon would
+		// have left behind had the row never run, and the issue's tree is over. The line is
+		// what says the row ended, since without it a 404 — an issue Dispatch no longer has —
+		// would end it in silence.
+		refusal, _ := dispatch.PermanentRefusal(cause)
+		told = func() {
+			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
+				"status", refusal.Status, "code", refusal.Code, "error", cause)
 		}
 	}
 	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
@@ -544,15 +556,28 @@ func retryBackoff(attempts int) time.Duration {
 // (finishRefused) rather than retried: a Dispatch status write or message post Dispatch refuses
 // the same way every time (dispatch.PermanentRefusal) — a refused status would hold every later
 // status of its issue behind it, and a refused post, a block over Dispatch's own bound among
-// them, would retry on its backoff for ever and tell nobody.
+// them, would retry on its backoff for ever and tell nobody. A claim release is the shared
+// Dispatch rule whole: its executor answers both of Dispatch's 409s as waits of its own before
+// this is reached (claimHeldWait, claimContendedWait), and each wraps no *dispatch.Error on
+// purpose, because this is computed before settle tests wait.ErrWaiting and a wait that let the
+// refusal through here would be finished rather than retried. A 404, and every other coded 4xx,
+// stay permanent and end the row.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
-	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage:
+	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
 	default:
 		return false
 	}
+}
+
+// routineWait is a wait nobody has to act on for Legion, which ends on its own: a Dispatch claim
+// release waiting on the claim's holder or on a contended answer (claimWait), which the hour
+// claimReleaseWait caps rather than an operator.
+func routineWait(err error) bool {
+	var routine interface{ Routine() bool }
+	return errors.As(err, &routine) && routine.Routine()
 }
 
 func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
@@ -565,6 +590,8 @@ func (r *outbox) execute(ctx context.Context, row record.OutboxRow) error {
 		return r.status(ctx, row, value)
 	case record.MessagePost:
 		return r.message(ctx, row, value)
+	case record.ClaimRelease:
+		return r.releaseClaim(ctx, row)
 	case record.Notice:
 		return r.notice(ctx, row, value)
 	case record.ControllerNotice:

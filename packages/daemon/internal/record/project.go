@@ -62,6 +62,11 @@ func InWorkflow(issue Issue) bool {
 	return issue.Standing().InWorkflow(OutOfWorkflow)
 }
 
+// Stopped is whether the issue's own record says its work has stopped: it is out of the
+// workflow, or its tree lingers. It is the one statement of that rule, and the readers that
+// must agree — the boot's claim release pass and the row it queues — both call it.
+func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
+
 // StandsIn says whether issue stands in one of phases, counting a hold from one of them as
 // standing there: a worker whose claim fails leaves its issue at phase.Held with Hold.From
 // naming the phase it was working (workflow's claimFailed), and the work has reached exactly
@@ -934,6 +939,27 @@ func TreeRunning(ctx context.Context, store Store, tx pgx.Tx, root Issue, steps 
 		return false, err
 	}
 	return TreeRuns(root, lifecycle, gate), nil
+}
+
+// OperatorHoldsTree says whether the operator opened the lifetime of the issue's tree (an
+// operator root spawn under the tree root's key) and its cleanup has not confirmed. Only a root
+// waiting for its slot can meet one: promotion waits on the operator's lifetime
+// (treelifecycle.ErrAuthorityHeld) and never opens a workflow tree under it. A tree with no
+// lifecycle row is no tree the operator holds, which is the read's own answer for it.
+//
+// It is the one statement of that rule, and the readers that must agree — the park of such a
+// root (workflow.Engine.leave) and the claim release row every other park queues
+// (outbox.releaseClaim) — both call it.
+func OperatorHoldsTree(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bool, error) {
+	project, err := claim.ProjectToken(issue.Project)
+	if err != nil {
+		return false, err
+	}
+	lifecycle, found, err := store.TreeLifecycle(ctx, tx, project, issue.Tree)
+	if err != nil {
+		return false, err
+	}
+	return found && lifecycle.HeldByOperator(), nil
 }
 
 // RunningRoots is the set of keys whose trees are running (TreeRuns), read from the records and
