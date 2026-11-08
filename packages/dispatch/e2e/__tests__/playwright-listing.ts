@@ -16,10 +16,9 @@ import { fileURLToPath } from "node:url";
 
 import type { Listing } from "../configurations";
 
-// The preload (web/src/__tests__/setup.ts) puts happy-dom's Response on globalThis, which cannot
-// read a subprocess's pipe; the listing below reads one with Bun's own, taken off a `data:` fetch
-// as `NativeResponse` in e2e/__tests__/harness-lanes.test.ts is.
-const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
+// A child's pipes are read with the global `Response`, which is Bun's own here: this half of the
+// package's `bun test` loads no preload and registers no DOM, so nothing puts happy-dom's
+// `Response` on globalThis (e2e/__tests__/harness-lanes.test.ts reads a child the same way).
 const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 
 /** What `playwright test --list` reports for the config at `configPath`, relative to
@@ -42,8 +41,8 @@ export async function listing(
   );
   const [code, stderr, stdout] = await Promise.all([
     child.exited,
-    new NativeResponse(child.stderr).text(),
-    new NativeResponse(child.stdout).text(),
+    new Response(child.stderr).text(),
+    new Response(child.stdout).text(),
   ]);
   if (code !== 0) {
     const named =
