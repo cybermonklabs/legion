@@ -715,7 +715,9 @@ func TestOutboxMessagePostsItsMarkerAndReturnsReadFailure(t *testing.T) {
 // A Dispatch message post Dispatch refuses the same way on every attempt — one block of the body
 // over Dispatch's own block bound — is finished refused with its architect's notice, as a refused
 // status write is, rather than retried on a backoff for ever with nobody told. An outage is no
-// refusal and still retries.
+// refusal and still retries. The run at the end is the other half: the refused row really leaves
+// the outbox, with its notice standing in its place, which the predicate and the composer above
+// say nothing about.
 func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) {
 	t.Parallel()
 	row := mustOutboxRow(t, "LEGION-208", record.MessagePost{Body: "READY #42 at head\n\nthe rest of the packet"}, time.Now())
@@ -734,6 +736,38 @@ func TestAMessagePostDispatchRefusesIsFinishedAndItsArchitectTold(t *testing.T) 
 		!strings.Contains(notice.Reason, "LEGION-208") || !strings.Contains(notice.Reason, "READY #42 at head") ||
 		strings.Contains(notice.Reason, "the rest of the packet") || !strings.Contains(notice.Reason, refusal.Error()) {
 		t.Fatalf("the notice = %+v, want message-refused to the architect naming the issue, the first line alone and Dispatch's refusal", notice)
+	}
+
+	// The runner's own end of it. The row is finished rather than retried, and the notice the
+	// composer made is enqueued in the finish's own transaction, so what the outbox holds after
+	// the run is that notice and nothing else. Its reason names the refusal the executor carried
+	// back, which wraps Dispatch's own in the call that failed, so the reason is read by what it
+	// must carry rather than against the composer's own string.
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	enqueueOutbox(t, pool, records, row)
+	runner := &outbox{
+		dispatchProject: "LEGION", log: quietLogger(),
+		pool: pool, records: records,
+		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-208", Status: "in_progress"}, postErr: refusal},
+		now:      func() time.Time { return now },
+	}
+	if err := runner.RunOnce(context.Background()); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+	var kind string
+	var payload []byte
+	if err := pool.QueryRow(context.Background(), "select kind, payload from outbox").Scan(&kind, &payload); err != nil {
+		t.Fatalf("read the row left behind: %v", err)
+	}
+	var queued record.Notice
+	if err := json.Unmarshal(payload, &queued); err != nil {
+		t.Fatalf("decode the notice: %v", err)
+	}
+	if kind != string(record.OutboxKindNotice) || queued.Kind != notice.Kind || queued.Role != notice.Role ||
+		!strings.Contains(queued.Reason, "READY #42 at head") || strings.Contains(queued.Reason, "the rest of the packet") ||
+		!strings.Contains(queued.Reason, refusal.Error()) {
+		t.Fatalf("the outbox holds a %s row carrying %+v, want the refused post finished and its architect's notice %+v in its place", kind, queued, notice)
 	}
 }
 

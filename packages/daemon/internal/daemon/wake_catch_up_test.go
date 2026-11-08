@@ -582,10 +582,8 @@ func TestAReHeldPacedCatchUpWritesItsOneWakeLineWhenItsCopyPublishes(t *testing.
 // RetryOutbox). The operator's own check reads those lines (scripts/wake-windows.py counts every
 // paced line per minute and builds a window for each), so one retried catch-up inflated both
 // halves of it.
-//
-// Not parallel: it assigns the production package variable reserved, which every test of the
-// process shares.
 func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -641,10 +639,8 @@ func TestARetriedPacedCatchUpWritesOneWakeLineWithTheWaitItsReservationGave(t *t
 // Before, every row the pacing had ever marked was skipped, so a catch-up that failed one attempt
 // waited out its backoff after the architect reported ready — the fence holds every later notice
 // of that architect behind it meanwhile.
-//
-// Not parallel: it assigns the production package variable reserved, which every test of the
-// process shares.
 func TestAReadyReleasesAPacedCatchUpWhoseMomentHasPassed(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()

@@ -38,8 +38,12 @@ var keptLongRegressionSeeds = []int64{11, 41, 48, 69, 73, 96, 125, 262, 311, 363
 
 // keptShortRegressionSeeds are the seeds whose runs at the default length found faults earlier in
 // this work — a decision told twice, one told to an architect owed nothing, one left kept at
-// quiesce. They run at the default bounds, which is where each was found.
-var keptShortRegressionSeeds = []int64{1, 4, 7, 8, 14, 19, 21, 22, 25, 27, 29, 30, 56, 66, 69, 110, 199, 260}
+// quiesce. They run at the default bounds, which is where each was found. Seeds 1 to 8 are not
+// among them: the property test's own seeds are 1..LEGION_KEPT_PROPERTY_RUNS (keptPropertySeeds),
+// which the pull-request lane sets to 8 (ci.yaml), and it drives each through the same
+// constructor at the same keptPropertySteps and judges it by the same oracle, so a seed under 8
+// listed here is that run a second time. The seeds above it are the ones no lane reaches.
+var keptShortRegressionSeeds = []int64{14, 19, 21, 22, 25, 27, 29, 30, 56, 66, 69, 110, 199, 260}
 
 // Every seed of the property model that has ever failed is run again here, each at the length that
 // found it, so a regression in the kept-decision machinery is caught by a named test rather than

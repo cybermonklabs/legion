@@ -197,8 +197,8 @@ func (d *postingDispatch) postsTo(issue string) int {
 }
 
 // laneBoard is one issue's Dispatch board as a lane writes it: it refuses the first failures
-// writes, applies each after, and keeps the statuses that landed in order. It is read while the
-// lane writes, which boardDispatch is not made for.
+// writes, applies each after, and keeps the statuses that landed in order, which is what a proof
+// of their order reads while the lane is still writing.
 type laneBoard struct {
 	mu       sync.Mutex
 	status   string

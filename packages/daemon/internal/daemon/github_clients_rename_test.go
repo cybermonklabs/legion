@@ -28,6 +28,7 @@ import (
 // off and addressed every call at sjawhar. What each case records is the repository path of the
 // request and the owner the token was minted for; none of these three calls carries a `head=`.
 func TestEachGitHubClientOfATreeRecordedBeforeItsTransferAddressesTheRepositoryGitHubServes(t *testing.T) {
+	t.Parallel()
 	recorded := ghrepo.MustParse("sjawhar/legion")
 	for _, site := range []struct {
 		name string

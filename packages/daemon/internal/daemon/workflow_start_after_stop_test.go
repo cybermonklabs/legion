@@ -291,6 +291,7 @@ func startedAgain(t *testing.T, cfg config.Config, rt *fake.Runtime, kept superv
 // the two a pass meets is the outbox's to decide, and the row must stand either way. That
 // subtest makes those passes and reads the row still there, and then reads it delivered.
 func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
+	t.Parallel()
 	t.Run("a backward move into the worker's phase", func(t *testing.T) {
 		pool, cfg, o, rt := startedAgainDaemon(t)
 		project, err := claim.ProjectToken(cfg.Project)

@@ -174,6 +174,7 @@ func TestHeardRepositoriesKeepGitHubsSpellingOverThePairs(t *testing.T) {
 //     M3's second row, where it would address the repository the transfer has not yet moved the
 //     name away from.
 func TestTheMappingResolvesARecordedRepositoryOverTheSixMappingStates(t *testing.T) {
+	t.Parallel()
 	const recordedOld, recordedNew = "sjawhar/legion", "cybermonklabs/legion"
 	pair := ghrepo.MustRenames(ghrepo.MustRename(recordedOld, recordedNew))
 	accepted := func(repos ...string) []mappedRepository {
@@ -352,6 +353,7 @@ func servedDefaults(repos *repositories) []string {
 // served with Dispatch's webhook App not installed on it. The served repository's gap is
 // reported, since what the daemon serves decides it and not what the pair's other name did.
 func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *testing.T) {
+	t.Parallel()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// transferred is GitHub after the transfer, which answers the old address with the redirect
 	// GitHub's own answers; untransferred is GitHub before it; separate is the pair's two names
@@ -571,6 +573,7 @@ func TestTheMappingLoadServesEachMappedRepositoryUnderTheNameGitHubHasIt(t *test
 // the honest answer, so a transient failure on the name the repository moved to would leave the
 // entry out for good behind that reason, and no read again would ever revisit it.
 func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T) {
+	t.Parallel()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	failure := errors.New("GitHub answered 502")
 	for _, tc := range []struct {
@@ -637,6 +640,7 @@ func TestARefusalOverATransferredPairIsForNowWhileAReadDidNotAnswer(t *testing.T
 // win would clear the default the accepted entry carries, and a project that serves no default
 // refuses the launch of an issue that names no repository (issueRepository).
 func TestAKeptEntryOfATransferredPairKeepsTheProjectsDefault(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	client := &mappingDispatch{mappings: []dispatch.RepoProject{{Repo: old, Project: "LEGION"}, {Repo: moved, Project: "LEGION", Default: true}}}
@@ -685,6 +689,7 @@ func TestAKeptEntryOfATransferredPairKeepsTheProjectsDefault(t *testing.T) {
 // under the name it was last served under: after a transfer those are two names, so without the
 // relabel legion state would name the owner the repository left, for as long as the read fails.
 func TestAKeptEntrysWebhookAppGapNamesTheRepositoryItIsServedUnder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const old, moved = "sjawhar/legion", "cybermonklabs/legion"
 	// Dispatch is asked the check under the name its own mapping holds, so the reason names the

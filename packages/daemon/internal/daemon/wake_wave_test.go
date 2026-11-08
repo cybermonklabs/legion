@@ -1290,6 +1290,7 @@ func TestEveryEventOnAWaitingClaimIsDecidedWhileTheWakesStillWait(t *testing.T) 
 // a second claim's wake with the root's, and nothing else in the suite asserts that a closed
 // tree's other claims lose their paced wakes.
 func TestAnOperatorsCloseOfATreeTakesTheWakesOfItsRootAndItsWorker(t *testing.T) {
+	t.Parallel()
 	cfg := waveConfig(t)
 	waveClaims(t, cfg, claim.RoleArchitect, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
 	// Two claims of the wave that are not their trees' roots: the close below ends one of them

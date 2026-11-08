@@ -168,10 +168,8 @@ func TestAReservedTreeCloseFinishesItsCleanupAfterReadmission(t *testing.T) {
 // session and resumes it under every runtime: under tmux it is on the host; under the Sandbox
 // runtime, which provisions each issue's workspace in a pod, it is in the session database the
 // deployment's session_store names, which every tree's pods read.
-//
-// Not parallel: it assigns the production package variable reserved, which every test of the
-// process shares.
 func TestAnOrphansClaimsLeaveTheirOldTreeAndStartInTheirOwn(t *testing.T) {
+	t.Parallel()
 	pool, reset := tableDatabase(t)
 	for _, tc := range []struct {
 		name  string
