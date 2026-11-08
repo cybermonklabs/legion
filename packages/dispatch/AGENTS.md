@@ -2484,54 +2484,41 @@ name had not gone, it had fallen back. Only with both gone did the page report `
 (critical). So on a control that carries a `title`, a missing label is invisible here - and a
 negative control that deletes one and reads a green pass has measured nothing.
 
-The visual layer has the same trap in its own shape, and it cost this change a test round. A
-control of it does not go in `web/src/theme/palette.ts`: a `Swatch` there feeds contrast
-arithmetic alone - `pair()` builds the `{light, dark}` objects `CONTRAST_CHECKS` reads - while
-every colour a page actually draws is a static Tailwind literal such as `bg-slate-200`, whose
-value is Tailwind's own, and that file's head says its numbers are copied from `tailwindcss`'s
-`theme.css`. So moving a swatch's OKLCH numbers changes no pixel, and a run that compares
-baselines after one passes with nothing different. A control that moves a rendered colour edits
-a class literal in `web/src/theme/classes.ts` together with its paired swatch, or a hex in
-`web/src/styles.css`. Keep the other layers green while you do it: `sky-700` in place of
-`slate-700` drops the offline pill below AA and reddens the unit step, and a control whose
-earlier step is red hides the reading it exists to take.
+The visual layer has the same trap in its own shape. A control of it does not go in
+`web/src/theme/palette.ts`: a `Swatch` there feeds contrast arithmetic alone - `pair()` builds
+the `{light, dark}` objects `CONTRAST_CHECKS` reads - while every colour a page actually draws
+is a static Tailwind literal such as `bg-slate-200`, whose value is Tailwind's own. So moving a
+swatch's OKLCH numbers changes no pixel, and a run that compares baselines after one passes
+with nothing different. A control that moves a rendered colour edits a class literal in
+`web/src/theme/classes.ts` together with its paired swatch, or a hex in `web/src/styles.css`.
+Keep the other layers green while you do it: `sky-700` in place of `slate-700` drops the
+offline pill below AA and reddens the unit step, and a control whose earlier step is red hides
+the reading it exists to take.
 
-Two more things that cost runs here, both measured rather than reasoned. **What bounds this
-layer is a count, not a per-pixel distance.** `threshold` is `0` and `maxDiffPixels` is `20`
-(`e2e/visual.e2e.ts`, where the whole reading is written down). Playwright's inherited
-`threshold: 0.2` is a cut at `35215 x 0.2² = 1408` on pixelmatch's YIQ distance, which tolerates
-every re-colour an 8-bit image can carry: three controls of this change compared clean over all
-22 rows for that reason alone, each having kept lightness constant to keep the contrast rows
-green - `slate-50` to `amber-50` is a normalised distance of 0.0005, `slate-200` to `sky-200`
-0.0046, `slate-900` to `sky-900` 0.017, all under 0.2 - while `slate-50` to `slate-800` is 0.343
-and counted. At `threshold: 0` all four count, and so does the smallest colour change an 8-bit
-rendering can hold: one step of red is a distance of 0.160, a normalised 0.0021. That is why no
-threshold can be the bound. Two clean container runs of one unchanged tree drift by 2 to 7
-pixels, each pixel one 8-bit step, a normalised 0.0038 - LARGER than the one-step change above -
-so a threshold that absorbs the drift blinds the layer to a real re-colour. Area separates them
-instead, and the range is two controls rather than one: `canvasText`, the app shell's own
-background and the largest area any token covers, reddens 451,448 pixels for one 8-bit step,
-while `TEXT_PRIMARY`, which paints glyphs, reddens 79 on `project-documents-light` and 84 on
-its dark half. So the picture a reader needs is drift 7 < bound 20 < nearest measured real
-change 79, a factor of 3.95, and the sentence that bounds this layer is that it does not see a
-colour change confined to fewer than about 20 pixels. Quoting the canvas alone states a margin
-of 22,572 and is a false claim. So compute the distance before spending a run, read what the
-count means rather than the distance, measure an ordinary token and not the biggest one, and
-never read a clean comparison as proof that a token is absent from the baseline - the first
-reading of these three was exactly that mistake, and the DOM disproved it (`bg-slate-50` covers
-921,600 px² of the inbox, and the shell computes to amber when amber is applied).
+Four rules follow from what controls of this layer have measured. The figures are in
+`e2e/visual.e2e.ts`'s comment on the bound, which owns them; they are not repeated here.
+
+**What bounds this layer is a count, not a per-pixel distance.** `threshold` is `0` and
+`maxDiffPixels` is `20`. A per-pixel threshold cannot be the bound, because the renderer's own
+drift moves a pixel further than the smallest real re-colour does, so any threshold that
+absorbs the drift blinds the layer. Read the count, and read what the layer therefore cannot
+see - a colour change confined to fewer than about 20 pixels - rather than a margin quoted from
+the widest token, which overstates it by three orders of magnitude.
+
 **A swatch and a class literal are many-to-one, so a control must move the literal the page
 actually draws.** `SURFACE` is spelled by both `surfaceBg` (`web/src/theme/classes.ts:66`) and
 `card` (`:771`), the same two colours in two strings, and only `card` draws the Settings
-mappings table: a control on `surfaceBg` reddened 11 of 18 pages and left both `settings` shots
-untouched, while the `card` control reddened `settings-light` at 482,641 pixels and
-`settings-dark` at 482,765. It is the same shape as the `palette.ts` trap above - a clean
-comparison told you nothing about the token, only about the string you edited.
+mappings table: a control on `surfaceBg` left both `settings` shots untouched where the `card`
+control reddened them. It is the `palette.ts` trap above in a second shape - a clean comparison
+told you nothing about the token, only about the string you edited. So never read a clean
+comparison as proof that a token is absent from a baseline.
+
 **A control that moves both schemes at once is what shows `expect.soft` reporting both.** It
-gives 36 snapshots where a hard assertion inside the `SCHEMES` loop gives 18, and nothing in
-the suite pins that behaviour, so a both-scheme control is the only check of it there is.
-**And the host cannot read these baselines at all** - they are the pinned container's rendering,
-which is what each spec's `SKIP_REASON` says, and the skip is defeated by setting
+gives twice the failures a hard assertion inside the `SCHEMES` loop gives, and nothing in the
+suite pins that behaviour, so a both-scheme control is the only check of it there is.
+
+**The host cannot read these baselines at all.** They are the pinned container's rendering,
+which is what the spec's `SKIP_REASON` says, and the skip is defeated by setting
 `DISPATCH_E2E_VISUAL_SEED` on the host. A null run there, with no code change whatever, fails
 every row at thousands of pixels. Every figure a control of this layer reports comes from a
 container run, and the way to know the rig is honest is to run it once with nothing changed.
@@ -2548,11 +2535,13 @@ the product was asked for disagree - and that is a product judgement, so it goes
 architect with the rule, the DOM and the rows it would move, and is written once the architect
 has answered. Every other finding is fixed in `web/src`, in the change that found it.
 
-`e2e/visual.e2e.ts` and `e2e/visual-phone.e2e.ts` compare the same table's shot set against
-committed baselines, in light and in dark, at the 1280x800 desktop width and, for the pages a
-phone width draws differently (`phoneShotNames`), again on an iPhone 13. Which pages are shot
-and which are excluded is `e2e/review-routes.ts` and nowhere else. An entry's `layers` says
-which of the two reads it: a page whose pixels cannot be held still is scanned and not shot,
+`e2e/visual.e2e.ts` compares the same table's shot set against committed baselines, in light
+and in dark, at the 1280x800 desktop width and, for the pages a phone width rearranges
+(`"shoot-phone"`), again on an iPhone 13. One spec, two projects: the phone rows carry the
+` @phone` tag, `visual-phone` greps it and `visual` inverts it, so each row runs once and
+reads its own project's baseline directory. Which pages are shot and which are excluded is
+`e2e/review-routes.ts` and nowhere else. An entry's `layers` says which layers read it: a page
+whose pixels cannot be held still is scanned and not shot,
 which is where `/machines`, `/machines/:machine` and `/credentials/machine` are - a registry's
 freshness, a tmux layout the seed carries none of and a capability probe that blinks each make
 a comparison flake and none of them touches a scan, which reads the DOM. An excluded entry is
@@ -2577,16 +2566,37 @@ bun e2e/run.ts -- e2e/visual-run.sh --update-snapshots
 Outside that container the rows reach the runner and every one of them skips itself, since
 `DISPATCH_E2E_VISUAL_SEED` is unset.
 
+**That command needs a container runtime, and this package's pods have none, so from a pod the
+baselines come out of CI's own run.** The `visual` job is on the full lane alone, so a change
+that moves any shot page passes the pull-request lane and is caught by the merge queue or the
+nightly instead; the recovery from either is the same four steps.
+
+1. Get a full-lane run of the head. Add the `full-ci` label and push, or read the merge-queue
+   run that refused the change. The label takes effect at the next push, not when it is added,
+   and it is taken off again once that run has passed (the root `AGENTS.md` says why).
+2. Download what the job uploaded: `gh run download <run id> --repo <owner>/<repo> --name
+   dispatch-browser-visual-<attempt>`. The attempt is the run attempt, so a re-run's artifact
+   is `-2`.
+3. The archive holds the repository path, so every shot the comparison wrote is under
+   `<download>/…/packages/dispatch/e2e/test-results/`, one directory per failing row, named by
+   Playwright from the spec, the row's title and the project (`…-baseline-in-light-and-dark-
+   visual/`), with the file inside it called `<route>-<scheme>-actual.png`. `find <download>
+   -name '*-actual.png'` is the way to list them. Playwright writes an `-actual.png` for a
+   FAILING row only; a row that passed wrote nothing and its baseline is already right.
+4. Read the difference before you take it. Open the `-actual.png` beside the committed
+   `e2e/__screenshots__/<project>/<route>-<scheme>.png` and satisfy yourself that every pixel
+   that moved is one this change meant to move - a run of the same tree twice, byte for byte
+   identical, is what tells a real change from a page that has not settled. Then copy the
+   `-actual.png` over the baseline and commit it with the reason in the message.
+
 A baseline lives at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and is committed. It is
 the one file a spec of this suite reads that is not under `testInfo.outputPath()`, and the
 reason is what it is for: an output of a row is a debugging artefact the workflow uploads when
 the row fails, while a baseline is an input a person reads in a review and a reviewer approves
 as part of the diff. The path template drops the `{platform}` segment Playwright's default adds,
 since every shot is taken in that one pinned Linux image and the segment would say the same
-thing on every file. A route this layer gains has no baseline until a run writes one, which this
-package's pods, having no container runtime, cannot do: the full lane's `visual` job uploads
-what it wrote as `dispatch-browser-visual-<attempt>`, and that is how a new baseline reaches the
-pull request.
+thing on every file. A route this layer gains has no baseline at all until a run writes one,
+which is the same four steps above with every row of the new route failing rather than one.
 
 ## Phone acceptance
 
