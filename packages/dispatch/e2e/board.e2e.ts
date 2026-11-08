@@ -149,9 +149,8 @@ test("the board is the kanban: whole-card drag orders List and Board alike, Iceb
     await page.reload();
     await expect(triage.getByRole("article")).toHaveText([/Third card/, /Second card/]);
     await page.getByRole("button", { name: "List" }).click();
-    await expect(
-      page.getByRole("list", { name: "Triage issues" }).getByRole("listitem")
-    ).toHaveText([/Third card/, /Second card/]);
+    await page.getByRole("button", { name: "Triage 2", exact: true }).click();
+    await expect(page.locator("[data-issue-row]")).toHaveText([/Third card/, /Second card/]);
     expect((await listIssues("CORE")).map((issue) => issue.key)).toEqual([
       third.key,
       second.key,
@@ -467,7 +466,7 @@ test("board cards carry the unread dot the project list shows", async ({ browser
   const page = await context.newPage();
   try {
     await page.goto("/projects/CORE");
-    const unreadRow = page.getByRole("listitem", { name: `${unread.key} Unread card` });
+    const unreadRow = page.getByRole("row", { name: `${unread.key} Unread card`, exact: true });
     await expect(unreadRow.locator('[title="Unread"]')).toHaveCount(1);
     await page.getByRole("button", { name: "Board" }).click();
     const unreadCard = page.getByRole("article", { name: `${unread.key} Unread card` });
@@ -492,7 +491,7 @@ test("project list rows and board cards set an issue's priority in place", async
   try {
     const page = await context.newPage();
     await page.goto("/projects/CORE");
-    const listRow = page.getByRole("listitem", { name: `${issue.key} Prioritized card` });
+    const listRow = page.getByRole("row", { name: `${issue.key} Prioritized card`, exact: true });
     const listControl = listRow.getByLabel(`Priority of ${issue.key}`);
     await expect(priorityBadge(listRow, "P1")).toBeVisible();
     // The badge stays small; the tap target around it is 32 px from md.
@@ -891,7 +890,7 @@ test("on the phone a finger drives the board: hold lifts, tap opens, swipes scro
   }
 });
 
-test("one URL-backed filter strip drives List and Board alike and survives a reload", async ({
+test("URL-backed labels drive the List table and Board strip and survive a reload", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -905,10 +904,9 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
   try {
     await page.goto("/projects/CORE");
     await expect(page.getByText("Plain card")).toBeVisible();
-    // Apply the label from the List's strip's Labels multi-select: the filter lands in the URL.
-    await page.getByRole("button", { name: "Filters · 0 active" }).click();
+    // Pick a label from the table header; the Board reads the same label parameter.
     await pickFilterOption(page, "Labels", "frontend");
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
     await expect(page.getByText("Labelled card")).toBeVisible();
     await expect(page.getByText("Plain card")).toBeHidden();
 
@@ -916,7 +914,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     await page.getByRole("button", { name: "Board" }).click();
     const board = page.getByRole("region", { name: "Project board" });
     await expect(board.getByRole("article")).toHaveText([/Labelled card/]);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues\?label=frontend$/);
+    await expect(page).toHaveURL(/[?&]label=frontend(?:&|$)/);
 
     // A reload keeps the filter, on the Board.
     await page.reload();
@@ -926,7 +924,7 @@ test("one URL-backed filter strip drives List and Board alike and survives a rel
     // Removing the chip on the Board shows every card again.
     await page.getByRole("button", { name: "Remove Label: frontend filter" }).click();
     await expect(board.getByRole("article")).toHaveCount(3);
-    await expect(page).toHaveURL(/\/projects\/CORE\/issues$/);
+    await expect(page).not.toHaveURL(/[?&]label=/);
   } finally {
     await context.close();
   }

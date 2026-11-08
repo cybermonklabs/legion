@@ -183,7 +183,10 @@ test("the bare project path opens on Issues with the filter parameters forwarded
     );
     expect(screen.queryByRole("tab", { name: "Architecture" })).toBeNull();
     expect(screen.getByRole("tab", { name: "Issues" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    expect(await screen.findByRole("searchbox", { name: "Search issues" })).toHaveProperty(
+      "value",
+      "core"
+    );
   } finally {
     page.restore();
   }
@@ -411,32 +414,24 @@ test("keeps an unpersisted List or Board choice while identity is pending", asyn
   }
 });
 
-test("one filter strip serves both views: chips survive the toggle and only List folds in Status", async () => {
+test("List table and Board strip share the URL's status, labels and search", async () => {
   const viewKey = "dispatch.project.issue-view:alice";
-  const page = renderPage("/projects/CORE?label=frontend&q=core");
+  const page = renderPage("/projects/CORE?label=frontend&q=core&status=todo");
   try {
-    await screen.findByRole("heading", { name: "Core" });
-    // One strip instance on the List, holding the URL-backed chips.
-    expect(screen.getAllByRole("button", { name: /Filters · \d+ active/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
-    // The List folds the URL's Status filter into the strip's count and chips.
-    fireEvent.click(await screen.findByRole("button", { name: "Status" }));
-    fireEvent.click(screen.getByRole("option", { name: "Todo" }));
-    expect(screen.getByRole("button", { name: "Filters · 3 active" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Remove Status: Todo filter" })).toBeTruthy();
-
+    await screen.findByRole("table", { name: "Project issues table" });
+    expect(screen.getByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeTruthy();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toHaveProperty(
+      "value",
+      "core"
+    );
     fireEvent.click(screen.getByRole("button", { name: "Board" }));
-    // Still one strip; the URL chips survive the toggle; the Board has no Status picker or chip.
-    expect(screen.getAllByRole("button", { name: /Filters · \d+ active/ })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Label: frontend filter" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove Search: core filter" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Status( · \d+)?$/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Remove Status: Todo filter" })).toBeNull();
-
-    // Back on the List the held Status filter counts again.
     fireEvent.click(screen.getByRole("button", { name: "List" }));
-    expect(screen.getByRole("button", { name: "Filters · 3 active" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Filter Status: 1 picked" })).toBeTruthy();
+    expect(screen.getByTestId("location").textContent).toContain("status=todo");
   } finally {
     page.restore();
     window.localStorage.removeItem(viewKey);

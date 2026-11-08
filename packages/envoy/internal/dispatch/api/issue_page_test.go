@@ -74,6 +74,44 @@ func readPage(t *testing.T, handler http.Handler, query string) (model.IssueSumm
 	return page, true
 }
 
+func TestListIssuesCarriesCreatorAndCreationTime(t *testing.T) {
+	handler := newTestHandler(t)
+	keys := createListedIssues(t, handler, "TEST", 1)
+	detail := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+keys[0], nil, "alice"))
+	for _, query := range []string{"project=TEST", "project=TEST&limit=1"} {
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues?"+query, nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("list: status=%d body=%s", response.Code, response.Body.String())
+		}
+		var rows []struct {
+			CreatedBy *model.Actor `json:"created_by"`
+			CreatedAt time.Time    `json:"created_at"`
+		}
+		if strings.Contains(query, "limit=") {
+			var page struct {
+				Issues json.RawMessage `json:"issues"`
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(page.Issues, &rows); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("listed %d issues, want 1", len(rows))
+		}
+		if rows[0].CreatedBy == nil || detail.CreatedBy == nil || *rows[0].CreatedBy != *detail.CreatedBy {
+			t.Errorf("creator = %+v, want %+v", rows[0].CreatedBy, detail.CreatedBy)
+		}
+		if rows[0].CreatedAt.IsZero() || !rows[0].CreatedAt.Equal(detail.CreatedAt) {
+			t.Errorf("creation time = %v, want %v", rows[0].CreatedAt, detail.CreatedAt)
+		}
+	}
+}
+
 // A caller that asks the listing for a page gets that page and how many issues the filters
 // matched, rather than every issue (LEGION-406).
 func TestListIssuesServesTheRequestedPage(t *testing.T) {

@@ -52,6 +52,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     rank: "U",
     title: "Core work",
     updated_at: "2026-09-10T00:00:00Z",
+    created_by: null,
+    created_at: "2026-09-10T00:00:00Z",
     ...overrides,
   };
 }

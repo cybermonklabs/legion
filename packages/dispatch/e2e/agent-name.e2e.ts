@@ -466,7 +466,9 @@ test("a claimed List row and Board card open their issue by keyboard, and the cl
 
     await page.goto("/projects/AGT");
     await page.getByRole("button", { name: "List" }).click();
-    const row = page.locator(`[data-issue-row="${seeded.runIssue}"]`);
+    const row = page
+      .getByRole("table", { name: "Project issues table" })
+      .locator(`[data-issue-row="${seeded.runIssue}"]`);
     await expect(agentIn(row, runId)).toHaveAttribute("data-agent-state", "running");
     await row.focus();
     await page.keyboard.press("o");

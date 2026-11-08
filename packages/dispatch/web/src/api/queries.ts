@@ -260,12 +260,16 @@ export const boardMoveMutationKey = (project: string): readonly unknown[] => [
  * unanswered waits for the answer: until then the server may not have applied the move, and its
  * list would put the card back where it came from.
  */
-export const projectIssuesQuery = (project: string, labels: readonly string[]) =>
+export const projectIssuesQuery = (project: string, labels: readonly string[], open = false) =>
   queryOptions({
-    queryKey: projectIssuesQueryKey(project, labels),
+    queryKey: [...projectIssuesQueryKey(project, labels), ...(open ? ["open"] : [])],
     queryFn: async (context) => {
       await boardMovesSettled(context, project);
-      return api.listIssues(labels.length === 0 ? { project } : { labels, project });
+      return api.listIssues({
+        project,
+        ...(labels.length ? { labels } : {}),
+        ...(open ? { open: true } : {}),
+      });
     },
   });
 

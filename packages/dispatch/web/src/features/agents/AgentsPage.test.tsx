@@ -962,6 +962,8 @@ const coreIssue: IssueSummary = {
   status: "todo",
   title: "Core work",
   updated_at: "2026-09-14T00:00:00Z",
+  created_by: null,
+  created_at: "2026-09-14T00:00:00Z",
 };
 
 test("Agents keeps selected-issue sends on the issue message route", async () => {

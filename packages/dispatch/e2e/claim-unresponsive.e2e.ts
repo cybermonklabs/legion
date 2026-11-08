@@ -150,7 +150,11 @@ test("an unresponsive holder keeps its claim: the issue page says unresponsive s
     // a regression that listed it could pass this check unnoticed.
     const pickable = await createIssue({ project: "CORE", title: "Nobody's to pick up" });
     await page.goto("/projects/CORE/issues?unclaimed=1");
-    await expect(page.locator("[data-issue-row]").filter({ hasText: pickable.key })).toHaveCount(1);
+    await expect(
+      page
+        .getByRole("table", { name: "Project issues table" })
+        .locator(`[data-issue-row="${pickable.key}"]`)
+    ).toHaveCount(1);
     await expect(page.locator("[data-issue-row]").filter({ hasText: freed.key })).toHaveCount(1);
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveCount(0);
     await expect(page.locator("[data-issue-row]").filter({ hasText: issueKey })).toHaveCount(0);
