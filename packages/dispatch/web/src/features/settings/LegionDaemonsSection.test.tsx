@@ -10,6 +10,7 @@ import {
 } from "../../__tests__/live-socket-harness";
 import { ApiError, api } from "../../api/client";
 import type { AuthenticatedUser, LegionBoardResponse, LegionSetting } from "../../api/types";
+import { dangerText, successText } from "../../theme/classes";
 import { LegionDaemonsSection } from "./LegionDaemonsSection";
 
 /** Every spy a test installed, put back when it ends, so one test's identity or answers are
@@ -319,6 +320,54 @@ test("a refused key shows the daemon's reason and leaves the value as it was", a
     const cap = document.querySelector('[data-legion-setting="admission_cap"]');
     await waitFor(() =>
       expect(cap?.querySelector("[data-legion-setting-value]")?.textContent).toBe("4")
+    );
+  } finally {
+    put.mockRestore();
+  }
+});
+
+// The daemon's third verdict: it took the value into its own settings and could not carry it
+// into the thing that holds a copy of it (`failed`, the daemon's internal/api/settings_route.go).
+// The change was made, so the row keeps the new value as an applied one does — and the answer is
+// a failure, never the success an applied verdict reads as: the holder the caller asked to reach
+// kept what it had.
+//
+// The verdict's `holder` is not that holder and is never shown. The daemon sets it to the row's
+// named holder whether or not that holder is the one that failed, and a path several things hold
+// is answered for all of them (`config.Row.Also`); the holder that failed is named inside
+// `failed`, which the daemon writes as `<holder>: <error>`. So the fixture below names a
+// `holder` the failure does not, and the row must not show it.
+test("a key the daemon could not carry into what holds it reads as a failure, not a success", async () => {
+  const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
+    recorded: true,
+    settings: {
+      instructions: {
+        failed: "launch-specs: read /etc/legion/instructions.md: no such file or directory",
+        holder: "api-server",
+        old: '"work/instructions.md"',
+        new: '"/etc/legion/instructions.md"',
+      },
+    },
+  });
+  try {
+    await renderControl(board(SETTINGS));
+
+    fireEvent.change(screen.getByLabelText("New value for instructions"), {
+      target: { value: '"/etc/legion/instructions.md"' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Change instructions" }));
+
+    const answer = await screen.findByRole("alert");
+    expect(answer.textContent).toContain("what holds it kept the old one: launch-specs:");
+    expect(answer.textContent).toContain("no such file or directory");
+    expect(answer.textContent).not.toContain("api-server");
+    expect(answer.className).toContain(dangerText);
+    expect(answer.className).not.toContain(successText);
+    const instructions = document.querySelector('[data-legion-setting="instructions"]');
+    await waitFor(() =>
+      expect(instructions?.querySelector("[data-legion-setting-value]")?.textContent).toBe(
+        '"/etc/legion/instructions.md"'
+      )
     );
   } finally {
     put.mockRestore();

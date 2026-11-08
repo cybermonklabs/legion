@@ -65,6 +65,59 @@ test("the Settings page's control changes the admission cap of a daemon @legion"
   }
 });
 
+// The daemon's third verdict, the one a person must not read as a success: a key it took into
+// its own settings and could not carry into the thing that holds a copy of the value
+// (`failed`, the daemon's internal/api/settings_route.go). The row's answer is announced
+// (`role="alert"`, on the span RowAnswer renders), reads the holder's own error, and the value
+// stays the new one, because the daemon's settings carry it and only a client, listener or
+// connection kept the old.
+//
+// It drives `admission_cap`: the fixture seeds that key and `review_round_cap` and no other
+// (`legion-seed.ts`), and the panel reads the verdict alone — `describeVerdict` keys on nothing
+// about the path. The verdict is the shape a real failure has, the daemon's own
+// `worker_rpc_timeout_seconds`: `holder` is the row's named holder, while the holder that kept
+// the old value is named inside `failed`, which the daemon writes as `<holder>: <error>`
+// (internal/daemon/holders.go). So the row proves the other half too — the text names what the
+// daemon's text names, never the row's holder.
+test("the Settings page's control shows a failed verdict as a failure and keeps the new value @legion", async ({
+  browser,
+}) => {
+  const daemon = await startFakeLegionDaemon({
+    admission_cap: {
+      failed: "nats: reopen the intake consumers: nats: no servers available for connection",
+      holder: "worker-stream",
+      old: "4",
+      new: "6",
+    },
+  });
+  await seedLegionFixture(daemon.url);
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+
+  try {
+    await page.goto("/settings");
+    const cap = page.locator('[data-legion-setting="admission_cap"]');
+    await expect(cap.locator("[data-legion-setting-value]")).toHaveText("4");
+
+    await page.getByLabel("New value for admission_cap").fill("6");
+    await page.getByRole("button", { name: "Change admission_cap" }).click();
+
+    const answer = cap.locator("[data-legion-setting-result]");
+    const failed =
+      "The daemon took the new value, and what holds it kept the old one: " +
+      "nats: reopen the intake consumers: nats: no servers available for connection";
+    await expect(answer).toHaveText(failed);
+    // Announced as a failure, and naming no holder the daemon's own text did not name.
+    await expect(answer.locator('[role="alert"]')).toHaveText(failed);
+    await expect(answer).not.toContainText("worker-stream");
+    // The daemon took the value, so the row shows the new one rather than rolling back to 4.
+    await expect(cap.locator("[data-legion-setting-value]")).toHaveText("6");
+  } finally {
+    await context.close();
+    await daemon.close();
+  }
+});
+
 // A1: "a daemon URL set on the Settings page that brings the view", and A4's "A project with no
 // Legion setting shows no Legion view". The project is seeded with its issues and its daemon's
 // observations but no `legion_settings` row, so the only thing that can bring the view is the
