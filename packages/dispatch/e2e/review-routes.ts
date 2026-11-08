@@ -267,7 +267,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    // Not shot: each row carries an unread dot when the issue's `last_seq` is above the
+    // reader's own `last_read_seq` (`UnreadDot.tsx`), and opening an issue's pages marks them
+    // read - which the rows before this one do, to the very issue this list names. Whether
+    // that write has landed by the time this page's read-state query answers is a race, and
+    // the dot is 36 counted pixels: present in three container runs of one tree (42476315586,
+    // 42476318547, 42478599706) and absent in two more of the same tree (42478603064,
+    // 42478605733), in both schemes, against the same baseline. It is the third page of this
+    // set whose difference is a per-reader marker racing the capture, and like the other two
+    // it keeps its scan, which reads the DOM and does not care.
+    layers: ["scan"],
     name: "project-issues",
     path: (seed) => `/projects/${seed.project}/issues`,
     pattern: "/projects/:key/issues",
