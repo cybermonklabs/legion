@@ -641,7 +641,9 @@ func messageDeliveryReceipt(
 }
 
 // completeMessageDelivery is the settle transaction of a targeted delivery: it records what the
-// send did and appends the message.delivery receipt, holding no listener call.
+// send did and appends the message.delivery receipt, holding no listener call. The attempt's
+// session is written back with the outcome, which changes it only for a send the listener
+// refused to a session the registry named (deliverMessageResuming).
 func (s *server) completeMessageDelivery(
 	ctx context.Context,
 	message model.Message,
@@ -660,10 +662,11 @@ func (s *server) completeMessageDelivery(
 	return settleDeliveryAttempt(ctx, s, receipt,
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, error) {
 			return scanMessageDelivery(tx.QueryRow(ctx, `
-				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7
+				update message_deliveries set envelope_id = $4, state = $5, error = $6, duplicate = $7, session_id = $8
 				where message_id = $1 and attempt = $2 and state = 'pending' and claimed_at = $3
 				returning `+messageDeliveryColumns,
 				message.ID, pending.attempt, pending.claimedAt, envelopeID, state, failure, duplicate,
+				pending.resolved.attemptSessionID,
 			))
 		},
 		func(ctx context.Context, tx pgx.Tx) (model.MessageDelivery, bool, *string, error) {
@@ -750,12 +753,13 @@ func (s *server) deliverMessageResuming(
 	takeover := s.newTakeoverRetry()
 	var envelopeID *string
 	var duplicate bool
+	var refused *ResolvedMention
 	deliveryError, err := takeover.retry(ctx,
 		func() string {
 			var failure string
 			// A direct message is written to the session it names and invites its answer;
 			// nothing about one says a reply is unwanted.
-			envelopeID, duplicate, failure = s.sendResolvedDelivery(
+			envelopeID, duplicate, failure, refused = s.sendResolvedDelivery(
 				ctx, pending.resolved, message.Body, key, pending.urgency,
 				contracts.ExpectsReplyOptional, pending.frame,
 			)
@@ -771,6 +775,13 @@ func (s *server) deliverMessageResuming(
 	)
 	if err != nil {
 		return model.MessageDelivery{}, err
+	}
+	// The listener refused the session the registry named, so the attempt records the session and
+	// title the listener's own answer gave, as it did before the registry existed: none for a role,
+	// the requested id for a session. An attempt pinned to a session earlier is one whose message
+	// targets that session, which that answer names too.
+	if refused != nil {
+		pending.resolved.attemptSessionID, pending.resolved.title = refused.attemptSessionID, refused.title
 	}
 	return s.completeMessageDelivery(ctx, message, actor, pending, envelopeID, duplicate, deliveryError)
 }

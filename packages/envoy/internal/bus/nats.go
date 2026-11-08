@@ -1647,6 +1647,39 @@ func (c *Client) PublishCursorAt(ctx context.Context, subject string, data []byt
 	return ack.Sequence, nil
 }
 
+// PublishRetained publishes data, bytes of the caller's own rather than an envelope, to subject on
+// the notification stream and waits for the stream's acknowledgement, within ctx's bound as
+// PublishCursorAt's. subject must be one the stream captures (StreamCaptures): JetStream answers a
+// publish to any other only with "no responders", or not at all, so one it does not capture is
+// refused here rather than waited out. A msgID that is not empty is the publish's Nats-Msg-Id, so
+// the stream keeps one copy of every publish under it within its duplicate window, and the call
+// reports whether it already held one. The listener hands a stopped Legion agent's message to its
+// daemon this way (cmd/listener/legion_handoff.go), under a MsgId every listener derives alike, so
+// the copies two listeners publish for one bus message collapse. Its refusals are sendStored's:
+// ErrPublishDenied, ErrTooLarge, ErrStreamFull, and ctx's error when ctx ends first.
+func (c *Client) PublishRetained(ctx context.Context, subject string, data []byte, msgID string) (bool, error) {
+	if err := checkSubject(subject); err != nil {
+		return false, err
+	}
+	if !StreamCaptures(subject) {
+		return false, fmt.Errorf("the notification stream does not capture %q", subject)
+	}
+	ctx, cancel := c.publishAcknowledgementClock.WithTimeout(ctx, publishBound)
+	defer cancel()
+	if err := c.ensureConnWithContext(ctx); err != nil {
+		return false, err
+	}
+	options := []nats.PubOpt{nats.Context(ctx)}
+	if msgID != "" {
+		options = append(options, nats.MsgId(msgID))
+	}
+	ack, err := c.sendStored(ctx, subject, data, options...)
+	if err != nil {
+		return false, err
+	}
+	return ack.Duplicate, nil
+}
+
 // cursorMoved names the server's refusal of a publish whose expected last sequence per subject did
 // not match as the ErrCursorMoved it is, and returns any other error as it is.
 func cursorMoved(err error) error {

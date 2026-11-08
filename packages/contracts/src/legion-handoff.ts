@@ -17,7 +17,8 @@ export function legionAgentHandoffSubject(project: string, session: string): str
 /**
  * One message the listener hands off to the Legion daemon in place of refusing or dropping it,
  * because it is for an agent that is not running and whose daemon answers for it (the Legion
- * agent registry names the session, and its project's `answering` heartbeat is fresh):
+ * agent registry names the session, and its project's answering record last said `answering:
+ * true`, whether that daemon runs now or not):
  *
  * - `original_topic` is the topic the message was for: the agent's own
  *   (`notifications.agent.<session>`) or its role's (`notifications.role.<role token>`).

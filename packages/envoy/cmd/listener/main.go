@@ -45,6 +45,9 @@ type listenerDeps struct {
 	// legionAgents is the Legion agent registry the /v1/legion/agents routes serve, or why it is
 	// unavailable. It keeps no cache, so it is in no list of caches.
 	legionAgents *legionAgentRegistry
+	// handoff hands a send or role publish no live session takes to a stopped Legion agent's
+	// daemon (handOffToLegion); nil hands nothing off.
+	handoff *legionHandoff
 	// ciStore is nil on a listener that mounts no GitHub webhook route, the one route that uses it.
 	ciStore *cistore.Store
 	// roleLane is the role lane's own client (bus.ConnectRoleLane), nil in a test that builds the
@@ -1172,6 +1175,9 @@ func main() {
 	wakes := newWakeReporter(wakesCtx, client)
 
 	// Phase 6: Open the role lane and /v1 onto the stores, then bind the durable consumer.
+	// One hand-off serves the three paths that find no session to deliver to: a send's, a role
+	// publish's (both on /v1) and an agent subject's on the bus.
+	handoff := &legionHandoff{client: client, registry: registry, sessions: sessions, agents: legionAgents, logger: logger}
 	deliveryConfig := listenerDeliveryHandlerConfig{
 		client:            client,
 		wakes:             wakes,
@@ -1203,6 +1209,7 @@ func main() {
 		// (roleKeepGuards, role_keep.go). Every handler and route built from this one value
 		// shares it, as they share the deferral set above.
 		roleKeepDrains: newRoleKeepGuards(),
+		handoff:        handoff,
 	}
 	// The role lane's forwards run off its handler (roleForwarder): the handler resolves each
 	// role message's holder and hands the forward over, and the forwards to one holder are
@@ -1279,6 +1286,7 @@ func main() {
 		registry:     registry,
 		sessions:     sessions,
 		legionAgents: legionAgents,
+		handoff:      handoff,
 		ciStore:      ciStore,
 		caches:       caches,
 		consumer:     consumer,

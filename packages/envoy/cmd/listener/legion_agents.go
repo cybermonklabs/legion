@@ -195,6 +195,11 @@ func (r *legionAgentRegistry) serving(w http.ResponseWriter) (*legionagents.Stor
 	return state.store, true
 }
 
+// store is the store the routes read and write, nil while the bucket is not open. It is what a
+// caller that has no response to write asks: the Legion hand-off, which answers as it does
+// without a registry (handOffToLegion).
+func (r *legionAgentRegistry) store() *legionagents.Store { return r.state.Load().store }
+
 // legionAgentBodyLimit bounds the body of a Legion agent registry write, one entry or a batch.
 const legionAgentBodyLimit = 1 << 20
 
@@ -440,5 +445,49 @@ func legionAgentsHandler(d *listenerDeps) http.HandlerFunc {
 		default:
 			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	}
+}
+
+// legionProjectHandler serves PUT /v1/legion/projects/<legion_project>: the project's answering
+// record, `{"answering":<bool>,"updated_at":"<RFC 3339 UTC>"}`, which the Legion daemon writes at
+// boot and every minute while it answers for the project's stopped agents (legionagents.Project).
+// It answers the record as stored. A path that is not a Legion project token, a body without
+// answering, or an updated_at that is not an RFC 3339 UTC time is a 400 and writes nothing.
+func legionProjectHandler(d *listenerDeps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		project := strings.TrimPrefix(r.URL.Path, "/v1/legion/projects/")
+		if project == "" {
+			writeJSONError(w, http.StatusBadRequest, "legion_project is required", "legion_project")
+			return
+		}
+		if err := legionagents.ValidateProject(project); err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
+		var body struct {
+			Answering *bool  `json:"answering"`
+			UpdatedAt string `json:"updated_at"`
+		}
+		if !decodeLegionAgentBody(w, r, &body) {
+			return
+		}
+		if body.Answering == nil {
+			writeJSONError(w, http.StatusBadRequest, "answering is required", "answering")
+			return
+		}
+		registry, ok := d.legionAgents.serving(w)
+		if !ok {
+			return
+		}
+		stored, err := registry.PutProject(r.Context(), project, legionagents.Project{Answering: *body.Answering, UpdatedAt: body.UpdatedAt})
+		if err != nil {
+			writeLegionAgentError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, stored)
 	}
 }

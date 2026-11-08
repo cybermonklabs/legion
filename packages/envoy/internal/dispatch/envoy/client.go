@@ -69,6 +69,28 @@ var ErrReceiptTimeout = errors.New("envoy listener did not answer the send in ti
 // ErrNotFound reports that the listener has no record of the requested session.
 var ErrNotFound = errors.New("envoy listener: session not found")
 
+// ErrNoHolder reports that the listener holds no live holder for a role: its 404, whose reason
+// is unclaimed or holder_lapsed (cmd/listener/api.go, writeRoleHolderError). The error Role
+// returns carries the listener's own text and matches ErrNoHolder under errors.Is.
+var ErrNoHolder = errors.New("envoy listener: no live role holder")
+
+// noHolderError is Role's 404: the listener's text, so a caller recording it records exactly
+// what the listener said, and ErrNoHolder under errors.Is.
+type noHolderError struct{ text string }
+
+func (e noHolderError) Error() string { return e.text }
+
+func (e noHolderError) Is(target error) bool { return target == ErrNoHolder }
+
+// noSessionError is Send's 404: the listener holds no live session under the target and handed
+// the message to no daemon (cmd/listener/api.go). It carries the listener's text, so a caller
+// recording it records exactly what the listener said, and matches ErrNotFound under errors.Is.
+type noSessionError struct{ text string }
+
+func (e noSessionError) Error() string { return e.text }
+
+func (e noSessionError) Is(target error) bool { return target == ErrNotFound }
+
 // ErrRefilling reports a list read (Sessions, ListInterests) the listener refused because its
 // copy of the bucket cannot be served yet: it has not completed a read of the bucket, or has not
 // followed it for longer than its stale bound (cmd/listener writeListRefilling). It is not
@@ -392,7 +414,8 @@ func (c *Client) Unsubscribe(ctx context.Context, sessionID string, topics []str
 // Role resolves a role's holder and returns its current session metadata. A role answer names
 // the holder's state as holder_state rather than state, and a holder that is only unresponsive
 // still holds the role: the caller delivers to it and the message waits for it. Only a holder
-// the listener has no live claim for at all is the 404 listenerResponseError carries.
+// the listener has no live claim for at all is the 404 listenerResponseError carries, which
+// matches ErrNoHolder (noLiveRoleHolder) so a caller can tell it from a read that failed.
 //
 // The listener answers an unresponsive holder either way, and both are resolved here. A 200
 // naming it holder_state unresponsive is read as it stands. The 404 the lookup route writes for
@@ -451,7 +474,7 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 		HolderState string `json:"holder_state"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&refusal); err != nil {
-		return Session{}, listenerRefusal(response, "")
+		return Session{}, noLiveRoleHolder(response, listenerRefusal(response, ""))
 	}
 	if refusal.Holder != "" && refusal.HolderState == StateUnresponsive {
 		holder, err := c.Session(ctx, refusal.Holder)
@@ -462,7 +485,19 @@ func (c *Client) lapsedRoleHolder(ctx context.Context, response *http.Response) 
 			return Session{}, err
 		}
 	}
-	return Session{}, listenerRefusal(response, refusal.Error)
+	return Session{}, noLiveRoleHolder(response, listenerRefusal(response, refusal.Error))
+}
+
+// noLiveRoleHolder marks err, a role read the listener refused, as ErrNoHolder when its status is
+// the 404 that says the role has no live holder and the listener named a reason for it. A 404
+// naming nothing is ErrUnavailable (listenerRefusal), and so is every status a gateway or the
+// listener's own starting gate gives, and neither says anything about the holder: only the
+// listener's own decision about the role does.
+func noLiveRoleHolder(response *http.Response, err error) error {
+	if response.StatusCode == http.StatusNotFound && !errors.Is(err, ErrUnavailable) {
+		return noHolderError{text: err.Error()}
+	}
+	return err
 }
 
 // Session returns one session's listener metadata, whatever its state, or ErrNotFound if the
@@ -623,7 +658,9 @@ func unavailableGetStatus(response *http.Response, route string) error {
 		fmt.Errorf("%w: GET %s returned %d", ErrUnavailable, route, response.StatusCode))
 }
 
-// Send delivers a Dispatch frame to an already-resolved live session.
+// Send delivers a Dispatch frame to an already-resolved live session. A send the listener refuses
+// because it holds no live session under the target and handed it off to no daemon is an error
+// carrying the listener's text that matches ErrNotFound; every other refusal is not.
 func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) {
 	body, err := json.Marshal(struct {
 		TargetSession  string                 `json:"target_session"`
@@ -666,7 +703,11 @@ func (c *Client) Send(ctx context.Context, input SendInput) (SendResult, error) 
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return SendResult{}, listenerResponseError(response)
+		err := listenerResponseError(response)
+		if response.StatusCode == http.StatusNotFound && !errors.Is(err, ErrUnavailable) {
+			return SendResult{}, noSessionError{text: err.Error()}
+		}
+		return SendResult{}, err
 	}
 	var result struct {
 		EnvelopeID string `json:"event_id"`

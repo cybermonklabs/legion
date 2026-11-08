@@ -1,0 +1,45 @@
+[
+  {
+    "route": "PUT /v1/legion/projects/{project}",
+    "method": "PUT",
+    "path": "/v1/legion/projects/sjawharlegion",
+    "body": {
+      "answering": true,
+      "updated_at": "2026-10-26T12:00:00.000Z"
+    }
+  },
+  {
+    "route": "PUT /v1/legion/agents",
+    "method": "PUT",
+    "path": "/v1/legion/agents",
+    "body": {
+      "entries": [
+        {
+          "session_id": "ses-history",
+          "legion_project": "sjawharlegion",
+          "issue": "LEGION-7",
+          "role": "tester",
+          "role_token": "legion-sjawharlegion-legion-7-tester",
+          "title": "Legion tester · LEGION-7",
+          "harness": "omp",
+          "started_at": "2026-10-20T09:00:00.000Z"
+        }
+      ]
+    }
+  },
+  {
+    "route": "PUT /v1/legion/agents/sessions/{id}",
+    "method": "PUT",
+    "path": "/v1/legion/agents/sessions/ses-registered",
+    "body": {
+      "session_id": "ses-registered",
+      "legion_project": "sjawharlegion",
+      "issue": "LEGION-7",
+      "role": "tester",
+      "role_token": "legion-sjawharlegion-legion-7-tester",
+      "title": "Legion tester · LEGION-7",
+      "harness": "omp",
+      "started_at": "2026-10-20T09:05:00.000Z"
+    }
+  }
+]

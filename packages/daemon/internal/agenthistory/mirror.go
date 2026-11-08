@@ -25,8 +25,10 @@ const (
 	// body per request.
 	batchEntries = 256
 	batchBytes   = 1 << 20
-	// heartbeatEvery is how often the project's answering key is written; the listener hands a
-	// project's messages off only while it says answering and is younger than three minutes.
+	// heartbeatEvery is how often the project's answering key is written. The listener hands a
+	// project's messages off while that key last said answering, whether this daemon runs now or
+	// not, so the minute's write is how an operator sees the daemon is up, not what keeps the
+	// hand-off alive (spec v21, section 2.12 of dispatch://INFRA-204's plan).
 	heartbeatEvery = time.Minute
 	// notFoundRetry is how soon a route an older listener answers 404 is tried again.
 	notFoundRetry = time.Minute
@@ -42,9 +44,9 @@ const (
 	registryTime = "2006-01-02T15:04:05.000Z07:00"
 )
 
-// keySafe is a session id the registry can key (`session.<id>`): no `.`, which separates a NATS
-// key's tokens, and nothing a URL path would need to escape.
-var keySafe = regexp.MustCompile(`^[A-Za-z0-9_=-]+$`)
+// keySafe is a session id the registry takes (legionagents.sessionIDPattern on the listener):
+// one NATS key token, so no `.`, and nothing a URL path would need to escape.
+var keySafe = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // Entry is one registry entry as the listener's write routes take it (dispatch://INFRA-448, "The
 // registry contract"): LegionProject is the Legion project token role tokens carry

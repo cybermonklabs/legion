@@ -51,6 +51,15 @@ type messageBody struct {
 	// read raw and parsed by contracts.ParseExpectsReply rather than decoded as one Go type.
 	ExpectsReply json.RawMessage `json:"expects_reply"`
 	ExpiresAt    *int64          `json:"expires_at"`
+	// Handoff false keeps the message from being handed to a stopped Legion agent's daemon
+	// (handOffToLegion): the daemon's own publishes carry it, so a notice to a stopped agent is
+	// refused as before. Absent and true are alike.
+	Handoff *bool `json:"handoff"`
+}
+
+// optedOutOfHandoff reports whether the body carried "handoff": false.
+func (body messageBody) optedOutOfHandoff() bool {
+	return body.Handoff != nil && !*body.Handoff
 }
 
 // sendResponse is the answer to a targeted send. Duplicate reports that JetStream already held
@@ -147,6 +156,10 @@ type publishResponse struct {
 	// carries (roleHolderError.Reason). This build keeps only for a role no claim holds
 	// (roleKeepable), so unclaimed is the one reason it sends; a lapsed claim is refused 404.
 	KeptReason roles.State `json:"kept_reason,omitempty"`
+	// Recipient is the stopped Legion agent a role publish with no live holder was handed to
+	// (handOffToLegion), in place of the holder a delivered one names, and is absent from every
+	// other answer.
+	Recipient string `json:"recipient,omitempty"`
 }
 
 type subscribeResponse struct {
@@ -729,7 +742,25 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// this 404 is the only sight of the message meant for it: the wake is reported so the
 			// pod comes back and the sender's next attempt reaches it.
 			reportAgentWake(d.wakes, logger, targetSession)
-			record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(d.sessions, targetSession, target, state))
+			// A stopped Legion agent whose daemon answers for it takes the message through that
+			// daemon instead of the 404 (handOffToLegion), and the sender reads the 200 a
+			// delivered message gets.
+			handed, handoffErr := d.handoff.handOffToLegion(ctx, legionHandoffTarget{
+				envelope: item, session: targetSession, stampSender: true, optedOut: body.optedOutOfHandoff(),
+			})
+			switch {
+			case handoffErr != nil:
+				record.refuseBusUnavailable(w, handoffErr)
+			case handed != nil:
+				record.accept(w, sendResponse{
+					Envelope:       handed.Envelope,
+					ExpectsReply:   expectsReplyAnswer(body.ExpectsReply),
+					Recipient:      handed.TargetSession,
+					RecipientState: state,
+				})
+			default:
+				record.refuseWith(w, http.StatusNotFound, outcomeNoLiveSession, noLiveSession(d.sessions, targetSession, target, state))
+			}
 			return
 		}
 		if err != nil {
@@ -995,7 +1026,7 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 			// give-up (roleSend.noHolder) rather than to the envelope, which travels on to the
 			// holder and back in this route's own answer. No flag at all means keep, so every
 			// publisher that sets none is unchanged.
-			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, arrived)
+			sendToRole(ctx, w, record, d, item, expectsReply, role, request.Keep == nil || *request.Keep, request.optedOutOfHandoff(), arrived)
 			return
 		}
 		if bus.UsesCoreTransport(request.Topic) {
@@ -2267,6 +2298,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d))
 	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d))
 	v1.HandleFunc("/v1/legion/agents/roles/", legionAgentRoleHandler(d))
+	v1.HandleFunc("/v1/legion/projects/", legionProjectHandler(d))
 
 	v1.Handle("/v1/interests/", adminInterestsHandler(d.registry, d.sessions, func(ctx context.Context, sessionID string) {
 		d.consumers.refollow(ctx, d, sessionID)

@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -245,6 +246,39 @@ func unplaceableAgentDelivery(cfg listenerDeliveryHandlerConfig, message deliver
 	// original payload, so an envelope near the server's max payload yields a notice refused
 	// bus.ErrTooLarge on every attempt - which ran the message to the durable's MaxDeliver
 	// with no give-up record at all.
+	//
+	// Before the notice, the stopped Legion agent's daemon is offered the message in place of it
+	// (handOffToLegion): the deferrals are spent, so nothing here will place it with a session,
+	// and the daemon answers it from the agent's own conversation. Every listener's durable
+	// reaches this point for the same message, and the hand-off's MsgId stores their copies once.
+	// A hand-off whose publish failed is NAKed and tried again rather than given up, since the
+	// give-up below would publish the notice the hand-off replaces.
+	handed, handoffErr := cfg.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: sessionID})
+	switch {
+	case handoffErr != nil:
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			sessionID:    sessionID,
+			metricStatus: "failed",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelError, "listener legion hand-off failed", sessionID, item.Topic, item.EventID, "failed", slog.String("error", handoffErr.Error()))
+			},
+			clearAttempt: true,
+		})
+		cfg.messagesNAKed.Inc()
+		message.finalize(true)
+		return
+	case handed != nil:
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			sessionID:    sessionID,
+			metricStatus: "handed_off",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelInfo, "listener agent handed off to its legion daemon", sessionID, item.Topic, item.EventID, "handed_off", slog.String("project", handed.Project))
+			},
+			recordDedupe: true,
+		})
+		message.finalize(false)
+		return
+	}
 	applyDeliveryOutcome(cfg, item, deliveryOutcome{
 		sessionID:    sessionID,
 		metricStatus: "unplaceable_no_record",

@@ -108,6 +108,9 @@ type listenerDeliveryHandlerConfig struct {
 	// main.go makes one and sets it once, so every handler and every route built from that config
 	// guards one set of roles. A test that builds a config sets its own.
 	roleKeepDrains *roleKeepGuards
+	// handoff hands an agent-subject message no session took to the stopped Legion agent's daemon
+	// in place of its no_holder exception (agentSubjectDelivery); nil hands nothing off.
+	handoff *legionHandoff
 }
 
 // wireRoleForwarder builds the role forwarder every delivery path hands its forwards to and
@@ -190,6 +193,12 @@ func (message deliveryMessage) finalizeAfter(delay time.Duration) {
 func jetStreamDeliveryHandler(cfg listenerDeliveryHandlerConfig) nats.MsgHandler {
 	handler := listenerDeliveryHandler(cfg)
 	return func(msg *nats.Msg) {
+		// A hand-off (notifications.legion.<project>.agents.<session>) is the Legion daemon's to
+		// read, and holds no envelope, so every listener's durable acknowledges it unread.
+		if isLegionHandoffSubject(msg.Subject) {
+			_ = msg.Ack()
+			return
+		}
 		message := deliveryMessage{data: msg.Data, mode: durableDelivery, msg: msg}
 		if metadata, err := msg.Metadata(); err == nil {
 			message.metadata = metadata

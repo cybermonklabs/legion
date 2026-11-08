@@ -225,7 +225,11 @@ type roleSend struct {
 	// this send's give-up keeps the message for the role's next holder (noHolder). It is the
 	// send's own rather than the envelope's, so no copy the listener forwards and no answer it
 	// writes carries it.
-	keep    bool
+	keep bool
+	// optedOut is the request's handoff field read as "handoff": false: the message is then never
+	// handed to a stopped Legion agent's daemon (noHolder, handOffToLegion), which is how the
+	// daemon's own notices keep their 404 and its outbox row its retry.
+	optedOut bool
 	arrived time.Time
 	holder  string
 	// holderState is the state the holder's own record put it in at the resolution that named
@@ -260,14 +264,21 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 	s.settle(outcome)
 }
 
-// noHolder answers a role with no live claim. For a state the listener keeps for (roleKeepable:
-// an unclaimed role, since no resolution of this build releases a claim), and while this send's
-// own keep flag asks for it, it keeps the message for the role's next holder and hands the lane
-// to whoever holds the role now, both in the one keep both give-up paths take
-// (keepForNextHolder), and answers kept's 202. A keep that kept nothing - one this send's keep
-// flag turned off, one under a role token no claim can name, a publish that failed, logged by
-// keepRoleMessage - is answered as a send that kept nothing is, since the sender's own fallback
-// must run when the message was not kept: writeRoleHolderError's 404 (unclaimed or
+// noHolder answers a role with no live claim. A stopped Legion agent whose daemon answers for it
+// takes the message through that daemon (handOffToLegion), answered 200 with the agent's session
+// as recipient: that comes before the keep, because a message kept on the role's lane waits for a
+// holder that may never claim the role again, while the daemon answers this one now from the
+// stopped agent's own conversation. It raises no refusal exception either, since nothing was
+// refused. A hand-off whose publish failed is answered as any publish the bus refused is.
+//
+// For a state the listener keeps for (roleKeepable: an unclaimed role, since no resolution of
+// this build releases a claim), and while this send's own keep flag asks for it, it keeps the
+// message for the role's next holder and hands the lane to whoever holds the role now, both in
+// the one keep both give-up paths take (keepForNextHolder), and answers kept's 202. A keep that
+// kept nothing - one this send's keep flag turned off, one under a role token no claim can name,
+// a publish that failed, logged by keepRoleMessage - is answered as a send that kept nothing is,
+// since the sender's own fallback must run when the message was not kept:
+// writeRoleHolderError's 404 (unclaimed or
 // holder_lapsed), which the Legion daemon reads as notify.ErrNoHolder, recorded role_unclaimed or
 // role_lapsed. The role lane counts an unclaimed role skipped and a lapsed holder failed.
 //
@@ -276,11 +287,22 @@ func (s *roleSend) delivered(outcome sendOutcome) {
 // (reportRoleWake). Both answers need it: a message kept for the role's next holder waits until
 // something claims the role again, and a publish with keep: false keeps nothing and is still
 // answered 404, so only the wake brings the released pod back to claim the role, drain what was
-// kept for it (drainKeptRole) and take the sender's next attempt. The report names the role and
+// kept for it (drainKeptRole) and take the sender's next attempt.  The report names the role and
 // nothing else; which daemon owns it, and whether any claim of that role is released, is for the
 // daemons to decide.
-func (s *roleSend) noHolder(result roles.Resolution) {
+func (s *roleSend) noHolder(ctx context.Context, result roles.Resolution) {
 	reportRoleWake(s.d, s.d.delivery.logger, s.role)
+	handed, err := s.d.handoff.handOffToLegion(ctx, legionHandoffTarget{
+		envelope: s.item, roleToken: s.role, optedOut: s.optedOut,
+	})
+	switch {
+	case err != nil:
+		s.refused(err)
+		return
+	case handed != nil:
+		s.handedOff(handed)
+		return
+	}
 	if s.keep && roleKeepable(result) && keepForNextHolder(*s.d.delivery, s.role, s.item) {
 		s.kept(result)
 		return
@@ -293,6 +315,14 @@ func (s *roleSend) noHolder(result roles.Resolution) {
 		outcome = sendUnclaimed
 	}
 	s.settle(outcome)
+}
+
+// handedOff answers 200 with the envelope and the stopped Legion agent its daemon was handed it
+// for, in place of the holder a delivered send names: the sender reads the answer a delivered
+// message gets, so no client of this route changes.
+func (s *roleSend) handedOff(handed *legionHandoffMessage) {
+	s.record.accept(s.w, publishResponse{Envelope: handed.Envelope, ExpectsReply: s.expectsReply, Recipient: handed.TargetSession})
+	s.settle(sendDelivered)
 }
 
 // kept answers 202 with the envelope the listener kept on the role's kept lane: kept is true and
@@ -406,8 +436,8 @@ func (s *roleSend) settledBeforeForward(entry session.SessionEntry) bool {
 // none outlasts it: a send whose window ends is answered 504. expectsReply is the expects_reply
 // its answers write (expectsReplyAnswer, api.go), the request's own dialect; the envelope this
 // send forwards and keeps carries the envelope's own value.
-func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep bool, arrived time.Time) {
-	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, arrived: arrived}
+func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecord, d *listenerDeps, item contracts.Envelope, expectsReply json.RawMessage, role string, keep, optedOutOfHandoff bool, arrived time.Time) {
+	send := &roleSend{w: w, record: record, d: d, item: item, expectsReply: expectsReply, role: role, keep: keep, optedOut: optedOutOfHandoff, arrived: arrived}
 	// The sender is stamped before the holder is resolved, so the copy a keep stores carries the
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
@@ -421,7 +451,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 		return
 	}
 	if first.State != roles.Live {
-		send.noHolder(first)
+		send.noHolder(ctx, first)
 		return
 	}
 	send.holder = first.Holder
@@ -450,7 +480,7 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, record *requestRecor
 		case err != nil:
 			// Retried below, as every resolution not answered here is.
 		case resolved.State == roles.Unclaimed:
-			send.noHolder(resolved)
+			send.noHolder(ctx, resolved)
 			return
 		case resolved.State == roles.Live:
 			if send.holder != checked {
