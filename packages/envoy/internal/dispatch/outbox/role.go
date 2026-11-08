@@ -309,7 +309,10 @@ func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]rol
 // measurement of the wider rule showed: holding every session's copy made each of them wait
 // for the 2 s re-read mentionPendingDelay sets (TestR17UnrelatedAuthorCopyFirstPass, measured
 // at +2.3 s against +0.3 s on this package's own drive), which is the whole of INFRA-514's p99
-// budget, for a mention that reaches one session.
+// budget, for a mention that reaches one session. That pair is one run of each: the same
+// quantity read on real binaries, two runs on one stack, came out +2.219 s against +2.350 s,
+// inside its own run-to-run spread, so what the hold's narrowing rests on is the 2 s re-read
+// each held copy takes by construction rather than the difference either drive printed.
 //
 // This resolution is a guess at the session the mention's sender is about to pin, and the two
 // are made by different readers a round trip apart: the outbox reads the role bucket itself as
