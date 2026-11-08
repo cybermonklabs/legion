@@ -938,6 +938,53 @@ TS
   (umask 077 && bun "$work/mint-provision-token.ts" "$root/scripts/e2e/lib" "$work/github-apps.yaml" "$repo" "$1")
 }
 
+# ---- the record a check seeds ----------------------------------------------------------------------
+# A6's and A19's trees are a person's Dispatch issues (new_rig_issue: no `legion` label), so the
+# workflow records nothing of them, and each check writes the record it needs itself, with the
+# daemon stopped. That record is in two tables, and both are needed: the issue rows, and the
+# tree's lifecycle.
+#
+# record_tree_issue KEY TREE PARENT PHASE TITLE writes one issue row as admission records a member
+# of a tree it admits (admit's promoteHolds): handed to Legion, in_progress at PHASE, generation
+# one, at the Dispatch event sequence the issue has reached (so the boot listing changes nothing)
+# and on the smoke repository. PARENT is empty for the tree's own root. The daemon must be stopped.
+record_tree_issue() {
+  local key=$1 tree=$2 parent=$3 phase=$4 title=$5 seq
+  seq=$(dispatch_events "$key" | jq '[.[].seq] | max // 0')
+  pg_sql "$daemon_db" "insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
+    values ('$key', '$tree', '$project', '$title', $([ -z "$parent" ] && printf null || printf "'%s'" "$parent"), '$phase', 1, 'in_progress', 'a', true, $seq, 'in_progress', '$repo', 'main', '$repo')" >/dev/null
+}
+
+# open_tree_lifecycle ROOT opens ROOT's tree lifecycle under the workflow's own authority, the
+# other half of that record and the half that makes the daemon keep the tree: a tree is live only
+# while its lifecycle stands open under the workflow (record.TreeLive over the tree_lifecycles row,
+# treelifecycle.Lifecycle.OpenUnderWorkflow), and the next boot's admission pass takes a root at a
+# running status whose tree is not live out of the workflow altogether, phase `done` and the tree
+# lingering (admit's releaseUnslotted, logged `released a root no tree of which runs and nothing
+# would ever start`), which leaves the check proving nothing. The row is keyed by the project
+# token the claims are (claim.ProjectToken, as claim_token spells it), at epoch one, which is the
+# epoch admission's first open of a tree writes.
+#
+# An operator's spawn of the root's architect opens that row first, under the operator's authority
+# (internal/api's spawn, OpenOperatorTreeLifecycle), and a tree stands open under one authority
+# only, so this takes the row over at the epoch the architect's claim is already bound to rather
+# than writing a second. That is also why every such spawn comes before the seeding: an operator's
+# spawn on a tree the workflow holds is refused (treelifecycle.ErrAuthorityHeld). The daemon must
+# be stopped.
+open_tree_lifecycle() {
+  pg_sql "$daemon_db" "insert into tree_lifecycles (project, tree, epoch, authority) values ('${project,,}', '$1', 1, 'workflow')
+    on conflict (project, tree) do update set authority = 'workflow', cleanup_started = false, cleanup_confirmed_at = null, updated_at = now()" >/dev/null
+}
+
+# tree_is_live ROOT PHASE: the daemon's own state says ROOT's tree is live and does not linger —
+# admission.trees is record.LiveRoots, the very set admission's release pass judges a root against
+# (admit's releaseUnslotted) — and ROOT still stands at PHASE, which that release would have left
+# at `done`.
+tree_is_live() {
+  legion_cmd state --json |
+    jq -e --arg root "$1" --arg phase "$2" '(.admission.trees | index($root)) != null and .issues[$root].phase == $phase' >/dev/null
+}
+
 # produce_pre_change runs the base commit's daemon on the pass's database and state directory, as the
 # release before this change: one Claude Code reviewer, on a child of a tree of its own, has its
 # conversation, then is suspended and the base daemon stopped. The tree's architect is spawned with
@@ -1654,46 +1701,59 @@ decide_and_ask() {
 # (its tester opened an ask and was suspended); a person's reply there reaches that architect once,
 # as an agent-decision notice, and not the controller. The daemon routes a notice only through the
 # trees it records, and the rig's issues are a person's (no `legion` label, so the workflow records
-# none of them): the running tree's two issues are written into the daemon's record with the daemon
-# stopped, as admission writes a root and the child it records under it (status in_progress, the
-# event sequence Dispatch is at, so the boot listing changes nothing), a departure like A19's. Each
-# leg's question gets its own answer on the ask's thread.
+# none of them): the running tree is written into the daemon's record with the daemon stopped, as
+# admission writes a root, the child it records under it and the tree's own lifecycle
+# (record_tree_issue, open_tree_lifecycle), a departure like A19's. The tree's architect is spawned
+# before that stop, because its spawn is what opens the tree's lifecycle row and an operator's
+# spawn on a tree the workflow holds is refused; the daemon's stop takes its pane with it, and the
+# daemon launches it again on the same conversation at the next boot. Nothing of the second leg is
+# run until the daemon's own state says the seeded tree is one it keeps live and its architect
+# holds its role, so a leg whose tree admission released can only fail. Each leg's question gets
+# its own answer on the ask's thread.
 check_a6() {
   criterion A6 "a decision on a parked tree's child and on a parked child of a running tree reaches the controller or architect once, and its question is answered" || return 0
-  local root6 child6 issue seq architect ok1=0 ok2=0
+  local root6 child6 architect ok1=0 ok2=0 why=
   decide_and_ask "parked tree's child tester" tester a6-tester-decision "the controller" && ok1=1
   root6=$(new_rig_issue "Answer loop proof: a running tree (A6, $store)")
   child6=$(new_rig_issue "Answer loop proof child: parked under a running tree (A6)" "$root6")
-  stop_daemon
-  for issue in "$root6" "$child6"; do
-    seq=$(dispatch_events "$issue" | jq '[.[].seq] | max // 0')
-    pg_sql "$daemon_db" "insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
-      values ('$issue', '$root6', '$project', 'A6 $issue', $([ "$issue" = "$root6" ] && printf null || printf "'%s'" "$root6"), 'implementing', 1, 'in_progress', 'a', true, $seq, 'in_progress', '$repo', 'main', '$repo')" >/dev/null
-  done
-  note "recorded the running tree $root6 and its child $child6 in the daemon's issues table"
-  start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
   architect=$(claim_token "$root6" architect)
   provision_workspace "$root6"
   claims_cmd spawn --json --tree "$root6" --issue "$root6" --role architect --prompt-file "$(write_prompt architect "$root6")" >/dev/null
   agent[$store:a6_architect.token]=$architect
   agent[$store:a6_architect.issue]=$root6
   soft_wait 600 "the running tree's architect to hold its role" claim_is "$architect" '.state | IN("ready", "idle")' || true
+  stop_daemon
+  record_tree_issue "$root6" "$root6" "" implementing "A6 $root6"
+  record_tree_issue "$child6" "$root6" "$root6" implementing "A6 $child6"
+  open_tree_lifecycle "$root6"
+  note "recorded the running tree $root6 and its child $child6 in the daemon's issues table, with $root6's tree lifecycle open under the workflow's own authority"
+  start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
+  if ! soft_wait 600 "the running tree's architect to hold its role again" claim_is "$architect" '.state | IN("ready", "idle")'; then
+    why="the running tree's architect $architect did not hold its role after the restart: $(claim_json "$architect" | jq -c '{state, session}' || true)"
+  elif ! soft_wait 300 "the daemon to keep the seeded tree $root6 live" tree_is_live "$root6" implementing; then
+    why="the seeded tree $root6 was not live in the daemon's own state ($(legion_cmd state --json | jq -c --arg root "$root6" '{trees: .admission.trees, phase: .issues[$root].phase}'))"
+  fi
+  note "the seeded tree in the daemon's own state: $(legion_cmd state --json | jq -c --arg root "$root6" '{trees: .admission.trees, phase: .issues[$root].phase}'), its architect $(claim_json "$architect" | jq -c '{state, session}' || true); its admission lines this boot: $(boot_log | jq -s -c --arg root "$root6" '[.[] | select(.issue == $root and ((.msg // "") | startswith("admission:"))) | .msg]')"
   agent[$store:a6_architect.session]=$(claim_json "$architect" | jq -r .session || true)
   agent[$store:a6_architect.file]=$(claim_json "$architect" | jq -r .sessionFile || true)
-  spawn_agent a6_child tester "$root6" "$child6" \
-    "$(jq -r .agents.a6_child.task "$questions_file") Then make exactly one tool call: open one Dispatch ask on $child6 asking a person whether to quarantine TestGarnetFalcon, and wait."
-  await_turn a6_child
-  if suspend_agent a6_child; then
-    note "the parked child's tester ${agent[$store:a6_child.session]} is suspended; the tree's architect $architect is $(claim_json "$architect" | jq -c '{state, session}')"
-    decide_and_ask "parked child of a running tree" a6_child a6-child-decision a6_architect && ok2=1
+  if [ -n "$why" ]; then
+    note "the second leg is not run: $why"
   else
-    note "the parked child's tester was not suspended, or its session stayed live"
+    spawn_agent a6_child tester "$root6" "$child6" \
+      "$(jq -r .agents.a6_child.task "$questions_file") Then make exactly one tool call: open one Dispatch ask on $child6 asking a person whether to quarantine TestGarnetFalcon, and wait."
+    await_turn a6_child
+    if suspend_agent a6_child; then
+      note "the parked child's tester ${agent[$store:a6_child.session]} is suspended; the tree's architect $architect is $(claim_json "$architect" | jq -c '{state, session}')"
+      decide_and_ask "parked child of a running tree" a6_child a6-child-decision a6_architect && ok2=1
+    else
+      note "the parked child's tester was not suspended, or its session stayed live"
+    fi
   fi
   claims_cmd suspend --claim "$architect" >/dev/null || true
   if [ "$ok1$ok2" = 11 ]; then
     record_result A6 PASS "each decision reached its route once (the parked tree's: the controller; the running tree's parked child's: its architect $architect, not the controller), and each question was answered on its ask's thread"
   else
-    record_result A6 FAIL "parked tree's child $ok1, parked child of a running tree $ok2 (1 = answered, and the decision passed once to its route)"
+    record_result A6 FAIL "parked tree's child $ok1, parked child of a running tree $ok2 (1 = answered, and the decision passed once to its route)${why:+; $why}"
   fi
 }
 
@@ -2180,17 +2240,21 @@ review_record() {
 # check_a19: a review round the daemon's record holds open on a pull request of the smoke
 # repository, with its reviewer's completion recorded and the reviewer stopped. The record is
 # written with the daemon stopped, as the workflow writes it when a reviewer completes undecided
-# (issue in reviewing; the reviewer's phase row naming its claim, its handoff commit and completion
-# time; the pull request at its head): driving a tree there through planning, implementing and
-# testing with real agents is the work of the stage proofs, not of this one. The reviewer is a real
-# Claude Code reviewer the daemon ran on that issue, its conversation holding its review. The
-# control comes first: an approval of the head by the review App whose footer names another
-# session decides nothing over two of the daemon's review reads. Then the stopped reviewer is asked
-# to approve: its gh tool posts the approval with its recorded session's footer, and the daemon's
-# next read of the pull request's reviews ends the round as the reviewer's running approval would.
+# (issue in reviewing, its tree's lifecycle open under the workflow; the reviewer's phase row
+# naming its claim, its handoff commit and completion time; the pull request at its head): driving
+# a tree there through planning, implementing and testing with real agents is the work of the
+# stage proofs, not of this one. The lifecycle is as much of that record as the issue row: without
+# it the next boot's admission pass finds a root at a running status whose tree nothing keeps live
+# and takes the whole round out of the workflow (admit's releaseUnslotted; open_tree_lifecycle).
+# The reviewer is a real Claude Code reviewer the daemon ran on that issue, its conversation
+# holding its review. The control comes first: an approval of the head by the review App whose
+# footer names another session decides nothing over two of the daemon's review reads. Then the
+# stopped reviewer is asked to approve: its gh tool posts the approval with its recorded session's
+# footer, and the daemon's next read of the pull request's reviews ends the round as the
+# reviewer's running approval would.
 check_a19() {
   criterion A19 "the stopped reviewer's approval with its recorded session ends the round; another session's footer ends nothing" || return 0
-  local issue branch pr number head token session seq control control_after sent event reply after review ok_control=0 ok_reviewer=0
+  local issue branch pr number head token session control control_after sent event reply after review ok_control=0 ok_reviewer=0
   issue=$(new_rig_issue "Answer loop proof: the review round ($store)")
   branch=legion-e2eal/${issue,,}
   if ! pr=$(timeout 120 bun "$root/scripts/e2e/lib/smoke-pull-request.ts" open "$work/github-apps.yaml" "$repo" "$branch" "Answer loop proof $issue (closed by the run)"); then
@@ -2213,14 +2277,14 @@ check_a19() {
   suspend_agent reviewer || true
   claims_cmd suspend --claim "${agent[$store:a19_architect.token]}" >/dev/null || true
   stop_daemon
-  seq=$(dispatch_events "$issue" | jq '[.[].seq] | max // 0')
-  pg_sql "$daemon_db" "insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
-    values ('$issue', '$issue', '$project', 'Answer loop proof: the review round ($store)', null, 'reviewing', 1, 'in_progress', 'a', true, $seq, 'in_progress', '$repo', 'main', '$repo')" >/dev/null
+  record_tree_issue "$issue" "$issue" "" reviewing "Answer loop proof: the review round ($store)"
+  open_tree_lifecycle "$issue"
   pg_sql "$daemon_db" "insert into phases (issue, role, claim, handoff_commit, rounds, verdict, completed_at) values ('$issue', 'reviewer', '$token', '$head', 1, '', now() - interval '2 minutes')" >/dev/null
   pg_sql "$daemon_db" "insert into pull_requests (issue, repo, number, branch, head_sha, head_updated_at, failing, cancelled, fix_attempts, blocked_attempts, check_runs, generation, snapshot, pushes, head_counted, state)
     values ('$issue', '$repo', $number, '$branch', '$head', now(), '[]', '[]', 0, 0, '[]', 0, '', '[]', '', 'open')" >/dev/null
   note "recorded $issue's review round open on #$number at $head, the reviewer $token (session $session) completed undecided: $(review_record "$issue")"
   start_daemon "$work/branch/legion" "$work/answers-$store.yaml" "$daemon_log" "$branch_home" "$branch_profile" "$branch_plugin"
+  note "the daemon keeps the round's tree live: $(legion_cmd state --json | jq -c --arg i "$issue" '{trees: .admission.trees, phase: .issues[$i].phase}')"
   control=$(timeout 120 bun "$root/scripts/e2e/lib/smoke-pull-request.ts" approve "$work/github-apps.yaml" "$repo" "$number" "$head" \
     "Approved (control: another session's footer). <!-- legion: {\"session\":\"legion-e2eal-another-session-$run_tag\",\"phase\":\"reviewing\"} -->") || control=
   note "control: the review App's approval with another session's footer: $control"

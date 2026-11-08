@@ -1368,9 +1368,18 @@ land in `inbox.jsonl` under the stand-in controller's session.
   opened an ask and was suspended; a person's reply there reaches that architect once (its
   conversation holds the notice) and not the controller. Each leg's question is answered on the
   ask's thread with its key. **Departure:** the daemon routes a notice only through the trees it
-  records, and the rig's issues are a person's, so the running tree's root and child are written
-  into the daemon's `issues` table with the daemon stopped, as admission writes them (status
-  `in_progress`, phase `implementing`, the Dispatch sequence they are at).
+  records, and the rig's issues are a person's, so the running tree is written into the daemon's
+  record with the daemon stopped, as admission writes a tree it admits: the root and child
+  `issues` rows (status `in_progress`, phase `implementing`, the Dispatch sequence they are at)
+  and the root's `tree_lifecycles` row, epoch one under the workflow's own authority. Both halves
+  are needed — a tree is live only while that lifecycle stands open, and the next boot's admission
+  pass takes a root at a running status whose tree is not live out of the workflow altogether
+  (`released a root no tree of which runs and nothing would ever start`) — so the tree's architect
+  is spawned before the stop, its operator spawn being what writes the lifecycle row the seeding
+  takes over (an operator's spawn on a tree the workflow holds is refused). The second leg runs
+  only once `legion state` shows the root under `admission.trees` and still at `implementing`,
+  with its architect holding its role again after the restart; otherwise A6 is a FAIL naming the
+  tree that was not live.
 - A7: a question to the resumed, running architect reaches its conversation and the daemon logs no
   `answers:` line; then, suspended again, a question whose loop model call the proxy holds while
   the claim is resumed is dropped and forwarded (`... the answer is dropped and the question
@@ -1409,13 +1418,16 @@ land in `inbox.jsonl` under the stand-in controller's session.
   question is forwarded with the call, one comment, no reply from the loop).
 - A19: a smoke pull request, the issue's architect (no task) and a Claude Code reviewer told its
   round is complete, both suspended. **Departure:** with the daemon stopped the run writes the
-  open round into the daemon's record (issue phase `reviewing`, the reviewer's `phases` row with
-  its claim, handoff commit and completion, the `pull_requests` row at the head), as the workflow
-  writes it when a reviewer completes undecided; driving a tree there with real agents is the
-  stage proofs' work. Control: a review-App approval whose footer names another session leaves the
-  round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s. Then the stopped reviewer
-  approves with its `gh` tool: the review App's single approval of the head carries its session's
-  footer, the phase leaves `reviewing`, and `review_seen` is that review's id.
+  open round into the daemon's record (issue phase `reviewing`, its tree's `tree_lifecycles` row
+  open under the workflow as A6's is, the reviewer's `phases` row with its claim, handoff commit
+  and completion, the `pull_requests` row at the head), as the workflow writes it when a reviewer
+  completes undecided; driving a tree there with real agents is the stage proofs' work. Without
+  the lifecycle row the next boot's admission pass would take the whole round out of the workflow
+  before the control could read it. Control: a review-App approval whose footer names another
+  session leaves the round open (phase `reviewing`, no decision, `review_seen` 0) over 270 s. Then
+  the stopped reviewer approves with its `gh` tool: the review App's single approval of the head
+  carries its session's footer, the phase leaves `reviewing`, and `review_seen` is that review's
+  id.
 - A13 (after both passes): the bus is snapshotted with the stopped agents in it; the branch's
   listener, Dispatch and daemon with `answers` removed take, for each pass's architect, an
   `envoy_send` to its session, a Dispatch message to its session and to its role, and a publish to
