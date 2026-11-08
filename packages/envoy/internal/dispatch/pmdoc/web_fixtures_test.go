@@ -3,6 +3,7 @@ package pmdoc
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -111,19 +112,48 @@ var webFixtureTexts = []struct{ name, markdown string }{
 	{"a-tag-shaped-run", "Use Array<string> here\n"},
 	{"a-two-block-title", "**Stop** the deploy\n\n1. one\n2. two\n"},
 	// The one body every Markdown surface of the web app is tested with
-	// (`markdown-surfaces.test.tsx`), as a search hit: a heading, bold, a code span, a link and
-	// a `dispatch://` reference, with two of its words matched.
-	{
-		"surfaces-fixture-marked",
-		"## Heading\n\n**" + webSnippetStart + "Bold" + webSnippetStop +
-			"** then `code` and a [link](https://example.com/docs) to dispatch://CORE-1.\n\n" +
-			"- first\n- " + webSnippetStart + "second" + webSnippetStop,
-	},
+	// (`markdown-surfaces.test.tsx`), as a search hit: the corpus document `markdown-surfaces-
+	// fixture` itself, with two of its words matched, so a change of that document moves this
+	// snippet with it rather than leaving the web test comparing two different texts.
+	{"surfaces-fixture-marked", markedSurfacesFixture()},
 	{
 		"surfaces-picture-marked",
 		"The broken " + webSnippetStart + "layout" + webSnippetStop +
 			": ![shot.png](dispatch://CORE-1/artifact/shot-png@v1)",
 	},
+}
+
+// markedSurfacesFixture is the corpus document `markdown-surfaces-fixture` with the two words
+// the web app's search row matches wrapped in the sentinels ts_headline writes, so the snippet
+// the row draws and the document its expectations are built from are one text. It panics rather
+// than returning an error: it runs while the table above is built, and a corpus that no longer
+// holds that document or those words is a fixture nobody can write.
+func markedSurfacesFixture() string {
+	raw, err := os.ReadFile(filepath.Join("testdata", "fixtures.json"))
+	if err != nil {
+		panic(fmt.Sprintf("read the display corpus: %v", err))
+	}
+	var documents []struct {
+		Name     string `json:"name"`
+		Markdown string `json:"markdown"`
+	}
+	if err := json.Unmarshal(raw, &documents); err != nil {
+		panic(fmt.Sprintf("decode the display corpus: %v", err))
+	}
+	for _, document := range documents {
+		if document.Name != "markdown-surfaces-fixture" {
+			continue
+		}
+		marked := strings.Replace(document.Markdown, "**Bold**",
+			"**"+webSnippetStart+"Bold"+webSnippetStop+"**", 1)
+		marked = strings.Replace(marked, "- second",
+			"- "+webSnippetStart+"second"+webSnippetStop, 1)
+		if marked == document.Markdown {
+			panic("markdown-surfaces-fixture no longer holds the words the search row matches")
+		}
+		return marked
+	}
+	panic("the display corpus holds no markdown-surfaces-fixture")
 }
 
 // TestWebDisplayFixture writes, or under --check verifies, the display trees the web app's unit
