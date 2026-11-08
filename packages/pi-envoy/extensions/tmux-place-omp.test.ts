@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
+  deliveryFor,
   ompRoot,
   type Request,
   serveStandin,
@@ -174,11 +175,17 @@ async function standin(
   const { requests, base } = serveStandin(cleanup, (url, body) => {
     if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
     if (url.pathname === "/api/v1/asks/open") return new Response("unavailable", { status: 503 });
+    // The Envoy listener: a registration is answered the consumer the listener gave the session
+    // (`deliveryFor`), as every stand-in listener of this repository answers one: the client
+    // refuses a registration answered no delivery, and these cases read the places the
+    // registrations carry.
+    const id = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
-      session_id: typeof body.session_id === "string" ? body.session_id : "",
+      session_id: id,
       machine_id: "tmux-place-machine",
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, id),
     });
   });
   await writeStandinProfile(home, base);

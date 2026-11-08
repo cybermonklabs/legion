@@ -3,6 +3,7 @@ import * as path from "node:path";
 import { DISPATCH_FIRST_MARKER } from "@legion/envoy-client/dispatch-first";
 import {
   type Cleanup,
+  deliveryFor,
   isSummarization,
   messageStream,
   ompRoot,
@@ -64,12 +65,17 @@ async function runSession(
     // An unavailable open-asks read arms no run-end self-check, so every Messages request is a
     // turn of the conversation or a compaction's summary call.
     if (url.pathname === "/api/v1/asks/open") return new Response("unavailable", { status: 503 });
-    // The Envoy listener: registration and any read answer with an interest.
+    // The Envoy listener: registration and any read answer with an interest, and a registration
+    // is answered the consumer the listener gave the session (`deliveryFor`), as every stand-in
+    // listener of this repository answers one: the client refuses a registration answered no
+    // delivery, which would leave this session's Envoy inbound unavailable.
+    const id = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
-      session_id: typeof body.session_id === "string" ? body.session_id : "",
+      session_id: id,
       machine_id: "dispatch-first-machine",
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, id),
     });
   });
   await writeStandinProfile(home, base, [

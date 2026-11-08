@@ -40,6 +40,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -230,16 +231,9 @@ func TestARefollowKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurther(t 
 	}
 	a.deps.consumers.afterStoredRowRead = nil
 
-	wrote, failure := requireFenceReadFailureLogged(t, a, sessionID)
-	if failure == "" {
-		t.Errorf("the line names no failure, and a fence that judged nothing for another reason corrects writes this case cannot see")
-	}
-	if wrote != newest {
-		t.Errorf("the refollow wrote from revision %d, want the %d the bucket held when it read: a write built from this listener's cache carries the row its own unsubscribe left, and only the fence that read no further would take it back", wrote, newest)
-	}
-	requireFilters(t, b, sessionID, kept, added)
-	b.store(t, "notifications.dispatch.issue.REFOLLOWUNJUDGEDADD.comment")
-	b.awaitPending(t, sessionID, 1)
+	wrote := requireFenceReadFailureLogged(t, a, sessionID)
+	requireKeptTheBucketsRow(t, b, sessionID, "refollow", wrote, newest,
+		"notifications.dispatch.issue.REFOLLOWUNJUDGEDADD.comment", kept, added)
 }
 
 // A relay restart keeps the topic a registration on another listener added before the restart
@@ -313,16 +307,9 @@ func TestARelayRestartKeepsTheTopicStoredBeforeItsReadWhereTheFenceReadsNoFurthe
 	}
 	pull.Stop()
 
-	wrote, failure := requireFenceReadFailureLogged(t, a.sessionConsumerRig, sessionID)
-	if failure == "" {
-		t.Errorf("the line names no failure, and a fence that judged nothing for another reason corrects writes this case cannot see")
-	}
-	if wrote != newest {
-		t.Errorf("the restart wrote from revision %d, want the %d the bucket held when it read: a filter built from this listener's cache carries the row that listener's own registration left, and only the settle that read no further would take it back", wrote, newest)
-	}
-	requireFilters(t, b, sessionID, kept, added)
-	b.store(t, "notifications.dispatch.issue.RESTARTUNJUDGEDADD.comment")
-	b.awaitPending(t, sessionID, 1)
+	wrote := requireFenceReadFailureLogged(t, a.sessionConsumerRig, sessionID)
+	requireKeptTheBucketsRow(t, b, sessionID, "restart", wrote, newest,
+		"notifications.dispatch.issue.RESTARTUNJUDGEDADD.comment", kept, added)
 }
 
 // An unsubscribe's refollow keeps the topic a registration on another listener stored under its
@@ -636,6 +623,130 @@ func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.
 	requireFilters(t, rig, sessionID, kept)
 }
 
+// A corrective pass that plans nothing names the window the pass before it left: that pass's
+// filter stands on the consumer, and the bucket has already answered a newer row than the one
+// it was built from, which is the window a loop out of passes leaves too (fenceFilterWrite).
+// The other half of that branch is a pass that plans nothing with no write of this loop's
+// behind it, where the fence ends silently: nothing of the loop stands anywhere to report.
+//
+// The order is built rather than waited for. The restore's first pass creates the consumer the
+// delete took, filtered on the row it read, and the first hook stores a newer row under that
+// write - a role claim's write, which sets no filter - so the fence reads the bucket again. The
+// second hook then closes the connection this listener reads the record and the row through,
+// before the corrective pass plans: neither read answers, so that pass plans nothing, sends
+// nothing and leaves the first pass's filter standing (registeredTarget, registeredReadFailed).
+func TestACorrectivePassThatPlansNothingNamesTheWindowTheWriteBeforeItLeft(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_plans_nothing"
+	const kept = "notifications.dispatch.issue.FENCEPLANSNOTHINGKEPT.>"
+	const added = "notifications.dispatch.issue.FENCEPLANSNOTHINGADD.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+	_, registered, err := rig.harness.registry.RefreshAt(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read the revision of %s's row: %v", sessionID, err)
+	}
+
+	var moved sync.Once
+	var movedTo uint64
+	rig.deps.consumers.afterRepairPlan = func() {
+		// The row of a write that sets no filter - a role claim's - stored under the restore's
+		// own write, which is what sends the fence round again.
+		moved.Do(func() {
+			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
+				t.Errorf("store %s on the session's row: %v", added, err)
+			}
+			if _, movedTo, err = rig.harness.registry.RefreshAt(context.Background(), sessionID); err != nil {
+				t.Errorf("read the revision the row moved to: %v", err)
+			}
+		})
+	}
+	passes := 0
+	rig.deps.consumers.beforeRepairPlan = func() {
+		passes++
+		if passes != 2 {
+			return
+		}
+		// The connection this listener reads the record and the row through, closed before the
+		// corrective pass plans and no part of the consumer calls, which go over the
+		// session-consumer connection (session.SessionRegistry.Refresh, store.Registry.RefreshAt).
+		rig.harness.client.Close()
+	}
+
+	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
+	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
+	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	defer cancel()
+	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
+		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
+	}
+	rig.deps.consumers.beforeRepairPlan, rig.deps.consumers.afterRepairPlan = nil, nil
+
+	if passes != 2 {
+		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
+	}
+	wrote, newest := requireFenceExhaustionLogged(t, rig, sessionID)
+	if wrote != registered || newest != movedTo {
+		t.Errorf("the line names revision %d written and %d newest, want the %d the first pass read and the %d stored under its write", wrote, newest, registered, movedTo)
+	}
+	// The window itself: the consumer filters on the topics of the row the first pass read, and
+	// the row the bucket holds names one more.
+	requireFilters(t, rig, sessionID, kept)
+}
+
+// A corrective pass that finds the stream holding no consumer ends the fence with nothing left
+// behind to report: the filter an earlier pass of this loop wrote went with the consumer the
+// delete took, so no older row's filter stands anywhere, and the window the fence's line names
+// - a session answered 200 for a topic its consumer does not filter on - is one no consumer
+// can hold open (storedFilterStep, filterWriteSettled).
+//
+// The order is built rather than waited for. The refollow's first pass writes the row it read,
+// and the first hook stores a newer one under that write - a role claim's write, which sets no
+// filter - so the fence reads the bucket again. The second hook then deletes the consumer
+// before the corrective pass's own call, as a reaper pass or a clean stop deletes it: neither
+// takes this listener's consumer lock, so both reach the server while the refollow holds it
+// (session.SessionReaper.DeleteConsumer, deleteSessionConsumer).
+func TestACorrectivePassThatFindsNoConsumerReportsNothingLeftBehind(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_consumer_gone"
+	const kept = "notifications.dispatch.issue.FENCECONSGONEKEPT.>"
+	const dropped = "notifications.dispatch.issue.FENCECONSGONEDROP.>"
+	const added = "notifications.dispatch.issue.FENCECONSGONEADD.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+
+	passes := 0
+	rig.deps.consumers.afterStoredRowRead = func() {
+		passes++
+		switch passes {
+		case 1:
+			// The row of a write that sets no filter - a role claim's - stored under the
+			// refollow's own write, which is what sends the fence round again.
+			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
+				t.Errorf("store %s on the session's row: %v", added, err)
+			}
+		case 2:
+			// The delete of the consumer, landing between the corrective pass's plan and the
+			// call it makes from it.
+			ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+			defer cancel()
+			if err := rig.consumers.Delete(ctx, sessionID); err != nil {
+				t.Errorf("delete the consumer of %s under its own refollow: %v", sessionID, err)
+			}
+		}
+	}
+	rig.post(t, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
+	rig.deps.consumers.afterStoredRowRead = nil
+
+	if passes != 2 {
+		t.Fatalf("the refollow made %d passes, want the write and the corrective pass over the row stored under it", passes)
+	}
+	if _, err := rig.consumers.Info(context.Background(), sessionID); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+		t.Fatalf("the stream answers %v for %s's consumer, want none at all: the corrective pass must find the consumer gone", err, sessionID)
+	}
+	if logs := rig.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
+		t.Errorf("a fence whose corrective pass found no consumer must report nothing left behind: no filter of its own stands anywhere:\n%s", logs)
+	}
+}
+
 // A fence whose read of the bucket after a write answers no row for the session plans no pass
 // from that answer: the filter that write left stands, and the live session goes on receiving
 // the topics it names (rowMovedUnder). A pass planned from no row sets the consumer's filter to
@@ -715,10 +826,7 @@ func TestAWriteThatLandedWhoseReadOfTheBucketFailsNamesTheSessionTheRevisionAndT
 	// What that write left: the filter of the row the registration above replaced, which is the
 	// window the line reports and the fence could not judge.
 	requireFilters(t, b, sessionID, kept)
-	wrote, failure := requireFenceReadFailureLogged(t, a, sessionID)
-	if failure == "" {
-		t.Errorf("the line names no failure, and the read's failure is what says why the fence judged nothing")
-	}
+	wrote := requireFenceReadFailureLogged(t, a, sessionID)
 	row, newest, err := b.harness.registry.RefreshAt(context.Background(), sessionID)
 	if err != nil || !slices.Contains(row.Topics, added) {
 		t.Fatalf("the bucket's row is %+v (%v), want %s among its topics: the registration above was answered 200 for it", row, err, added)
@@ -737,25 +845,9 @@ const fenceExhaustionLine = "session consumer filter left on an older interest r
 // the bucket answered after it.
 func requireFenceExhaustionLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) (uint64, uint64) {
 	t.Helper()
-	logs := rig.harness.logs.String()
-	for line := range strings.SplitSeq(logs, "\n") {
-		if !strings.Contains(line, `"msg":"`+fenceExhaustionLine+`"`) {
-			continue
-		}
-		var reported struct {
-			SessionID string `json:"session_id"`
-			Wrote     uint64 `json:"wrote_revision"`
-			Newest    uint64 `json:"newest_revision"`
-		}
-		if err := json.Unmarshal([]byte(line), &reported); err != nil {
-			t.Fatalf("decode the listener's line %s: %v", line, err)
-		}
-		if reported.SessionID == sessionID {
-			return reported.Wrote, reported.Newest
-		}
-	}
-	t.Fatalf("the fence left %s on an older row and logged nothing:\n%s", sessionID, logs)
-	return 0, 0
+	reported := requireFilterLineLogged(t, rig, sessionID, fenceExhaustionLine,
+		"the fence left "+sessionID+" on an older row")
+	return reported.Wrote, reported.Newest
 }
 
 // fenceReadFailureLine is what a fenced filter write logs when the read of the bucket after a
@@ -764,29 +856,18 @@ func requireFenceExhaustionLogged(t *testing.T, rig *sessionConsumerRig, session
 const fenceReadFailureLine = "session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it"
 
 // requireFenceReadFailureLogged fails the test unless the listener logged that line for
-// sessionID, and answers what it names beside it: the revision the filter standing was built
-// from, and the failure of the read that judged nothing.
-func requireFenceReadFailureLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) (uint64, string) {
+// sessionID naming the failure of the read that judged nothing, and answers the other thing it
+// names: the revision the filter standing was built from. The failure is required here rather
+// than answered to each caller, since a line that names none is a fence that judged nothing for
+// another reason, whose corrective pass a case built on this line cannot see.
+func requireFenceReadFailureLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) uint64 {
 	t.Helper()
-	logs := rig.harness.logs.String()
-	for line := range strings.SplitSeq(logs, "\n") {
-		if !strings.Contains(line, `"msg":"`+fenceReadFailureLine+`"`) {
-			continue
-		}
-		var reported struct {
-			SessionID string `json:"session_id"`
-			Wrote     uint64 `json:"wrote_revision"`
-			Error     string `json:"error"`
-		}
-		if err := json.Unmarshal([]byte(line), &reported); err != nil {
-			t.Fatalf("decode the listener's line %s: %v", line, err)
-		}
-		if reported.SessionID == sessionID {
-			return reported.Wrote, reported.Error
-		}
+	reported := requireFilterLineLogged(t, rig, sessionID, fenceReadFailureLine,
+		"the fence could not read the bucket after "+sessionID+"'s write")
+	if reported.Error == "" {
+		t.Errorf("the line names no failure, and the read's failure is what says why the fence judged nothing")
 	}
-	t.Fatalf("the fence could not read the bucket after %s's write and logged nothing:\n%s", sessionID, logs)
-	return 0, ""
+	return reported.Wrote
 }
 
 // repairRecordGoneLine is what a repair of a session's consumer logs when a pass of it finds
@@ -798,22 +879,54 @@ const repairRecordGoneLine = "listener left the filter of an older interest row 
 // sessionID, and answers the revision it names: the row the filter standing was built from.
 func requireRepairRecordGoneLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) uint64 {
 	t.Helper()
+	return requireFilterLineLogged(t, rig, sessionID, repairRecordGoneLine,
+		"the repair of "+sessionID+" found the bucket holding no record of it").Wrote
+}
+
+// loggedFilterLine is what one of the lines above names: the session whose consumer it is
+// about, the revision the filter standing on that consumer was built from, the revision the
+// bucket answered after that write, and the failure of a read that judged nothing. Each line
+// names the fields of its own case and leaves the rest zero, which is what its require reads.
+type loggedFilterLine struct {
+	SessionID string `json:"session_id"`
+	Wrote     uint64 `json:"wrote_revision"`
+	Newest    uint64 `json:"newest_revision"`
+	Error     string `json:"error"`
+}
+
+// requireFilterLineLogged answers the fields of the line msg the listener logged for sessionID,
+// and fails the test unless it logged one; did names what the listener did and logged nothing
+// of, which is that failure's own sentence.
+func requireFilterLineLogged(t *testing.T, rig *sessionConsumerRig, sessionID, msg, did string) loggedFilterLine {
+	t.Helper()
 	logs := rig.harness.logs.String()
 	for line := range strings.SplitSeq(logs, "\n") {
-		if !strings.Contains(line, `"msg":"`+repairRecordGoneLine+`"`) {
+		if !strings.Contains(line, `"msg":"`+msg+`"`) {
 			continue
 		}
-		var reported struct {
-			SessionID string `json:"session_id"`
-			Wrote     uint64 `json:"wrote_revision"`
-		}
+		var reported loggedFilterLine
 		if err := json.Unmarshal([]byte(line), &reported); err != nil {
 			t.Fatalf("decode the listener's line %s: %v", line, err)
 		}
 		if reported.SessionID == sessionID {
-			return reported.Wrote
+			return reported
 		}
 	}
-	t.Fatalf("the repair of %s found the bucket holding no record of it and logged nothing:\n%s", sessionID, logs)
-	return 0
+	t.Fatalf("%s and logged nothing:\n%s", did, logs)
+	return loggedFilterLine{}
+}
+
+// requireKeptTheBucketsRow fails the test unless the write writer names was built from the
+// revision the bucket answered when it read, and the consumer it left filters on topics and is
+// offered a message stored on message. The three cases whose fence reads the bucket no further
+// end this way: with no corrective pass behind it, what the consumer carries is that write's
+// own read, which is of the bucket and never of this listener's cache (storedTopics).
+func requireKeptTheBucketsRow(t *testing.T, rig *sessionConsumerRig, sessionID, writer string, wrote, newest uint64, message string, topics ...string) {
+	t.Helper()
+	if wrote != newest {
+		t.Errorf("the %s wrote from revision %d, want the %d the bucket held when it read: the fence behind it read no further, so what stands is that write's own read, and a write built from this listener's cache names the row that cache holds", writer, wrote, newest)
+	}
+	requireFilters(t, rig, sessionID, topics...)
+	rig.store(t, message)
+	rig.awaitPending(t, sessionID, 1)
 }

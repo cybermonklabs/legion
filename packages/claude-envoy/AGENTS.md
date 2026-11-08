@@ -5,9 +5,13 @@ Claude Code plugin package for Legion's Envoy subsystem.
 ## Overview
 
 One MCP stdio process is the Envoy ingress.
-It subscribes NATS to one subject, the session's
-relay subject, where the listener serves the session's own durable consumer; it receives from no
-other subscription, and answers no receipt. It renders each
+It subscribes NATS to two subjects.
+Every Envoy message reaches it on the session's relay subject, where the listener serves the
+session's own durable consumer, and it answers no receipt.
+The other is the Agents page live view's control subject
+(`agentstream.<session_id>.control`, `src/agent-stream-runner.ts`), which carries a viewer's
+replay request and its watch pings and no Envoy traffic.
+It renders each
 envelope through `@legion/envoy-client/delivery`, then writes it into the session's own
 conversation through the mod (`src/mod-session.ts`), or, in a Legion pane, through the bridge's
 inbox.
@@ -233,7 +237,7 @@ above says how to run it).
 - `renderInbound` from `@legion/envoy-client/delivery` is the sole inbound renderer. Never add an
   adapter-specific renderer or emit raw envelope bytes.
 - A frame's identity fields are `event_id`, `dedupe_key`, `source`, `source_event_id` and
-  `topic` (`deliveryIdentity` in `src/channel-forwarder.ts`), each parsed on its own and kept
+  `topic` (`deliveryIdentity` in `src/channel-topics.ts`), each parsed on its own and kept
   only when valid, so one field the rule refuses still leaves its sibling able to recognise a
   repeat.
   Nothing else of an envelope leaves the renderer: what reaches the session is the rendered
@@ -399,7 +403,6 @@ above says how to run it).
   and every other post is refused with `MOD_STATUS_TAKEN`, which stops that mod. Two Claude Code
   processes can boot on one session id (`claude -c`, `claude --resume <id>` in a second
   terminal), and the one that got there first owns the session's live view and its Send.
->>>>>>> conflict 3 of 3 ends
 - Preserve the held role at `${CLAUDE_PLUGIN_DATA}/roles/<session-id>.json` (keyed by session id so
   `claude --resume <id>` finds it), with this process's client instance id in the record beside
   the session id and the role, since two `claude` processes of one user read one state directory

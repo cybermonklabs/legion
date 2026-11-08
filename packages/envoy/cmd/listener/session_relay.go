@@ -1083,9 +1083,9 @@ func (m *sessionRelays) forget(run *relayRun) map[string]*relayFrame {
 // consumer with it, so the naks of such a hand-over are publishes the server drops; the run's
 // line says so (relayCancelSessionGone, relayHandOverLines). A nak is safe to repeat as far as
 // the server goes, since the session consumer sets MaxDeliver = -1
-// (internal/bus/session_consumers.go:471): a message returned here spends no server redelivery
-// budget. Each delivery still raises the message's delivery count, which the session's client
-// counts toward the attempts it allows a frame its host fails
+// (internal/bus/session_consumers.go, applySettings): a message returned here spends no server
+// redelivery budget. Each delivery still raises the message's delivery count, which the session's
+// client counts toward the attempts it allows a frame its host fails
 // (RELAY_ATTEMPTS_BEFORE_FAILED, packages/envoy-client/src/consumer-delivery.ts). It returns how
 // many messages it returned, and the naks that failed as one error, so that the
 // run's one hand-over line can say whether the hand-over was whole rather than claiming it was.

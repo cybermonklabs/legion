@@ -199,16 +199,9 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 	if err != nil || !slices.Contains(row.Topics, added) {
 		t.Fatalf("the bucket's row is %+v (%v), want %s among its topics: the registration on the other listener was answered 200 for it", row, err, added)
 	}
-	wrote, failure := requireFenceReadFailureLogged(t, rig, sessionID)
-	if failure == "" {
-		t.Errorf("the line names no failure, and a fence that judged nothing for another reason corrects writes this case cannot see")
-	}
-	if wrote != newest {
-		t.Errorf("the settle wrote from revision %d, want the %d the bucket held when it read: a settle built from this listener's cache carries the row its own registration left, and only the fence that read no further would take it back", wrote, newest)
-	}
-	requireFilters(t, other, sessionID, followed, added)
-	other.store(t, "notifications.dispatch.issue.SETTLEREADADD.comment")
-	other.awaitPending(t, sessionID, 1)
+	wrote := requireFenceReadFailureLogged(t, rig, sessionID)
+	requireKeptTheBucketsRow(t, other, sessionID, "settle", wrote, newest,
+		"notifications.dispatch.issue.SETTLEREADADD.comment", followed, added)
 }
 
 // refusingEntryKV is a session bucket whose writes all fail, after before has run: the write of

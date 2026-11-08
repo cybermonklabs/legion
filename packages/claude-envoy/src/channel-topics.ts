@@ -30,7 +30,9 @@ export interface ChannelConnectionStatus {
 
 /** The NATS connection surface a channel session holds. */
 export interface ChannelConnection {
-  /** Subscribes one subject; the session's relay subject is the only one it opens. */
+  /** Subscribes one subject. A channel session opens two: the session's relay subject, where
+   *  every Envoy message arrives, and the live view's control subject, which a viewer takes
+   *  the session on (`./agent-stream-runner`). */
   subscribe(subject: string): ChannelTopicSubscription
   publish(subject: string, data: Uint8Array): void
   flush(): Promise<void>
@@ -44,8 +46,8 @@ export interface ChannelConnection {
 /**
  * The topics this session follows, and the one broker connection it holds. Nothing is subscribed
  * for a topic: the listener relays every followed subject from the session's own durable consumer
- * (`ConsumerDelivery`), so a topic is followed by registering it, and the only subscription the
- * process holds is that consumer's relay subject.
+ * (`ConsumerDelivery`), so a topic is followed by registering it, and the only subscription that
+ * carries Envoy traffic is that consumer's relay subject.
  */
 export interface ChannelTopics {
   /** Start following a topic; one already followed is left alone. */
