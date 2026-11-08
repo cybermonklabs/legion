@@ -651,9 +651,18 @@ export interface ComposerReference {
   reference: string;
 }
 
+/** The base `isSafeAppPath` resolves a path against. It is never fetched, never shown and never
+ *  leaves that function: it stands in for "this app's own address" while the question is asked,
+ *  and `.invalid` is the name RFC 2606 reserves for a host that resolves nowhere, so a mistake
+ *  that let one of these strings out would reach no server. The page's own origin is not used,
+ *  because the question is whether the string is a path at all rather than which host it names,
+ *  and a page whose origin is opaque (a test's `about:blank`, a sandboxed frame) has no origin
+ *  to compare with. */
+const APP_PATH_BASE = "https://dispatch.invalid";
+
 /**
  * Whether a path is a place inside this dashboard: one leading `/` and no second one, and a path
- * the URL parser resolves against the app's own origin to that same origin.
+ * the URL parser resolves against a base to that same base.
  *
  * The two halves catch different things, and neither alone is enough. The text these paths are
  * read out of is the reader's own - a body they typed, a reference they pasted - so a `javascript:`
@@ -668,12 +677,12 @@ export interface ComposerReference {
  * here, in front of the sink, rather than spread over the builders where the next one would miss
  * it.
  */
-export function isSafeAppPath(path: string, appOrigin = window.location.origin): boolean {
+export function isSafeAppPath(path: string): boolean {
   if (!path.startsWith("/") || path.startsWith("//")) {
     return false;
   }
   try {
-    return new URL(path, appOrigin).origin === new URL(appOrigin).origin;
+    return new URL(path, APP_PATH_BASE).origin === APP_PATH_BASE;
   } catch {
     return false;
   }
@@ -697,7 +706,7 @@ export function composerReferences(
     }
     // The pill is a link, and the text behind this route is the reader's own.
     const href = buildReferencePath(route);
-    if (!isSafeAppPath(href, appOrigin)) {
+    if (!isSafeAppPath(href)) {
       continue;
     }
     const reference = buildDispatchReference(route);
