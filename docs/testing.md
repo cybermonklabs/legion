@@ -65,8 +65,10 @@ go test -timeout 20m ./internal/dispatch/api
 A Legion issue pod does not run that whole package: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 CI's `envoy-go` job runs it that way, alone and before the module's other packages
-(`.github/workflows/ci.yaml`), and `envoy-go-race-api`, the race job that runs that package by
-itself, gives it 30 minutes; `docs` runs under `-race` in `envoy-go-race-docs`, which gives it 60.
+(`.github/workflows/ci-job-envoy-go.yaml`, which holds that job's steps), and
+`envoy-go-race-api`, the race job that runs that package by itself, gives it 30 minutes
+(`ci-job-envoy-go-race-api.yaml`); `docs` runs under `-race` in `envoy-go-race-docs`, which
+gives it 60.
 A command that runs one of its tests by name (`-run`) needs no deadline of its own. Run it alone
 rather than beside the module's other Postgres-backed packages: together they share one database
 service and the machine's CPU, and on a small machine `api` and `docs` then each overran the default
@@ -115,7 +117,7 @@ It prints `WARNING: LIKELY CLEANUP/FINALIZER ISSUES`, then one `is reachable fro
 The rule covers the cleanup's argument as well as its closure, so an argument that reaches the object is the same defect: the room load `keepInstance` passed reached a document of its own, which is the finding this job made on a head where the closure itself was already weak, and the comment on that cleanup names the path it took (dispatch://INFRA-1085).
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
-CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci.yaml`), which the `envoy_go_race_docs` filter selects.
+CI runs that command in `envoy-go-docs-finalizers` (`.github/workflows/ci-job-envoy-go-docs-finalizers.yaml`, which holds that job's steps), which the `envoy_go_race_docs` filter in `.github/workflows/ci.yaml` selects.
 It is one of the eight slow suites: a pull request runs it only with the label `full-ci`, and the merge queue runs it on the tree the change lands as, which is where its result normally comes from.
 
 That job runs the command with `-v` for a second check Go's detector does not make:
@@ -135,7 +137,7 @@ it, PostgreSQL 15 and later copy the source database through the write-ahead log
 4.4 MB of log for an empty database made from `template1`, and 6.4 MB for a clone of Dispatch's
 migrated template, which made one run of the `api` and `docs` packages write 16 GiB of log. A file
 copy writes a few hundred bytes. `storetest`'s own test fails when a clone writes more than a
-hundredth of its template's size, and each module's `internal/testpg` test
+hundredth of its template's size, and each module's `internal/textcheck` test
 `TestEveryCreatedDatabaseIsAFileCopy` fails on any line of the module's Go files that opens a
 database's creation in a string without `strategy file_copy` on the same line.
 

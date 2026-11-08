@@ -220,8 +220,8 @@ while, so the target fails: a client that reached it then was refused the list
 
 `listener-deploy-probe.test.sh` proves the verdict over two fake tasks, one
 Python process per case serving `127.0.0.1` and `127.0.0.2` on one port the
-kernel chose, behind a fake `getent`; CI runs it in the `envoy-go` job of
-`.github/workflows/ci.yaml`.
+kernel chose, behind a fake `getent`; CI runs it in the `envoy-go-checks` job,
+whose steps are in `.github/workflows/ci-job-envoy-go-checks.yaml`.
 
 ## Measuring search on a copy of the corpus
 

@@ -38,13 +38,14 @@ versions. Never add the module to the root `go.work`.
 | `seed/` | `envoy-infra seed`: `Check`, `Generate`, `Verify` and the command over a `Store` (`Label`, `Describe`, `Versions`, `Put`, `Current`) and the `StoreType` each `--store` value names, the AWS Secrets Manager store (`awsstore.go`), the GCP Secret Manager store (`gcpstore.go`), the error naming and version paging both share (`errors.go`), and the contract every store's tests run (`store_contract_test.go`). |
 | `render/` | `envoy-infra render`: one subcommand per rendering of `aws/rendering`, each flag setting a component input. |
 | `host/` | `host:Listener` (`listener.go`) and its watchdog's texts (`watchdog.go`, golden-tested in `testdata/`). |
-| `nats/` | The schema types every NATS component shares, whatever its cloud, importing no cloud package: `RulesArgs`, `nats:Rules`, one direction's permissions of a NATS user, which `aws:User` and `gcp:Permissions` take (`rules.go`). A type shared by components of more than one cloud lives here, never in one cloud's package, so a single-cloud consumer's SDK shows no other cloud's types; `gcp/imports_test.go` fails if the `gcp` package compiles any `aws` package. |
+| `nats/` | The schema types every NATS component shares, whatever its cloud, importing no cloud package: `RulesArgs`, `nats:Rules`, one direction's permissions of a NATS user, which `aws:User` and `gcp:Permissions` take (`rules.go`). A type shared by components of more than one cloud lives here, never in one cloud's package, so a single-cloud consumer's SDK shows no other cloud's types; `internal/textcheck/gcp_imports_test.go` fails if the `gcp` package compiles any `aws` package. |
 | `aws/` | `aws:NatsService` (`natsservice.go`) and `aws:WebhookListener` (`webhooklistener.go`): their resources, refusals and outputs, with the goldens of their container definitions in `testdata/`. `fargate.go` holds what both register identically: each child's options, its tags, the log group and the task definition's base. |
 | `aws/rendering/` | What the AWS components render, with no Pulumi in it: the container definitions, the NATS start script, the listener's environment and read policy, the metric filters and the alarms' text. Its own tests hold `ListenerEnv.Check`'s refusals; `aws/`'s pin its texts, building each component from one example. |
 | `gcp/` | `gcp:NatsHub` (`natshub.go`, which also holds `authorization`, the users rendering both hubs share) and its VM's cloud-config, with the secret fetcher's, the listener's seed script's and the joined marker's scripts (`cloudconfig.go`, golden-tested in `testdata/cloud-config.golden`); `gcp:Dispatch` (`dispatch.go`, `dispatch_cloud.go`, `dispatch_kube.go`; `dispatch.go` also holds `podPriorityClass`, the priority-class rule `gcp:ClusteredNatsHub` shares) and its Kubernetes and Serve renderings, golden-tested in `testdata/dispatch-*.golden`, with its front door and the Tailscale Service `svc:<hostname>` it declares itself in `dispatch_frontdoor.go` (`newDispatchTailscaleService`), its one resource outside Google Cloud and the cluster, which is why it requires a `tailscale` provider wherever it builds the front door; `gcp:ClusteredNatsHub`: its inputs, refusals and sizing (`clusteredhub.go`, with its pods' Autopilot size rule in `clusteredhub_autopilot.go`), its Kubernetes provider, the `nats` chart with the transform that protects its StatefulSet, its NetworkPolicy and its PodMonitoring (`clusteredhub_kube.go`), and its tailnet hosts (`clusteredhub_tailnet.go`, golden-tested in `testdata/clustered-hub-*.golden`), with the chart's archive vendored for its render test (`testdata/nats-2.15.1.tgz`); and `tailnet_service.go`, a Tailscale Service host's parts (the tailscale container's environment, the serve configs, the advertiser and preStop scripts, the probes), functions of the Service's name and ports, which every multi-pod Tailscale Service host reuses rather than writing its own. |
 | `docs/` | Each component's operator document beside the module's README: `nats-hub.md` for `gcp:NatsHub`, and for how `gcp:ClusteredNatsHub` runs, updates and is watched beside it. It lives outside the component's package so that an edit to it cuts no release, which a file in a package the plugin compiles does (see Release contract). |
 | `internal/providers/` | `Require`, the providers check. |
 | `internal/pulumitest/` | The tests' harness: the mock engine a component's unit tests run on (`Mocks`, `Construct`, `mocks.go`), and the live tests' plugin build and pulumi CLI. |
+| `internal/textcheck/` | The module's checks whose subject is its source rather than its behaviour: `gcp_imports_test.go` (the `gcp` package compiles no `aws` package) and `core_imports_test.go` (`core` compiles no listener config package). They need no container and no cloud, so they run in `ci.yaml`'s `text-checks` job rather than in `envoy-infra-go`. |
 
 ## Rules for a component
 
@@ -414,17 +415,23 @@ the tools takes minutes on a cold module cache, which is why CI runs the `natsli
 go test -count=1 -tags natslive -run 'TestClusteredNatsHub(Chart|Cluster)' -v -timeout 20m ./gcp/
 ```
 
-The `envoy-infra-go` job in `.github/workflows/ci.yaml` runs, from `packages/envoy/infra`:
+The `envoy-infra-go` job of `.github/workflows/ci.yaml` holds its steps in
+`.github/workflows/ci-job-envoy-infra-go.yaml`, and runs, from `packages/envoy/infra`:
 
 ```sh
 test -z "$(gofmt -l .)"
 go vet -tags pulumilive,natslive ./...
-go test ./...
+go list ./... | grep -Ev '/internal/textcheck$' | xargs go test -count=1
 go test -timeout 30m -tags natslive ./core/ ./seed/ ./gcp/
 ```
 
-The `envoy-infra-go` job runs only when a file its `envoy_infra_go` filter in that workflow names
-changes. That filter includes every package `cmd/dispatch` and `cmd/listener` import, since
+`internal/textcheck` is left out of that unit-test step and runs in `ci.yaml`'s `text-checks`
+job instead (`.github/workflows/ci-job-text-checks.yaml`), beside the other two modules' text
+checks.
+
+The `envoy-infra-go` job runs only when a file its `envoy_infra_go` filter in
+`.github/workflows/ci.yaml` names changes. That filter includes every package `cmd/dispatch`
+and `cmd/listener` import, since
 `core/permissions_live_test.go:298-299` builds them; `packages/envoy/AGENTS.md` (Critical
 conventions) says what keeps it current.
 

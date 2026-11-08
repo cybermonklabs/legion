@@ -91,7 +91,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Raising Bun is two commits: first the new version's row in `.github/ci-images.yaml`, which `ci.yaml`'s `ci-images` job copies, then `.bun-version`, that ARG and every `FROM` on the row it leaves.
   `.github/scripts/check-bun-version.sh` fails the build until they agree
 
-- **bun.lock** — `ci.yaml`'s `lint` job holds the step `Check bun.lock agrees with the workspace manifests`, which runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
+- **bun.lock** — the step `Check bun.lock agrees with the workspace manifests` of `ci.yaml`'s `lint` job (`.github/workflows/ci-job-lint.yaml`, which holds that job's steps) runs `bun install --lockfile-only` and fails when the committed `bun.lock` differs;
   a red `lint` fails `ci-ok`, which main's ruleset requires.
   Correct a refused lockfile by running `bun install` and committing what it writes.
   After a forward merge of main that touched `bun.lock`, take one side's file whole first (`git checkout origin/main -- bun.lock`) and install only then,
@@ -595,6 +595,13 @@ Each item below names a task and where its code is, then notes on it.
 
   The `envoy-infra` Pulumi plugin and the `envoy-infra` command (`seed`, `render`), a Go module outside the root `go.work`.
   Operators: `packages/envoy/infra/README.md`; changing it: `packages/envoy/infra/AGENTS.md`
+
+- Add or change a CI job — `.github/workflows/ci.yaml`, `.github/workflows/ci-job-<job id>.yaml`
+
+  A job of `ci.yaml` holds its steps in a reusable workflow of its own, `.github/workflows/ci-job-<job id>.yaml`, which the job calls with `uses:` and hands `ci-ok-changes: ${{ toJSON(needs.changes) }}` in its `with:`, under a `permissions:` block of its own.
+  What decides whether those steps run stays in the router: the job's filter in `changes`, its `needs: changes` and its `if:`.
+  Seven jobs are not in that shape: `changes`, `pr-title`, `cancel-started` and `ci-ok` hold their own steps, and `docs`, `dispatch-browser` and `worker-image` call `docs-site.yaml`, `dispatch-browser.yaml` and `worker-image.yaml` instead.
+  `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through it
 
 - Documentation site — `docs/site/`
 

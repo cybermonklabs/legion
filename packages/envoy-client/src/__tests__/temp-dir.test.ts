@@ -219,7 +219,7 @@ describe("temporaryDirectory", () => {
  * What a test file left behind is a fact about a finished run, not about its source, so this runs
  * `bun test` over a fixture file of each kind and reads the temporary directory it ran with. The
  * same reading over this package's whole suite is a step of its own in CI, beside the step that
- * runs it ("Test Envoy client" in `.github/workflows/ci.yaml`).
+ * runs it ("Test Envoy client" in `.github/workflows/ci-job-envoy-client.yaml`).
  */
 describe("a test file's run", () => {
   /**

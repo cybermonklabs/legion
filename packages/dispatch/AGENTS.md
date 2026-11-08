@@ -1542,8 +1542,9 @@ reduction.
 The `merge` job of that workflow joins every leg's blob report into one report, publishes the
 run's rows, its flake rate and the legs that did not succeed, and is the one job of the workflow
 that reports ci-ok, so a run gets one verdict and not seven.
-The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's lint, typecheck, unit
-tests and build, beside the proof editor's, and runs no browser row.
+The `dispatch-ui` job of `.github/workflows/ci.yaml` keeps the dashboard's typecheck, unit tests
+and build, beside the proof editor's typecheck and unit tests, and runs no browser row and no
+lint: Biome checks the whole tree once, in the `lint` job.
 A role does not run the whole suite in an issue pod — two CPUs do not carry it — it runs the files
 it is working on.
 

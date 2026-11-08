@@ -682,7 +682,8 @@ jobs:
               - 'packages/envoy/roleholder/*'
             # What `go test ./cmd/dispatch` reads under both its memory and its multiprocess tag:
             # the packages it compiles, with the whole of cmd/dispatch and internal/dispatch, whose
-            # .go files cmd/dispatch/settings_test.go:137 walks, and the pod spec
+            # .go files internal/textcheck/environment_reads_test.go:33 walks (from the
+            # text-checks job, which names them in its own filter), and the pod spec
             # cmd/dispatch/pod_grace_period_test.go:17 reads.
             # internal/roles and, through it, internal/store, internal/session and internal/kvwatch:
             # the outbox's role forward resolves a role's holder with roles.ResolveHolder (#2395).
