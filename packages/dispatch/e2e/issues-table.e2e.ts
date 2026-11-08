@@ -433,9 +433,12 @@ test("phone headers, saved widths, popover focus and short-window paging stay us
     const tableBox = await box.boundingBox();
     if (!keyBefore || !titleBefore || !tableBox)
       throw new Error("The identifying columns are missing");
+    // The pinned key and title leave an edge of the next column, and the title is wide enough
+    // to read a few words, not a fragment.
     expect(titleBefore.x + titleBefore.width - tableBox.x).toBeLessThanOrEqual(
-      tableBox.width * 0.6 + 1
+      tableBox.width * 0.85 + 1
     );
+    expect(titleBefore.width).toBeGreaterThanOrEqual(120);
     await box.evaluate((element) => {
       element.scrollLeft = element.scrollWidth;
     });
