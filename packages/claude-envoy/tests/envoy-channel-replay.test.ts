@@ -7,7 +7,7 @@
  * wired to this server.
  */
 import { expect, spyOn, test } from "bun:test"
-import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises"
+import { mkdir, open, readdir, readFile, stat } from "node:fs/promises"
 import { agentSubject } from "@legion/contracts"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
 import { type ChannelNotification, startChannelSession } from "../src/envoy-channel-server"
@@ -18,13 +18,15 @@ import {
   FakeNats,
   noInterest,
   recordingClient,
-  scratchState,
   sessionOptions,
+  useScratchState,
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
 
 isolatePaneEnvironment()
+
+const scratchState = useScratchState()
 
 const SESSION = "ses_replay"
 const DIRECT = agentSubject(SESSION)
@@ -136,7 +138,7 @@ async function stateOf(directory: string, sessionID: string): Promise<ReplayStat
 }
 
 test("a frame the channel never takes is named in one notice on its third delivery, and never shown after a restart", async () => {
-  const directory = await scratchState()
+  const directory = scratchState()
   const frame = peerMessage(SESSION, "refused")
   let attempts = 0
   // Every card naming the frame fails; the notice naming it carries no event id of its own.
@@ -204,12 +206,11 @@ test("a frame the channel never takes is named in one notice on its third delive
     expect(cards(sink.shown, frame.eventId)).toHaveLength(0)
   } finally {
     await second.shutdown()
-    await rm(directory, { recursive: true, force: true })
   }
 })
 
 test("a session the listener reaped follows its remembered topics again and registers them", async () => {
-  const directory = await scratchState()
+  const directory = scratchState()
   // The state a stopped session left: it followed the issue topic, and the listener has since
   // reaped its interests, so the registry holds nothing for it.
   await writeReplayState(replayStateFile(directory, SESSION), {
@@ -230,12 +231,11 @@ test("a session the listener reaped follows its remembered topics again and regi
     )
   } finally {
     await session.shutdown()
-    await rm(directory, { recursive: true, force: true })
   }
 })
 
 test("a removal the relay delivers after a restart re-registered the topic takes it out of the registry, so a later restart does not follow it", async () => {
-  const directory = await scratchState()
+  const directory = scratchState()
   const registry = registryClient()
   const start = async (connection: FakeNats) =>
     startChannelSession(
@@ -278,12 +278,11 @@ test("a removal the relay delivers after a restart re-registered the topic takes
     expect(registry.topicsOf(SESSION)).not.toContain(ISSUE_TOPIC)
   } finally {
     await third.shutdown()
-    await rm(directory, { recursive: true, force: true })
   }
 })
 
 test("a followed topic reaching a private stream subject is followed and never registered", async () => {
-  const directory = await scratchState()
+  const directory = scratchState()
   const registry = registryClient()
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
@@ -307,12 +306,11 @@ test("a followed topic reaching a private stream subject is followed and never r
     for (const topic of refused) expect(registered).not.toContain(topic)
   } finally {
     await session.shutdown()
-    await rm(directory, { recursive: true, force: true })
   }
 })
 
 test("the delivery state file is private to its user and replaced whole by each write", async () => {
-  const directory = await scratchState()
+  const directory = scratchState()
   const session = await startChannelSession(
     sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
       connection: new FakeNats(),
@@ -352,12 +350,11 @@ test("the delivery state file is private to its user and replaced whole by each 
     ])
   } finally {
     await session.shutdown()
-    await rm(directory, { recursive: true, force: true })
   }
 })
 
 test("a state file that cannot be written is logged, and what the session was shown stays shown", async () => {
-  const directory = await scratchState()
+  const directory = scratchState()
   // A directory where the file goes: every rename onto it fails.
   await mkdir(replayStateFile(directory, SESSION))
   const sink = channelSink()
@@ -395,12 +392,11 @@ test("a state file that cannot be written is logged, and what the session was sh
   } finally {
     await session.shutdown()
     stderr.mockRestore()
-    await rm(directory, { recursive: true, force: true })
   }
 })
 
 test("a /clear handoff to a new session id starts a fresh delivery state in a file of its own", async () => {
-  const directory = await scratchState()
+  const directory = scratchState()
   const registry = registryClient()
   const handoff = sessionHandoffFile(directory, 931)
   await writeSessionHandoff(handoff, "ses_old")
@@ -463,6 +459,5 @@ test("a /clear handoff to a new session id starts a fresh delivery state in a fi
     await waitFor(async () => cards(sink.shown, taken.eventId).length === 1, "the new id's frame")
   } finally {
     await session.shutdown()
-    await rm(directory, { recursive: true, force: true })
   }
 })

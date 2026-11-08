@@ -6,17 +6,13 @@ import {
   type EnvoyStack,
   envoyStackEnabled,
   startEnvoyStack,
+  useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
 import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
-import { removeTemporaryDirectories } from "@legion/envoy-client/test/temp-dir"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
-
-// The stack's own scratch directory, which it makes through envoy-client's helper: `stop` removes
-// it, and this removes it when the rig never reached `stop` (a SIGKILL'd child, a failed start).
-afterAll(removeTemporaryDirectories)
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -149,12 +145,16 @@ async function startChannelServer(
 // One rollout state is left: every listener gives the session a consumer and relays it. A
 // listener that can give none refuses the registration, which `envoy-client`'s own stack tests
 // cover; there is no core path to fall back to here.
+// Reserved out here, at the file's module scope: the file's own `afterAll` removes it once the
+// `describe` has stopped the stack writing into it.
+const stackDirectory = useEnvoyStackDirectory()
+
 describe.skipIf(!envoyStackEnabled)(
   "the channel server against a real natsd and Envoy listener",
   () => {
     let stack: EnvoyStack | undefined
     beforeAll(async () => {
-      stack = await startEnvoyStack()
+      stack = await startEnvoyStack({ work: stackDirectory })
     }, 120_000)
     afterAll(async () => {
       await stack?.stop()

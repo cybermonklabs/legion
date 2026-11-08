@@ -1,6 +1,5 @@
 import { expect, jest, test } from "bun:test"
-import { mkdir, readdir, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, readdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
@@ -28,14 +27,16 @@ import {
   type FakeClient,
   noInterest,
   recordingClient,
-  scratchState,
   sessionOptions,
   testCapabilities,
+  useScratchState,
   waitFor,
 } from "./channel-session-harness"
 import { isolatePaneEnvironment } from "./pane-environment"
 
 isolatePaneEnvironment()
+
+const scratchState = useScratchState()
 
 class IdleNats implements ChannelConnection {
   subscribe(): ChannelTopicSubscription {
@@ -94,7 +95,7 @@ const INSTANCE = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
 
 test("reasserts a role claimed after channel startup on the next heartbeat", async () => {
   jest.useFakeTimers()
-  const stateDirectory = join(tmpdir(), `claude-envoy-claim-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const reasserted = Promise.withResolvers<void>()
   const setRoles: unknown[] = []
   const client: FakeClient = {
@@ -135,12 +136,11 @@ test("reasserts a role claimed after channel startup on the next heartbeat", asy
   } finally {
     await session?.shutdown()
     jest.useRealTimers()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("the record a remembered role writes names this process, so another one tells it from its own", async () => {
-  const stateDirectory = join(tmpdir(), `claude-envoy-remember-${crypto.randomUUID()}`)
+  const stateDirectory = scratchState()
   const client: FakeClient = {
     subscribe: async () => registered(),
     getInterest: async () => interest(),
@@ -178,7 +178,6 @@ test("the record a remembered role writes names this process, so another one tel
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
@@ -191,7 +190,7 @@ test("a record another process wrote is left where it is while this process hold
   // record over the file, which is keyed by session id alone. This process holds a role of its
   // own, so the record it finds for its predecessor is not a role to take back — pressing it
   // would ask the listener for the other process's role and throw this one's away.
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_old", "/tmp")
   const handoff = sessionHandoffFile(stateDirectory, 786)
   await writeSessionHandoff(handoff, "ses_old")
@@ -236,14 +235,13 @@ test("a record another process wrote is left where it is while this process hold
     expect(await readPersistedRole(roleStateFile(stateDirectory, "ses_old"))).toEqual(otherRecord)
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a record another process wrote is pressed while this process holds no role", async () => {
   // The same record, found by a process with no role to lose: it asks, and the listener decides
   // between the two processes. Granted, the role and its record are this process's.
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_old", "/tmp")
   const handoff = sessionHandoffFile(stateDirectory, 787)
   await writeSessionHandoff(handoff, "ses_old")
@@ -291,12 +289,11 @@ test("a record another process wrote is pressed while this process holds no role
     })
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("every role claim and every release carries that same instance id, not one of its own", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -347,12 +344,11 @@ test("every role claim and every release carries that same instance id, not one 
     ])
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a refused claim naming the predecessor itself as holder keeps that record and keeps asking for it", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -416,12 +412,11 @@ test("a refused claim naming the predecessor itself as holder keeps that record 
     )
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("a refused claim naming a third session holder drops the predecessor's record and asks no more", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_claude", "/tmp")
   const roleFile = roleStateFile(stateDirectory, "ses_claude")
   await mkdir(dirname(roleFile), { recursive: true })
@@ -457,12 +452,11 @@ test("a refused claim naming a third session holder drops the predecessor's reco
     expect(setRoles).toHaveLength(1)
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })
 
 test("every registration and both deregistrations carry the one client instance id the process minted", async () => {
-  const stateDirectory = await scratchState()
+  const stateDirectory = scratchState()
   const identity = new SessionIdentity("ses_old", "/tmp")
   const handoff = sessionHandoffFile(stateDirectory, 785)
   await writeSessionHandoff(handoff, "ses_old")
@@ -511,6 +505,5 @@ test("every registration and both deregistrations carry the one client instance 
     )
   } finally {
     await session.shutdown()
-    await rm(stateDirectory, { recursive: true, force: true })
   }
 })

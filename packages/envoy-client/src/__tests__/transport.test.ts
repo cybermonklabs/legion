@@ -13,7 +13,6 @@ import {
   parseSubscribeAnswer,
   type RoleInfo,
   roleHeldBy,
-  UNRESPONSIVE_RULE,
 } from "../transport";
 
 /** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test"
 import { connect } from "nats"
-import { createChannelTopics, deliveryIdentity } from "../src/channel-topics"
+import { type ChannelTopics, createChannelTopics, deliveryIdentity } from "../src/channel-topics"
 import { FakeNatsServer } from "./fake-nats-server"
 
 const THREAD = "notifications.github.acme-org.example-repo.issue.3.>"
@@ -36,12 +36,19 @@ test("keeps each valid dedupe identity when a sibling identity field is empty", 
   expect(deliveryIdentity("not an Envoy envelope")).toBeUndefined()
 })
 
+// Both rows below build their broker and their connection inside the try: the broker binds in its
+// constructor and `connect` opens a real connection, so a throw past either reaches the finally
+// that closes them, rather than leaving a bound port and a nats.js reconnect loop that keeps
+// `bun test` from exiting.
 test("subscribes nothing for a followed topic, and closes the connection at shutdown", async () => {
-  const broker = new FakeNatsServer()
-  const connection = await connect({ servers: broker.url })
-  const followed = createChannelTopics(connection)
-
+  let stopBroker: (() => Promise<void>) | undefined
+  let followed: ChannelTopics | undefined
   try {
+    const broker = new FakeNatsServer()
+    stopBroker = () => broker.stop()
+    const connection = await connect({ servers: broker.url })
+    followed = createChannelTopics(connection)
+
     followed.follow(THREAD)
     // The session receives only what its own consumer's relay pushes, so a followed topic is a
     // registration entry and nothing more: this process opens no subscription for it.
@@ -55,21 +62,25 @@ test("subscribes nothing for a followed topic, and closes the connection at shut
     expect(followed.topics()).toEqual([])
     expect(connection.isClosed()).toBe(true)
   } finally {
-    await broker.stop()
+    await followed?.close()
+    await stopBroker?.()
   }
 })
 
 test("unfollow drops a topic from topics() at once", async () => {
-  const broker = new FakeNatsServer()
-  const connection = await connect({ servers: broker.url })
-  const followed = createChannelTopics(connection)
-
+  let stopBroker: (() => Promise<void>) | undefined
+  let followed: ChannelTopics | undefined
   try {
+    const broker = new FakeNatsServer()
+    stopBroker = () => broker.stop()
+    const connection = await connect({ servers: broker.url })
+    followed = createChannelTopics(connection)
+
     followed.follow(COMMENT)
     followed.unfollow([COMMENT])
     expect(followed.topics()).toEqual([])
   } finally {
-    await followed.close()
-    await broker.stop()
+    await followed?.close()
+    await stopBroker?.()
   }
 })

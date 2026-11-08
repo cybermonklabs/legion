@@ -2883,30 +2883,35 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   nothing deletes a comment, ask, message, issue or document, so a row's thread exists, and a harness that empties those tables empties `user_threads` with them (`packages/dispatch/e2e/seed.ts`).
 
 - `GET /api/v1/me/replies?kind=&state=&limit=&offset=&cursor=&issue=|artifact=` (needs the `person` scope, `api/replies.go`) answers the Inbox's threads as `{rows, total, limit, offset, as_of, next_cursor}`, in the state's own order, ties by thread id descending.
-  It answers two kinds of row, as `?kind=` names them: `reply`, the default, a thread the caller wrote in - an ask's thread, a comment thread by its root, an issue message thread by its root - where somebody else has written since they last read it;
-  `agent`, one of the caller's one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
-  `reply,agent`, both in one order.
-  Anything else is `400 INVALID_QUERY`.
-  The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
-  A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
-  that is an open ask on an open issue assigned to the caller alone (`myRepliesOwner`), so an open ask on a project document, on an unassigned issue or on another person's issue is a Reply row here.
-  A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
-  its row stays, since the Inbox hides it.
-  `?state=` is `unread`, the default and the Inbox count's own read, which lists the rows somebody else has written in since the caller read them, newest reply first; `inbox`, every row in their Inbox, read or not, less what they have dismissed, newest reply first; or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `?cursor=` (the `next_cursor` of the page before it, which a page that filled answers).
-  `limit` and `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`, as `GET /api/v1/issues` refuses a cursor: answering one paging scheme's request with the other's page hands the caller rows it cannot tell from the ones it asked for.
-  The three states are three constants over one filter (`myRepliesUnread`, `myRepliesInbox` and `myRepliesDismissed`), and the cursor a fourth beside them, rather than bound parameters, since a parameter leaves the planner nothing to imply a partial index's predicate from and turns a cursor into a filter over every dismissed row of the caller's.
-  `total` is how many rows the state holds, except under `dismissed`, where it is the page the read answers: nothing counts that view, which pages from `next_cursor`, and counting every thread a person has ever dismissed was 8 s of the 9.4 s that read took at 110,000 of them (INFRA-450's a14).
-  A Reply page is read in two steps - the page's thread ids out of the state's own index, by an index-only scan in the state's order, then each row by its id - because one step over a table one login owns is cheaper for the planner as a scan of the whole table than as a walk of the index, and the pile is what it would then scan.
-  The Agent half reads one root at a time: each state's roots (the unread ones, the undismissed ones, or a page of the dismissal marks themselves) and then each root's own thread by `messages_in_reply_to`, so a Dismissed page costs the page; the Inbox's own two states answer their total with the page, since both read every root they hold to order it.
-  The Agent half's dismissal is cleared by a trigger of its own (`20261105093507`), as a Reply thread's is by `user_threads_record`: a session's reply newer than the mark deletes it, in the reply's own transaction, so "dismissed" on this half is a mark existing and nothing else, and `state=inbox`, the unread read and Mark all read leave a dismissed root out by that mark alone, without reading its thread.
-  Before it, each of those three asked every thread the person had ever dismissed whether a session had written in it since - one index read a thread, 66 ms of the Inbox read's 69 at 10,000 of them (INFRA-450's a14).
-  `kind: "reply"` for a comment or a message, `kind: "answer"` for an answer, whose `id` is the ask's, whose `author` is the answerer and whose `first_line` is the chosen options and the answer's text (`<selected> - <text>`, as the outbox's `payload_summary` renders it).
-  A row also carries its issue's `priority`, its owner's `project`, the caller's `read_through`, `unread`, `unread_count` (the writes in the thread they have not read), an Agent row's `unread_reply_ids` and `session`, and the document mark its root is anchored to.
-  A row's `ref` names the thread's root, never the reply, so an anchored root still redirects to its document.
-  `issue` and `artifact` together are `400 INVALID_QUERY`, and either leaves every Agent row out, since an Agent row has no issue and no document.
-  An absent `limit` is every row, which is what the Inbox reads - it sorts, groups, filters and counts over all of them - and a `limit` the caller names is 1-200, as `GET /api/v1/me/answers` reads it.
-  Every read runs in one read-only repeatable-read transaction and `as_of` is that snapshot's database time, which is what a mark-all passes back as its read mark:
-  two reads in two snapshots would leave a row committed between them marked read without ever having been shown.
+
+  - It answers two kinds of row, as `?kind=` names them: `reply`, the default, a thread the caller wrote in - an ask's thread, a comment thread by its root, an issue message thread by its root - where somebody else has written since they last read it;
+    `agent`, one of the caller's one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or an Aside the session did not take as a turn of its live conversation) holding a reply from that session;
+    `reply,agent`, both in one order.
+    Anything else is `400 INVALID_QUERY`.
+    The two kinds come from unrelated tables, so they are merged in Go rather than unioned in SQL, and the page is cut from the merged list.
+
+  - A Reply read leaves out an open ask the Inbox already lists in Waiting on you, whose row there shows its reply:
+    that is an open ask on an open issue assigned to the caller alone (`myRepliesOwner`), so an open ask on a project document, on an unassigned issue or on another person's issue is a Reply row here.
+    A close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an older release left during a roll;
+    its row stays, since the Inbox hides it.
+
+  - `?state=` is `unread`, the default and the Inbox count's own read, which lists the rows somebody else has written in since the caller read them, newest reply first; `inbox`, every row in their Inbox, read or not, less what they have dismissed, newest reply first; or `dismissed`, what they dismissed out of it, newest dismissal first, 200 rows at a time from `?cursor=` (the `next_cursor` of the page before it, which a page that filled answers).
+    `limit` and `offset` under `dismissed`, and `cursor` under any other state, are each `400 INVALID_QUERY`, as `GET /api/v1/issues` refuses a cursor: answering one paging scheme's request with the other's page hands the caller rows it cannot tell from the ones it asked for.
+    The three states are three constants over one filter (`myRepliesUnread`, `myRepliesInbox` and `myRepliesDismissed`), and the cursor a fourth beside them, rather than bound parameters, since a parameter leaves the planner nothing to imply a partial index's predicate from and turns a cursor into a filter over every dismissed row of the caller's.
+    `total` is how many rows the state holds, except under `dismissed`, where it is the page the read answers: nothing counts that view, which pages from `next_cursor`, and counting every thread a person has ever dismissed was 8 s of the 9.4 s that read took at 110,000 of them (INFRA-450's a14).
+    A Reply page is read in two steps - the page's thread ids out of the state's own index, by an index-only scan in the state's order, then each row by its id - because one step over a table one login owns is cheaper for the planner as a scan of the whole table than as a walk of the index, and the pile is what it would then scan.
+    The Agent half reads one root at a time: each state's roots (the unread ones, the undismissed ones, or a page of the dismissal marks themselves) and then each root's own thread by `messages_in_reply_to`, so a Dismissed page costs the page; the Inbox's own two states answer their total with the page, since both read every root they hold to order it.
+    The Agent half's dismissal is cleared by a trigger of its own (`20261105093507`), as a Reply thread's is by `user_threads_record`: a session's reply newer than the mark deletes it, in the reply's own transaction, so "dismissed" on this half is a mark existing and nothing else, and `state=inbox`, the unread read and Mark all read leave a dismissed root out by that mark alone, without reading its thread.
+    Before it, each of those three asked every thread the person had ever dismissed whether a session had written in it since - one index read a thread, 66 ms of the Inbox read's 69 at 10,000 of them (INFRA-450's a14).
+
+  - `kind: "reply"` for a comment or a message, `kind: "answer"` for an answer, whose `id` is the ask's, whose `author` is the answerer and whose `first_line` is the chosen options and the answer's text (`<selected> - <text>`, as the outbox's `payload_summary` renders it).
+    A row also carries its issue's `priority`, its owner's `project`, the caller's `read_through`, `unread`, `unread_count` (the writes in the thread they have not read), an Agent row's `unread_reply_ids` and `session`, and the document mark its root is anchored to.
+    A row's `ref` names the thread's root, never the reply, so an anchored root still redirects to its document.
+    `issue` and `artifact` together are `400 INVALID_QUERY`, and either leaves every Agent row out, since an Agent row has no issue and no document.
+    An absent `limit` is every row, which is what the Inbox reads - it sorts, groups, filters and counts over all of them - and a `limit` the caller names is 1-200, as `GET /api/v1/me/answers` reads it.
+    Every read runs in one read-only repeatable-read transaction and `as_of` is that snapshot's database time, which is what a mark-all passes back as its read mark:
+    two reads in two snapshots would leave a row committed between them marked read without ever having been shown.
+
   How the SPA shows and marks threads is `packages/dispatch/AGENTS.md`'s.
 
 - `PUT /api/v1/me/threads/{id}/read` `{read_through}` (needs the `person` scope, `api/replies.go`) stores `least(value, now())`, Postgres casting the caller's text so an answer's nanosecond time rounds as the trigger rounded it, and only moves forward, with `agentStateCutoffSkew`'s minute of allowance (`400 INVALID_STATE` past it);
