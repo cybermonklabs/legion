@@ -179,3 +179,4 @@ against main with #2225.
 - A session that takes an issue's events on two destinations (its topic family and its own
   subject) can see a later event's first copy before an earlier one's when the stream fails one
   subject and not the other (`planChains`).
+
