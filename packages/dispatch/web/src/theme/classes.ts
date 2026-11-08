@@ -86,13 +86,13 @@ export const TEXT_DISABLED = pair(P.SLATE_400, P.SLATE_600);
  * AA. This pairing needs its own, slightly stronger light shade to actually clear 4.5:1. */
 export const TEXT_MUTED_ON_SURFACE_MUTED = pair(P.SLATE_600, P.SLATE_400);
 
-export const textPrimaryOnCanvas = "text-slate-900 dark:text-slate-100";
-export const textPrimaryOnSurface = "text-slate-900 dark:text-slate-100";
+export const textPrimaryOnCanvas = "text-slate-900 dark:text-[#f1f5fa]";
+export const textPrimaryOnSurface = "text-slate-900 dark:text-[#f1f5fa]";
 export const textSecondaryOnCanvas = "text-slate-700 dark:text-slate-300";
 export const textSecondaryOnSurface = "text-slate-700 dark:text-slate-300";
 export const textMutedOnCanvas = "text-slate-500 dark:text-slate-400";
 export const textMutedOnSurface = "text-slate-500 dark:text-slate-400";
-export const textPrimaryOnSurfaceMuted = "text-slate-900 dark:text-slate-100";
+export const textPrimaryOnSurfaceMuted = "text-slate-900 dark:text-[#f1f5fa]";
 export const textSecondaryOnSurfaceMuted = "text-slate-700 dark:text-slate-300";
 export const textMutedOnSurfaceMuted = "text-slate-600 dark:text-slate-400";
 export const textMutedOnSelectedCard = "text-slate-600 dark:text-slate-400";
@@ -269,7 +269,7 @@ export const checkboxAccent = "text-sky-600";
 export const dragHandleBg = "bg-slate-300 dark:bg-slate-700";
 /** A high-emphasis line (e.g. the original question) inside a success callout — `TEXT_PRIMARY`
  * rendered on `CALLOUT_SUCCESS_BG` rather than on `CANVAS`/`SURFACE`. */
-export const textPrimaryOnSuccessCallout = "text-slate-900 dark:text-slate-100";
+export const textPrimaryOnSuccessCallout = "text-slate-900 dark:text-[#f1f5fa]";
 export const calloutInfoBorder = "border-sky-200 dark:border-sky-900";
 export const calloutInfoBg = "bg-sky-50 dark:bg-sky-950";
 export const calloutInfoTitleText = "text-sky-950 dark:text-sky-300";
@@ -769,7 +769,7 @@ export const chartBar = {
 // ---------------------------------------------------------------------------------------------
 
 export const card = "border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900";
-export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100";
+export const canvasText = "bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-[#f1f5fa]";
 
 /**
  * A 32 px fade at the trailing edge of a horizontally scrolling strip. It is a mask, not a
