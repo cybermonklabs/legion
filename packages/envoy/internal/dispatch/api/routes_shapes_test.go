@@ -26,9 +26,9 @@ func TestRouteShapesCoverEveryRouteTheTableMounts(t *testing.T) {
 // A shape describes what a success answers, so its status must be one a success can carry, and a
 // route that answers a body must name that body's type: an entry with no Response, no other
 // answer and no reason its bytes carry no schema is a route that answers nothing at all, which
-// is 204 and no other status. OptionalRequest says a body may be left out, and the emitter reads
-// it only where the row has a body to leave out (openapi.go, operation), so the flag on a row
-// with none says nothing at all and is drift the emit cannot catch.
+// is 204 and no other status. A row that marks its request optional and names no body to leave
+// out is the emitter's own refusal (openapi.go, requestBody), which holds every row the document
+// is written from, so the predicate for a body is stated there alone.
 func TestRouteShapesDescribeASuccess(t *testing.T) {
 	for name, shape := range routeShapes {
 		if shape.Status < http.StatusOK || shape.Status >= http.StatusMultipleChoices {
@@ -36,10 +36,6 @@ func TestRouteShapesDescribeASuccess(t *testing.T) {
 		}
 		if shape.Response == nil && len(shape.Also) == 0 && shape.Opaque == "" && shape.Status != http.StatusNoContent {
 			t.Errorf("%s: answers %d with no response type; a route that answers a body must name it", name, shape.Status)
-		}
-		if shape.OptionalRequest && shape.Request == nil && !shape.Multipart && shape.OpaqueRequest == "" {
-			t.Errorf("%s: OptionalRequest and no body to leave out; the emitter reads the flag "+
-				"only for a row with a Request, a Multipart or an OpaqueRequest", name)
 		}
 	}
 }

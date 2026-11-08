@@ -328,8 +328,9 @@ RULES = {
         (f"{ENVOY}/internal/dispatch/delivery/testdata/dev-only-run-jobs.json", "internal/dispatch/api/delivery_test.go:714")),
     f"{ENVOY}/internal/dispatch/api/openapi_test.go": reads(
         ("packages/contracts/schemas/dispatch-openapi.json",
-         "internal/dispatch/api/openapi_test.go:176 (runtime-relative ../../../../.., the committed document "
-         "TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the emitter's bytes with)")),
+         "internal/dispatch/api/openapi_test.go:177-178 (the path built runtime-relative ../../../../.., then "
+         "read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the "
+         "emitter's bytes with)")),
     f"{ENVOY}/internal/dispatch/api/lock_level_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/event_insert_guard_test.go": MODULE_SOURCES,
     f"{ENVOY}/internal/dispatch/api/review_write_guard_test.go": MODULE_SOURCES,
@@ -1133,7 +1134,8 @@ GATES = [
         # must start this job: the Run stands for what the command compiles, never for what it reads.
         ("packages/contracts/schemas/dispatch-openapi.json",
          f"{at('envoy-go-checks', 'Check the OpenAPI document is generated from the route table')}: "
-         "cmd/dispatch/subcommands.go:171 reads the committed document to compare it"),
+         "cmd/dispatch/subcommands.go:125 reads the committed document to compare it (:171 only builds a "
+         "candidate path for it)"),
         (CONTRACTS_SRC, "packages/contracts/scripts/gen-go.ts's imports of ../src/*"),
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),

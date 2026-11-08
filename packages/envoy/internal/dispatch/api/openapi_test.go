@@ -95,13 +95,13 @@ func TestOpenAPIDocumentHasOneOperationPerMountedRoute(t *testing.T) {
 // generator renders as `unknown` or refuses outright, and nothing else in the pipeline would say
 // which reference it was.
 func TestOpenAPIDocumentDeclaresEverySchemaItReferences(t *testing.T) {
-	raw, document := readOpenAPI(t)
-	var tree any
-	if err := json.Unmarshal(raw, &tree); err != nil {
-		t.Fatalf("read the emitted document: %v", err)
-	}
+	tree, document := readOpenAPITree(t)
 	references := map[string]bool{}
-	collectOpenAPIReferences(tree, references)
+	walkOpenAPI(tree, "", func(_ string, node map[string]any) {
+		if reference, isString := node["$ref"].(string); isString {
+			references[reference] = true
+		}
+	})
 	if len(references) == 0 {
 		t.Fatal("the document holds no reference at all, so this test would pass on an empty document")
 	}
@@ -122,20 +122,32 @@ func TestOpenAPIDocumentDeclaresEverySchemaItReferences(t *testing.T) {
 	}
 }
 
-// collectOpenAPIReferences gathers every $ref the document holds, wherever it holds it.
-func collectOpenAPIReferences(node any, into map[string]bool) {
+// readOpenAPITree writes the document and hands back every node of it beside the few fields
+// openAPIDocumentForTest names, for the readers that walk the whole tree.
+func readOpenAPITree(t testing.TB) (any, openAPIDocumentForTest) {
+	t.Helper()
+	raw, document := readOpenAPI(t)
+	var tree any
+	if err := json.Unmarshal(raw, &tree); err != nil {
+		t.Fatalf("read the emitted document: %v", err)
+	}
+	return tree, document
+}
+
+// walkOpenAPI calls visit for every object the document holds, wherever it holds it - a component
+// schema, a property of a nested object, a query parameter's schema - with the JSON path the
+// object sits at. Its readers say what they look for and nothing of the recursion, and a node one
+// of them reaches is a node they all reach.
+func walkOpenAPI(node any, path string, visit func(path string, m map[string]any)) {
 	switch value := node.(type) {
 	case map[string]any:
+		visit(path, value)
 		for key, child := range value {
-			if reference, isString := child.(string); key == "$ref" && isString {
-				into[reference] = true
-				continue
-			}
-			collectOpenAPIReferences(child, into)
+			walkOpenAPI(child, path+"/"+key, visit)
 		}
 	case []any:
-		for _, child := range value {
-			collectOpenAPIReferences(child, into)
+		for index, child := range value {
+			walkOpenAPI(child, fmt.Sprintf("%s/%d", path, index), visit)
 		}
 	}
 }
@@ -238,13 +250,24 @@ func TestOpenAPIRequestBodySchemasRequireWhatTheirFieldsTag(t *testing.T) {
 // since the emitter moves a query parameter's enum (queryParameters) and a nested object's by
 // the same call, and an enum left on an array there reads the same way to a client.
 func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
-	raw, _ := readOpenAPI(t)
-	var tree any
-	if err := json.Unmarshal(raw, &tree); err != nil {
-		t.Fatalf("read the emitted document: %v", err)
-	}
+	tree, _ := readOpenAPITree(t)
+	read := 0
 	var misplaced []string
-	read := collectOpenAPIEnums(tree, "", &misplaced)
+	walkOpenAPI(tree, "", func(path string, node map[string]any) {
+		if enum, carried := node["enum"].([]any); carried {
+			read++
+			if openAPITypeHolds(node["type"], "array") {
+				misplaced = append(misplaced, fmt.Sprintf("%s is an array and carries the enum "+
+					"%v on the array itself: a list's values are its items', so the document says "+
+					"the field is one of them rather than a list of them", path, enum))
+			}
+		}
+		if items, nested := node["items"].(map[string]any); nested {
+			if _, carried := items["enum"]; carried && !openAPITypeHolds(node["type"], "array") {
+				misplaced = append(misplaced, fmt.Sprintf("%s carries an enum on its items and is no array", path))
+			}
+		}
+	})
 	sort.Strings(misplaced)
 	for _, found := range misplaced {
 		t.Error(found)
@@ -252,39 +275,6 @@ func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
 	if read == 0 {
 		t.Fatal("the document declares no enum at all, so this test proves nothing")
 	}
-}
-
-// collectOpenAPIEnums walks every node the document holds, wherever it holds it, as
-// collectOpenAPIReferences does: a component schema's property, a property of a nested object, a
-// query parameter's schema. It appends to misplaced what each enum sitting on an array rather
-// than on the array's items is, by the path it sits at, and answers how many enums it read, so a
-// walk that silently found none cannot pass for one that found every enum right.
-func collectOpenAPIEnums(node any, path string, misplaced *[]string) int {
-	read := 0
-	switch value := node.(type) {
-	case map[string]any:
-		if enum, carried := value["enum"].([]any); carried {
-			read++
-			if openAPITypeHolds(value["type"], "array") {
-				*misplaced = append(*misplaced, fmt.Sprintf("%s is an array and carries the enum "+
-					"%v on the array itself: a list's values are its items', so the document says "+
-					"the field is one of them rather than a list of them", path, enum))
-			}
-		}
-		if items, nested := value["items"].(map[string]any); nested {
-			if _, carried := items["enum"]; carried && !openAPITypeHolds(value["type"], "array") {
-				*misplaced = append(*misplaced, fmt.Sprintf("%s carries an enum on its items and is no array", path))
-			}
-		}
-		for key, child := range value {
-			read += collectOpenAPIEnums(child, path+"/"+key, misplaced)
-		}
-	case []any:
-		for index, child := range value {
-			read += collectOpenAPIEnums(child, fmt.Sprintf("%s/%d", path, index), misplaced)
-		}
-	}
-	return read
 }
 
 // openAPITypeHolds answers whether a schema's `type`, which is one name or a list of them, holds

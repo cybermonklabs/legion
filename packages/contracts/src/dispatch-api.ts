@@ -33,6 +33,7 @@ import type {
   Issue,
   IssueAskRow,
   IssueClaim,
+  IssueCollaboratorPerson,
   IssueDetails,
   Message,
   MyReplyRow,
@@ -193,6 +194,13 @@ export type DocumentRole = "verification" | "plan" | "decisions";
  *  root issue's decisions document, `criteria` its Verification document, `spec` its primary
  *  document. */
 export type GatedStep = (typeof GATED_STEPS)[number];
+
+/** Why someone is on `GET /api/v1/issues/{key}/collaborators`: the assignee, whoever claimed the
+ *  issue, whoever posted on it or one of its documents, and whoever answered one of its asks. The
+ *  set is the handler's own (`issue_collaborators.go`'s `collaboratorReasons`), so the document
+ *  carries it as a closed union on each `reasons` array rather than as a schema of its own; this
+ *  projects one element of that array, which is the name a consumer imports. */
+export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>[number];
 
 /** Who gave a review: `person` for one a person gave, `plan_review` for a plan review's approval
  *  of a plan version. A review Dispatch carried forward to a later version keeps the kind of the

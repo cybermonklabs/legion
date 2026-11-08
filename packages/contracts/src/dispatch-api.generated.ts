@@ -3302,27 +3302,6 @@ export interface components {
       updated_at: string;
       verification_artifact_id: string;
     };
-    CollaboratorAgent: {
-      kind: string;
-      last_at: null | string;
-      legion: components["schemas"]["CollaboratorLegion"] | null;
-      reasons: string[] | null;
-      session_id: string;
-      title: null | string;
-    };
-    CollaboratorLegion: {
-      replaced_at: null | string;
-      replaced_by: null | string;
-      role: string;
-      role_token: string;
-      started_at: string;
-    };
-    CollaboratorPerson: {
-      kind: string;
-      last_at: null | string;
-      login: string;
-      reasons: string[] | null;
-    };
     Comment: {
       anchor: components["schemas"]["Anchor"] | null;
       anchor_block?: components["schemas"]["BlockPath"];
@@ -4318,11 +4297,35 @@ export interface components {
       code: string;
       error: string;
     };
+    IssueCollaboratorAgent: {
+      /** @enum {string} */
+      kind: "session";
+      last_at: null | string;
+      legion: components["schemas"]["IssueCollaboratorLegion"] | null;
+      reasons: ("assignee" | "claimed" | "posted" | "answered")[] | null;
+      session_id: string;
+      title: null | string;
+    };
+    IssueCollaboratorLegion: {
+      replaced_at: null | string;
+      replaced_by: null | string;
+      role: string;
+      role_token: string;
+      started_at: string;
+    };
+    IssueCollaboratorPerson: {
+      /** @enum {string} */
+      kind: "user";
+      last_at: null | string;
+      login: string;
+      reasons: ("assignee" | "claimed" | "posted" | "answered")[] | null;
+    };
     IssueCollaborators: {
-      agents: components["schemas"]["CollaboratorAgent"][] | null;
+      agents: components["schemas"]["IssueCollaboratorAgent"][] | null;
       issue_key: string;
-      legion_registry: string;
-      people: components["schemas"]["CollaboratorPerson"][] | null;
+      /** @enum {string} */
+      legion_registry: "ok" | "unavailable";
+      people: components["schemas"]["IssueCollaboratorPerson"][] | null;
     };
     IssueComponents: {
       ids: string[] | null;
@@ -12009,9 +12012,6 @@ export type CheckResult = components["schemas"]["CheckResult"];
 export type CheckResultRecorded = components["schemas"]["CheckResultRecorded"];
 export type ClaimIssueInput = components["schemas"]["ClaimIssueInput"];
 export type ClaimedIssue = components["schemas"]["ClaimedIssue"];
-export type CollaboratorAgent = components["schemas"]["CollaboratorAgent"];
-export type CollaboratorLegion = components["schemas"]["CollaboratorLegion"];
-export type CollaboratorPerson = components["schemas"]["CollaboratorPerson"];
 export type Comment = components["schemas"]["Comment"];
 export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
@@ -12128,6 +12128,9 @@ export type IssueCheckResults = components["schemas"]["IssueCheckResults"];
 export type IssueChild = components["schemas"]["IssueChild"];
 export type IssueClaim = components["schemas"]["IssueClaim"];
 export type IssueClaimedError = components["schemas"]["IssueClaimedError"];
+export type IssueCollaboratorAgent = components["schemas"]["IssueCollaboratorAgent"];
+export type IssueCollaboratorLegion = components["schemas"]["IssueCollaboratorLegion"];
+export type IssueCollaboratorPerson = components["schemas"]["IssueCollaboratorPerson"];
 export type IssueCollaborators = components["schemas"]["IssueCollaborators"];
 export type IssueComponents = components["schemas"]["IssueComponents"];
 export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"];

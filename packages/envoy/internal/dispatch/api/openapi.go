@@ -611,7 +611,7 @@ func (e *openAPIEmitter) operation(route apiRoute, hook bool) (*openapi31.Operat
 	}
 	operation.Parameters = parameters
 
-	if shape.Request != nil || shape.Multipart || shape.OpaqueRequest != "" {
+	if shape.hasRequestBody() || shape.OptionalRequest {
 		body, err := e.requestBody(shape, name)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
@@ -758,13 +758,25 @@ func (e *openAPIEmitter) queryParameters(params any) ([]openapi31.ParameterOrRef
 	return parameters, nil
 }
 
+// hasRequestBody is whether the row carries a request body at all, the one predicate that says
+// so: the emitter builds a body for such a row, and routeShape.OptionalRequest, which says a
+// body may be left out, means nothing on a row with none.
+func (s routeShape) hasRequestBody() bool {
+	return s.Request != nil || s.Multipart || s.OpaqueRequest != ""
+}
+
 // requestBody is the row's JSON body, and the multipart body beside it where the route takes one.
 // It is required where the handler refuses an empty body and optional where it takes one
-// (routeShape.OptionalRequest). A route whose body Dispatch does not model carries
-// OpaqueRequest, and the body is an object of any shape with that reason on it: saying nothing
-// is honest, where naming a type that covers one arm of the body would promise a client a
-// contract the route does not hold it to.
+// (routeShape.OptionalRequest), and a row that marks its request optional and names no body is
+// refused here, where the emit is the one reader of the flag. A route whose body Dispatch does
+// not model carries OpaqueRequest, and the body is an object of any shape with that reason on
+// it: saying nothing is honest, where naming a type that covers one arm of the body would
+// promise a client a contract the route does not hold it to.
 func (e *openAPIEmitter) requestBody(shape routeShape, name string) (*openapi31.RequestBody, error) {
+	if !shape.hasRequestBody() {
+		return nil, fmt.Errorf("%s has no body to leave out: OptionalRequest is read only for a "+
+			"row with a Request, a Multipart or an OpaqueRequest", name)
+	}
 	body := &openapi31.RequestBody{Content: map[string]openapi31.MediaType{}}
 	if shape.OpaqueRequest != "" {
 		if shape.Request != nil {

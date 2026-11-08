@@ -57,6 +57,14 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(checkResultInput{}):         "RecordCheckResultInput",
 	reflect.TypeOf(relatedRequest{}):           "RelatedCheckInput",
 
+	// The members of the collaborators answer, whose Go names say which handler built them and
+	// whose names here are the ones main's TypeScript exported and a consumer imports
+	// (packages/contracts/.changes/unreleased/pr2234-added-1.yaml announces the three).
+	// Declared under their Go names they would delete three exports main publishes.
+	reflect.TypeOf(collaboratorPerson{}): "IssueCollaboratorPerson",
+	reflect.TypeOf(collaboratorAgent{}):  "IssueCollaboratorAgent",
+	reflect.TypeOf(collaboratorLegion{}): "IssueCollaboratorLegion",
+
 	// The model and document packages, whose one-word names would take a word of the API's own.
 	reflect.TypeOf(model.Mention{}):        "CommentMention",
 	reflect.TypeOf(model.NodeParent{}):     "GraphNodeParent",

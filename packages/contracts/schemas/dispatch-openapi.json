@@ -13485,121 +13485,6 @@
         ],
         "type": "object"
       },
-      "CollaboratorAgent": {
-        "properties": {
-          "kind": {
-            "type": "string"
-          },
-          "last_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "legion": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/CollaboratorLegion"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "reasons": {
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "session_id": {
-            "type": "string"
-          },
-          "title": {
-            "type": [
-              "null",
-              "string"
-            ]
-          }
-        },
-        "required": [
-          "kind",
-          "session_id",
-          "title",
-          "reasons",
-          "last_at",
-          "legion"
-        ],
-        "type": "object"
-      },
-      "CollaboratorLegion": {
-        "properties": {
-          "replaced_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "replaced_by": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "role": {
-            "type": "string"
-          },
-          "role_token": {
-            "type": "string"
-          },
-          "started_at": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "role",
-          "role_token",
-          "started_at",
-          "replaced_by",
-          "replaced_at"
-        ],
-        "type": "object"
-      },
-      "CollaboratorPerson": {
-        "properties": {
-          "kind": {
-            "type": "string"
-          },
-          "last_at": {
-            "type": [
-              "null",
-              "string"
-            ]
-          },
-          "login": {
-            "type": "string"
-          },
-          "reasons": {
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          }
-        },
-        "required": [
-          "kind",
-          "login",
-          "reasons",
-          "last_at"
-        ],
-        "type": "object"
-      },
       "Comment": {
         "properties": {
           "anchor": {
@@ -18254,11 +18139,144 @@
         ],
         "type": "object"
       },
+      "IssueCollaboratorAgent": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "session"
+            ],
+            "type": "string"
+          },
+          "last_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "legion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/IssueCollaboratorLegion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "assignee",
+                "claimed",
+                "posted",
+                "answered"
+              ],
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "session_id",
+          "title",
+          "reasons",
+          "last_at",
+          "legion"
+        ],
+        "type": "object"
+      },
+      "IssueCollaboratorLegion": {
+        "properties": {
+          "replaced_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "replaced_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "role_token": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "role_token",
+          "started_at",
+          "replaced_by",
+          "replaced_at"
+        ],
+        "type": "object"
+      },
+      "IssueCollaboratorPerson": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "user"
+            ],
+            "type": "string"
+          },
+          "last_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "login": {
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "enum": [
+                "assignee",
+                "claimed",
+                "posted",
+                "answered"
+              ],
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "login",
+          "reasons",
+          "last_at"
+        ],
+        "type": "object"
+      },
       "IssueCollaborators": {
         "properties": {
           "agents": {
             "items": {
-              "$ref": "#/components/schemas/CollaboratorAgent"
+              "$ref": "#/components/schemas/IssueCollaboratorAgent"
             },
             "type": [
               "array",
@@ -18269,11 +18287,15 @@
             "type": "string"
           },
           "legion_registry": {
+            "enum": [
+              "ok",
+              "unavailable"
+            ],
             "type": "string"
           },
           "people": {
             "items": {
-              "$ref": "#/components/schemas/CollaboratorPerson"
+              "$ref": "#/components/schemas/IssueCollaboratorPerson"
             },
             "type": [
               "array",
