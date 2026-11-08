@@ -3533,11 +3533,21 @@ func (h *memoryHarness) projectDocumentCopies(t *testing.T, sourceID string, cou
 				t.Fatalf("copy %d: %v", index, err)
 			}
 		}
-		// Each copy's versions mark its blocks owed (0122's trigger), which this clears as
-		// oweNoBlockIndex clears the issue's own.
+		// Each copy's versions mark its blocks owed (0122's trigger) and its text and scope owed
+		// a re-index (20261103205041's), which this clears as oweNoBlockIndex clears the issue's
+		// own - a copy here carries no issue_key, so that helper's join over the issue does not
+		// reach it. Measured 2026-11-07 with the text rows left: the 320 copies of the live-write
+		// burst owed 642 of them, two a copy, and writing that index took the drain before each
+		// start about nine minutes.
 		if _, err := tx.Exec(ctx, `delete from document_block_versions where artifact_id = $1`, copies[index]); err != nil {
 			_ = tx.Rollback(ctx)
 			t.Fatalf("clear the block index copy %d owes: %v", index, err)
+		}
+		if _, err := tx.Exec(ctx,
+			`delete from refs_grammar_owed where id = $1 and kind in ('artifact', 'scope')`, copies[index],
+		); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("clear the text index copy %d owes: %v", index, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			t.Fatalf("commit copy %d: %v", index, err)
@@ -4045,7 +4055,22 @@ func (h *memoryHarness) oweNoBlockIndex(t *testing.T) int64 {
 	if err != nil {
 		t.Fatalf("clear the block index the drive's documents owe: %v", err)
 	}
-	return cleared.RowsAffected()
+	// The text index each document's version owes as well: a row for the document's own text and
+	// one for its scope (refs_grammar_owed, 20261103205041's trigger). Indexing one text reads
+	// its document whole and marks that document owed a block index again, so a drive whose
+	// documents owe texts goes on being owed documents however often the clear above runs.
+	// Measured 2026-11-07 with the text rows left and the 320 copies of a mebibyte the
+	// live-write burst makes: the drain wrote 60 documents and 643 texts in 1m57s and was still
+	// owed 261 documents, about nine minutes of reading for an index no reader of these
+	// documents ever asks for.
+	texts, err := h.database.Pool.Exec(context.Background(), `
+		delete from refs_grammar_owed o
+		using artifacts a where a.id = o.id and o.kind in ('artifact', 'scope') and a.issue_key = $1
+	`, h.issue)
+	if err != nil {
+		t.Fatalf("clear the text index the drive's documents owe: %v", err)
+	}
+	return cleared.RowsAffected() + texts.RowsAffected()
 }
 
 // artifactName names a document for a log line: its name, and whether it is its issue's primary
