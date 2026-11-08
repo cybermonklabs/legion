@@ -9,7 +9,8 @@ description: >-
   latest: an unpinned runner moved to 1.4.2 and segfaulted `bun test` intermittently (8 crashes
   in 60 runs against 2 in 60 on the pinned version, same tree, four cores). Raising Bun is two
   commits: the new version's row in .github/ci-images.yaml first, then .bun-version, the
-  `ARG BUN_VERSION` default of packages/daemon/docker/worker.Dockerfile and every `FROM`.
+  `ARG BUN_VERSION` default of packages/daemon/docker/worker.Dockerfile and every `FROM`, with
+  the three bun-* rows of .github/ci-tools.yaml moving in that second commit beside .bun-version.
 
   Bun has a second source, because oven-sh/setup-bun reads one: the npm package upstream
   publishes the same binary in, which needs no copy of ours and which every job already reaches

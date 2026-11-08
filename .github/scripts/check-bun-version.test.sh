@@ -506,6 +506,18 @@ check "says what the missing check would let through" \
   "$(contains "$out" 'oven-sh/setup-bun verifies no checksum, so without that call this action would leave on PATH, for every job of this repository, whatever the download, the cache or the second source wrote')"
 check "and names the file that pins it" "$(contains "$out" '.github/ci-tools.yaml row that pins it')"
 
+# The call has to be run, not described. The real wrapper's last step explains at length why it
+# holds the bun to its row, and a review that deleted the `if ! ci_tools_verify …; fi` block
+# from that step left the comment naming the call behind: a gate reading the script as one
+# string found both words it searched for and passed a wrapper that verified nothing.
+root=$(fixture wrapper-with-the-call-only-in-a-comment)
+sed -i 's|^        ci_tools_verify.*|        # ci_tools_verify bun-linux-x64 "$bun" github-release holds it to its row|' \
+  "$root/.github/actions/setup-bun/action.yml"
+run_check "$root"
+check "a wrapper whose last step keeps the comment and loses the call fails" "$(is "$status" 1)"
+check "saying what the missing check would let through" \
+  "$(contains "$out" 'oven-sh/setup-bun verifies no checksum, so without that call this action would leave on PATH, for every job of this repository, whatever the download, the cache or the second source wrote')"
+
 # The check is the last step because a step after it runs with the bun it allowed on PATH and
 # can put another one there.
 root=$(fixture wrapper-check-not-last)

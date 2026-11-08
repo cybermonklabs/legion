@@ -458,10 +458,30 @@ else:
 # bun it must judge is the one every later step of the job will run, whichever of the two
 # sources installed it. A wrapper that lost that call would leave an unverified Bun on every
 # lane with this gate green, which is the state the rule exists to refuse.
+#
+# The step's comment lines are dropped before the rule reads it, and the call is matched as the
+# command a line runs rather than as a substring of the whole script. That step says at length
+# why it holds the bun to its row, so a review that deleted the `if ! ci_tools_verify …; fi`
+# block and left the prose above it kept both words this rule used to search for, and the gate
+# stayed green over a wrapper that verified nothing.
+# A comment that is not a whole line is left where it is: the words before it are still a
+# command, and that is what these two patterns read.
+SHELL_COMMENT = re.compile(r"^[ \t]*#")
+# `ci_tools_verify` as the command the line runs: bare, as the fixtures of this gate's tests
+# write it, or as the condition of the `if` the wrapper writes it as, which is the shape that
+# takes the refused binary away.
+VERIFY_CALL = re.compile(r"^[ \t]*(?:if[ \t]+![ \t]+)?ci_tools_verify[ \t]", re.MULTILINE)
+# The bun that call must judge: the one on this job's PATH, not a path the step composed.
+COMMAND_V_BUN = re.compile(r"\bcommand[ \t]+-v[ \t]+bun\b")
 if SETUP_ACTION.is_file():
     last = wrapper_steps[-1] if wrapper_steps and isinstance(wrapper_steps[-1], dict) else None
     script = last.get("run") if last else None
-    if not isinstance(script, str) or "ci_tools_verify" not in script or "command -v bun" not in script:
+    code = (
+        "\n".join(line for line in script.splitlines() if not SHELL_COMMENT.match(line))
+        if isinstance(script, str)
+        else ""
+    )
+    if not VERIFY_CALL.search(code) or not COMMAND_V_BUN.search(code):
         problems.append(
             f"{SETUP_ACTION}:{line_of(last) if last else 1}: the wrapper's last step does not "
             f"call ci_tools_verify on the bun `command -v bun` gives — oven-sh/setup-bun "

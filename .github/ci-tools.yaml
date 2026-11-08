@@ -21,15 +21,18 @@
 # A row that disagrees with its pin installs one version and verifies another, and that is the
 # hole .github/scripts/check-ci-tools.sh exists to close, so the tree never holds that state.
 #
-# .github/ci-images.yaml takes two commits for the same move, and the difference is what a
-# consumer names. There a consumer names a digest, so a new row is inert until a `FROM` moves
-# onto it and the intermediate state is readable by nobody. Here a call site names a row, so a
-# second row of the same tool has no name a call site can use, and this file's gate refuses two
-# rows of one name for that reason.
+# Raising Bun is the one raise that takes two commits, and the three bun rows below move in the
+# second one, with .bun-version. That raise takes two because it moves a container image as
+# well as these rows: .github/ci-images.yaml's new `oven/bun` row goes first and alone, since a
+# consumer there names a digest and the new row is inert until a `FROM` moves onto it, and
+# .bun-version, `ARG BUN_VERSION`, every `FROM` and these three rows follow in the second
+# commit. What a tool row cannot do is go ahead of its pin the way an image row can, because a
+# call site names a row rather than a version: a second row of the same tool has no name a call
+# site could use, and this file's gate refuses two rows of one name for that reason.
 #
 # One commit races nothing: ci.yaml's `tool-fallback` job declares `needs: [changes, ci-images]`,
-# so the copy of the new row is filled before anything of that run reads it, and an install
-# reaches the copy only where its primary did not serve the bytes.
+# so the copy of the new row is filled before `tool-fallback` reads it, and no other job waits on
+# that copy, because an install reaches the copy only where its primary did not serve the bytes.
 # The one window it leaves, said out loud: a raise merged while that tool's release asset is
 # down and its copy is not yet filled. In that window the tool has exactly the single source it
 # has today, which is what every install of it had before this file existed.
