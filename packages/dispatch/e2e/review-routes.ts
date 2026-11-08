@@ -166,7 +166,16 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    // Not shot: what this page draws last is a turn that reaches it over the live socket
+    // rather than with the first read, so the page is sometimes 1280x905 where the baseline
+    // is 1280x925, carrying the `Jump to latest` pill a settled view does not - measured in
+    // one container run of five of one tree (42479821620), and a size mismatch is a
+    // difference no pixel bound can absorb. It is the same race the phone copy of this page
+    // was taken out of the shot set for. The binding the shots of it carried - the docked
+    // composer's `SURFACE`, in both schemes - is read off the live element by the kept row of
+    // `e2e/theme.e2e.ts` instead, which is a stronger claim than a snapshot made. A scan
+    // reads the DOM and does not care which turns have landed, so this page keeps that layer.
+    layers: ["scan"],
     name: "issue-conversation",
     path: (seed) => `/issues/${seed.issue}/conversation`,
     pattern: "/issues/:key/*",

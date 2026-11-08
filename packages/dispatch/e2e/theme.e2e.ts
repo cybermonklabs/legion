@@ -156,13 +156,23 @@ test("the Inbox, an issue's spec and its Conversation render each palette token 
     const turn = page.locator(`[data-turn="comment:${comment.id}"]`);
     const link = turn.locator(".dispatch-markdown").getByRole("link", { name: "the plan" });
 
+    // The composer docked at the foot of the Conversation route sits on `SURFACE`, the token
+    // that separates a writing surface from the canvas behind it. Read here rather than left to
+    // a baseline because this page has no committed shot to carry it: a turn arriving over the
+    // live socket makes it sometimes 20 pixels shorter, so its screenshots were taken out of the
+    // visual set (e2e/review-routes.ts).
+    const dock = page.getByRole("form", { name: "Comment composer" });
+
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto(`/issues/${issue.key}/conversation`);
     await expect(link).toBeVisible();
     await expectTextColor(link, C.LINK.light);
+    await expect(dock).toBeVisible();
+    await expectBackgroundColor(dock, C.SURFACE.light);
 
     await page.emulateMedia({ colorScheme: "dark" });
     await expectTextColor(link, C.LINK.dark);
+    await expectBackgroundColor(dock, C.SURFACE.dark);
 
     // Expanded, the turn swaps that preview for the full `MarkdownBody` - in place above the
     // phone breakpoint, in a full-screen Thread dialog below it, which is what the scope helper
