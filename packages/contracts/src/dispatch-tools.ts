@@ -1411,10 +1411,13 @@ export const dispatchToolSpecs = [
       "Print each check of an issue's Verification document with its latest result and whether " +
       "that result is current. A result is current when it ran at the commit the work stands at " +
       "— the head of an open pull request of the check's issue, the final head of a merged one, " +
-      "or, for an after_merge or default_branch check, a commit on the repository's default " +
-      "branch — and the check's words have not changed since; older otherwise, and unknown when " +
-      "Dispatch cannot read the repository. A push that moves the pull request's head makes a " +
-      "result older with no write of anyone's: record it again at the new head. " +
+      "for an after_merge check a commit on the branch that issue's pull request merged into " +
+      "(the repository's default branch where Dispatch holds no merge of that issue), or for a " +
+      "default_branch check a commit on the repository's default branch, whatever branch the " +
+      "pull request merged into — and the check's words have not changed since; older " +
+      "otherwise, and unknown when Dispatch cannot read the repository. A push that moves the " +
+      "pull request's head makes a result older with no write of anyone's: record it again at " +
+      "the new head. " +
       ISSUE_REFERENCE,
     arguments: (z) => ({
       issue: z.string().describe(ISSUE_REFERENCE),

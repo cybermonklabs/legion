@@ -1884,8 +1884,18 @@ a recorded result makes one, and so does the read of an issue's results, which s
 A new table, as above; its census answers `0`.
 
 Migration `20261102122400_default_branch_commits` creates `default_branch_commits`, what Dispatch's GitHub App answered about one commit of one repository: whether the repository's default branch carries it.
-A result for an `after_merge` or `default_branch` check is current only at such a commit, and the answer is read when the results are read, never written by a push, so this cache keeps those reads off GitHub.
-A yes is kept for good, since a commit on the default branch never leaves it, and a no is re-read after five minutes, since a commit merges later.
+It cached the answer the results read asked for while that one question decided an `after_merge` and a `default_branch` check alike, a yes kept for good and a no re-read after five minutes.
+This release reads and writes it nowhere: `20261107234701_branch_commits` below holds that answer now, keyed by the branch as well, and this table is left exactly as it is because the release before this one still reads and writes it.
+Dropping it is a contracting migration of a later release (dispatch://INFRA-1700).
+A new table, as above; its census answers `0`.
+
+Migration `20261107234701_branch_commits` creates `branch_commits`, what Dispatch's GitHub App answered about one commit of one branch of one repository: whether that branch carries it.
+A result for an `after_merge` check is current only at a commit on the branch the check's issue's pull request merged into, and one for a `default_branch` check only at a commit on the repository's default branch, so the question the results read asks names a branch and the answer is kept under one; the answer is read when the results are read, never written by a push, so this cache keeps those reads off GitHub.
+Its primary key is `(repo, branch, sha)` — the repository, the branch as GitHub names it, and the 40-hex commit — with `on_branch`, GitHub's answer, and `checked_at`, when it was read.
+A yes is kept for good, since a rewrite of a branch does not undo that the work reached it, and a no is re-read after five minutes, on every branch alike, since a commit merges later.
+It is a new table and not a `branch` column on `default_branch_commits`, whose primary key is `(repo, sha)`, because a Dispatch release rolls: the release before this one runs `insert ... on conflict (repo, sha) do update` against this schema, and widening that key would leave that statement targeting no unique constraint, so every such write would fail, while that build's single-row read could answer another branch's yes as the default branch's.
+So this release reads and writes `default_branch_commits` nowhere and leaves it exactly as it is.
+The table starts empty, with no backfill: a `default_branch_commits` row names no branch, and the default branch it was asked about may since have been renamed, so no backfill could be faithful and every answer is earned again with one GitHub read.
 A new table, as above; its census answers `0`.
 
 Migrations `20261105093500_user_threads_dismissed_at` through `20261105093507_user_agent_thread_dismissed_clear` are the Inbox's dismissal: a thread stays in a person's Inbox, read or not, until they dismiss it.
@@ -3231,7 +3241,8 @@ Each item below names a path with its method and identity, then its purpose.
   - Eligibility for that read is the repository and commit's, never one result's: it is skipped only where GitHub's answer cannot change the result — Dispatch already holds an open or merged pull request whose head is that commit, whatever issue it is attributed to, since its own passes keep reading that row; or a read has already been told of a pull request whose head is another commit, which answers about this commit for now and holds the pair off for `delivery.CommitPullSettledFor` (one hour, `delivery.CommitPullReads`), after which it is read through again, since a pull request opened later can have its head at that commit.
 
   The issue a result was recorded on is read for nothing here, so a child's pull request never makes a result against a check above it current.
-  An `after_merge` or `default_branch` result is current while its commit is on the default branch of that repository.
+  An `after_merge` result is current while its commit is on the branch the check's issue's pull request merged into — the `base_ref` of the newest merged pull request attributed to that issue, and that repository's default branch where Dispatch holds no merge of the issue or the merged row names no base branch.
+  A `default_branch` result is current while its commit is on that repository's default branch, whatever branch the pull request merged into.
   Nothing is written on a push: a push that moves a pull request's head makes the result at the old head older by itself.
   An issue with no Verification document answers no checks.
 
