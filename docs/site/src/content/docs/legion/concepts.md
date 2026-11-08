@@ -342,14 +342,19 @@ Legion uses GitHub's own review mechanisms rather than labels:
   `pull-request-missing`, once per handoff commit.
 - **Review threads** close one by one, and only once the thread's opener (or, for a thread a bot
   opened, Legion's reviewer) accepts the reply.
-- Two limits flag a loop: after `review_round_cap` rounds (three by default), or once
+- Two limits flag a loop: after `review_round_cap` counted rounds (three by default), or once
   `max_fix_attempts` pushes fail to turn CI green (three by default), the daemon posts a message on
   the issue and tells the architect; neither stops a worker. At the round cap the architect decides,
   in the turn the notice wakes, whether to narrow the next rounds, split work off (into a sibling
   child, or, on a root, an ask whether the rest needs an issue of its own), or let converging rounds
   run, and posts that decision on the issue. Every move back to an earlier phase counts a round: a
   tester's fail, a review's request for changes, a worker's move back, and the daemon's own move
-  when CI turns red or the head starts conflicting with its base. Once `max_fix_attempts` runs out,
+  when CI turns red, when the head starts conflicting with its base, or when GitHub's merge queue
+  reports its entry for the head unmergeable on the base branch's own tip. A move made while the
+  record holds the head conflicting with its base is a conflict round, which `review_round_cap`
+  does not count: the implementer answers such a round with a forward merge, which no reviewer
+  asked for, and the cap's message names both numbers, the rounds counted and the conflict rounds
+  left out. Once `max_fix_attempts` runs out,
   CI red within the attempt that ran it out - the head whose push was counted, and every head pushed
   on top of it until a push lands on a head CI judged green or on a settled head whose base requires
   nothing - no longer sends the work back from testing, review, retro or merging by itself: the
@@ -389,8 +394,11 @@ one in a repository that allows auto-merge is armed, and in a repository that al
 daemon waits until GitHub reports the pull request mergeable — a required check passing, a required
 review a person gives — and then merges it. An arm or a queue entry is not the end: the submission
 keeps reading GitHub until GitHub reports the pull request merged at the `READY` head, and submits
-again when the arm or entry is gone while the record still awaits that head, as when a disarm sent
-before `READY` lands late. The repository's own required reviews and checks decide
+again after two removals: its own disarm sent before `READY` that GitHub applied late, and
+auto-merge a close turned off, which the reopen at the `READY` head undid. It submits the head once
+more, saying so on the issue, when GitHub's merge queue takes the pull request out for a conflict
+GitHub's merge state leaves with an entry queued ahead of it; every other removal ends the
+submission. The repository's own required reviews and checks decide
 when it merges, rules Legion neither reads nor changes nor bypasses, and a person may still merge it
 first. The submission reads GitHub, then the record, when it runs, and submits nothing once the
 record shows the issue left that `READY` or the pull request closed. While the record still awaits
@@ -413,7 +421,9 @@ disarm reads GitHub, then the record: it keeps the arm only while the issue awai
 `READY` head and that `READY` is not by hand, and otherwise disables auto-merge and takes the pull
 request out of a merge queue, as the implement App. `READY` is
 withdrawn when a push or reopen moves the head past the one `READY` named, when the head's own CI
-turns red, or when it starts conflicting with its base: the
+turns red, when it starts conflicting with its base, or when GitHub's merge queue reports its
+entry for that head unmergeable while the queue has built the entry on the base branch's own tip,
+where nothing queued ahead of it can be the cause: the
 issue goes back to `implementing`, the architect is told, and the daemon disarms the pull request
 and posts on the issue, and tells that role, that the `READY` is withdrawn, naming the cause.
 
