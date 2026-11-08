@@ -671,6 +671,13 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 			handler = s.gateRouteScopes(route.OAuthScopes, handler)
 		}
 		if route.Method != http.MethodGet {
+			// The write limit, outside everything the handler does: a write the pod has no room
+			// for is refused before it reads its body, resolves its artifact or opens anything
+			// (holdWriteLimit). It is inside the drain below, so a client waiting to continue is
+			// answered as it is for every other early answer.
+			handler = s.holdWriteLimit(handler)
+		}
+		if route.Method != http.MethodGet {
 			// Every layer above may answer before the body is read; the answer waits for the body.
 			//
 			// A client that asked to be told to continue before it sends its body (Expect:
@@ -1586,17 +1593,23 @@ func (s *server) publish(events ...model.Event) {
 	}
 }
 
-// begin opens one of the API's transactions. The write limit is taken first, before any
-// connection and before any lock, so a caller the pool has no room for waits holding nothing
-// and the connections the limit leaves stay free for the callers that take one without a
-// transaction - the room workers' durable appends among them (apiWriteLimit).
+// begin opens one of the API's transactions, on the write limit its request took at its entry
+// (holdWriteLimit), or one of its own for a caller that holds none - a server task, a test that
+// calls begin directly. The limit is taken before any connection and before any lock, so a
+// caller the pool has no room for waits holding nothing and the connections the limit leaves
+// stay free for the callers that take one without a transaction - the room workers' durable
+// appends among them (apiWriteLimit).
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	release, err := s.writes.take(ctx)
-	if err != nil {
-		return nil, err
+	release := writeGrantFrom(ctx)
+	if release == nil {
+		taken, err := s.writes.take(ctx)
+		if err != nil {
+			return nil, err
+		}
+		release = taken
 	}
 	tx, err := s.deps.Store.Pool.Begin(ctx)
 	if err != nil {

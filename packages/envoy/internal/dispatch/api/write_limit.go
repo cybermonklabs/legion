@@ -77,6 +77,44 @@ func (l *writeLimiter) take(ctx context.Context) (func(), error) {
 	return func() { once.Do(func() { l.semaphore().Release(1) }) }, nil
 }
 
+// writeGrantKey carries the write limit a request took at its entry, so the transaction it opens
+// runs on that one rather than taking a second (server.begin).
+type writeGrantKey struct{}
+
+// writeGrantFrom is the write limit ctx's request already holds, or nil for a caller holding
+// none: a server task of its own, a test that calls begin directly.
+func writeGrantFrom(ctx context.Context) func() {
+	release, _ := ctx.Value(writeGrantKey{}).(func())
+	return release
+}
+
+// holdWriteLimit takes the API's write limit at a request's entry, before the handler reads its
+// body, resolves its artifact or opens anything, and gives it back when the handler returns. It
+// wraps every route that is not a GET.
+//
+// The limit used to be taken inside server.begin, after the handler had read the request's
+// artifact, and that read is not free: measured over 320 concurrent writes to documents of a
+// mebibyte on the two-processor pod, every one of the 320 paid 1.34 s at the median for its
+// artifact read before 305 of them were refused at the limit, so the writes that would be
+// refused burned the processors the admitted ones needed (dispatch://INFRA-179). Taken here, a
+// write the pod has no room for costs one wait on a semaphore and nothing else: no body read, no
+// pooled read, no lock, no copy.
+//
+// The handler's own transaction runs on this grant (server.begin, writeGrantFrom), so a request
+// holds one of the limit however many transactions it opens in turn, and the limit still bounds
+// how many of the pool's connections the API's writes hold at once.
+func (s *server) holdWriteLimit(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		release, err := s.writes.take(r.Context())
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		defer release()
+		handler(w, r.WithContext(context.WithValue(r.Context(), writeGrantKey{}, release)))
+	}
+}
+
 // limitedTx is a transaction holding one of the API's write limit, which it gives back as it
 // ends. Commit and Rollback are the only two ways a transaction ends, and every caller of
 // server.begin defers one of them, so the limit is held exactly as long as the connection
