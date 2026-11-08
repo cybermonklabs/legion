@@ -73,7 +73,7 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from claims where project = $1 and issue = $2 and last_start_row > $3)
 			or exists (select 1 from outbox where issue = $2 and id > $3 and kind = 'supervise'
-			and payload->>'op' = 'start' and coalesce((payload->>'checkLook')::int, 0) > 0)`,
+			and payload->>'op' = 'start' and coalesce((payload->>'checkLook')::bigint, 0) > 0)`,
 			project, close.Issue, close.Row).Scan(&restarted); err != nil {
 			return err
 		}

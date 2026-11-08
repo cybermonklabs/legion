@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -198,132 +199,20 @@ func (s issueLaunchSpecs) SpawnSpec(context.Context, supervise.Claim) (runtime.S
 // launches fresh because its resume path was cleared, while its session id stays as reaping
 // evidence until the volume is gone.
 func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	pool := isolatedOutboxPool(t)
-	st, err := store.Open(ctx, pool.Config().ConnString())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(st.Close)
-	records := record.NewStore()
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
-	parent := root.Key
-	done := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "done child", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "V", LastDispatchSeq: 1}
-	parked := record.Issue{Key: "LEGION-210", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "parked child", Phase: phase.Planning, Generation: 1, Status: "in_progress", Rank: "W", LastDispatchSeq: 1}
-	for _, issue := range []record.Issue{root, done, parked} {
-		putOutboxIssue(t, pool, records, issue)
-	}
-	approved := 1
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: time.Now()}); err != nil {
-			return err
-		}
-		return records.PutGate(ctx, tx, record.DesignGate{Issue: root.Key, ArtifactID: "artifact-208", LatestVersion: 1, ApprovedVersion: &approved})
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatal(err)
-	}
-	rootSandbox, doneSandbox, parkedSandbox := "legion-legion-legion-208", "legion-legion-legion-209", "legion-legion-legion-210"
-	api := newIssueSandboxAPI(
-		issueSandbox(rootSandbox, "sandbox-uid-root", root.Key, root.Key),
-		issueSandbox(doneSandbox, "sandbox-uid-done", root.Key, done.Key),
-		issueSandbox(parkedSandbox, "sandbox-uid-parked", root.Key, parked.Key),
-	)
-	server := httptest.NewServer(api)
-	t.Cleanup(func() { cancel(); server.Close() })
-	logs := &syncBuffer{}
-	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	runtimeCtx, stopRuntime := context.WithCancel(ctx)
-	t.Cleanup(stopRuntime)
-	rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
-		Namespace: "legion", Project: "legion", Store: st, Image: "ghcr.io/example/worker@sha256:" + strings.Repeat("a", 64),
-		StorageClass: "standard", IssueVolume: resource.MustParse("1Gi"), StreamURL: "tcp://127.0.0.1:13371", Resources: defaultReservations(t),
-		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
-		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
-		BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
-		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
-		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	prompt := filepath.Join(t.TempDir(), "role.md")
-	if err := os.WriteFile(prompt, []byte("You are the role.\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), logger)
-	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: logger,
-		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: 24,
-	}
-	t.Cleanup(sup.stop)
-	// The root's architect works on, with its session, and its implementer works the implementing
-	// phase the root stands in: an issue that holds an admission slot has a worker with the task
-	// of its phase, and admission's pass starts one again for a slot whose worker has none
-	// (admit's resumeSlottedWorkers). Each child has one role stopped with its session retained,
-	// as a phase's end leaves it, supervised by this daemon.
-	architect := supervise.Claim{Token: "legion-legion-legion-208-architect", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleArchitect,
-		State: supervise.StateWorking, Generation: 1, Session: "saved-architect", SessionFile: "/legion/sessions/architect.jsonl"}
-	implementer := supervise.Claim{Token: "legion-legion-legion-208-implementer", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleImplementer,
-		State: supervise.StateWorking, Generation: 1, Session: "saved-implementer", SessionFile: "/legion/sessions/implementer.jsonl",
-		Pending: &supervise.Delivery{ID: "outbox:1", Task: "Continue root. Issue: LEGION-208. Phase: implementing.", Generation: 1,
-			Phase: phase.Implementing, QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}}
-	planner := supervise.Claim{Token: "legion-legion-legion-209-planner", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: done.Key, Role: claim.RolePlanner,
-		State: supervise.StateSuspended, Generation: 1, Session: "saved-planner", SessionFile: "/legion/sessions/planner.jsonl"}
-	tester := supervise.Claim{Token: "legion-legion-legion-210-tester", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: parked.Key, Role: claim.RoleTester,
-		State: supervise.StateSuspended, Generation: 1, Session: "saved-tester", SessionFile: "/legion/sessions/tester.jsonl"}
-	for _, c := range []supervise.Claim{architect, implementer, planner, tester} {
-		if err := st.PutClaim(ctx, c); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := sup.restore(ctx, []supervise.Claim{planner, tester}); err != nil {
-		t.Fatal(err)
-	}
-	clock := time.Now()
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, logger)
-	admission := admit.New(records, engine, 2, "LEGION", logger)
-	runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: st, tokens: outboxTokens{},
-		stateDir: t.TempDir(), githubAPI: newBranchGitHub(t, nil, branchExists).url,
-		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: done.Key, Status: "todo"}}, notices: &outboxPublisher{},
-		handlers: []intake.Handler{engine, admission}, log: logger, now: func() time.Time { return clock },
-	}
-	run := func(what string) {
-		t.Helper()
-		clock = clock.Add(2 * time.Second)
-		if err := runner.RunOnce(ctx); err != nil {
-			t.Fatalf("%s: %v", what, err)
-		}
-	}
-	storedClaim := func(token claim.Token) supervise.Claim {
-		t.Helper()
-		claims, err := st.Claims(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, c := range claims {
-			if c.Token == token {
-				return c
-			}
-		}
-		t.Fatalf("no stored claim %s", token)
-		return supervise.Claim{}
-	}
-	effectsLeft := func(issue string) int {
-		t.Helper()
-		var left int
-		if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind in ('supervise', 'issue_suspend')`, issue).Scan(&left); err != nil {
-			t.Fatal(err)
-		}
-		return left
-	}
+	// Two children under the running root: the one closed as done, whose planner is stopped with
+	// its session kept, and the one parked in backlog, whose tester is. The root's own implementer
+	// works the phase the root stands in, so admission's pass starts no worker of the root's while
+	// the children depart.
+	rig := newFenceRig(t, fenceSetup{rootImplementer: true, children: []fenceChild{
+		{status: "testing", at: phase.Testing, role: claim.RolePlanner, uid: "sandbox-uid-done"},
+		{status: "in_progress", at: phase.Planning, role: claim.RoleTester, uid: "sandbox-uid-parked"},
+	}})
+	ctx, pool, api, st, logs := rig.ctx, rig.pool, rig.api, rig.st, rig.logs
+	engine, admission := rig.engine, rig.admission
+	root, done, parked := rig.root, rig.children[0], rig.children[1]
+	rootSandbox, doneSandbox, parkedSandbox := rig.rootSandbox, done.sandbox, parked.sandbox
+	architect, planner, tester := rig.architect, done.suspended, parked.suspended
+	run, storedClaim, effectsLeft := rig.run, rig.storedClaim, rig.effectsLeft
 
 	// (a) The done child: its claims closed, its Sandbox and its pod's disk gone, its parent untouched.
 	if _, err := intake.ApplyFact(ctx, pool, "dispatch", "child-done", intake.DispatchIssue{Key: done.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: done.Title, Parent: root.Key, Rank: "V"}, engine, admission); err != nil {
@@ -408,35 +297,76 @@ func TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns(t *testing.T) {
 	}
 }
 
-// fenceRig is the fixture TestAChildClosedDoneDeletesItsSandboxWhileItsParentRuns builds, cut to
-// one child: a running root holding its admission slot, a child under it whose role named by the
-// constructor is suspended with its session kept, a Sandbox apiece, and the outbox over the real
-// Sandbox runtime. Every reader takes a rig of its own, because a departure gives its issue's
-// Sandbox back and a Sandbox is given back once.
+// fenceChild is one child a reader asks the rig for: an issue at status standing at phase at,
+// carrying a Sandbox of its own under uid, and one stopped role, the claim the rig seeds,
+// restores and is read against. The rig names the issue itself, in the order the setup gives
+// them: LEGION-209, LEGION-210, and so on.
+type fenceChild struct {
+	status string
+	at     phase.Phase
+	role   claim.Role
+	uid    string
+}
+
+// fenceSetup is the arrangement a reader asks the rig to stand up.
+type fenceSetup struct {
+	children []fenceChild
+	// rootImplementer gives the root the implementer of the phase it stands in, holding the
+	// delivery it was given: an issue that holds an admission slot has a worker with the task of
+	// its phase, and admission's pass starts one again for a slot whose worker has none (admit's
+	// resumeSlottedWorkers). A reader that must see no launch of the root's own asks for it.
+	rootImplementer bool
+}
+
+// oneFenceChild is the setup the readers of the fence itself take: the single child at status,
+// standing at phase at, whose one stopped role is role. Its Sandbox carries the uid those readers
+// name in their assertions.
+func oneFenceChild(status string, at phase.Phase, role claim.Role) fenceSetup {
+	return fenceSetup{children: []fenceChild{{status: status, at: at, role: role, uid: "sandbox-uid-child"}}}
+}
+
+// fenceIssue is one child as the rig seeded it: the issue the records hold, the Sandbox the API
+// serves for it, and its one stopped role, holding the session a departure leaves it.
+type fenceIssue struct {
+	record.Issue
+	sandbox   string
+	suspended supervise.Claim
+}
+
+// fenceRig is the fixture a reader of the start fence and of a departure's effects stands on: a
+// running root holding its admission slot, the setup's children under it, each with a Sandbox and
+// one stopped role of its own, and the outbox over the real Sandbox runtime. Every reader takes a
+// rig of its own, because a departure gives its issue's Sandbox back and a Sandbox is given back
+// once.
 type fenceRig struct {
 	ctx       context.Context
 	pool      *pgxpool.Pool
-	records   record.Store
+	st        *store.Store
 	api       *issueSandboxAPI
 	engine    *workflow.Engine
 	admission *admit.Admission
-	root      record.Issue
-	child     record.Issue
-	// suspended is the child's stopped role as the rig seeded it: the claim a start of the child
-	// reaches, holding the session a departure leaves it.
-	suspended    supervise.Claim
-	sandbox      string
+	// logs is everything the fixture logged, at debug, for a reader that reads a line of it.
+	logs *syncBuffer
+	root record.Issue
+	// rootSandbox is the root's own Sandbox, the one no child's departure may touch.
+	rootSandbox string
+	// architect is the root's working role, which keeps the tree live: a lingering tree has a
+	// start fence of its own, and the fence a rig reads must be the issue's own standing.
+	architect    supervise.Claim
+	children     []fenceIssue
 	base         time.Time
 	run          func(what string)
 	storedClaim  func(token claim.Token) supervise.Claim
-	effectsLeft  func() int
-	enqueueStart func(role claim.Role, due time.Time) int64
+	effectsLeft  func(issue string) int
+	enqueueStart func(issue string, role claim.Role, due time.Time) int64
 }
 
-// newFenceRig builds the rig with the child at status standing at phase at, and role the child's
-// one stopped role: the claim the rig seeds, restores and is read against.
-func newFenceRig(t *testing.T, status string, at phase.Phase, role claim.Role) *fenceRig {
+// newFenceRig builds the rig the setup asks for.
+func newFenceRig(t *testing.T, setup fenceSetup) *fenceRig {
 	t.Helper()
+	if len(setup.children) == 0 {
+		t.Fatal("a fence rig stands on at least one child")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	pool := isolatedOutboxPool(t)
@@ -448,9 +378,17 @@ func newFenceRig(t *testing.T, status string, at phase.Phase, role claim.Role) *
 	records := record.NewStore()
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "root", Phase: phase.Implementing, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 1}
 	parent := root.Key
-	child := record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: at, Generation: 1, Status: status, Rank: "V", LastDispatchSeq: 1}
-	for _, issue := range []record.Issue{root, child} {
-		putOutboxIssue(t, pool, records, issue)
+	rootSandbox := "legion-legion-" + strings.ToLower(root.Key)
+	sandboxes := []map[string]any{issueSandbox(rootSandbox, "sandbox-uid-root", root.Key, root.Key)}
+	children := make([]fenceIssue, 0, len(setup.children))
+	putOutboxIssue(t, pool, records, root)
+	for i, spec := range setup.children {
+		key := fmt.Sprintf("LEGION-%d", 209+i)
+		child := record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: root.Key, Parent: &parent, Title: "child", Phase: spec.at, Generation: 1, Status: spec.status, Rank: string(rune('V' + i)), LastDispatchSeq: 1}
+		name := "legion-legion-" + strings.ToLower(key)
+		sandboxes = append(sandboxes, issueSandbox(name, spec.uid, root.Key, key))
+		children = append(children, fenceIssue{Issue: child, sandbox: name})
+		putOutboxIssue(t, pool, records, child)
 	}
 	approved := 1
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -464,13 +402,11 @@ func newFenceRig(t *testing.T, status string, at phase.Phase, role claim.Role) *
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatal(err)
 	}
-	rootSandbox, childSandbox := "legion-legion-legion-208", "legion-legion-legion-209"
-	api := newIssueSandboxAPI(
-		issueSandbox(rootSandbox, "sandbox-uid-root", root.Key, root.Key),
-		issueSandbox(childSandbox, "sandbox-uid-child", root.Key, child.Key),
-	)
+	api := newIssueSandboxAPI(sandboxes...)
 	server := httptest.NewServer(api)
 	t.Cleanup(func() { cancel(); server.Close() })
+	logs := &syncBuffer{}
+	logger := slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	runtimeCtx, stopRuntime := context.WithCancel(ctx)
 	t.Cleanup(stopRuntime)
 	rt, err := sandbox.New(runtimeCtx, sandboxRESTConfig(server.URL), sandbox.Options{
@@ -479,9 +415,9 @@ func newFenceRig(t *testing.T, status string, at phase.Phase, role claim.Role) *
 		SessionStore: ompsessions.Store{Kind: ompsessions.StorePostgres, DSNSecret: "SESSION_DSN"},
 		Tools:        sandbox.Tools{GH: "/usr/bin/gh", Git: "/usr/bin/git", JJ: "/usr/bin/jj", Legion: "/opt/legion/bin/legion", AgentSecrets: "/opt/legion/bin/agent-secrets"},
 		BootTimeout:  300 * time.Millisecond, RegistrationIntervals: 3, BusyBackoff: time.Millisecond, TerminationGrace: 100 * time.Millisecond, ProbeInterval: time.Hour, AdoptTimeout: time.Second,
-		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
-		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, quietLogger()),
-		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: quietLogger(),
+		Tokens: issueProvisionTokens{}, GitHubCredential: appauth.GitHubCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
+		ControllerCredential: appauth.ControllerCredential(outboxTokens{}, legionRepos, ghrepo.Renames{}, nil, logger),
+		GitHubDirs:           legionDirs, Conns: fake.NewConns(), Log: logger,
 		RepositoryCache: defaultRepositoryCache(t), Mapped: noRepositories,
 	})
 	if err != nil {
@@ -491,43 +427,61 @@ func newFenceRig(t *testing.T, status string, at phase.Phase, role claim.Role) *
 	if err := os.WriteFile(prompt, []byte("You are the role.\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), quietLogger())
+	sup := newSupervisor(runtimeCtx, st, "legion", t.TempDir(), logger)
 	sup.deps = supervise.Deps{
-		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: quietLogger(),
+		Runtime: rt, Conns: fake.NewConns(), Store: st, Specs: issueLaunchSpecs{prompt: prompt}, Clock: stillClock{}, Log: logger,
 		Limits:         supervise.Limits{LaunchFailures: 1, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: 24,
 	}
 	t.Cleanup(sup.stop)
-	// The root's architect works on, so the tree runs and never lingers: a lingering tree has a
-	// start fence of its own, and the fence a rig reads must be the issue's own standing. The
+	// The root's architect works on, with its session, so the tree runs and never lingers. Each
 	// child's role stands stopped with its session kept, as a phase's end or a park leaves it.
 	architect := supervise.Claim{Token: "legion-legion-legion-208-architect", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleArchitect,
 		State: supervise.StateWorking, Generation: 1, Session: "saved-architect", SessionFile: "/legion/sessions/architect.jsonl"}
-	stopped := supervise.Claim{Token: mustClaimToken(t, child.Key, role), Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: child.Key, Role: role,
-		State: supervise.StateSuspended, Generation: 1, Session: "saved-" + string(role), SessionFile: "/legion/sessions/" + string(role) + ".jsonl"}
-	for _, c := range []supervise.Claim{architect, stopped} {
+	seeded := []supervise.Claim{architect}
+	if setup.rootImplementer {
+		seeded = append(seeded, supervise.Claim{Token: "legion-legion-legion-208-implementer", Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: root.Key, Role: claim.RoleImplementer,
+			State: supervise.StateWorking, Generation: 1, Session: "saved-implementer", SessionFile: "/legion/sessions/implementer.jsonl",
+			Pending: &supervise.Delivery{ID: "outbox:1", Task: "Continue root. Issue: LEGION-208. Phase: implementing.", Generation: 1,
+				Phase: phase.Implementing, QueuedAt: time.Now(), DeliveredAt: time.Now(), ConfirmedAt: time.Now()}})
+	}
+	stopped := make([]supervise.Claim, 0, len(setup.children))
+	for i, spec := range setup.children {
+		child := children[i].Issue
+		stopped = append(stopped, supervise.Claim{Token: mustClaimToken(t, child.Key, spec.role), Project: "legion", Tree: root.Key, TreeEpoch: 1, Issue: child.Key, Role: spec.role,
+			State: supervise.StateSuspended, Generation: 1, Session: "saved-" + string(spec.role), SessionFile: "/legion/sessions/" + string(spec.role) + ".jsonl"})
+		children[i].suspended = stopped[i]
+	}
+	for _, c := range append(seeded, stopped...) {
 		if err := st.PutClaim(ctx, c); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := sup.restore(ctx, []supervise.Claim{stopped}); err != nil {
+	if _, err := sup.restore(ctx, stopped); err != nil {
 		t.Fatal(err)
 	}
 	base := time.Now()
 	clock := base
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, quietLogger())
-	admission := admit.New(records, engine, 2, "LEGION", quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour}, logger)
+	admission := admit.New(records, engine, 2, "LEGION", logger)
 	runner := &outbox{pool: pool, records: records, project: "legion", dispatchProject: "LEGION", supervisor: sup, trees: st, tokens: outboxTokens{},
 		stateDir: t.TempDir(), githubAPI: newBranchGitHub(t, nil, branchExists).url,
-		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: child.Key, Status: "todo"}}, notices: &outboxPublisher{},
-		handlers: []intake.Handler{engine, admission}, log: quietLogger(), now: func() time.Time { return clock },
+		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: children[0].Key, Status: "todo"}}, notices: &outboxPublisher{},
+		handlers: []intake.Handler{engine, admission}, log: logger, now: func() time.Time { return clock },
 	}
-	rig := &fenceRig{ctx: ctx, pool: pool, records: records, api: api, engine: engine, admission: admission,
-		root: root, child: child, suspended: stopped, sandbox: childSandbox, base: base}
+	rig := &fenceRig{ctx: ctx, pool: pool, st: st, api: api, engine: engine, admission: admission, logs: logs,
+		root: root, rootSandbox: rootSandbox, architect: architect, children: children, base: base}
 	rig.run = func(what string) {
 		t.Helper()
+		// The clock may not simply advance: the rows the facts write carry next_at from the real
+		// clock — the engine here has no Clock of its own and admission always reads time.Now —
+		// and a row is due only when the runner's clock is at or past it, so a rig clock left
+		// behind the real one leaves those rows undue and the drain acts on nothing.
 		clock = clock.Add(2 * time.Second)
+		if now := time.Now(); clock.Before(now) {
+			clock = now
+		}
 		if err := runner.RunOnce(ctx); err != nil {
 			t.Fatalf("%s: %v", what, err)
 		}
@@ -546,21 +500,21 @@ func newFenceRig(t *testing.T, status string, at phase.Phase, role claim.Role) *
 		t.Fatalf("no stored claim %s", token)
 		return supervise.Claim{}
 	}
-	rig.effectsLeft = func() int {
+	rig.effectsLeft = func(issue string) int {
 		t.Helper()
 		var left int
-		if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind in ('supervise', 'issue_suspend')`, child.Key).Scan(&left); err != nil {
+		if err := pool.QueryRow(ctx, `select count(*) from outbox where issue = $1 and kind in ('supervise', 'issue_suspend')`, issue).Scan(&left); err != nil {
 			t.Fatal(err)
 		}
 		return left
 	}
-	// enqueueStart queues role's start and answers its row id. It names no phase, as a relaunch
-	// and a production check's look do, so the phase fence never answers for the standing fence a
-	// rig's reader reads; due is the row's next_at, which is what puts it behind a departure's own
-	// rows in the drain (record.Store.DueRows orders by next_at, then id).
-	rig.enqueueStart = func(role claim.Role, due time.Time) int64 {
+	// enqueueStart queues issue's start of role and answers its row id. It names no phase, as a
+	// relaunch and a production check's look do, so the phase fence never answers for the standing
+	// fence a rig's reader reads; due is the row's next_at, which is what puts it behind a
+	// departure's own rows in the drain (record.Store.DueRows orders by next_at, then id).
+	rig.enqueueStart = func(issue string, role claim.Role, due time.Time) int64 {
 		t.Helper()
-		row := mustOutboxRow(t, child.Key, record.SuperviseRequest{Op: "start", Tree: child.Tree, Role: role, Generation: 1}, due)
+		row := mustOutboxRow(t, issue, record.SuperviseRequest{Op: "start", Tree: root.Key, Role: role, Generation: 1}, due)
 		var id int64
 		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 			var err error
@@ -595,26 +549,26 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 	// against the claim, a claim with no process and no locator, and the issue's Sandbox given back
 	// with its pod and the disk under it, fenced to the Sandbox the departure read. The delete
 	// happened once: nothing is left of the issue to issue a second one.
-	departed := func(t *testing.T, rig *fenceRig, start int64) {
+	departed := func(t *testing.T, rig *fenceRig, child fenceIssue, start int64) {
 		t.Helper()
-		if slices.Contains(rig.api.created, rig.sandbox) {
-			t.Fatalf("the start of the departed issue created %v, want no Sandbox %s built again", rig.api.created, rig.sandbox)
+		if slices.Contains(rig.api.created, child.sandbox) {
+			t.Fatalf("the start of the departed issue created %v, want no Sandbox %s built again", rig.api.created, child.sandbox)
 		}
-		got := rig.storedClaim(rig.suspended.Token)
+		got := rig.storedClaim(child.suspended.Token)
 		if got.LastStartRow != 0 {
 			t.Fatalf("the departed issue's planner records start row %d, want start row %d declined before it was recorded", got.LastStartRow, start)
 		}
 		if !got.RunsNothing() || got.Locator != nil {
 			t.Fatalf("the departed issue's planner = %s with locator %+v, want a claim that runs nothing and holds no process", got.State, got.Locator)
 		}
-		options, deleted := rig.api.deleted(rig.sandbox)
-		if mode := rig.api.mode(rig.sandbox); mode != "deleted" || !deleted || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground {
+		options, deleted := rig.api.deleted(child.sandbox)
+		if mode := rig.api.mode(child.sandbox); mode != "deleted" || !deleted || options.PropagationPolicy == nil || *options.PropagationPolicy != metav1.DeletePropagationForeground {
 			t.Fatalf("the departed issue's Sandbox = %s, delete %+v (requested %t), want it deleted with foreground propagation", mode, options, deleted)
 		}
 		if options.Preconditions == nil || options.Preconditions.UID == nil || *options.Preconditions.UID != "sandbox-uid-child" {
 			t.Fatalf("the departed issue's Sandbox delete preconditions = %+v, want fenced to uid sandbox-uid-child", options.Preconditions)
 		}
-		if left := rig.effectsLeft(); left != 0 {
+		if left := rig.effectsLeft(child.Key); left != 0 {
 			t.Fatalf("%d supervise/issue_suspend rows of the departed issue remain, want the start finished and no suspension left to delete its Sandbox a second time", left)
 		}
 	}
@@ -623,14 +577,15 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 	// hands it to the runner after the close's own rows: the claim is retired and the Sandbox
 	// given back by the time it runs, and it must start nothing on top of that.
 	t.Run("a start queued before the close runs after it", func(t *testing.T) {
-		rig := newFenceRig(t, "testing", phase.Testing, claim.RolePlanner)
-		start := rig.enqueueStart(claim.RolePlanner, rig.base.Add(time.Second))
-		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-done", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: rig.child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
+		rig := newFenceRig(t, oneFenceChild("testing", phase.Testing, claim.RolePlanner))
+		child := rig.children[0]
+		start := rig.enqueueStart(child.Key, claim.RolePlanner, rig.base.Add(time.Second))
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-done", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
 		rig.run("the child's close, with a start queued before it")
-		departed(t, rig, start)
-		if got := rig.storedClaim(rig.suspended.Token); got.State != supervise.StateRetired {
+		departed(t, rig, child, start)
+		if got := rig.storedClaim(child.suspended.Token); got.State != supervise.StateRetired {
 			t.Fatalf("the closed issue's planner = %s, want it left retired as its close retired it", got.State)
 		}
 	})
@@ -639,14 +594,15 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 	// own fence (workflow.StopActs) would read as a newer run: it is not one, and the start is
 	// declined as the one before it was.
 	t.Run("a start queued after the close waits behind it", func(t *testing.T) {
-		rig := newFenceRig(t, "testing", phase.Testing, claim.RolePlanner)
-		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-done", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: rig.child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
+		rig := newFenceRig(t, oneFenceChild("testing", phase.Testing, claim.RolePlanner))
+		child := rig.children[0]
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-done", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed", Status: "done", Title: child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
-		start := rig.enqueueStart(claim.RolePlanner, rig.base.Add(time.Second))
+		start := rig.enqueueStart(child.Key, claim.RolePlanner, rig.base.Add(time.Second))
 		rig.run("the child's close, with a start queued after it")
-		departed(t, rig, start)
-		if got := rig.storedClaim(rig.suspended.Token); got.State != supervise.StateRetired {
+		departed(t, rig, child, start)
+		if got := rig.storedClaim(child.suspended.Token); got.State != supervise.StateRetired {
 			t.Fatalf("the closed issue's planner = %s, want it left retired as its close retired it", got.State)
 		}
 	})
@@ -655,14 +611,15 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 	// than finished, so its roles keep their sessions and the departure suspends them where a
 	// close retires them. Its Sandbox goes either way, and so does the start.
 	t.Run("a start queued before the park runs after it", func(t *testing.T) {
-		rig := newFenceRig(t, "in_progress", phase.Planning, claim.RolePlanner)
-		start := rig.enqueueStart(claim.RolePlanner, rig.base.Add(time.Second))
-		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: rig.child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
+		rig := newFenceRig(t, oneFenceChild("in_progress", phase.Planning, claim.RolePlanner))
+		child := rig.children[0]
+		start := rig.enqueueStart(child.Key, claim.RolePlanner, rig.base.Add(time.Second))
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: child.Title, Parent: "LEGION-208", Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
 		rig.run("the child's park, with a start queued before it")
-		departed(t, rig, start)
-		if got := rig.storedClaim(rig.suspended.Token); got.State != supervise.StateSuspended || got.Session != "saved-planner" || got.SessionFile != "/legion/sessions/planner.jsonl" {
+		departed(t, rig, child, start)
+		if got := rig.storedClaim(child.suspended.Token); got.State != supervise.StateSuspended || got.Session != "saved-planner" || got.SessionFile != "/legion/sessions/planner.jsonl" {
 			t.Fatalf("the parked issue's planner = %+v, want it left suspended with its session kept", got)
 		}
 	})
@@ -676,18 +633,19 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 			if !record.OutOfWorkflow(status) {
 				t.Fatalf("%s no longer takes an issue out of the workflow; this table reads the rule the fence is held to", status)
 			}
-			rig := newFenceRig(t, status, phase.Planning, claim.RolePlanner)
-			start := rig.enqueueStart(claim.RolePlanner, rig.base)
+			rig := newFenceRig(t, oneFenceChild(status, phase.Planning, claim.RolePlanner))
+			child := rig.children[0]
+			start := rig.enqueueStart(child.Key, claim.RolePlanner, rig.base)
 			rig.run("the start of the issue at " + status)
-			if slices.Contains(rig.api.created, rig.sandbox) {
+			if slices.Contains(rig.api.created, child.sandbox) {
 				t.Fatalf("the start of the issue at %s created %v, want no Sandbox built behind it", status, rig.api.created)
 			}
-			got := rig.storedClaim(rig.suspended.Token)
+			got := rig.storedClaim(child.suspended.Token)
 			if got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != "saved-planner" {
 				t.Fatalf("the planner of the issue at %s = %s with last start %d and session %q, want start row %d declined and the claim untouched",
 					status, got.State, got.LastStartRow, got.Session, start)
 			}
-			if left := rig.effectsLeft(); left != 0 {
+			if left := rig.effectsLeft(child.Key); left != 0 {
 				t.Fatalf("the start of the issue at %s left %d rows, want it declined and finished", status, left)
 			}
 		})
@@ -696,10 +654,11 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 		if record.OutOfWorkflow("testing") {
 			t.Fatal("testing now takes an issue out of the workflow; this control reads a status the workflow runs in")
 		}
-		rig := newFenceRig(t, "testing", phase.Testing, claim.RolePlanner)
-		start := rig.enqueueStart(claim.RolePlanner, rig.base)
+		rig := newFenceRig(t, oneFenceChild("testing", phase.Testing, claim.RolePlanner))
+		child := rig.children[0]
+		start := rig.enqueueStart(child.Key, claim.RolePlanner, rig.base)
 		rig.run("the start of the issue at testing")
-		if got := rig.storedClaim(rig.suspended.Token); got.LastStartRow != start {
+		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != start {
 			t.Fatalf("the planner of the issue at testing records start row %d, want start row %d to have reached it", got.LastStartRow, start)
 		}
 	})
@@ -725,24 +684,25 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 	// it standing mid-run in implementing with its implementer stopped and its session kept, a
 	// Sandbox apiece, and the outbox over the real Sandbox runtime.
 	t.Run("a parked child moved back to todo re-enters and starts its first phase", func(t *testing.T) {
-		rig := newFenceRig(t, "in_progress", phase.Implementing, claim.RoleImplementer)
+		rig := newFenceRig(t, oneFenceChild("in_progress", phase.Implementing, claim.RoleImplementer))
+		child := rig.children[0]
 
 		// The implementer's start, written while the child still stood in the workflow and reaching
 		// the runner behind the park that took it out: its next_at puts it behind the park's own
 		// rows in the drain (record.Store.DueRows).
-		startID := rig.enqueueStart(claim.RoleImplementer, rig.base.Add(time.Second))
-		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: rig.child.Title, Parent: rig.root.Key, Rank: "V"}, rig.engine, rig.admission); err != nil {
+		startID := rig.enqueueStart(child.Key, claim.RoleImplementer, rig.base.Add(time.Second))
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-backlog", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: child.Title, Parent: rig.root.Key, Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
 		rig.run("the child's park, with its implementer's start queued behind it")
-		if slices.Contains(rig.api.created, rig.sandbox) {
+		if slices.Contains(rig.api.created, child.sandbox) {
 			t.Fatalf("the park's drain created %v, want the start of the parked child declined and no pod built behind it", rig.api.created)
 		}
-		if got := rig.storedClaim(rig.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.SessionFile != rig.suspended.SessionFile {
+		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.SessionFile != child.suspended.SessionFile {
 			t.Fatalf("the parked child's implementer = %s with last start %d and session file %q, want start row %d declined and the claim left suspended with its session",
 				got.State, got.LastStartRow, got.SessionFile, startID)
 		}
-		if left := rig.effectsLeft(); left != 0 {
+		if left := rig.effectsLeft(child.Key); left != 0 {
 			t.Fatalf("%d supervise/issue_suspend rows of the parked child remain, want the declined start finished with the park's own", left)
 		}
 
@@ -750,19 +710,22 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		// park left and enters the child again under its live tree at the next generation, standing
 		// at admitted; the waiting line promotes it in the same pass, and what it starts is the
 		// child's first phase (record.LineFirstPhase), not the phase the park interrupted.
-		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-todo", intake.DispatchIssue{Key: rig.child.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: rig.child.Title, Parent: rig.root.Key, Rank: "V"}, rig.engine, rig.admission); err != nil {
+		if _, err := intake.ApplyFact(rig.ctx, rig.pool, "dispatch", "child-todo", intake.DispatchIssue{Key: child.Key, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.updated", Status: "todo", Title: child.Title, Parent: rig.root.Key, Rank: "V"}, rig.engine, rig.admission); err != nil {
 			t.Fatal(err)
 		}
-		back := storedIssue(t, rig.pool, rig.records, rig.child.Key)
-		if back.Generation != rig.child.Generation+1 || back.Phase != phase.Planning || back.Tree != rig.root.Key {
+		back := readIssue(t, rig.pool, child.Key)
+		if back == nil {
+			t.Fatalf("the re-entered child %s is gone from the records", child.Key)
+		}
+		if back.Generation != child.Generation+1 || back.Phase != phase.Planning || back.Tree != rig.root.Key {
 			t.Fatalf("the re-entered child = %s at generation %d in tree %s, want its first phase at generation %d under the tree it was parked in",
-				back.Phase, back.Generation, back.Tree, rig.child.Generation+1)
+				back.Phase, back.Generation, back.Tree, child.Generation+1)
 		}
 		// Nothing of the old run is wanted back: every start the re-entry queued is the planner's,
 		// of the new generation and the new run's first phase, and the pair of them is the one
 		// workflow.StartOrOwe writes — the task-less relaunch and the row carrying the phase's own
 		// task and the assignment it minted, which is no resume of anything.
-		queued := startRequestsOf(t, rig.pool, rig.child.Key)
+		queued := startRequestsOf(t, rig.pool, child.Key)
 		if len(queued) != 2 {
 			t.Fatalf("the re-entry queued %d starts, want the two of the planner's first phase: %+v", len(queued), queued)
 		}
@@ -787,10 +750,10 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		// recorded against the claim, is what the assertions below read.
 		rig.run("the re-entered child's branch and status")
 		rig.run("the re-entered child's planner start")
-		if !slices.Contains(rig.api.created, rig.sandbox) {
-			t.Fatalf("the re-entered child's start created %v, want the Sandbox %s built again: the way back is the way in", rig.api.created, rig.sandbox)
+		if !slices.Contains(rig.api.created, child.sandbox) {
+			t.Fatalf("the re-entered child's start created %v, want the Sandbox %s built again: the way back is the way in", rig.api.created, child.sandbox)
 		}
-		if uid := rig.api.uid(rig.sandbox); uid == "" || uid == "sandbox-uid-child" {
+		if uid := rig.api.uid(child.sandbox); uid == "" || uid == "sandbox-uid-child" {
 			t.Fatalf("the re-entered child's Sandbox uid = %q, want one other than the Sandbox its park deleted", uid)
 		}
 		if got := rig.storedClaim("legion-legion-legion-209-planner"); got.LastStartRow == 0 || got.SessionFile != "" {
@@ -798,7 +761,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		// No role of the old run is resumed: the implementer whose start the fence declined is left
 		// exactly as the park left it, and the run that came back never asked for it.
-		if got := rig.storedClaim(rig.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != rig.suspended.Session {
+		if got := rig.storedClaim(child.suspended.Token); got.LastStartRow != 0 || got.State != supervise.StateSuspended || got.Session != child.suspended.Session {
 			t.Fatalf("the re-entered child's implementer = %+v, want the old run's role left suspended with its session and no start recorded against it", got)
 		}
 	})
@@ -835,7 +798,15 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		}
 		run := func(what string) {
 			t.Helper()
+			// The engine here takes this clock, but admission does not: admit.New always reads
+			// time.Now (admit.go:107) and writes its rows with it, so the promotion's rows carry
+			// the real clock whatever the engine's is. A row is due only when the runner's clock
+			// is at or past its next_at, so this clock may not simply advance: left behind the
+			// real one on a slow runner, it leaves those rows undue and the drain acts on nothing.
 			clock = clock.Add(2 * time.Second)
+			if now := time.Now(); clock.Before(now) {
+				clock = now
+			}
 			if err := runner.RunOnce(ctx); err != nil {
 				t.Fatalf("%s: %v", what, err)
 			}
@@ -898,7 +869,10 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		if _, err := intake.ApplyFact(ctx, pool, "dispatch", "root-todo", intake.DispatchIssue{Key: root.Key, ResolvedRepo: "acme/widgets", Seq: 7, Type: "issue.updated", Status: "todo", Title: root.Title, Rank: root.Rank, HandedOver: true}, engine, admission); err != nil {
 			t.Fatal(err)
 		}
-		carried := storedIssue(t, pool, records, member.Key)
+		carried := readIssue(t, pool, member.Key)
+		if carried == nil {
+			t.Fatalf("the member %s is gone from the records after the re-admission", member.Key)
+		}
 		if carried.Phase != phase.Implementing || carried.Generation != member.Generation {
 			t.Fatalf("the member after the re-admission = %s at generation %d, want it still standing where the linger left it", carried.Phase, carried.Generation)
 		}
@@ -909,7 +883,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		// marked ResumeTask and held unclaimable until the member holds a slot — and every other
 		// role one start of its own with no task at all, since a role with nothing to do comes back
 		// and is told nothing.
-		resume := workflow.ResumePhaseTask(carried)
+		resume := workflow.ResumePhaseTask(*carried)
 		taskless := map[claim.Role]bool{}
 		var relaunch, owed *record.SuperviseRequest
 		for _, row := range startRequestsOf(t, pool, member.Key) {
@@ -974,22 +948,6 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 	})
 }
 
-// storedIssue is key as the records hold it, read in a transaction of its own: a reader of what a
-// pass wrote takes it after that pass, so the row it reads is the one the pass left.
-func storedIssue(t *testing.T, pool *pgxpool.Pool, records record.Store, key string) record.Issue {
-	t.Helper()
-	ctx := context.Background()
-	var got *record.Issue
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		var err error
-		got, err = records.Issue(ctx, tx, key)
-		return err
-	}); err != nil || got == nil {
-		t.Fatalf("read %s = %+v, %v", key, got, err)
-	}
-	return *got
-}
-
 // startRequestsOf is every start the outbox holds for issue, oldest first, decoded as the pass
 // that queued it wrote it. The rows a drain has run are gone, so a reader must take them before
 // it drains. The name is this file's own: internal/daemon's stopped_worker_test.go has a
@@ -1052,7 +1010,10 @@ func TestAProductionCheckLookStillStartsItsRole(t *testing.T) {
 		t.Fatalf("implementer after the look's start = %s with last start %d and %d resumes, want it resumed by row %d",
 			got.State, got.LastStartRow, len(rt.CallsOf("Resume")), row.ID)
 	}
-	after := storedIssue(t, pool, records, root.Key)
+	after := readIssue(t, pool, root.Key)
+	if after == nil {
+		t.Fatalf("%s is gone from the records after the look's start", root.Key)
+	}
 	if after.Status != "done" || after.Lingers() {
 		t.Fatalf("%s after the look's start = %q lingering until %v, want it left done under a tree that does not linger",
 			root.Key, after.Status, after.LingerUntil)
