@@ -333,11 +333,12 @@ refresh token ends that login and every token of its family.
 airlock needs: `cmd/dev-airlock-stands`, which serves the stand-in services and records every
 request each one is sent; a rules file (`BROKER_AIRLOCK_RULES_FILE`) and a fake secrets file that
 name the same secrets; two broker processes on one database, each with an API port and a proxy
-port of its own, behind one TCP front over both API ports and one over both proxy ports; and one
-enrolled pod session, whose key directory the exports name. Run it in place of `dev-broker.sh`,
-from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have no Docker. Each
-bound host listens on port 443 of a loopback address of its own (127.0.0.2 and up), so the
-machine must let this user bind 443, and one such stack runs at a time.
+port of its own, behind one TCP front over both API ports and one over both proxy ports; one
+enrolled pod session, whose key directory the exports name; and the model judge on both brokers
+([let the judge decide a request](#let-the-judge-decide-a-request)). Run it in place of
+`dev-broker.sh`, from `packages/envoy`, and set the same `DEV_BROKER_POSTGRES_URL` where you have
+no Docker. Each bound host listens on port 443 of a loopback address of its own (127.0.0.2 and
+up), so the machine must let this user bind 443, and one such stack runs at a time.
 
 This run read that URL from a variable the pod sets, which names the same Postgres server as the
 first section. The lines `dev-broker.sh` prints are the ones that section shows, and are cut here:
@@ -427,6 +428,51 @@ enrollment, the grant, the secret, the host, the method, the path, the answer's 
 value. Ctrl-C in the first shell stops every process this script started, drops its database and
 prints the workdir it kept.
 
+## Let the judge decide a request
+
+The stack of the first section runs no model judge. The airlock stack runs one, on both broker
+processes. Three more stand-ins of `cmd/dev-airlock-stands` serve it: a model endpoint, a
+Dispatch holding one open issue and one done one, and a Compute Engine metadata server, where
+the broker mints the identity token it presents to the model. Three human-tier secrets tell the
+judge's class from everything outside it:
+
+| Secret | Its rules entry and owner | A request for it |
+| --- | --- | --- |
+| `AIRLOCK_JUDGED_TOKEN` | `judge: 900`, owned by `ada@example.com` | The judge decides it. |
+| `AIRLOCK_SHARED_TOKEN` | `judge: 900`, `owner=shared` | The judge decides it, in the place of anyone who signs in. |
+| `AIRLOCK_UNJUDGED_TOKEN` | no `judge`, owned by `ada@example.com` | It waits for her, as every human-tier request does without a judge. |
+
+Ask for one with a lifetime inside that entry's seconds and a reason naming the Dispatch stand's
+open issue. The exports name the secret and the issue:
+
+```sh
+agent-secrets request "$AIRLOCK_JUDGED_SECRET" --ttl 10m \
+  --reason "read the example service for $AIRLOCK_DISPATCH_OPEN_ISSUE" --wait 60s
+```
+
+`agent-secrets status <request id>` then names the judge as the decider,
+`decided_by: judge:$AIRLOCK_JUDGE_MODEL`, and the broker that decided it logs one line,
+`broker judge: wrote a verdict`, with the verdict, the model's reason and, where a check stopped
+the run, the check that failed. The same verdict is one `request.judged` row in the `audit` table
+([Concepts](/legion/broker/concepts/#the-model-judge)). What the model was sent is at its
+recording route, `$AIRLOCK_MODEL_RECORDS`, and what Dispatch was asked at
+`$AIRLOCK_DISPATCH_RECORDS`, which holds two GETs for each run that reached the check, and no
+write at all.
+
+The model stand approves until something tells it otherwise. A `POST` to
+`$AIRLOCK_MODEL_ANSWER_URL` sets what it answers from then on:
+`{"verdict": "refer", "reason": "…"}` for the other verdict, `{"text": "…"}` for a reply that is
+no such object, and `{"delay": "30s"}` for an answer that never arrives inside the judge's 20
+seconds. Each of those leaves the request pending for `ada@example.com`, which is what the judge
+does with everything it does not approve.
+
+Starting the stack with `--judge-skip-checks` sets `BROKER_JUDGE_TEST_SKIP_CHECKS`: the judge
+still makes every check and records each, and none of them holds a request back, so the model is
+asked about a request a check would have stopped. It is the negative control of those checks, and
+a broker refuses it on a production start. `packages/envoy/scripts/judge-check.sh --help` lists
+the checks that script drives end to end, each on a stack of its own, printing what it observed
+beside what the check expected.
+
 ## Stop
 
 1. In the first shell, press Ctrl-C: the script stops the broker and `dev-oidc-issuer`, drops its
@@ -460,9 +506,13 @@ token endpoint the `azure` kind exchanges at, which also plays the resource host
 spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
 resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
 at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The rules file the script writes stands in for the
-deployment's own, which lives in the deployment's repository. The proxy's certificate authority
-is made at each start, where a deployment keeps it in a Kubernetes Secret both broker pods mount.
-The two brokers behind one TCP front stand in for two pods behind a Service, so a call reaches
-either process. And the pod session the script enrols stands in for the Legion daemon's
-enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.
+address, as it does in production. The judge's own run — its five checks, its one model call and
+what it writes — is real as well, and three more of that command's stands serve it, on loopback
+addresses the broker reaches directly rather than through the proxy: a model endpoint that
+answers whatever was last set for it, a Dispatch holding one open issue and one done one, and a
+metadata server that mints the broker's identity token. The rules file the script writes stands
+in for the deployment's own, which lives in the deployment's repository. The proxy's certificate
+authority is made at each start, where a deployment keeps it in a Kubernetes Secret both broker
+pods mount. The two brokers behind one TCP front stand in for two pods behind a Service, so a
+call reaches either process. And the pod session the script enrols stands in for the Legion
+daemon's enrollment of a worker pod, which is why `agent-secrets self` answers `kind: pod` there.

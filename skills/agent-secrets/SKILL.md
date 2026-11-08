@@ -19,7 +19,8 @@ agent-secrets NAME... [--reason TEXT] [--wait DURATION] [--ttl DURATION] -- <com
   a secret behind the airlock, as a placeholder standing for it (below). Nothing runs unless
   every name is granted: a denial of one name denies the whole request, so the command never starts
   with some of its secrets missing (`cmdExec`, `packages/envoy/cmd/agent-secrets/main.go`).
-- `--reason` is what a person reads if the request waits for a decision. Write one.
+- `--reason` is what a person reads if the request waits for a decision. Write one, and name in
+  it the issue you work on, by its key (below).
 - `agent-secrets --help` holds the rest: the flags that narrow a GitHub App token
   (`--github-owner`, `--github-repo`, `--github-read-only`), and how long a grant lasts.
 - A narrowing and the airlock do not go together. Ask for a narrowing in a run whose grant holds
@@ -144,6 +145,21 @@ The other statuses come from forms this skill does not use: 76 from `agent-secre
 refusal that is permanent; 126 and 127 from `agent-secrets register --exec`, whose command could not
 run or was not found; and 129, 130, 131 and 143 from a signal at the value prompt of
 `agent-secrets secret create` or `secret set`. `agent-secrets --help` lists them all.
+
+## Asking so a model judge can decide it
+
+Your deployment may run a model judge over a narrow class of the requests that would otherwise
+wait for a person. Three things in your own command decide whether a request can fall in that
+class:
+
+- One secret. A request that names two is outside it.
+- `--ttl 15m`, or less. A request with no `--ttl`, or a longer one, is outside it.
+- The key of the issue you work on in `--reason`, for an issue that is not done.
+
+The rules of your deployment decide which secrets the judge may take, and you are told none of
+them, so ask this way and wait as you would anyway. The judge approves such a request or leaves
+it for the person who approves it today, and it never denies. Every other request waits for that
+person, as it does now.
 
 ## Waiting, and a grant you already hold
 

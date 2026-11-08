@@ -103,6 +103,18 @@ name does not carry is answered `403 ACCOUNT_LACKS_POWER`, naming the caller and
 entry naming a caller the broker does not know refuses the start, naming that name and the names
 it knows, so a typo cannot quietly produce a caller that reaches nothing.
 
+Five settings turn the model judge on, which decides one narrow class of the requests that would
+otherwise wait for a person ([Concepts](/legion/broker/concepts/#the-model-judge)): the endpoint
+and the id of the model it asks, the audience of the Google identity token the broker presents to
+that endpoint, and the Dispatch it reads an issue from with the file holding the broker's own
+projected ServiceAccount token for it. They are all-or-none: with none of them set there is no
+judge, and every human-tier request waits for the person who decides it today. A sixth setting
+names the protocol that endpoint speaks and has a default. The
+[configuration reference](/legion/broker/reference/config/) names each and gives its accepted
+values. `BROKER_JUDGE_TEST_SKIP_CHECKS` turns the judge's checks before the model off, as the
+local stack's negative control of them, and a production start — one with
+`BROKER_FAKE_SECRETS_FILE` unset — is refused naming it.
+
 `BROKER_SECRETS_STORE` picks the secret store: `aws-secrets-manager`, the default when it is unset,
 as above, or `gcp-secret-manager`, which takes the Google Cloud forms of the namespace and the key
 and reads nothing from AWS:
@@ -564,6 +576,7 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
 | Kubernetes (optional) | To enroll pods, and to let a service log in with its token (`BROKER_SERVICE_LOGINS`), `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE` name the cluster's service-account token issuer and the audience the pods' and the services' projected tokens carry. The broker fetches the issuer's discovery document at startup and refuses to start if it cannot. |
 | Google Cloud (optional) | To let machines trade their Google identity tokens, `BROKER_GOOGLE_OIDC_AUDIENCE` names the audience of those tokens, and `BROKER_VM_SERVICES`, `BROKER_VM_PROJECTS`, `BROKER_VM_INSTANCES` and `BROKER_VM_EXCHANGE_ACCOUNTS` describe each fleet. The broker fetches Google's discovery document at startup and refuses to start if it cannot. |
 | Envoy (optional) | With `BROKER_ENVOY_URL`, the broker tells a waiting agent session, best effort, when its pending request expires. |
+| The model judge (optional) | Outbound HTTPS access to the model endpoint `BROKER_JUDGE_MODEL_URL` names, which the broker reaches with its machine's own Google identity token for `BROKER_JUDGE_MODEL_AUDIENCE`, and to the Dispatch `BROKER_JUDGE_DISPATCH_URL` names, which it reads with the projected ServiceAccount token in the file `BROKER_JUDGE_DISPATCH_TOKEN_FILE` names, read anew at each call. It reads one issue and that issue's spec document there and writes nothing. With those settings unset the broker makes neither call and runs no judge ([Concepts](/legion/broker/concepts/#the-model-judge)). |
 
 ## Network and trust
 
@@ -575,6 +588,13 @@ to start while the removed `BROKER_DATABASE_PASSWORD` is set or the URL names it
   terminate TLS without setting `X-Forwarded-Proto`, and a client that sends those headers itself
   changes nothing. That holds for the machine login's token endpoint (`POST /v1/oauth/token`)
   too, whose DPoP proofs name `BROKER_PUBLIC_URL/v1/oauth/token`.
+- The model judge adds two outbound calls. The broker reads one Dispatch issue and that issue's
+  spec document at `BROKER_JUDGE_DISPATCH_URL`, with its own projected ServiceAccount token, and
+  writes nothing there: no ask, no comment, no status. It calls the model at
+  `BROKER_JUDGE_MODEL_URL`, presenting its machine's own Google identity token for
+  `BROKER_JUDGE_MODEL_AUDIENCE`. Each call carries the broker's own identity and no session's,
+  and neither carries a secret value: what reaches the model is the secret's name and rules, the
+  request's reason and the issue, as data to judge.
 - A person approves a secret request in a browser at `BROKER_PUBLIC_URL`, which must therefore be
   an `https` address people's browsers reach: the page's two cookies, `__Host-broker-session` and
   `__Host-broker-signin`, are `Secure` and host-only. A decision is accepted only from a form on
@@ -1114,7 +1134,21 @@ A secret request's state is its request's (`request_state`), which is what the b
 request an older broker cancelled when its session ended carries no event on its record. A machine
 login has no request, and its events alone say how it was decided.
 
-Neither holds a secret value.
+A decision the model judge made names `judge:<model id>` in the event's `actor` and in the
+request's `decided_by`, with no login beside it, and writes one `request.judged` row of its own.
+That row is there for every judge run that reached a verdict, the referrals and the failed checks
+included, so it is where a request the judge did not take says why
+([Concepts](/legion/broker/concepts/#the-model-judge)):
+
+```sql
+select at, actor, request_id, detail
+from audit
+where kind = 'request.judged'
+order by at desc
+limit 50;
+```
+
+No row any of them answers holds a secret value.
 
 ## Running it locally
 
