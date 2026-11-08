@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import {
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
@@ -6,13 +6,21 @@ import {
 } from "@legion/contracts";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import type { Window as HappyDOMWindow } from "happy-dom";
 import { type ReactNode, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
-import type { SearchResponse, SearchResult, SearchResultsPage } from "../../api/types";
+import { ApiError, api } from "../../api/client";
+import type {
+  IssueReferenceSummary,
+  SearchResponse,
+  SearchResult,
+  SearchResultsPage,
+} from "../../api/types";
+import { issue as issueFixture, specArtifact } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
 import { ANSWER_PREVIEW_CHARS } from "./AskHitStatus";
@@ -63,6 +71,29 @@ function searchAnswer(hits: SearchResult[]): SearchResponse & SearchResultsPage 
  *  bar hands the client so a search it has moved on from is dropped rather than waited for. */
 const aborts = { signal: expect.anything() };
 
+/**
+ * An issue hit's row is a reference to that issue, which reads the issue's summary to draw it.
+ * No test here is about that read, so every key is answered with the issue the row names and no
+ * documents.
+ */
+let getIssueSummary: Mock<typeof api.getIssueSummary>;
+
+beforeEach(() => {
+  getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation((key) =>
+    Promise.resolve({
+      documents: [],
+      key,
+      project: key.split("-")[0] ?? "",
+      status: "todo",
+      title: `Instrument ${key}`,
+    } satisfies IssueReferenceSummary)
+  );
+});
+
+afterEach(() => {
+  getIssueSummary.mockRestore();
+});
+
 function CurrentRoute(): ReactNode {
   const location = useLocation();
   return <output data-testid="current-route">{`${location.pathname}${location.search}`}</output>;
@@ -95,19 +126,22 @@ function renderPalette(
   return { queryClient, unmount: view.unmount };
 }
 
-async function searchFor(query: string): Promise<HTMLInputElement> {
+async function searchFor(user: UserEvent, query: string): Promise<HTMLInputElement> {
   const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-  fireEvent.change(input, { target: { value: query } });
+  await user.clear(input);
+  await user.click(input);
+  await user.paste(query);
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
   return input;
 }
 
 test("renders grouped results with marked snippets and dims a done issue", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     await waitFor(() =>
       expect(screen.getAllByText("astrolabe", { selector: "mark" }).length).toBeGreaterThan(0)
     );
@@ -118,8 +152,8 @@ test("renders grouped results with marked snippets and dims a done issue", async
     expect(screen.getAllByRole("group")).toHaveLength(2);
     expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getAllByText("astrolabe", { selector: "mark" })).not.toHaveLength(0);
-    expect(doneGroup?.getAttribute("data-status")).toBe("done");
-    expect(screen.queryByText(/^Showing the best/)).toBeNull();
+    expect(doneGroup).toHaveAttribute("data-status", "done");
+    expect(screen.queryByText(/^Showing the best/)).not.toBeInTheDocument();
   } finally {
     search.mockRestore();
     view.unmount();
@@ -128,6 +162,7 @@ test("renders grouped results with marked snippets and dims a done issue", async
 });
 
 test("says how many matches a query has when the page holds fewer", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
     reachable: 300,
@@ -136,7 +171,7 @@ test("says how many matches a query has when the page holds fewer", async () => 
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     expect(screen.getAllByRole("option")).toHaveLength(3);
     expect(screen.getByText("Showing the best 3 of 1328 matches")).toBeDefined();
   } finally {
@@ -147,6 +182,7 @@ test("says how many matches a query has when the page holds fewer", async () => 
 });
 
 test("renders document-owned results under the document and opens their discussion", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
       {
@@ -169,12 +205,12 @@ test("renders document-owned results under the document and opens their discussi
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
 
     const documentGroup = document.querySelector('[aria-label="CORE: Navigation design"]');
     expect(documentGroup).not.toBeNull();
     expect(screen.getByRole("group", { name: "CORE: Navigation design" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("option"));
+    await user.click(screen.getByRole("option"));
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/projects/CORE/documents/navigation-design?comment=comment-2"
     );
@@ -186,6 +222,7 @@ test("renders document-owned results under the document and opens their discussi
 });
 
 test("an ask hit says where it stands and shows its latest answer", async () => {
+  const user = userEvent.setup();
   const answer = {
     at: "2026-10-01T00:00:00Z",
     selected: ["Brass", "Steel"],
@@ -218,21 +255,21 @@ test("an ask hit says where it stands and shows its latest answer", async () => 
   const view = renderPalette();
 
   try {
-    await searchFor("orrery");
+    await searchFor(user, "orrery");
     const option = (id: string) =>
       screen.getAllByRole("option").find((row) => row.textContent?.includes(`frame, ${id}?`));
-    await waitFor(() => expect(option("closed-answered")?.textContent).toContain("both"));
+    await waitFor(() => expect(option("closed-answered")).toHaveTextContent("both"));
 
-    expect(option("open")?.textContent).toContain("Open");
-    expect(option("answered")?.textContent).toContain("Answered");
-    expect(option("answered")?.textContent).toContain("alice · ");
-    expect(option("answered")?.textContent).toContain("No option chosen");
-    expect(option("closed")?.textContent).toContain("Closed, no answer");
-    expect(option("closed")?.textContent).toContain("Resolved by bob · ");
-    expect(option("closed")?.textContent).not.toContain("alice");
-    expect(option("closed-answered")?.textContent).toContain("Closed after an answer");
-    expect(option("closed-answered")?.textContent).toContain("Resolved by bob · ");
-    expect(option("closed-answered")?.textContent).toContain("Chose Brass, Steel");
+    expect(option("open")).toHaveTextContent("Open");
+    expect(option("answered")).toHaveTextContent("Answered");
+    expect(option("answered")).toHaveTextContent("alice · ");
+    expect(option("answered")).toHaveTextContent("No option chosen");
+    expect(option("closed")).toHaveTextContent("Closed, no answer");
+    expect(option("closed")).toHaveTextContent("Resolved by bob · ");
+    expect(option("closed")).not.toHaveTextContent("alice");
+    expect(option("closed-answered")).toHaveTextContent("Closed after an answer");
+    expect(option("closed-answered")).toHaveTextContent("Resolved by bob · ");
+    expect(option("closed-answered")).toHaveTextContent("Chose Brass, Steel");
     expect(screen.getAllByRole("option", { name: /^ask / })).toHaveLength(4);
   } finally {
     search.mockRestore();
@@ -244,6 +281,7 @@ test("an ask hit says where it stands and shows its latest answer", async () => 
 // The answer's three-line clamp is CSS only: whatever text reaches the option is its accessible
 // name, so a long answer is cut to its start before it renders.
 test("an ask hit shows only the start of a long answer, cut at a word with an ellipsis", async () => {
+  const user = userEvent.setup();
   const text = `Keep **both** frames. ${"The meridian ring stays level. ".repeat(80)}zenithward`;
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
@@ -264,7 +302,7 @@ test("an ask hit shows only the start of a long answer, cut at a word with an el
   const view = renderPalette();
 
   try {
-    await searchFor("orrery");
+    await searchFor(user, "orrery");
     const option = screen.getByRole("option");
     await waitFor(() => expect(option.querySelector("strong")?.textContent).toBe("both"));
 
@@ -291,6 +329,7 @@ test("an ask hit shows only the start of a long answer, cut at a word with an el
 // for that document all the same, an issue's and a project's alike. The hrefs are read against
 // the page's origin, which happy-dom's `about:blank` does not have.
 test("a hit in a long-named document previews that document", async () => {
+  const user = userEvent.setup();
   const slug = "a".repeat(2683);
   const search = spyOn(api, "search").mockResolvedValue(
     searchAnswer([
@@ -320,30 +359,46 @@ test("a hit in a long-named document previews that document", async () => {
       },
     ])
   );
+  // The bar reads the viewer, to list what that person opened lately, and the project list, to
+  // offer a project row for every project the words name. This row's page has an origin of its
+  // own - the hrefs are read against it - and it is not the suite's, so the shell's own answers
+  // to those two routes do not resolve against it: both are answered here at the api client, as
+  // the shell answers them, signed out and with no project. Neither adds a row, so the two
+  // document hits below are the whole list.
+  const whoAmI = spyOn(api, "whoAmI").mockRejectedValue(
+    new ApiError(401, { code: "NO_IDENTITY", error: "no identity" })
+  );
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([]);
   const testWindow = window as unknown as HappyDOMWindow;
   const pageBefore = window.location.href;
   testWindow.happyDOM.setURL("https://dispatch.test/issues/LEGION-2");
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     expect(
       screen.getAllByRole("option").map((option) => option.getAttribute("data-dispatch-ref"))
     ).toEqual([`dispatch://LEGION-2/artifact/${slug}`, `dispatch://CORE/artifact/${slug}`]);
   } finally {
     search.mockRestore();
+    whoAmI.mockRestore();
+    listProjects.mockRestore();
     view.unmount();
     view.queryClient.clear();
     testWindow.happyDOM.setURL(pageBefore);
   }
 });
 
-test("does not query below two characters", () => {
+test("does not query below two characters", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const view = renderPalette();
 
   try {
-    fireEvent.change(screen.getByRole("combobox", { name: "Search" }), { target: { value: "a" } });
+    const input = screen.getByRole("combobox", { name: "Search" });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("a");
 
     expect(search).not.toHaveBeenCalled();
     expect(screen.getByText("Type at least 2 characters")).not.toBeNull();
@@ -355,12 +410,15 @@ test("does not query below two characters", () => {
 });
 
 test("names the limit instead of querying over it, and queries at it", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
   const view = renderPalette();
 
   try {
     const input = screen.getByRole("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "x".repeat(SEARCH_QUERY_MAX + 1) } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("x".repeat(SEARCH_QUERY_MAX + 1));
 
     expect(
       screen.getByText(
@@ -373,7 +431,9 @@ test("names the limit instead of querying over it, and queries at it", async () 
     await act(() => settled.promise);
     expect(search).not.toHaveBeenCalled();
 
-    fireEvent.change(input, { target: { value: "x".repeat(SEARCH_QUERY_MAX) } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("x".repeat(SEARCH_QUERY_MAX));
     await waitFor(() =>
       expect(search).toHaveBeenCalledWith(
         "x".repeat(SEARCH_QUERY_MAX),
@@ -389,19 +449,25 @@ test("names the limit instead of querying over it, and queries at it", async () 
 });
 
 test("arrow keys move aria-activedescendant and Enter navigates to the active href", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
-    const options = screen.getAllByRole("option");
-    expect(input.getAttribute("aria-activedescendant")).toBe(options[0]?.id);
+    const input = await searchFor(user, "astrolabe");
+    // Named rather than indexed with `?.`: `toHaveAttribute` given an `undefined` value checks
+    // that the attribute is present and not what it holds, so an option the palette failed to
+    // list would pass the two rows below rather than failing them.
+    const [first, second] = screen.getAllByRole("option");
+    if (first === undefined || second === undefined)
+      throw new Error("the palette listed fewer than two options");
+    expect(input).toHaveAttribute("aria-activedescendant", first.id);
 
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(options[1]?.id);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", second.id);
 
-    fireEvent.keyDown(input, { key: "ArrowUp" });
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{ArrowUp}");
+    await user.keyboard("{Enter}");
 
     expect(screen.getByTestId("current-route").textContent).toBe(
       "/issues/LEGION-2/spec?q=astrolabe"
@@ -425,12 +491,13 @@ function issueHit(key: string): SearchResult {
 }
 
 test("a refetch that re-ranks the hits leaves the highlight on the hit the reader sees", async () => {
+  const user = userEvent.setup();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
+    const input = await searchFor(user, "astrolabe");
     const shown = input.getAttribute("aria-activedescendant");
     expect(shown).toBe(screen.getAllByRole("option")[0]?.id ?? "");
 
@@ -439,7 +506,7 @@ test("a refetch that re-ranks the hits leaves the highlight on the hit the reade
     search.mockResolvedValue(searchAnswer([second, first]));
     await view.queryClient.refetchQueries();
     await waitFor(() => expect(screen.getAllByRole("option")[0]?.id).not.toBe(shown));
-    expect(input.getAttribute("aria-activedescendant")).toBe(shown);
+    expect(input).toHaveAttribute("aria-activedescendant", shown);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -459,6 +526,7 @@ function bothTiers(
 }
 
 test("a pause searches by meaning too, and its order re-ranks the list under the highlight", async () => {
+  const user = userEvent.setup();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockImplementation(
     bothTiers([first, second], [second, first])
@@ -466,9 +534,9 @@ test("a pause searches by meaning too, and its order re-ranks the list under the
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
+    const input = await searchFor(user, "astrolabe");
     expect(optionIds()).toEqual([optionId(first), optionId(second)]);
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(first));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
     expect(search.mock.calls).toHaveLength(1);
     expect(search.mock.calls[0]?.[1]).toEqual({ keywords_only: true });
 
@@ -479,9 +547,9 @@ test("a pause searches by meaning too, and its order re-ranks the list under the
     expect(search.mock.calls[1]?.[0]).toBe("astrolabe");
     expect(search.mock.calls[1]?.[1]).toEqual({});
     await waitFor(() => expect(optionIds()).toEqual([optionId(second), optionId(first)]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(first));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
 
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
   } finally {
     search.mockRestore();
@@ -491,26 +559,27 @@ test("a pause searches by meaning too, and its order re-ranks the list under the
 });
 
 test("a re-rank that drops the highlighted hit leaves no row highlighted, and Enter opens nothing", async () => {
+  const user = userEvent.setup();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockImplementation(bothTiers([first, second], [first]));
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(second));
+    const input = await searchFor(user, "astrolabe");
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(second));
 
     // The pause's order drops the row the reader had arrowed to. Nothing takes its place: the
     // head would be a row they never chose, and the next Enter would open it.
     await waitFor(() => expect(optionIds()).toEqual([optionId(first)]), { timeout: 3000 });
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/");
 
     // The reader's own arrow says which row, and Enter then opens that one.
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(first));
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(first));
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
   } finally {
     search.mockRestore();
@@ -520,13 +589,14 @@ test("a re-rank that drops the highlighted hit leaves no row highlighted, and En
 });
 
 test("a background refresh that fails keeps the hits the query has, and the highlight on its hit", async () => {
+  const user = userEvent.setup();
   const [first, second] = [issueHit("LEGION-3"), issueHit("LEGION-4")];
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([first, second]));
   const view = renderPalette();
 
   try {
-    const input = await searchFor("astrolabe");
-    fireEvent.keyDown(input, { key: "ArrowDown" });
+    const input = await searchFor(user, "astrolabe");
+    await user.keyboard("{ArrowDown}");
     const arrowed = input.getAttribute("aria-activedescendant");
     expect(arrowed).toBe(screen.getAllByRole("option")[1]?.id ?? "");
 
@@ -539,8 +609,8 @@ test("a background refresh that fails keeps the hits the query has, and the high
       ).toBe("error")
     );
     expect(screen.getAllByRole("option")).toHaveLength(2);
-    expect(screen.queryByText("Search failed.")).toBeNull();
-    expect(input.getAttribute("aria-activedescendant")).toBe(arrowed);
+    expect(screen.queryByText("Search failed.")).not.toBeInTheDocument();
+    expect(input).toHaveAttribute("aria-activedescendant", arrowed);
   } finally {
     search.mockRestore();
     view.unmount();
@@ -583,6 +653,7 @@ function optionIds(): string[] {
 }
 
 test("a query found inside an action's label lists the action below the hits, and Enter opens the first hit", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -591,11 +662,13 @@ test("a query found inside an action's label lists the action below the hits, an
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
 
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
     expect(ran).toEqual([]);
   } finally {
@@ -607,6 +680,7 @@ test("a query found inside an action's label lists the action below the hits, an
 });
 
 test("while the search is in flight no action found inside its label is highlighted, so Enter runs nothing", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -616,17 +690,19 @@ test("while the search is in flight no action found inside its label is highligh
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([CLOSE_ROW]);
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
     expect(ran).toEqual([]);
 
     // The hits arriving take the head; the action row was never adopted while they were out.
     await act(async () => answer.resolve(searchAnswer([hit])));
-    await waitFor(() => expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit)));
+    await waitFor(() => expect(input).toHaveAttribute("aria-activedescendant", optionId(hit)));
     expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]);
   } finally {
     search.mockRestore();
@@ -637,6 +713,7 @@ test("while the search is in flight no action found inside its label is highligh
 });
 
 test("a search that finds nothing still leaves an action found inside its label unhighlighted", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
@@ -644,11 +721,13 @@ test("a search that finds nothing still leaves an action found inside its label 
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     await screen.findByText('No results for "issue"');
     expect(optionIds()).toEqual([CLOSE_ROW]);
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(screen.getByRole("dialog", { name: "Search" })).toBeTruthy();
     expect(ran).toEqual([]);
   } finally {
@@ -660,6 +739,7 @@ test("a search that finds nothing still leaves an action found inside its label 
 });
 
 test("an arrow pressed before the search answers reaches no action found inside its label", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -669,23 +749,25 @@ test("an arrow pressed before the search answers reaches no action found inside 
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     // Down and Enter in one burst, inside the debounce and again once the request is out.
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{Enter}");
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
     await waitFor(() => expect(search).toHaveBeenCalled());
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    fireEvent.keyDown(input, { key: "ArrowUp" });
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{ArrowUp}");
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(ran).toEqual([]);
 
     // The hits arrive above it and take the head; Enter opens the first one.
     await act(async () => answer.resolve(searchAnswer([hit])));
     await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
-    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
     expect(ran).toEqual([]);
   } finally {
@@ -697,6 +779,7 @@ test("an arrow pressed before the search answers reaches no action found inside 
 });
 
 test("once the search has answered with no hit, Down takes the first action found inside its label", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer([]));
@@ -704,11 +787,13 @@ test("once the search has answered with no hit, Down takes the first action foun
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     await screen.findByText('No results for "issue"');
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["close"]));
   } finally {
     search.mockRestore();
@@ -719,6 +804,7 @@ test("once the search has answered with no hit, Down takes the first action foun
 });
 
 test("while the search is out the arrows walk only the actions the query starts, which keep the highlight as hits arrive", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
     { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
@@ -736,21 +822,23 @@ test("while the search is out the arrows walk only the actions the query starts,
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([report, triage, CLOSE_ROW]);
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(triage);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
-    fireEvent.keyDown(input, { key: "ArrowUp" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(triage);
+    expect(input).toHaveAttribute("aria-activedescendant", report);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", triage);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", report);
+    await user.keyboard("{ArrowUp}");
+    expect(input).toHaveAttribute("aria-activedescendant", triage);
 
     await act(async () => answer.resolve(searchAnswer([hit])));
     await waitFor(() => expect(optionIds()).toEqual([report, triage, optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(triage);
-    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveAttribute("aria-activedescendant", triage);
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["triage"]));
   } finally {
     search.mockRestore();
@@ -761,6 +849,7 @@ test("while the search is out the arrows walk only the actions the query starts,
 });
 
 test("a refetch behind a stale cached answer is still out, so Down and Enter reach no action found inside its label", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -772,18 +861,20 @@ test("a refetch behind a stale cached answer is still out, so Down and Enter rea
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     await waitFor(() => expect(search).toHaveBeenCalled());
     expect(optionIds()).toEqual([CLOSE_ROW]);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
+    await user.keyboard("{ArrowDown}");
     expect(input.getAttribute("aria-activedescendant")).toBeNull();
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     expect(ran).toEqual([]);
 
     await act(async () => answer.resolve(searchAnswer([hit])));
     await waitFor(() => expect(optionIds()).toEqual([optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
-    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{Enter}");
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/LEGION-3");
     expect(ran).toEqual([]);
   } finally {
@@ -795,6 +886,7 @@ test("a refetch behind a stale cached answer is still out, so Down and Enter rea
 });
 
 test("once the search has failed, Down takes the first action found inside its label", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const search = spyOn(api, "search").mockRejectedValue(new Error("503"));
@@ -802,11 +894,13 @@ test("once the search has failed, Down takes the first action found inside its l
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
-    expect((await screen.findByRole("alert")).textContent).toContain("Search failed.");
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["close"]));
   } finally {
     search.mockRestore();
@@ -817,6 +911,7 @@ test("once the search has failed, Down takes the first action found inside its l
 });
 
 test("a background refetch keeps the actions the query starts and the hits walkable, and a highlight already among the More actions moving", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = appKeymap.register("global", [
     { id: "close", keys: [], label: "Close issue", run: () => ran.push("close") },
@@ -838,29 +933,31 @@ test("a background refetch keeps the actions the query starts and the hits walka
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "issue" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("issue");
     await waitFor(() => expect(optionIds()).toEqual([report, optionId(hit), CLOSE_ROW]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
+    expect(input).toHaveAttribute("aria-activedescendant", report);
 
     // A focus or staleTime refetch is out with the hits still shown: the arrows walk the
     // leading row and the hits, and stop short of the More actions.
     const first = await refetchHeld(2);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
-    fireEvent.keyDown(input, { key: "ArrowUp" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(optionId(hit));
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", report);
+    await user.keyboard("{ArrowUp}");
+    expect(input).toHaveAttribute("aria-activedescendant", optionId(hit));
     await act(async () => first.resolve(searchAnswer([hit])));
     await waitFor(() => expect(view.queryClient.isFetching()).toBe(0));
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
 
     // Moved there after an answer, a highlight among the More actions keeps moving over the
     // whole list through the next refetch.
     const second = await refetchHeld(3);
-    fireEvent.keyDown(input, { key: "ArrowDown" });
-    expect(input.getAttribute("aria-activedescendant")).toBe(report);
+    await user.keyboard("{ArrowDown}");
+    expect(input).toHaveAttribute("aria-activedescendant", report);
     await act(async () => second.resolve(searchAnswer([hit])));
     expect(ran).toEqual([]);
   } finally {
@@ -872,6 +969,7 @@ test("a background refetch keeps the actions the query starts and the hits walka
 });
 
 test("a query that starts an action's label lists it above the hits, and Enter runs it", async () => {
+  const user = userEvent.setup();
   const ran: string[] = [];
   const unregister = registerClose(ran);
   const hit = issueHit("LEGION-3");
@@ -880,11 +978,13 @@ test("a query that starts an action's label lists it above the hits, and Enter r
 
   try {
     const input = screen.getByRole<HTMLInputElement>("combobox", { name: "Search" });
-    fireEvent.change(input, { target: { value: "clo" } });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("clo");
     await waitFor(() => expect(optionIds()).toEqual([CLOSE_ROW, optionId(hit)]));
-    expect(input.getAttribute("aria-activedescendant")).toBe(CLOSE_ROW);
+    expect(input).toHaveAttribute("aria-activedescendant", CLOSE_ROW);
 
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.keyboard("{Enter}");
     await waitFor(() => expect(ran).toEqual(["close"]));
     expect(screen.getByTestId("current-route").textContent).toBe("/");
   } finally {
@@ -895,14 +995,17 @@ test("a query that starts an action's label lists it above the hits, and Enter r
   }
 });
 
-test("Escape calls onClose", () => {
+test("Escape calls onClose", async () => {
+  const user = userEvent.setup();
   let closed = 0;
   const view = renderPalette(() => {
     closed += 1;
   });
 
   try {
-    fireEvent.keyDown(screen.getByRole("dialog", { name: "Search" }), { key: "Escape" });
+    // Escape is the dialog's own keymap binding, registered at the document, so the key
+    // reaches it from whatever holds focus inside the open palette.
+    await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   } finally {
     view.unmount();
@@ -910,7 +1013,8 @@ test("Escape calls onClose", () => {
   }
 });
 
-test("Escape closes the palette even when pressed before focus has moved into it", () => {
+test("Escape closes the palette even when pressed before focus has moved into it", async () => {
+  const user = userEvent.setup();
   let closed = 0;
   const view = renderPalette(() => {
     closed += 1;
@@ -919,7 +1023,10 @@ test("Escape closes the palette even when pressed before focus has moved into it
   try {
     // The dialog moves focus inside itself one animation frame after opening; a key pressed
     // in that frame lands on whatever was focused before (the document editor, the body).
-    fireEvent.keyDown(document.body, { key: "Escape" });
+    // user-event sends its key to whatever holds focus, so the focus the dialog took is given
+    // up here: the press has to reach the dialog from outside it, as a press in that frame does.
+    (document.activeElement as HTMLElement | null)?.blur();
+    await user.keyboard("{Escape}");
     expect(closed).toBe(1);
   } finally {
     view.unmount();
@@ -928,6 +1035,7 @@ test("Escape closes the palette even when pressed before focus has moved into it
 });
 
 test("closes the palette when navigation changes", async () => {
+  const user = userEvent.setup();
   let closed = 0;
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -945,7 +1053,7 @@ test("closes the palette when navigation changes", async () => {
   );
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Navigate elsewhere" }));
+    await user.click(screen.getByRole("button", { name: "Navigate elsewhere" }));
     await waitFor(() => expect(closed).toBe(1));
   } finally {
     view.unmount();
@@ -954,14 +1062,16 @@ test("closes the palette when navigation changes", async () => {
 });
 
 test("shows a retryable failure when the search request fails", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockRejectedValue(new Error("500"));
   const view = renderPalette();
 
   try {
-    fireEvent.change(screen.getByRole("combobox", { name: "Search" }), {
-      target: { value: "astrolabe" },
-    });
-    expect((await screen.findByRole("alert")).textContent).toContain("Search failed.");
+    const input = screen.getByRole("combobox", { name: "Search" });
+    await user.clear(input);
+    await user.click(input);
+    await user.paste("astrolabe");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Search failed.");
     expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
   } finally {
     search.mockRestore();
@@ -973,6 +1083,7 @@ test("shows a retryable failure when the search request fails", async () => {
 // The three forms are offered whatever the query holds; which of them this query was read as
 // using is the answer's own reading of it, so the bar and the search never disagree.
 test("the operator forms are offered, and the answer says which the query uses", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
     query: { broadened: false, operators: [SEARCH_OPERATOR_PHRASE, SEARCH_OPERATOR_EXCLUDE] },
@@ -980,7 +1091,7 @@ test("the operator forms are offered, and the answer says which the query uses",
   const view = renderPalette();
 
   try {
-    await searchFor('"brass astrolabe" -steel');
+    await searchFor(user, '"brass astrolabe" -steel');
     const forms = screen.getByRole("list", { name: "What the words can do" });
     const inUse = (name: string) =>
       forms.querySelector(`[data-operator="${name}"]`)?.getAttribute("data-in-use");
@@ -1000,6 +1111,7 @@ test("the operator forms are offered, and the answer says which the query uses",
 });
 
 test("says meaning search is not running, and still shows the hits", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue({
     ...searchAnswer(results),
     degraded: SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
@@ -1007,7 +1119,7 @@ test("says meaning search is not running, and still shows the hits", async () =>
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     const line = await screen.findByTestId("search-degraded");
 
     expect(line.textContent).toBe(
@@ -1022,15 +1134,16 @@ test("says meaning search is not running, and still shows the hits", async () =>
 });
 
 test("a chip narrows the search, reads back in the person's words, and comes off again", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
   const view = renderPalette();
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
     expect(search).toHaveBeenLastCalledWith("astrolabe", { keywords_only: true }, aborts);
 
-    fireEvent.click(screen.getByRole("button", { name: "Status" }));
-    fireEvent.click(screen.getByRole("button", { name: "In progress" }));
+    await user.click(screen.getByRole("button", { name: "Status" }));
+    await user.click(screen.getByRole("button", { name: "In progress" }));
     await waitFor(() =>
       expect(search).toHaveBeenLastCalledWith(
         "astrolabe",
@@ -1043,7 +1156,7 @@ test("a chip narrows the search, reads back in the person's words, and comes off
     expect(chip.textContent).toContain("Status In progress");
     expect(chip.textContent).not.toContain("status:in_progress");
 
-    fireEvent.click(chip);
+    await user.click(chip);
     await waitFor(() => expect(screen.queryByText("Status In progress")).toBeNull());
     expect(screen.getByRole("button", { name: "Status" })).not.toBeNull();
   } finally {
@@ -1057,11 +1170,25 @@ test("a chip narrows the search, reads back in the person's words, and comes off
 // anywhere does. The page's project rides under `number_project`, which the route reads a bare
 // issue number in and narrows nothing by, so the bar shows no chip claiming a narrowing.
 test("the page's project is the search's context, not a chip narrowing it", async () => {
+  const user = userEvent.setup();
   const search = spyOn(api, "search").mockResolvedValue(searchAnswer(results));
+  // The bar opened over an issue reads that issue, to offer the words as a message to an agent
+  // holding it (`SendToAgentOffer.tsx`). LEGION-2 is the page's issue and the document hit's
+  // own, and no agent holds it, so the bar offers no such row and the chips below the box are
+  // the whole of what this row reads.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issueFixture,
+    artifacts: [{ ...specArtifact, issue_key: "LEGION-2", project: "LEGION" }],
+    key: "LEGION-2",
+    number: 2,
+    project: "LEGION",
+    status: "done",
+    title: "Navigation instruments",
+  });
   const view = renderPalette(() => {}, "/issues/LEGION-2/spec");
 
   try {
-    await searchFor("astrolabe");
+    await searchFor(user, "astrolabe");
 
     expect(search).toHaveBeenLastCalledWith(
       "astrolabe",
@@ -1072,6 +1199,7 @@ test("the page's project is the search's context, not a chip narrowing it", asyn
     expect(screen.getByRole("button", { name: "Project" })).not.toBeNull();
   } finally {
     search.mockRestore();
+    getIssue.mockRestore();
     view.unmount();
     view.queryClient.clear();
   }
