@@ -43,8 +43,14 @@ with exactly one repository per issue — never two. A change that spans reposit
 issue with one child per repository, each child's own `--repo` fixed when the daemon records it.
 Every pane and pod holds a write token, minted from the role's GitHub App, for its own issue's
 repository alone, and read-only tokens for every other repository the project maps. Its gh bundle
-holds one directory per owner and, under the issue's own owner, one more per other repository
-served there; `legion gh`, the `gh` wrapper every pane and pod runs, reads the repository's own
+holds one directory per owner, one more per owner a configured rename moved a repository away
+from while the project serves the name it moved to, and an `<owner>/<repo>` directory for each
+other repository served by the issue's recorded
+owner and by the owner whose installation serves the issue's repository. The write token stands in
+two of those directories, the recorded owner's and the serving owner's, which are one directory
+unless a rename moved the issue's repository, and every other directory is read-only, an
+`<owner>/<repo>` directory over the one repository its own name resolves to. `legion gh`, the `gh`
+wrapper every pane and pod runs, reads the repository's own
 directory where the bundle holds one and the owner's otherwise, and `git` reaches the same bundle
 through a credential helper that picks a directory the same way, so a push to any other repository
 is refused there, not merely discouraged.
