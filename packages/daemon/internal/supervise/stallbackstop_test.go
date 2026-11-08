@@ -1,14 +1,22 @@
 package supervise
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
+	"go/importer"
 	"go/parser"
 	gotoken "go/token"
-	"path/filepath"
+	"go/types"
+	"io"
+	"os"
+	"os/exec"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -692,57 +700,64 @@ func stalledFor(h *harness) time.Time {
 }
 
 // ProcessEnds is the list the walks read, so a value declared and left out of it would be
-// walked by nothing: this reads the package's own source and holds the list to every constant
-// of the type declared in it.
+// walked by nothing: this type-checks the package's own source and holds the list to every
+// constant of ProcessEnd the compiler sees in it.
 //
-// It catches a value added to the type and forgotten here, which is the whole of how a value
-// enters this package. What it cannot catch is an end some other package manufactures by
-// converting a string, which no caller does and which the daemon's notice answers by naming the
-// value rather than claiming a relaunch (the daemon's stallBackstopEnd).
+// It reads the type the compiler gave each constant rather than the spelling that declared it,
+// so no way of writing one is outside it: the explicit type (EndFailed ProcessEnd = "failed"),
+// a conversion (EndFailed = ProcessEnd("failed")), a copy of another constant, a value computed
+// from others, and a constant declared inside a function are one thing to it. The package's
+// other guard over a sealed set reads the compiler the same way and for the same reason
+// (sealed, in table_test.go).
+//
+// What it covers is the constants of this package's own non-test source, which is where every
+// end the machine reaches is written (endReached), and that is all it covers: an end no
+// constant declares — a conversion of a string computed at run time, which nothing here does,
+// or one another package manufactures — is outside it, and the daemon's notice answers that one
+// by naming the value rather than claiming a relaunch (the daemon's stallBackstopEnd).
 func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
-	sources, err := filepath.Glob("*.go")
+	entries, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatalf("read this package's source: %v", err)
 	}
 	fileset := gotoken.NewFileSet()
-	declared := map[string]string{}
-	for _, source := range sources {
-		file, err := parser.ParseFile(fileset, source, nil, parser.SkipObjectResolution)
+	var parsed []*ast.File
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fileset, name, nil, 0)
 		if err != nil {
-			t.Fatalf("parse %s: %v", source, err)
+			t.Fatalf("parse %s: %v", name, err)
 		}
-		for _, decl := range file.Decls {
-			general, isGeneral := decl.(*ast.GenDecl)
-			if !isGeneral || general.Tok != gotoken.CONST {
-				continue
-			}
-			for _, spec := range general.Specs {
-				value, isValue := spec.(*ast.ValueSpec)
-				if !isValue {
-					continue
-				}
-				named, isNamed := value.Type.(*ast.Ident)
-				if !isNamed || named.Name != "ProcessEnd" {
-					continue
-				}
-				if len(value.Values) != len(value.Names) {
-					t.Fatalf("%s declares %d constants of ProcessEnd with %d values; this walk reads one string literal each",
-						source, len(value.Names), len(value.Values))
-				}
-				for i, ident := range value.Names {
-					literal, isLiteral := value.Values[i].(*ast.BasicLit)
-					if !isLiteral || literal.Kind != gotoken.STRING {
-						t.Fatalf("%s declares %s as something other than a string literal; this walk reads literals only", source, ident.Name)
-					}
-					text, err := strconv.Unquote(literal.Value)
-					if err != nil {
-						t.Fatalf("%s declares %s as %s: %v", source, ident.Name, literal.Value, err)
-					}
-					declared[ident.Name] = text
-				}
-			}
-		}
+		parsed = append(parsed, file)
 	}
+	defs := map[*ast.Ident]types.Object{}
+	config := types.Config{Importer: importer.ForCompiler(fileset, "gc", compiledDependencies(t))}
+	pkg, err := config.Check("github.com/sjawhar/legion/daemon/internal/supervise", fileset, parsed, &types.Info{Defs: defs})
+	if err != nil {
+		t.Fatalf("type-check this package: %v", err)
+	}
+	type declaration struct{ name, text string }
+	var declared []declaration
+	for ident, object := range defs {
+		constant, isConstant := object.(*types.Const)
+		if !isConstant {
+			continue
+		}
+		named, isNamed := constant.Type().(*types.Named)
+		if !isNamed || named.Obj().Pkg() != pkg || named.Obj().Name() != "ProcessEnd" {
+			continue
+		}
+		text, err := strconv.Unquote(constant.Val().ExactString())
+		if err != nil {
+			t.Fatalf("%s declares %s as %s, which is no string: %v",
+				fileset.Position(ident.Pos()).Filename, ident.Name, constant.Val().ExactString(), err)
+		}
+		declared = append(declared, declaration{name: ident.Name, text: text})
+	}
+	slices.SortFunc(declared, func(a, b declaration) int { return strings.Compare(a.name, b.name) })
 	if len(declared) == 0 {
 		t.Fatal("this walk found no constant of type ProcessEnd in the package's source; it reads the source of the directory it runs in")
 	}
@@ -753,13 +768,52 @@ func TestProcessEndsListsEveryEndDeclared(t *testing.T) {
 		}
 		listed[end] = true
 	}
-	for name, text := range declared {
-		if !listed[ProcessEnd(text)] {
-			t.Errorf("the constant %s (%q) is a value of ProcessEnd that ProcessEnds does not list: add it there, give it a case in TestEveryProcessEndTellsItsOwnerExactlyOnce, and give it a sentence in the daemon's stallBackstopEnds", name, text)
+	declares := map[ProcessEnd]bool{}
+	for _, constant := range declared {
+		if !listed[ProcessEnd(constant.text)] {
+			t.Errorf("the constant %s (%q) is a value of ProcessEnd that ProcessEnds does not list: add it there, give it a case in TestEveryProcessEndTellsItsOwnerExactlyOnce, and give it a sentence in the daemon's stallBackstopEnds", constant.name, constant.text)
 		}
-		delete(listed, ProcessEnd(text))
+		declares[ProcessEnd(constant.text)] = true
 	}
-	for end := range listed {
-		t.Errorf("ProcessEnds lists %q, which this package declares no constant for", end)
+	for _, end := range ProcessEnds() {
+		if !declares[end] {
+			t.Errorf("ProcessEnds lists %q, which this package declares no constant for", end)
+		}
+	}
+}
+
+// compiledDependencies is where the compiler left the types of everything this package imports:
+// the build that runs this test has written them into its cache, and the go command reports the
+// file of each. The walk above reads those rather than type-checking the dependency tree from
+// its source, which this package's dependencies make tens of seconds of the test binary's run
+// (the source read sealed makes, in table_test.go, is the longest test in the package by
+// itself).
+func compiledDependencies(t *testing.T) func(string) (io.ReadCloser, error) {
+	t.Helper()
+	listed, err := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", ".").Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			t.Fatalf("ask the go command where this package's dependencies were compiled: %v: %s", err, exit.Stderr)
+		}
+		t.Fatalf("ask the go command where this package's dependencies were compiled: %v", err)
+	}
+	exports := map[string]string{}
+	decoder := json.NewDecoder(bytes.NewReader(listed))
+	for decoder.More() {
+		var dependency struct{ ImportPath, Export string }
+		if err := decoder.Decode(&dependency); err != nil {
+			t.Fatalf("read the go command's answer: %v", err)
+		}
+		if dependency.Export != "" {
+			exports[dependency.ImportPath] = dependency.Export
+		}
+	}
+	return func(path string) (io.ReadCloser, error) {
+		export, found := exports[path]
+		if !found {
+			return nil, fmt.Errorf("the go command reported no compiled types for %s", path)
+		}
+		return os.Open(export)
 	}
 }

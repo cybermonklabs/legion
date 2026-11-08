@@ -76,6 +76,9 @@ interface Rig {
   /** Whether `abortTurn` answers with a Promise that never settles of itself: the host whose
    * `abort()` waits on the very call that is stuck, which is what bounds the second step. */
   abortHangs: boolean;
+  /** What the host does while its `abort()` runs, before the Promise that call answers with
+   * settles: the real host ends the turn there, and the end arrives as an event of its own. */
+  duringAbort: (() => void) | undefined;
   /** Settles the Promise a hung `abortTurn` answered with, late and from outside, and hands back
    * once every handler the module put on it has run: a sweep runs its way to a step before it
    * yields, so a case that did not wait here would judge before the late answer was read. */
@@ -105,6 +108,7 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
     tellAnswer: { evidenceWritten: true, ownerTold: true },
     abortThrows: undefined,
     abortHangs: false,
+    duringAbort: undefined,
     sendThrows: undefined,
   };
   const deps: StallWatchdogDeps = {
@@ -138,6 +142,7 @@ function rig(options: { role?: string; limits?: Partial<StallLimits> } = {}): Ri
       abortTurn: () => {
         if (state.abortThrows !== undefined) throw new Error(state.abortThrows);
         state.aborts.push(clock);
+        state.duringAbort?.();
         if (!state.abortHangs) return;
         const never = Promise.withResolvers<void>();
         hung = { promise: never.promise, resolve: () => never.resolve() };
@@ -688,6 +693,38 @@ test("the next turn aborts for itself, whichever path ended the turn that was ab
 
     // A later turn of the same session, with a stuck call of its own: the abort it needs is not
     // the one the turn before it had.
+    running(r.watchdog, "bash", { command: "sleep 100000", pty: true }, "toolu_2");
+    r.tick(10 * MINUTE + SECOND);
+    await r.watchdog.sweep();
+    r.tick(2 * MINUTE);
+    await r.watchdog.sweep();
+    expect(r.aborts, clearer.name).toHaveLength(2);
+    expect(r.messages[1], clearer.name).toContain("toolu_2");
+    expect(r.steps.at(-1)?.outcome, clearer.name).toContain(
+      "the turn was ended with the host's abort()"
+    );
+  }
+});
+
+test("a turn ended inside the abort clears it, so the next turn's stuck call aborts for itself", async () => {
+  // The host can end the turn while its own `abort()` is still running — `turn_end` or the
+  // aborted assistant message arrives before the Promise settles — and that is what the order
+  // inside the step is for. The turn's one abort is marked before the step awaits anything
+  // (`abortTurn`), so an end that lands during the abort clears a fact that is already there
+  // and leaves nothing behind. Marked after that await, the step would write the ended turn's
+  // call id back over the cleared fact, and the next turn's stuck call would read it as an
+  // abort already made for its turn and take none — the one thing the second step owes every
+  // turn.
+  for (const clearer of TURN_CLEARERS) {
+    const r = await stuckShellCall();
+    r.duringAbort = () => clearer.clear(r.watchdog);
+    r.tick(2 * MINUTE);
+    await r.watchdog.sweep();
+    expect(r.aborts, clearer.name).toHaveLength(1);
+
+    // A later turn of the same session, with a stuck call of its own. Its host ends nothing
+    // early: what is under test is what the turn before it left behind.
+    r.duringAbort = undefined;
     running(r.watchdog, "bash", { command: "sleep 100000", pty: true }, "toolu_2");
     r.tick(10 * MINUTE + SECOND);
     await r.watchdog.sweep();
