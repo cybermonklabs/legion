@@ -52,6 +52,9 @@
 #   operator's explicit choice and the summary line says which selection ran.
 # - CLEAN_SESSION_STOP_EVIDENCE_DIR (default a fresh directory under $TMPDIR, kept and printed)
 #   holds the run's transcript, every service's log, the daemon's log and each check's answers.
+# - CLEAN_SESSION_STOP_HEARTBEAT_MS (default 5000) is how often every session of the run
+#   heartbeats its registration, the panes' ENVOY_HEARTBEAT_MS and the control's. The window
+#   section below says what it is for; the default leaves every run as it is today.
 #
 # Everything the run installs — the Go binaries, Claude Code and the two plugin builds — goes under
 # $TMPDIR, never /tmp and never the home directory: a pod's own disk is small, and filling it
@@ -78,11 +81,18 @@
 #                                     by an order of magnitude; ten minutes would measure it no
 #                                     better and would hold the run for half an hour
 #   ENVOY_SESSION_REAP_INTERVAL=10s   the reaper acts promptly once a record passes the horizon
-# and every pane heartbeats at ENVOY_HEARTBEAT_MS=5000 (runtime.tmux.pane_env), so a live pane
-# refreshes six times inside the live window; the plugin's own default is 90 s, which no 30 s
-# window could hold. The ten seconds the clean stop is held to are this issue's acceptance, not a
-# number this rig chose: the daemon's probe runs the moment the shim's stream closes, and the
-# delete is one HTTP call after it.
+# and every pane heartbeats at ENVOY_HEARTBEAT_MS, CLEAN_SESSION_STOP_HEARTBEAT_MS's 5000 by
+# default (runtime.tmux.pane_env), so a live pane refreshes six times inside the live window; the
+# plugin's own default is 90 s, which no 30 s window could hold. The ten seconds the clean stop is
+# held to are this issue's acceptance, not a number this rig chose: the daemon's probe runs the
+# moment the shim's stream closes, and the delete is one HTTP call after it.
+#
+# The heartbeat is an input because it decides how often a kill lands just after a registration,
+# which is the window a clean stop that compares moments alone can refuse a stop that is owed in
+# (dispatch://INFRA-2064). A small value makes that window certain, so the defect's reproduction
+# is a command rather than an edit; the default leaves every run as it is today. It moves nothing
+# else: the live window, the gone horizon, the reap interval and the ten-second acceptance are the
+# numbers above whatever it is.
 #
 # ---- the named checks ---------------------------------------------------------------------------
 # Each prints `PASS <name>` or `FAIL <name>: <reason>`, every selected check runs whatever the one
@@ -108,6 +118,7 @@ set -Eeuo pipefail
 pg_dsn=${CLEAN_SESSION_STOP_PG_DSN:-}
 wanted=${CLEAN_SESSION_STOP_CHECKS:-}
 evidence=${CLEAN_SESSION_STOP_EVIDENCE_DIR:-}
+heartbeat_ms=${CLEAN_SESSION_STOP_HEARTBEAT_MS:-5000}
 model_base_url=${LEGION_E2E_MODEL_BASE_URL:-}
 model_key_file=${LEGION_E2E_MODEL_KEY_FILE:-}
 model_id=${LEGION_E2E_MODEL_ID:-}
@@ -250,11 +261,11 @@ state_dir=$work/state
 omp_home=$work/omp-home
 profile=clean-session-stop-$$
 # The windows the listener judges every record against; the header says why each is this number.
+# The heartbeat every session of the run keeps is CLEAN_SESSION_STOP_HEARTBEAT_MS, read above.
 live_window=30s
 gone_horizon=90s
 gone_horizon_seconds=90
 reap_interval=10s
-heartbeat_ms=5000
 # The acceptance this proof measures: a role's record is gone this many seconds after the kill.
 clean_stop_limit_seconds=10
 
@@ -593,6 +604,8 @@ fi
   fail "LEGION_E2E_MODEL_ID is '$model_id'; it must be anthropic/<id>, the provider Oh My Pi reaches the endpoint through"
 [ -n "$claude_model" ] ||
   fail "LEGION_E2E_CLAUDE_MODEL is required: the model id Claude Code runs against that endpoint"
+[[ $heartbeat_ms =~ ^[1-9][0-9]*$ ]] ||
+  fail "CLEAN_SESSION_STOP_HEARTBEAT_MS is '$heartbeat_ms'; it must be a positive whole number of milliseconds"
 [ -n "$pg_dsn" ] ||
   fail "CLEAN_SESSION_STOP_PG_DSN is required: a loopback PostgreSQL the run creates the daemon's own database in"
 case $pg_dsn in
@@ -751,7 +764,7 @@ start_kept listener listener_keeper ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=
   ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
   ENVOY_SESSION_REAP_INTERVAL="$reap_interval" "$work/bin/envoy-listener"
 await_start listener "$listener_pid" 60 "the Envoy listener to serve" serving "$listener_port"
-note "the listener on 127.0.0.1:$listener_port judges records with a ${live_window} live window and a ${gone_horizon} gone horizon"
+note "the listener on 127.0.0.1:$listener_port judges records with a ${live_window} live window and a ${gone_horizon} gone horizon, against sessions that heartbeat every ${heartbeat_ms}ms"
 
 database=clean_session_stop_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')
 psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null ||
