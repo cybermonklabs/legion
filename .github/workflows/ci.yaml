@@ -4060,6 +4060,11 @@ jobs:
     if: needs.changes.outputs.proof_sdk_offline == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # The hosts of the old route, named once: the proxy is started with them and the count step
+    # reads them back, and a host in one list and not the other would be faulted and never
+    # counted, or counted and never faulted. Nothing else of this job reads the variable.
+    env:
+      FAULT_HOSTS: api.github.com,github.com,codeload.github.com,objects.githubusercontent.com
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -4082,7 +4087,7 @@ jobs:
           port_file="$RUNNER_TEMP/proxy.port"
           rm -f "$log" "$port_file"
           .github/scripts/ci-fault-proxy.py --mode fail \
-            --hosts api.github.com,github.com,codeload.github.com,objects.githubusercontent.com \
+            --hosts "$FAULT_HOSTS" \
             --bind 127.0.0.1 --port 0 --port-file "$port_file" </dev/null >/dev/null 2>>"$log" &
           pid=$!
           for _ in $(seq 1 100); do
@@ -4167,7 +4172,7 @@ jobs:
           }' "$log")
           passed=$(grep -c '^ci-fault-proxy: pass ' "$log" || true)
           reached=""
-          for host in api.github.com github.com codeload.github.com objects.githubusercontent.com; do
+          for host in ${FAULT_HOSTS//,/ }; do
             count=$(printf '%s\n' "$refused" | grep -c -x -F "$host" || true)
             echo "$host: $count request(s) refused"
             if [ "$count" != 0 ]; then
@@ -4180,7 +4185,11 @@ jobs:
             echo "::error::the frozen install reached the old proof-sdk route through the proxy:$reached; a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"
             exit 1
           fi
-          echo "no request for api.github.com, github.com, codeload.github.com or objects.githubusercontent.com: every byte of the proof editor's upstream sources came out of the checkout"
+          if [ "$passed" = 0 ]; then
+            echo "::error::the proxy passed no request through while the two installs ran; the cold install fetches every package from registry.npmjs.org, so a zero here means the installs did not reach the proxy at all and their silence about the four hosts proves nothing"
+            exit 1
+          fi
+          echo "no request for $FAULT_HOSTS: every byte of the proof editor's upstream sources came out of the checkout"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
