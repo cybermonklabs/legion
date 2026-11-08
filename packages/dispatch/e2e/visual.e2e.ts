@@ -154,6 +154,16 @@ async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
       // and the third is what two container runs of this corpus disagreed about
       // (`waitForRouteSettled`).
       await waitForRouteSettled(page, route);
+      // And the focus with it. A page that moves the focus as it settles - the issue
+      // artifact's header takes it when the artifact resolves - paints a focus ring in the
+      // run that was quick enough and none in the run that was not, which is one page
+      // disagreeing with itself across two container runs of one unchanged tree
+      // (`issue-artifact-dark`, runs 42528597235 and 42530219433). Nothing of these pages is
+      // shot for its focus, so the shot is taken with none.
+      await page.evaluate(() => {
+        const focused = document.activeElement;
+        if (focused instanceof HTMLElement) focused.blur();
+      });
       // `soft`, so a row that fails in light still shoots dark and reports both. A hard
       // assertion throws out of the `SCHEMES` loop, so a change that moved both schemes was
       // reported as one, and the reader fixed light, re-ran, and met dark the round after.
