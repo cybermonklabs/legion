@@ -265,10 +265,12 @@ func readRows(ctx context.Context, deps Deps, inFlight []string) (pending []pend
 // keep of this copy waits for the attempt's lease to end one way or the other
 // (resolveRoleHolders). mentionStates is read beside those two, by a role route alone as well:
 // what each session's copies of the comment wait on (mentionDeliveries.holds) - the states of
-// that session's own attempts, and the attempts that name no session yet whose role it holds -
-// which is asked of the holder a forward names: a forward to a holder a mention of the comment
-// is still being sent to waits for that one holder's mentions, as the keep waits for any of
-// them (mentionHolds.live, roleCopyWaitsForAMention).
+// that session's own attempts, the attempts that name no session yet whose role it holds, and
+// the sessions a mention of the comment delivered to - which is asked of the holder a forward
+// names: a forward to a holder a mention of the comment is still being sent to waits for that
+// one holder's mentions, as the keep waits for any of them, and one whose holder a mention of
+// the comment delivered to carries that mention's key and waits for no unnamed mention at all
+// (mentionHolds.live, mentionHolds.keyedByADeliveredMention, roleCopyWaitsForAMention).
 //
 // waiting is that wait, written once the role's holder is known (resolveRoleHolders), and the
 // same mark a copy bound for a session the owner's own work names carries while an attempt of

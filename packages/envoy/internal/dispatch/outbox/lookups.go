@@ -535,6 +535,12 @@ type settledMention struct {
 // claimed when the send landed, while the key of a mention that never landed is one no host has
 // claimed. Of two mentions of one kind the lowest target wins, the way fallbackKeys picks among
 // a session's failed targets, so one reading of a comment names one key per session.
+//
+// Which of the two the winner is leaves the lookup in mentionDeliveries.deliveredMentions, the
+// sessions a mention of the comment delivered to: a delivered mention beats every failed one,
+// so a session in that set is one whose settled key its host has claimed, which is what lets a
+// role route's forward carrying that key skip the wait for an unnamed mention
+// (mentionHolds.keyedByADeliveredMention, roleCopyWaitsForAMention).
 func (m settledMention) beats(current settledMention) bool {
 	if m.delivered != current.delivered {
 		return m.delivered
@@ -604,6 +610,13 @@ func loadMentionDeliveries(ctx context.Context, db queryer, ids []string, found 
 					if current, ok := pick.settledOf[*sessionID]; !ok || settled.beats(current) {
 						pick.settledOf[*sessionID] = settled
 						deliveries.settledKeys[*sessionID] = key
+					}
+					if sent {
+						// A delivered mention beats every failed one, so this session's
+						// settled key is a key its host claimed, whichever of its mentions
+						// won it above (settledMention.beats,
+						// mentionDeliveries.deliveredMentions).
+						deliveries.deliveredMentions[*sessionID] = struct{}{}
 					}
 					if failedSend {
 						if lowest, ok := pick.targetOf[*sessionID]; !ok || target < lowest {

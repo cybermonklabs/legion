@@ -111,8 +111,23 @@ type mentionDeliveries struct {
 	// A session mentioned under several targets keys by a delivered mention of it, the lowest
 	// such target, and by the lowest failed target only when no mention of it delivered: the key
 	// of a mention that never landed is one that host never claimed, so a copy carrying it would
-	// be shown beside the mention it stands for (settledMention.beats).
+	// be shown beside the mention it stands for (settledMention.beats). Which of the two a
+	// session's key came from is recorded beside this map, the wait a role route's forward
+	// takes turning on it (deliveredMentions).
 	settledKeys map[string]string
+	// deliveredMentions holds the sessions a mention of which delivered this comment - an
+	// attempt of it reached the session - which is every session whose settledKeys entry is a
+	// delivered mention's key, a delivered mention beating a failed one for that entry
+	// (settledMention.beats). It is written by loadMentionDeliveries beside that map, read
+	// through the states a role route's destination carries (holds,
+	// mentionHolds.keyedByADeliveredMention), and asked by the one wait a key the holder's host
+	// has claimed makes pointless: a forward carrying such a key is dropped at that host, so it
+	// waits for no attempt of the comment that names no session yet
+	// (roleCopyWaitsForAMention). A session whose settled mentions all failed is not in it -
+	// the key of a send that never landed is one no host has claimed, so a copy carrying it can
+	// be shown beside the mention it stands for - and neither is one with no settled mention at
+	// all.
+	deliveredMentions map[string]struct{}
 	// targetFallbackKeys is keyed like targets, and holds for each target with a failed or
 	// abandoned attempt that names a session the dedupe key of that target's mention (of the
 	// lowest session, should its attempts name several), which a fallback copy keyed by that
@@ -137,6 +152,7 @@ func newMentionDeliveries() mentionDeliveries {
 		targets:            mentionOutcomes{kind: targetMentions, states: map[string]mentionState{}},
 		fallbackKeys:       map[string]string{},
 		settledKeys:        map[string]string{},
+		deliveredMentions:  map[string]struct{}{},
 		targetFallbackKeys: map[string]string{},
 		held:               map[string]struct{}{},
 		unpinned:           newUnpinnedRoleMentions(),
@@ -154,10 +170,12 @@ func (d mentionDeliveries) of(kind mentionKind) (mentionHolds, map[string]string
 }
 
 // holds is the question every copy of the comment bound for a session asks of that session
-// (mentionHolds): the states of its own attempts, and the hold of an attempt that names no
-// session yet whose role it turns out to hold.
+// (mentionHolds): the states of its own attempts, the hold of an attempt that names no session
+// yet whose role it turns out to hold, and the sessions a mention of this comment delivered to,
+// which a role route's forward reads beside those states (deliveredMentions,
+// mentionHolds.keyedByADeliveredMention).
 func (d mentionDeliveries) holds() mentionHolds {
-	return mentionHolds{outcomes: d.sessions, unpinned: d.unpinned}
+	return mentionHolds{outcomes: d.sessions, unpinned: d.unpinned, delivered: d.deliveredMentions}
 }
 
 // anyLive reports whether an attempt of any of the comment's mentions is still live
@@ -449,8 +467,10 @@ func (u *unpinnedRoleMentions) state(sessionID string) mentionState {
 // sessions the owner's own work names - the session its route names and the session that
 // claims it, where the measurement found the duplicate it costs
 // (destinations.addWorkingSession, resolveUnpinnedRoleMentions) - and a role route's forward,
-// while no one key stands for that mention (mentionHolds.waitsForAnUnnamedMention). Every other
-// copy goes in that pass, under the event's own key.
+// while no one key stands for that mention and no mention of the comment delivered to the
+// holder it reaches (mentionHolds.waitsForAnUnnamedMention,
+// mentionHolds.keyedByADeliveredMention). Every other copy goes in that pass, under the
+// event's own key.
 //
 // A copy already held as a comment_fallback_copies row waits for it whichever session the row
 // is bound for (decideFallbackCopy): the row is read by a sweep and not by the comment's
@@ -470,8 +490,9 @@ func (u *unpinnedRoleMentions) liveUnnamed() bool {
 // finds another such attempt live, a row bound for a session's own topic waits for it too, as
 // the claimant's copy did before the lease (decideFallbackCopy). A role route's forward reads
 // it in the pass that reads the event and waits there while no one key stands for that
-// mention and the attempt is within the bound such a wait runs to, no row keeping the owner's
-// order to a role's holder within it (mentionHolds.waitsForAnUnnamedMention,
+// mention, no mention of the comment delivered to the holder it reaches, and the attempt is
+// within the bound such a wait runs to, no row keeping the owner's order to a role's holder
+// within it (mentionHolds.waitsForAnUnnamedMention, mentionHolds.keyedByADeliveredMention,
 // roleCopyWaitsForAMention, unnamedForwardBound); past that bound the forward is a row of the
 // role's own topic, which this state holds unpublished for as long as that send is owed
 // (holdsTheForwardAsARow, decideFallbackCopy). A copy published under the event's own key
@@ -562,13 +583,19 @@ func (u *unpinnedRoleMentions) keyFor(sessionID string) string {
 // key stands in for, which waits in the list while the attempt is within unnamedForwardBound,
 // and which is held as a row of the role's own topic past it, the owner's order to that holder
 // being what the bound gives up (waitsForAnUnnamedMention, roleCopyWaitsForAMention,
-// holdsTheForwardAsARow).
+// holdsTheForwardAsARow). That forward asks one thing more than the copies beside it: whether
+// a mention of the comment delivered to the very session it reaches, which is the key its copy
+// then carries and a key that session's host has claimed already, so there is no double for
+// the wait to prevent (delivered, keyedByADeliveredMention).
 //
 // A target's keys carry no such hold (mentionDeliveries.of): a target names a key, not a
-// session, and the copy it decides is the route's own topic (suppressesCurrentRoute).
+// session, and the copy it decides is the route's own topic (suppressesCurrentRoute). Nor do
+// they name a delivered mention: the copy a target decides is keyed by its own failed mention
+// and never by a settled one (mentionDeliveries.targetFallbackKeys).
 type mentionHolds struct {
-	outcomes mentionOutcomes
-	unpinned *unpinnedRoleMentions
+	outcomes  mentionOutcomes
+	unpinned  *unpinnedRoleMentions
+	delivered map[string]struct{}
 }
 
 // state is the state key's copies of the comment follow: the first state the mentions bound for
@@ -582,11 +609,13 @@ type mentionHolds struct {
 // reads: live and resolved to this very session, so its copy waits; past the lease, whether the
 // attempt names this session or no session at all, so its copy bound for that session's own
 // topic is held as a fallback row and the pass that publishes it reads the comment's attempts
-// again (destinations.leftTo, publishFallbackCopies). A role route's forward to that session
+// again (destinations.leftTo, publishFallbackCopies). A role route's forward to such a session
 // reads named rather than this and waits in the event's list while that attempt is within
 // unnamedForwardBound, no row keeping the owner's order to a role's holder within it, and is
 // held as a row of the role's own topic past it (waitsForAnUnnamedMention,
-// roleCopyWaitsForAMention, holdsTheForwardAsARow).
+// roleCopyWaitsForAMention, holdsTheForwardAsARow). A session a mention of the comment
+// delivered to reads mentionSent here and is no such key: its forward carries that mention's
+// own key and waits for nothing (keyedByADeliveredMention, roleFallbackKey).
 //
 // An abandoned key held back this way is not settled while it waits (destinations.leftTo): the
 // settle is the outbox's only once no send is coming, and an attempt that may yet be pinned to
@@ -632,6 +661,9 @@ func (h mentionHolds) liveUnnamed() bool {
 // target the copy carries that mention's own key and goes in this pass instead (roleFallbackKey),
 // and the copies bound for a session the owner's own work names wait for a live one whichever it
 // is, no key of theirs being the mention's (destinations.addWorkingSession, destinations.leftTo).
+// It answers for the mention alone: the forward that asks it asks keyedByADeliveredMention
+// beside it and waits for neither when its copy already carries a key that holder's host
+// claimed (roleCopyWaitsForAMention).
 //
 // The copy that asks it is a role route's forward (roleCopyWaitsForAMention), and it is the one
 // copy of the comment that waits in the event's list past that lease rather than being held as
@@ -659,6 +691,30 @@ func (h mentionHolds) liveUnnamed() bool {
 // (state, decideFallbackCopy).
 func (h mentionHolds) waitsForAnUnnamedMention(key string) bool {
 	return h.unpinned.owedWithinTheForwardsBound() && h.unpinned.keyFor(key) == ""
+}
+
+// keyedByADeliveredMention reports whether the copy of the comment a role route forwards to
+// key's session carries the key of a mention of this comment that delivered to that very
+// session: the settled mentions name that session, and the mention they name it by is one an
+// attempt reached it with, which is what its settled key is chosen as
+// (mentionDeliveries.deliveredMentions, settledMention.beats). That key is the one such a
+// forward carries, a settled mention of the holder outranking every other choice
+// (roleFallbackKey), and the holder's host claimed it when that send landed, so the copy is
+// dropped there.
+//
+// It is why such a forward waits for no attempt of the comment that names no session yet: the
+// wait exists to keep a copy from going out under a key no host has claimed beside a mention
+// that may yet be pinned to this holder, and a copy the host drops is no such double
+// (waitsForAnUnnamedMention, roleCopyWaitsForAMention). A session whose settled mentions all
+// failed is not named here: a failed mention's send may never have landed, so its key may be
+// one that host never claimed, and a forward carrying it waits as before.
+//
+// Nothing else reads it. The keep of a copy for a role nobody holds has no holder to ask it
+// of, the holder's own live mention is a question of the attempt's state and not of its key
+// (live), and a target's keys name no delivered mention at all (mentionDeliveries.of).
+func (h mentionHolds) keyedByADeliveredMention(key string) bool {
+	_, delivered := h.delivered[key]
+	return delivered
 }
 
 // pastTheUnnamedForwardsBound reports whether the wait waitsForAnUnnamedMention puts on key's
