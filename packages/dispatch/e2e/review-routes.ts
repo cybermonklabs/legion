@@ -231,7 +231,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    // Not shot: under "Shaped in the spec:" the panel lists every block a decision shaped, and
+    // a block the reference graph answers with no text of its own is drawn as `Block <uuid>`
+    // (`DecisionsPanel.tsx`). That id is fresh in every seeded corpus and no wait resolves it,
+    // because there is nothing for it to resolve to; a mask does not hold it either, since a
+    // uuid is a fixed count of characters and not a fixed width, so the painted rectangle
+    // moves with the glyphs. Three container runs measured it at 153, 781 and 794 pixels. A
+    // scan reads the DOM and does not care, so this page is reviewed by that layer alone.
+    layers: ["scan"],
     name: "issue-decisions",
     path: (seed) => `/issues/${seed.issue}/decisions`,
     pattern: "/issues/:key/*",
@@ -420,12 +427,19 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *
  *  A phone width is one under 768 px (`packages/dispatch/AGENTS.md`, "Phone acceptance"), where
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
- *  alone changes every page, so the three named here are the ones whose own content the width
- *  rearranges rather than only its frame: the Inbox becomes the compact row list with no reading
- *  pane beside it, the Conversation docks its composer at the foot of the screen and opens a
- *  comment's thread full-screen over the list, and the Spec's margin becomes a bottom sheet
- *  instead of a column beside the document. */
-export const phoneShotNames: readonly string[] = ["inbox", "issue-conversation", "issue-spec"];
+ *  alone changes every page, so the ones named here are those whose own content the width
+ *  rearranges rather than only its frame: the Inbox becomes the compact row list with no
+ *  reading pane beside it, and the Spec's margin becomes a bottom sheet rather than a column
+ *  beside the document.
+ *
+ *  An issue's Conversation belongs in that company and is deliberately absent. At a phone width
+ *  it draws a floating "Jump to latest" pill counting what has arrived since the reader last
+ *  looked, and whether the seeded reply has arrived by the moment of capture is a race with the
+ *  live socket: one container run shot "Jump to latest" and the next "Jump to latest - 1 new",
+ *  which moved the card above it and differed by 15,776 pixels. Waiting for the pill would be
+ *  waiting for that race to go one way. The desktop row of the same page is shot and is steady,
+ *  because that layout draws no such pill. */
+export const phoneShotNames: readonly string[] = ["inbox", "issue-spec"];
 
 /** Waits until `route`'s page has settled, which is more than drawn.
  *
