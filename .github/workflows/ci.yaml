@@ -1296,7 +1296,8 @@ jobs:
               # The claim list its fence reads: internal/broker/oauth/claims_doc_test.go:161.
               - 'docs/kubernetes.md'
               - '.github/actions/pull-test-images/**'
-              # Its natslive step takes that tag's test list from this script at run time.
+              # Its unit step takes the test list of its two natslive calls from this script at
+              # run time.
               - '.github/scripts/go-tagged-tests.sh'
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
             # checks, the seven shell-script tests, and the build and pack of the envoy commands.
@@ -3228,17 +3229,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.envoy_go == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    # Each go test step's -timeout must fire before the runner cancels the job, so a hung test
+    # Each go test call's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
     # before it at their measured times plus its own limit: about 1 minute of setup, then the
     # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
-    # 2 minutes the unit step's own 20 is 23; after the unit step, which runs strictly fewer
-    # packages than the 35 minutes it measured before the race lane's and the routes package's
-    # left it and so cannot exceed that, the routes step's own 10 is 48; after that step's
-    # measured 1 minute, natslive's default 10 and the bus matrix's own 5 are 55, and the
-    # integration step's 5 is less. 55, then, is the bound, and this job is held to it rather
-    # than to the 60 it carried when the unit step ran the whole module in two 20-minute runs.
-    timeout-minutes: 55
+    # 2 minutes the unit step's own limit is 23, since that step's five calls run at the same
+    # time and the longest limit among them is the package list's 20 - the routes call's 10,
+    # natslive's default 10 and the bus matrix's 5 after it, and the integration call's 5 all
+    # end before it. 31, then, is the bound, and this job is held to it rather than to the 55 it
+    # carried when the routes, natslive and integration calls were steps of their own after the
+    # unit step.
+    timeout-minutes: 31
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -3292,22 +3293,22 @@ jobs:
           --health-interval 1s
           --health-timeout 5s
           --health-retries 50
-      # internal/dispatch/routes gets an instance of its own, and the step below is the only one
-      # pointed at it. Its tests wait for the event log's safe horizon, which is instance-wide
-      # by design: it rests on pg_snapshot_xmin, so ANY transaction running anywhere on the
-      # instance holds it back until it ends, this job's other package binaries' `create
-      # database … strategy file_copy` among them (internal/dispatch/events/horizon.go, "Safe
-      # horizon"). That is not a cost a setting can take away - the settings below are this
-      # server's too - so the only way to keep those waits off the other packages' transactions
-      # is a second instance. Measured on a pod: one transaction holding a transaction id on
-      # another database of the same instance, with no load at all, takes
-      # TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince to the exact failure
-      # CI saw twice in three runs ("read the events_start: … i/o timeout", runs 42378432951 and
-      # 42424201523), with the server's own warning naming the holder: "event horizon held back
-      # by an open transaction; live event readers wait for it … query=select
-      # pg_current_xact_id(), pg_sleep(30)". The subscription is open throughout - the socket's
-      # read deadline is what ends it, not the socket - so the wait is the horizon's
-      # (dispatch://INFRA-1075).
+      # internal/dispatch/routes gets an instance of its own, and the routes call of the unit
+      # step below is the only thing pointed at it. Its tests wait for the event log's safe
+      # horizon, which is instance-wide by design: it rests on pg_snapshot_xmin, so ANY
+      # transaction running anywhere on the instance holds it back until it ends, this job's
+      # other package binaries' `create database … strategy file_copy` among them
+      # (internal/dispatch/events/horizon.go, "Safe horizon"). That is not a cost a setting can
+      # take away - the settings below are this server's too - so the only way to keep those
+      # waits off the other packages' transactions is a second instance. Measured on a pod: one
+      # transaction holding a transaction id on another database of the same instance, with no
+      # load at all, takes TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince
+      # to the exact failure CI saw twice in three runs ("read the events_start: … i/o
+      # timeout", runs 42378432951 and 42424201523), with the server's own warning naming the
+      # holder: "event horizon held back by an open transaction; live event readers wait for
+      # it … query=select pg_current_xact_id(), pg_sleep(30)". The subscription is open
+      # throughout - the socket's read deadline is what ends it, not the socket - so the wait
+      # is the horizon's (dispatch://INFRA-1075).
       postgres_routes:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
@@ -3408,8 +3409,8 @@ jobs:
           echo "$id:$read_back"
           [ -z "$failed" ] || exit 1
       # Every image the tests here start: testnats.Image and testnats.HubImage, which the
-      # natslive step below runs the two-image matrix on, and tests3.Image, pulled first for the
-      # reason the action gives.
+      # natslive calls of the unit step below run the two-image matrix on, and tests3.Image,
+      # pulled first for the reason the action gives.
       - name: Pull test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -3446,15 +3447,33 @@ jobs:
         run: |
           go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs
         working-directory: packages/envoy
-      # The unit step below, the natslive step and the integration step each write their `go test
-      # -json` stream to a file under $RUNNER_TEMP/go-test-json, which the upload step below
-      # publishes as one artifact per run attempt. .github/scripts/go-test-times.py ranks the
-      # tests and packages of such a stream, and compares two of them, which is how this job's
-      # time is measured (dispatch://INFRA-1075). The stream is a file rather than the log because
-      # `go test -json` is verbose: each of those steps replays the package result lines to the
-      # log, and the whole stream only when it failed, so a green log reads as it did and a red
-      # one carries every failing test's output. -count=1 keeps the restored build cache from
-      # replaying a stored result as `(cached)`.
+      # The step below runs the module's packages in the foreground and, beside them, four calls
+      # that were steps of their own after it until dispatch://INFRA-1075: the routes package,
+      # the container-backed NATS matrix, the integration suite and the agentloop vet. The
+      # package list uses about half this runner's four cores - 595.7 s of CPU over 104 test
+      # binaries against 4 x 284 s of wall - and ends on one package's serial tail, and those
+      # four steps then ran one after another on cores it had left idle: on the slower of the
+      # two attempts measured, routes 13 s, natslive 12 s, integration 3 s and the vet 8 s, 36 s
+      # of the 90 s this job spends on test steps running one at a time. Each of the four
+      # is started in the background at the head of this step now, so the step costs the longest
+      # of the five rather than their sum. The race-impossible step above, 52 to 60 s and the
+      # rest of that 90 s, is NOT among them: its three documents memory bounds read this
+      # process's own heap, and whether they hold in a concurrent shape is a measurement of its
+      # own before that step moves (dispatch://INFRA-985).
+      #
+      # Each call writes its own `go test -json` stream to a file under $RUNNER_TEMP/go-test-json,
+      # which the upload step below publishes as one artifact per run attempt.
+      # .github/scripts/go-test-times.py ranks the tests and packages of such a stream, and
+      # compares two of them, which is how this job's time is measured (dispatch://INFRA-1075).
+      # The stream is a file rather than the log because `go test -json` is verbose: the step
+      # replays each call's package result lines to the log, and that call's whole stream only
+      # when it failed, so a green log reads as it did and a red one carries every failing test's
+      # output. -count=1 keeps the restored build cache from replaying a stored result as
+      # `(cached)`. What a background call prints outside its stream cannot be left to interleave
+      # with the others', so each writes that to a log of its own under $RUNNER_TEMP/go-test-logs,
+      # replayed with its stream; the package list holds the foreground and prints as it goes.
+      # The step waits for all four, replays one group per call, and exits with the first
+      # non-zero status of the five, each failing call named in an ::error:: of its own.
       #
       # The API package used to run first and on its own in this job, because the per-test
       # database clone and drop of every other package queued on the service's one checkpointer
@@ -3476,9 +3495,9 @@ jobs:
       # packages were still in this call; the race lane runs them now, so the call they bound is
       # a lighter one.
       #
-      # internal/dispatch/routes is NOT in that call: it runs in the step below, against the
-      # second Postgres service, for the reason that service's own comment gives. It was in this
-      # call for one revision of this change, and CI answered the question that put it here -
+      # internal/dispatch/routes is NOT in that call: it is the routes call of this step, against
+      # the second Postgres service, for the reason that service's own comment gives. It was in
+      # this call for one revision of this change, and CI answered the question that put it here -
       # whether a disposable server's clones hold the safe horizon back long enough to matter -
       # by failing TestAnEventsSubscriptionFromTheWhoamiHeadReplaysWhatCommittedSince on its
       # events_start twice in three runs (42378432951 and 42424201523, passing in between). The
@@ -3486,23 +3505,64 @@ jobs:
       # transaction id, and the horizon waits on the oldest one open anywhere on the instance,
       # whatever it is doing (dispatch://INFRA-1075).
       #
-      # Everything the three race jobs run is left out here, since they run it under the detector,
-      # and so is internal/integration, which the integration step below tests. The pattern is
-      # built in .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built
-      # from, so what this step leaves out and what the lane runs cannot drift apart. What is left
-      # is the rest of the module less the routes package, the two longest packages of it (the
-      # API's and the documents service's) now among the ones the lane runs, so its 20 minutes
-      # are ample.
+      # Everything the three race jobs run is left out of the package list, since they run it
+      # under the detector, and so is internal/integration, which the integration call tests. The
+      # pattern is built in .github/scripts/ci_job_reads.py from the same list those jobs' own
+      # steps are built from, so what the list leaves out and what the lane runs cannot drift
+      # apart. What is left is the rest of the module less the routes package, the two longest
+      # packages of it (the API's and the documents service's) now among the ones the lane runs,
+      # so its 20 minutes are ample.
       # The long poles lead the list. `go test` starts the packages in the order its arguments
-      # name, so a package that starts late ends the step late however little it is waiting for:
+      # name, so a package that starts late ends the call late however little it is waiting for:
       # measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
       # after any other package finished, while every other long package was done 90 s earlier.
       # Leading with the six longest overlaps the longest one with the rest, which is what
-      # longest-first scheduling buys, and the order is read back from the step's own -json
+      # longest-first scheduling buys, and the order is read back from the call's own -json
       # (dispatch://INFRA-1075).
       - name: Unit test envoy Go package
         run: |
-          mkdir -p "$RUNNER_TEMP/go-test-json"
+          mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+          # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
+          # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
+          # its own tests'. It is on the call rather than on the step because every other call
+          # here runs against 5432. The package measured 56 s with an instance to itself on a
+          # loaded two-core pod, so 10 minutes is ample.
+          DISPATCH_TEST_DATABASE_URL=postgres://postgres:ci@localhost:5433/postgres?sslmode=disable go test -json -count=1 -timeout 10m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" 2> "$RUNNER_TEMP/go-test-logs/routes.log" &
+          routes=$!
+          # internal/testnats runs its server in the test process, so the package list below
+          # starts no container. The two-image matrix, which proves a rendered authorization on
+          # nats:2.10 and on the image the hub runs, is the one thing an in-process server cannot
+          # reproduce: it sits behind the natslive tag, and this call is where it runs
+          # (INFRA-250). internal/bus has one test of its own on that matrix: the module links
+          # nats-server v2.15.1 in process, which caps a stream that sets no cap at a default of
+          # its own and takes a change of MaxConsumers on a stream that already exists, so the
+          # raise of an uncapped ENVOY_NOTIFICATIONS to the consumer cap this binary compiles and
+          # the keeper's restore of a cap an operator lowered or unset are proved in process.
+          # What is left for a real image is the pair of 2.10 cases - the stream with no cap the
+          # binary must leave alone, and the refusal of the raise of a lower cap, naming the
+          # field, the cap and the first server taking the change - and the hub's own reconcile
+          # on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each package runs
+          # only the tests its tag adds: `-tags natslive ./pkg` would re-run the package's
+          # untagged tests, which already run elsewhere - internal/testnats in the package list
+          # below, and internal/bus in envoy-go-race, which that list's grep -Ev leaves out - so
+          # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
+          # source at run time, and no test name is spelled here. Each assignment is a line of
+          # its own and runs before the call it feeds: under bash -e it carries the script's exit
+          # status, so an empty or refused list fails the step instead of running -run "", which
+          # matches every test.
+          rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
+          cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
+          { go test -json -count=1 -tags natslive -run "$rig" ./internal/testnats/ &&
+            go test -json -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" 2> "$RUNNER_TEMP/go-test-logs/natslive.log" &
+          natslive=$!
+          # The integration suite, which runs a real NATS server in the test process.
+          go test -json -count=1 -timeout 300s ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" 2> "$RUNNER_TEMP/go-test-logs/integration.log" &
+          integration=$!
+          # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
+          # never runs it. Vetting it keeps it compiling as the package changes. It writes no
+          # stream: its log is everything it prints.
+          go vet -tags modellive ./agentloop/ > "$RUNNER_TEMP/go-test-logs/agentloop-vet.log" 2>&1 &
+          vet=$!
           lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
           github.com/sjawhar/envoy/cmd/dispatch-seed
           github.com/sjawhar/envoy/internal/dispatch/outbox
@@ -3512,83 +3572,41 @@ jobs:
           s=0
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
-          if [ "$s" -eq 0 ]; then
-            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
-          else
-            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
-          fi
-          exit $s
-        working-directory: packages/envoy
-      # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
-      # here and nowhere else, so the only transactions its horizon waits on are its own tests'.
-      # It runs after the unit step rather than beside it because a step is a step; the package
-      # measured 56 s with an instance to itself on a loaded two-core pod, so 10 minutes is
-      # ample and the job's bound above counts it at 1 minute.
-      - name: Test the routes package on an instance of its own
-        env:
-          DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5433/postgres?sslmode=disable
-        run: |
-          mkdir -p "$RUNNER_TEMP/go-test-json"
-          s=0
-          go test -json -count=1 -timeout 10m ./internal/dispatch/routes/ > "$RUNNER_TEMP/go-test-json/routes.json" || s=$?
-          if [ "$s" -eq 0 ]; then
-            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/routes.json"
-          else
-            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/routes.json"
-          fi
-          exit $s
-        working-directory: packages/envoy
-      # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
-      # never runs it. Vetting it keeps it compiling as the package changes.
-      - name: Vet agentloop's live proof (no model call)
-        run: go vet -tags modellive ./agentloop/
-        working-directory: packages/envoy
-      # internal/testnats runs its server in the test process, so the untagged step above starts
-      # no container. The two-image matrix, which proves a rendered authorization on nats:2.10 and
-      # on the image the hub runs, is the one thing an in-process server cannot reproduce: it sits
-      # behind the natslive tag, and this step is where it runs (INFRA-250). internal/bus has one
-      # test of its own on that matrix: the module links nats-server v2.15.1 in process, which
-      # caps a stream that sets no cap at a default of its own and takes a change of MaxConsumers
-      # on a stream that already exists, so the raise of an uncapped ENVOY_NOTIFICATIONS to the
-      # consumer cap this binary compiles and the keeper's restore of a cap an operator lowered or
-      # unset are proved in process. What is left for a real image is the pair of 2.10 cases - the
-      # stream with no cap the binary must leave alone, and the refusal of the raise of a lower
-      # cap, naming the field, the cap and the first server taking the change - and the hub's own
-      # reconcile on the nats:2.15.1-alpine image the deployment runs (INFRA-1384). Each
-      # package runs only the tests its tag adds: `-tags natslive ./pkg` would re-run the
-      # package's untagged tests, which already run elsewhere - internal/testnats in the unit step
-      # above, and internal/bus in envoy-go-race, which the unit step's grep -Ev leaves out - so
-      # the -run comes from .github/scripts/go-tagged-tests.sh, which reads the names off the
-      # source at run time, and no test name is spelled here. Each assignment is a line of its
-      # own: under bash -e it carries the script's exit status, so an empty or refused list fails
-      # the step instead of running -run "", which matches every test.
-      - name: Test the container-backed NATS matrix (natslive)
-        run: |
-          mkdir -p "$RUNNER_TEMP/go-test-json"
-          rig=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/testnats)
-          cap=$(../../.github/scripts/go-tagged-tests.sh natslive ./internal/bus)
-          s=0
-          { go test -json -count=1 -tags natslive -run "$rig" ./internal/testnats/ &&
-            go test -json -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/; } > "$RUNNER_TEMP/go-test-json/natslive.json" || s=$?
-          if [ "$s" -eq 0 ]; then
-            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/natslive.json"
-          else
-            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/natslive.json"
-          fi
-          exit $s
-        working-directory: packages/envoy
-
-      - name: Integration test envoy (a real NATS server, in the test process)
-        run: |
-          mkdir -p "$RUNNER_TEMP/go-test-json"
-          s=0
-          go test -json -count=1 -timeout 300s ./internal/integration/ > "$RUNNER_TEMP/go-test-json/integration.json" || s=$?
-          if [ "$s" -eq 0 ]; then
-            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/integration.json"
-          else
-            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/integration.json"
-          fi
-          exit $s
+          r=0
+          wait "$routes" || r=$?
+          n=0
+          wait "$natslive" || n=$?
+          i=0
+          wait "$integration" || i=$?
+          v=0
+          wait "$vet" || v=$?
+          # One group per call, in the order the calls were started: its own log, then its stream
+          # - the package result lines when it passed, the whole stream when it failed - and an
+          # ::error:: naming it when it failed. The step's status is the first non-zero of the
+          # five, and the package list, which prints as it goes, writes no log of its own.
+          status=0
+          replay() {
+            echo "::group::$1 (exit $2)"
+            [ ! -s "$RUNNER_TEMP/go-test-logs/$3.log" ] || cat "$RUNNER_TEMP/go-test-logs/$3.log"
+            if [ "$2" -eq 0 ]; then
+              jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            else
+              jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/$3.json"
+            fi
+            echo "::endgroup::"
+            [ "$2" -eq 0 ] || echo "::error::$1 failed (exit $2)"
+            [ "$status" -ne 0 ] || status=$2
+          }
+          replay "the package list" "$s" unit
+          replay "the routes package" "$r" routes
+          replay "the natslive matrix" "$n" natslive
+          replay "the integration suite" "$i" integration
+          echo "::group::the agentloop vet (exit $v)"
+          cat "$RUNNER_TEMP/go-test-logs/agentloop-vet.log"
+          echo "::endgroup::"
+          [ "$v" -eq 0 ] || echo "::error::the agentloop vet failed (exit $v)"
+          [ "$status" -ne 0 ] || status=$v
+          exit "$status"
         working-directory: packages/envoy
       # Always, because a red attempt's times are the ones a reader needs, and one artifact per
       # attempt because a run's artifacts are listed per run, not per attempt, and a download by
