@@ -263,12 +263,12 @@ fi
 #
 # The runs that do prove the embed path are the ones this harness builds the dev embedder for
 # (DISPATCH_DEV_EMBEDDER above, which calls no model service): the acceptance driver's meaning
-# rows and `two-builds.multiprocess.e2e.ts`'s rollout row, which read vectors the queue wrote and
-# can pass no other way. The default follows that build rather than making each of them say it
-# twice, and it follows the build rather than the request for it, since the server reads the dev
-# embedder beside dev sign-in alone: a run that asks for it under DISPATCH_E2E_SIGNIN=oidc gets
-# no embedder, and defaulting on the request there would leave it building Bedrock's client on
-# the file store's static keys, which is the one thing this setting exists to stop.
+# rows, which read vectors the queue wrote and can pass no other way. The default follows that
+# build rather than making each of them say it twice, and it follows the build rather than the
+# request for it, since the server reads the dev embedder beside dev sign-in alone: a run that
+# asks for it under DISPATCH_E2E_SIGNIN=oidc gets no embedder, and defaulting on the request
+# there would leave it building Bedrock's client on the file store's static keys, which is the
+# one thing this setting exists to stop.
 if [ "$dev_embedder" = "1" ]; then
   embedder_off="${DISPATCH_TEST_EMBEDDER_OFF:-0}"
 else
