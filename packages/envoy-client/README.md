@@ -22,8 +22,7 @@ preload that calls `jest.setTimeout` governs the first test file of a run only, 
 `BUN_TEST_TIMEOUT` is not read, each of the three measured on Bun 1.4.4. So a bare `bun test` here
 still runs under Bun's 5,000 ms, and every row whose own work reaches half of that carries its own
 limit as the third argument to `test`, with what can hang and the two costs that sized it written
-beside it: 60 s for `delivery-dedupe`'s key-limit row and `free-ports`' port row, 240 s for the
-gated-write row of `dispatch-askgate`, 30 s for the rest.
+beside it. Each row's comment is the record of its own number.
 
 A row whose limit is a bound on work rather than a hang guard says so beside its number, and a row
 whose limit must stay below something the row must not wait out says that too.

@@ -721,8 +721,7 @@ describe("DispatchClient's writes", () => {
   // row's own 20 s limit, so a pause that ran would fail the row by that limit. The limit is that
   // discriminator rather than a bound on work: measured in a 2-CPU pod the row costs 0.10 s idle
   // and, under 16 busy loops (8 x nproc), 0.17 s at most in a whole-suite run and 0.15 s with this
-  // file alone. The 20 s stays on the row and sits below the suite's 30 s default on purpose: the
-  // pause it must not wait out is 30 s.
+  // file alone. It stays on the row because the suite's 30 s default would equal that pause.
   test("the production pause waits out its time and stops when the signal aborts", async () => {
     const { fetchImpl, sent } = scripted([page(502, "Bad Gateway"), json(posted, 201)]);
     const started = performance.now();
@@ -1160,7 +1159,7 @@ async function socketDispatch(intakes: readonly Intake[]) {
 // bounded by how long it goes unheard, never by how long it takes; one whose connection stops
 // taking it is cut off and sent again under its key. Only a real socket shows that: the pace is
 // the kernel's backpressure on the connection, which no fake clock drives, so these run in real
-// time, a few seconds at most.
+// time.
 describe("DispatchClient's uploads on a real connection", () => {
   const opened: { close(): void }[] = [];
 
