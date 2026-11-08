@@ -389,6 +389,115 @@ func TestAFenceOutOfPassesNamesBothRevisionsAndLeavesTheFilterToTheNextHeartbeat
 	b.awaitPending(t, sessionID, 1)
 }
 
+// A corrective pass that finds the consumer already filtering on what the newest row asks ends
+// the fence with nothing left behind to report: no write of this loop's stands over a newer
+// registration's filter, so there is no window to name (fenceFilterWrite, filterWriteSettled).
+//
+// The order is built rather than waited for. The restore's first pass writes the row it read,
+// and the hook below stores a newer one under that write - a role claim's write, which sets no
+// filter - so the fence reads the bucket again. The pass after it plans from that newest row,
+// and the second hook lets a registration on the other listener set the consumer's filter to
+// that same row first, so this pass's own call sends nothing (bus.SessionConsumers.Ensure). A
+// fence reading "sent nothing" as a write that did not land names a window the consumer is not
+// in: it filters on the newest row, which is what the line it would log says it does not.
+func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind(t *testing.T) {
+	a := newSessionConsumerRig(t)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_already"
+	const kept = "notifications.dispatch.issue.FENCEALREADYKEPT.>"
+	const added = "notifications.dispatch.issue.FENCEALREADYADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	var moved sync.Once
+	a.deps.consumers.afterRepairPlan = func() {
+		// The row of a write that sets no filter - a role claim's - stored under the restore's
+		// own write, which is what sends the fence round again.
+		moved.Do(func() {
+			if _, err := a.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
+				t.Errorf("store %s on the session's row: %v", added, err)
+			}
+		})
+	}
+	passes := 0
+	a.deps.consumers.beforeRepairPlan = func() {
+		passes++
+		if passes != 2 {
+			return
+		}
+		// The registration on the other listener that sets the consumer's filter to the newest
+		// row, before the corrective pass plans from that same row.
+		b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
+	}
+
+	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
+	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
+	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	defer cancel()
+	if err := a.deps.consumers.deleteConsumer(ctx, a.deps, sessionID); err != nil {
+		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
+	}
+	a.deps.consumers.beforeRepairPlan, a.deps.consumers.afterRepairPlan = nil, nil
+
+	if passes != 2 {
+		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
+	}
+	requireFilters(t, a, sessionID, kept, added)
+	if logs := a.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
+		t.Errorf("a fence whose corrective pass found the consumer as the newest row asks must report nothing left behind:\n%s", logs)
+	}
+	b.store(t, "notifications.dispatch.issue.FENCEALREADYADD.comment")
+	b.awaitPending(t, sessionID, 1)
+}
+
+// A write that landed whose read of the bucket after it fails names the session, the revision
+// that write was built from and the read's failure: the fence cannot say whether the filter it
+// left is an older row's, and that line is all an operator reading the pause in the session's
+// delivery has to go on (fenceFilterWrite).
+//
+// The order is built rather than waited for. The refollow below is held between its read of the
+// bucket and its consumer call while a registration on the other listener stores a newer row and
+// sets the consumer's filter on it, so what the refollow writes is the filter of the row that
+// registration replaced. The connection its registry reads the bucket through is closed in that
+// same window, and the write lands all the same: it goes over the session-consumer connection.
+// The unsubscribe is answered 200, and the consumer is left filtering on the older row.
+func TestAWriteThatLandedWhoseReadOfTheBucketFailsNamesTheSessionTheRevisionAndTheError(t *testing.T) {
+	a := newSessionConsumerRig(t)
+	b := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_read_failed"
+	const kept = "notifications.dispatch.issue.FENCEREADKEPT.>"
+	const dropped = "notifications.dispatch.issue.FENCEREADDROP.>"
+	const added = "notifications.dispatch.issue.FENCEREADADD.>"
+	a.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, dropped))
+
+	var once sync.Once
+	a.deps.consumers.afterStoredRowRead = func() {
+		once.Do(func() {
+			b.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept, added))
+			// The connection this listener's registry reads the bucket through, and no part of
+			// the write below: a connection that went is one of the reads the fence cannot make
+			// after a write that landed (store.Registry.RefreshAt).
+			a.harness.client.Close()
+		})
+	}
+	a.post(t, "/v1/interests/unsubscribe", `{"session_id":"`+sessionID+`","topics":["`+dropped+`"]}`)
+	a.deps.consumers.afterStoredRowRead = nil
+
+	// What that write left: the filter of the row the registration above replaced, which is the
+	// window the line reports and the fence could not judge.
+	requireFilters(t, b, sessionID, kept)
+	wrote, failure := requireFenceReadFailureLogged(t, a, sessionID)
+	if failure == "" {
+		t.Errorf("the line names no failure, and the read's failure is what says why the fence judged nothing")
+	}
+	row, newest, err := b.harness.registry.RefreshAt(context.Background(), sessionID)
+	if err != nil || !slices.Contains(row.Topics, added) {
+		t.Fatalf("the bucket's row is %+v (%v), want %s among its topics: the registration above was answered 200 for it", row, err, added)
+	}
+	if wrote == 0 || wrote >= newest {
+		t.Errorf("the line names revision %d as the one written from, want one above 0 and below the %d the bucket holds now", wrote, newest)
+	}
+}
+
 // fenceExhaustionLine is what a fenced filter write logs when it ends on a filter older than the
 // row the bucket holds (fenceFilterWrite).
 const fenceExhaustionLine = "session consumer filter left on an older interest row than the bucket holds; the session's next heartbeat sets it"
@@ -417,4 +526,35 @@ func requireFenceExhaustionLogged(t *testing.T, rig *sessionConsumerRig, session
 	}
 	t.Fatalf("the fence left %s on an older row and logged nothing:\n%s", sessionID, logs)
 	return 0, 0
+}
+
+// fenceReadFailureLine is what a fenced filter write logs when the read of the bucket after a
+// write that landed failed, so the fence cannot say whether the filter it left is an older row's
+// (fenceFilterWrite).
+const fenceReadFailureLine = "session consumer filter written and left unjudged: the interest row could not be read again; the session's next heartbeat sets it"
+
+// requireFenceReadFailureLogged fails the test unless the listener logged that line for
+// sessionID, and answers what it names beside it: the revision the filter standing was built
+// from, and the failure of the read that judged nothing.
+func requireFenceReadFailureLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) (uint64, string) {
+	t.Helper()
+	logs := rig.harness.logs.String()
+	for line := range strings.SplitSeq(logs, "\n") {
+		if !strings.Contains(line, `"msg":"`+fenceReadFailureLine+`"`) {
+			continue
+		}
+		var reported struct {
+			SessionID string `json:"session_id"`
+			Wrote     uint64 `json:"wrote_revision"`
+			Error     string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(line), &reported); err != nil {
+			t.Fatalf("decode the listener's line %s: %v", line, err)
+		}
+		if reported.SessionID == sessionID {
+			return reported.Wrote, reported.Error
+		}
+	}
+	t.Fatalf("the fence could not read the bucket after %s's write and logged nothing:\n%s", sessionID, logs)
+	return 0, ""
 }

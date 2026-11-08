@@ -766,13 +766,13 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 // have created the consumer on the filter it carried (restart, consumerCallAnswered).
 func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrote uint64) {
 	// The restart's own write is this fence's first pass: it is made, or may have been made,
-	// before the fence runs, so that pass answers it and sends nothing, and the passes after it
-	// correct it from the bucket's newest row.
+	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
+	// sends nothing, and the passes after it correct it from the bucket's newest row.
 	restart := true
-	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, func() (uint64, bool) {
+	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, func() (uint64, filterWriteOutcome) {
 		if restart {
 			restart = false
-			return wrote, true
+			return wrote, filterWriteLanded
 		}
 		return m.delivery.storedFilterStep(ctx, m.registry, sessionID, filterAfterRestart)
 	})

@@ -405,13 +405,15 @@ const (
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
-	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, func() (uint64, bool) {
+	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, func() (uint64, filterWriteOutcome) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
 		want, ok := m.registeredTarget(ctx, d, sessionID, ackFloor)
 		if !ok {
-			return 0, false
+			// Nothing to write: the bucket asks for no consumer, or a read of it failed
+			// (registeredTarget), so this pass puts no filter anywhere.
+			return 0, filterWriteNotMade
 		}
 		if m.afterRepairPlan != nil {
 			m.afterRepairPlan()
@@ -425,7 +427,10 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// A call the server answered changed nothing, so there is nothing for the fence to
 			// hold; a call whose answer did not come back may have set this row's filter, and
 			// the loop judges it as it judges a write that answered (consumerCallAnswered).
-			return want.revision, !consumerCallAnswered(err)
+			if consumerCallAnswered(err) {
+				return 0, filterWriteNotMade
+			}
+			return want.revision, filterWriteLanded
 		case start.Created:
 			m.logger.Warn("listener created the consumer of a session the bucket holds a record for again",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
@@ -434,12 +439,13 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			m.logger.Warn("listener set the filter of the consumer of a session to the topics the bucket holds for it",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter))
 		default:
-			// The call sent nothing, so no filter of this row's landed anywhere and there is
-			// nothing for the fence to hold. This is every repair of a session nothing raced,
-			// and it costs one bucket read fewer than one that wrote.
-			return 0, false
+			// The call sent nothing because the consumer is already what this row asks for, so
+			// no filter of an older row stands and the fence ends here, on whatever pass. This
+			// is every repair of a session nothing raced, and it costs one bucket read fewer
+			// than one that wrote.
+			return 0, filterWriteSettled
 		}
-		return want.revision, true
+		return want.revision, filterWriteLanded
 	})
 }
 
