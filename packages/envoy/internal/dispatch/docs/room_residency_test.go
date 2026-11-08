@@ -917,8 +917,16 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 			service, database := newRetiringRoomService(t)
 			ctx := context.Background()
 			const trials = 40
-			hung := 0
-			for trial := range trials {
+			hungTrial := -1
+			hungCommitReturned, hungCloseReturned := false, false
+			// Each trial runs in a function of its own so that what it defers goes back where it
+			// came from at the end of that trial, not at the end of the subtest: a defer written
+			// in the loop below would hold forty transactions open until the subtest returned,
+			// and a t.Fatalf in the middle of a trial would leave that trial's transaction open
+			// for good. storetest.Open closes the pool in its own cleanup, and Pool.Close returns
+			// only once every connection in use has come back, so a transaction left open there
+			// wedges the cleanup and the subtest never prints its result.
+			runTrial := func(trial int) bool {
 				number := 100 + trial
 				artifactID := createIssueDocument(t, database, number, markdown(paragraphs, "before"))
 				seedServiceText(t, service, artifactID, markdown(paragraphs, "before"))
@@ -927,6 +935,24 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					t.Fatal(err)
 				}
 				joined, ledger := service.Join(ctx, tx)
+				// committing says the commit goroutine below owns the transaction, and while it
+				// does the release leaves it alone: a rollback beside a live Commit writes the
+				// same pgx transaction and the same pooled connection from a second goroutine,
+				// which -race reports as a data race. Only the subtest's own goroutine ever
+				// touches the flag -- it sets it before the goroutine starts, clears it once a
+				// value has arrived on committed, and reads it in the deferred release, which
+				// runs on that same goroutine -- so a plain bool says all there is to say and an
+				// atomic would claim a sharing that is not there.
+				committing := false
+				defer func() {
+					if committing {
+						return
+					}
+					// After a commit only the ledger's read-backs are left to drop, and the
+					// rollback answers ErrTxClosed; both are what this file's other writers do.
+					ledger.Discard()
+					tx.Rollback(ctx)
+				}()
 				if _, err := service.ReplaceText(joined, artifactID, markdown(paragraphs, "after"), alice); err != nil {
 					t.Fatalf("trial %d: replace: %v", trial, err)
 				}
@@ -943,23 +969,49 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				}()
 				time.Sleep(30 * time.Millisecond)
 				committed := make(chan error, 1)
+				committing = true
 				go func() { committed <- ledger.Commit(ctx) }()
 				select {
 				case err := <-committed:
+					committing = false
 					if err != nil {
 						t.Errorf("trial %d: commit: %v", trial, err)
 					}
 				case <-time.After(10 * time.Second):
-					hung++
-					continue
+					hungTrial = trial
+					// A hang guard, not a measurement of anything: the commit that did not return
+					// still holds this trial's transaction and its pooled connection, so give it
+					// ten more seconds to arrive and take the transaction back when it does. A
+					// write wedged before tx.Commit would otherwise hold the pool's Close open.
+					select {
+					case <-committed:
+						committing = false
+						hungCommitReturned = true
+					case <-time.After(10 * time.Second):
+					}
+					// The close is a second goroutine of this trial's making, so say whether it
+					// came back rather than walk away from it unreported.
+					select {
+					case <-closed:
+						hungCloseReturned = true
+					case <-time.After(10 * time.Second):
+					}
+					return false
 				}
 				if err := <-closed; err != nil {
 					t.Fatalf("trial %d: close the issue: %v", trial, err)
 				}
+				return true
 			}
-			if hung > 0 {
-				t.Errorf("%d of %d writes never returned from their commit once their issue closed as they published (%d goroutine(s) in consumeSuppressedPersistence)",
-					hung, trials, goroutinesIn("consumeSuppressedPersistence"))
+			// The loop stops at the first hang, so at most one commit goroutine is ever in flight.
+			for trial := range trials {
+				if !runTrial(trial) {
+					break
+				}
+			}
+			if hungTrial >= 0 {
+				t.Errorf("trial %d of %d never returned from its commit once its issue closed as it published, and the loop stopped there (the commit returned within ten more seconds: %t; the close returned: %t; %d goroutine(s) in consumeSuppressedPersistence)",
+					hungTrial, trials, hungCommitReturned, hungCloseReturned, goroutinesIn("consumeSuppressedPersistence"))
 			}
 		})
 	}
