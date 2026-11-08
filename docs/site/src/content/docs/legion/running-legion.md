@@ -481,7 +481,7 @@ What each part is for:
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
   order a person approves them. No phase of the tree starts, no released child starts and no
-  merger's READY is accepted until a person has approved the document of every step listed. The
+  merger merges until a person has approved the document of every step listed. The
   default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
   approval, which the word `off` also means. A list naming one step twice, and any other word,
   is refused at load. There is no other way past the gate. `legion state --json` answers the

@@ -499,8 +499,8 @@ func testReleaseClaimLane(t *testing.T) {
 	})
 
 	commitRows(t, pool, runner.records, "board",
-		mustOutboxRow(t, claimIssue, record.StatusWrite{ObservedStatus: "backlog", Status: "icebox"}, clock.Now()),
-		mustOutboxRow(t, claimIssue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}, clock.Now()))
+		mustOutboxRow(t, claimIssue, record.OrdinaryStatusWrite("icebox", "backlog", ""), clock.Now()),
+		mustOutboxRow(t, claimIssue, record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "review_round_cap"}, clock.Now()))
 	testwait.Eventually(t, "the status write and the notice ran while the release waited", func() bool {
 		_, delivered := publisher.snapshot()
 		return len(client.statusWrites()) == 1 && len(delivered) == 1

@@ -219,6 +219,19 @@ func TestNoComposedPromptCommitsAHandoff(t *testing.T) {
 				t.Errorf("the composed %s prompt still says %q", role, phrase)
 			}
 		}
+		// Every phrase above is one sentence that said READY, and a new one would pass them all,
+		// so the word itself is censused: the only READY a composed prompt may hold is the one
+		// inside HANDOFF_ALREADY_RECORDED, the refusal that outlived the packet.
+		for at := 0; ; {
+			found := strings.Index(text[at:], "READY")
+			if found < 0 {
+				break
+			}
+			at += found + len("READY")
+			if !strings.HasSuffix(text[:at], "ALREADY") {
+				t.Errorf("the composed %s prompt names READY: %q", role, text[max(0, at-120):min(len(text), at+120)])
+			}
+		}
 	}
 }
 
