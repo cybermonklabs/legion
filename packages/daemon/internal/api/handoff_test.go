@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -98,11 +99,10 @@ func newHandoffGitHub(t *testing.T) *handoffGitHub {
 		checkRuns:  `[{"id":1,"name":"ci","status":"completed","conclusion":"success"}]`,
 		statuses:   `[{"context":"legacy","state":"success"}]`,
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		g.mu.Lock()
 		defer g.mu.Unlock()
 		g.bearers = append(g.bearers, r.Header.Get("Authorization"))
-		w.Header().Set("Content-Type", "application/json")
 		path, ok := strings.CutPrefix(r.URL.Path, "/repos/"+g.repo+"/")
 		if !ok {
 			http.NotFound(w, r)
@@ -143,9 +143,7 @@ func newHandoffGitHub(t *testing.T) *handoffGitHub {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	}})
 	return g
 }
 

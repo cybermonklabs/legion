@@ -2,6 +2,7 @@ package api
 
 import (
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
@@ -19,6 +20,11 @@ import (
 // comparing the head with the approved head (dispatch://INFRA-764).
 var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH"}
 
+// guardedAtStart is what TestMain's own Guard kept, read before any test of this package ran.
+// TestTheGuardTestMainRanKeptTheGatedProofsInputs reads it rather than the live state, which a
+// test that runs a Guard of its own would answer for.
+var guardedAtStart []string
+
 // TestMain takes out of the process every variable that could lead this package's real git and gh
 // — the credential proof's `git clone` of a real repository through gh's own credential helper,
 // and the gh it runs over the rendered files — to a repository, remote or credential not the
@@ -29,7 +35,22 @@ var guardKeep = []string{realGitHubProofEnabled, "LEGION_GH_PATH"}
 // run in.
 func TestMain(m *testing.M) {
 	fixtureenv.MustGuard(guardKeep...)
+	guardedAtStart = fixtureenv.Kept()
 	os.Exit(testpg.Main("legion_api_test", m.Run))
+}
+
+// TestTheGuardTestMainRanKeptTheGatedProofsInputs holds this package's entry point to the two
+// names its gated proof reads, from what that Guard recorded rather than from a Guard of its own.
+// Without it, a TestMain that called fixtureenv.Guard() with no names would leave every test of
+// this package green — TestTheGuardKeepsTheGatedProofsInputs below runs its own Guard with
+// guardKeep, so it answers for the list rather than for the entry point — and the loss would show
+// only as an operator's gated proofs skipping, with nothing red (dispatch://INFRA-917 R1).
+func TestTheGuardTestMainRanKeptTheGatedProofsInputs(t *testing.T) {
+	want := []string{"LEGION_GH_PATH", "LEGION_REAL_GITHUB"}
+	kept := slices.Sorted(slices.Values(guardedAtStart))
+	if !slices.Equal(kept, want) {
+		t.Errorf("TestMain's guard kept %q, want the gated proof's inputs %q", kept, want)
+	}
 }
 
 // TestTheGuardKeepsTheGatedProofsInputs holds guardKeep to the inputs the gated proof reads: with

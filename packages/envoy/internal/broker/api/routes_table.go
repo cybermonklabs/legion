@@ -377,7 +377,8 @@ func routes() []apiRoute {
 		{http.MethodPost, "/v1/secrets/{name}/reread", public((*server).rereadSecret)},
 		// A person's approval page for one credential-request record, an HTML page on the broker's
 		// own origin: the record's secret names, the enrollment the broker verified asked, the
-		// session the request claims when it differs, the reason or "No reason given", the
+		// session the request claims when it differs, the reason (empty only on a record an older
+		// build wrote before the broker required one wherever a person decides), the
 		// lifetime, the times, the approver and the state, one sentence saying what Approve gives
 		// and for how long and one saying what Deny and the expiry do, then every other pending
 		// secret request the person may decide, with Approve and Deny for each the person may

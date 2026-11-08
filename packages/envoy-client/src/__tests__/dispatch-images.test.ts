@@ -294,6 +294,11 @@ describe("sending pictures", () => {
     expect(server.posted.map((posted) => posted.body)).toEqual([`${body}\n\n${line}`]);
   });
 
+  // The 30 s limit is a hang guard, not a budget: the row uploads 25 MiB, the most one Dispatch
+  // upload takes, and bun's unwritten 5,000 ms per-test default is a limit on moving those bytes
+  // rather than on a hang. Measured in a 2-CPU pod: 0.94 s idle; under 16 busy loops (8 x nproc),
+  // 5.05 s at most in a whole-suite run and 5.13 s with this file alone, which passes that
+  // default. It fires only if the upload never answers.
   test("a picture of exactly 25 MiB, the most one Dispatch upload takes, is uploaded and posted", async () => {
     const server = dispatch();
     const largest = file("largest.png", PNG, 25 * MiB);
@@ -308,7 +313,7 @@ describe("sending pictures", () => {
     expect(server.posted.map((body) => body.body)).toEqual([
       "Full size.\n\n![largest.png](dispatch://DSP-41/artifact/largest-png@v1)",
     ]);
-  });
+  }, 30_000);
 
   test("a file name holding brackets or a backslash still reads back as its picture", async () => {
     const server = dispatch();

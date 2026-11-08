@@ -1459,14 +1459,10 @@ Each item below names an input and its default, then what it means.
 - `LEGION_E2E_AGENT_SECRETS_URL` — unset (the `secrets-*` checks report `SKIPPED-BLOCKED`)
 
   the agent-secrets broker the run enrolls pods with
-  — the **production** broker (Plan D, the broker design's AWS deployment plan), never a development slot (below)
-
-- `LEGION_E2E_AGENT_SECRETS_OPERATOR` — unset
-
-  the email of the person who approves the run's credential request for `LEGION_E2E_APPROVAL` (the `secrets-approval-ask` check prints `STAGE4A: approve credential request <record> for LEGION_E2E_APPROVAL on the Dispatch credential page as <operator>`).
-  The stage is devbox-attended for that one approval:
-  someone clicks Approve during the run (polled up to 10 minutes; a timeout, denial, or expiry fails that check).
-  The run's own broker login asks no one: it logs in as the daemon does, with a token for `LEGION_E2E_AGENT_SECRETS_ACCOUNT`
+  — the **production** broker (Plan D, the broker design's AWS deployment plan), never a development slot (below).
+  The `secrets-*` checks run only when this input, `LEGION_E2E_AGENT_SECRETS_ACCOUNT` and `LEGION_E2E_AGENT_SECRETS_AUTO_SHA256` are all set, and each one of them left unset holds every `secrets-*` check at `SKIPPED-BLOCKED`.
+  The stage is unattended: `secrets-approval-ask` makes one request for `LEGION_E2E_APPROVAL`, asserts the approver the broker names for it is that secret's single owner and not the shared marker `anyone`, and then cancels its own request, so no card waits on a person and none is left behind.
+  The run's own broker login asks no one either: it logs in as the daemon does, with a token for `LEGION_E2E_AGENT_SECRETS_ACCOUNT`
 
 - `LEGION_E2E_AGENT_SECRETS_ACCOUNT` — unset
 
@@ -1492,12 +1488,12 @@ Each item below names an input and its default, then what it means.
 A dispatch-project development slot cannot host this proof, for three reasons Plan D established:
 its broker verifies tokens of the *staging* cluster's issuer, and the pods this harness launches carry the production cluster's;
 it lives in the staging VPC and cannot reach production Dispatch;
-and it may not run a Dispatch of its own (the GitHub App's credentials cannot cross accounts), so nobody can approve the run's credential request there.
+and it may not run a Dispatch of its own (the GitHub App's credentials cannot cross accounts), so no person could sign in to decide a credential record there.
 Instead the proof runs against the **production broker** with two throwaway secrets in its namespace, tagged (`LEGION_E2E_AUTO`:
 `owner=shared`, `tier=agent`, granted automatically to every pod;
-`LEGION_E2E_APPROVAL`: `owner=shared`, `tier=human`, so a request for it is decided by anyone signed in to Dispatch, the operator included
+`LEGION_E2E_APPROVAL`: `tier=human` under a single owner no person holds, so a request for it stays pending on that owner's page alone and on no signed-in person's
 — a pod has no operator, and the broker's policy names no issue assignee;
-Sami's values seeded after Plan D's apply)
+Sami's values seeded after Plan D's apply, its owner retagged away from `shared` for INFRA-1665)
 — "before any real secret moves" is exactly this state, and it is what spec Acceptance 2's "a live worker pod on a development slot" means here.
 
 Two identities, so the runtime is proven under exactly the RBAC it ships with.
@@ -1674,8 +1670,9 @@ Each item below names a check, then what it does and what it requires.
 
   a request for the approval-gated secret comes back pending with a credential-request record id (ruling 16:
   the secret's owner and tier pick the approver at request time, naming no issue);
-  the harness prints `STAGE4A: approve credential request <record id> for LEGION_E2E_APPROVAL on the Dispatch credential page as <operator>` and polls for up to 10 minutes until the operator's real approval settles it granted (success), denied, or expired (both failures)
-  — always attended, with no cancel-and-cleanup path
+  the approver the broker names for it is `LEGION_E2E_APPROVAL`'s single owner, not the shared marker `anyone`, so the card is on that one owner's page and not on every signed-in person's, and the check's evidence line names the approver it read;
+  the harness then cancels its own request (`agent-secrets cancel <request id>`) and reads the request back `cancelled`
+  — unattended, waiting on nobody and leaving no pending card behind
 
 - `suspend`
 
@@ -5126,7 +5123,7 @@ a GitHub that never answered, an answer that is not 2xx (GitHub's 401 for a toke
 A stage proof calls it once in `prerequisites`, after `require_app_inputs` and `write_github_apps` and before its first write anywhere and any check that needs a login.
 `role_app ROLE` then prints the login of the App the role acts as (the implement App's for the implementer and the merger, the review App's for every other role, the controller's included), as REST and git name it, and `role_app_slug ROLE` the bare slug GraphQL names the bot by;
 either fails, saying so, when `read_app_logins` has not run.
-`lib/app-logins.test.ts` runs the helper, and `read_app_logins` and the input checks over it, against a stand-in GitHub, and `lib/reviewer-thread.test.ts` drives `reviewer_thread` with the logins set.
+`lib/app-logins.test.ts` runs the helper, and `read_app_logins` over it, against a stand-in GitHub, `lib/github-apps.test.ts` runs the input checks over the same stand-in, and `lib/reviewer-thread.test.ts` drives `reviewer_thread` with the logins set.
 
 `clean_smoke_main` is Stage 3's `smoke-main-clean` and the cleanup inside Stage 4b's `done`:
 one fixture pull request, on the branch `proof/clean-main-<project, lowercased>`, that removes the handoffs and learnings proof merges leave on the smoke `main`.
@@ -5208,6 +5205,8 @@ Each App input defaults to the lib's default pair, `legion-implementer` (App ID 
 The lib takes no key input.
 A deployment with its own Apps stores each as a broker github-app secret and sets all four inputs:
 the lib proves an App from its token, and a key file or a key runner was the only reason for a key input.
+A deployment whose broker holds no credential for a role must set that role's two inputs, whatever it leaves to the default for the other:
+the broker then serves no github-app secret under the name the default gave, and the check fails naming that role and the `LEGION_E2E_<ROLE>_APP_SECRET` to set.
 
 `require_app_inputs ROLE...` reads each role's pair, taking the default for an input that is unset, and fails naming the input that is set but malformed:
 an id that is not a number of at most 12 digits, or a secret name that is not letters, digits and underscores of at most 64 (so it is safe in a shell command and as a variable name, and a pasted token is refused by its length).
@@ -5232,18 +5231,21 @@ A `DIR` holding anything but letters, digits and `_ . / -` is refused, by `mint_
 
 `check_github_apps ROLE...` runs [`lib/app-logins.ts`](#libworkflowsh) `--roles` over `$work/github-apps.yaml` and fails the check unless each App's token command releases a token whose GraphQL viewer is an App's bot, `<slug>[bot]`, and GitHub's `GET /apps/<slug>`, under that token, answers the configured id and the write permission the role's work needs (the implement role's `contents`, the review role's `checks`):
 a token GitHub does not take is refused by GitHub's 401, an answer naming another id is refused naming both ids, and the two Apps configured the other way round are refused by the permission, since the implement App holds `checks: read` alone.
+A broker that serves no github-app secret under the name a role gave refuses that role's token command outright (`UNKNOWN_SECRET`, `no agent secret has this name`), the one failure of this check whose fix is an input and not GitHub.
+`lib/app-logins.ts` reads that refusal out of the run it already makes, asking the broker nothing of its own, since a probe of a human-tier secret would raise a person's approval card, and names the role and the input to set, `LEGION_E2E_<ROLE>_APP_SECRET`, in place of its reason for that one failure.
+It reads the whole of the command's stderr, so a refusal the client prints under a line of its own is named the same way, and `agent-secrets`' own lines reach the run's output as they are written, redacted of every token form before anything sees one.
 No JWT is signed and no key is read anywhere.
 A token never enters the script's shell or an argv, and never a file but through the refresher:
 under the sandbox proof's `bridge`, the two Apps' releases exist as owner-only files on the devbox user's tmpfs (`XDG_RUNTIME_DIR`) for the run's lifetime, and its teardown removes them ([Pod reachability](#pod-reachability)).
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
-`TestRealGitHubCredentialSurface` sources this lib and runs its `require_app_inputs`, `app_token_command` and `check_github_apps` (through `liveProofApps` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
-`proveLiveProofApps` checks the very block the proof acts with), so it holds no copy of the pair, its checks or its token command, and it proves both Apps as the stage proofs do before it acts.
+`TestRealGitHubCredentialSurface` sources this lib and runs its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
+`proveLiveProofApps` checks the very block the proof acts with), so it holds no copy of the App, its checks or its token command, and it proves the implement App as the stage proofs do before it acts: it takes the implement inputs and no others, since the default review secret is human tier and a run that named it would wait for a person.
 Stage 4a hands its Go harness the implement App's pair and that App's `app_token_command`, which the harness's token manager runs with `sh -c`, so it holds no copy of the token command either.
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, which strips each role's secret name, the default pair's two, and every exported variable whose name holds `PRIVATE_KEY`.
-`lib/app-logins.test.ts` drives the functions under a stage script's shell options against a stand-in GitHub that serves GraphQL's viewer and `GET /apps/<slug>` and refuses the JWT routes, with a stand-in `agent-secrets`:
-the default pair, an unset input taking its default, a malformed one refused by name with its value unprinted, `app_token_command`'s text and the `--github-owner`, `--github-repo` and `--github-read-only` words it passes only when the daemon sets each variable, `write_github_apps` refusing an unread role and writing the daemon's block, `app_key_unsets` leaving no App secret in a child's environment, an answer naming another App id refused naming both ids, a role's missing write permission refused, a failed token command named by its field, exit code and stderr, the command run without the NATS seeds and with owner, repositories and read-only empty, no token in any message, and a match accepted;
+`lib/github-apps.test.ts` drives the functions under a stage script's shell options against a stand-in GitHub that serves GraphQL's viewer and `GET /apps/<slug>` and refuses the JWT routes, with a stand-in `agent-secrets`:
+the default pair, an unset input taking its default, a malformed one refused by name with its value unprinted, `app_token_command`'s text and the `--github-owner`, `--github-repo` and `--github-read-only` words it passes only when the daemon sets each variable, `write_github_apps` refusing an unread role and writing the daemon's block, `app_key_unsets` leaving no App secret in a child's environment, an answer naming another App id refused naming both ids, a secret the broker does not serve failing the check by its role and its input, the same refusal below the first line of the command's stderr failing it the same way, no token in any message, and a match accepted (`lib/app-logins.test.ts` holds the rows over the helper beneath them: a role's missing write permission refused, a failed token command named by its field, exit code and stderr, and that command run without the NATS seeds and with owner, repositories and read-only empty);
 and `mint_app_tokens` writing each release 0600 and atomically, a failed or empty mint leaving no file and the last good release, the refresher minting again and stopping, `write_github_apps --token-dir`'s commands reading the right file under busybox `sh`, its block proved with `agent-secrets` broken after the mint, and a token directory unsafe in shell text refused.
 
 ## lib/namespace-rig.sh
