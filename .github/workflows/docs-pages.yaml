@@ -41,6 +41,7 @@ on:
       - 'packages/claude-envoy/package.json'
       - 'packages/proof-editor/package.json'
       - 'packages/dispatch/package.json'
+      - 'packages/test-fixtures/package.json'
       - 'packages/envoy/internal/dispatch/pmdoc/gen/package.json'
       - 'docs/site/package.json'
       - '.bun-version'
