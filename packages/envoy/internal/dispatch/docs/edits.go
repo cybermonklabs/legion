@@ -208,8 +208,15 @@ func (e *ErrInvalidPrecondition) Error() string {
 var ErrPreconditionBusy = errors.New("document conditional edit queue is full")
 
 // ErrPreconditionFailed reports a stale document or block token without changing the live tree.
+// CurrentVersion is the number of the newest version the document has, filled in by a caller that
+// has read it beside the write it refused (api's upload); an edit refuses without reading the
+// version rows at all, and leaves it nil. Advice is what that caller tells the reader to do next,
+// in its own words, appended to the refusal's sentence; an edit leaves it empty and its refusal
+// reads as it always has.
 type ErrPreconditionFailed struct {
 	CurrentDocument string
+	CurrentVersion  *int
+	Advice          string
 	Mismatches      []model.EditPreconditionMismatch
 }
 
@@ -226,7 +233,11 @@ func (e *ErrPreconditionFailed) Error() string {
 		}
 		reasons = append(reasons, fmt.Sprintf("block %q changed", mismatch.BlockID))
 	}
-	return "document edit precondition failed: " + strings.Join(reasons, ", ")
+	refusal := "document edit precondition failed: " + strings.Join(reasons, ", ")
+	if e.Advice != "" {
+		return refusal + "; " + e.Advice
+	}
+	return refusal
 }
 
 // nodeToken hashes a canonical semantic Proof representation, including inline marks but excluding
@@ -345,6 +356,18 @@ func validateEditPrecondition(precondition model.EditPrecondition) error {
 		seen[block.ID] = struct{}{}
 	}
 	return nil
+}
+
+// ValidateUploadPrecondition holds a whole-document upload's precondition to what an upload can
+// mean. The upload replaces the whole document, so only the document token says which text it
+// believes it is replacing: a blocks precondition guards part of a tree the upload rewrites
+// whole. Everything else is held to the shape every edit's precondition is held to, so an upload
+// refuses a malformed one as `dispatch doc-edit` refuses it.
+func ValidateUploadPrecondition(precondition model.EditPrecondition) error {
+	if len(precondition.Blocks) > 0 {
+		return &ErrInvalidPrecondition{Reason: "an upload's precondition names the document token and nothing else"}
+	}
+	return validateEditPrecondition(precondition)
 }
 
 // checkEditPrecondition refuses an edit whose precondition the document no longer meets, and

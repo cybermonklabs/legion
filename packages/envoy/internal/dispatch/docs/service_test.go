@@ -4626,7 +4626,7 @@ func TestRolledBackWriteNeverReachesTheRoom(t *testing.T) {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
 	if got, err := service.Text(joined, artifactID); err != nil || got != "after\n" {
@@ -5725,7 +5725,7 @@ func joinedWrite(service *Service, write func(ctx context.Context) error) error 
 func joinedReplaceText(service *Service, artifactID, markdown string, actor model.Actor) (string, error) {
 	var canonical string
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
-		canonical, err = service.ReplaceText(ctx, artifactID, markdown, actor)
+		canonical, err = service.ReplaceText(ctx, artifactID, markdown, actor, nil)
 		return err
 	})
 	return canonical, err

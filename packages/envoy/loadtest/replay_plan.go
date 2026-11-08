@@ -261,6 +261,10 @@ type replayArg struct {
 // ask an answer must name as expected_edited_at).
 type replayPrevEditedAt struct{}
 
+// replayDocToken in a body is the document token an earlier read of the same action carried: the
+// base a whole-document upload names (its `precondition`).
+type replayDocToken struct{}
+
 // replayFile is a multipart upload's file: deterministic bytes of the logged size.
 type replayFile struct {
 	Name, MIME, Seed string
@@ -286,6 +290,10 @@ type replayReq struct {
 	// Tolerate is a status that does not fail the action (the 404 of architecture-sources at
 	// 35efd326).
 	Tolerate int
+	// ReadsBase marks the read that carries an upload's base (replayDocToken): it waits for the
+	// planned write before it on the document, as the upload itself does, so the token it reads
+	// is the one the upload meets.
+	ReadsBase bool
 }
 
 // replayAction is one CLI call: its stages run in order, the requests of a stage in parallel.
@@ -932,8 +940,16 @@ func (pl *replayPlanner) planWrite(ev replayEvent, offset time.Duration) (*repla
 		switch {
 		case upload:
 			act.Kind = rkUpload
-			act.Stages = [][]*replayReq{{{Method: "POST", Path: "/api/v1/issues/{key}/artifacts", Params: keyParams(key), Person: person,
-				Body: withActor(map[string]any{"name": v.Name, "content": next, "summary": summary}, actor)}}}
+			// The upload replaces a document that exists, so it names the base it replaces: the
+			// read ahead of it carries the document's token into its precondition, and waits,
+			// as the write does, for the planned write before it on this document to return.
+			read := map[string]replayArg{"id": refArg(replayRef{idArtifact, v.ArtifactID})}
+			act.Stages = [][]*replayReq{
+				{{Method: "GET", Path: "/api/v1/artifacts/{id}/text", Params: read, ReadsBase: true}},
+				{{Method: "POST", Path: "/api/v1/issues/{key}/artifacts", Params: keyParams(key), Person: person,
+					Body: withActor(map[string]any{"name": v.Name, "content": next, "summary": summary,
+						"precondition": map[string]any{"document": replayDocToken{}}}, actor)}},
+			}
 		default:
 			act.Kind = rkEdit
 			body := withActor(map[string]any{"ops": ops}, actor)

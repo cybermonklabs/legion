@@ -49,7 +49,7 @@ func BenchmarkAnchoredWrite(b *testing.B) {
 			return err
 		}},
 		{"upload", func(ctx context.Context, fixture *anchoredWriteFixture, iteration int) error {
-			_, err := fixture.service.ReplaceText(ctx, fixture.artifactID, fixture.uploads[iteration%len(fixture.uploads)], anchoredWriteActor)
+			_, err := fixture.service.ReplaceText(ctx, fixture.artifactID, fixture.uploads[iteration%len(fixture.uploads)], anchoredWriteActor, nil)
 			return err
 		}},
 	} {

@@ -132,7 +132,7 @@ func TestARolledBackWriteIsNoAuthorOfTheNextVersion(t *testing.T) {
 	}
 	joined, ledger := service.Join(ctx, tx)
 	rolledBack := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
-	if _, err := service.ReplaceText(joined, artifactID, "rolled back", rolledBack); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "rolled back", rolledBack, nil); err != nil {
 		t.Fatalf("replace text in the transaction: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {

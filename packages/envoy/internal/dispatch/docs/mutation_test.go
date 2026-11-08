@@ -54,7 +54,7 @@ func TestEveryDocumentWriteRefusesAnUnjoinedContext(t *testing.T) {
 		{"SeedText", func() error { _, err := service.SeedText(unjoined, artifactID, "seeded", alice); return err }},
 		{"SnapshotVersion", func() error { _, err := service.SnapshotVersion(unjoined, artifactID, alice); return err }},
 		{"NamedVersion", func() error { _, err := service.NamedVersion(unjoined, artifactID, "named", alice); return err }},
-		{"ReplaceText", func() error { _, err := service.ReplaceText(unjoined, artifactID, "replaced", alice); return err }},
+		{"ReplaceText", func() error { _, err := service.ReplaceText(unjoined, artifactID, "replaced", alice, nil); return err }},
 		{"ApplyOps", func() error { _, err := service.ApplyOps(unjoined, artifactID, insert, alice, nil); return err }},
 		{"ApplyOps with a precondition", func() error {
 			_, err := service.ApplyOps(unjoined, artifactID, insert, alice, &model.EditPrecondition{Document: token})
@@ -192,7 +192,7 @@ func TestReplaceTextWithTransactionRollsBackUpdate(t *testing.T) {
 	}
 	actor := model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "# Rolled back", actor, nil); err != nil {
 		t.Fatalf("replace text: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {

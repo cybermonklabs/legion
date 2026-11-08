@@ -128,6 +128,10 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// uploadBaseRequired makes the server refuse a whole-document upload that replaces a
+	// document and names no base (Deps.UploadBaseRequired); false is the deployment default,
+	// where such an upload is taken.
+	uploadBaseRequired bool
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -253,6 +257,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:               options.answerer,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
+		UploadBaseRequired:     options.uploadBaseRequired,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

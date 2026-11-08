@@ -146,6 +146,9 @@ type AppContextOptions struct {
 	// ListenerRosterUncached is for end-to-end test processes only (cmd/dispatch:
 	// DISPATCH_TEST_ROSTER_UNCACHED); see api.DepsInput.
 	ListenerRosterUncached bool
+	// UploadBaseRequired refuses a whole-document upload that replaces a document and names no
+	// base (cmd/dispatch: DISPATCH_UPLOAD_BASE_REQUIRED); see api.DepsInput.
+	UploadBaseRequired bool
 	// DevSignIn mounts GET /auth/_dev/signin, which issues the session cookie for any person
 	// named with no sign-in issuer exchange, and makes the whole router refuse a request whose Host
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
@@ -202,6 +205,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		RouteRosterTTL:         opts.RouteRosterTTL,
 		ListenerTakeoverWindow: opts.ListenerTakeoverWindow,
 		ListenerRosterUncached: opts.ListenerRosterUncached,
+		UploadBaseRequired:     opts.UploadBaseRequired,
 		DashboardEntry:         opts.DashboardEntry,
 	})
 	if err != nil {

@@ -1271,7 +1271,7 @@ func TestRenderReuseADocumentOutsideTheSchema(t *testing.T) {
 	}
 	replaceWhole := func(service *Service, artifactID string) func(ctx context.Context) error {
 		return func(ctx context.Context) error {
-			_, err := service.ReplaceText(ctx, artifactID, renderReuseDocument(), reuseAgent)
+			_, err := service.ReplaceText(ctx, artifactID, renderReuseDocument(), reuseAgent, nil)
 			return err
 		}
 	}

@@ -165,7 +165,7 @@ func TestARoomThatFailsWhileItIsLoadingRecovers(t *testing.T) {
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
 		t.Fatalf("joined write after the failed load recovered: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -207,7 +207,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "after", alice); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "after", alice, nil); err != nil {
 		t.Fatalf("joined write: %v", err)
 	}
 	// Commit without publishing, the window a room can be replaced in: the write's own update is
@@ -274,7 +274,7 @@ func TestAPublishRefusedByAFailedRoomLeavesTheReplacementAlone(t *testing.T) {
 	defer retry.Rollback(ctx)
 	retryJoined, retryLedger := service.Join(ctx, retry)
 	defer retryLedger.Discard()
-	if _, err := service.ReplaceText(retryJoined, artifactID, "later", alice); err != nil {
+	if _, err := service.ReplaceText(retryJoined, artifactID, "later", alice, nil); err != nil {
 		t.Fatalf("joined write after the refused publish: %v", err)
 	}
 	if err := retryLedger.Commit(ctx); err != nil {
@@ -375,7 +375,7 @@ func TestATransactionHoldingTheRoomLockFailsFastOnItsFailedRoom(t *testing.T) {
 			service.failRoom(artifactID, errors.New("injected room failure"))
 
 			failsFast(t, "a joined write", func() error {
-				_, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"})
+				_, err := service.ReplaceText(joined, artifactID, "after", model.Actor{Kind: "user", ID: "alice"}, nil)
 				return err
 			})
 			if err := tx.Rollback(ctx); err != nil {
@@ -419,7 +419,7 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 	defer ledger.Discard()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	failsFast(t, "a joined write", func() error {
-		_, err := service.ReplaceText(joined, artifactID, "during", alice)
+		_, err := service.ReplaceText(joined, artifactID, "during", alice, nil)
 		return err
 	})
 	if err := tx.Rollback(ctx); err != nil {
@@ -438,7 +438,7 @@ func TestAWriteMeetingAFailedRoomFailsFastWhoeverHoldsItsLock(t *testing.T) {
 	defer retry.Rollback(ctx)
 	retryJoined, retryLedger := service.Join(ctx, retry)
 	defer retryLedger.Discard()
-	if _, err := service.ReplaceText(retryJoined, artifactID, "after", alice); err != nil {
+	if _, err := service.ReplaceText(retryJoined, artifactID, "after", alice, nil); err != nil {
 		t.Fatalf("joined write on the recovered room: %v", err)
 	}
 	if err := retryLedger.Commit(ctx); err != nil {
@@ -512,13 +512,13 @@ func TestARoomFailingBetweenTwoJoinedOperationsFailsTheSecondFast(t *testing.T) 
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	if _, err := service.ReplaceText(joined, artifactID, "during", alice); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "during", alice, nil); err != nil {
 		t.Fatalf("first joined write: %v", err)
 	}
 	service.failRoom(artifactID, errors.New("injected room failure"))
 
 	failsFast(t, "the second joined write", func() error {
-		_, err := service.ReplaceText(joined, artifactID, "after", alice)
+		_, err := service.ReplaceText(joined, artifactID, "after", alice, nil)
 		return err
 	})
 	if err := tx.Rollback(ctx); err != nil {
@@ -585,7 +585,7 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 	defer first.Rollback(ctx)
 	firstJoined, firstLedger := service.Join(ctx, first)
 	defer firstLedger.Discard()
-	if _, err := service.ReplaceText(firstJoined, artifactID, "first", model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := service.ReplaceText(firstJoined, artifactID, "first", model.Actor{Kind: "user", ID: "alice"}, nil); err != nil {
 		t.Fatalf("first joined write: %v", err)
 	}
 
@@ -598,7 +598,7 @@ func TestAWriterWaitingForTheSlotFinishesWhenTheRoomFails(t *testing.T) {
 	defer secondLedger.Discard()
 	returned := make(chan error, 1)
 	go func() {
-		_, err := service.ReplaceText(secondJoined, artifactID, "second", model.Actor{Kind: "user", ID: "bob"})
+		_, err := service.ReplaceText(secondJoined, artifactID, "second", model.Actor{Kind: "user", ID: "bob"}, nil)
 		returned <- err
 	}()
 	// The second write waits on the document's owner row while the first transaction is open;

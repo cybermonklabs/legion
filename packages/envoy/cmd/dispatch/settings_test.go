@@ -830,6 +830,46 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		"DISPATCH_MAX_DOC_CONNECTIONS": func(t *testing.T) {
 			documentCapReachesTheService(t, "DISPATCH_MAX_DOC_CONNECTIONS", func(_, connections int) int { return connections })
 		},
+		"DISPATCH_UPLOAD_BASE_REQUIRED": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_UPLOAD_BASE_REQUIRED": "on"}); !boot.UploadBaseRequired {
+				t.Error("DISPATCH_UPLOAD_BASE_REQUIRED=on: UploadBaseRequired false")
+			}
+			for _, off := range []string{"", "off"} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_UPLOAD_BASE_REQUIRED": off}); boot.UploadBaseRequired {
+					t.Errorf("DISPATCH_UPLOAD_BASE_REQUIRED=%q: UploadBaseRequired true", off)
+				}
+			}
+			refusedWith(t, map[string]string{"DISPATCH_UPLOAD_BASE_REQUIRED": "1"}, `DISPATCH_UPLOAD_BASE_REQUIRED="1" (expected on, off or unset)`)
+			// Its reader: a second upload of one project document, naming no base, which the
+			// router takes with the setting off and refuses with it on.
+			t.Run("router", func(t *testing.T) {
+				for value, want := range map[string]string{"": "", "on": "PRECONDITION_REQUIRED"} {
+					router := routerFor(t, resolveWith(t, map[string]string{"DISPATCH_UPLOAD_BASE_REQUIRED": value}),
+						routes.AppContextOptions{Store: storetest.Open(t)})
+					post := func(path, body string) *httptest.ResponseRecorder {
+						t.Helper()
+						request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+						request.Header.Set("Authorization", "Bearer agent-token")
+						request.Header.Set("Content-Type", "application/json")
+						response := httptest.NewRecorder()
+						router.ServeHTTP(response, request)
+						return response
+					}
+					const actor = `"actor":{"kind":"session","id":"settings-test"}`
+					if created := post("/api/v1/projects", `{"key":"UPL","name":"Uploads",`+actor+`}`); created.Code != http.StatusCreated {
+						t.Fatalf("create the project: %d %s", created.Code, created.Body.String())
+					}
+					if created := post("/api/v1/projects/UPL/artifacts", `{"name":"notes.md","content":"before\n",`+actor+`}`); created.Code != http.StatusCreated {
+						t.Fatalf("upload the document: %d %s", created.Code, created.Body.String())
+					}
+					replaced := post("/api/v1/projects/UPL/artifacts", `{"name":"notes.md","content":"after\n",`+actor+`}`)
+					if got := errorCode(replaced); got != want {
+						t.Errorf("DISPATCH_UPLOAD_BASE_REQUIRED=%q: a replacement naming no base answered %d %s, want code %q",
+							value, replaced.Code, replaced.Body.String(), want)
+					}
+				}
+			})
+		},
 		"DISPATCH_SERVER_URL": func(t *testing.T) {
 			if cfg, err := envoyJSON(t, map[string]string{"DISPATCH_SERVER_URL": "https://from-the-table.example"}); err != nil || cfg.Dispatch.ServerURL != "https://from-the-table.example" {
 				t.Errorf("set: %+v, %v; want the variable over envoy.json", cfg, err)

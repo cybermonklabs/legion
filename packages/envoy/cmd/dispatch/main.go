@@ -155,6 +155,12 @@ type bootConfig struct {
 	// its jittered first tick; only DISPATCH_TEST_RECONCILE_AT_START=1, under the test hooks, sets
 	// it.
 	ReconcileAtStart bool
+	// UploadBaseRequired refuses a whole-document upload that replaces a document which already
+	// exists and names no base (400 PRECONDITION_REQUIRED); DISPATCH_UPLOAD_BASE_REQUIRED=on sets
+	// it. It is off until the fleet's pods run a `dispatch` that sends a base, because a pod runs
+	// that command from its image and a new one reaches it only when the daemon replaces the pod.
+	// A base an upload does name is checked whatever this says.
+	UploadBaseRequired bool
 	// OIDCIssuer and OIDCAudience configure verification of projected
 	// service-account tokens. Both set or neither; empty means no verifier.
 	OIDCIssuer   string
@@ -1105,6 +1111,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 			return bootConfig{}, err
 		}
 	}
+	switch flag := strings.TrimSpace(env.get("DISPATCH_UPLOAD_BASE_REQUIRED")); flag {
+	case "", "off":
+	case "on":
+		boot.UploadBaseRequired = true
+	default:
+		return bootConfig{}, fmt.Errorf("DISPATCH_UPLOAD_BASE_REQUIRED=%q (expected on, off or unset)", flag)
+	}
 	identityMode := strings.TrimSpace(env.get("DISPATCH_IDENTITY"))
 	if err := checkSignInSettings(boot, identityMode); err != nil {
 		return bootConfig{}, err
@@ -1513,6 +1526,7 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.RouteRosterTTL = boot.RouteRosterTTL
 	built.ListenerTakeoverWindow = boot.ListenerTakeoverWindow
 	built.ListenerRosterUncached = boot.ListenerRosterUncached
+	built.UploadBaseRequired = boot.UploadBaseRequired
 	built.DevSignIn = boot.DevSignIn
 	return built
 }

@@ -65,7 +65,7 @@ func replaceDocumentText(database *store.Store, documentService docs.API, artifa
 	defer tx.Rollback(ctx)
 	joined, ledger := documentService.Join(ctx, tx)
 	defer ledger.Discard()
-	canonical, err := documentService.ReplaceText(joined, artifactID, markdown, actor)
+	canonical, err := documentService.ReplaceText(joined, artifactID, markdown, actor, nil)
 	if err != nil {
 		return "", err
 	}
@@ -1365,7 +1365,7 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 	defer tx.Rollback(ctx)
 	joined, ledger := documentService.Join(ctx, tx)
 	defer ledger.Discard()
-	uploaded, err := documentService.ReplaceText(joined, issue.PrimaryArtifactID, "First.\n\nSecond, uploaded.\n", alice)
+	uploaded, err := documentService.ReplaceText(joined, issue.PrimaryArtifactID, "First.\n\nSecond, uploaded.\n", alice, nil)
 	if err != nil {
 		t.Fatalf("replace the document with the upload: %v", err)
 	}

@@ -721,10 +721,10 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer earlierTx.Rollback(earlierCtx)
 			earlierJoined, earlierLedger := doc.documentService.Join(earlierCtx, earlierTx)
 			defer earlierLedger.Discard()
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice); err != nil {
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A temporary spec", alice, nil); err != nil {
 				t.Fatalf("write the earlier edit: %v", err)
 			}
-			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice); err != nil {
+			if _, err := doc.documentService.ReplaceText(earlierJoined, doc.artifactID, "A spec", alice, nil); err != nil {
 				t.Fatalf("undo the earlier edit: %v", err)
 			}
 			if err := earlierLedger.Commit(earlierCtx); err != nil {
@@ -742,7 +742,7 @@ func TestANewVersionMovesTheOpenApprovalAsk(t *testing.T) {
 			defer tx.Rollback(ctx)
 			joined, ledger := doc.documentService.Join(ctx, tx)
 			defer ledger.Discard()
-			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker); err != nil {
+			if _, err := doc.documentService.ReplaceText(joined, doc.artifactID, "A revised spec", asker, nil); err != nil {
 				t.Fatalf("the agent's joined write: %v", err)
 			}
 			if err := ledger.Commit(ctx); err != nil {

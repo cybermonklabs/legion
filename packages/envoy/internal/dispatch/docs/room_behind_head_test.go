@@ -1801,7 +1801,7 @@ func TestAMarginWriteFromAWarmForkKeepsTheRenderingOfTheRoomItWasForkedFrom(t *t
 	pair.taskA.unlockState(pair.artifactID, state)
 	var cold bool
 	if err := joinedWrite(pair.taskA, func(ctx context.Context) error {
-		if _, err := pair.taskA.ReplaceText(ctx, pair.artifactID, "First.\n", alice); err != nil {
+		if _, err := pair.taskA.ReplaceText(ctx, pair.artifactID, "First.\n", alice, nil); err != nil {
 			return err
 		}
 		if err := pair.taskA.ProjectMark(ctx, pair.artifactID, "comment-on-task-a", MarkRecord{

@@ -545,7 +545,7 @@ func TestAnUploadClearsOnlyTheEditsItsForkHeld(t *testing.T) {
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
 	const uploaded = "First.\n\nSecond, uploaded.\n"
-	if _, err := service.ReplaceText(joined, artifactID, uploaded, uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, uploaded, uploader, nil); err != nil {
 		t.Fatalf("upload the replacement: %v", err)
 	}
 	service.afterForkRead = nil
@@ -745,10 +745,10 @@ func TestAJoinedWritesAuthorsAreRecordedByTheAppendsThatCreditedThem(t *testing.
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First, once.\n\nSecond.\n", first); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First, once.\n\nSecond.\n", first, nil); err != nil {
 		t.Fatalf("first actor's write: %v", err)
 	}
-	if _, err := service.ReplaceText(joined, artifactID, "First, once.\n\nSecond, twice.\n", second); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First, once.\n\nSecond, twice.\n", second, nil); err != nil {
 		t.Fatalf("second actor's write: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -827,7 +827,7 @@ func TestAFailedUploadLeavesItsRoomsHeldUpdatesAsTheyWere(t *testing.T) {
 	joined, ledger := taskA.Join(ctx, refusedCommitTx{Tx: tx})
 	const uploaded = "First.\n\nSecond, uploaded on task A.\n"
 	uploader := model.Actor{Kind: "session", ID: "uploader-on-task-a"}
-	if _, err := taskA.ReplaceText(joined, artifactID, uploaded, uploader); err != nil {
+	if _, err := taskA.ReplaceText(joined, artifactID, uploaded, uploader, nil); err != nil {
 		t.Fatalf("upload the replacement: %v", err)
 	}
 	number := nextVersionNumber(t, taskA.store, artifactID)
@@ -879,7 +879,7 @@ func uploadOn(t *testing.T, service *Service, artifactID, markdown string, uploa
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, markdown, uploader); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, markdown, uploader, nil); err != nil {
 		t.Fatalf("upload the replacement: %v", err)
 	}
 	number := nextVersionNumber(t, service.store, artifactID)
@@ -949,14 +949,14 @@ func TestAWriteAfterItsOwnTransactionsVersionStaysPending(t *testing.T) {
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
 	defer ledger.Discard()
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, once.\n", agent); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, once.\n", agent, nil); err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 	version, err := service.NamedVersion(joined, artifactID, "checkpoint", agent)
 	if err != nil || !slices.Contains(version.Version.Authors, agent) {
 		t.Fatalf("version = %+v (%v), want one listing the agent", version.Version, err)
 	}
-	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, twice.\n", agent); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, "First.\n\nSecond, twice.\n", agent, nil); err != nil {
 		t.Fatalf("write after the version: %v", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {

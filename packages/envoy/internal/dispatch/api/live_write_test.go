@@ -701,9 +701,9 @@ func (d *postApplyFailureDocs) ProjectMark(ctx context.Context, artifactID, mark
 	return errors.New("forced post-projection failure")
 }
 
-func (d *postApplyFailureDocs) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor) (string, error) {
+func (d *postApplyFailureDocs) ReplaceText(ctx context.Context, artifactID, markdown string, actor model.Actor, precondition *model.EditPrecondition) (string, error) {
 	d.waitBeforeApply()
-	_, err := d.API.ReplaceText(ctx, artifactID, markdown, actor)
+	_, err := d.API.ReplaceText(ctx, artifactID, markdown, actor, precondition)
 	if err != nil {
 		return "", err
 	}

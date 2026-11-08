@@ -154,6 +154,12 @@ type Deps struct {
 	// changes the listener's sessions sees the change at its next read. A deployment leaves it
 	// false.
 	ListenerRosterUncached bool
+	// UploadBaseRequired refuses a whole-document upload that replaces a document which already
+	// exists and names no base, 400 PRECONDITION_REQUIRED (storeArtifact). It is off until the
+	// fleet's pods run a `dispatch` that sends a base, since a pod runs that command from its
+	// image and a new one reaches it only when the daemon replaces the pod; a base an upload does
+	// name is checked whatever this says. cmd/dispatch sets it from DISPATCH_UPLOAD_BASE_REQUIRED.
+	UploadBaseRequired bool
 	// DashboardEntry is the entry chunk (`/assets/index-*.js`) of the dashboard build this process
 	// serves, "" when it serves none; GET /api/v1/dashboard/builds answers it as serving.
 	DashboardEntry string
@@ -218,6 +224,9 @@ type DepsInput struct {
 	// ListenerRosterUncached is for end-to-end test processes only; see
 	// Deps.ListenerRosterUncached.
 	ListenerRosterUncached bool
+	// UploadBaseRequired refuses a replacing upload that names no base; see
+	// Deps.UploadBaseRequired.
+	UploadBaseRequired bool
 	// DashboardEntry is this process's dashboard entry chunk; see Deps.DashboardEntry.
 	DashboardEntry string
 }
@@ -289,6 +298,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		ListenerTakeoverWindow: input.ListenerTakeoverWindow,
 		TestHookTimeout:        input.TestHookTimeout,
 		ListenerRosterUncached: input.ListenerRosterUncached,
+		UploadBaseRequired:     input.UploadBaseRequired,
 		DashboardEntry:         input.DashboardEntry,
 	}, nil
 }
@@ -863,10 +873,16 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 				})
 			}
 		}
+		current := map[string]any{"document": preconditionFailed.CurrentDocument, "blocks": currentBlocks}
+		// The document's version number, for the refusals whose caller read it beside the write
+		// (an upload); an edit refuses without reading the version rows, and names none.
+		if preconditionFailed.CurrentVersion != nil {
+			current["version"] = *preconditionFailed.CurrentVersion
+		}
 		WriteJSON(w, http.StatusConflict, map[string]any{
 			"error":      preconditionFailed.Error(),
 			"code":       "PRECONDITION_FAILED",
-			"current":    map[string]any{"document": preconditionFailed.CurrentDocument, "blocks": currentBlocks},
+			"current":    current,
 			"mismatches": preconditionFailed.Mismatches,
 		})
 		return

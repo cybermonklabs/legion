@@ -471,9 +471,11 @@ func (rr *replayRun) do(ctx context.Context, base, token string, act *replayActi
 	ac := &api{base: base, token: token, client: &http.Client{Transport: tr}}
 	var state replayActionState
 	ok := true
+	// hasTurn says the action is a write on a document, whose turn it takes before it writes.
+	hasTurn := turn != nil
 	for _, stg := range act.Stages {
 		from := int64(0) // when the stage's latency counts from; 0 for each request's arrival
-		if turn != nil && writeStage(stg) {
+		if turn != nil && takesTurn(stg) {
 			waited, alive := rr.awaitTurn(ctx, turn)
 			turn = nil
 			if !alive {
@@ -483,6 +485,8 @@ func (rr *replayRun) do(ctx context.Context, base, token string, act *replayActi
 			if waited {
 				from = at.UnixNano()
 			}
+		}
+		if hasTurn && sendsWrite(stg) {
 			rr.mu.Lock()
 			rr.wrote[act.Doc] = true
 			rr.mu.Unlock()
@@ -535,9 +539,16 @@ func (rr *replayRun) do(ctx context.Context, base, token string, act *replayActi
 	}
 }
 
-// writeStage says whether a stage sends a write (any request but a GET).
-func writeStage(stg []*replayReq) bool {
+// sendsWrite says whether a stage sends a write (any request but a GET).
+func sendsWrite(stg []*replayReq) bool {
 	return slices.ContainsFunc(stg, func(r *replayReq) bool { return r.Method != "GET" })
+}
+
+// takesTurn says whether a stage waits for the previous planned write on the action's document:
+// one that writes, and the read that carries an upload's base (ReadsBase), which must read what
+// that write left for the upload to name it.
+func takesTurn(stg []*replayReq) bool {
+	return sendsWrite(stg) || slices.ContainsFunc(stg, func(r *replayReq) bool { return r.ReadsBase })
 }
 
 // awaitTurn waits until the previous write on the action's document has returned: waited is
@@ -569,12 +580,16 @@ type replayActionState struct {
 	mu       sync.Mutex
 	lastSeq  *int64
 	editedAt json.RawMessage
+	// token is the document token the action's read of a document carried, which its upload
+	// sends as the base it replaces (replayDocToken).
+	token string
 }
 
 func (s *replayActionState) observe(body []byte) {
 	var r struct {
 		LastSeq  *int64          `json:"last_seq"`
 		EditedAt json.RawMessage `json:"edited_at"`
+		Token    string          `json:"token"`
 		Ask      *struct {
 			EditedAt json.RawMessage `json:"edited_at"`
 		} `json:"ask"`
@@ -586,6 +601,9 @@ func (s *replayActionState) observe(body []byte) {
 	defer s.mu.Unlock()
 	if r.LastSeq != nil {
 		s.lastSeq = r.LastSeq
+	}
+	if r.Token != "" {
+		s.token = r.Token
 	}
 	if r.Ask != nil && len(r.Ask.EditedAt) > 0 {
 		s.editedAt = r.Ask.EditedAt
@@ -659,6 +677,10 @@ func renderBody(v any, local map[replayRef]string, state *replayActionState) any
 			return json.RawMessage("null")
 		}
 		return state.editedAt
+	case replayDocToken:
+		state.mu.Lock()
+		defer state.mu.Unlock()
+		return state.token
 	case map[string]any:
 		out := make(map[string]any, len(x))
 		for k, e := range x {
