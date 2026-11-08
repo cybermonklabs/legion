@@ -138,8 +138,9 @@ name: CI
 # made, which is the loud failure the retry exists to give. GitHub reads this budget in whole
 # minutes, so a whole minute is the smallest margin that can be written and the budget is the
 # next whole minute strictly above the arithmetic. .github/scripts/check-download-retry.sh's
-# rule 8 refuses a step that carries less. It is the rule the Playwright block of the dispatch
-# job already followed, and it holds for every retried step of this repository's workflows.
+# rule 8 refuses a step that carries less. It is the rule the Playwright install of the browser
+# suite already followed (.github/scripts/playwright-install.sh, whose head derives the budget
+# its calling steps carry), and it holds for every retried step of this repository's workflows.
 #
 # A job carries its measured duration plus the arithmetic of its single slowest retried step,
 # and nothing more. Both terms are written beside every `timeout-minutes` below, with the step

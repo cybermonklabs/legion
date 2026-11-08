@@ -421,7 +421,8 @@ jobs:
           grep -rl dl.google.com /etc/apt/sources.list.d | xargs -r sudo rm -f
           packages=$(grep -vE '^[[:space:]]*(#|$)' .github/playwright-apt-packages.txt)
           # Both phases retry through .github/scripts/ci-retry.sh (ci.yaml's Retries note), at
-          # the bounds that file's dispatch job derives for these same two fetches: 90 s for the
+          # the bounds .github/scripts/playwright-install.sh derives for these same two fetches,
+          # which is the install the browser jobs run: 90 s for the
           # 13.0 MB of indexes and 300 s for the list's 114 MB, each as an inner `sudo timeout`,
           # not `timeout sudo`, so the signal reaches apt-get itself rather than a sudo holding
           # it, with retry_fetch's own bound five seconds above it to backstop the sudo alone.
