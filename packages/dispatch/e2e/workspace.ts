@@ -133,25 +133,37 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     createProject({ key: "OPS", name: "Ops" }),
   ]);
 
-  // A human's issue is assigned to its creator, so every issue here is alice's. The issues are
-  // written in one round: only the child names another, and no row here reads their order.
+  // A human's issue is assigned to its creator, so every issue here is alice's.
+  //
+  // The issues are created ONE AT A TIME rather than in one round, and those six round trips
+  // are deliberate: the server numbers an issue's key as it inserts it, so a round of seven
+  // races and the child is CORE-2 on one run and CORE-3 on the next. Nothing read that order
+  // until the visual review began comparing rendered pages against committed baselines
+  // (e2e/visual.e2e.ts), and a key printed on a page is a key in a baseline - the first two
+  // container runs of that layer differed on the Children tab, the project's issue list and
+  // the Inbox, in the key's own digits and nowhere else.
   const workflow = await createIssue({
     project: "CORE",
     spec: workflowSpec,
     title: "Local testing workflow for Dispatch",
   });
-  const [child, broadcastOrder, snooze, folds, phone, retracted, rotate] = await Promise.all([
-    createIssue({ parent: workflow.key, project: "CORE", title: "Seed the local corpus" }),
-    createIssue({
-      project: "CORE",
-      title: "Broadcast recipients keep their send order",
-    }),
-    createIssue({ project: "CORE", title: "Snooze an Inbox row until tomorrow" }),
-    createIssue({ project: "CORE", title: "Agents page freshness folds" }),
-    createIssue({ project: "CORE", title: "Phone layout of the review sheet" }),
-    createIssue({ project: "CORE", title: "A retracted ask stays in history" }),
-    createIssue({ project: "OPS", title: "Rotate the agent token" }),
-  ]);
+  const child = await createIssue({
+    parent: workflow.key,
+    project: "CORE",
+    title: "Seed the local corpus",
+  });
+  const broadcastOrder = await createIssue({
+    project: "CORE",
+    title: "Broadcast recipients keep their send order",
+  });
+  const snooze = await createIssue({ project: "CORE", title: "Snooze an Inbox row until tomorrow" });
+  const folds = await createIssue({ project: "CORE", title: "Agents page freshness folds" });
+  const phone = await createIssue({ project: "CORE", title: "Phone layout of the review sheet" });
+  const retracted = await createIssue({
+    project: "CORE",
+    title: "A retracted ask stays in history",
+  });
+  const rotate = await createIssue({ project: "OPS", title: "Rotate the agent token" });
   await Promise.all([
     patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }),
     patchIssue(broadcastOrder.key, { status: "needs_review" }),
@@ -160,42 +172,42 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
     patchIssue(rotate.key, { status: "triage" }),
   ]);
 
-  // Five asks and the runbook in one round: each names a different issue, and the writes that
-  // follow each ask below are what order it.
-  const [blocking, snoozed, answered, withdrawn, rotation, runbook] = await Promise.all([
-    createAsk(
-      folds.key,
-      { question: "Fold a session unseen for ten minutes under Inactive?", urgency: "blocking" },
-      { actor: actor(sessionIds.planner, { tmux: "legion:1.2" }), as: "agent" }
-    ),
-    createAsk(
-      snooze.key,
-      { question: "Snooze until tomorrow morning, or for a full day?", urgency: "high" },
-      as(sessionIds.tester)
-    ),
-    createAsk(
-      broadcastOrder.key,
-      {
-        options: [{ label: "Ship" }, { label: "Hold" }],
-        question: "Ship the recipient-order fix?",
-      },
-      as(sessionIds.reviewer)
-    ),
-    createAsk(
-      retracted.key,
-      { question: "Keep the retracted ask out of the Inbox?" },
-      as(sessionIds.planner)
-    ),
-    createAsk(
-      rotate.key,
-      { question: "Rotate the token before or after the deploy?", urgency: "med" },
-      as(sessionIds.reviewer)
-    ),
-    createProjectDocument("CORE", {
-      content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
-      name: "Runbook",
-    }),
-  ]);
+  // Five asks and the runbook, one at a time for the reason the issues above are: an Inbox row
+  // is ordered by its ask's own creation, so a round of six ties and two rows of equal urgency
+  // swap places between runs. The visual review's baseline of the Inbox is what reads that
+  // order, and the first two container runs differed by exactly those two rows.
+  const blocking = await createAsk(
+    folds.key,
+    { question: "Fold a session unseen for ten minutes under Inactive?", urgency: "blocking" },
+    { actor: actor(sessionIds.planner, { tmux: "legion:1.2" }), as: "agent" }
+  );
+  const snoozed = await createAsk(
+    snooze.key,
+    { question: "Snooze until tomorrow morning, or for a full day?", urgency: "high" },
+    as(sessionIds.tester)
+  );
+  const answered = await createAsk(
+    broadcastOrder.key,
+    {
+      options: [{ label: "Ship" }, { label: "Hold" }],
+      question: "Ship the recipient-order fix?",
+    },
+    as(sessionIds.reviewer)
+  );
+  const withdrawn = await createAsk(
+    retracted.key,
+    { question: "Keep the retracted ask out of the Inbox?" },
+    as(sessionIds.planner)
+  );
+  const rotation = await createAsk(
+    rotate.key,
+    { question: "Rotate the token before or after the deploy?", urgency: "med" },
+    as(sessionIds.reviewer)
+  );
+  const runbook = await createProjectDocument("CORE", {
+    content: "# Runbook\n\nRestart, reseed, reopen the signed-in URL.\n",
+    name: "Runbook",
+  });
   const [documentAsk] = await Promise.all([
     createArtifactAsk(
       runbook.artifact.id,

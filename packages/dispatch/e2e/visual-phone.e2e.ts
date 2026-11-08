@@ -63,7 +63,8 @@ for (const route of phoneRoutes) {
         await expect(route.ready(page)).toBeVisible();
         await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
-          mask: [page.locator("time")],
+          // Every clock, as `e2e/visual.e2e.ts` masks them and for the reason it gives there.
+          mask: [page.locator("time"), page.getByText(/^Generated /), page.getByText(/, as of /)],
           // MEASURED IN CI: placeholder, exactly as in `e2e/visual.e2e.ts`, and measured
           // separately: a phone emulation lays the page out at another scale, so its legitimate
           // maximum is its own number. Whoever runs this layer in the container replaces the

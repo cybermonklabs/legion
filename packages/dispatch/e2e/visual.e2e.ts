@@ -103,7 +103,13 @@ for (const route of shotRoutes) {
         await expect(route.ready(page)).toBeVisible();
         await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
-          mask: [page.locator("time")],
+          // Every clock the page draws. A `<time>` carries the relative labels of the Inbox and
+          // the Agents page; the Delivery and Pipeline pages write the moment they answered as
+          // plain text instead ("Generated 11/8/2026, 2:27:03 AM", DeliveryPage.tsx and
+          // PipelinePage.tsx), and a measures card dates its claim the same way, so those two
+          // are masked by the words they begin with. The first two container runs differed on
+          // those pages in that text and nowhere else.
+          mask: [page.locator("time"), page.getByText(/^Generated /), page.getByText(/, as of /)],
           // MEASURED IN CI: placeholder. This is the zero the measurement starts from
           // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
           // -its-separation-stated-pr2502.md), not a measured bound: the pod this was written in
