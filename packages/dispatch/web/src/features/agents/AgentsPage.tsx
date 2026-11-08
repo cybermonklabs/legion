@@ -709,7 +709,10 @@ function AgentRow({
           {unreadReplies === 0 ? null : (
             // Opening the conversation is what reads it, so the badge opens it.
             <button
-              aria-label={`${label} replied: ${unreadReplies} unread`}
+              // The pill's own words first, so the name contains the visible text and a voice
+              // user can press what they read (WCAG 2.5.3, axe's
+              // `label-content-name-mismatch`); the session's name says whose replies they are.
+              aria-label={`${unreadRepliesLabel(unreadReplies)} from ${label}`}
               className="inline-flex min-h-11 items-center rounded-full md:min-h-8"
               onClick={() => setExpanded(true)}
               title={`Replies from ${label} you have not read`}

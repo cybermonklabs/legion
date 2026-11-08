@@ -1004,7 +1004,7 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");
@@ -1037,7 +1037,7 @@ test("IssuePage clears the parent with an empty editor save", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
     );
-    await screen.findByRole("button", { name: "Set parent issue" });
+    await screen.findByRole("button", { name: "None, set parent issue" });
     expect(screen.queryByRole("link", { name: "CORE-9" })).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -1059,7 +1059,7 @@ test("IssuePage renders the server's reason inline when a parent save is refused
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");

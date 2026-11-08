@@ -695,7 +695,10 @@ export function IssueHeader({
                 </Link>
               )}
               <button
-                aria-label={issue.parent === null ? "Set parent issue" : "Edit parent issue"}
+                // The name starts with the word on the button - "None" or "Edit" - because a
+                // name that does not contain the visible text leaves the control out of reach
+                // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+                aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
                 className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
                 disabled={isClosed}
                 onClick={() => setParentEditing(true)}

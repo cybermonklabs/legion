@@ -12,6 +12,7 @@ import {
   surfaceMutedBg,
   textMutedOnCanvas,
   textMutedOnSurface,
+  textMutedOnSurfaceMuted,
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { BlockReferences } from "../refs/ReferencedBy";
@@ -50,12 +51,15 @@ const CHECK_STATE_LABELS: Record<CheckState, string> = {
   unmarked: "Unmarked",
 };
 
+/** The pill sits on `surfaceMutedBg`, so its muted states take the token written for that
+ *  background: `textMutedOnSurface` is slate-500, which is 4.34:1 on slate-100 and under
+ *  WCAG AA's 4.5:1 for text this size (axe's `color-contrast`, serious). */
 const CHECK_STATE_TEXT: Record<CheckState, string> = {
   failed: dangerText,
-  "no-result": textMutedOnSurface,
-  older: textMutedOnSurface,
+  "no-result": textMutedOnSurfaceMuted,
+  older: textMutedOnSurfaceMuted,
   passed: successText,
-  unmarked: textMutedOnSurface,
+  unmarked: textMutedOnSurfaceMuted,
 };
 
 /** The two currency marks as a reader sees them, beside `Pass` and `Fail` and the check-state

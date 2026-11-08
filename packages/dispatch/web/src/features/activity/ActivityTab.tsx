@@ -101,16 +101,16 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
           if (item.kind === "day-divider" || item.kind === "unread-divider") {
             const label = item.kind === "day-divider" ? item.label : "New since you last read";
             return (
-              // biome-ignore lint/a11y/useSemanticElements: A labeled list item is required by the activity DOM contract.
-              // biome-ignore lint/a11y/useFocusableInteractive: A divider is descriptive, not an interactive control.
+              // A labelled list item, not a `role="separator"`: the role took the item out of
+              // the list while it stayed a child of the `<ol>`, which is a list element with a
+              // child that is no list item (axe's `list`, serious). The label is what a reader
+              // hears, and `e2e/activity.e2e.ts` finds the dividers by it.
               <li
                 aria-label={label}
                 className={`my-2 flex items-center gap-3 text-xs font-semibold tracking-wide uppercase ${
                   item.kind === "unread-divider" ? linkText : textMutedOnCanvas
                 }`}
                 key={item.id}
-                // biome-ignore lint/a11y: The role is required by the activity DOM contract.
-                role="separator"
               >
                 <span className={`h-px flex-1 ${newDividerLine}`} />
                 {label}
