@@ -932,8 +932,32 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				number := 100 + trial
 				artifactID := createIssueDocument(t, database, number, markdown(paragraphs, "before"))
 				seedServiceText(t, service, artifactID, markdown(paragraphs, "before"))
-				tx, err := database.Pool.Begin(ctx)
+				// Every trial's transaction runs on a connection of its own that the pool does
+				// not own: Acquire takes one out of the pool and Hijack removes it from the
+				// pool altogether, which is how this repository's own Pool.Listener gets a
+				// connection no Close of the pool waits for (store/pool.go:318-335). A trial
+				// that ends while it owns the transaction gives the connection back by closing
+				// it in the release below; a trial whose commit is still in flight leaves it
+				// where it is, since nothing may take a connection a live Commit is writing,
+				// and because the pool no longer owns it the pool's Close does not wait for it.
+				// So a commit that never returns costs this trial its connection rather than
+				// the package's cleanup.
+				pooled, err := database.Pool.Acquire(ctx)
 				if err != nil {
+					t.Fatal(err)
+				}
+				conn := pooled.Hijack()
+				// Bounded, as Pool.Dedicated bounds the close of the connection it hijacked
+				// (pool.go:350-356): a connection that went half-open must not hold the trial
+				// in its Terminate.
+				closeConn := func() {
+					terminate, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+					defer cancel()
+					_ = conn.Close(terminate)
+				}
+				tx, err := conn.Begin(ctx)
+				if err != nil {
+					closeConn()
 					t.Fatal(err)
 				}
 				joined, ledger := service.Join(ctx, tx)
@@ -947,25 +971,39 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				committing := false
 				defer func() {
 					if committing {
+						// The commit goroutine still owns the transaction and the hijacked
+						// connection under it, so leave both alone. Nothing here waits on
+						// them: the connection left the pool, so the pool's Close does not
+						// count it among the connections in use it waits for.
 						return
 					}
 					// After a commit only the ledger's read-backs are left to drop, and the
 					// rollback answers ErrTxClosed; both are what this file's other writers do.
+					// The connection is this trial's to close, since the pool gave it up when
+					// this trial hijacked it.
 					ledger.Discard()
 					tx.Rollback(ctx)
+					closeConn()
 				}()
 				if _, err := service.ReplaceText(joined, artifactID, markdown(paragraphs, "after"), alice); err != nil {
 					t.Fatalf("trial %d: replace: %v", trial, err)
 				}
 				closed := make(chan error, 1)
+				// The close runs on a connection of the pool and waits there on the issue row
+				// this trial's write holds, so it gets a context the trial can end. Cancelled
+				// when the trial leaves, its Exec stops waiting and that pooled connection
+				// goes back, which is what lets Pool.Close finish even when the commit that
+				// would have freed the row never arrives.
+				closing, cancelClosing := context.WithCancel(ctx)
+				defer cancelClosing()
 				go func() {
 					issueKey := fmt.Sprintf("DOC-%d", number)
 					// The close waits on the issue row the write holds until the write commits.
-					if _, err := database.Pool.Exec(ctx, `update issues set closed_at = now() where key = $1`, issueKey); err != nil {
+					if _, err := database.Pool.Exec(closing, `update issues set closed_at = now() where key = $1`, issueKey); err != nil {
 						closed <- err
 						return
 					}
-					service.issueOpenChanged(ctx, issueKey)
+					service.issueOpenChanged(closing, issueKey)
 					closed <- nil
 				}()
 				time.Sleep(30 * time.Millisecond)
@@ -989,10 +1027,12 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					}
 				case <-time.After(10 * time.Second):
 					hungTrial = trial
-					// A hang guard, not a measurement of anything: the commit that did not return
-					// still holds this trial's transaction and its pooled connection, so give it
-					// ten more seconds to arrive and take the transaction back when it does. A
-					// write wedged before tx.Commit would otherwise hold the pool's Close open.
+					// A hang guard, not a measurement of anything: the commit that did not
+					// return still owns this trial's transaction, so give it ten more seconds
+					// to take the transaction back when it arrives late. They remove nothing
+					// for a commit that never arrives: that one keeps the transaction and the
+					// connection under it for good, which is why that connection is not one of
+					// the pool's.
 					select {
 					case <-committed:
 						committing = false
