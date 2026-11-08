@@ -98,9 +98,10 @@ func CheckRepositoryResponse(status int, header http.Header, body []byte, repoFu
 // head; `ahead` and `diverged` both mean the branch does not hold it). Only `status` is decoded:
 // the comparison's commit list, which an unpaginated answer carries up to 250 of, is asked for
 // one page of one so the body stays small, and `status` is a field of every page. A 403 or 404
-// is ErrRepositoryUnreadable, which the currency read takes as "unknown"; a 404 is also GitHub's
-// answer for a commit the repository does not have, which is likewise no proof that the branch
-// lacks it.
+// is ErrRepositoryUnreadable, which the currency read takes as "unknown" about the repository's
+// default branch and as "not on it" about an after-merge result's base branch, which GitHub no
+// longer holding is the usual reason for; a 404 is also GitHub's answer for a commit the
+// repository does not have, which is likewise no proof that the branch lacks it.
 func (c *Client) CommitOnBranch(ctx context.Context, token, owner, repo, branch, sha string) (bool, error) {
 	if c == nil {
 		return false, ErrNoAppKey
@@ -182,9 +183,9 @@ func noCommitForSHA(body []byte) bool {
 }
 
 // DefaultBranch is the name of the repository's default branch (`GET /repos/{owner}/{repo}`,
-// `default_branch` alone), the branch a default-branch result's commit must be on, and an
-// after-merge result's where Dispatch holds no merge of its issue. A 403 or 404 is
-// ErrRepositoryUnreadable.
+// `default_branch` alone), the branch a default-branch result's commit must be on, and one of
+// the two an after-merge result's commit may be on (the other is the base branch its issue's pull
+// request merged into). A 403 or 404 is ErrRepositoryUnreadable.
 func (c *Client) DefaultBranch(ctx context.Context, token, owner, repo string) (string, error) {
 	if c == nil {
 		return "", ErrNoAppKey

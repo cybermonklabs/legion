@@ -451,7 +451,7 @@ const noDeletedBranch = ""
 // resultsGitHubWithDeletedBranch is resultsGitHubWithDefaultBranch with one branch GitHub no
 // longer holds named: every compare read whose base is that branch answers `404 Not Found`,
 // body and all, as a compare against a branch deleted when its pull request merged does —
-// which this repository does on every merge.
+// which a repository that deletes merged branches does on every merge.
 //
 // The deleted branch is named here rather than answered by `compare`, whose answer is
 // GitHub's compare `status`, because a 404 is a different shape of answer: it says nothing at
@@ -965,10 +965,10 @@ func TestAfterMergeResultCurrencyOfAnIssueMergedIntoTheTrunkSpendsOneCompareRead
 	}
 }
 
-// The branch deleted on the merge, which is every branch here. GitHub answers a compare read
-// against it 404, which this codebase reads as a repository it cannot see and so as no answer
-// about the commit at all; the rule takes that for "this commit is not on that branch" and
-// lets the default branch decide.
+// The branch deleted on the merge, as a repository that deletes merged branches leaves every
+// base branch once it lands. GitHub answers a compare read against it 404, which this codebase
+// reads as a repository it cannot see and so as no answer about the commit at all; the rule
+// takes that for "this commit is not on that branch" and lets the default branch decide.
 //
 // So a commit the default branch carries reads current, and a commit neither branch carries
 // reads older rather than unknown — the whole point of the rule, since a reviewer left with an

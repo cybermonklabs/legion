@@ -1,5 +1,5 @@
 kind: Changed
-body: 'The `dispatch_results` tool description states the currency rule as it now stands: an `after_merge` result is current on the branch its issue''s pull request merged into, a `default_branch` result only on the repository''s default branch.'
+body: 'The `dispatch_results` tool description states the currency rule as it now stands: an `after_merge` result is current on the branch its issue''s pull request merged into or on the repository''s default branch, and a base branch GitHub no longer holds answers "not on it" rather than unknown; a `default_branch` result is current only on the repository''s default branch.'
 time: 2026-11-08T01:38:23.409381136Z
 custom:
     Issue: pr2962

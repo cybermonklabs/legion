@@ -34,8 +34,8 @@ import (
 // match. An issue whose work merged into an integration branch has reached that branch, so a
 // commit that branch carries proves the work before the integration branch itself lands; and
 // once that branch has landed, the trunk carries the work too, and answers for it where the
-// base branch — deleted on the merge, as this repository deletes every merged branch — can
-// answer nothing at all. So a base branch GitHub no longer holds is read as "this commit is
+// base branch — deleted on the merge, as a repository that deletes every merged branch does —
+// can answer nothing at all. So a base branch GitHub no longer holds is read as "this commit is
 // not on it" and never as unknown, and the default branch decides (of, measuredBranches).
 // Where Dispatch knows of no merge of that issue, the default branch answers alone, which is
 // every issue merged the ordinary way before Dispatch was told of the merge and every issue
@@ -111,9 +111,9 @@ func newCurrencyReader(s *server) *currencyReader {
 // merge of, and for a merged row whose base_ref is empty: no branch to measure against. It is
 // spelled like delivery.DefaultBranch and means the opposite of it — "there is nothing here to
 // ask about" rather than "ask about the repository's own default branch" — so each is named
-// where it is used. The fallback below reads one for the other on purpose, and naming both is
-// what makes that a decision of this file's rather than an agreement between two packages that
-// either could end without a compiler saying so.
+// where it is used. measuredBranches tests for one and answers the other in its place, and
+// naming both is what makes that a decision of this file's rather than an agreement between two
+// packages that either could end without a compiler saying so.
 const noMergedBranch = ""
 
 // of is the currency of one of a check's results. It reads that one result and that one check:

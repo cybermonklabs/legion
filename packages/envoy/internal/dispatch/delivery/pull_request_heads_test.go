@@ -1249,8 +1249,8 @@ func branchCommitsOn(t *testing.T, ctx context.Context, pool *store.Pool, repo, 
 }
 
 // Recording a merge records its merge commit as on its base branch, for good. GitHub
-// completing the merge is the only proof Dispatch will ever have: this repository deletes a
-// branch when its pull request merges and merges by squash, so by the time an `after_merge`
+// completing the merge is the only proof Dispatch will ever have: in a repository that deletes
+// a branch when its pull request merges and merges by squash, by the time an `after_merge`
 // result of an issue that merged into an integration branch is measured — after that branch
 // has itself landed on the default branch and gone — no compare read can show the commit on
 // the base branch and the default branch holds only a squash of it.

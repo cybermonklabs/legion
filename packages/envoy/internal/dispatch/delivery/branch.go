@@ -104,7 +104,7 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // at all. DefaultBranch — the empty branch — means the repository's own default branch, resolved
 // through branchOf: a `default_branch` check names no branch of its own and so is measured
 // against that branch whatever the work merged into, while an `after_merge` check asks about the
-// branch its issue's pull request merged into and about that branch in turn
+// branch its issue's pull request merged into and then about the default branch
 // (api/results_currency.go).
 //
 // What branch_commits holds for that repository, branch and commit answers first while it still
@@ -119,12 +119,12 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // BranchCommitStaleAfter, and every caller naming the pair meanwhile is answered unknown
 // without a second call (compareUnanswerable). Two pairs would otherwise cost one GitHub call
 // per result commit on every read of the Verification tab, for as long as the issue exists: a
-// base branch deleted when its pull request merged, which this repository does on every merge
-// and which a compare read answers 404 for, and a repository the App can no longer read, whose
-// refusal nothing else caches (githubapp.Client.RepositoryToken caches the tokens it minted,
-// not the mints it was refused). Neither failure says anything about the commit, so nothing is
-// written to branch_commits for it; the hold is this process's alone, and it is released as
-// soon as a compare read of the pair is answered.
+// base branch deleted when its pull request merged, which a repository that deletes merged
+// branches does on every merge and which a compare read answers 404 for, and a repository the
+// App can no longer read, whose refusal nothing else caches (githubapp.Client.RepositoryToken
+// caches the tokens it minted, not the mints it was refused). Neither failure says anything
+// about the commit, so nothing is written to branch_commits for it; the hold is this process's
+// alone, and it is released as soon as a compare read of the pair is answered.
 //
 // A caller that names no branch, of a repository the App cannot read just now, is answered from
 // the stored row alone, under the last default branch this process resolved for that repository

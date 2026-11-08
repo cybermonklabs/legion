@@ -111,10 +111,10 @@ func PullRequestHeadState(action string, merged bool) string {
 // A merged pull request's merge commit is recorded as on its base branch, for good, as soon as
 // this row is written: GitHub completing the merge is itself the proof that the branch held
 // that commit, and branch_commits keeps a yes for good (branch.go). Nothing can prove it
-// later. This repository deletes a branch when its pull request merges and merges by squash,
-// so by the time an `after_merge` result of an issue that merged into an integration branch is
-// measured — once the integration branch has itself landed on the default branch and been
-// deleted — no compare read can show that commit on the base branch, because the branch is
+// later. In a repository that deletes a branch when its pull request merges and merges by
+// squash, by the time an `after_merge` result of an issue that merged into an integration
+// branch is measured — once the integration branch has itself landed on the default branch and
+// been deleted — no compare read can show that commit on the base branch, because the branch is
 // gone, and the default branch holds only a squash of it. Without the row written here such a
 // result could never read `current`. Only a merged row writes one: GitHub answers a test-merge
 // commit for an open pull request too, and that commit is on no branch at all.
