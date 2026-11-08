@@ -48,9 +48,10 @@ export interface UploadResult {
  * document under that name, so this upload is the first one; nothing when the read fails, which
  * is what a document whose tree is outside the Proof schema answers — it renders no markdown and
  * so has no token, and an upload is the only way to repair it, which the server lets through
- * (`refuseUploadNamingNoBase`). Only a document has a base: Dispatch stores an upload as one
- * when its media type is text/markdown (`artifactKind` in the server's `api/artifacts.go`),
- * which is the type a browser gives a `.md` or a `.markdown` file, and a conversation holds
+ * (`refuseUploadNamingNoBase`). Only a document has a base, and Dispatch decides that by the
+ * media type alone (`artifactKind` in the server's `api/artifacts.go`: `text/markdown` is a
+ * document and everything else is a file or an image), so the name counts for nothing here and
+ * a base sent for anything else is refused `400 INVALID_PRECONDITION`. A conversation holds
  * files and images and no document at all.
  */
 async function uploadBase(
@@ -58,7 +59,7 @@ async function uploadBase(
   name: string,
   type: string
 ): Promise<string | undefined> {
-  if ("session" in owner || !(type === "text/markdown" || /\.(?:md|markdown)$/i.test(name))) {
+  if ("session" in owner || type !== "text/markdown") {
     return undefined;
   }
   try {

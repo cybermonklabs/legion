@@ -250,10 +250,6 @@ async function followsAsk(
   return `You follow this ask: its answer and replies reach you directly.${subscribe === null ? "" : ` ${subscribe}`}`;
 }
 
-/** How much of a reviewer's reason the standing-review line prints. The server already cuts the
- *  reason to this, so the cut here only bounds one that reaches the command uncut. */
-const standingReviewReasonLimit = 500;
-
 /**
  * What a question says about the review its issue's specification already carries
  * (`WriteAdvice.standing_review`): who reviewed, when, whether they approved or asked for
@@ -278,8 +274,7 @@ function standingReviewLines(advice: WriteAdvice | undefined): string[] {
   }
   const verb = review.state === "approved" ? "approved" : "asked for changes on";
   const opening = `${review.by} ${verb} this issue's spec at version ${review.version} on ${review.at}`;
-  const reason =
-    review.reason === undefined ? "" : review.reason.slice(0, standingReviewReasonLimit);
+  const reason = review.reason ?? "";
   return [
     reason === "" ? `${opening}, and gave no reason.` : `${opening}: "${reason}"`,
     "Say what changed since that review in a reply on this ask.",
@@ -5260,8 +5255,8 @@ export async function executeDispatchTool(
       const content = optionalString(args, "content");
       // The base this upload replaces, for an upload over a document that already exists; the
       // server takes the document token alone and refuses a blocks guard.
-      const uploadBase = args.precondition as EditPrecondition | undefined;
-      const base = uploadBase === undefined ? {} : { precondition: uploadBase };
+      const precondition = args.precondition as EditPrecondition | undefined;
+      const base = precondition === undefined ? {} : { precondition };
       const artifactInput =
         content === undefined
           ? {

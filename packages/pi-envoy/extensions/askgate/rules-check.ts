@@ -435,8 +435,12 @@ async function readAsks(
   const current =
     read !== "not-found" && (read.name === name || read.slug === name) ? read.blocks : undefined;
   const currentIds = current === undefined ? undefined : new Set(current.map((block) => block.id));
+  // The live document is scanned for its questions only when an opener names no id, which a
+  // body read back from the server never does: an upload of such a body is decided by the ids
+  // alone and pays no scan.
+  const unnamed = first.some((ask) => ask.id === undefined);
   const currentQuestions =
-    current === undefined
+    current === undefined || !unnamed
       ? undefined
       : new Set(current.flatMap((block) => askBlocks(block.text)).map((ask) => ask.text));
   return {

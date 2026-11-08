@@ -175,7 +175,7 @@ function artifactProblem(value: unknown): string | undefined {
     readonly path?: unknown;
     readonly content?: unknown;
   };
-  const ownerOrSourceProblem = brokenParts([
+  const partProblem = brokenParts([
     [artifactOwner.check(value), artifactOwner.message],
     [
       (typeof input.path === "string") !== (typeof input.content === "string"),
@@ -183,7 +183,7 @@ function artifactProblem(value: unknown): string | undefined {
     ],
     [preconditionKept(value), PRECONDITION_RULE],
   ]);
-  if (ownerOrSourceProblem !== undefined) return ownerOrSourceProblem;
+  if (partProblem !== undefined) return partProblem;
   if (typeof input.content !== "string" || typeof input.name !== "string") return undefined;
   const extension = NAME_EXTENSION.exec(input.name.trim())?.[1];
   if (extension === undefined || MARKDOWN_EXTENSION.test(extension)) return undefined;

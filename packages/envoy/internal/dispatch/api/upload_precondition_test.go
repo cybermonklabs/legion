@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -251,6 +252,55 @@ func TestFirstUploadOfANameNoArtifactHoldsNeedsNoBase(t *testing.T) {
 	}
 	if read := readDocumentPrecondition(t, handler, upload.Artifact.ID); read.Markdown != "# Fresh\n" {
 		t.Fatalf("the created document = %q, want the uploaded text", read.Markdown)
+	}
+}
+
+// A first upload replaces nothing, so a base names a document the owner does not hold: the
+// caller's belief about what it is replacing is false, which is a failed precondition, and
+// nothing is written.
+func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
+	handler, database := uploadBaseHandler(t, false)
+	issue := createArtifactIssue(t, handler)
+
+	refused := postUpload(t, handler, issue.Key, map[string]any{
+		"name": "fresh.md", "content": "# Fresh\n",
+		"precondition": map[string]string{"document": "sha256:" + strings.Repeat("a", 64)},
+	})
+	if refused.Code != http.StatusConflict {
+		t.Fatalf("a first upload naming a base = %d (want 409), body=%s", refused.Code, refused.Body.String())
+	}
+	conflict := decodeBody[uploadPreconditionConflict](t, refused)
+	if conflict.Code != "PRECONDITION_FAILED" {
+		t.Fatalf("the refusal's code = %q, want PRECONDITION_FAILED: %s", conflict.Code, refused.Body.String())
+	}
+	if !strings.Contains(conflict.Error, "dispatch doc-read") {
+		t.Fatalf("the refusal reads %q, want it to say where the token comes from", conflict.Error)
+	}
+	var artifacts int
+	if err := database.Pool.QueryRow(context.Background(),
+		`select count(*) from artifacts where issue_key = $1`, issue.Key).Scan(&artifacts); err != nil {
+		t.Fatalf("count the issue's artifacts: %v", err)
+	}
+	if artifacts != 1 {
+		t.Fatalf("the issue holds %d artifacts after the refused first upload, want only the spec it was created with", artifacts)
+	}
+}
+
+// A file holds no document tree and so no token, so a base on one guards nothing: it is refused
+// rather than taken and dropped, since the caller believes its write was conditional.
+func TestFileUploadNamingABaseIsRefused(t *testing.T) {
+	handler, _ := uploadBaseHandler(t, false)
+	issue := createArtifactIssue(t, handler)
+	path := "/api/v1/issues/" + issue.Key + "/artifacts"
+	base := `{"document":"sha256:` + strings.Repeat("a", 64) + `"}`
+
+	refused := multipartRequest(t, handler, path, map[string]string{"name": "diagram.png", "precondition": base},
+		"diagram.png", "image/png", []byte("\x89PNG\r\n\x1a\nfirst"), "alice")
+	if refused.Code != http.StatusBadRequest {
+		t.Fatalf("a file upload naming a base = %d (want 400), body=%s", refused.Code, refused.Body.String())
+	}
+	if code := decodeBody[uploadPreconditionConflict](t, refused).Code; code != "INVALID_PRECONDITION" {
+		t.Fatalf("the refusal's code = %q, want INVALID_PRECONDITION: %s", code, refused.Body.String())
 	}
 }
 

@@ -394,15 +394,6 @@ type standingReview struct {
 // characters so a cut never splits one.
 const standingReviewReasonLimit = 500
 
-// carriedApprovalReasonPrefix opens the reason of every review Dispatch carried forward to a
-// later version: both sentences the carry writes (carryReason and restoreReason in
-// docs/approval_carry.go) begin with it, and the version the person reviewed follows it. The
-// carry row's own Version is the new version, so that number is the only record of which
-// version the person read, and a carry that followed a carry names the version the carry before
-// it named. The Legion daemon tells a carry from a person's own approval by the same words from
-// its own module (intake.CarriedApprovalReasonPrefix).
-const carriedApprovalReasonPrefix = "Carried forward from the approval of version "
-
 // standingReviewAdvice is the review the issue's specification already carries when a question
 // is opened on it, or nil when it carries none and whenever the read failed: the question is
 // written either way, so this reports nothing rather than refusing the write.
@@ -446,19 +437,22 @@ func standingSpecReview(ctx context.Context, q queryer, issueKey string) (*stand
 		}
 		return nil, fmt.Errorf("read the issue's primary document: %w", err)
 	}
-	latest, err := latestVersionNumber(ctx, q, artifactID)
-	if err != nil || latest == nil {
-		return nil, err
-	}
+	// The review is read before the version: an issue nobody has reviewed, and one whose newest
+	// review is a plan review or an agent's, is answered without asking for the version number
+	// at all, and those are most issues.
 	review, err := docs.NewestReview(ctx, q, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the document's newest review: %w", err)
 	}
-	if review == nil || review.Version != *latest || review.Kind != docs.ReviewKindPerson {
+	if review == nil || review.Kind != docs.ReviewKindPerson {
 		return nil, nil
 	}
 	if review.Actor.Kind != "user" || review.Actor.Act != nil {
 		return nil, nil
+	}
+	latest, err := latestVersionNumber(ctx, q, artifactID)
+	if err != nil || latest == nil || review.Version != *latest {
+		return nil, err
 	}
 	standing := &standingReview{
 		By:      review.Actor.ID,
@@ -480,11 +474,11 @@ func standingSpecReview(ctx context.Context, q queryer, issueKey string) (*stand
 }
 
 // carriedApprovalVersion reads the version a carried review's reason names out of
-// carriedApprovalReasonPrefix's sentence, and reports false for every reason a person wrote. A
-// reason that opens with the prefix but names no number there is read as a person's: the number
-// is what the line would print, and a line naming no version says less than none.
+// docs.CarriedReviewReasonPrefix's sentence, and reports false for every reason a person wrote.
+// A reason that opens with the prefix but names no number there is read as a person's: the
+// number is what the line would print, and a line naming no version says less than none.
 func carriedApprovalVersion(reason string) (int, bool) {
-	rest, found := strings.CutPrefix(reason, carriedApprovalReasonPrefix)
+	rest, found := strings.CutPrefix(reason, docs.CarriedReviewReasonPrefix)
 	if !found {
 		return 0, false
 	}
@@ -500,11 +494,9 @@ func carriedApprovalVersion(reason string) (int, bool) {
 }
 
 // firstCharacters is text cut to the first count characters, whole: a cut between two bytes of
-// one rune would leave the reader a replacement character where a letter was.
+// one rune would leave the reader a replacement character where a letter was. One pass: a text
+// of count runes or fewer never reaches the cut and is returned as it is.
 func firstCharacters(text string, count int) string {
-	if utf8.RuneCountInString(text) <= count {
-		return text
-	}
 	runes := 0
 	for index := range text {
 		if runes == count {

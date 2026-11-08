@@ -243,9 +243,18 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		}
 	}
 	// The base an upload names is held to what an upload can mean before anything is written:
-	// the document token alone, in the shape every edit's precondition takes. Whether a
-	// replacement must name one at all is the stored document's to say (storeArtifact).
+	// the document token alone, in the shape every edit's precondition takes, and only on an
+	// upload Dispatch stores as a document, since a file holds no tree and so no token. A base
+	// nothing would read is refused rather than taken and dropped, because the caller believes
+	// its write was conditional. Whether a replacement must name one at all is the stored
+	// document's to say (storeArtifact).
 	if input.precondition != nil {
+		if kind != "doc" {
+			s.writeHandlerError(w, &docs.ErrInvalidPrecondition{
+				Reason: "only a document has a base; this upload is stored as a file",
+			})
+			return
+		}
 		if refusal := docs.ValidateUploadPrecondition(*input.precondition); refusal != nil {
 			s.writeHandlerError(w, refusal)
 			return
@@ -401,6 +410,13 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 	}, true
 }
 
+// uploadBaseAdvice tells the reader of a refused upload where a base that is not behind the live
+// document comes from, and is the tail of both refusals an upload's base can earn: the one a
+// replacement naming none gets, and the one a replacement naming a stale one gets.
+const uploadBaseAdvice = "read the document with `dispatch doc-read`, which prints " +
+	"`Document token: sha256:…`, and upload again naming that token as " +
+	"`--precondition-json '{\"document\":\"sha256:…\"}'`"
+
 // refuseUploadNamingNoBase is the refusal of a replacement that named no base, where the server
 // asks every replacement to name one (Deps.UploadBaseRequired): the upload says which text it
 // believes it is replacing, and the reader is told where that token comes from. A document whose
@@ -417,9 +433,7 @@ func (s *server) refuseUploadNamingNoBase(ctx context.Context, name, artifactID 
 		return err
 	}
 	return errorf(http.StatusBadRequest, "PRECONDITION_REQUIRED",
-		"an upload replacing document %q must name the base it replaces: read the document with `dispatch doc-read`, "+
-			"which prints `Document token: sha256:…`, and upload again naming that token as "+
-			"`--precondition-json '{\"document\":\"sha256:…\"}'`", name)
+		"an upload replacing document %q must name the base it replaces: "+uploadBaseAdvice, name)
 }
 
 // writeDocumentVersion stores the document-version row uploads write directly, returning the same
@@ -594,13 +608,27 @@ func (s *server) storeArtifact(
 	defer ledger.Discard()
 	// An upload over a document that already exists replaces every word of it, so where the
 	// server asks for it (Deps.UploadBaseRequired) it says which text it believes it is
-	// replacing, and one that names none is refused before anything is written. A first upload
-	// has no base to name, and a file is not a document: neither is asked for one.
-	if s.deps.UploadBaseRequired && kind == "doc" && !created && input.precondition == nil {
+	// replacing, and one that names none is refused before anything is written. A file is not a
+	// document and was refused a base already (uploadArtifactFor).
+	if kind == "doc" && !created && input.precondition == nil && s.deps.UploadBaseRequired {
 		if refusal := s.refuseUploadNamingNoBase(documentCtx, input.name, artifact.ID); refusal != nil {
 			s.writeHandlerError(w, refusal)
 			return
 		}
+	}
+	// A first upload under a name the owner holds nothing under replaces nothing, so a base
+	// names a document that is not there: the caller read something this owner does not hold,
+	// or another writer has taken the name since. That is a failed precondition rather than a
+	// malformed request, so it is answered as a stale base is, with no current token to give.
+	if kind == "doc" && created && input.precondition != nil {
+		s.writeHandlerError(w, &docs.ErrPreconditionFailed{
+			Advice: uploadBaseAdvice,
+			Mismatches: []model.EditPreconditionMismatch{{
+				Scope:    "document",
+				Expected: input.precondition.Document,
+			}},
+		})
+		return
 	}
 	var documentMarkdown string
 	// documentReadBack is the rendering this write stored, read back by its own parse (docs'
@@ -624,8 +652,7 @@ func (s *server) storeArtifact(
 			if errors.As(err, &stale) {
 				currentVersion := nextNumber - 1
 				stale.CurrentVersion = &currentVersion
-				stale.Advice = "read the document with `dispatch doc-read`, which prints `Document token: sha256:…`, " +
-					"and upload again naming that token as `--precondition-json '{\"document\":\"sha256:…\"}'`"
+				stale.Advice = uploadBaseAdvice
 			}
 			s.writeHandlerError(w, err)
 			return

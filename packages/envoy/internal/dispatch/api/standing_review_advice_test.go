@@ -286,7 +286,7 @@ func TestStandingSpecReviewRefusesAPlanReviewOfTheSpecification(t *testing.T) {
 }
 
 // carriedApprovalVersion reads the version out of the sentence both carries write
-// (carriedApprovalReasonPrefix) and reports nothing for a reason a person wrote.
+// (docs.CarriedReviewReasonPrefix) and reports nothing for a reason a person wrote.
 func TestCarriedApprovalVersionReadsTheVersionTheCarrysReasonNames(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -298,7 +298,7 @@ func TestCarriedApprovalVersionReadsTheVersionTheCarrysReasonNames(t *testing.T)
 		{name: "the restore's sentence", reason: restoreSentence(11), version: 11, carried: true},
 		{name: "a reviewer's own reason", reason: standingReviewReason},
 		{name: "no reason at all", reason: ""},
-		{name: "the prefix with no version after it", reason: carriedApprovalReasonPrefix + ": unchanged."},
+		{name: "the prefix with no version after it", reason: docs.CarriedReviewReasonPrefix + ": unchanged."},
 		{name: "the prefix later in the reason", reason: "Not " + carrySentence(2)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
