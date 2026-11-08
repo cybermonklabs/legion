@@ -114,6 +114,9 @@ const ActivityTab = chunkComponent(() =>
 const ChildrenTab = chunkComponent(() =>
   import("./ChildrenTab").then((module) => module.ChildrenTab)
 );
+const CollaboratorsTab = chunkComponent(() =>
+  import("./CollaboratorsTab").then((module) => module.CollaboratorsTab)
+);
 const ConversationTab = chunkComponent(() =>
   import("../conversation/ConversationTab").then((module) => module.ConversationTab)
 );
@@ -279,6 +282,8 @@ const tabChords: readonly { keys: string; label: string; tab: IssueTab }[] = [
   // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
   { keys: "t v", label: "Activity tab", tab: "activity" },
   { keys: "t d", label: "Decisions tab", tab: "decisions" },
+  // `s k p c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
+  { keys: "t o", label: "Collaborators tab", tab: "collaborators" },
 ];
 
 /** One of the two role-document tab panels, Verification and Plan. They differ only in the tab
@@ -470,6 +475,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     activity: activeTab === "activity",
     artifacts: activeTab === "artifacts",
     children: activeTab === "children",
+    collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
@@ -783,6 +789,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
               isClosed={isClosed}
               issueKey={issueKey}
             />
+          </Suspense>
+        ) : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "collaborators"}
+        aria-labelledby="issue-collaborators-tab"
+        hidden={activeTab !== "collaborators"}
+        id="issue-collaborators-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.collaborators ? (
+          <Suspense fallback={null}>
+            <CollaboratorsTab issueKey={issueKey} />
           </Suspense>
         ) : null}
       </div>

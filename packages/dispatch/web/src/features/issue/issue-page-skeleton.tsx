@@ -9,6 +9,7 @@ import {
   skeletonBg,
   textTransparent,
 } from "../../theme/classes";
+import { ISSUE_TAB_LABELS } from "./issue-tab-list";
 
 /**
  * The two pieces of the issue page a reader has before the page itself: the header's box and the
@@ -62,24 +63,16 @@ export function IssueHeaderSkeleton({ state }: { state?: ReactNode }): ReactNode
   );
 }
 
-/** The tabs the strip names, in the order `IssueTabs` lists them. Here as plain text rather
- *  than read from that module: the tabs are a chunk of their own, and a static import of it
- *  would put the strip back in the commit this box exists to keep it out of. */
-const ISSUE_TABS = [
-  "Spec",
-  "Verification",
-  "Plan",
-  "Conversation",
-  "Children",
-  "Artifacts",
-  "Activity",
-  "Decisions",
-] as const;
-
 /**
  * The tab strip's box, at the strip's own size: the same classes `Tabs` draws itself with
  * (`components/tab-classes.ts`) around a box per tab the issue has, so the strip landing in it
  * moves the document under it by no pixels.
+ *
+ * The tabs it names are `issue-tab-list.ts`, the list `IssueTabs` renders. A copy of them here
+ * had already drifted by three tabs, and a box naming other tabs than the strip is a box of the
+ * wrong width. That module is data and types alone, so reading it costs this box none of the
+ * tablist's own weight: nothing of `Tabs` or the `Pill` it draws counts with follows the list
+ * into the commit this box exists to keep them out of.
  *
  * Each tab is a pulsing box the width of its own name rather than a tab that reads as one: the
  * strip is what the reader presses, and nothing there answers a press or a screen reader.
@@ -95,7 +88,7 @@ export function IssueTabsSkeleton({ trailing }: { trailing?: ReactNode }): React
   return (
     <div className={tabStripClassName(true)} data-testid="issue-tabs-box">
       <div aria-hidden="true" className={tabListClassName(true)}>
-        {ISSUE_TABS.map((label) => (
+        {ISSUE_TAB_LABELS.map((label) => (
           <span className={tabClassName(true, false)} key={label}>
             <span className={`animate-pulse rounded ${textTransparent} ${skeletonBg}`}>
               {label}

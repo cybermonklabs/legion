@@ -1,0 +1,74 @@
+Experiment 14, go-workflows: a wait for a person.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+library: github.com/cschleiden/go-workflows v1.4.2
+database: legion_golib_eval
+schema: exp14_28906_727117
+instance-id: exp14-gate-1794091101841848796
+wait-mechanism: workflow.NewSignalChannel(ctx, "approval").Receive(ctx), answered by client.SignalWorkflow from another process
+unbounded-wait-available: yes: Receive takes no timeout and records no deadline, so a wait for a person is open-ended and costs no timer
+sticky-timeout-this-run-used: 10s
+executor-cache-ttl-this-run-used: 10s
+[gate1] gwworker: pid=28914
+gate1-pid: 28914
+[gate1] gwworker: goroutines-before-the-workflow=11
+[gate1] gwworker: workflow-started=exp14-gate-1794091101841848796
+[gate1] gwworker: goroutines-while-waiting=12
+sql-while-waiting-instances: state=Active(0) queue=default locked_until=null sticky_until=2026-11-07T22:38:33.494067Z worker=exp14-gate-host-1 completed_at=null
+sql-while-waiting-history: 5: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted
+sql-while-waiting-pending_events: none
+sql-while-waiting-activities-rows: 0
+recorded-state-while-waiting: Active(0), with locked_until null: a waiting instance is an ordinary active row that no worker holds
+held-while-waiting-goroutines-in-the-waiting-process: 11 before the workflow, 12 while it waits
+held-while-waiting-goroutine-delta: 1
+[gate1] gwworker: goroutines-after-the-stickiness-and-cache-lapsed=12
+held-after-stickiness-and-cache-lapsed-goroutines: 12
+held-after-stickiness-and-cache-lapsed-goroutine-delta: 1
+held-while-waiting-connections: total=5 active=1 idle=3 idle-in-transaction=1 idle-in-transaction-for-longer-than-2s=0
+held-while-waiting-open-transactions: 1 sampled mid-flight, 0 of them older than 2s: a go-workflows poller begins and rolls back a transaction every poll, and only one that outlived a poll cycle would be the wait holding it
+held-while-waiting-locks-on-the-schema-or-rows: 2
+held-while-waiting-rows: instances=1 pending_events=0 history=5 activities=0 attributes=5
+held-while-waiting-row-bytes: 2596
+connection-model-read-from-the-library: go-workflows holds one database/sql pool per process and polls it; there is no connection, no transaction and no listener per waiting instance
+killed-pid: 28914
+kill-signal: SIGKILL
+sql-after-the-waiting-process-died: state=Active(0) queue=default locked_until=null sticky_until=2026-11-07T22:38:33.494067Z worker=exp14-gate-host-1 completed_at=null
+sql-after-the-waiting-process-died-history: 5: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted
+what-the-death-cost-the-wait: nothing in the database changed: the wait was already only rows, so there was nothing in the dead process to lose
+[gate2] gwworker: pid=28924
+replacement-pid: 28924
+replacement-started-after-seconds: 0.042
+answer-sent: approved
+seconds-from-answer-to-finished: 0.278
+wait-resumed-in-the-replacement: true
+sql-final-instances: state=Finished(2) queue=default locked_until=null sticky_until=2026-11-07T22:38:47.889446Z worker=exp14-gate-host-2 completed_at=2026-11-07T22:38:37.889446Z
+sql-final-history: 11: WorkflowTaskStarted WorkflowExecutionStarted ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowTaskStarted SignalReceived ActivityScheduled WorkflowTaskStarted ActivityCompleted WorkflowExecutionFinished
+sql-final-signal-received-events: 1
+question-line-1: issue=INFRA-1546 question=approve-the-spec asked-by-pid=28914
+decision-line-1: issue=INFRA-1546 answer=approved applied-by-pid=28924
+question-asked-times: 1
+work-before-the-wait-re-run-after-the-restart: false
+pending_events-rows-after-the-answer: 0
+timed: row-bytes-for-one-open-wait: 2596
+timed: row-bytes-source: sum(pg_column_size(row)) over instances, pending_events, history, activities and attributes for this instance
+timed: goroutines-added-by-one-open-wait: 1
+timed: goroutines-added-once-stickiness-and-cache-lapsed: 1
+timed: connections-to-the-database-while-one-wait-was-open: 5
+timed: connections-idle-in-transaction-while-waiting: 1 at the sample, 0 older than 2s
+timed: locks-held-while-waiting: 2
+timed: undelivered-event-rows-while-waiting: 0
+timed: wall-clock-this-gate-actually-waited: 14.217s, from the question being asked to the answer being sent
+reasoned: storage-bytes-for-one-gate-open-1-days: 2596 (the rows do not grow while nothing happens: a wait writes nothing per day, so 1 days cost the same 2596 bytes as one minute)
+reasoned: storage-bytes-for-one-gate-open-7-days: 2596 (the rows do not grow while nothing happens: a wait writes nothing per day, so 7 days cost the same 2596 bytes as one minute)
+reasoned: storage-bytes-for-one-gate-open-30-days: 2596 (the rows do not grow while nothing happens: a wait writes nothing per day, so 30 days cost the same 2596 bytes as one minute)
+reasoned: storage-bytes-for-1000-gates-open-30-days: 2596000 (1000 x 2596 bytes, on the PostgreSQL Legion already runs, not a metered store)
+reasoned: goroutine-stacks-for-1000-open-gates-in-one-process: 1000 goroutines, about 8192000 bytes of initial stack (1000 x 1 x 8192 bytes)
+reasoned: what-a-waiting-gate-costs-per-day: no workflow task, no write and no timer: the pollers that run anyway ask the database for work on their own interval, and a gate that nobody answers is never in an answer to those queries
+reasoned: what-the-wait-costs-in-polling: the cost of polling belongs to the worker, not to the gate: one worker polling every 200ms runs the same two queries whether no gate or a thousand gates are open
+reasoned: what-a-pod-cannot-do: this run waited seconds; the lines above extend its measured bytes and goroutines over days by arithmetic, and nothing here observed a gate that really stood for days
+limit: one gate on one PostgreSQL, waiting seconds rather than days, with one answer: it shows what a go-workflows wait holds in a process and in a database and that the wait survives the process dying, while the cost of a real multi-day wait is arithmetic on this run's bytes and goroutines, not a wait this pod sat through
+schema-dropped: exp14_28906_727117
+experiment 14: PASS

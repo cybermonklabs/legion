@@ -147,6 +147,8 @@ function importTheOpenTab(route: IssueRoute): Promise<unknown> | undefined {
       return import("./features/conversation/ConversationTab");
     case "children":
       return import("./features/issue/ChildrenTab");
+    case "collaborators":
+      return import("./features/issue/CollaboratorsTab");
     case "decisions":
       return import("./features/issue/DecisionsPanel");
     case "plan":

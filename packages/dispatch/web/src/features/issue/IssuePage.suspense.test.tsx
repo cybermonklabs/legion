@@ -310,6 +310,7 @@ test("the tab strip lands in a commit after the document's, with the tabs it has
     "Artifacts2",
     "Activity",
     "Decisions",
+    "Collaborators",
   ]);
   expect(landedIn(mount, "tabs")).toBeGreaterThan(0);
 });

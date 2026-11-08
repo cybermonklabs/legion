@@ -431,12 +431,15 @@ export function MentionComposer({
   const [multiple, setMultiple] = useState(initial.ask?.multiple ?? false);
   const [urgency, setUrgency] = useState<AskUrgency>(initial.ask?.urgency ?? "med");
   const [referencePickerOpen, setReferencePickerOpen] = useState(false);
-  /** Everything the field's `@` picker needs (`useMentionOptions`): its options, what the read
-   *  that gave them stands at, and whether the picker is open, which lifts a docked composer
-   *  over the page under it. */
-  const { listing, onPickerOpenChange, options, pickerOpen } = useMentionOptions(
+  /** Everything the field's `@` picker needs (`useMentionOptions`): its options, the issue's
+   *  Legion roles nobody is running, what the read that gave them stands at, and whether the
+   *  picker is open, which lifts a docked composer over the page under it. The issue key is
+   *  what the "Not running" options are read for, so a project document's margin composer and
+   *  a direct message offer none. */
+  const { listing, onPickerOpenChange, options, pickerOpen, stoppedOptions } = useMentionOptions(
     owner.kind !== "session",
-    suppliedAgents
+    suppliedAgents,
+    owner.kind === "issue" ? owner.issueKey : undefined
   );
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   // Why the last kind pick was refused, kept with the mark it answered: the composer stays mounted
@@ -1030,6 +1033,7 @@ export function MentionComposer({
         }
         onPickerOpenChange={onPickerOpenChange}
         options={mentionable ? options : undefined}
+        stoppedOptions={mentionable ? stoppedOptions : undefined}
       />
       {plainNotice.length > 0 ? (
         <p className={`text-sm ${textMutedOnSurface}`}>

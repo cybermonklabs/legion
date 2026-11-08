@@ -104,7 +104,7 @@ export function Tabs<Id extends string>({
   }, [activeTab]);
 
   // Compact tabs sit tighter on phones, which is what keeps the shorter tablists on one line.
-  // The issue's five tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
+  // The issue's nine tabs, one carrying a count pill, no longer fit a 390 px viewport: there the
   // tablist scrolls sideways, as it already did at 360 px, and `revealTab` keeps the focused or
   // selected tab fully visible. Every tab stays reachable and keeps its 44 px target. The
   // classes themselves are `tab-classes.ts`, which the box the issue page keeps for this strip

@@ -1,4 +1,5 @@
 import { MessageType } from "@hocuspocus/provider";
+import type { ParagraphReading } from "@legion/proof-editor/reading";
 import {
   type Browser,
   expect,
@@ -70,8 +71,33 @@ export function actionBar(page: Page): Locator {
   return page.locator(".dispatch-action-bar");
 }
 
+/** Presses one of the selection bar's actions, once the bar is where a press can reach it. The
+ * bar is `position: fixed` and `dispatch-action-bar.ts` places it beside the selection, so a
+ * selection outside the viewport puts the bar outside it too - and Playwright's "scroll into
+ * view" moves nothing for a fixed element, so such a click only retries until the row's budget
+ * ends and reports a button that would not take a press. The wait fails by naming the bar
+ * instead, which is the thing that did not arrive. */
 export async function barAction(page: Page, label: "Comment" | "Suggest" | "Ask"): Promise<void> {
+  await expect(actionBar(page)).toBeInViewport();
   await actionBar(page).getByRole("button", { exact: true, name: label }).click();
+}
+
+/** Opens the Inbox or the Agents page by the sidebar's own link, and waits for the heading the
+ *  application gives that page, so a navigation that did not happen fails by naming the page
+ *  that never opened rather than by whatever the row reaches for next.
+ *
+ *  The link, not the `g i` and `g a` chords: the keymap drops a half-typed chord one second
+ *  after its first key (`CHORD_TIMEOUT_MS`, `web/src/features/shell/keymap.ts`), and the two
+ *  keys of a chord are two round trips to the engine — on the Agents page, measured in WebKit on
+ *  an idle machine, 281-382 ms of that second passes between the `g` and the `i`. A loaded lane
+ *  lands the second key after the chord is gone, where `i` on its own opens the inbox peek and
+ *  the reader never leaves the page. A link carries no such deadline. */
+export async function openFromSidebar(page: Page, name: "Agents" | "Inbox"): Promise<void> {
+  await page
+    .getByRole("navigation", { name: "Navigation" })
+    .getByRole("link", { name: new RegExp(`^${name}`) })
+    .click();
+  await expect(page.getByRole("heading", { exact: true, level: 1, name })).toBeVisible();
 }
 
 /** The comment composer: on a document page, the margin's, which a selection-bar action opens. */
@@ -259,14 +285,9 @@ export function conversationThreadScope(page: Page, project: string, turn: Locat
   return project === "iphone" ? page.getByRole("dialog", { name: "Thread" }) : turn;
 }
 
-/** One paragraph of a reading: its whole text, with runs of whitespace collapsed, and the text of
- *  each `<em>`, `<strong>` and `<del>` in it, in document order. */
-export interface ParagraphReading {
-  emphasized: string[];
-  strong: string[];
-  struck: string[];
-  text: string;
-}
+/** One paragraph of a reading, from the one definition (`@legion/proof-editor/reading`): the
+ *  type a spec passes `expectParagraphReadings`, and the type the fixture table stores. */
+export type { ParagraphReading };
 
 /** Asserts the paragraphs `view` draws read as `reading`, the whole table at once, so a failure
  *  reports every row's reading. */
@@ -292,42 +313,6 @@ export async function expectParagraphReadings(
       )
     )
     .toEqual(reading);
-}
-
-/** Opens the comment's thread in the Conversation and asserts `read` of the body the engine drew
- *  there, `read` being given the body's `.dispatch-markdown` view. A spec whose rows are not
- *  `ParagraphReading`s passes its own reader. */
-export async function expectCommentBody(
-  page: Page,
-  issueKey: string,
-  commentId: string,
-  project: string,
-  read: (view: Locator) => Promise<void>
-): Promise<void> {
-  await page.goto(`/issues/${issueKey}/conversation`);
-  // A collapsed card previews the body inline; the expanded thread draws its paragraphs, in
-  // place on a wide screen and in the Thread sheet on a phone.
-  const turn = page.locator(`[data-turn="comment:${commentId}"]`);
-  await turn.getByRole("button", { name: "Expand thread" }).click();
-  const thread = conversationThreadScope(page, project, turn);
-  await read(thread.locator(".dispatch-markdown"));
-  // The engine drew the body: no literal-text fallback stands in for it.
-  await expect(turn.locator("[data-markdown-fallback]")).toHaveCount(0);
-  await expect(thread.locator("[data-markdown-fallback]")).toHaveCount(0);
-}
-
-/** Opens the comment's thread in the Conversation and asserts the engine drew its body as
- *  `reading`. */
-export function expectCommentReading(
-  page: Page,
-  issueKey: string,
-  commentId: string,
-  project: string,
-  reading: ParagraphReading[]
-): Promise<void> {
-  return expectCommentBody(page, issueKey, commentId, project, (view) =>
-    expectParagraphReadings(view, reading)
-  );
 }
 
 /** The Conversation's All / Open / Closed control, the one filter over its cards. It starts on

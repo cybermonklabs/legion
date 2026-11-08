@@ -1,15 +1,8 @@
-import { afterAll, describe, expect, setDefaultTimeout, test } from "bun:test";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
@@ -17,26 +10,45 @@ import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 // one minute.
 setDefaultTimeout(60_000);
 
+// The judge runs in a Docker container; every other row here needs no container. Read once, so
+// one warning names docker for the whole file.
+const withoutDocker = skipWithout("docker");
+
 // rig.sh's install_model_route, run with the checkout's real installers: the route a label's
 // profile reaches Anthropic by, picked by LEGION_E2E_MODEL_ROUTE.
 const root = path.resolve(import.meta.dir, "../../../..");
 const fn = scriptFunctions(path.join(import.meta.dir, "rig.sh"));
-const work = mkdtempSync(path.join(tmpdir(), "skill-scenarios-rig-"));
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+const work = temporaryDirectory("skill-scenarios-rig");
 const operatorHome = path.join(work, "operator-home");
-mkdirSync(operatorHome);
+// The home the probes must not reach, with the one thing they look for in it: a judge that could
+// read it would list this directory. It is staged in a hook, below the one the reservation
+// registered: a run that selects no row of this file makes neither. Each level is made on its
+// own, never with `recursive`, so this hook makes nothing above the reserved root and a root the
+// fixture did not make is an error here rather than a directory nothing removes.
+beforeAll(() => {
+  mkdirSync(operatorHome);
+  mkdirSync(path.join(operatorHome, ".ssh"));
+  writeFileSync(path.join(operatorHome, ".ssh", "id_ed25519"), "not a key\n", { mode: 0o600 });
+});
 /** The variables every child process of this file gets: the caller's PATH, a HOME of the test's
- * own, and the caller's mise data and config directories. A tool on PATH can be a mise shim (jq and
- * jj are, on a devbox). Under a fresh HOME such a shim finds neither its installs nor its global
- * config, so it fails. make_omp_home keeps the operator's two directories for the processes it
- * starts for the same reason, and base_env passes MISE_DATA_DIR to every agent. */
+ * own, and the caller's mise data and config directories when the caller names them. A tool on
+ * PATH can be a mise shim (jq and jj are, on a devbox). Under a fresh HOME such a shim finds
+ * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
+ * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
+ * to every agent. A caller that names neither variable gets neither: the developer's own home
+ * decides nothing here. */
+const miseData =
+  process.env.MISE_DATA_DIR ??
+  (process.env.XDG_DATA_HOME === undefined
+    ? undefined
+    : path.join(process.env.XDG_DATA_HOME, "mise"));
 const childEnv = {
   PATH: process.env.PATH ?? "",
   HOME: operatorHome,
-  MISE_DATA_DIR:
-    process.env.MISE_DATA_DIR ??
-    path.join(process.env.XDG_DATA_HOME ?? path.join(homedir(), ".local", "share"), "mise"),
-  XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? path.join(homedir(), ".config"),
+  ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
+  ...(process.env.XDG_CONFIG_HOME === undefined
+    ? {}
+    : { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }),
 };
 
 let profiles = 0;
@@ -806,17 +818,24 @@ describe("judge-omp", () => {
   // The bad-argument row is not skipped: judge-omp refuses its arguments before it looks for
   // Docker, so it runs anywhere.
   const onActions = process.env.GITHUB_ACTIONS === "true";
-  const skip = Bun.which("docker") === null && !onActions;
-  const work = freshDir("judge-work");
-  const outside = path.join(work, "outside.txt");
-  writeFileSync(outside, "a file beside the judge's directory\n");
-  mkdirSync(path.join(work, "runs"), { recursive: true });
-  const omp = path.join(freshDir("judge-omp-bin"), "omp");
-  // The stand-in writes everything through the one file the judge may write, answer.json: argv
-  // (one word a line), then `env` lines, then one line per probe (`<name> allowed|denied`).
-  writeFileSync(
-    omp,
-    `#!/bin/bash
+  const skip = withoutDocker && !onActions;
+  // Staged in a hook: Bun runs this body even where the rows do not run, and a write here would
+  // make the suite's work directory and leave it behind.
+  let work = "";
+  let outside = "";
+  let omp = "";
+  beforeAll(() => {
+    work = freshDir("judge-work");
+    outside = path.join(work, "outside.txt");
+    writeFileSync(outside, "a file beside the judge's directory\n");
+    mkdirSync(path.join(work, "runs"), { recursive: true });
+    omp = path.join(freshDir("judge-omp-bin"), "omp");
+    // The stand-in writes everything through the one file the judge may write, answer.json: argv
+    // (one word a line), then `env` lines, then one line per probe (`<name> allowed|denied`), then
+    // one `mode <name> <bits>` line per key path, which only a judge holding the key can read.
+    writeFileSync(
+      omp,
+      `#!/bin/bash
 probe() { if "\${@:2}" >/dev/null 2>&1; then echo "probe $1 allowed"; else echo "probe $1 denied"; fi; }
 # DROP: write a marker into every directory this judge can write outside its own directory.
 # SEEK: report any marker another judge left anywhere this judge can read.
@@ -841,14 +860,16 @@ fi
   probe gateway-base-url grep -q 'baseUrl: https://gateway.internal.example/anthropic' "$HOME/.omp/profiles/$OMP_PROFILE/agent/models.yml"
   probe token-is-jwt bash -c '[[ "$("$1")" =~ ^eyJ[A-Za-z0-9_-]*\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$ ]]' - "$key"
   probe dbus-set test -n "\${DBUS_SESSION_BUS_ADDRESS:-}"
+  printf 'mode %s\\n' "key-dir $(stat -c %a /opt/key 2>/dev/null || echo none)" \\
+    "token $(stat -c %a /opt/key/token 2>/dev/null || echo none)"
   [ -z "\${SEEK:-}" ] || echo "seek $(find / \\( -path /proc -o -path /sys -o -path /dev \\) -prune -o -name 'leak-*' -print 2>/dev/null | head -1)"
 } >"$PWD/answer.json"
-sleep "\${SLEEP:-0}"
 echo judged
 exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
 `,
-    { mode: 0o755 }
-  );
+      { mode: 0o755 }
+    );
+  });
   const judge = (
     kind: string,
     dir: string,
@@ -861,7 +882,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
         USER: "rig",
         SKILL_SCENARIOS_WORK: work,
         SKILL_SCENARIOS_JUDGE_OMP: omp,
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${homedir()} WORK=${work}`,
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work}`,
         LEGION_E2E_MODEL_ROUTE: "key-file",
         LEGION_E2E_ANTHROPIC_KEY_FILE: keyFile(0o600),
         ...env,
@@ -880,6 +901,22 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
       .split("\n")
       .filter((line) => line.startsWith(`${kind} `))
       .map((line) => line.slice(kind.length + 1));
+  /**
+   * A judge's exit code, and whether the rig refused: any line of its stderr starting
+   * `skill-scenarios: `, the prefix note() and fail() give every word of the rig's own. Equality
+   * against the whole stderr string read a byte from docker, getent, mise or flock as a failed
+   * row; what a row is about is that the judge ran and the rig refused nothing. A result that is
+   * not clean carries the stderr that was read, so a failing row still names what went wrong; a
+   * clean result reports no stderr.
+   */
+  const judged = (result: { exitCode: number; stderr: Buffer }) => {
+    const stderr = result.stderr.toString();
+    const refused = stderr.split("\n").some((line) => line.startsWith("skill-scenarios: "));
+    const clean = !refused && result.exitCode === 0;
+    return { code: result.exitCode, refused, stderr: clean ? "" : stderr };
+  };
+  /** What `judged` reads back from a judge that ran and a rig that refused nothing. */
+  const judgedCleanly = { code: 0, refused: false, stderr: "" };
 
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
@@ -888,10 +925,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
     () => {
       const dir = judgeDir();
       const result = judge("ste", dir);
-      expect({ code: result.exitCode, stderr: result.stderr.toString() }).toEqual({
-        code: 0,
-        stderr: "",
-      });
+      expect(judged(result)).toEqual(judgedCleanly);
       expect(recorded(dir, "argv")).toEqual([
         "/opt/omp/omp",
         "-p",
@@ -977,7 +1011,7 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   test.skipIf(skip)("one judge cannot leave a file that a second judge can read", () => {
     const first = judgeDir();
     const env = (word: string) => ({
-      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${homedir()} WORK=${work} ${word}`,
+      SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${work} ${word}`,
     });
     expect(judge("ste", first, "answer.json", env("DROP=one")).exitCode).toBe(0);
     const second = judgeDir();
@@ -1003,24 +1037,30 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   // PATH that mints a JWT and counts each mint. The key command needs the operator's home and
   // session bus, so it runs on the host; the container gets only the token it printed.
   describe("on the gateway route", () => {
-    const gatewayWork = freshDir("judge-gateway-work");
-    mkdirSync(path.join(gatewayWork, "runs"), { recursive: true });
-    const fakeBin = freshDir("judge-gateway-bin");
-    const mints = path.join(gatewayWork, "mints.log");
-    writeFileSync(
-      path.join(fakeBin, "hawk-token"),
-      `#!/usr/bin/env bash
+    // Staged in a hook, for the reason the describe above gives.
+    let gatewayWork = "";
+    let fakeBin = "";
+    let mints = "";
+    beforeAll(() => {
+      gatewayWork = freshDir("judge-gateway-work");
+      mkdirSync(path.join(gatewayWork, "runs"), { recursive: true });
+      fakeBin = freshDir("judge-gateway-bin");
+      mints = path.join(gatewayWork, "mints.log");
+      writeFileSync(
+        path.join(fakeBin, "hawk-token"),
+        `#!/usr/bin/env bash
 printf '%s\\n' "$$" >>"$FAKE_MINT_LOG"
 payload=$(printf '{"exp":%s}' "$(($(date +%s) + 3600))" | base64 -w0 | tr '+/' '-_' | tr -d '=')
 printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
 `,
-      { mode: 0o755 }
-    );
+        { mode: 0o755 }
+      );
+    });
     const gatewayJudge = (kind: string, dir: string, env: Record<string, string> = {}) =>
       judge(kind, dir, "answer.json", {
         PATH: `${fakeBin}:${childEnv.PATH}`,
         SKILL_SCENARIOS_WORK: gatewayWork,
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${homedir()} WORK=${gatewayWork}`,
+        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${operatorHome} WORK=${gatewayWork}`,
         LEGION_E2E_MODEL_ROUTE: "gateway",
         LEGION_E2E_MODEL_GATEWAY_URL: "https://gateway.internal.example/anthropic",
         DBUS_SESSION_BUS_ADDRESS: "unix:path=/nonexistent/bus",
@@ -1049,10 +1089,7 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
         const dir = gatewayDir();
         const before = mintCount();
         const result = gatewayJudge("ste", dir);
-        expect({ code: result.exitCode, stderr: result.stderr.toString() }).toEqual({
-          code: 0,
-          stderr: "",
-        });
+        expect(judged(result)).toEqual(judgedCleanly);
         expect(mintCount() - before).toBeLessThanOrEqual(1);
         expect(recorded(dir, "env")).toEqual([
           `PWD=${dir}`,
@@ -1078,28 +1115,16 @@ printf 'eyJhbGciOiJub25lIn0.%s.c2ln\\n' "$payload"
       }
     );
 
-    // Catches: a token directory or file that others can read while the judge runs. The stand-in
-    // omp sleeps 2 s, so a watcher sees the files while they exist.
+    // Catches: a token directory or file that others can read while the judge runs. The modes
+    // are the judge's own reading of them from inside the container, recorded while it ran
+    // (`recorded(dir, "mode")`), rather than a watcher's from outside: the stand-in omp sleeps
+    // for nothing now, so there is no window for a watcher to look through, and a row that
+    // waited for one would be waiting on a sleep.
     test.skipIf(skip)("the token file is the owner's alone while the judge runs", () => {
       const dir = gatewayDir();
-      const seen = path.join(gatewayWork, `seen-mode-${jobs}`);
-      const watcher = Bun.spawn(
-        [
-          "bash",
-          "-c",
-          'for _ in $(seq 400); do [ -f "$1/token" ] && { stat -c %a "$1" "$1/token" >"$2"; exit 0; }; sleep 0.05; done',
-          "-",
-          `${dir}.key`,
-          seen,
-        ],
-        { stdout: "ignore", stderr: "ignore" }
-      );
-      const result = gatewayJudge("bare", dir, {
-        SKILL_SCENARIOS_JUDGE_ENV: `OUTSIDE=${outside} OPERATOR_HOME=${homedir()} WORK=${gatewayWork} SLEEP=2`,
-      });
-      watcher.kill();
-      expect(result.exitCode).toBe(0);
-      expect(readFileSync(seen, "utf8").split("\n").filter(Boolean)).toEqual(["700", "600"]);
+      const result = gatewayJudge("bare", dir);
+      expect(judged(result)).toEqual(judgedCleanly);
+      expect(recorded(dir, "mode")).toEqual(["key-dir 700", "token 600"]);
       expect(existsSync(`${dir}.key`)).toBe(false);
     });
 

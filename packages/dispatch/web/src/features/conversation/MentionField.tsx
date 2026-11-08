@@ -1,3 +1,4 @@
+import { useQuery } from "@tanstack/react-query";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -14,7 +15,8 @@ import {
   useState,
 } from "react";
 
-import type { Agent } from "../../api/types";
+import { issueCollaboratorsQuery } from "../../api/queries";
+import type { Agent, IssueCollaboratorAgent, IssueCollaboratorLegionAgent } from "../../api/types";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import {
@@ -37,15 +39,18 @@ import { useAgents } from "./useAgents";
 
 export interface MentionOption {
   readonly capabilities: readonly string[];
-  /** Where the session runs: its directory, which the picker shows and its filter matches. */
-  readonly dir: string;
+  /** The detail line under the option's name, which its filter matches too: a running session's
+   *  directory, or, for a role nobody is running, the role and that it is not running. */
+  readonly detail: string;
   /** The name of the session the option is, or of the one holding its role, as `useAgentText`
    *  gives it: the filter matches it, and a role option's detail tooltip names it. */
   readonly holder: string;
   /** When the session was last seen, ISO (`Agent.last_seen` is epoch milliseconds): the picker
-   *  shows it as a relative `<Timestamp>`, the exact time on its `title`. */
-  readonly lastSeen: string;
-  /** The session the option is, or, for a role, the session holding it: `AgentName` draws it. */
+   *  shows it as a relative `<Timestamp>`, the exact time on its `title`. Undefined for an
+   *  option no session is running, which has no such time and shows none. */
+  readonly lastSeen?: string;
+  /** The session the option is, or, for a role, the session holding it (the newest one for a
+   *  role nobody holds): `AgentName` draws it. */
   readonly sessionId: string;
   /** That session's title as the agent list gave it: its name when the registry cache has none. */
   readonly sessionTitle: string;
@@ -75,7 +80,7 @@ function roleOptions(
     })
     .map(([role, agent]) => ({
       capabilities: agent.capabilities,
-      dir: agent.dir,
+      detail: agent.dir,
       holder: text.sessionText(agent.session_id, agent.title),
       lastSeen: new Date(agent.last_seen).toISOString(),
       sessionId: agent.session_id,
@@ -97,7 +102,7 @@ export function mentionOptions(
       )
       .map((agent) => ({
         capabilities: agent.capabilities,
-        dir: agent.dir,
+        detail: agent.dir,
         holder: text.sessionText(agent.session_id, agent.title),
         lastSeen: new Date(agent.last_seen).toISOString(),
         sessionId: agent.session_id,
@@ -106,6 +111,46 @@ export function mentionOptions(
         title: text.sessionText(agent.session_id, agent.title),
       })),
   ];
+}
+
+/**
+ * The picker's "Not running" options: one per Legion role token the issue's collaborators record
+ * (`IssueCollaborators.agents[].legion`) that no live agent holds - the live agents' `roles`, the
+ * rule the live role options follow - addressed `role:<token>` and drawn by the role's newest
+ * session, the one entry per token the server leaves unreplaced (`legion.replaced_by` null), so a
+ * replaced session is never an option of its own. A session the live list itself names is left
+ * out whatever its roles say: a live session that claims no role would otherwise be offered here
+ * and draw its own `Running` mark, so one row would read running and not running at once.
+ *
+ * The options keep the server's order, which the collaborators contract states: the registry's
+ * agents by role in workflow order, then newest first.
+ */
+export function stoppedRoleOptions(
+  live: readonly Agent[],
+  collaborators: readonly IssueCollaboratorAgent[],
+  text: Pick<AgentText, "sessionText">
+): MentionOption[] {
+  const held = new Set(live.flatMap((agent) => agent.roles));
+  const running = new Set(live.map((agent) => agent.session_id));
+  const offered = (agent: IssueCollaboratorAgent): agent is IssueCollaboratorLegionAgent =>
+    agent.legion !== null &&
+    agent.legion.replaced_by === null &&
+    !held.has(agent.legion.role_token) &&
+    !running.has(agent.session_id);
+  return collaborators.filter(offered).map((agent) => {
+    // The title the server gives is the registry's, else the session's newest stamped one; the
+    // name is still `useAgentText`'s, as a live option's holder is.
+    const storedTitle = agent.title ?? "";
+    return {
+      capabilities: [],
+      detail: `${agent.legion.role} · not running`,
+      holder: text.sessionText(agent.session_id, storedTitle),
+      sessionId: agent.session_id,
+      sessionTitle: storedTitle,
+      target: `role:${agent.legion.role_token}`,
+      title: agent.legion.role_token,
+    };
+  });
 }
 
 /** Where the agent list the picker offers stands: `current` is a read that landed, and the
@@ -126,10 +171,13 @@ export type MentionListing = "current" | "loading" | "refilling" | "unreachable"
  *
  * `enabled` is whether this host's channel takes a mention at all. `suppliedAgents`, where a
  * host has its own list, is offered in place of the registry and no registry read is made.
+ * `issueKey` is the issue whose Legion roles the "Not running" options come from; a host with
+ * no issue of its own offers none.
  */
 export function useMentionOptions(
   enabled: boolean,
-  suppliedAgents?: readonly Agent[]
+  suppliedAgents?: readonly Agent[],
+  issueKey?: string
 ): {
   /** For the field's `listing`. */
   readonly listing: MentionListing;
@@ -139,6 +187,8 @@ export function useMentionOptions(
   /** Whether the picker is open, for a host that moves under it: the docked composer rises over
    *  the page while the list is showing. */
   readonly pickerOpen: boolean;
+  /** For the field's `stoppedOptions`: the issue's Legion roles no live agent holds. */
+  readonly stoppedOptions: MentionOption[];
 } {
   const [pickerOpen, setPickerOpen] = useState(false);
   const readsTheRegistry = suppliedAgents === undefined && enabled;
@@ -155,6 +205,28 @@ export function useMentionOptions(
         : live.isPending
           ? "loading"
           : "unreachable";
+  // The issue's collaborators feed the "Not running" options, read once the picker opens and
+  // only where the host named an issue: a project document's margin composer carries that
+  // document rather than an issue, while an issue document's margin composer is an issue owner
+  // and does read them, and a closed picker and a direct message read nothing. The query is the
+  // Collaborators tab's, so the two readers share one entry - a tab read within the shell's 30 s
+  // `staleTime` opens the picker with no request of its own - and the event feed refreshes that
+  // key by a rule of its own (`changesCollaborators` in event-refresh.ts), which refetches it
+  // under a picker that stays open.
+  const collaborators = useQuery({
+    ...issueCollaboratorsQuery(issueKey),
+    enabled: issueKey !== undefined && enabled && pickerOpen,
+  });
+  // A live list whose state is unknown (not read yet, or its read failed) holds every role as
+  // far as the picker can tell, which is what a `listing` other than `current` says of it, so no
+  // role is offered as not running.
+  const stoppedOptions = useMemo(
+    () =>
+      listing === "current"
+        ? stoppedRoleOptions(agents, collaborators.data?.agents ?? [], text)
+        : [],
+    [agents, collaborators.data, listing, text]
+  );
   const { refetch } = live;
   useEffect(() => {
     // An open picker is kept fresh through the shell's one poller (`useAgents`), whose interval
@@ -164,7 +236,7 @@ export function useMentionOptions(
       void refetch();
     }
   }, [pickerOpen, readsTheRegistry, refetch]);
-  return { listing, onPickerOpenChange: setPickerOpen, options, pickerOpen };
+  return { listing, onPickerOpenChange: setPickerOpen, options, pickerOpen, stoppedOptions };
 }
 
 /** Reconcile accepted mentions against the actual textarea edit range. */
@@ -284,6 +356,7 @@ export function MentionField({
   onPaste,
   onPickerOpenChange,
   options,
+  stoppedOptions,
   placeholder,
 }: {
   readonly body: string;
@@ -322,6 +395,10 @@ export function MentionField({
   /** What the empty box says it takes, where the host has words for it (an ask's answer box
    *  names what the picked option asks of the reader). */
   readonly placeholder?: string;
+  /** The roles the host's issue records that nobody is running (`stoppedRoleOptions`), offered
+   *  under "Not running" after the live options. Undefined where the host has no issue to read
+   *  them from, which is every host but the issue's own composer. */
+  readonly stoppedOptions?: readonly MentionOption[];
 }): ReactNode {
   const element = useRef<HTMLTextAreaElement | null>(null);
   const [autocomplete, setAutocomplete] = useState<{ query: string; start: number }>();
@@ -341,6 +418,7 @@ export function MentionField({
     { before: string; inputType: string; range: TextEditRange } | undefined
   >(undefined);
   const listboxId = useId();
+  const notRunningId = useId();
   const open = autocomplete !== undefined;
   // The detail line below ends in that session's last-seen time, drawn as the `<Timestamp>`
   // every other relative time on the page is, and the whole line is also that line's `title`:
@@ -348,22 +426,30 @@ export function MentionField({
   // a string, so it is built here rather than rendered, and this subscribes to the one tick
   // `<Timestamp>` follows so the two say the same thing for as long as the list is open.
   useRelativeTimeTick(open);
-  const filteredOptions = useMemo(() => {
-    if (autocomplete === undefined || options === undefined) return [];
+  const [filteredOptions, filteredStoppedOptions] = useMemo<
+    [readonly MentionOption[], readonly MentionOption[]]
+  >(() => {
+    if (autocomplete === undefined || options === undefined) return [[], []];
     const query = autocomplete.query.toLocaleLowerCase();
     // A role option matches its holder's name too, which its detail line shows, and either kind
     // matches the session's folder: the time beside it in that line is no search term.
-    return options.filter(
-      (option) =>
-        query === "" ||
-        option.target.toLocaleLowerCase().includes(query) ||
-        option.title.toLocaleLowerCase().includes(query) ||
-        option.holder.toLocaleLowerCase().includes(query) ||
-        option.dir.toLocaleLowerCase().includes(query)
-    );
-  }, [autocomplete, options]);
+    const matches = (option: MentionOption) =>
+      query === "" ||
+      option.target.toLocaleLowerCase().includes(query) ||
+      option.title.toLocaleLowerCase().includes(query) ||
+      option.holder.toLocaleLowerCase().includes(query) ||
+      option.detail.toLocaleLowerCase().includes(query);
+    return [options.filter(matches), (stoppedOptions ?? []).filter(matches)];
+  }, [autocomplete, options, stoppedOptions]);
+  /** Every option the arrows step through, in the order the list draws them: the live ones,
+   *  then the roles nobody is running. The index is the option's place in this list, which is
+   *  also the id each row carries. */
+  const navigableOptions = useMemo(
+    () => [...filteredOptions, ...filteredStoppedOptions],
+    [filteredOptions, filteredStoppedOptions]
+  );
   // The list is read again while the picker is open, so an option the reader was on can go.
-  const activeOption = active === undefined ? undefined : filteredOptions[active];
+  const activeOption = active === undefined ? undefined : navigableOptions[active];
   /** The option the field reports as active, which is the one Enter picks. */
   const activeId = activeOption === undefined ? undefined : `${listboxId}-${active}`;
   const activeMentions = useMemo(() => survivingMentions(body, mentions), [body, mentions]);
@@ -451,7 +537,7 @@ export function MentionField({
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       event.stopPropagation();
-      const rows = filteredOptions.length;
+      const rows = navigableOptions.length;
       if (rows === 0) return;
       const step = event.key === "ArrowDown" ? 1 : -1;
       // Nothing active yet: down takes the first option, up the last. Either wraps from there.
@@ -503,6 +589,69 @@ export function MentionField({
     };
   }, []);
 
+  /** One suggestion: a button that inserts the mention, at its place in the list the arrows
+   *  step through (`navigableOptions`), which is the id the field names as active. Both halves
+   *  of the list draw it, so a role nobody is running reads as every other row does. */
+  const optionButton = (option: MentionOption, index: number) => {
+    const isRole = option.target.startsWith("role:");
+    // What the detail line reads, for its `title`: the same relative time the `<Timestamp>` in
+    // it draws, and what is left of the line once it is cut. A role nobody is running has no
+    // session running to have been seen, so its line ends at the role.
+    const lastSeen =
+      option.lastSeen === undefined
+        ? undefined
+        : (relativeTimeLabel(new Date(option.lastSeen), Date.now()) ?? option.lastSeen);
+    const line = isRole ? `${option.holder} · ${option.detail}` : option.detail;
+    const detail = lastSeen === undefined ? line : `${line} · ${lastSeen}`;
+    // Each suggestion is one option that inserts the mention; a listbox owns only options, so
+    // the agent in it is drawn by `AgentName` without a link (exclusion E2): a session option's
+    // name, and a role option's holder - for a role no live agent holds, its newest session.
+    const agent = (
+      <AgentName kind="static" sessionId={option.sessionId} storedTitle={option.sessionTitle} />
+    );
+    return (
+      // Below `xl` every button is `inline-flex` with centred items (styles.css's touch rule,
+      // unlayered, so it beats `block`): the title and detail stack explicitly and each
+      // stretches to the row's width.
+      // A session option's full id is its tooltip and accessible description: its name can be
+      // the short form `session:<8>…`, which two sessions may share.
+      <button
+        aria-label={option.title}
+        aria-selected={option === activeOption}
+        // The active option wears the accent border every selected row in the page wears
+        // (`SearchPalette`), never a fill: the detail line's muted text would not clear AA
+        // over a sky card.
+        className={`flex min-h-11 w-full flex-col rounded-lg border px-3 py-2 text-left text-sm ${surfaceMutedHoverBg} ${option === activeOption ? selectedCardBorder : borderDefault}`}
+        id={`${listboxId}-${index}`}
+        key={option.target}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => addMention(option)}
+        role="option"
+        title={isRole ? undefined : option.sessionId}
+        type="button"
+      >
+        <span className={`self-stretch font-medium ${textPrimaryOnSurface}`}>
+          {isRole ? option.title : agent}
+        </span>
+        <TruncatedText className={`self-stretch text-xs ${textMutedOnSurface}`} title={detail}>
+          {isRole ? (
+            <>
+              {agent} · {option.detail}
+            </>
+          ) : (
+            option.detail
+          )}
+          {option.lastSeen === undefined ? null : (
+            <>
+              {" · "}
+              <Timestamp at={option.lastSeen} />
+            </>
+          )}
+        </TruncatedText>
+      </button>
+    );
+  };
+
   return (
     <>
       <label className={`block text-sm font-medium ${textSecondaryOnSurface}`}>
@@ -551,71 +700,32 @@ export function MentionField({
           id={listboxId}
           role="listbox"
         >
-          {filteredOptions.map((option, index) => {
-            const isRole = option.target.startsWith("role:");
-            // What the detail line reads, for its `title`: the same relative time the
-            // `<Timestamp>` in it draws, and what is left of the line once it is cut.
-            const lastSeen =
-              relativeTimeLabel(new Date(option.lastSeen), Date.now()) ?? option.lastSeen;
-            const detail = isRole
-              ? `${option.holder} · ${option.dir} · ${lastSeen}`
-              : `${option.dir} · ${lastSeen}`;
-            // Each suggestion is one option that inserts the mention; a listbox owns only
-            // options, so the agent in it is drawn by `AgentName` without a link (exclusion E2):
-            // a session option's name, and a role option's holder.
-            const agent = (
-              <AgentName
-                kind="static"
-                sessionId={option.sessionId}
-                storedTitle={option.sessionTitle}
-              />
-            );
-            return (
-              // Below `xl` every button is `inline-flex` with centred items (styles.css's touch
-              // rule, unlayered, so it beats `block`): the title and detail stack explicitly and
-              // each stretches to the row's width.
-              // A session option's full id is its tooltip and accessible description: its name
-              // can be the short form `session:<8>…`, which two sessions may share.
-              <button
-                aria-label={option.title}
-                aria-selected={option === activeOption}
-                // The active option wears the accent border every selected row in the page
-                // wears (`SearchPalette`), never a fill: the detail line's muted text would
-                // not clear AA over a sky card.
-                className={`flex min-h-11 w-full flex-col rounded-lg border px-3 py-2 text-left text-sm ${surfaceMutedHoverBg} ${option === activeOption ? selectedCardBorder : borderDefault}`}
-                id={`${listboxId}-${index}`}
-                key={option.target}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => addMention(option)}
-                role="option"
-                title={isRole ? undefined : option.sessionId}
-                type="button"
+          {filteredOptions.map(optionButton)}
+          {/* The issue's Legion roles no live agent holds, after the live options: a mention of
+              one is addressed to its role as any role option is, and the arrows step into the
+              group from the live options above it. */}
+          {filteredStoppedOptions.length === 0 ? null : (
+            // biome-ignore lint/a11y/useSemanticElements: a listbox owns only options and groups of options; a fieldset is neither.
+            <div aria-labelledby={notRunningId} role="group">
+              <div
+                className={`px-3 pt-2 pb-1 text-xs font-semibold ${textMutedOnSurface}`}
+                id={notRunningId}
+                role="presentation"
               >
-                <span className={`self-stretch font-medium ${textPrimaryOnSurface}`}>
-                  {isRole ? option.title : agent}
-                </span>
-                <TruncatedText
-                  className={`self-stretch text-xs ${textMutedOnSurface}`}
-                  title={detail}
-                >
-                  {isRole ? (
-                    <>
-                      {agent} · {option.dir} · <Timestamp at={option.lastSeen} />
-                    </>
-                  ) : (
-                    <>
-                      {option.dir} · <Timestamp at={option.lastSeen} />
-                    </>
-                  )}
-                </TruncatedText>
-              </button>
-            );
-          })}
+                Not running
+              </div>
+              {filteredStoppedOptions.map((option, index) =>
+                optionButton(option, filteredOptions.length + index)
+              )}
+            </div>
+          )}
           {/* Only a current list may say nobody matches: one that is refilling, still out or
-              unreachable says that instead, so an absent registry never reads as an empty
-              one. */}
+              unreachable says that instead, so an absent registry never reads as an empty one.
+              And only when the picker offers nothing at all: a "Not running" group with options
+              in it is a match, so saying no agent matches underneath it would contradict the
+              list the reader is looking at. */}
           {listing === "current" ? (
-            filteredOptions.length === 0 ? (
+            navigableOptions.length === 0 ? (
               <p className={`px-3 py-2 text-sm ${textMutedOnSurface}`}>No live agents match.</p>
             ) : null
           ) : listing === "refilling" ? (
