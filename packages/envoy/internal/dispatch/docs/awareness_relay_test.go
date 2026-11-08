@@ -299,17 +299,19 @@ func TestRelayedAwarenessNeitherLoadsNorKeepsARoomWithNoReaderOfItsOwn(t *testin
 
 // A client whose state is too large for one notification is dropped and counted rather than sent,
 // on every batch that carries it, and what the room relays after it still crosses. The count is
-// not one: nothing takes an oversized client off the list this process answers queries from, and a
-// query is answered with the state of every local client (awareness_relay.go:61-64, answer), so
-// the query task B sends as bob's open activates the room there offers alice's state to the size
-// check again. How many batches carry it is what scheduling decides; the invariant is that every
-// one of them was dropped, so none of them reached task B.
+// not always one: nothing takes an oversized client off the list this process answers queries
+// from, and a query is answered with the state of every local client (the query note at the top
+// of awareness_relay.go, answer), so the query task B sends as bob's open activates the room
+// there offers alice's state to the size check again. How many batches carry it is what
+// scheduling decides; the invariant is that every one of them was dropped, so none of them
+// reached task B.
 func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 	pair := newProcessPair(t)
 	// Each batch of the room that carries alice's client as a state rather than a removal offers
 	// that state to the size check once (awarenessNotifications), so these offers are what the
-	// drops counted below are owed against. The window is opened before any room is opened, since
-	// task B queries task A as bob's open activates the room there.
+	// drops counted below are owed against. The window is opened before either reader connects,
+	// since task B queries task A as bob's open activates the room there and the answer's batch
+	// carries alice's state like any other.
 	var offered atomic.Uint64
 	pair.taskA.beforeAwarenessResolve = func(room string, batch map[uint64]awarenessEntry) {
 		if entry, carried := batch[aliceClient]; room == pair.artifactID && carried && !entry.removed {
@@ -332,7 +334,7 @@ func TestAnAwarenessStateTooLargeToRelayIsDroppedAndCounted(t *testing.T) {
 	if _, present := bob.AwarenessStates()[aliceClient]; present {
 		t.Fatal("the oversized state reached bob on task B")
 	}
-	if offers := offered.Load(); offers == 0 {
+	if offered.Load() == 0 {
 		t.Fatal("no batch of task A's room carried the oversized state, so the drops below stand for nothing")
 	}
 	// The drop is counted after this window has run, so a flush already in flight leaves the two
