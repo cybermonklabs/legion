@@ -123,11 +123,11 @@ def bun_job(job, workflow=CI):
     install = at(job, "bun install --frozen-lockfile", workflow)
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
-        (".bun-version", ".github/actions/setup-bun/action.yml:47 bun-version-file: .bun-version"),
-        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:60-95 reads the bun row of this runner's build "
-                                  "variant and fetches its second source where the release asset served no Bun of the "
-                                  "pinned version, and :119 holds the bun on PATH to that row's digest"),
-        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:56,105 source it: ci_tools_fetch_fallback "
+        (".bun-version", ".github/actions/setup-bun/action.yml:58 bun-version-file: .bun-version"),
+        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:72-82 reads the bun row of this runner's build "
+                                  "variant and :104-125 fetches its second source where the release asset served no Bun "
+                                  "of the pinned version, and :146 holds the bun on PATH to that row's digest"),
+        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:67,132 source it: ci_tools_fetch_fallback "
                                         "installs the npm copy and ci_tools_verify checks the installed binary"),
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
@@ -831,7 +831,7 @@ GATES = [
                                    "its ordering fixture from the repository's own rows"),
         (".github/ci-tools.yaml", f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh:444-447 runs "
                                   f"the gate over this repository's own tree, and {at('test', 'Test the tool fetch helper')}: "
-                                  "ci-tools.test.sh:391-405 reads a row's digest out of the repository's own manifest"),
+                                  "ci-tools.test.sh:521 reads every row of the repository's own manifest"),
         (".github/e2e-scripts.json", f"{at('test', 'Test the e2e proof selector')}: select-e2e-proofs.test.sh runs the "
                                      "selector over the repository's own list"),
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
