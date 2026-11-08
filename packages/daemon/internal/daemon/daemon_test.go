@@ -1727,19 +1727,14 @@ func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
 	return append([]appauth.AppRole(nil), r.roles...)
 }
 
+// workflowNATS is the package's shared NATS server with Envoy's notification stream on it, for
+// every test that boots a daemon against it: the URL testnats hands out, and the stream the
+// daemon's durable consumers are opened on (notificationsStreamOn, which is the one place the
+// connect, the JetStream handle and the stream's own shape are written).
 func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)
-	conn, err := nats.Connect(url, nats.Timeout(time.Second))
-	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
-	}
-	t.Cleanup(conn.Close)
-	js, err := jetstream.New(conn)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	notificationsStreamOn(t, url)
 	return url
 }
 

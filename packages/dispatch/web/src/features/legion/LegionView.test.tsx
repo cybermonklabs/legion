@@ -379,13 +379,19 @@ test("a refused key shows the daemon's reason and leaves the value as it was", a
 // The change was made, so the row keeps the new value as an applied one does — and the answer is
 // a failure, never the success an applied verdict reads as: the holder the caller asked to reach
 // kept what it had.
+//
+// The verdict's `holder` is not that holder and is never shown. The daemon sets it to the row's
+// named holder whether or not that holder is the one that failed, and a path several things hold
+// is answered for all of them (`config.Row.Also`); the holder that failed is named inside
+// `failed`, which the daemon writes as `<holder>: <error>`. So the fixture below names a
+// `holder` the failure does not, and the row must not show it.
 test("a key the daemon could not carry into what holds it reads as a failure, not a success", async () => {
   const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
     recorded: true,
     settings: {
       instructions: {
         failed: "launch-specs: read /etc/legion/instructions.md: no such file or directory",
-        holder: "launch-specs",
+        holder: "api-server",
         old: '"work/instructions.md"',
         new: '"/etc/legion/instructions.md"',
       },
@@ -402,6 +408,7 @@ test("a key the daemon could not carry into what holds it reads as a failure, no
     const answer = await screen.findByRole("alert");
     expect(answer.textContent).toContain("what holds it kept the old one: launch-specs:");
     expect(answer.textContent).toContain("no such file or directory");
+    expect(answer.textContent).not.toContain("api-server");
     expect(answer.className).toContain(dangerText);
     expect(answer.className).not.toContain(successText);
     const instructions = document.querySelector('[data-legion-setting="instructions"]');
@@ -410,60 +417,6 @@ test("a key the daemon could not carry into what holds it reads as a failure, no
         '"/etc/legion/instructions.md"'
       )
     );
-  } finally {
-    put.mockRestore();
-  }
-});
-
-// The verdict's `holder` is not the holder that kept the old value: the daemon sets it to the
-// row's named holder whether or not that holder is the one that failed, and a path whose value
-// several things hold is answered for all of them (`config.Row.Also`) —
-// `worker_rpc_timeout_seconds` is the worker stream's and NATS's. A failed NATS reopen under
-// that path answers `holder: "worker-stream"` with a `failed` that names nats, so a text built
-// from `holder` would tell the reader the wrong thing kept the old value. The holder that
-// failed is named inside `failed`, which the daemon writes as `<holder>: <error>`
-// (internal/daemon/holders.go), and that is the only name the row shows.
-test("a failed verdict names the holder its text names, not the row's own holder", async () => {
-  const put = spyOn(api, "putLegionProjectSettings").mockResolvedValue({
-    recorded: true,
-    settings: {
-      worker_rpc_timeout_seconds: {
-        failed: "nats: reopen the intake consumers: nats: no servers available for connection",
-        holder: "worker-stream",
-        old: "5s",
-        new: "11s",
-      },
-    },
-  });
-  try {
-    await renderView(
-      board(
-        {},
-        {
-          settings: { worker_rpc_timeout_seconds: 5 },
-          setting_sources: {
-            worker_rpc_timeout_seconds: {
-              at: "2026-10-20T00:00:00Z",
-              by: null,
-              source: "file" as const,
-            },
-          },
-        }
-      )
-    );
-
-    fireEvent.change(screen.getByLabelText("New value for worker_rpc_timeout_seconds"), {
-      target: { value: "11" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Change worker_rpc_timeout_seconds" }));
-
-    const answer = await screen.findByRole("alert");
-    expect(answer.textContent).toBe(
-      "The daemon took the new value, and what holds it kept the old one: " +
-        "nats: reopen the intake consumers: nats: no servers available for connection"
-    );
-    expect(answer.textContent).not.toContain("worker-stream");
-    expect(answer.className).toContain(dangerText);
   } finally {
     put.mockRestore();
   }

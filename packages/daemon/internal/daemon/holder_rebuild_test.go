@@ -10,9 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -61,16 +58,7 @@ func (r *rebuilder) replace(holder rebuilt) {
 // missed it, and why connectAsBootDoes is now what the tests of this holder connect through.
 func TestANatsRebuildUnderAProductionContext(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	notificationsStreamOn(t, url)
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
 	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
@@ -110,16 +98,7 @@ func TestANatsRebuildUnderAProductionContext(t *testing.T) {
 // the fact lock, and only then is the intake this rebuild replaced ended and drained.
 func TestANatsRebuildWaitsForTheIntakeItEndedToSettle(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	notificationsStreamOn(t, url)
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
 	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
