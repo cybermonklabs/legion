@@ -4,6 +4,7 @@ import * as C from "../web/src/theme/classes";
 import { oklchToSrgb8 } from "../web/src/theme/contrast";
 import type { Swatch } from "../web/src/theme/palette";
 import { createAsk, createComment, createIssue, createProject } from "./api";
+import { conversationThreadScope } from "./editor";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -84,10 +85,12 @@ test.beforeEach(async () => {
 // changed palette becomes the new baseline and passes. It detects a change against a file
 // somebody committed; it cannot bind a rendered element to the swatch `web/src/theme/classes.ts`
 // names for that element's role, because it holds pixels and not that mapping. This row is that
-// binding - the five registered tokens, in both schemes, read off the live elements - and it is
+// binding - the registered tokens, in both schemes, read off the live elements - and it is
 // untagged, so `chromium` runs it on every pull request, where the visual review, which is the
 // full lane's alone (.github/workflows/dispatch-browser.yaml), does not run at all.
-// SLOW(>=2s): a database reset, four API writes, a sign-in, and three pages read in both schemes.
+// SLOW(>=2s): a database reset, five API writes, a sign-in, three pages read in both schemes,
+// and two states no baseline holds - an expanded thread and the phone margin sheet - opened and
+// read in both schemes too.
 test("the Inbox, an issue's spec and its Conversation render each palette token in light and in dark", async ({
   browser,
 }) => {
@@ -105,6 +108,13 @@ test("the Inbox, an issue's spec and its Conversation render each palette token 
   const comment = await createComment(
     issue.key,
     { body: "See [the plan](https://example.com/plan)." },
+    session
+  );
+  // Anchored on the spec, so the margin has a card and the review panel something to show: the
+  // sheet renders empty-handed otherwise, and an empty sheet is not the surface under test.
+  await createComment(
+    issue.key,
+    { anchor: { artifact: "spec", quote: "Decide" }, body: "left a note" },
     session
   );
   const alice = await asUser(browser, "alice");
@@ -143,10 +153,8 @@ test("the Inbox, an issue's spec and its Conversation render each palette token 
 
     // Collapsed, the turn shows the comment as a two-line `MarkdownPreview` with live links,
     // whose `<a>` Typography colours through `--tw-prose-links`.
-    const link = page
-      .locator(`[data-turn="comment:${comment.id}"]`)
-      .locator(".dispatch-markdown")
-      .getByRole("link", { name: "the plan" });
+    const turn = page.locator(`[data-turn="comment:${comment.id}"]`);
+    const link = turn.locator(".dispatch-markdown").getByRole("link", { name: "the plan" });
 
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto(`/issues/${issue.key}/conversation`);
@@ -155,6 +163,32 @@ test("the Inbox, an issue's spec and its Conversation render each palette token 
 
     await page.emulateMedia({ colorScheme: "dark" });
     await expectTextColor(link, C.LINK.dark);
+
+    // Expanded, the turn swaps that preview for the full `MarkdownBody` - in place above the
+    // phone breakpoint, in a full-screen Thread dialog below it, which is what the scope helper
+    // resolves. A second `.dispatch-markdown` body, and a second `--tw-prose-links` binding: no
+    // baseline reaches it, since every committed shot holds the thread collapsed.
+    await turn.getByRole("button", { name: "Expand thread" }).click();
+    const thread = conversationThreadScope(page, test.info().project.name, turn);
+    const bodyLink = thread.locator(".dispatch-markdown").getByRole("link", { name: "the plan" });
+    await expect(bodyLink).toBeVisible();
+    await expectTextColor(bodyLink, C.LINK.dark);
+
+    await page.emulateMedia({ colorScheme: "light" });
+    await expectTextColor(bodyLink, C.LINK.light);
+
+    // On a phone viewport the review margin is a bottom sheet the reader opens, and its surface
+    // is `SURFACE` - the same token the Inbox card above reads, on a different component. No
+    // baseline reaches it either: the phone shots are taken with the sheet closed.
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.goto(`/issues/${issue.key}/spec`);
+    await page.getByRole("button", { name: "Open review panel" }).click();
+    const sheet = page.getByTestId("margin-sheet");
+    await expect(sheet).toBeVisible();
+    await expectBackgroundColor(sheet, C.SURFACE.light);
+
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expectBackgroundColor(sheet, C.SURFACE.dark);
   } finally {
     await alice.close();
   }
