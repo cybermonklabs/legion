@@ -218,10 +218,19 @@ jobs:
     # shard's browser step, and which the container does not move: it is the same rows in the
     # same browsers.
     #
-    # The job budget below is the rule's arithmetic, read again on the image this file pins now.
-    # The figures it replaces were read at 99bdf09cf435, which pinned the image from before
-    # build-essential was added to it (dispatch://INFRA-1443), over eight legs of two runs: not
-    # one of them ran the image these jobs run in now, and none is a leg of the reading below.
+    # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of this
+    # same Dockerfile from before the last move of .github/ci-images.yaml's `built:` row, and not
+    # on the digest this file pins now. It carries to that digest all the same: the two are
+    # rebuilds of this one Dockerfile, ten layers each, and each build printed its own size --
+    # 1,160,268,762 bytes for sha256:ba003193 (job 128730667606) against 1,160,268,675 for the
+    # digest pinned now (job 128766793614), eighty-seven apart in one layer's comment text, with
+    # layers 8 to 10 differing because the apt installs are not pinned to versions. Eighty-seven
+    # bytes do not move a pull that took six seconds more when build-essential added real bytes to
+    # it, and a measured table carries the head it was measured at, which is worth saying plainly
+    # rather than claiming an identity that does not hold. The figures it replaces were read at
+    # 99bdf09cf435, which pinned the image from before build-essential was added to it
+    # (dispatch://INFRA-1443), over eight legs of two runs: not one of them ran a build carrying
+    # build-essential, and none is a leg of the reading below.
     # Three steps the job budget carries are higher here - `Initialize containers` 39 -> 45 s,
     # which is the larger image to pull, `./.github/actions/setup-bun` 3 -> 19 s and
     # `bun install --frozen-lockfile` 10 -> 62 s, those two the slowest download of 24 legs
@@ -414,9 +423,10 @@ jobs:
         # reporter's output, so a green run reports what it ran too.
         #
         # The budget below is the 9 minutes the job's head derives from the sharded head's own
-        # runs, and the image this head pins does not move it: the most this step took over the
-        # 24 containerised legs the job's head lists is 356 s, under those runs' 419 s and well
-        # under the budget, so the pooled maximum the rule reads is still 419 s.
+        # runs, and the containerised reading taken on sha256:ba003193 does not move it: the
+        # most this step took over the 24 legs the job's head lists is 356 s, under the sharded
+        # head's 419 s and well under the budget, so the pooled maximum the rule reads is still
+        # 419 s.
         timeout-minutes: 9
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
@@ -621,8 +631,9 @@ jobs:
     # than it moves a parallel row. The 15 per cent the rule adds is what carries that, and a
     # leg that outran it fails the browser step by name, which is a reading of its own.
     #
-    # The job budget below is the rule's arithmetic, read again on the image this file pins now,
-    # for the reason the shard job's head gives: the figures it replaces were read at
+    # The job budget below is the rule's arithmetic, read on sha256:ba003193 and not on the
+    # digest this file pins now, for the reason the shard job's head gives, which also says why
+    # a reading taken on that build carries to this one: the figures it replaces were read at
     # 99bdf09cf435, which pinned the image from before build-essential was added to it
     # (dispatch://INFRA-1443), over three legs of one run. The two steps that moved most are
     # `./.github/actions/setup-bun`, 2 -> 20 s, and `Initialize containers`, 38 -> 45 s, the
@@ -741,9 +752,9 @@ jobs:
         # goes beside the list reporter's output, so a green run reports what it ran too.
         #
         # The budget below is the 3 minutes the job's head derives from the sharded head's own
-        # run, and the image this head pins does not move it: the most this step took over the
-        # nine containerised legs the job's head lists is 69 s, well under webkit-alone's 141 s
-        # there, so the pooled maximum the rule reads is still 141 s.
+        # run, and the containerised reading taken on sha256:ba003193 does not move it: the most
+        # this step took over the nine legs the job's head lists is 69 s, well under
+        # webkit-alone's 141 s there, so the pooled maximum the rule reads is still 141 s.
         timeout-minutes: 3
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts

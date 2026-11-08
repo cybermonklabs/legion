@@ -65,9 +65,12 @@ work="$(cd "$e2e_dir/../../envoy" && pwd)/out/dispatch-e2e-broker"
 
 # The three binaries the broker's harness needs; the header above says what
 # DISPATCH_E2E_BROKER_BIN_DIR holds and who sets it. The check below reads the handed-over value
-# while the script is still in the caller's directory, above the `cd` to packages/envoy, so a
-# relative value resolves against the directory the caller named it from, which is what a caller
-# writing one means.
+# above the `cd` to packages/envoy, so a relative value resolves against the directory this
+# script is working in when it starts, which under the harness is packages/dispatch -
+# e2e/harness-start.ts starts every listener there - and not the directory a caller exported it
+# from. A relative value written anywhere else therefore names somewhere this script does not
+# serve, and the check below refuses it by the name it was handed rather than letting it stand
+# for whatever it happens to resolve to.
 # This script execs exactly one of broker and dev-oidc-issuer per invocation and never runs
 # requestseed: e2e/real-broker.ts runs that one itself, out of
 # packages/envoy/out/dispatch-e2e-broker, the fixed path the build below writes to and the one
