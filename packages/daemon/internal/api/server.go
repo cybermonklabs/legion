@@ -693,9 +693,12 @@ const gatedStepsContract = 55
 // the whole body for a third.
 const retiredStrandedContract = 56
 
-// waitingLineContract is the daemon contract that added each waiting issue's place in the line to
-// the state (version.go's 57): a plugin before it reads the state with a strict schema that knows
-// no `waitingLine` and refuses the whole body for it.
+// waitingLineContract is the daemon contract that added each waiting issue's place in the line
+// to the state (version.go's 57). A plugin before it is served the state without the field:
+// one built before sjawhar/legion#2788 reads it with a strict schema and would refuse the
+// whole body for a key it does not name, and one built after strips the key instead, so the
+// strip is what keeps the field from a caller that did not ask for it rather than what keeps
+// such a caller reading at all.
 const waitingLineContract = 57
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

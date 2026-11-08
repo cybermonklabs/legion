@@ -723,8 +723,13 @@ package api
 // the issues without the gated steps, one below 53 a body with no wakes waiting, one below 51
 // the issues without the admission's trees and each issue's tree, one below 49 without the
 // memory draw and one below 46 without the claim views' update rounds; the seven compose, and
-// every reader from 57 on takes the field as optional. A plugin at 56 reads the state with a
-// strict schema that knows no `waitingLine` and refuses the whole body for it.
+// every reader from 57 on takes the field as optional. A plugin at 56 does not refuse the
+// field, as a plugin before one of the earlier contracts above refuses its own: every
+// answer-side schema of `packages/contracts` has stripped a key it does not name since
+// sjawhar/legion#2788, which that package's own test holds it to, and 56 is later than
+// that change, so such a plugin reads this state and sees no `waitingLine` at all. The
+// strip below is still what serves it: a caller that did not ask for the field is not
+// given it, and a plugin built before #2788 is strict and would refuse the body.
 // (This branch declared 56 while main held 55. main then landed INFRA-1480 at 56, and
 // @sjawhar/pi-legion 18.32.1 was released declaring that 56 with none of these shapes, so this
 // branch takes the number above it, as

@@ -103,11 +103,13 @@ func TestTheWaitingLinePlaceIsServedOnEachIssue(t *testing.T) {
 	}
 }
 
-// A plugin below waitingLineContract reads the state with a strict schema that knows no
-// `waitingLine` and refuses the whole body for it. The route authenticates nobody, so it knows
-// that plugin by the pod the request came from: a caller whose pod's claims record a contract
-// below this one is served no issue carrying the field, and a caller whose pod records this
-// contract is served it on every member of the line.
+// A plugin below waitingLineContract is served no issue carrying `waitingLine`: one built
+// before sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole
+// body for a key it does not name, and one built after strips the key, so the strip is what
+// keeps the field from a caller that did not ask for it. The route authenticates nobody, so
+// it knows that plugin by the pod the request came from: a caller whose pod's claims record a
+// contract below this one is served no issue carrying the field, and a caller whose pod
+// records this contract is served it on every member of the line.
 func TestTheWaitingLinePlaceIsStrippedBelowItsContract(t *testing.T) {
 	state := waitingLineState()
 	behind := stateFrom(t, state, statePodAddr+":4100", podClaims(waitingLineContract-1))
