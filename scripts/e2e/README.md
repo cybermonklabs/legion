@@ -175,7 +175,7 @@ Each item below names a script, then what it proves.
   the answer loop (INFRA-204, acceptance A1-A10, A12-A19) on the branch's daemon, listener and Dispatch with real Anthropic models, under both tmux conversation stores (`files`, then `session_store: postgres`):
   stopped agents with real conversations about decisions `answer-loop/questions.json` records, a boot that records them and mirrors them to the listener's Legion agent registry, and one check per criterion with its evidence and a negative control, ending in a PASS / FAIL / WAITING summary that names what each waiting criterion waits on.
   A13 compares a stopped agent's `404`s and failed Dispatch deliveries with the base commit's binaries byte for byte.
-  Runs in a Legion issue pod (no docker, no root) and on a devbox; the answering criteria need both role Apps' keys
+  Runs in a Legion issue pod (no docker, no root) and on a devbox; the answering criteria need both role Apps' keys, and A3's second leg drives Playwright's Chromium against the SPA this checkout builds and this run's Dispatch serves
 
 - `verifiers-staging-token.sh`
 
@@ -1265,6 +1265,14 @@ runs, and every process stopped by its exact pid on exit:
   gh` wrapper script, which the daemon refuses). Ports are picked below the kernel's ephemeral
   range from `/proc/net/tcp`, since `lib/free-port.sh` needs `ss` and a range above 21000, and a
   pod has neither.
+- Only for A3's conversation-page leg, the one surface of this proof that is a page: Dispatch's
+  SPA, built from this checkout (`bun run build:web` into `packages/dispatch/web/dist`, which
+  Dispatch serves as `DISPATCH_WEB_DIST`), and Playwright's own Chromium, installed once under
+  `PLAYWRIGHT_BROWSERS_PATH` — the caller's when it names one, else the run's cache, never a
+  pod's home directory, whose disk a browser fills. A run with no workflow (no review App grant,
+  so every answering criterion only waits) and a run narrowed past A3 build and install neither,
+  and Dispatch then serves its API alone. Do not run `bun run build:web` or `bun run e2e` in this
+  checkout while a run is live: either rewrites that directory under the Dispatch process.
 
 The daemon's `answers` block names the model route's endpoint through the proxy, keyed by the
 route's own key file or key command, with the list prices (`claude-opus-5-5` 5/25/6.25/0.5 and
@@ -1338,12 +1346,19 @@ land in `inbox.jsonl` under the stand-in controller's session.
   four minutes; no claim or pane of the tree starts.
 - A2: the tester's role topic, its replaced session and the pre-change session each answer on the
   asker's topic with the answer key; an unregistered session still answers `404`.
-- A3 (thread leg): the tester's issue is closed; its role token is read from
-  `GET /issues/{key}/collaborators` (the list the mention picker offers stopped agents from); a
-  person's comment on the closed issue mentions `role:<token>`; the delivery is `sent` to that
-  tester's session and its reply in the thread holds the answer key. Control: a mention of a role no
-  entry names fails as today. The Collaborators-view leg (the tester's conversation page) records
-  WAITING on INFRA-470.
+- A3, two legs, both of which must hold. Thread leg: the tester's issue is closed; its role token
+  is read from `GET /issues/{key}/collaborators` (the list the mention picker offers stopped
+  agents from); a person's comment on the closed issue mentions `role:<token>`; the delivery is
+  `sent` to that tester's session and its reply in the thread holds the answer key. Control: a
+  mention of a role no entry names fails as today. Conversation-page leg: the same person, in
+  Playwright's Chromium signed in by the trusted identity header, opens the closed issue's
+  Collaborators tab, reads every Legion agent row it draws, follows the tester's own row (the one
+  no later session replaced) by its link to `/agents/<session>/live`, sends a second question
+  there in the mode the page offers a stopped agent (Aside), and waits four minutes for the
+  answer; it must hold that question's key both on the page's own thread and in the record the
+  page reads (`GET /agents/{session}/messages`). A screenshot per step goes to `a3/<store>/`, and
+  a Collaborators view that names no such tester, or a link that leads elsewhere, is a FAIL
+  naming every row the page drew.
 - A4, A5: the planner's reply is `not_answered` / `needs_work`, and `legion state` lists the
   question in `questionsForController`; the planner stays retired.
 - A6: first leg, a person's reply on the replacing tester's ask (a child of the parked tree)
@@ -1423,11 +1438,11 @@ each read from the run rather than assumed: the daemon's workflow, which carries
 and boots only with two distinct role Apps (without the review App's grant every answering
 criterion and `boot` wait on it); the listener's hand-off, read from the boot's `404` on the
 heartbeat route; INFRA-448's registry routes, read from the checkout (A3); the OpenAI API (A10's
-GPT-6.1 leg); `LEGION_E2E_REPO_SECOND_OWNER` (A17). A3's Collaborators-view leg always records
-WAITING on INFRA-470. Everything else that runs records PASS or FAIL, and the run exits non-zero
-on any FAIL. **Departure:** the review role cannot stand in as the implement App to boot the
-workflow without the review App: the daemon refuses it at boot (`the review App names bot login
-"<login>" and the implement App "<login>"; the workflow needs two different Apps`).
+GPT-6.1 leg); `LEGION_E2E_REPO_SECOND_OWNER` (A17). Everything else that runs records PASS or
+FAIL, and the run exits non-zero on any FAIL. **Departure:** the review role cannot stand in as
+the implement App to boot the workflow without the review App: the daemon refuses it at boot
+(`the review App names bot login "<login>" and the implement App "<login>"; the workflow needs
+two different Apps`).
 
 **Inputs.** `LEGION_E2E_MODEL_ROUTE` picks the model route, as Stage 2's and Stage 3's proofs take
 it: `key-file`, the default, or `gateway`. Under `key-file` the key comes from
@@ -1464,7 +1479,9 @@ proves the criteria sets neither.
 **Evidence**: `transcript.log`, `summary.txt` (one `store|criterion|verdict|detail` line each),
 `logs/` (each service and daemon), `model-calls.jsonl`, `inbox.jsonl` (the asker's and the
 controller stand-in's deliveries), `sessions/<store>/` (each agent's conversation as its store
-holds it), and `a13/{branch,base}/<store>/` (the bodies A13 compares).
+holds it), `a3/<store>/` (the conversation-page leg's screenshots: the Collaborators view, the
+conversation it led to, the question sent and the answer, or the step that failed), and
+`a13/{branch,base}/<store>/` (the bodies A13 compares).
 
 **GitHub.** The run reads the smoke repository. Its writes there are A17's, A18's and A19's: the
 pull requests [`lib/smoke-pull-request.ts`](lib/smoke-pull-request.ts) opens as the implement App,

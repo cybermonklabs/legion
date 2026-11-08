@@ -42,6 +42,18 @@
 //     page. Prints {"connected","version","seq"}: the version that settlement wrote and its event's
 //     seq. Exits 1 naming the step that failed: a dot that never read connected is a sign-in that
 //     did not reach the document's socket.
+//   bun scripts/e2e/lib/dispatch-user-turns.ts collaborator <dispatch-url> <login> <issue> <session> <role> <body> <seconds> <shots>
+//     opens <issue>'s Collaborators tab as <login>, reads every Legion agent it lists, follows the
+//     link on <role>'s own <session> — the row that carries that name as its own and that no later
+//     session replaced — to that agent's conversation page, sends <body> there in the mode the page
+//     opens on, and waits up to <seconds> for a reply the thread did not already hold. Prints
+//     {"issue","listed","picked","conversation","mode","sent","answer","waited","reloads"}: the
+//     Collaborators address, every Legion agent row it drew, the row followed, the conversation
+//     address it reached, the delivery mode the page offered a stopped agent, the question sent,
+//     the answer read off the thread, how long it took and how many reloads it took. A step that
+//     fails prints the same object with "error" and exits 1, so a run records what the page showed.
+//     The screenshots are <shots>-collaborators.png, -conversation.png, -sent.png and -answer.png,
+//     and -failed.png for a step that failed.
 //
 // Playwright is resolved from packages/dispatch, the package that owns the browser suite.
 import { createRequire } from "node:module";
@@ -60,11 +72,13 @@ const MODE_LABELS: Record<string, string> = { aside: "Aside", btw: "BTW", steer:
 
 interface PageLike {
   goto(url: string): Promise<unknown>;
+  reload(): Promise<unknown>;
+  url(): string;
   screenshot(options: { path: string; fullPage?: boolean }): Promise<unknown>;
   getByRole(role: string, options: { name: string }): LocatorLike;
   getByTestId(id: string): LocatorLike;
   waitForTimeout(ms: number): Promise<void>;
-  evaluate<T, A>(fn: (arg: A) => Promise<T>, arg: A): Promise<T>;
+  evaluate<T, A>(fn: (arg: A) => T | Promise<T>, arg: A): Promise<T>;
   keyboard: { type(text: string): Promise<void> };
   locator(selector: string): LocatorLike;
 }
@@ -517,6 +531,181 @@ async function edit(): Promise<void> {
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
+/** One row of the Collaborators tab's Legion agents section, as the page drew it. */
+interface ListedAgent {
+  href: string | null;
+  replacedBy: string | null;
+  role: string;
+  session: string;
+  state: string;
+}
+
+/** Every Legion agent the Collaborators tab lists, in the order the page draws them: the role
+ *  section it sits under, the session the row carries as its own name (`data-collaborator`, never
+ *  the one its detail line names as its replacement), the running state the agents registry gave
+ *  that name, the session that replaced it, and where its name links
+ *  (`features/issue/CollaboratorsTab.tsx`, `features/refs/AgentName.tsx`). One DOM read, so a row
+ *  that is missing is reported beside every row that is there. */
+async function listedAgents(page: PageLike): Promise<ListedAgent[]> {
+  return page.evaluate(
+    () =>
+      Array.from(
+        document.querySelectorAll('section[aria-label="Legion agents"] section[aria-label]')
+      ).flatMap((section) =>
+        Array.from(section.querySelectorAll("li")).map((row) => {
+          const name = row.querySelector("[data-collaborator] [data-agent-name]");
+          return {
+            href: name?.querySelector("a")?.getAttribute("href") ?? null,
+            replacedBy:
+              row.querySelector("[data-replaced-by]")?.getAttribute("data-replaced-by") ?? null,
+            role: section.getAttribute("aria-label") ?? "",
+            session: name?.getAttribute("data-agent-name") ?? "",
+            state: name?.getAttribute("data-agent-state") ?? "",
+          };
+        })
+      ),
+    undefined
+  );
+}
+
+/** Every reply the session sent through Dispatch that the thread shows, each without the
+ *  `Reply via Dispatch` label the card draws above it (`features/agent-view/AgentThread.tsx`). */
+async function dispatchReplies(page: PageLike): Promise<string[]> {
+  const texts = await page
+    .getByTestId("agent-thread")
+    .locator('[data-testid="agent-dispatch-reply"]')
+    .allTextContents();
+  return texts.map((text) => text.replace(/^\s*Reply via Dispatch\s*/, "").trim());
+}
+
+async function collaborator(): Promise<void> {
+  const [base, login, issue, session, role, body, seconds, shots] = args;
+  if (!base || !login || !issue || !session || !role || !body || !seconds || !shots) {
+    refuse(
+      "usage: collaborator <dispatch-url> <login> <issue> <session> <role> <body> <seconds> <shots>"
+    );
+  }
+  const limit = Number(seconds);
+  if (!Number.isFinite(limit) || limit <= 0) {
+    refuse(`seconds must be a positive number of seconds, not ${seconds}`);
+  }
+  const conversation = `/agents/${encodeURIComponent(session)}/live`;
+  const seen: Record<string, unknown> = {
+    issue: `/issues/${encodeURIComponent(issue)}/collaborators`,
+    sent: body,
+  };
+  try {
+    await withSignedInPage(login, async (page) => {
+      try {
+        await page.goto(`${base}${seen.issue as string}`);
+        // The tab is the page's own, so the list it draws is the issue's record of who worked it;
+        // its region renders only once the collaborators read has answered.
+        await page.getByRole("tab", { name: "Collaborators" }).waitFor({ timeout: 30_000 });
+        await page.getByRole("region", { name: "Legion agents" }).waitFor({ timeout: 30_000 });
+        await page.screenshot({ fullPage: true, path: `${shots}-collaborators.png` });
+        const listed = await listedAgents(page);
+        seen.listed = listed;
+        const picked = listed.filter(
+          (agent) => agent.session === session && agent.role === role && agent.replacedBy === null
+        );
+        if (picked.length !== 1) {
+          throw new Error(
+            `the Collaborators view lists ${picked.length} rows for ${role} ${session} that no later session replaced, want 1`
+          );
+        }
+        seen.picked = picked[0];
+        if (picked[0]?.href !== conversation) {
+          throw new Error(
+            `${role} ${session}'s name links to ${picked[0]?.href ?? "nothing"}, not its conversation ${conversation}`
+          );
+        }
+        // The link is followed as a reader follows it: the row's own name under Legion agents,
+        // never the detail line's name for the session that replaced a row.
+        await page
+          .getByRole("region", { name: "Legion agents" })
+          .locator(`[data-collaborator] [data-agent-name="${session}"]`)
+          .locator("a")
+          .click();
+        await page.getByTestId("agent-thread").waitFor({ timeout: 30_000 });
+        const reached = new URL(page.url()).pathname;
+        if (reached !== conversation) {
+          throw new Error(
+            `the link led to ${reached}, not the agent's conversation ${conversation}`
+          );
+        }
+        seen.conversation = reached;
+        await page.screenshot({ fullPage: true, path: `${shots}-conversation.png` });
+        // The mode is the page's own: a session the listener no longer lists advertises nothing,
+        // and the composer offers a stopped agent Aside alone (`AgentConversationPage.tsx`,
+        // deliveryModes). The person sends in the mode they are given.
+        const picker = page.getByRole("combobox", { name: "Delivery mode" });
+        await picker.waitFor({ timeout: 30_000 });
+        await page.waitForTimeout(2_000);
+        seen.mode = {
+          options: await picker.evaluate((select) =>
+            Array.from(select.options, (option) => option.textContent ?? "")
+          ),
+          picked: await picker.inputValue(),
+        };
+        // The thread already holds the replies to every message this agent was sent before, the
+        // closed issue's own thread among them, so the answer is the reply that was not there.
+        const before = await dispatchReplies(page);
+        seen.repliesBefore = before.length;
+        const composer = page.getByTestId("agent-composer");
+        await composer.locator("textarea").fill(body);
+        await composer.getByRole("button", { name: "Send" }).click();
+        const sentBy = Date.now() + 30_000;
+        while (!(await threadMessages(page)).some((text) => text.includes(body))) {
+          if (Date.now() > sentBy) throw new Error(`the thread never showed "${body}"`);
+          await page.waitForTimeout(500);
+        }
+        await page.screenshot({ fullPage: true, path: `${shots}-sent.png` });
+        // The page keeps itself current from Dispatch's live events; a reload every minute is the
+        // belt to that brace, and the count says which of the two the answer arrived on.
+        const started = Date.now();
+        const deadline = started + limit * 1_000;
+        let reloads = 0;
+        for (;;) {
+          const answer = (await dispatchReplies(page)).find(
+            (text) => text.length > 0 && !before.includes(text)
+          );
+          if (answer !== undefined) {
+            seen.answer = answer;
+            seen.waited = Math.round((Date.now() - started) / 1_000);
+            seen.reloads = reloads;
+            await page.screenshot({ fullPage: true, path: `${shots}-answer.png` });
+            return;
+          }
+          if (Date.now() > deadline) {
+            seen.waited = Math.round((Date.now() - started) / 1_000);
+            seen.reloads = reloads;
+            throw new Error(
+              `no reply from ${session} on its conversation page within ${limit} s of the question`
+            );
+          }
+          await page.waitForTimeout(2_000);
+          if (Date.now() - started > (reloads + 1) * 60_000) {
+            reloads += 1;
+            await page.reload();
+            await page.getByTestId("agent-thread").waitFor({ timeout: 30_000 });
+          }
+        }
+      } catch (error) {
+        await page
+          .screenshot({ fullPage: true, path: `${shots}-failed.png` })
+          .catch(() => undefined);
+        throw error;
+      }
+    });
+  } catch (error) {
+    seen.error = error instanceof Error ? error.message : String(error);
+    process.stdout.write(`${JSON.stringify(seen)}\n`);
+    process.stderr.write(`dispatch-user-turns: collaborator: ${seen.error as string}\n`);
+    process.exit(1);
+  }
+  process.stdout.write(`${JSON.stringify(seen)}\n`);
+}
+
 if (command === "send") await send();
 else if (command === "complete") await complete();
 else if (command === "list") await list();
@@ -525,7 +714,8 @@ else if (command === "count") await count();
 else if (command === "envelope") await envelope();
 else if (command === "publish") await publish();
 else if (command === "edit") await edit();
+else if (command === "collaborator") await collaborator();
 else
   refuse(
-    `unknown command ${command ?? "(none)"}: send, complete, list, forge, count, envelope, publish or edit`
+    `unknown command ${command ?? "(none)"}: send, complete, list, forge, count, envelope, publish, edit or collaborator`
   );

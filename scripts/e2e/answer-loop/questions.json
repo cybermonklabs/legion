@@ -63,6 +63,14 @@
       "must_contain": ["VIOLET-OTTER-88", "20"]
     },
     {
+      "id": "tester-conversation-page",
+      "criteria": ["A3"],
+      "agent": "tester",
+      "to": "the tester's conversation page, reached through the closed issue's Collaborators view",
+      "text": "Name the test your rerun covered and the marker that rerun carried.",
+      "must_contain": ["TestQuartzLantern", "VIOLET-OTTER-88"]
+    },
+    {
       "id": "pre-change-scan",
       "criteria": ["A2"],
       "agent": "pre_change",

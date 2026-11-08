@@ -58,6 +58,11 @@
 #                                narrow a run while a check is fixed: the criteria to run (e.g.
 #                                "boot A6"; default all) and the stores (default "files postgres").
 #                                The bring-up and the stopped agents are made as always.
+#   PLAYWRIGHT_BROWSERS_PATH     where Playwright's Chromium lives, for A3's conversation-page leg,
+#                                the one check of this proof that opens a page (default the run's
+#                                cache; it is installed there once when it is missing). A run with
+#                                no workflow, and one narrowed past A3, opens no page and installs
+#                                nothing.
 #
 # Everything the run starts is its own and stopped by exact pid on exit: Postgres (the zonky
 # embedded-postgres binaries with Debian's pgvector), nats-server, the recording proxy, the Envoy
@@ -157,6 +162,11 @@ daemon_plugin_dir=
 # build_base): a Claude Code pane's plugin, which the daemon refuses unbuilt at boot.
 branch_plugin=
 base_plugin=
+# A3's conversation-page leg alone needs a page and a browser (browser_leg): the SPA this checkout
+# builds, which Dispatch then serves, and Playwright's Chromium. Both stay empty for a run that
+# drives no browser.
+web_dist=
+web_browser=
 github_writes=()
 results=()
 declare -A agent=()
@@ -433,6 +443,47 @@ build_branch() {
   note "branch claude-envoy plugin: $branch_plugin"
 }
 
+# browser_leg: whether this run drives a browser, which only A3's conversation-page leg does. It
+# needs the daemon's workflow (without the review App's grant every answering criterion, A3 among
+# them, records WAITING and runs nothing) and A3 among the criteria a narrowed run names, so a
+# claims-only run and a run narrowed to other criteria neither build the SPA nor install Chromium.
+browser_leg() { [ "$mode" = workflow ] && wanted A3; }
+
+# provision_browser: the Chromium A3's conversation-page leg drives, Playwright's own, installed
+# once under PLAYWRIGHT_BROWSERS_PATH — the caller's when it names one, else the run's cache, never
+# the home directory of a pod whose disk a browser fills. It sets web_browser to the executable
+# Playwright resolves, which the helper then launches with no executablePath of its own.
+provision_browser() {
+  export PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH:-$cache/ms-playwright}
+  web_browser=$(playwright_chromium) || web_browser=
+  if [ -z "$web_browser" ] || [ ! -x "$web_browser" ]; then
+    (cd "$root/packages/dispatch" && bunx playwright install chromium >"$evidence/logs/playwright-install.log" 2>&1) ||
+      fail "playwright install chromium failed; see $evidence/logs/playwright-install.log"
+    web_browser=$(playwright_chromium) ||
+      fail "Playwright resolves no Chromium under PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH after installing it"
+  fi
+  [ -x "$web_browser" ] || fail "Playwright's Chromium $web_browser is not executable"
+  note "Chromium for A3's conversation-page leg: $web_browser (PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH)"
+}
+
+# playwright_chromium prints the Chromium Playwright would launch, from the packages/dispatch
+# install the page helper resolves it from; it fails when none is installed.
+playwright_chromium() {
+  (cd "$root/packages/dispatch" && bun -e 'console.log(require("@playwright/test").chromium.executablePath())' 2>/dev/null)
+}
+
+# build_web builds Dispatch's SPA from the checkout into packages/dispatch/web/dist and sets
+# web_dist, which start_dispatch then serves (DISPATCH_WEB_DIST): the page A3's conversation-page
+# leg opens. Nothing else in this proof reads a page, so only browser_leg runs builds it.
+build_web() {
+  (cd "$root/packages/dispatch" && bun run build:web >"$evidence/logs/build-web.log" 2>&1) ||
+    fail "Dispatch's web app did not build; see $evidence/logs/build-web.log"
+  web_dist=$root/packages/dispatch/web/dist
+  [ -r "$web_dist/index.html" ] ||
+    fail "$web_dist holds no index.html after bun run build:web"
+  note "Dispatch's SPA: $web_dist (built from this checkout)"
+}
+
 # build_base builds the base commit's three binaries from a `git archive` of it (the checkout is
 # read, never changed) and installs its workspace, whose plugins the base daemon loads.
 build_base() {
@@ -578,6 +629,10 @@ start_listener() {
 
 start_dispatch() {
   local bin=$1 database=$2 attempt offset result
+  local -a web=()
+  # The SPA only a run with A3's conversation-page leg builds; without it Dispatch serves the API
+  # alone, which every other criterion reads.
+  [ -z "$web_dist" ] || web=("DISPATCH_WEB_DIST=$web_dist")
   mkdir -p "$work/dispatch-home"
   chmod 0700 "$work/dispatch-home"
   for attempt in 1 2 3 4 5; do
@@ -587,7 +642,7 @@ start_dispatch() {
       "DATABASE_URL=postgres://postgres@127.0.0.1:$port_pg/$database?sslmode=disable" \
       "DISPATCH_AGENT_TOKEN=$(cat "$work/dispatch-token")" "ENVOY_TOKEN=$(cat "$work/envoy-token")" \
       DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 \
-      "DISPATCH_PORT=$port_dispatch" "DISPATCH_SERVER_URL=http://127.0.0.1:$port_dispatch" \
+      "DISPATCH_PORT=$port_dispatch" "DISPATCH_SERVER_URL=http://127.0.0.1:$port_dispatch" "${web[@]}" \
       "NATS_URLS=nats://127.0.0.1:$port_nats" "ENVOY_URL=http://127.0.0.1:$port_listener" "$bin/envoy-dispatch"
     result=0
     await_start dispatch "$dispatch_pid" 120 "the scratch Dispatch server" \
@@ -1117,6 +1172,11 @@ provision_nats
 provision_claude
 resolve_omp
 real_tools
+if browser_leg; then
+  provision_browser
+else
+  note "no browser: A3's conversation-page leg does not run in this run"
+fi
 mkdir -p "$work/tmp" "$work/tmux" "$work/xdg" "$work/listener-home"
 chmod 0700 "$work/tmux" "$work/xdg"
 pass
@@ -1124,6 +1184,7 @@ pass
 begin build
 build_branch
 build_base
+! browser_leg || build_web
 pass
 
 begin rig
@@ -1408,19 +1469,19 @@ check_a2() {
 # agents from), and asks on the closed issue's own thread with a role mention of that tester; the
 # answer is the tester's reply to that comment, in its own name, holding what only the replacing
 # tester's conversation holds. Control: a role mention of a token no registry entry names, on the
-# same closed issue, fails its delivery as today. The second leg, a message from the tester's
-# conversation page reached through the Collaborators view, waits on INFRA-470.
+# same closed issue, fails its delivery as today. Then the second leg, a3_conversation_page: the
+# same person, in a browser, opens the closed issue's Collaborators view, follows the tester's own
+# link to its conversation page and asks a second question there. A3 passes only on both legs.
 check_a3() {
-  criterion A3 "a question on a closed issue's own thread, by a role mention of its stopped tester, is answered there" infra448 || return 0
-  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} collaborators token comment id reply='' control before
+  criterion A3 "a question on a closed issue's own thread, by a role mention of its stopped tester, is answered there, and a second asked from the tester's conversation page reached through the issue's Collaborators view is answered there" infra448 || return 0
+  local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} collaborators token comment id reply='' control before thread_leg='' page_leg=''
   set_status "$issue" "done"
   note "closed $issue: status $(dispatch_get "issues/$issue" | jq -r .status)"
   collaborators=$(dispatch_get "issues/$issue/collaborators") || collaborators='{"agents":[],"legion_registry":"unavailable"}'
   note "collaborators of $issue: registry $(jq -r .legion_registry <<<"$collaborators"); agents $(jq -c '[.agents[] | {session_id, legion: (.legion | if . then {role, role_token, replaced_by} else null end)}]' <<<"$collaborators")"
   token=$(jq -r --arg s "$session" '[.agents[] | select(.session_id == $s and .legion.role == "tester" and .legion.replaced_by == null) | .legion.role_token] | first // empty' <<<"$collaborators")
   if [ -z "$token" ]; then
-    record_result A3 FAIL "the collaborators of closed $issue name no current tester $session with its role token"
-    record_result A3 WAITING "(the conversation-page leg through the Collaborators view) needs INFRA-470"
+    record_result A3 FAIL "the collaborators of closed $issue name no current tester $session with its role token, so neither the thread leg nor the conversation-page leg can run"
     return 0
   fi
   before=$(date +%s)
@@ -1439,11 +1500,64 @@ check_a3() {
   if [ -n "$reply" ] && answer_holds tester-closed-thread "$reply" >/dev/null &&
     jq -e --arg s "$session" '.deliveries[0].state == "sent" and .deliveries[0].session_id == $s' <<<"$comment" >/dev/null &&
     jq -e 'length == 1 and .[0].state == "failed"' <<<"$control" >/dev/null; then
-    record_result A3 PASS "the role mention on closed $issue reached tester $session, which answered in the thread from its conversation; an unregistered role's mention failed as today"
+    thread_leg=1
+    note "thread leg: the role mention on closed $issue reached tester $session, which answered in the thread; an unregistered role's mention failed as today"
   else
-    record_result A3 FAIL "no reply with the answer key from $session to comment $id, or its delivery was not sent to it, or the control did not fail"
+    note "thread leg: no reply with the answer key from $session to comment $id, or its delivery was not sent to it, or the control did not fail"
   fi
-  record_result A3 WAITING "(the conversation-page leg through the Collaborators view) needs INFRA-470"
+  a3_conversation_page "$issue" "$session" && page_leg=1
+  if [ -n "$thread_leg" ] && [ -n "$page_leg" ]; then
+    record_result A3 PASS "the role mention on closed $issue reached tester $session, which answered in the thread from its conversation, and a question asked from that tester's conversation page, reached through the issue's Collaborators view, was answered there; an unregistered role's mention failed as today"
+  else
+    record_result A3 FAIL "the thread leg $([ -n "$thread_leg" ] && printf 'held' || printf 'did not hold') and the conversation-page leg $([ -n "$page_leg" ] && printf 'held' || printf 'did not hold') (each leg's evidence is above)"
+  fi
+}
+
+# a3_conversation_page ISSUE SESSION is A3's second leg: as the proof human, in a browser, the
+# closed issue's page is opened, its Collaborators view read, and the current tester's own link
+# followed to its conversation page, where question tester-conversation-page is asked and waited
+# out for four minutes (lib/dispatch-user-turns.ts's `collaborator`, a screenshot per step in
+# <evidence>/a3). The answer must be on the page's own thread and in the record that page reads
+# (`GET /agents/{session}/messages`, the tester's own reply there), and hold the question's key in
+# both. It prints the leg's evidence and returns 0 when all of that holds.
+a3_conversation_page() {
+  local issue=$1 session=$2 body shots page='' record='' page_answer='' api_answer='' missing
+  if ! browser_leg; then
+    note "conversation-page leg: no browser in this run"
+    return 1
+  fi
+  body="$(question_text tester-conversation-page) (question tester-conversation-page of run $run_tag)"
+  shots=$evidence/a3/$store
+  mkdir -p "$shots"
+  if ! page=$(bun "$root/scripts/e2e/lib/dispatch-user-turns.ts" collaborator "$dispatch_base" "$proof_human_user" \
+    "$issue" "$session" tester "$body" 240 "$shots/a3" 2>"$work/a3-page-$store.err"); then
+    note "conversation-page leg: the page stopped: $(tr '\n' ' ' <"$work/a3-page-$store.err")"
+  fi
+  # The helper prints what it saw whether it reached the answer or not, so the evidence below is
+  # the page's own either way; only a crash before its first write leaves nothing.
+  [ -n "$page" ] || page='{}'
+  note "conversation-page leg: $(jq -c 'del(.listed, .answer)' <<<"$page")"
+  note "the Collaborators view listed: $(jq -c '.listed // []' <<<"$page")"
+  page_answer=$(jq -r '.answer // empty' <<<"$page")
+  [ -z "$page_answer" ] || note "the page's thread shows as the tester's answer: $(head -c 400 <<<"$page_answer" | tr '\n' ' ')"
+  # The page's own record of that message, read as the person whose page it is (the route serves
+  # the signed-in person's own messages with that session, and refuses the agents' bearer 403):
+  # the delivery it recorded for the stopped tester, which the listener's hand-off makes `sent`,
+  # and the tester's reply to it.
+  record=$(dispatch_human GET "agents/$session/messages" | jq -c --arg b "$body" 'first(.[] | select(.message.body == $b)) // {}') || record='{}'
+  note "the record the page reads (GET agents/$session/messages): deliveries $(jq -c '[.message.deliveries[]? | {state, session_id, delivery}]' <<<"$record")"
+  api_answer=$(jq -r --arg s "$session" 'first(.replies[]? | select(.author.id == $s) | .body) // empty' <<<"$record")
+  note "that record holds as the tester's reply: $(head -c 400 <<<"$api_answer" | tr '\n' ' ')"
+  [ -n "$page_answer" ] && [ -n "$api_answer" ] || return 1
+  if ! missing=$(answer_holds tester-conversation-page "$page_answer"); then
+    note "the page's answer does not hold \"$missing\""
+    return 1
+  fi
+  if ! missing=$(answer_holds tester-conversation-page "$api_answer"); then
+    note "the recorded answer does not hold \"$missing\""
+    return 1
+  fi
+  note "conversation-page leg: the Collaborators view named tester $session, its link opened $(jq -r '.conversation // "nothing"' <<<"$page"), and the answer there holds the question's key on the page and in Dispatch's own record"
 }
 
 # passed_to_controller EVENT REASON: legion state lists a question passed on for REASON whose id or
