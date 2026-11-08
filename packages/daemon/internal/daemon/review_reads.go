@@ -72,7 +72,7 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 			"read a pull request's reviews; a decision its webhook never delivered stays unread until a later read of the issue reads it",
 			"repo", pr.Repo, "pullRequest", pr.Number)
 	}
-	review, ok, err := w.reviewToApply(read, pr, reviews)
+	review, ok, err := w.reviewToApply(read, github, pr, reviews)
 	if err != nil {
 		if ctx.Err() != nil {
 			return true
@@ -124,7 +124,7 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 // review not yet recorded again, with the permission GitHub gives then; and the read judges once
 // more a review its webhook's delivery refused, since the workflow records nothing for a review
 // that decides nothing. A read that failed judged nothing, and the next read of the issue asks again.
-func (w *workflowRuntime) reviewToApply(ctx context.Context, pr record.PullRequest, reviews []githubReview) (intake.PullRequestReview, bool, error) {
+func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.Client, pr record.PullRequest, reviews []githubReview) (intake.PullRequestReview, bool, error) {
 	var candidates []intake.PullRequestReview
 	for _, listed := range reviews {
 		review := intake.PullRequestReview{Repo: pr.Repo, Number: pr.Number, ID: listed.ID, SubmittedAt: listed.SubmittedAt,
@@ -151,9 +151,29 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, pr record.PullReque
 	})
 	var reviewerSession string
 	sessionRead := false
+	var headArrived time.Time
+	headRead := false
 	for _, review := range candidates {
 		if w.reviewRefused(review.ID) {
 			continue
+		}
+		// GitHub's REST record of a review can name a head the review never saw: its commit_id
+		// moves to the pull request's current head, where the webhook carries the head as
+		// submitted (dispatch://INFRA-1557, where an approval of 2026-11-06 listed a merge pushed
+		// two days later). So a listed review approves the head it names only if it was submitted
+		// after that head arrived. Only the current head is asked about, since a review naming an
+		// older commit decides no round of this head anyway, and the read is made once per read of
+		// the pull request, for the first candidate that names it.
+		if review.CommitID != "" && review.CommitID == pr.HeadSHA {
+			if !headRead {
+				headArrived, headRead = w.headArrivedAt(ctx, github, pr), true
+			}
+			if !headArrived.IsZero() && review.SubmittedAt.Before(headArrived) {
+				w.log.Warn("workflow: a listed review names a head it cannot have seen, so it decides nothing",
+					"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "review", review.ID, "author", review.Author,
+					"state", review.State, "head", pr.HeadSHA, "submitted_at", review.SubmittedAt, "head_arrived", headArrived)
+				continue
+			}
 		}
 		if !sessionRead {
 			if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -194,4 +214,34 @@ func (w *workflowRuntime) refuseReview(id int64) {
 		w.refusedReviews = map[int64]bool{}
 	}
 	w.refusedReviews[id] = true
+}
+
+// headArrivedAt is when the pull request's current head arrived, which a listed review must be
+// newer than to approve it (reviewToApply). The record's own observation is the answer wherever it
+// holds one: HeadUpdatedAt is GitHub's time of the lifecycle event that put this head on the pull
+// request. A record that holds none — a pull request opened before the daemon recorded the time,
+// or one whose observations carried no clock — is answered by the head commit's own committer
+// date, read from GitHub, which is the earliest moment any review of that head could have been
+// submitted. The zero time is the answer when neither is to be had, and it holds no review back:
+// a guard that refused on a time nobody knows would drop the decisions this read exists to apply.
+func (w *workflowRuntime) headArrivedAt(ctx context.Context, github githubrest.Client, pr record.PullRequest) time.Time {
+	if !pr.HeadUpdatedAt.IsZero() {
+		return pr.HeadUpdatedAt
+	}
+	if pr.HeadSHA == "" {
+		return time.Time{}
+	}
+	var commit struct {
+		Commit struct {
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+	if err := github.Get(ctx, "/commits/"+pr.HeadSHA, &commit); err != nil {
+		w.log.Warn("read the date of a pull request's head; a listed review of it is held to nothing this read",
+			"repo", pr.Repo, "pullRequest", pr.Number, "head", pr.HeadSHA, "error", err)
+		return time.Time{}
+	}
+	return commit.Commit.Committer.Date
 }

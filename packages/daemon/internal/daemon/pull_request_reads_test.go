@@ -104,10 +104,13 @@ func TestTheReadFollowsAHeadWhoseSynchronizeHasNotArrived(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Testing, "testing", record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim"})
-			if !tc.recorded.IsZero() {
-				if _, err := pool.Exec(context.Background(), "update pull_requests set head_updated_at = $1 where issue = 'CAPTURE-1'", tc.recorded); err != nil {
-					t.Fatalf("seed the record's clock: %v", err)
-				}
+			// Each case names the clock the record holds before the read, the zero time included:
+			// the fixture records when the head arrived (seedCapture, captureHeadArrived), and the
+			// zero time is the record of a pull request whose head arrived before the daemon kept
+			// one, which this test's second case is about.
+			if _, err := pool.Exec(context.Background(), "update pull_requests set head_updated_at = $1 where issue = 'CAPTURE-1'",
+				tc.recorded); err != nil {
+				t.Fatalf("seed the record's clock: %v", err)
 			}
 			w := readRuntime(pool, pullRequestStandIn(t, tc.github, read, &atomic.Int32{}).URL, quietLogger())
 			readCapture(t, w)

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -106,6 +107,10 @@ func readCapture(t *testing.T, w *workflowRuntime) {
 	}
 }
 
+// captureHeadArrived is when CAPTURE-1's head arrived on its pull request, which every listed
+// review of that head must be newer than to decide (review_reads.go's reviewToApply).
+var captureHeadArrived = time.Date(2026, 10, 8, 22, 15, 0, 0, time.UTC)
+
 // seedCapture records CAPTURE-1 in from with its pull request 86 at head code, whose required
 // check passed there and which GitHub's last read found clean, and its phases. A test about what
 // an unread or another merge state leaves undone sets its own (clearCaptureMergeState).
@@ -119,7 +124,7 @@ func seedCapture(t *testing.T, pool *pgxpool.Pool, from phase.Phase, status stri
 			return err
 		}
 		if err := records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: "CAPTURE-1", Repo: "acme/widgets",
-			Number: 86, Branch: "legion/CAPTURE-1", HeadSHA: "code", CheckedHead: "code", Failing: []string{},
+			Number: 86, Branch: "legion/CAPTURE-1", HeadSHA: "code", HeadUpdatedAt: captureHeadArrived, CheckedHead: "code", Failing: []string{},
 			CheckRuns:  []record.AttemptRun{{Name: "pr-checks-result", ID: 1}, {Name: "review", ID: 2}},
 			Generation: 1, Snapshot: "settled", Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}); err != nil {
 			return err

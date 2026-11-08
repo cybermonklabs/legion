@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A review read from GitHub's REST list approves the head it names only when it was submitted
+  after that head arrived. GitHub's record of a review can move: an approval of one head has been
+  seen listing, as its commit_id, a merge pushed two days later, and the per-issue read took that
+  at face value, so an old approval could approve a head nobody reviewed. The webhook carries the
+  head as submitted and is unaffected. A review older than the head it names decides nothing and
+  says so in the log.
