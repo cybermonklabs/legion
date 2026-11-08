@@ -53,6 +53,12 @@ type PullRequestHead struct {
 	URL                 string
 	EventAt             *time.Time
 	CheckedAt           *time.Time
+	// MergeCommitSHA is the commit GitHub made when this pull request merged. It is set only
+	// for a merged pull request, and only by a writer that read it; one that did not read it
+	// leaves it empty, which asks for nothing. It is written to no column of
+	// pull_request_heads: it exists to seed branch_commits with the one fact the merge itself
+	// proves, that the base branch held this commit (UpsertPullRequestHead).
+	MergeCommitSHA string
 }
 
 // PullRequestHeadState is the state a `pull_request` event leaves the row in: a pull request
@@ -101,6 +107,26 @@ func PullRequestHeadState(action string, merged bool) string {
 // rule that never judged it. An insert writes it outright: a row this build has just made was
 // judged by this build's rule. A test that needs a row of an older rule sets attribution_rule
 // itself, with one update.
+//
+// A merged pull request's merge commit is recorded as on its base branch, for good, as soon as
+// this row is written: GitHub completing the merge is itself the proof that the branch held
+// that commit, and branch_commits keeps a yes for good (branch.go). Nothing can prove it
+// later. This repository deletes a branch when its pull request merges and merges by squash,
+// so by the time an `after_merge` result of an issue that merged into an integration branch is
+// measured — once the integration branch has itself landed on the default branch and been
+// deleted — no compare read can show that commit on the base branch, because the branch is
+// gone, and the default branch holds only a squash of it. Without the row written here such a
+// result could never read `current`. Only a merged row writes one: GitHub answers a test-merge
+// commit for an open pull request too, and that commit is on no branch at all.
+//
+// The row is written whether or not the `where` guard above applied this write's facts. The
+// guard is about which event's facts the row keeps, not about whether the merge happened, and
+// GitHub's merge proves the fact whatever order the events arrive in. The time recorded is
+// time.Now() rather than a clock threaded through every caller of this function, which would
+// buy nothing: a yes never goes stale, so checked_at only records when the fact was learned
+// and no reader measures a yes against it. A failed write is logged at Warn and does not fail
+// the upsert, exactly as branch.go logs its own failed writes: the row is a cache, and the
+// head row is the fact worth failing for.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullRequestHead) error {
 	_, err := pool.Exec(ctx, `
 		insert into pull_request_heads (
@@ -133,6 +159,12 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullReque
 	)
 	if err != nil {
 		return fmt.Errorf("store the head of %s#%d: %w", head.Repo, head.Number, err)
+	}
+	if head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != "" {
+		if err := writeBranchCommit(ctx, pool, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
+			slog.Warn("dispatch: record a merge commit on its base branch", "repo", head.Repo,
+				"number", head.Number, "branch", head.BaseRef, "commit", head.MergeCommitSHA, "error", err)
+		}
 	}
 	return nil
 }
@@ -489,7 +521,7 @@ func headRow(repoFull string, payload pullRequestPayload, attributed headAttribu
 		BaseRef: payload.Base.Ref, State: PullRequestHeadState(payload.State, payload.Merged || payload.MergedAt != nil),
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload.Title, URL: payload.HTMLURL,
-		EventAt: payload.UpdatedAt, CheckedAt: checkedAt,
+		EventAt: payload.UpdatedAt, CheckedAt: checkedAt, MergeCommitSHA: mergeCommitOf(payload),
 	}
 }
 
@@ -500,6 +532,17 @@ func headRepositoryOf(payload pullRequestPayload) string {
 		return ""
 	}
 	return payload.Head.Repo.FullName
+}
+
+// mergeCommitOf is the commit GitHub made when a pull request merged, as its answer names it,
+// and "" where it names none. GitHub answers this field for an open pull request too, with the
+// test merge it keeps for the mergeability check, so only a merged pull request's value says
+// anything about a branch (UpsertPullRequestHead tests the state before it believes it).
+func mergeCommitOf(payload pullRequestPayload) string {
+	if payload.MergeCommitSHA == nil {
+		return ""
+	}
+	return *payload.MergeCommitSHA
 }
 
 // attributePayload attributes one pull request GitHub itself answered: the four facts its
@@ -709,6 +752,7 @@ func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]
 		IssueKey: attributed.issueKey, AttributionSource: attributed.source,
 		AttributionComplete: attributed.complete, Title: payload["title"], URL: payload["url"],
 		EventAt: envelopeTime(payload["updated_at"]), CheckedAt: checkedAt,
+		MergeCommitSHA: payload["merge_commit_sha"],
 	}, given)
 }
 

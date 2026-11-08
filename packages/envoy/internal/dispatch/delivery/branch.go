@@ -41,16 +41,27 @@ type BranchCommit struct {
 // and the empty answer that says the App cannot read it, are believed for the same span.
 const BranchCommitStaleAfter = 5 * time.Minute
 
-// Branches holds each repository's default branch across reads. The Verification tab refetches
-// the results on every result.recorded, and a read holding an `after_merge` or `default_branch`
-// check, or a `before_merge` result at a commit heading no pull request Dispatch knows, would
-// otherwise spend a GET /repos/{owner}/{repo} each time. Its zero value is an empty cache, and
-// the server holds one for the process: the answers are a repository's, not a request's, and
-// every goroutine reading results shares them. What a branch holds of a commit is cached in the
-// database instead (branch_commits), since that answer outlives any one process.
+// Branches holds, across reads, each repository's default branch and each repository-and-branch
+// pair GitHub could not answer a compare read about. The Verification tab refetches the results
+// on every result.recorded, and a read holding an `after_merge` or `default_branch` check, or a
+// `before_merge` result at a commit heading no pull request Dispatch knows, would otherwise
+// spend a GET /repos/{owner}/{repo} each time, and one compare read per result commit of a
+// branch GitHub cannot answer for. Its zero value is an empty cache, and the server holds one
+// for the process: the answers are a repository's, not a request's, and every goroutine reading
+// results shares them. What a branch holds of a commit is cached in the database instead
+// (branch_commits), since that answer outlives any one process; a pair GitHub could not answer
+// about is not, since it is a failure to learn anything rather than something learned.
 type Branches struct {
-	mu    sync.Mutex
-	known map[string]cachedBranch
+	mu           sync.Mutex
+	known        map[string]cachedBranch
+	unanswerable map[repoBranch]time.Time
+}
+
+// repoBranch is one repository and one branch of it: the pair a compare read is made about, and
+// the key the pairs no compare read could answer are held under.
+type repoBranch struct {
+	repo   string
+	branch string
 }
 
 // cachedBranch is what this process last learned about one repository's default branch: the
@@ -75,7 +86,8 @@ type cachedBranch struct {
 // refused, a deployment holding no App key, and a read that failed; all of them mean Dispatch
 // cannot see the repository, which is the unknown currency rather than a verdict about the work.
 func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) bool {
-	return c.branchOf(ctx, client, repoFull, now) != ""
+	_, readable := c.branchOf(ctx, client, repoFull, now)
+	return readable
 }
 
 // CommitOnBranch answers whether branch of repoFull carries sha, and whether Dispatch could say
@@ -92,10 +104,21 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // Dispatch has already answered for costs nothing at all. A read that failed is the unknown
 // answer, as is a repository the App cannot read.
 //
+// A compare read GitHub could not answer holds that repository and branch for
+// BranchCommitStaleAfter, and every caller naming the pair meanwhile is answered unknown
+// without a second call (compareUnanswerable). Two pairs would otherwise cost one GitHub call
+// per result commit on every read of the Verification tab, for as long as the issue exists: a
+// base branch deleted when its pull request merged, which this repository does on every merge
+// and which a compare read answers 404 for, and a repository the App can no longer read, whose
+// refusal nothing else caches (githubapp.Client.RepositoryToken caches the tokens it minted,
+// not the mints it was refused). Neither failure says anything about the commit, so nothing is
+// written to branch_commits for it; the hold is this process's alone, and it is released as
+// soon as a compare read of the pair is answered.
+//
 // A caller that names no branch, of a repository the App cannot read just now, is answered from
 // the stored row alone, under the last default branch this process resolved for that repository
-// (named). A row is keyed by a branch, so the name has to come from somewhere before the cache
-// can be asked at all, and without this the first unreadable moment would turn every
+// (branchOf's name). A row is keyed by a branch, so the name has to come from somewhere before
+// the cache can be asked at all, and without this the first unreadable moment would turn every
 // `default_branch` result, and every `after_merge` result of an issue Dispatch holds no merge
 // of, from current to unknown for BranchCommitStaleAfter — even where the permanent yes is
 // stored. A default branch renamed while the App cannot be read leaves that answer under the
@@ -109,14 +132,13 @@ func (c *Branches) CommitOnBranch(
 	repoFull, branch, sha string,
 	now time.Time,
 ) (onBranch, known bool) {
-	storedOnly := false
+	// readable is what the newest read of the repository could say, which only a caller naming
+	// no branch asks for; a caller that names a branch has asked nothing of the repository yet,
+	// so the compare read below is what finds out.
+	readable := true
 	if branch == "" {
-		branch = c.branchOf(ctx, client, repoFull, now)
-		if branch == "" {
-			if branch = c.named(repoFull); branch == "" {
-				return false, false
-			}
-			storedOnly = true
+		if branch, readable = c.branchOf(ctx, client, repoFull, now); branch == "" {
+			return false, false
 		}
 	}
 	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
@@ -126,29 +148,42 @@ func (c *Branches) CommitOnBranch(
 	if found && (stored.OnBranch || now.Sub(stored.CheckedAt) < BranchCommitStaleAfter) {
 		return stored.OnBranch, true
 	}
-	if storedOnly {
+	if !readable {
 		// The App could not read this repository a moment ago, so a compare read of it would
 		// be refused too: the stored row was the whole of what could answer.
 		return false, false
 	}
+	pair := repoBranch{repo: repoFull, branch: branch}
+	if c.compareUnanswerable(pair, now) {
+		return false, false
+	}
 	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
 	if err != nil {
+		c.markUnanswerable(pair, now)
 		if !cannotSeeRepository(err) {
 			slog.Warn("dispatch: ask whether a commit is on a branch", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
 		}
 		return false, false
 	}
+	c.markAnswerable(pair)
 	if err := writeBranchCommit(ctx, pool, repoFull, branch, sha, answer, now); err != nil {
 		slog.Warn("dispatch: record a commit's branch answer", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
 	}
 	return answer, true
 }
 
-// branchOf is repoFull's default branch, held for BranchCommitStaleAfter, and "" when Dispatch
-// cannot say.
-func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) string {
+// branchOf is the default branch this process holds for repoFull and whether the newest read of
+// it could say at all. The name is the newest GitHub gave, kept across a read that could not say
+// and "" where no read ever named one (cachedBranch); both are held for BranchCommitStaleAfter.
+//
+// The two are returned together because each caller wants a different one. RepositoryReadable
+// wants only whether the newest read could say, since that is the whole of what "can Dispatch
+// see this repository" means. CommitOnBranch wants the name even when the newest read could not
+// say, since a branch_commits row is keyed by a branch and the name has to come from somewhere
+// before that row can be asked for at all.
+func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoFull string, now time.Time) (string, bool) {
 	if held, fresh := c.get(repoFull, now); fresh {
-		return held
+		return held.branch, held.readable
 	}
 	branch := ""
 	if client != nil {
@@ -161,40 +196,25 @@ func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoF
 			branch = read
 		}
 	}
-	c.put(repoFull, branch, now)
-	return branch
+	return c.put(repoFull, branch, now), branch != ""
 }
 
-// get is the branch held for repo and whether that answer still stands at now. A read that
-// could not say is the empty branch, as it was when it was made: the name kept beside it is
-// for named alone, and answering it here would tell RepositoryReadable that a repository the
-// App cannot read is readable.
-func (c *Branches) get(repo string, now time.Time) (string, bool) {
+// get is what this process holds about repo's default branch, exactly as put left it, and
+// whether that answer still stands at now.
+func (c *Branches) get(repo string, now time.Time) (cachedBranch, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	held, found := c.known[repo]
 	if !found || now.Sub(held.readAt) >= BranchCommitStaleAfter {
-		return "", false
+		return cachedBranch{}, false
 	}
-	if !held.readable {
-		return "", true
-	}
-	return held.branch, true
+	return held, true
 }
 
-// named is the last default branch this process resolved for repo, whatever its age and
-// whatever the newest read said, and "" where it has resolved none. It is what CommitOnBranch
-// keys the stored answer by while the App cannot read the repository.
-func (c *Branches) named(repo string) string {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.known[repo].branch
-}
-
-// put records what GitHub said about repo's default branch at now. A read that could not say
-// leaves the name standing and marks the repository unreadable, so get answers nothing for it
-// while named still answers the name.
-func (c *Branches) put(repo, branch string, now time.Time) {
+// put records what GitHub said about repo's default branch at now and answers the name held
+// afterwards. A read that could not say leaves the name standing and marks the repository
+// unreadable, for the reason cachedBranch gives.
+func (c *Branches) put(repo, branch string, now time.Time) string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.known == nil {
@@ -207,6 +227,38 @@ func (c *Branches) put(repo, branch string, now time.Time) {
 		held.branch = branch
 	}
 	c.known[repo] = held
+	return held.branch
+}
+
+// compareUnanswerable reports whether a compare read of pair failed within
+// BranchCommitStaleAfter of now, the span every other answer here is believed for. The failure
+// is held against the pair and not against the commit that happened to be asked about, because
+// that is what it is about: a branch GitHub cannot compare against answers for no commit, and
+// the next result commit of the same branch would spend the same refused call.
+func (c *Branches) compareUnanswerable(pair repoBranch, now time.Time) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	failed, found := c.unanswerable[pair]
+	return found && now.Sub(failed) < BranchCommitStaleAfter
+}
+
+// markUnanswerable records that a compare read of pair could not be answered at now.
+func (c *Branches) markUnanswerable(pair repoBranch, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.unanswerable == nil {
+		c.unanswerable = map[repoBranch]time.Time{}
+	}
+	c.unanswerable[pair] = now
+}
+
+// markAnswerable drops whatever hold pair is under, GitHub having just answered a compare read
+// of it, so the map holds the pairs that cannot be answered now rather than every pair that
+// could not be answered once.
+func (c *Branches) markAnswerable(pair repoBranch) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.unanswerable, pair)
 }
 
 // cannotSeeRepository is repositoryUnreadable — the App is installed on no repository covering

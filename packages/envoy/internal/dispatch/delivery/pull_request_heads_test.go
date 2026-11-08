@@ -1227,7 +1227,103 @@ func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) 
 
 const (
 	// landedCommit is on acme/widgets' default branch; unaskedCommit is on no branch and is
-	// never asked about while the App can read the repository.
+	// never asked about while the App can read the repository. mergeCommit is the commit
+	// GitHub makes when a pull request merges, which is no pull request's head and the commit
+	// an `after_merge` result of a squash-merged issue is recorded at.
 	landedCommit  = "9999999999999999999999999999999999999999"
 	unaskedCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	mergeCommit   = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
+
+// branchCommitsOn is how many answers branch_commits holds about one branch of one repository,
+// whatever commit each is about: how a test says that a write recorded nothing.
+func branchCommitsOn(t *testing.T, ctx context.Context, pool *store.Pool, repo, branch string) int {
+	t.Helper()
+	var rows int
+	if err := pool.QueryRow(ctx, `
+		select count(*) from branch_commits where repo = $1 and branch = $2
+	`, repo, branch).Scan(&rows); err != nil {
+		t.Fatalf("count the branch answers stored for %s on %s: %v", repo, branch, err)
+	}
+	return rows
+}
+
+// Recording a merge records its merge commit as on its base branch, for good. GitHub
+// completing the merge is the only proof Dispatch will ever have: this repository deletes a
+// branch when its pull request merges and merges by squash, so by the time an `after_merge`
+// result of an issue that merged into an integration branch is measured — after that branch
+// has itself landed on the default branch and gone — no compare read can show the commit on
+// the base branch and the default branch holds only a squash of it.
+func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const base = "integration/138"
+	merged := PullRequestHead{
+		Repo: "acme/widgets", Number: 91, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
+		URL: "https://github.com/acme/widgets/pull/91", MergeCommitSHA: mergeCommit,
+	}
+	if err := UpsertPullRequestHead(ctx, pool, merged); err != nil {
+		t.Fatalf("store the head of a merged pull request: %v", err)
+	}
+	stored, found, err := readBranchCommit(ctx, pool, merged.Repo, base, mergeCommit)
+	if err != nil {
+		t.Fatalf("read whether the merge commit is on %s: %v", base, err)
+	}
+	if !found || !stored.OnBranch {
+		t.Fatalf("the merge commit on %s = %v, stored %v; want true, true", base, stored.OnBranch, found)
+	}
+
+	// GitHub answers a merge commit for an open pull request too — the test merge it keeps for
+	// the mergeability check, which is on no branch — and a writer that read no merge commit
+	// has nothing to record. Neither leaves a row, so the one row above is still the only one.
+	open := merged
+	open.Number, open.State, open.MergeCommitSHA = 92, "open", unaskedCommit
+	if err := UpsertPullRequestHead(ctx, pool, open); err != nil {
+		t.Fatalf("store the head of an open pull request: %v", err)
+	}
+	unread := merged
+	unread.Number, unread.MergeCommitSHA = 93, ""
+	if err := UpsertPullRequestHead(ctx, pool, unread); err != nil {
+		t.Fatalf("store the head of a merge whose merge commit nobody read: %v", err)
+	}
+	if rows := branchCommitsOn(t, ctx, pool, merged.Repo, base); rows != 1 {
+		t.Fatalf("answers stored about %s = %d, want only the merge's own", base, rows)
+	}
+}
+
+// A branch GitHub cannot answer a compare read about is not asked about again at once. A base
+// branch deleted when its pull request merged is the ordinary case here, and a compare read
+// against it answers 404; without the hold, every result commit measured against that branch
+// would spend one refused GitHub call on every read of the Verification tab, for as long as
+// the issue exists.
+func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const gone = "integration/138"
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	for _, at := range []time.Time{asked, asked.Add(BranchCommitStaleAfter / 2)} {
+		if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, at); on || known {
+			t.Fatalf("a commit of a branch GitHub cannot answer for = %v, %v; want false, false", on, known)
+		}
+	}
+	if got := compares.Load(); got != 1 {
+		t.Fatalf("compare reads within BranchCommitStaleAfter = %d, want 1", got)
+	}
+
+	later := asked.Add(BranchCommitStaleAfter + time.Minute)
+	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, later); on || known {
+		t.Fatalf("a commit of that branch once the hold is stale = %v, %v; want false, false", on, known)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads once the hold is stale = %d, want 2", got)
+	}
+}
