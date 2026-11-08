@@ -90,7 +90,7 @@ func bootClaimListing() []bootClaimFixture {
 		{key: "CAPTURE-8", status: "backlog", listedUnread: true,
 			recorded: bootParked("CAPTURE-8"), liveClaim: sessionClaim(bootOwnSession), queued: true, deleted: true},
 		{key: "CAPTURE-9", status: "backlog", listedClaim: "session:" + bootOwnSession,
-			recorded: bootParked("CAPTURE-9"), liveClaim: sessionClaim(bootOwnSession), operatorHolds: true},
+			recorded: bootParked("CAPTURE-9"), liveClaim: sessionClaim(bootOwnSession), operatorHolds: true, queued: true},
 		{key: "CAPTURE-10", status: "backlog", recorded: bootParked("CAPTURE-10")},
 	}
 }
@@ -301,11 +301,11 @@ func TestBootReleasesParkedClaims(t *testing.T) {
 // The boot queues a release row for each listed issue that carries a claim while the daemon's own
 // record says it stopped, and for no other: not for a claim of a closed issue, which Dispatch
 // released at the close; not for one of an issue the daemon runs; not for one of an issue it
-// records nothing for; not for one whose tree the operator holds; and not for a listing row that
-// carries no claim at all, which the pass passes over before it reads anything. Which holder the
-// claim has is no part of the decision — the row's own executor reads that when it runs — so a
-// person's claim, a session of another tree and a holder no claims row accounts for each get a
-// row whose DELETE is never sent.
+// records nothing for; and not for a listing row that carries no claim at all, which the pass
+// passes over before it reads anything. Which holder the claim has, and whose the tree is, are no
+// part of the decision — the row's own executor reads both when it runs — so a person's claim, a
+// session of another tree, a holder no claims row accounts for and a tree the operator holds each
+// get a row whose DELETE is never sent.
 func testBootQueuesTheParkedClaims(t *testing.T) {
 	fixtures := bootClaimListing()
 	rig := newBootClaimRig(t, fixtures, nil)

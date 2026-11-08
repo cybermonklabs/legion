@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -18,14 +19,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // The issue a claim release row answers: a child the daemon parked, in its root's tree, held by
-// the tree's own architect session.
+// the tree's own architect session. The project's controller holds a claim of its own, on no
+// issue and no tree.
 const (
-	claimTree        = "LEGION-1"
-	claimIssue       = "LEGION-2"
-	claimTreeSession = "ses-architect"
+	claimTree              = "LEGION-1"
+	claimIssue             = "LEGION-2"
+	claimTreeSession       = "ses-architect"
+	claimControllerSession = "ses-controller"
 )
 
 // The executor's own log lines, each of which says what became of a row nothing else would.
@@ -128,9 +132,9 @@ type claimReleaseRig struct {
 	row int64
 }
 
-// newClaimReleaseRig seeds the tree and its parked issue and builds the runner over them. Both
-// sessions the holder cases name are recorded: the tree's own architect, and one that claims only
-// in another tree.
+// newClaimReleaseRig seeds the tree and its parked issue and builds the runner over them. Every
+// session the holder cases name is recorded: the tree's own architect, one that claims only in
+// another tree, and the project's controller, whose claims row carries no tree at all.
 func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answer func(int) error) *claimReleaseRig {
 	t.Helper()
 	pool := isolatedOutboxPool(t)
@@ -143,6 +147,7 @@ func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answ
 	putOutboxIssue(t, pool, records, claimReleaseRoot())
 	seedSessionClaim(t, pool, "architect-claim", "LEGION", claimTree, claimTree, claimTreeSession)
 	seedSessionClaim(t, pool, "other-tree-claim", "LEGION", "LEGION-9", "LEGION-9", "ses-elsewhere")
+	seedControllerClaim(t, pool, "LEGION", claimControllerSession)
 	return rig
 }
 
@@ -150,6 +155,22 @@ func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answ
 func (r *claimReleaseRig) records(issue record.Issue) {
 	r.t.Helper()
 	putOutboxIssue(r.t, r.pool, record.NewStore(), issue)
+}
+
+// heldByOperator opens the tree's lifecycle under the operator's authority, as an operator root
+// spawn under the root's key does (treelifecycle.AuthorityOperator).
+func (r *claimReleaseRig) heldByOperator() {
+	r.t.Helper()
+	token, err := claim.ProjectToken("LEGION")
+	if err != nil {
+		r.t.Fatalf("the project token of LEGION: %v", err)
+	}
+	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, claimTree, treelifecycle.AuthorityOperator)
+		return err
+	}); err != nil {
+		r.t.Fatalf("open %s under the operator: %v", claimTree, err)
+	}
 }
 
 // due queues the issue's release row, written age ago on the test's clock and due now.
@@ -224,6 +245,23 @@ func seedSessionClaim(t *testing.T, pool *pgxpool.Pool, token, project, tree, is
 	}
 }
 
+// seedControllerClaim records session as the project's controller: the one claims row with no
+// issue and no tree (migration 0032_controller_claim), which SessionClaimsAnywhere accounts for
+// while SessionClaimsTree, which matches on a tree, never can.
+func seedControllerClaim(t *testing.T, pool *pgxpool.Pool, project, session string) {
+	t.Helper()
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		t.Fatalf("the project token of %s: %v", project, err)
+	}
+	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
+		session, session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, $2, '', '', 'controller', 1, $3, '', 'working', 0, 0, 0, 0)`,
+		string(claim.ControllerToken(token)), project, session); err != nil {
+		t.Fatalf("record the controller claim of %s in %s: %v", session, project, err)
+	}
+}
+
 // TestReleaseClaimRow is the claim release executor (outbox.releaseClaim) over the real store:
 // which holders the daemon takes a claim from, which of its own records let it, what it makes of
 // Dispatch's answers, and that an issue's release row waiting on its holder holds nothing else of
@@ -237,8 +275,9 @@ func TestReleaseClaimRow(t *testing.T) {
 
 // Only a claim held by a session the daemon records in the issue's own tree is released. A
 // person's claim is theirs, the daemon's own session is a legitimate holder, a session of another
-// tree owns its own issue, and a holder the daemon cannot attribute, or one Dispatch names no
-// actor for, is left where it is and logged.
+// tree owns its own issue, the project controller's claims row carries no tree so no issue's
+// claim is ever attributed to it, and a holder the daemon cannot attribute, or one Dispatch names
+// no actor for, is left where it is and logged.
 func testReleaseClaimHolders(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -251,6 +290,7 @@ func testReleaseClaimHolders(t *testing.T) {
 		{name: "a person", shown: dispatch.Issue{Claim: &dispatch.Claim{Kind: "user", ID: "alice"}}},
 		{name: "the daemon's own session", shown: dispatch.Issue{Claim: sessionClaim(dispatch.DaemonSession(claimIssue))}},
 		{name: "a session of another tree", shown: dispatch.Issue{Claim: sessionClaim("ses-elsewhere")}},
+		{name: "the project controller's session", shown: dispatch.Issue{Claim: sessionClaim(claimControllerSession)}},
 		{name: "a holder no claims row accounts for", shown: dispatch.Issue{Claim: sessionClaim("ses-stranger")},
 			logged: claimUnattributedLine, holder: "session:ses-stranger"},
 		{name: "a claim Dispatch names no actor for", shown: dispatch.Issue{ClaimUnread: true}, logged: claimUnreadLine},
@@ -293,25 +333,35 @@ func testReleaseClaimHolders(t *testing.T) {
 
 // The record decides as much as the holder does: a claim of an issue the daemon runs belongs to
 // that run, and so does a claim of an issue whose tree runs again at a later generation while
-// Dispatch still shows it parked, though the holder is the tree's own architect in both. An issue
-// the daemon records nothing for is one it can attribute nothing of, and it says nothing either.
+// Dispatch still shows it parked. A tree the operator holds is the operator's whole — its own
+// root spawn shares the tree's key, so its session is a session of the issue's tree here — and
+// the workflow may act on none of its claims. The holder is the tree's own architect session in
+// each of the three, the one holder the daemon would otherwise take the claim from. An issue the
+// daemon records nothing for is one it can attribute nothing of, and it says nothing either.
 func testReleaseClaimRecord(t *testing.T) {
 	live := parkedIssue()
 	live.Status, live.Phase = "in_progress", phase.Implementing
 	readmitted := parkedIssue()
 	readmitted.Status, readmitted.Phase, readmitted.Generation = "todo", phase.Admitted, 2
+	parked := parkedIssue()
 	for _, tc := range []struct {
 		name     string
 		recorded *record.Issue
+		// operatorHolds opens the issue's tree under the operator's authority.
+		operatorHolds bool
 	}{
 		{name: "the daemon records the issue live in the workflow", recorded: &live},
 		{name: "its tree runs again at a later generation", recorded: &readmitted},
+		{name: "the operator holds the stopped issue's tree", recorded: &parked, operatorHolds: true},
 		{name: "the daemon records nothing for the issue"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rig := newClaimReleaseRig(t, dispatch.Issue{Status: "backlog", Claim: sessionClaim(claimTreeSession)}, true, nil)
 			if tc.recorded != nil {
 				rig.records(*tc.recorded)
+			}
+			if tc.operatorHolds {
+				rig.heldByOperator()
 			}
 			rig.due(0)
 			rig.run()
@@ -327,10 +377,11 @@ func testReleaseClaimRecord(t *testing.T) {
 	}
 }
 
-// What the daemon makes of Dispatch's answer to the DELETE: the holder still holding the claim,
-// and a contended one Dispatch applied nothing for, are waits the row rides out until the hour it
-// is given runs out; a refusal no retry repairs ends the row with that refusal logged; and an
-// outage, whatever its shape, is ridden out and the next attempt releases the claim.
+// What the daemon makes of Dispatch's answer to the DELETE: the holder still holding the claim
+// is a wait the row rides out until the hour it is given runs out; a contended one, which
+// Dispatch applied nothing for and judged nobody by, is a wait of its own the hour never ends; a
+// refusal no retry repairs ends the row with that refusal logged; and an outage, whatever its
+// shape, is ridden out and the next attempt releases the claim.
 func testReleaseClaimAnswers(t *testing.T) {
 	// A claim release's backoff climbs to retryBackoff's cap, so one advance of the cap brings
 	// every attempt but the one the hour ends on due again.
@@ -351,10 +402,10 @@ func testReleaseClaimAnswers(t *testing.T) {
 	}{
 		{name: "a 409 ISSUE_CLAIMED, then the holder is gone", answers: []error{claimConflict(dispatch.IssueClaimed)},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row waits"},
-		// A contended release applied nothing and judged nobody, so it is no wait on the holder:
-		// the row fails and retries, which the carve-out in permanentRefusal is what allows.
+		// A contended release applied nothing and judged nobody, so it is a routine retry rather
+		// than a failure, and no evidence about the holder: it never spends the hour.
 		{name: "a 409 CLAIM_CONTENDED, then Dispatch applies it", answers: []error{claimConflict(dispatch.ClaimContended)},
-			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
+			attempts: 2, between: capped, deletes: 2, settled: "outbox row waits"},
 		{name: "a 409 ISSUE_CLAIMED that never clears", answers: []error{claimConflict(dispatch.IssueClaimed), claimConflict(dispatch.IssueClaimed)},
 			attempts: 2, between: time.Hour, deletes: 2, settled: "outbox row waits",
 			logged: claimGaveUpLine, holder: "session:" + claimTreeSession},

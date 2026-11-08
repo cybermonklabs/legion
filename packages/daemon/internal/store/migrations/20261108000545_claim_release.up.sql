@@ -6,8 +6,9 @@
 -- and in work. Dispatch releases a claim on the close alone, by its own rule, so the release is
 -- the daemon's. It rides the outbox like every other Dispatch write, so a Dispatch that is down
 -- does not fail the transaction that parked the issue; the row is retried until the claim is
--- gone, or until an hour has passed since it was written. The row carries the issue key alone:
--- the holder and the issue's record are read when the row runs, not when it is queued.
+-- gone, capped at an hour from when it was written, since a holder Dispatch still calls live
+-- keeps its claim and nothing would end that refusal on its own. The row carries the issue key
+-- alone: the holder and the issue's record are read when the row runs, not when it is queued.
 --
 -- The check is one list, so the migration that sets it names every kind, as 0049, 20261101222956
 -- and 20261106041346 did: whichever of two open branches merges last admits both their kinds.
