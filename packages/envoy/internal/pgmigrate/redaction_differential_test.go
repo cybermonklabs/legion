@@ -184,36 +184,21 @@ func eachTextFrom(first, maxLen int, withMarker bool, visit func(string)) int {
 }
 
 // --- what one reading of a text holds ---
-
-// reading is what scanl.go's transcription reads a text as at one standard_conforming_strings:
-// the spans it does not read as structure, the quoted identifiers it reads as a name, and where
-// scan.l refused it, or -1.
-type reading struct {
-	spans   []sqlToken
-	names   []sqlToken
-	failure int
-}
-
-func readingOf(text string, standardConformingStrings bool) reading {
-	var r reading
-	r.failure = lexSQL(text, standardConformingStrings, func(token sqlToken) {
-		switch token.kind {
-		case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
-			r.spans = append(r.spans, token)
-		case sqlQuotedIdentifier:
-			r.names = append(r.names, token)
-		}
-	})
-	return r
-}
+//
+// A reading is scan.go's own (readingOf): the tokens scanl.go's transcription read the text as
+// at one standard_conforming_strings, and where scan.l refused it, or -1. Both legs below take
+// the two readings of a text once and hand them to redact, since redactedQuery would read the
+// text twice over again. What this file asks of a reading - which of its bytes are inside a
+// literal or a comment, which are inside a name, whether two readings read a text alike - it
+// asks over those tokens, here.
 
 // isName reports whether this reading holds [from, to) inside a quoted identifier. What is
 // inside one is a name, and the report keeps the names a statement touches on purpose, so the
 // server answering alike whether that name is spelt one way or another says nothing: it never
 // looked the name up.
 func (r reading) isName(from, to int) bool {
-	for _, span := range r.names {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind == sqlQuotedIdentifier && token.start < to && from < token.end {
 			return true
 		}
 	}
@@ -226,24 +211,37 @@ func (r reading) hides(from, to int) bool {
 	if r.failure >= 0 && r.failure < to {
 		return true
 	}
-	for _, span := range r.spans {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind.hidden() && token.start < to && from < token.end {
 			return true
 		}
 	}
 	return false
 }
 
+// same reports whether the two readings were refused alike and hold the same spans hidden. The
+// tokens either reads as structure are not compared: what the caller asks is whether the two
+// disagree over which bytes are a value, which is the question those spans answer.
 func (r reading) same(other reading) bool {
-	if r.failure != other.failure || len(r.spans) != len(other.spans) {
+	if r.failure != other.failure {
 		return false
 	}
-	for i := range r.spans {
-		if r.spans[i] != other.spans[i] {
+	i, j := 0, 0
+	for {
+		for i < len(r.tokens) && !r.tokens[i].kind.hidden() {
+			i++
+		}
+		for j < len(other.tokens) && !other.tokens[j].kind.hidden() {
+			j++
+		}
+		if i == len(r.tokens) || j == len(other.tokens) {
+			return i == len(r.tokens) && j == len(other.tokens)
+		}
+		if r.tokens[i] != other.tokens[j] {
 			return false
 		}
+		i, j = i+1, j+1
 	}
-	return true
 }
 
 // --- the redaction loop, over the whole corpus ---
@@ -311,13 +309,16 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 					if on.failure >= 0 || off.failure >= 0 {
 						shard.refusedTexts++
 					}
-					printed := strings.Contains(redactedQuery(text), marker)
+					// The redaction is taken from the two readings this text has already
+					// been given: redactedQuery would lex it twice over again.
+					redaction := redact(text, on, off)
+					printed := strings.Contains(redaction, marker)
 					if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
 						shard.hiddenTexts++
 						if printed {
 							shard.leaked++
 							if len(shard.leaks) < 20 {
-								shard.leaks[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
+								shard.leaks[fmt.Sprintf("%q -> %q", text, redaction)] = true
 							}
 						}
 						return
@@ -327,7 +328,7 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 						if !printed {
 							shard.overHidden++
 							if len(shard.swallowed) < 20 {
-								shard.swallowed[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
+								shard.swallowed[fmt.Sprintf("%q -> %q", text, redaction)] = true
 							}
 						}
 					}
@@ -741,10 +742,15 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	}
 	for _, entry := range sample {
 		text := entry.text
-		printed := strings.Contains(redactedQuery(text), marker)
+		// settings is on and then off, so readings[i] is the reading of the text the session
+		// behind conns[i] makes, and the redaction is taken from the two of them rather than
+		// lexing the text twice over again (redactedQuery).
+		readings := [2]reading{readingOf(text, true), readingOf(text, false)}
+		redaction := redact(text, readings[0], readings[1])
+		printed := strings.Contains(redaction, marker)
 		var verdicts [2]verdict
 		for i, setting := range settings {
-			ours := readingOf(text, setting == "on")
+			ours := readings[i]
 			verdicts[i] = probe(ctx, conns[i], text, ours)
 			switch {
 			case ours.failure >= 0 && !verdicts[i].failed:
@@ -790,7 +796,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 				if printed {
 					uncovered++
 					if len(leaks) < 20 {
-						leaks[fmt.Sprintf("scs=%s %q -> %q: the server's own lexer refused it at byte %d, at or before the marker", setting, text, redactedQuery(text), verdicts[i].coversFrom)] = true
+						leaks[fmt.Sprintf("scs=%s %q -> %q: the server's own lexer refused it at byte %d, at or before the marker", setting, text, redaction, verdicts[i].coversFrom)] = true
 					}
 				}
 			case verdicts[i].name:
@@ -806,7 +812,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 			if verdicts[i].conclusive && !verdicts[i].name && !verdicts[i].token && printed {
 				leaked++
 				if len(leaks) < 20 {
-					leaks[fmt.Sprintf("scs=%s %q -> %q: the server answered the same with %s in its place", setting, text, redactedQuery(text), markerReplacement)] = true
+					leaks[fmt.Sprintf("scs=%s %q -> %q: the server answered the same with %s in its place", setting, text, redaction, markerReplacement)] = true
 				}
 			}
 		}
@@ -818,7 +824,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 			if !printed {
 				lost++
 				if len(losses) < 20 {
-					losses[fmt.Sprintf("%q -> %q: the server read the marker as a token of its own under both settings", text, redactedQuery(text))] = true
+					losses[fmt.Sprintf("%q -> %q: the server read the marker as a token of its own under both settings", text, redaction)] = true
 				}
 			}
 		}
