@@ -1180,6 +1180,92 @@ run_check "$root"
 check "a call-mode term in the build step's own if: is refused" "$(is "$status" 1)"
 check "  and quotes the term" "$(contains "$out" "step 'Build image' builds or calls an image, and its if: is narrowed by \`inputs.mode == ''\`")"
 
+echo "case: one gate is admitted as data, for one workflow and one job and no other"
+# The live shape: the browser image's build step is skipped where the published image was
+# already built from the tree's Dockerfile, which no path filter can say. The hatch is an entry
+# in PINNED_IMAGE_GATES, keyed to the workflow, the job and the term's exact text.
+#
+# pin_gate <root> <workflow file> <job id> <term>: replaces the symlinked checker with a copy
+# whose PINNED_IMAGE_GATES names one gate - the reviewed edit a refusal asks for. Editing the
+# script is the point: the hatch is data in a reviewed file, not a shape a gate can claim.
+pin_gate() {
+  local root=$1
+  rm -f "$root/.github/scripts/check-image-trigger-paths.sh"
+  python3 - "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh" "$2" "$3" "$4" <<'PYEOF'
+import sys
+source, destination, workflow, job, term = sys.argv[1:6]
+text = open(source).read()
+anchor = "PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [\n"
+entry = f"    ({workflow!r}, {job!r}, {term!r}, 'the argument a reviewer read'),\n"
+assert anchor in text
+open(destination, "w").write(text.replace(anchor, anchor + entry, 1))
+PYEOF
+  chmod +x "$root/.github/scripts/check-image-trigger-paths.sh"
+}
+published="steps.decide.outputs.publish == 'true'"
+
+root=$(fixture pinned-gate-unlisted)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+run_check "$root"
+check "a gate on what the package already serves is refused unlisted" "$(is "$status" 1)"
+check "  and quotes the term" "$(contains "$out" "is narrowed by \`$published\`")"
+
+root=$(fixture pinned-gate-listed)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+pin_gate "$root" ".github/workflows/image.yaml" "docker" "$published"
+run_check "$root"
+check "  and goes green once listed" "$(is "$status" 0)"
+check "  and the excusal names the if: it was read in" \
+  "$(contains "$out" "listed in PINNED_IMAGE_GATES: .github/workflows/image.yaml: jobs.docker step 'Build image' if: \`$published\`")"
+
+# Keyed to one job: the same term in a job no entry names is refused, and the entry that
+# excused nothing fails beside it rather than standing as an exemption nobody reviews again.
+root=$(fixture pinned-gate-other-job)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+pin_gate "$root" ".github/workflows/image.yaml" "changes" "$published"
+run_check "$root"
+check "the same term in another job is refused" "$(is "$status" 1)"
+check "  and quotes the term" "$(contains "$out" "is narrowed by \`$published\`")"
+check "  and the entry that excused nothing fails too" \
+  "$(contains "$out" "PINNED_IMAGE_GATES names .github/workflows/image.yaml job changes term")"
+
+# And to one workflow: a second workflow of this tree, with a job of the same id and no such
+# term, is not the holder the entry names either. (An entry for a workflow the tree does not
+# hold at all is passed over, since this check runs over the fixtures here as well as over the
+# repository, so the second workflow is a real one.)
+root=$(fixture pinned-gate-other-workflow)
+gate_probe "$root" "$unchanged"
+step_if "$root" "$published"
+cat > "$root/.github/workflows/other.yaml" <<'YAML'
+name: Other
+on:
+  workflow_dispatch:
+jobs:
+  docker:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo nothing is built here
+YAML
+pin_gate "$root" ".github/workflows/other.yaml" "docker" "$published"
+run_check "$root"
+check "the same term in another workflow is refused" "$(is "$status" 1)"
+check "  and quotes the term" "$(contains "$out" "is narrowed by \`$published\`")"
+check "  and the entry that excused nothing fails too" \
+  "$(contains "$out" "PINNED_IMAGE_GATES names .github/workflows/other.yaml job docker term")"
+
+# An entry excuses its own term and nothing beside it: the filter gate in the same `if:` is
+# read as it always was, so a filter that drops an input still fails.
+root=$(fixture pinned-gate-beside-a-filter)
+gate_probe "$root" "$unchanged"
+step_if "$root" "needs.changes.outputs.narrow == 'true' && $published"
+pin_gate "$root" ".github/workflows/image.yaml" "docker" "$published"
+run_check "$root"
+check "the filter beside an excused term still decides" "$(is "$status" 1)"
+check "  and names the input that filter drops" "$(contains "$out" 'does not cover package.json')"
+
 # V5: an action that builds an image and is not the one this check reads.
 root=$(fixture tripwire-bake-action)
 python3 - "$root/.github/workflows/image.yaml" <<'PYEOF'

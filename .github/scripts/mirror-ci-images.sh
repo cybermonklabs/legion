@@ -79,36 +79,47 @@ fi
 rows=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 - <<'PY'
 import yaml
 
-from ci_images import upstream_parts
+from ci_images import BUILT, row_kind, upstream_parts
 
 GOLANG = "library/golang"
-# The two kinds of row, which .github/scripts/check-ci-images.sh names: a row carrying
-# `upstream:` is one this script copies, and a row carrying `built:` is one this repository
-# builds. Each kind is written below as the literal word, because no constant of this heredoc
-# can reach the loop that reads these lines, and that loop tests the same literal: the
-# producing side and the consuming side spell the kind alike on purpose.
+# Which kind a row is, is ci_images.row_kind's, the one reader of that every script of this
+# repository shares: a row carrying `upstream:` is one this script copies, and a row carrying
+# `built:` is one this repository builds. The kind travels to the loop below as the literal
+# word row_kind gives, because no constant of this heredoc can reach that loop, and that loop
+# tests the same literal: the producing side and the consuming side spell the kind alike on
+# purpose. A row row_kind cannot read is left to .github/scripts/check-ci-images.sh, whose rule
+# 1 says which of the four shapes it is; this script's own refusal below only has to stop the
+# copy.
 
 document = yaml.safe_load(open(".github/ci-images.yaml"))
 registry = document["registry"]
 for row in document["images"]:
+    kind_and_source = row_kind(row)
+    if kind_and_source is None:
+        raise SystemExit(
+            "::error file=.github/ci-images.yaml::a row of this file carries neither a "
+            "`upstream:` to copy from nor a `built:` this repository builds, so this copy "
+            "cannot tell what to do with it. .github/scripts/check-ci-images.sh's rule 1 says "
+            "which shape it is."
+        )
+    kind, source = kind_and_source
     # A row this repository builds names a Dockerfile where a copied row names an upstream, and
     # nothing here copies it: .github/workflows/browser-image.yaml builds and pushes it. That
     # Dockerfile goes in the source column, so the line the loop below prints names the thing
     # that exists, and the kind column is what keeps the row away from `crane copy`.
-    built = row.get("built")
-    if built:
-        print("\t".join((registry, row["tag"], row["digest"], built, "built", "")))
+    if kind == BUILT:
+        print("\t".join((registry, row["tag"], row["digest"], source, kind, "")))
         continue
     # The row's upstream without the digest it may carry, and that same string at the row's
     # digest, which is what the copy asks for: crane drops a tag written before the `@`.
-    labelled = row["upstream"].partition("@")[0]
-    source = f"{labelled}@{row['digest']}"
+    labelled = source.partition("@")[0]
+    reference = f"{labelled}@{row['digest']}"
     # The Go version this row's label claims, empty where the row copies another image or
     # names no tag. The Go a `1.27.1-alpine` tag names is the part before the first `-`, which
     # is how rule 7 of check-ci-images.sh reads the same tag.
-    _, repository, tag, _ = upstream_parts(row["upstream"])
+    _, repository, tag, _ = upstream_parts(source)
     claimed_go = tag.partition("-")[0] if repository == GOLANG else ""
-    print("\t".join((registry, row["tag"], row["digest"], source, "upstream", claimed_go)))
+    print("\t".join((registry, row["tag"], row["digest"], reference, kind, claimed_go)))
 PY
 )
 if [ -z "$rows" ]; then

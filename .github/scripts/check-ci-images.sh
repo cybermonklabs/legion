@@ -203,7 +203,7 @@ from typing import NamedTuple
 
 import yaml
 
-from ci_images import DIGEST, split_reference, upstream_parts
+from ci_images import BUILT, DIGEST, UPSTREAM, row_kind, row_tag, split_reference, upstream_parts
 
 
 class LineLoader(yaml.SafeLoader):
@@ -249,11 +249,11 @@ REPOSITORY = "cybermonklabs/legion/ci"
 CI_IMAGES = Path(".github/ci-images.yaml")
 MIRROR_SCRIPT = ".github/scripts/mirror-ci-images.sh"
 MIRROR_JOB = "ci.yaml's ci-images job"
-# The two kinds of row, and the workflow that publishes a row of the second kind. A row
-# carrying `upstream:` is a copy MIRROR_SCRIPT makes; a row carrying `built:` is an image this
-# repository builds from the Dockerfile that key names, which nothing copies.
-UPSTREAM = "upstream"
-BUILT = "built"
+# The workflow that publishes a row of the second kind. The two kinds themselves, and which one
+# a row is, are .github/scripts/ci_images.py's UPSTREAM, BUILT and row_kind, which every reader
+# of a row shares: a row carrying `upstream:` is a copy MIRROR_SCRIPT makes, and a row carrying
+# `built:` is an image this repository builds from the Dockerfile that key names, which nothing
+# copies.
 BUILD_WORKFLOW = ".github/workflows/browser-image.yaml"
 # The one Dockerfile BUILD_WORKFLOW builds, and the label that build writes the Dockerfile's
 # own sha256 into. Rule 8 holds every `built` row to that file, because a row naming another is
@@ -482,54 +482,46 @@ for row in rows:
             f"{CI_IMAGES}:{line}: this row is not a mapping of upstream or built, tag, digest"
         )
         continue
-    upstream, built, tag, digest = (
-        row.get(key) for key in ("upstream", "built", "tag", "digest")
-    )
-    # A row is one kind or the other, and each key says where the row's bytes came from: a row
-    # with both says two different things about one digest, and a row with neither says nothing
-    # about it at all. The kind decides what the rules below read a row's source as, so it is
-    # settled here, before the keys every row holds are read.
-    if upstream is not None and built is not None:
-        problems.append(
-            f"{CI_IMAGES}:{key_line(row, 'built')}: this row carries both `upstream:` and "
-            f"`built:`, and a row is one or the other: a copy {MIRROR_SCRIPT} makes, or an image "
-            f"this repository builds. A row with both says two different things about where its "
-            f"bytes came from. Delete the key that is not this row's."
-        )
-        continue
-    if upstream is None and built is None:
-        problems.append(
-            f"{CI_IMAGES}:{line}: this row carries neither `upstream:` nor `built:`, and a row "
-            f"is one or the other: `upstream:` is the image {MIRROR_SCRIPT} copies from, and "
-            f"`built:` is the Dockerfile this repository builds the image from. Give it one of "
-            f"the two."
-        )
-        continue
-    if built is not None:
-        kind = BUILT
-        if not isinstance(built, str) or not built.strip():
+    kind_and_source = row_kind(row)
+    # Which kind a row is, is row_kind's; WHY a row is neither is this rule's, and the four
+    # shapes it refuses are the four row_kind answers None for. The keys are read again here
+    # for the message alone.
+    if kind_and_source is None:
+        upstream, built = row.get("upstream"), row.get("built")
+        if upstream is not None and built is not None:
+            problems.append(
+                f"{CI_IMAGES}:{key_line(row, 'built')}: this row carries both `upstream:` and "
+                f"`built:`, and a row is one or the other: a copy {MIRROR_SCRIPT} makes, or an "
+                f"image this repository builds. A row with both says two different things about "
+                f"where its bytes came from. Delete the key that is not this row's."
+            )
+        elif upstream is None and built is None:
+            problems.append(
+                f"{CI_IMAGES}:{line}: this row carries neither `upstream:` nor `built:`, and a "
+                f"row is one or the other: `upstream:` is the image {MIRROR_SCRIPT} copies "
+                f"from, and `built:` is the Dockerfile this repository builds the image from. "
+                f"Give it one of the two."
+            )
+        elif built is not None:
             problems.append(
                 f"{CI_IMAGES}:{key_line(row, 'built')}: this row's built is {one_line(built)}, "
                 f"and it names the Dockerfile this repository builds the image from."
             )
-            continue
-        source = built.strip()
-        if not Path(source).is_file():
-            problems.append(
-                f"{CI_IMAGES}:{key_line(row, 'built')}: this row is built from "
-                f"{one_line(source)}, and this tree holds no such file, so nothing builds the "
-                f"row. Name the Dockerfile {BUILD_WORKFLOW} builds, or delete the row."
-            )
-            continue
-    else:
-        kind = UPSTREAM
-        if not isinstance(upstream, str) or not upstream.strip():
+        else:
             problems.append(
                 f"{CI_IMAGES}:{key_line(row, 'upstream')}: this row has no upstream, and "
                 f"{MIRROR_SCRIPT} copies from it"
             )
-            continue
-        source = upstream.strip()
+        continue
+    kind, source = kind_and_source
+    tag, digest = row.get("tag"), row.get("digest")
+    if kind == BUILT and not Path(source).is_file():
+        problems.append(
+            f"{CI_IMAGES}:{key_line(row, 'built')}: this row is built from "
+            f"{one_line(source)}, and this tree holds no such file, so nothing builds the "
+            f"row. Name the Dockerfile {BUILD_WORKFLOW} builds, or delete the row."
+        )
+        continue
     if not isinstance(tag, str) or not tag.strip():
         rule = (
             "the upstream repository's last path element, then the upstream tag when this row "
@@ -761,18 +753,9 @@ if MODE == PACKAGE:
     )
 
 
-def tag_rule(row: Row) -> str:
-    """The tag the rule gives a row. For a row the mirror copies: the upstream repository's last
-    path element, then the upstream tag when the row names one, then the first eight hex
-    characters of the digest. For a row this repository builds: the stem of the Dockerfile that
-    builds it, which is its name without the .Dockerfile suffix, then those same eight
-    characters."""
-    short = row.digest.partition(":")[2][:8]
-    if row.kind == BUILT:
-        return f"{Path(row.source).stem}-{short}"
-    _, path, carried, _ = upstream_parts(row.source)
-    parts = [part for part in (path.rpartition("/")[2], carried, short) if part]
-    return "-".join(parts)
+# Rule 2's tag is .github/scripts/ci_images.py's row_tag, the rule the build writes a tag with
+# and this check holds a row to: one function, so no row can carry a tag the build gives it and
+# this check refuses.
 
 
 by_digest: dict[str, Row] = {}
@@ -797,7 +780,7 @@ for row in readable:
         )
     else:
         by_tag[tag] = row
-    wanted = tag_rule(row)
+    wanted = row_tag(kind, source, digest)
     if tag != wanted:
         gives = "upstream" if kind == UPSTREAM else "Dockerfile"
         problems.append(
