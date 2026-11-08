@@ -398,13 +398,13 @@ describe("an editor constructed before its document arrives", () => {
     });
   });
 
-  // A read-only admission lands before the sync that binds, so the editor it decides for is
-  // one that has already been built (`ProofDocument`'s `onAdmission`).
+  // A read-only admission lands before the sync that binds, so the access it decides for is
+  // one the editor has already been built with (`ProofDocument`'s `onAdmission`).
   test("takes a read-only decision made before it was bound", async () => {
     await withDomWindow(async (window) => {
       const { construction, root } = await construct(window, paragraphs(8));
 
-      construction.setReadOnly(true);
+      construction.setAccess("read");
       const handle = await construction.bind();
       try {
         expect(handle.view.editable).toBe(false);

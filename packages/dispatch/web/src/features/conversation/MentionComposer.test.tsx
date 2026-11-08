@@ -1318,15 +1318,15 @@ test("a direct message to a session that advertises no mode warns that it takes 
   try {
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Ship it." } });
     const warning = screen.getByText(/Worker advertises no delivery mode, so sending it records/);
-    expect(warning.textContent).toContain("started with its Envoy channel");
+    expect(warning.textContent).toContain("while its plugin cannot reach its conversation");
     expect(warning.textContent).not.toContain("Prefix with");
   } finally {
     view.unmount();
   }
 });
 
-// A session that refuses Send but takes Aside - a Claude Code session - gets a plain message as
-// an Aside, and the composer says so instead of warning that the Send would fail.
+// A session that refuses Send but takes Aside gets a plain message as an Aside, and the composer
+// says so instead of warning that the Send would fail.
 for (const capabilities of [["aside"], ["aside", "btw"]]) {
   test(`a plain message to a session advertising ${capabilities.join(" and ")} goes as an Aside`, async () => {
     const createAgentMessage = spyOn(api, "createAgentMessage").mockResolvedValue(createdMessage);
@@ -2486,29 +2486,70 @@ test("a stopped send the reader comes back to a day later says its key has run o
   }
 });
 
-// A closed owner takes no send. Its composer stays mounted for a send it still has out and for
-// that send's refusal - Send refused, Discard draft in place of Retry - and shows nothing else.
-test("a closed composer shows only a send of its own still out, then its refusal with Discard", async () => {
-  const refused = Promise.withResolvers<Comment>();
-  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
-  const { rerender, view } = renderComposer();
+// A closed issue takes comments: its composer shows and sends one, and a refusal still shows,
+// with Retry, as on an open issue. It refuses suggestions and asks, so the kind switch offers
+// neither there.
+test("a closed composer sends a comment, hides Suggest and Ask, and still shows a refusal", async () => {
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(commentRefused)
+    .mockResolvedValueOnce(createdComment);
+  const anchor = { artifact: "artifact-1", mark_id: "mark-1", quote: "brown" };
+  const props = { anchor, closed: true, onKindChange: () => undefined };
+  const { rerender, view } = renderComposer(props);
 
   try {
-    rerender({ closed: true });
-    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
-    rerender({});
+    expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Suggest" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ask" })).toBeNull();
+    rerender({ anchor, onKindChange: () => undefined });
+    expect(screen.getByRole("button", { name: "Suggest" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeTruthy();
+    rerender(props);
 
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    fireEvent.change(field, { target: { value: "Closing under me" } });
+    fireEvent.change(field, { target: { value: "After the close" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+    expect(field.value).toBe("After the close");
+    expect(screen.queryByRole("button", { name: "Discard draft" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.at(-1)?.[1]).toEqual({
+      anchor: { artifact: "artifact-1", mark_id: "mark-1" },
+      body: "After the close",
+    });
+    await waitFor(() => expect(field.value).toBe(""));
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A suggestion is a proposed edit a closed issue refuses. Its composer stays mounted for a send it
+// still has out and for that send's refusal - Send refused, Discard draft in place of Retry - and
+// shows nothing else.
+test("a closed suggestion composer shows only a send of its own still out, then its refusal with Discard", async () => {
+  const refused = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
+  const anchor = { artifact: "artifact-1", mark_id: "mark-1", quote: "brown" };
+  const { rerender, view } = renderComposer({ anchor, kind: "suggestion" });
+
+  try {
+    rerender({ anchor, closed: true, kind: "suggestion" });
+    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+    rerender({ anchor, kind: "suggestion" });
+
+    fireEvent.change(screen.getByLabelText("Replacement"), { target: { value: "red" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    rerender({ closed: true });
+    rerender({ anchor, closed: true, kind: "suggestion" });
     expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
     expect(holdControls().disabled).toBe(true);
 
     refused.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "issue is closed" }));
     await screen.findByText("Couldn't send — issue is closed");
-    expect(screen.getByLabelText<HTMLTextAreaElement>("Comment").value).toBe("Closing under me");
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Replacement").value).toBe("red");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     const send = screen.getByRole("button", { name: "Send" });
     expect(send.getAttribute("aria-disabled")).toBe("true");

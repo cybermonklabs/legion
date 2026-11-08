@@ -92,7 +92,8 @@ import {
 
 import { dispatchMarkPlugins, remarkDispatchMarksPlugin, dispatchMarkHandler } from './dispatch-marks';
 import type { MarkAction, RecordMarkPlacement, SelectionBarActionKind } from './dispatch-marks';
-import { commentOnSelection, dispatchActionBarPlugin } from './dispatch-action-bar';
+import { commentOnSelection, dispatchActionBarPlugin, setAccess } from './dispatch-action-bar';
+import type { ProofEditorAccess } from './dispatch-action-bar';
 import { registerPopoverHookInstance } from './dispatch-popover-hook';
 import { dispatchMarkEventsPlugin } from './dispatch-mark-events';
 import { remarkSoftBreakAsSpace } from './dispatch-soft-breaks';
@@ -120,6 +121,7 @@ import { removeRecordMark, remarkRecordMark, retypeMark as retypeRecordMark } fr
 import type { RemarkOutcome, RetypeOutcome } from './record-mark-retype';
 
 export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverActionKind } from './dispatch-marks';
+export type { ProofEditorAccess } from './dispatch-action-bar';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
 export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
@@ -166,11 +168,16 @@ export interface CreateProofEditorOptions {
   awareness?: Awareness | null;
   /** Local user identity for cursor labels. */
   user: ProofEditorUser;
-  /** Render the document read-only. Defaults to false. */
-  readOnly?: boolean;
+  /** What the reader may do with the document: `'edit'` it, `'comment'` on it alone - the
+   *  selection bar offers Comment alone, for a selection that holds text, which writes no mark
+   *  and reports a `quote-comment` action, for a host whose server anchors the comment by its
+   *  quote - or only `'read'` it. Defaults to `'edit'`. */
+  access?: ProofEditorAccess;
   /** Fired for every mark-affecting user action: Comment/Suggest/Ask on the
    *  selection bar (the editor has already applied the mark locally with a
-   *  fresh markId over [from,to]; a rejected promise removes it), and
+   *  fresh markId over [from,to]; a rejected promise removes it), Comment on
+   *  a document with `'comment'` access (`quote-comment`: no mark is
+   *  written), and
    *  Reply/Resolve/Unresolve/Accept/Reject/Delete on the mark popover (no
    *  local mutation is applied for these — the host's server is expected to
    *  mutate and the change arrives back through the shared Y.Doc). */
@@ -235,8 +242,8 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  `placed` false each answers 0, so a host that places nothing against those pixels still
    *  reads which marks the document draws without a forced layout of the whole document. */
   markOffsets(placed: boolean): Map<string, number>;
-  /** Toggle editability (e.g. for a readOnly flag change post-construction). */
-  setReadOnly(readOnly: boolean): void;
+  /** Changes what the reader may do with the document (`access`) post-construction. */
+  setAccess(access: ProofEditorAccess): void;
   /** Apply mark metadata received from a peer, re-anchoring by quote. Unified
    *  Proof marks (comment/suggestion/flagged/approved) only — see
    *  ./dispatch-marks.ts's module doc for why dispatchAsk marks are outside
@@ -264,7 +271,7 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   ): RemarkOutcome;
   /** Starts a comment on the current selection exactly as the selection bar's Comment button
    *  does, `onMarkAction` included, and answers whether it did: false for an empty selection and
-   *  while the document is read-only, where the bar offers no Comment. */
+   *  while the document is read-only and takes no comments, where the bar offers no Comment. */
   commentOnSelection(): boolean;
   /** Scrolls a mark's anchor into view and pulses it. Works for both the
    *  unified marks system and dispatchAsk marks: both render `data-id`. */
@@ -418,9 +425,10 @@ export interface ProofEditorConstruction {
    *  batch of blocks at a time, and answers the handle. Call it once, when the document has
    *  arrived. */
   bind(): Promise<ProofEditorHandle>;
-  /** Toggles editability before the binding, for an admission that lands while the socket is
-   *  still syncing. The handle's `setReadOnly` is this same call. */
-  setReadOnly(readOnly: boolean): void;
+  /** Changes what the reader may do with the document before the binding, for an admission
+   *  that lands while the socket is still syncing. The handle's `setAccess` is this same
+   *  call. */
+  setAccess(access: ProofEditorAccess): void;
   /** Tears down a construction that will never be bound, and shows the root again. The handle's
    *  `destroy` is this same call. */
   destroy(): void;
@@ -577,13 +585,12 @@ async function theConstruction(
 
   const view = editor.ctx.get(editorViewCtx);
 
-  let currentReadOnly = Boolean(opts.readOnly);
-  view.setProps({ editable: () => !currentReadOnly });
   view.setProps(brokenAskInputGuards); // no input throws in an off-rule ask (./ask-content.ts)
-  const setReadOnly = (readOnly: boolean) => {
-    currentReadOnly = readOnly;
-    view.setProps({ editable: () => !currentReadOnly });
+  const applyAccess = (access: ProofEditorAccess) => {
+    setAccess(view, access);
+    view.setProps({ editable: () => access === 'edit' });
   };
+  applyAccess(opts.access ?? 'edit');
 
   // The host's own node views and plugins, over the empty document, so every node view of the
   // build is created once, in the batch that builds its block (`beforeBuild`).
@@ -651,7 +658,7 @@ async function theConstruction(
       }
       return offsets;
     },
-    setReadOnly,
+    setAccess: applyAccess,
     applyRemoteMarks(metadata: Record<string, StoredMark>, options?: { hydrateAnchors?: boolean }): void {
       applyRemoteMarksMutation(view, metadata, options);
     },
@@ -779,7 +786,7 @@ async function theConstruction(
   return {
     bind,
     destroy: () => handle.destroy(),
-    setReadOnly,
+    setAccess: applyAccess,
   };
 }
 

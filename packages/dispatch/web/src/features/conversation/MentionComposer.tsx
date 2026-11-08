@@ -291,10 +291,11 @@ interface MentionComposerProps {
    *  mounted out of sight - the margin's, under its collapsed sheet, its rail or the Pinned tab -
    *  passes it once the composer is on screen, since a field out of sight takes no focus. */
   readonly autoFocus?: boolean;
-  /** The owner takes no more sends: its issue is closed. The composer stays mounted, so a send
-   *  still out and its refusal keep their draft: it shows itself only while it holds one of them,
-   *  with Send refused and Discard in place of Retry, and otherwise renders nothing, its draft
-   *  kept for a reopen. */
+  /** The owner's issue is closed. A closed issue takes comments and message replies, so a comment
+   *  composer shows and sends as ever; its Suggest and Ask kinds are hidden, since a closed issue
+   *  refuses both. A suggestion or ask composer stays mounted, so a send of its own still out and
+   *  its refusal keep their draft: it shows itself only while it holds one of them, with Send
+   *  refused and Discard in place of Retry, and otherwise renders nothing. */
   readonly closed?: boolean;
   readonly docked?: boolean;
   /** The host offers no new message here - a decided suggestion's thread offers no reply - so the
@@ -440,8 +441,8 @@ export function MentionComposer({
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   // Why the last kind pick was refused, kept with the mark it answered: the composer stays mounted
   // when a newer compose replaces the anchor, and a refusal about the old mark says nothing about
-  // the new one.
-  const [kindRefusal, setKindRefusal] = useState<{ markId: string; text: string }>();
+  // the new one. A quote anchor (a closed issue's document) has no mark.
+  const [kindRefusal, setKindRefusal] = useState<{ markId: string | undefined; text: string }>();
 
   /** Whether this draft takes mentions at all: an edit of a comment does not, and a message to
    *  one session already reaches it. */
@@ -578,9 +579,12 @@ export function MentionComposer({
     if (!inline && sentEdit === undefined) onClose();
   };
   const { refusal, sending } = outgoing;
-  // Closed or finishing, with no send out and no refusal to show: nothing of this composer is on
-  // screen.
-  const dormant = (closed || finishing) && !sending && refusal === undefined;
+  // The kind a closed issue refuses: a suggestion or an ask. Its composer only finishes a send of
+  // its own.
+  const refusedKind = closed && kind !== "comment";
+  // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
+  // composer is on screen.
+  const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
   /** Ends the reply; an inline reply's draft and refusal end with it (`onCancelReply`). */
   const cancelReply = () => {
     if (inline) {
@@ -766,7 +770,7 @@ export function MentionComposer({
     return option === undefined ? [] : [option];
   });
   // What a message with no command goes in: Send, or the mode every addressed session takes
-  // when one of them refuses Send - an Aside to a Claude Code session.
+  // when one of them refuses Send - an Aside to a session that advertises Aside alone.
   const plainMode = plainDelivery(targetOptions.map((option) => option.capabilities));
   // The mode a send this composer holds - out, or refused - went in, where pressing Send or Retry
   // now would send that very request again: the live view picks a mode outright, and the message
@@ -799,9 +803,9 @@ export function MentionComposer({
     heldPicked === undefined
       ? deliveryPlan(body, inheritedDelivery)
       : { body, delivery: heldPicked };
-  // A closed owner takes no send: the composer is only still here for a send of its own that is
-  // out, or its refusal, and Send says why it cannot go.
-  const submitReason = closed
+  // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
+  // its own that is out, or its refusal, and Send says why it cannot go.
+  const submitReason = refusedKind
     ? "This issue is closed. Reopen it to send."
     : draftRefusal(kind, body, replacement, outbound);
   const footId = useId();
@@ -856,8 +860,8 @@ export function MentionComposer({
       ? []
       : targetOptions.filter((option) => !option.capabilities.includes(outboundMode));
   const unsupported = unsupportedOptions.length > 0;
-  // Sessions that advertise no mode at all take no message in any mode: a Claude Code session
-  // whose Envoy channel Claude Code did not load says so by advertising none.
+  // Sessions that advertise no mode at all take no message in any mode: a session whose plugin
+  // cannot reach its conversation says so by advertising none.
   const deaf =
     unsupported && unsupportedOptions.every((option) => option.capabilities.length === 0);
   // The plain mode, named whenever it is not Send, so the reader knows what their words become.
@@ -929,7 +933,7 @@ export function MentionComposer({
           {anchor.quote}
         </blockquote>
       )}
-      {onKindChange !== undefined && edit === undefined && owner.kind !== "session" ? (
+      {onKindChange !== undefined && edit === undefined && owner.kind !== "session" && !closed ? (
         <>
           <fieldset className="flex gap-1">
             <legend className="sr-only">Kind</legend>
@@ -1038,8 +1042,8 @@ export function MentionComposer({
         <p className={`text-sm ${dangerText}`}>
           {unsupportedOptions.map((option) => option.title).join(" and ")}{" "}
           {unsupportedOptions.length > 1 ? "advertise" : "advertises"} no delivery mode, so sending
-          it records a failed attempt. A Claude Code session takes messages only when it was started
-          with its Envoy channel.
+          it records a failed attempt. A session advertises none while its plugin cannot reach its
+          conversation.
         </p>
       ) : unsupported ? (
         <p className={`text-sm ${dangerText}`}>
@@ -1183,9 +1187,10 @@ export function MentionComposer({
             onRetry={canSubmit ? send : undefined}
             retrying={sending}
           />
-          {/* A closed owner takes no Retry, so the refusal's own way out is to drop the draft it
-              handed back, once the reader has it; a send the reader stopped offers both ways. */}
-          {closed || refusal instanceof SendStoppedError ? (
+          {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
+              drop the draft it handed back, once the reader has it; a send the reader stopped
+              offers both ways. */}
+          {refusedKind || refusal instanceof SendStoppedError ? (
             <button
               className={`text-sm font-medium underline ${dangerText}`}
               onClick={discard}
@@ -1211,7 +1216,7 @@ export function MentionComposer({
       </p>
     </fieldset>
   );
-  // A closed owner's composer, or a finishing one, stays mounted, keeping its draft, and shows
+  // A composer closed to its kind, or a finishing one, stays mounted, keeping its draft, and shows
   // itself only for a send of its own that is out or that send's refusal; otherwise it renders
   // nothing, its frame with it.
   if (dormant) return null;

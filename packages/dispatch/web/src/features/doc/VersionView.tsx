@@ -114,11 +114,11 @@ export function VersionView({
       // `setMarkdown` below, over a standalone Yjs document - so there is nothing to wait for
       // between the two phases (`features/doc/editor.ts`).
       const construction = await constructEditor(parent, {
+        access: "read",
         awareness: null,
         blockSchema,
         heatMapMode: "hidden",
         onAskBlockHosts: setAskBlockHosts,
-        readOnly: true,
         user: { color: colorForLogin(user.login), name: user.login },
         watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
         ydoc: doc,

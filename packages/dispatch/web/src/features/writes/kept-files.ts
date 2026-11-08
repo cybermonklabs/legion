@@ -67,7 +67,13 @@ function fileFrom(row: unknown): File | undefined {
 
 /** Where kept files live: IndexedDB in the page, an in-memory map in a test. */
 export interface KeptFiles {
-  put(key: string, login: string, file: File): Promise<void>;
+  /** Keeps `file` under `key` and says whether it is there: `false` for every way nothing was
+   *  written - a browser with no IndexedDB, an open it refused (a private window, a storage
+   *  policy, a quota), a file it can no longer read, and a put a `delete` of its key or a sweep
+   *  marked on the way past. The write's own record waits on this answer, since a record naming
+   *  a file that is not there is one a reload drops with nothing shown and nothing sent
+   *  (`write-store.ts`). */
+  put(key: string, login: string, file: File): Promise<boolean>;
   get(key: string): Promise<File | undefined>;
   delete(key: string): Promise<void>;
   /** Deletes every row but `login`'s from within the last day; every row, for `undefined`. */
@@ -90,11 +96,13 @@ function committed(transaction: IDBTransaction): Promise<void> {
 }
 
 /** The database, or `undefined` when this browser has no IndexedDB or refuses to open it (a
- *  private window, a storage policy, a quota error): an upload is then kept without its file, and
- *  a reload lets it go. The version stays 1 across the change of shape: both shapes live in the
- *  one store under the one key path, `get` reads either, and an upgrade that rewrote the rows
- *  already there could not run - remaking a row needs the bytes of its `File`, and the await of
- *  `File.arrayBuffer()` ends the version-change transaction the rewrite would have to run in. */
+ *  private window, a storage policy, a quota error): `put` then answers that it kept nothing,
+ *  and the page keeps no record of that upload at all rather than one naming a file that is not
+ *  there, so the upload is sent and a reload lets it go. The version stays 1 across the change
+ *  of shape: both shapes live in the one store under the one key path, `get` reads either, and
+ *  an upgrade that rewrote the rows already there could not run - remaking a row needs the
+ *  bytes of its `File`, and the await of `File.arrayBuffer()` ends the version-change
+ *  transaction the rewrite would have to run in. */
 function openDatabase(): Promise<IDBDatabase | undefined> {
   const factory: IDBFactory | undefined = globalThis.indexedDB;
   if (factory === undefined) return Promise.resolve(undefined);
@@ -182,10 +190,12 @@ export function indexedDbFiles(): KeptFiles {
     // release before this one, which stored the `File` and read nothing; a `delete` of the key
     // in that window leaves the file let go rather than kept, since a put that wrote its row
     // back would keep the file of a write that has landed or been discarded until `keepOnly`
-    // reaps it. `put` still answers once the row is committed, or once there is nothing kept,
-    // and a file the browser can no longer read - one moved or deleted since the press - is let
-    // go like any other IndexedDB failure.
+    // reaps it. The answer says whether the row is there: the write that waits on it is kept
+    // only where it is, and sent either way. A browser with no IndexedDB is answered before the
+    // bytes are read, since there is nothing to read them for and the write would pay the whole
+    // file for an answer that is already known.
     put: async (key, login, file) => {
+      if (globalThis.indexedDB === undefined) return false;
       const at = Date.now();
       const pending = { at, discarded: false, key, login };
       putting.add(pending);
@@ -194,7 +204,7 @@ export function indexedDbFiles(): KeptFiles {
         try {
           bytes = await file.arrayBuffer();
         } catch {
-          return;
+          return false;
         }
         const row: KeptFileRow = {
           at,
@@ -205,9 +215,12 @@ export function indexedDbFiles(): KeptFiles {
           name: file.name,
           type: file.type,
         };
-        await run("readwrite", (store) =>
-          pending.discarded ? Promise.resolve(undefined) : settled(store.put(row))
-        );
+        const kept = await run("readwrite", async (store) => {
+          if (pending.discarded) return false;
+          await settled(store.put(row));
+          return true;
+        });
+        return kept ?? false;
       } finally {
         putting.delete(pending);
       }
