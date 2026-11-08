@@ -23,6 +23,16 @@ import (
 // the results read (api/results_currency.go), which picks the branch each check is measured
 // against and keeps a memo for the span of one request, and holds no policy of its own.
 
+// DefaultBranch is the branch argument that means "the repository's own default branch, which
+// delivery resolves": a caller holding no branch name of its own passes it, and CommitOnBranch
+// resolves the repository's own name through branchOf before it reads or writes anything under
+// it. It is a named constant rather than a bare empty string at each call site because the
+// empty string is what more than one answer about a branch is spelled with — the base branch of
+// an issue Dispatch holds no merge of is the other (BaseBranchMergedFor), and it means "no
+// branch to measure against" rather than this — so a caller that passed one for the other would
+// fall back to the default branch with no error and no failing type.
+const DefaultBranch = ""
+
 // BranchCommit is what Dispatch last learned about one commit of one branch of one repository:
 // whether that branch's history carries it, and when that was read.
 type BranchCommit struct {
@@ -91,10 +101,11 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 }
 
 // CommitOnBranch answers whether branch of repoFull carries sha, and whether Dispatch could say
-// at all. An empty branch means the repository's own default branch, resolved through branchOf:
-// a `default_branch` check passes none and so is measured against that branch whatever the work
-// merged into, while an `after_merge` check passes the branch its issue's pull request merged
-// into (api/results_currency.go).
+// at all. DefaultBranch — the empty branch — means the repository's own default branch, resolved
+// through branchOf: a `default_branch` check names no branch of its own and so is measured
+// against that branch whatever the work merged into, while an `after_merge` check asks about the
+// branch its issue's pull request merged into and about that branch in turn
+// (api/results_currency.go).
 //
 // What branch_commits holds for that repository, branch and commit answers first while it still
 // stands — a yes for good, a no for BranchCommitStaleAfter — and GitHub is read against the
@@ -136,7 +147,7 @@ func (c *Branches) CommitOnBranch(
 	// no branch asks for; a caller that names a branch has asked nothing of the repository yet,
 	// so the compare read below is what finds out.
 	readable := true
-	if branch == "" {
+	if branch == DefaultBranch {
 		if branch, readable = c.branchOf(ctx, client, repoFull, now); branch == "" {
 			return false, false
 		}
