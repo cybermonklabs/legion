@@ -96,9 +96,18 @@ func newAdmissionWithGate(t *testing.T, cap int, gate config.DesignGate, log *sl
 // deployment's `gates.design` list resolves to.
 func newAdmissionWithSteps(t *testing.T, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
 	t.Helper()
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: steps,
+	return newAdmissionForProject(t, testProject, cap, steps, log)
+}
+
+// newAdmissionForProject is newAdmissionWithSteps for a Dispatch project key of its own. Every
+// other helper here records issues under testProject, so a test that takes another key seeds its
+// own records: the key is what admission reads the line, the claims and the tree lifecycles
+// under, and a test of two keys proves a behaviour reads none of it.
+func newAdmissionForProject(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
+	t.Helper()
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: project, Repositories: testRepositories, Steps: steps,
 		Clock: func() time.Time { return fixedNow }}, log)
-	admission := New(record.NewStore(), engine, cap, testProject, log)
+	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission
 }

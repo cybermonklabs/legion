@@ -2,6 +2,7 @@ package projection
 
 import (
 	"context"
+	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -726,57 +727,70 @@ func TestProjectAnswersEveryRootsGatedStepsAndNoChildsOwn(t *testing.T) {
 // their place, and what holds the blocked one is `admission.blocked` beside this. An issue
 // holding a slot and an issue the line does not name carry no place at all: they stand in no
 // line.
+//
+// The case runs under two Dispatch project keys, with nothing else between the runs: nothing of
+// this field reads a project key, so each run gives the same places over the same line.
 func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
-	answeredAt := projectedAt.Add(-time.Hour)
-	answered := lineIssue("LEGION-40", "LEGION-40", "in_progress", phase.AwaitingPerson, "D")
-	answered.Awaiting = &record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 9},
-		AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByReply}
-	elsewhere := lineIssue("OTHER-70", "OTHER-70", "todo", phase.Admitted, "A")
-	elsewhere.Project = "OTHER"
-	store := projectionStore{
-		issues: []record.Issue{
-			lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.Implementing, "B"),
-			lineIssue("LEGION-20", "LEGION-20", "todo", phase.Admitted, "C"),
-			lineIssue("LEGION-30", "LEGION-30", "todo", phase.Admitted, "E"),
-			answered, elsewhere,
-		},
-		slots: []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: projectedAt}},
-		// LEGION-99 has no row of its own, which is not a finished issue: the wait stands.
-		mirror: []record.DispatchIssueRow{
-			{Key: "LEGION-30", Project: "LEGION", Status: "todo", Blockers: []string{"LEGION-99"}},
-		},
-	}
+	for _, project := range []string{"LEGION", "WIDGETS"} {
+		t.Run(project, func(t *testing.T) {
+			key := func(n int) string { return fmt.Sprintf("%s-%d", project, n) }
+			of := func(n int, status string, stands phase.Phase, rank string) record.Issue {
+				issue := lineIssue(key(n), key(n), status, stands, rank)
+				issue.Project = project
+				return issue
+			}
+			answeredAt := projectedAt.Add(-time.Hour)
+			answered := of(40, "in_progress", phase.AwaitingPerson, "D")
+			answered.Awaiting = &record.Awaiting{Ask: "ask-1", Since: record.EventMark{Seq: 9},
+				AnsweredAt: &answeredAt, AnsweredBy: record.AnsweredByReply}
+			elsewhere := lineIssue("OTHER-70", "OTHER-70", "todo", phase.Admitted, "A")
+			elsewhere.Project = "OTHER"
+			store := projectionStore{
+				issues: []record.Issue{
+					of(10, "in_progress", phase.Implementing, "B"),
+					of(20, "todo", phase.Admitted, "C"),
+					of(30, "todo", phase.Admitted, "E"),
+					answered, elsewhere,
+				},
+				slots: []record.Slot{{Issue: key(10), Index: 0, AdmittedAt: projectedAt}},
+				// The blocker has no row of its own, which is not a finished issue: the wait stands.
+				mirror: []record.DispatchIssueRow{
+					{Key: key(30), Project: project, Status: "todo", Blockers: []string{key(99)}},
+				},
+			}
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, nil, nil, projectedAt)
-	if err != nil {
-		t.Fatalf("Project: %v", err)
-	}
-	line := got.Admission.Waiting
-	for _, key := range []string{"LEGION-20", "LEGION-30", "LEGION-40"} {
-		if !slices.Contains(line, key) {
-			t.Fatalf("admission.waiting = %v, want %s among them: the blocked member, the answered root and the queued root all stand in the line", line, key)
-		}
-	}
-	if blocked := got.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != "LEGION-30" {
-		t.Fatalf("admission.blocked = %#v, want LEGION-30 alone: what holds a member is read there, and holds it out of no place", blocked)
-	}
-	stands := make(map[int]string, len(line))
-	for i, key := range line {
-		place := got.Issues[key].WaitingLine
-		if place == nil {
-			t.Fatalf("%s stands at %d in %v and carries no waitingLine", key, i+1, line)
-		}
-		if place.Place != i+1 || place.Length != len(line) {
-			t.Errorf("%s's waitingLine = %+v, want place %d of %d, its place in %v", key, *place, i+1, len(line), line)
-		}
-		if taken, twice := stands[place.Place]; twice {
-			t.Errorf("%s and %s both stand at place %d of %v", taken, key, place.Place, line)
-		}
-		stands[place.Place] = key
-	}
-	for _, key := range []string{"LEGION-10", "OTHER-70"} {
-		if place := got.Issues[key].WaitingLine; place != nil {
-			t.Errorf("%s carries waitingLine %+v, want none: the line does not name it", key, *place)
-		}
+			got, err := Project(context.Background(), nil, store, project, nil, nil, nil, projectedAt)
+			if err != nil {
+				t.Fatalf("Project: %v", err)
+			}
+			line := got.Admission.Waiting
+			for _, member := range []string{key(20), key(30), key(40)} {
+				if !slices.Contains(line, member) {
+					t.Fatalf("admission.waiting = %v, want %s among them: the blocked member, the answered root and the queued root all stand in the line", line, member)
+				}
+			}
+			if blocked := got.Admission.Blocked; len(blocked) != 1 || blocked[0].Issue != key(30) {
+				t.Fatalf("admission.blocked = %#v, want %s alone: what holds a member is read there, and holds it out of no place", blocked, key(30))
+			}
+			stands := make(map[int]string, len(line))
+			for i, member := range line {
+				place := got.Issues[member].WaitingLine
+				if place == nil {
+					t.Fatalf("%s stands at %d in %v and carries no waitingLine", member, i+1, line)
+				}
+				if place.Place != i+1 || place.Length != len(line) {
+					t.Errorf("%s's waitingLine = %+v, want place %d of %d, its place in %v", member, *place, i+1, len(line), line)
+				}
+				if taken, twice := stands[place.Place]; twice {
+					t.Errorf("%s and %s both stand at place %d of %v", taken, member, place.Place, line)
+				}
+				stands[place.Place] = member
+			}
+			for _, member := range []string{key(10), "OTHER-70"} {
+				if place := got.Issues[member].WaitingLine; place != nil {
+					t.Errorf("%s carries waitingLine %+v, want none: the line does not name it", member, *place)
+				}
+			}
+		})
 	}
 }
