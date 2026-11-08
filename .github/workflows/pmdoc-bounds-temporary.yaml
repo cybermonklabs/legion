@@ -12,7 +12,11 @@
 # fine-grained clock and four cores, so this is where the three conditions are read.
 name: pmdoc bounds (TEMPORARY, INFRA-1075)
 
+# It runs on a push of the branch it was written on, because GitHub offers workflow_dispatch only
+# for a workflow its default branch already holds, and this one is never going to reach main.
 on:
+  push:
+    branches: [legion/INFRA-1075]
   workflow_dispatch:
 
 permissions:
