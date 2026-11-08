@@ -396,6 +396,14 @@ def go_notices_runs():
     return out
 
 
+# The two jq filters a step replays its own `go test -json` stream to the log with: the package
+# result lines of a green run, the whole stream of a red one. Named once because the envoy-go unit
+# step replays four streams of its own and must replay each of them the way every other step
+# replays its one (dispatch://INFRA-1075).
+GREEN_REPLAY = "jq -rj 'select(.Action == \"build-output\" or (.Action == \"output\" and .Test == null)) | .Output'"
+RED_REPLAY = "jq -rj 'select(.Action == \"build-output\" or .Action == \"output\") | .Output'"
+
+
 def json_stream_script(command: str, stream: str, prelude: str = "") -> str:
     """A test step that writes its `go test -json` stream to a file under $RUNNER_TEMP/go-test-json
     and replays it to the log: the package result lines of a green run, the whole stream of a red
@@ -407,9 +415,9 @@ mkdir -p "$RUNNER_TEMP/go-test-json"
 {prelude}s=0
 {command} > "$RUNNER_TEMP/go-test-json/{stream}" || s=$?
 if [ "$s" -eq 0 ]; then
-  jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/{stream}"
+  {GREEN_REPLAY} "$RUNNER_TEMP/go-test-json/{stream}"
 else
-  jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/{stream}"
+  {RED_REPLAY} "$RUNNER_TEMP/go-test-json/{stream}"
 fi
 exit $s"""
 
@@ -598,30 +606,130 @@ def race_step(job):
     ])
 
 
-# The unit step runs the module less three things: the lane's packages, which the three race jobs
-# run under the detector, internal/integration, which envoy-go's integration step runs, and
+# The unit step runs the module less four things: the lane's packages, which the three race jobs
+# run under the detector, internal/integration, which envoy-go's integration step runs,
 # internal/dispatch/routes, which that job's own routes step runs against a second Postgres
-# service (ci.yaml says why). Its `grep -Ev` is `/integration`, then, in the lane's own order,
-# each package in the form go list's import paths need - a tree matching the package and
-# everything under it, any other the package alone - and the routes package last.
+# service (ci.yaml says why), and internal/dispatch/pmdoc, which the same step runs as three
+# calls of its own (below). Its `grep -Ev` is `/integration`, then, in the lane's own order, each
+# package in the form go list's import paths need - a tree matching the package and everything
+# under it, any other the package alone - then the routes package and pmdoc.
 ROUTES_PACKAGE = "internal/dispatch/routes"
+PMDOC_PACKAGE = "internal/dispatch/pmdoc"
 UNIT_TEST_STEP = "Unit test envoy Go package"
 UNIT_TEST_PATTERN = "|".join(
     ["/integration"] + [f"/{p.name}($|/)" if p.tree else f"/{p.name}$" for job in ENVOY_RACE_LANE for p in job.packages]
-    + [f"/{ROUTES_PACKAGE}$"])
-# -p 8 and -parallel 12, and the stream the step writes, are ci.yaml's own comment's to explain.
-# UNIT_TEST_LEAD is the longest-first order ci.yaml's comment gives its reason for: go test starts
-# the packages in the order its arguments name them, so the longest must lead or it ends the step
-# alone. The names are import paths because that is what `go list ./...` prints, and the lines of
-# the workflow's own block carry its indentation, which YAML strips before the shell sees them.
-UNIT_TEST_LEAD = ["internal/dispatch/pmdoc", "cmd/dispatch-seed", "internal/dispatch/outbox",
+    + [f"/{ROUTES_PACKAGE}$", f"/{PMDOC_PACKAGE}$"])
+# pmdoc's measured tests, the one list the step's three pmdoc patterns are built from: every test
+# of the package that reads this process's own CPU time through internal/cputest, directly or
+# through a function of the package that does. cputest.Process reads RUSAGE_SELF, the whole
+# process's CPU, so a measured test must run while nothing else in its process computes: none of
+# them calls t.Parallel, and Go starts a package's parallel tests only once every test that does
+# not call it has finished. That rule is what made the package 334 s in run 42484046283 - 290.7 s
+# of measured tests one after another, and only then a 44 s parallel tail - and three processes
+# are what overlap the two halves while each of them keeps the rule (dispatch://INFRA-1075).
+#
+# The list is read off the source, not off a measurement: the two functions whose own body names
+# cputest (linear_test.go's cpuTimeOf and processCPUTime), then the functions that call those
+# (readsAndWritesLinearly and timedWindow), and so on until the set stopped growing, and the Test
+# functions of that set. A test that reaches a measurement through a closure of its own - every
+# caller of growsLinearly passes it one built on cpuTimeOf - is caught by that closure, which is
+# in its own body. The twelve are the eight growth tests, the two that hold a refusal to a CPU
+# budget, and the two tests of the measuring harness itself that open a timed window of their own.
+PMDOC_MEASURED = (
+    "TestALateCallFinishingAfterItsTestDoesNotPanicHelper",
+    "TestAMissedDeadlineLeavesTheCollectorAsItWas",
+    "TestBareURLShapesParseAndRenderLinearly",
+    "TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime",
+    "TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength",
+    "TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength",
+    "TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText",
+    "TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly",
+    "TestParseIsLinearInATableOfEscapedPipes",
+    "TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds",
+    "TestUnclosedRawHTMLShapesParseAndRenderLinearly",
+    "TestUpdateIsLinearInTheBlockCount",
+)
+# The heaviest measured test, 134.5 s of that 290.7 s chain, which runs alone; the other eleven,
+# about 156 s together, run beside it, and the rest of the package runs beside both.
+PMDOC_HEAVIEST = "TestBareURLShapesParseAndRenderLinearly"
+if PMDOC_HEAVIEST not in PMDOC_MEASURED:
+    raise ValueError(f"{PMDOC_HEAVIEST} is not one of PMDOC_MEASURED, so the step's three pmdoc "
+                     "calls would leave it out of the measured set its -skip call skips")
+PMDOC_OTHERS = tuple(name for name in PMDOC_MEASURED if name != PMDOC_HEAVIEST)
+
+
+def anchored(names) -> str:
+    """Test names as one anchored alternation, the form every -run and -skip here takes: go test
+    matches a name element against the whole pattern, so an anchored alternation can neither miss
+    one of these tests nor reach another whose name merely begins with one of them."""
+    return "^(" + "|".join(names) + ")$"
+
+
+# -p 8 and -parallel 12, the four streams the step writes, the partition check and the three
+# pmdoc calls are ci.yaml's own comment's to explain. UNIT_TEST_LEAD is the longest-first order
+# ci.yaml's comment gives its reason for: go test starts the packages in the order its arguments
+# name them, so the longest must lead or it ends the step alone. pmdoc is not in it any more: it
+# is a call of its own. The names are import paths because that is what `go list ./...` prints,
+# and the lines of the workflow's own block carry its indentation, which YAML strips before the
+# shell sees them.
+UNIT_TEST_LEAD = ["cmd/dispatch-seed", "internal/dispatch/outbox",
                   "internal/pgmigrate", "cmd/dispatch", "cmd/broker"]
 UNIT_TEST_PRELUDE = ("lead=\"" + "\n".join(f"github.com/sjawhar/envoy/{p}" for p in UNIT_TEST_LEAD)
                      + "\"\n")
-UNIT_TEST_SCRIPT = json_stream_script(
-    f"rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF \"$lead\")\n"
-    "printf '%s\\n%s\\n' \"$lead\" \"$rest\" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m",
-    "unit.json", prelude=UNIT_TEST_PRELUDE)
+UNIT_TEST_SCRIPT = f"""\
+mkdir -p "$RUNNER_TEMP/go-test-json"
+pmdoc=./{PMDOC_PACKAGE}/
+heaviest='{anchored([PMDOC_HEAVIEST])}'
+others='{anchored(PMDOC_OTHERS)}'
+measured='{anchored(PMDOC_MEASURED)}'
+listed() {{ go test -count=1 -list "$1" "$pmdoc" | grep '^Test' | sort; }}
+all=$(listed '.*')
+in_heaviest=$(listed "$heaviest")
+in_others=$(listed "$others")
+in_measured=$(listed "$measured")
+in_run=$(printf '%s\\n%s\\n' "$in_heaviest" "$in_others" | grep '^Test' | sort)
+unmeasured=$(comm -23 <(printf '%s\\n' "$all") <(printf '%s\\n' "$in_measured"))
+overlap=$(comm -12 <(printf '%s\\n' "$in_heaviest") <(printf '%s\\n' "$in_others"))
+union=$(printf '%s\\n%s\\n' "$in_measured" "$unmeasured" | grep '^Test' | sort -u)
+if [ -z "$in_heaviest" ] || [ -z "$in_others" ] || [ -z "$unmeasured" ] || [ -n "$overlap" ] || [ "$in_run" != "$in_measured" ] || [ "$union" != "$all" ]; then
+  printf 'the three pmdoc calls do not partition the package: %s heaviest + %s other measured + %s unmeasured, %s listed\\n' "$(grep -c . <<<"$in_heaviest")" "$(grep -c . <<<"$in_others")" "$(grep -c . <<<"$unmeasured")" "$(grep -c . <<<"$all")"
+  printf 'in both -run calls: %s\\n' "${{overlap:-none}}"
+  printf 'in a -run call and not skipped by the third: %s\\n' "$(comm -23 <(printf '%s\\n' "$in_run") <(printf '%s\\n' "$in_measured"))"
+  printf 'skipped by the third call and in no -run call: %s\\n' "$(comm -13 <(printf '%s\\n' "$in_run") <(printf '%s\\n' "$in_measured"))"
+  printf 'listed and in no call: %s\\n' "$(comm -23 <(printf '%s\\n' "$all") <(printf '%s\\n' "$union"))"
+  printf 'in a call and not listed: %s\\n' "$(comm -13 <(printf '%s\\n' "$all") <(printf '%s\\n' "$union"))"
+  exit 1
+fi
+printf 'pmdoc partition: %s heaviest + %s other measured + %s unmeasured = %s listed\\n' "$(grep -c . <<<"$in_heaviest")" "$(grep -c . <<<"$in_others")" "$(grep -c . <<<"$unmeasured")" "$(grep -c . <<<"$all")"
+go test -json -count=1 -timeout 20m -run "$heaviest" "$pmdoc" > "$RUNNER_TEMP/go-test-json/unit-pmdoc-heaviest.json" &
+heaviest_pid=$!
+go test -json -count=1 -timeout 20m -run "$others" "$pmdoc" > "$RUNNER_TEMP/go-test-json/unit-pmdoc-others.json" &
+others_pid=$!
+go test -json -count=1 -parallel 12 -timeout 20m -skip "$measured" "$pmdoc" > "$RUNNER_TEMP/go-test-json/unit-pmdoc-unmeasured.json" &
+unmeasured_pid=$!
+{UNIT_TEST_PRELUDE}s=0
+rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
+printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+heaviest_status=0
+wait "$heaviest_pid" || heaviest_status=$?
+others_status=0
+wait "$others_pid" || others_status=$?
+unmeasured_status=0
+wait "$unmeasured_pid" || unmeasured_status=$?
+replay() {{
+  if [ "$2" -eq 0 ]; then
+    {GREEN_REPLAY} "$RUNNER_TEMP/go-test-json/$1"
+  else
+    {RED_REPLAY} "$RUNNER_TEMP/go-test-json/$1"
+  fi
+}}
+replay unit.json "$s"
+replay unit-pmdoc-heaviest.json "$heaviest_status"
+replay unit-pmdoc-others.json "$others_status"
+replay unit-pmdoc-unmeasured.json "$unmeasured_status"
+for status in "$s" "$heaviest_status" "$others_status" "$unmeasured_status"; do
+  [ "$status" -eq 0 ] || exit "$status"
+done"""
 # The routes package's own step, which the unit step's pattern leaves out: the event log's safe
 # horizon is instance-wide, so this one runs against a Postgres service of its own and nothing
 # else runs against it (ci.yaml's postgres_routes service).
@@ -1198,11 +1306,16 @@ GATES = [
             for under in RACE_IMPOSSIBLE_PACKAGES
         ]),
         # ./... but the race lane's packages, internal/integration, which the integration step
-        # tests, and internal/dispatch/routes, which the routes step below tests: a Run cannot
-        # name "./... but those", so the entry declares the superset ./..., which over-declares
-        # and so keeps this gate's wide patterns justified.
+        # tests, internal/dispatch/routes, which the routes step below tests, and
+        # internal/dispatch/pmdoc, which the same step runs as three calls of its own: a Run
+        # cannot name "./... but those", so the entry declares the superset ./..., which
+        # over-declares and so keeps this gate's wide patterns justified. pmdoc's own Run is
+        # that superset's subset, declared because the step names the package itself - in the
+        # three `go test -list` calls of its partition check and the three `go test` calls those
+        # check - rather than through `go list ./...`.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
+            (ENVOY, [f"./{PMDOC_PACKAGE}/"], f"the -list, -run and -skip calls of ./{PMDOC_PACKAGE}/", {}),
         ]),
         pinned_step("envoy-go", ROUTES_STEP, ENVOY, ROUTES_SCRIPT, [
             (ENVOY, [f"./{ROUTES_PACKAGE}/"], f"go test ./{ROUTES_PACKAGE}/", {}),
