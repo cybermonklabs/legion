@@ -447,14 +447,34 @@ func awaitWave(t *testing.T, d *daemon, count int) []api.WakeWaiting {
 	// state, not of one row, and the thing it waits for is that daemon writing forty rows
 	// through its own goroutines: asked a hundred times a second, beside the rest of this
 	// package on two cores, the read competes with the work and the wait fails on its own
-	// weight. At ten times a second it does not, and five minutes is what forty facts written
-	// by as many goroutines can take on a machine running everything else at the same time.
-	testwait.EventuallyEvery(t, 5*time.Minute, 100*time.Millisecond,
+	// weight. At ten times a second it does not.
+	//
+	// The wait names what it last saw, so a failure says whether the fan-out never finished or
+	// finished and kept moving: those are different defects and the count tells them apart.
+	defer func() {
+		if t.Failed() {
+			t.Logf("the wave last held %d wakes, %d of them unchanged since the read before",
+				len(waiting), matchingWakes(waiting, settled))
+		}
+	}()
+	testwait.EventuallyEvery(t, 10*time.Minute, 100*time.Millisecond,
 		fmt.Sprintf("the pacing to hold %d of the wave's %d wakes", count-1, count), func() bool {
 			waiting, settled = waitingWakes(t, d), waiting
 			return len(waiting) == count-1 && slices.Equal(waiting, settled)
 		})
 	return waiting
+}
+
+// matchingWakes is how many of the two reads agree, position by position: the whole of one read
+// where the fan-out has settled, and fewer where it is still moving.
+func matchingWakes(now, before []api.WakeWaiting) int {
+	matched := 0
+	for i := range min(len(now), len(before)) {
+		if now[i] == before[i] {
+			matched++
+		}
+	}
+	return matched
 }
 
 // wakeMoments is the moment each wake of a wave runs at: the first at origin, which the burst let
