@@ -283,7 +283,7 @@ func TestTheStallBackstopEndsAStalledTurnAndTellsTheOwnerOnce(t *testing.T) {
 		t.Fatalf("the notice = %+v, want a worker-stalled of the implementer", notice)
 	}
 	for _, want := range []string{
-		"the daemon ended the implementer's turn",
+		"the daemon ended the implementer's turn and started a new process in its place",
 		"4h30m0s ago",
 		"past the 4h0m0s this deployment gives the role",
 		"bash (toolu_impl_11)",
@@ -537,8 +537,9 @@ func TestTheStallBackstopTellsNobodyOfATurnItDidNotEnd(t *testing.T) {
 }
 
 // A turn a held suspension ended is told as that. The machine ends such a turn in a suspension
-// rather than a relaunch (replaceProcess, endHeld), so the notice names the suspension and says
-// nothing runs for the claim until it is resumed.
+// rather than a relaunch (replaceProcess, endHeld), so the notice names the suspension, says
+// the claim is suspended with nothing queued for it, and names what it waits on — a resume, or
+// the close of its tree — rather than promising a resume nobody has asked for.
 func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-222", backstopBound+time.Hour, true)
@@ -561,7 +562,9 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 	if resumes := rig.resumes(stalled.Token); len(resumes) != 0 {
 		t.Fatalf("resumes = %d, want none: the held suspension ended the process rather than replacing it", len(resumes))
 	}
-	for _, want := range []string{"still owed", "a suspension that was already waiting for this turn ended the process"} {
+	for _, want := range []string{"still owed", "a suspension that was already waiting for this turn ran instead of a replacement",
+		"the claim is suspended with nothing queued for it", "what it waits on is a resume, or the close of its tree, which retires it",
+		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
 		}
@@ -572,11 +575,14 @@ func TestTheStallBackstopTellsASuspendedEndAsSuspended(t *testing.T) {
 }
 
 // A turn the daemon ended whose replacement the store would not write reaches its owner all the
-// same, and the notice says what is true of it: the worker's process was stopped and nothing is
-// running in its place until one of the daemon's retries of that launch lands (supervise's
-// launchNow, relaunchLater). It is the store's transient refusal that this exists for — the one
-// a sweep sees often enough to have been measured — so a stall that falls in it is a worker
-// stopped and an owner who would otherwise hear nothing at all.
+// same, and the notice says what is true of it: the worker's process was stopped, the launch
+// that replaces it was not written, and the daemon tries that launch again at its probe
+// interval (supervise's launchNow, relaunchLater) — with the ends that can come instead named,
+// since a retry can be refused for a reserved cleanup, meet a suspension that arrived
+// meanwhile, or run the claim's launch budget out (relaunchRefused, relaunchAgain, fail). It is
+// the store's transient refusal that this exists for — the one a sweep sees often enough to
+// have been measured — so a stall that falls in it is a worker stopped and an owner who would
+// otherwise hear nothing at all.
 func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T) {
 	rig := newBackstopRig(t)
 	stalled := rig.claim(claim.RoleImplementer, "LEGION-223", backstopBound+time.Hour, true)
@@ -599,14 +605,49 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T)
 	if c := m.Claim(); c.State != supervise.StateLaunching || c.Locator != nil {
 		t.Fatalf("the claim is %s with locator %+v, want it launching with the stalled process let go", c.State, c.Locator)
 	}
-	for _, want := range []string{"still owed", "its process was stopped, and the daemon could not write the launch that replaces it",
-		"nothing runs for the claim until one of the daemon's retries of that launch lands", "nothing was charged to the claim"} {
+	for _, want := range []string{"still owed", "the daemon ended the implementer's turn and took its stalled process off the claim",
+		"the launch that replaces that process could not be written, so nothing runs for the claim",
+		"the daemon tries that launch again at its probe interval",
+		"leaves it suspended or failed with nothing in its place instead", "nothing was charged to the claim",
+		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
 		}
 	}
 	if strings.Contains(notices[0].Reason, "brought back") {
 		t.Errorf("the notice says the session was brought back, and none was: %q", notices[0].Reason)
+	}
+}
+
+// And the same end over a runtime that would not stop the process. The claim is suspended all
+// the same (supervise's endHeld), so the machine goes on with a process nobody has seen end,
+// and the owner is told that rather than that it was stopped: a pod the runtime still runs goes
+// on holding its node's room and its disk, which is the half of this the owner acts on.
+func TestTheStallBackstopTellsAStopTheRuntimeWouldNotMake(t *testing.T) {
+	rig := newBackstopRig(t)
+	stalled := rig.claim(claim.RoleImplementer, "LEGION-227", backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if err := m.Handle(context.Background(), supervise.RequestSuspend{Claim: stalled.Token,
+		By: supervise.SuspendedByOperator}); !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatalf("a suspension mid-turn = %v, want it held for the turn", err)
+	}
+	rig.rt.FailSuspend(errors.New("the pod would not stop"))
+
+	rig.sweep(claims)
+
+	testwait.Eventually(t, "the held suspension to end the stalled turn", func() bool {
+		return m.Claim().State == supervise.StateSuspended
+	})
+	notices := rig.awaitNotices("LEGION-227", 1)
+	if !strings.Contains(notices[0].Reason, stallStopRefused) {
+		t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, stallStopRefused)
+	}
+	if strings.Contains(notices[0].Reason, stallProcessStopped) {
+		t.Errorf("the notice says %q, and the runtime refused that stop: the process may be running still", notices[0].Reason)
 	}
 }
 
@@ -638,8 +679,10 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 		t.Fatalf("the claim is %s, want it failed: every try at the replacement was refused", c.State)
 	}
 	for _, want := range []string{"still owed", "every try at the replacement was refused",
-		"the claim has failed and nothing runs for it until it is retried",
-		"the launch failures of the replacement that could not be started are what it was charged"} {
+		"the claim is failed and the daemon starts nothing for it",
+		"what it waits on is a retry, or the close of its tree, which retires it",
+		"the launch failures of the replacement that could not be started are what it was charged",
+		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
 		}
@@ -649,16 +692,88 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 	}
 }
 
+// A replacement the wake pacing parked is the one end whose turn was not ended: the take-back
+// has run, so the task is owed again, and the claim keeps the stalled process and keeps running
+// it until the launch's turn (supervise's reserveWake, parkWake). The notice says exactly that
+// much and no more. Its opening never says the turn was ended, because it was not. Its clause
+// never says the process is replaced at that turn, because three things end the claim there
+// instead and none of them writes this owner a second notice: a suspension that arrived while
+// the launch waited ends the turn in a stop (supervise's wakeNow, endHeld), a lifecycle recheck
+// the turn's own launch is refused keeps the process (runWake, relaunchRefused), and a tree
+// close drops the wake with the process (letGo). And the wait is the wake's own due time, which
+// the machine carries on its report (supervise.StallBackstopStop.WakeDue), not a guess at how
+// long a wave takes.
+func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T) {
+	rig := newBackstopRig(t)
+	limiter := pacedWakes()
+	rig.sup.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	// The burst's one token is spent before the sweep, so the backstop's own relaunch is parked
+	// rather than run where it is raised (supervise's reserveWake).
+	for range testWakeBurst {
+		limiter.Reserve(time.Now())
+	}
+	stalled := rig.claim(claim.RoleImplementer, "LEGION-226", backstopBound+time.Hour, true)
+	claims := rig.supervising(stalled)
+
+	rig.sweep(claims)
+
+	notices := rig.awaitNotices("LEGION-226", 1)
+	if told := rig.reported(); told != 1 {
+		t.Fatalf("the machines' reports = %d, want the one end the backstop made", told)
+	}
+	if resumes := rig.resumes(stalled.Token); len(resumes) != 0 {
+		t.Fatalf("resumes = %d, want none: the launch that replaces the stalled process waits its turn", len(resumes))
+	}
+	m, ok := rig.sup.Machine(stalled.Token)
+	if !ok {
+		t.Fatal("the stalled claim is not supervised")
+	}
+	if c := m.Claim(); c.State != supervise.StateWorking || c.Locator == nil {
+		t.Fatalf("the claim is %s with locator %+v, want it still running the stalled process until the launch's turn", c.State, c.Locator)
+	}
+	parked := m.View().WakeWaiting
+	if parked == nil || parked.Kind != supervise.WakeLaunch {
+		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
+	}
+	for _, want := range []string{
+		"the daemon took back the implementer's task and queued the relaunch that replaces its stalled process",
+		"still owed",
+		"the launch that replaces its stalled process is queued in the daemon's wake pacing and is due at " + stallInstant(parked.At),
+		"the stalled process runs on until that launch's turn",
+		"that turn starts nothing at all if a suspension waiting for this claim ends it there",
+		"if the tree lifecycle recheck every launch makes first refuses this one",
+		"if the tree's close has dropped the queued launch",
+		"nothing was charged to the claim",
+	} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
+		}
+	}
+	for _, never := range []string{
+		"the daemon ended the implementer's turn",
+		"is stopped and replaced there",
+		"tens of minutes",
+		"brought back",
+	} {
+		if strings.Contains(notices[0].Reason, never) {
+			t.Errorf("the notice says %q, which claims %q: the turn runs on and nothing is promised of the launch's turn", notices[0].Reason, never)
+		}
+	}
+}
+
 // The notice's wording walked by the machine's own classification rather than by the ends
-// anyone remembered (supervise.ProcessEnds): every end that tells its owner has a sentence of
-// its own, no end that tells nobody has one, and the relaunch is claimed by the one end that
-// made it. A notice claiming a relaunch that did not happen is the defect this table's default
-// clause had, so the wording is total over the type and the default is unreachable for every
-// end this daemon declares (stallBackstopEnds, stallBackstopEnd).
+// anyone remembered (supervise.ProcessEnds): every end that tells its owner has an opening and
+// a sentence of its own, no end that tells nobody has either, and the relaunch is claimed by
+// the one end that made it. A notice claiming a relaunch that did not happen is the defect this
+// table's default clause had, and an opening claiming a turn that was not ended is the defect
+// one opening shared by every end had, so all three clauses are total over the type and the
+// default is unreachable for every end this daemon declares (stallBackstopEnds,
+// stallBackstopEnd).
 //
-// It catches an end added with no sentence, an end whose sentence claims the wrong thing, and a
-// row left behind for an end that no longer exists. It cannot catch a sentence that is merely
-// wrong about what the machine did: the cases above read each end's own notice for that.
+// It catches an end added with no opening or no sentence, an end whose sentence claims the
+// wrong thing, a clause whose values nothing fills in (stallFill), and a row left behind for an
+// end that no longer exists. It cannot catch a sentence that is merely wrong about what the
+// machine did: the cases above read each end's own notice for that.
 func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 	const relaunched = "its session was brought back on a new process"
 	worded := map[supervise.ProcessEnd]bool{}
@@ -678,6 +793,9 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			t.Errorf("the notice has no sentence for the end %q: add a row to stallBackstopEnds saying what is running for the claim now and what its owner is waiting on", end)
 			continue
 		}
+		if words.opening == "" {
+			t.Errorf("the notice's row for %q is %+v, want an opening: add one to stallBackstopEnds saying what the daemon did to this claim, since the notice opens with the end's own words and never with one sentence for all of them", end, words)
+		}
 		if words.end == "" || words.charged == "" {
 			t.Errorf("the notice's row for %q is %+v, want both clauses: what became of the worker and what the claim was charged", end, words)
 		}
@@ -685,9 +803,42 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			t.Errorf("the sentence for %q is %q, which says %q: only %q brought a session back, and a notice that claims a relaunch nobody made sends an architect looking for a process that is not there",
 				end, words.end, relaunched, supervise.EndRelaunched)
 		}
-		stop := supervise.StallBackstopStop{Bound: backstopBound, End: end}
-		if told := stallBackstopRecord(rigClaim(), stop, time.Hour); !strings.Contains(told, words.end) {
-			t.Errorf("the notice of %q reads %q, which does not carry its own sentence", end, told)
+		if words.process == stallFateUnsaid {
+			t.Errorf("the notice's row for %q is %+v, want it to say what the end did with the claim's process: set process to stallProcessLetGo or stallProcessKept, since the sentence about that process is written from it and an end that lets one go must not reach its owner with nothing said about it", end, words)
+		}
+		stop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now()}
+		fill := stallFill(rigClaim(), stop)
+		told := stallBackstopRecord(rigClaim(), stop, time.Hour)
+		for clause, text := range map[string]string{"opening": words.opening, "sentence": words.end, "charge clause": words.charged} {
+			if !strings.Contains(told, fill.Replace(text)) {
+				t.Errorf("the notice of %q reads %q, which does not carry its own %s", end, told, clause)
+			}
+		}
+		if strings.Contains(told, stallRoleWord) || strings.Contains(told, stallDueWord) {
+			t.Errorf("the notice of %q reads %q, which still holds %s or %s: every value a clause names is filled in by stallFill", end, told, stallRoleWord, stallDueWord)
+		}
+		// The sentence about the stalled process is written from the machine's record of the
+		// stop, so each end that let one go is read both ways: the stop the runtime made, and
+		// the stop it refused, which leaves a process running that the owner must know about.
+		refused := stallBackstopRecord(rigClaim(), supervise.StallBackstopStop{Bound: backstopBound, End: end,
+			WakeDue: time.Now(), StopUnconfirmed: true}, time.Hour)
+		switch words.process {
+		case stallProcessLetGo:
+			if !strings.Contains(told, stallProcessStopped) {
+				t.Errorf("the notice of %q reads %q, which does not say %q: this end let the claim's process go", end, told, stallProcessStopped)
+			}
+			if !strings.Contains(refused, stallStopRefused) {
+				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which does not say %q: an owner told the process was stopped would leave a pod running", end, refused, stallStopRefused)
+			}
+			if strings.Contains(refused, stallProcessStopped) {
+				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q all the same", end, refused, stallProcessStopped)
+			}
+		case stallProcessKept:
+			for _, said := range []string{stallProcessStopped, stallStopRefused} {
+				if strings.Contains(told, said) || strings.Contains(refused, said) {
+					t.Errorf("the notice of %q says %q, and this end let no process go: the claim keeps and runs it", end, said)
+				}
+			}
 		}
 	}
 	for end := range worded {

@@ -75,9 +75,12 @@ const (
 	EndRelaunched ProcessEnd = "relaunched"
 	// EndRelaunchParked is the turn's task taken back (interrupted) and the launch that replaces
 	// the process parked by the wake pacing until its turn (reserveWake, parkWake). The claim
-	// still records the process and still runs it; that turn is what stops it and brings the
-	// session back (wakeNow, launchNow), tens of minutes later over a wave. It is an end of its
-	// own because something has happened to this worker — the task it was serving is owed to it
+	// still records the process and still runs it until that turn, which is where the launch
+	// stops it and brings the session back (wakeNow, launchNow) — unless a suspension held
+	// meanwhile ends the claim there instead (endHeld), the lifecycle recheck that turn makes
+	// first refuses the launch and leaves the process as it is (runWake, relaunchRefused), or the
+	// tree's close has dropped the wake with the process (letGo). It is an end of its own because
+	// something has happened to this worker — the task it was serving is owed to it
 	// again — while nothing has been relaunched yet, and the two sentences are not the same news.
 	EndRelaunchParked ProcessEnd = "relaunch parked"
 	// EndRelaunchPending is the process let go and stopped with nothing in its place: the
@@ -143,6 +146,10 @@ func (m *Machine) replaceProcess(ctx context.Context, interruption string, outOf
 		found = loc.Incarnation
 	}
 	parked := m.wake
+	// Whether the runtime left a process running is this replacement's own fact, so it starts
+	// unset here: a refusal an earlier replacement of this claim met is not what the end reached
+	// now says of the process it let go (stopUnconfirmed, backstopStalledTurn).
+	m.stopUnconfirmed = false
 	err := m.replaceNow(ctx, interruption, outOfMemory)
 	return m.endReached(found, parked), err
 }

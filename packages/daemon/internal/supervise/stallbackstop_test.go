@@ -508,7 +508,8 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 	h.mustPostTo(stalled, StallBackstop{Claim: secondToken, Bound: backstopBound,
 		Deadline: stepped.Add(backstopBound), Step: working.Step})
 
-	if parked := stalled.View().WakeWaiting; parked == nil || parked.Kind != WakeLaunch {
+	parked := stalled.View().WakeWaiting
+	if parked == nil || parked.Kind != WakeLaunch {
 		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
 	}
 	if c := stalled.Claim(); c.State != StateWorking || c.Locator == nil {
@@ -518,7 +519,9 @@ func TestTheBackstopTellsTheOwnerOfAReplacementThePacingParkedOnce(t *testing.T)
 		t.Fatalf("the claim's task after the park = %+v, want it taken back and owed: this is what the owner is told of", c.Pending)
 	}
 	h.wantStarts(secondToken, 0)
-	want := StallBackstopStop{Step: working.Step, LastStep: stepped, Bound: backstopBound, End: EndRelaunchParked}
+	// The due time goes with the report: the owner's notice names the moment that launch's turn
+	// comes rather than guessing at the wait (the daemon's stallBackstopEnds).
+	want := StallBackstopStop{Step: working.Step, LastStep: stepped, Bound: backstopBound, End: EndRelaunchParked, WakeDue: parked.At}
 	if len(stops) != 1 || stops[0] != want {
 		t.Fatalf("the backstop reported %+v over a replacement the pacing parked, want the one end it made, %+v", stops, want)
 	}

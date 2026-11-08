@@ -120,26 +120,39 @@ the issue, because a relaunch would fail the same way.
 
 ## `worker-stalled on <KEY>` (`{kind: "worker-stalled", role: "architect", reason}`)
 
-The daemon's stall backstop ended a turn of the tree's architect: its agent had not stepped for
-longer than the `worker_stall_backstop_hours` the deployment gives that role, so the daemon ended
-the turn and brought the same session back on a new process. You get a copy only for a tree's own
-architect, because every other notice of the tree goes to that architect and nobody inside the
-tree is left to read this one; the architect is told on its issue as well. The `reason` is the
-record the daemon read: when the agent last stepped and how long ago that was, the bound it
-passed, when the turn began, and the last call the daemon saw, with its tool, its call id, when it
-started and whether it ended — never a call's arguments, whose text the daemon keeps in no
-column. It says what the daemon did as well, which is not always a relaunch: where a suspension
-was already waiting for that turn, the process was ended and nothing runs for the claim until it
-is resumed; where the launch that replaces the process could not be written, the process was
-stopped and the daemon is still retrying that launch; and where every try at that launch was
-refused, the claim has failed and nothing relaunches it. The notice says which.
+The daemon's stall backstop acted on a stalled turn of the tree's architect: its agent had not
+stepped for longer than the `worker_stall_backstop_hours` the deployment gives that role, and most
+often the daemon ended the turn and brought the same session back on a new process. You get a copy
+only for a tree's own architect, because every other notice of the tree goes to that architect and
+nobody inside the tree is left to read this one; the architect is told on its issue as well. The
+`reason` is the record the daemon read: when the agent last stepped and how long ago that was, the
+bound it passed, when the turn began, and the last call the daemon saw, with its tool, its call
+id, when it started and whether it ended — never a call's arguments, whose text the daemon keeps
+in no column. It says what the daemon did as well, which is not always a relaunch: where the
+daemon's wake pacing parked the replacement, the task was taken back and the launch that replaces
+the stalled process is queued, due at the moment the notice names, and that process runs on until
+the launch's turn, which starts nothing at all if a suspension waiting for the claim, a refused
+lifecycle recheck or the tree's close ends the claim there instead; where a suspension was already
+waiting for that turn, the suspension ran instead of a replacement and the claim is suspended with
+nothing queued for it, waiting on a resume; where the launch that replaces the process could not
+be written, the daemon is still retrying that launch; and where every try at that
+launch was refused, the claim has failed and nothing relaunches it. The notice says which, and no
+second notice follows it: where it names a parked launch, the `wakesWaiting` list of `read_state`
+is what says whether that launch is still waiting its turn.
+
+The notice says what became of the stalled process itself, for every end but the parked one: that
+it was stopped, or that the runtime did not confirm the stop, in which case that process may be
+running still and holding what it runs on.
+A stop the runtime would not make is a finding to put to a person, with the notice in it, because
+nothing of the daemon's stops that process afterwards.
 
 Nothing was charged to the claim for the stall itself, and on every end but the failed one
 nothing failed either: the task that architect was serving is still owed to it and is sent to it
-again, no issue was held, and no status moved. Do nothing to the tree — park nothing, re-admit
-nothing, set no status — and start nothing. A notice that names the failed end is the exception:
-that architect's claim is failed, its `worker-died` reaches you as any other does, and you answer
-that notice as its own section says. One copy comes per stall, so an architect that stalls again
+again, at the launch's turn where the relaunch was parked, no issue was held, and no status moved.
+Do nothing to the tree — park nothing, re-admit nothing, set no status — and start nothing. A
+notice that names the failed end is the exception: that architect's claim is failed, its
+`worker-died` reaches you as any other does, and you answer that notice as its own section says.
+One copy comes per stall, so an architect that stalls again
 and again sends one each time: that is a finding to put to a person
 ([Findings](skill://legion-controller/SKILL.md#findings-and-the-issues-you-file)), with the
 records you were sent in it.

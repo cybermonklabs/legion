@@ -23,16 +23,29 @@ func (s StepRecord) LastStep() time.Time {
 
 // StallBackstopStop is what the daemon's stall backstop did to one claim, told to the daemon
 // once the machine has done it (Deps.StallBackstopped, the daemon's stallBackstopped): the
-// record the request carried, the moment the machine judged from, the bound it passed, and the
+// record the request carried, the moment the machine judged from, the bound it passed, the
 // end the machine reached — relaunched, the relaunch parked on the wake pacing, the relaunch
-// still to make, suspended, or the claim failed (ProcessEnd). The owner's notice is written
-// from this and not from what the sweep asked for, because the sweep asks over claims it read
-// before the decision and the machine can answer by leaving the turn exactly as it stands.
+// still to make, suspended, or the claim failed (ProcessEnd) — the moment a parked launch's
+// turn comes, and whether the process that end let go was left possibly running. The owner's
+// notice is written from this and not from what the sweep asked for, because the sweep asks
+// over claims it read before the decision and the machine can answer by leaving the turn
+// exactly as it stands.
 type StallBackstopStop struct {
 	Step     StepRecord
 	LastStep time.Time
 	Bound    time.Duration
 	End      ProcessEnd
+	// WakeDue is when the launch the pacing parked is due to run (wake.at, reserveWake), carried
+	// so the owner's notice names that moment rather than guessing at the wait (the daemon's
+	// stallBackstopEnds). It is the zero time for every other end, which queues no wake.
+	WakeDue time.Time
+	// StopUnconfirmed is whether the runtime left the process this end let go possibly running:
+	// it refused the stop and the machine went on anyway, or the daemon's own stop cut the launch
+	// short before the stop was made (Machine.stopUnconfirmed). It is carried because the claim
+	// shows nothing of it — a claim whose process was stopped and one whose stop was refused both
+	// record no process — and a pod nothing stopped goes on holding what it runs on, which its
+	// owner acts on. It is false for an end that let no process go.
+	StopUnconfirmed bool
 }
 
 // backstopStalledTurn is the daemon's stall backstop reaching a claim whose recorded last step is
@@ -53,8 +66,9 @@ type StallBackstopStop struct {
 // a launch that does what the parked one was already going to do. A relaunch parked on the
 // pacing leaves the claim working, so without this guard every sweep of a wave would raise
 // another. Nothing is lost by returning, and nothing is owed to this request: the wake standing
-// over the claim is what ends the turn — a launch of this claim replaces the stalled process at
-// its turn, and the claim a plugin task's round leaves working is swept again at the next tick,
+// over the claim is what decides the turn — its own turn replaces the stalled process, unless a
+// suspension already waiting or the tree's close ends the claim there instead (wakeNow, letGo) —
+// and the claim a plugin task's round leaves working is swept again at the next tick,
 // since this pass posts over every claim still in a turn past its bound.
 //
 // What it does when it does act is exactly what a daemon-made replacement does (replaceProcess):
@@ -81,7 +95,11 @@ type StallBackstopStop struct {
 //
 // It tells once per end, because this is the only call that tells and the end is decided once,
 // where the machine makes it (endReached). A relaunch the pacing parked is told here and not
-// again at the wake's turn: that turn is the end this notice already named being carried out.
+// again at the wake's turn, and that turn tells nobody either, whatever it does: so the notice
+// of a parked relaunch names what the park itself settles — the launch queued, the stalled
+// process running until that launch's turn — and names a held suspension, a refused lifecycle
+// recheck and the tree's close as what can end the claim at that turn instead, rather than
+// promising the launch (wakeNow, runWake, the daemon's stallBackstopEnds).
 //
 // The record in that report is the request's, which is the store's own as the sweep read it: the
 // claim this machine holds carries the record as it stood when the machine was built, since a
@@ -116,7 +134,14 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 		"callStartedAt", ev.Step.StartedAt, "heldSuspension", suspended)
 	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
 	if end.TellsOwner() && m.deps.StallBackstopped != nil {
-		m.deps.StallBackstopped(m.current(), StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end})
+		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end, StopUnconfirmed: m.stopUnconfirmed}
+		if end == EndRelaunchParked {
+			// The wake the machine holds now is this replacement's own: the guard above returned
+			// over a claim that already held one, and the end itself is read from a wake that is
+			// not the one the replacement began with (endReached).
+			stop.WakeDue = m.wake.at
+		}
+		m.deps.StallBackstopped(m.current(), stop)
 	}
 	m.log.Info("supervise: the stall backstop's end of the stalled turn", "end", end)
 	return err

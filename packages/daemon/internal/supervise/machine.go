@@ -884,6 +884,16 @@ type Machine struct {
 	// the runtime to wait out until one starts. letGo is the one way a process gets here. It is
 	// memory only: after a restart the boot orphan sweep has reaped every process no claim records.
 	previous *runtime.Locator
+	// stopUnconfirmed is whether the runtime left the process this replacement let go possibly
+	// running: it refused the stop and the machine went on anyway (endHeld, fail, stopPrevious),
+	// or the daemon's own stop cut the launch short before the stop was made (launchNow). It is
+	// the one thing a caller cannot read off the claim the replacement leaves — the claim records
+	// no process either way — and a stalled worker's owner is told of it, since a process the
+	// runtime would not stop goes on holding what it runs on (StallBackstopStop.StopUnconfirmed,
+	// the daemon's stallBackstopRecord). replaceProcess clears it before the replacement it
+	// reports on, so it names that replacement and no earlier one, and a start that succeeds
+	// clears it again: the launch that started was handed the process it replaces (start).
+	stopUnconfirmed bool
 	// relaunch is the relaunch relaunchLater left waiting, tried again when TimerRelaunch fires; it
 	// lives as long as that timer, which letGo disarms with it. It is memory only, as the timer is: a
 	// restart launches that claim again as an unfinished launch.
@@ -1698,6 +1708,10 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 		loc, err := m.start(ctx, token)
 		if err == nil {
 			m.previous = nil
+			// The process this launch let go is the one the start was handed and waits out
+			// (start, Resume), so a stop an earlier try of this same launch could not make is no
+			// longer what anyone must be told of.
+			m.stopUnconfirmed = false
 			m.claim.Locator = &loc
 			m.leftPodRoundAt(loc)
 			m.armBoot()
@@ -1709,6 +1723,9 @@ func (m *Machine) launchNow(ctx context.Context, charged, exempt bool) error {
 			// The runtime refused nothing: the launch ended with its context. The claim stays
 			// launching with no process recorded, which the next boot launches again once its orphan
 			// reconciliation has reaped every process no claim records, the one let go included.
+			// Until that boot the process this launch let go was never stopped, which is what the
+			// owner of a stalled worker is told (stopUnconfirmed).
+			m.stopUnconfirmed = true
 			m.log.Info("supervise: launch cut short; its context ended", "generation", m.claim.Generation, "error", err)
 			return err
 		}
@@ -1817,11 +1834,17 @@ func (m *Machine) start(ctx context.Context, token string) (runtime.Locator, err
 // building its spec, Spawn, Resume); a runtime stops only a process it started itself
 // (runtime.Runtime's Spawn and Resume). Suspend stops that one process alone, and does nothing for
 // one already gone or replaced; previous is kept, for the next launch to wait out.
+//
+// A refusal is recorded as well as returned (stopUnconfirmed): every caller joins this error to
+// one of its own and goes on — to the retry, to the next try, or to the failed claim — so the
+// process is left possibly running, and the owner of a stalled worker is told that rather than
+// that it was stopped.
 func (m *Machine) stopPrevious(ctx context.Context) error {
 	if m.previous == nil {
 		return nil
 	}
 	if err := m.deps.Runtime.Suspend(ctx, *m.previous); err != nil {
+		m.stopUnconfirmed = true
 		return fmt.Errorf("stop the process %s let go before its relaunch: %w", m.previous.Incarnation, err)
 	}
 	return nil
@@ -1876,10 +1899,12 @@ func (m *Machine) forgetSession() {
 // fail puts the claim where nothing relaunches it: its timers stop, its locator goes, and the
 // pending delivery stays for whoever decides what happens next. A process the claim still records
 // — found dead, or never stopped — is suspended first, so nothing of it keeps holding what it ran
-// on until the tree closes; a suspension that fails is logged, and the claim fails all the same.
+// on until the tree closes; a suspension that fails is logged and recorded (stopUnconfirmed), and
+// the claim fails all the same.
 func (m *Machine) fail(ctx context.Context, why string) error {
 	if loc := m.claim.Locator; loc != nil {
 		if err := m.endProcess(ctx); err != nil {
+			m.stopUnconfirmed = true
 			m.log.Error("supervise: could not suspend the failed claim's process", "incarnation", loc.Incarnation, "error", err)
 		}
 	}
