@@ -3487,7 +3487,7 @@ jobs:
             rss=$(grep -a "Maximum resident set size" "$f" | tr -dc '0-9')
             cpu=$(awk -v u="$user" -v s="$sys" 'BEGIN{printf "%.1f", u+s}')
             total=$(awk -v t="$total" -v c="$cpu" 'BEGIN{printf "%.1f", t+c}')
-            printf '%8s s CPU  %9s kB  %s\n' "$cpu" "$rss" "$(basename "${f%%.*}")"
+            printf '%8s s CPU (%7s user %7s sys)  %9s kB  %s\n' "$cpu" "$user" "$sys" "$rss" "$(basename "${f%%.*}")"
           done | sort -rn
           echo "total CPU of every test binary: $total s"
       # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
