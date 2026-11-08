@@ -415,8 +415,8 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // Dropping the wake instead would leave the claim recording a process nothing retires: the park
 // disarmed that process's boot interval, registration deadline, probe interval and turn wait
 // (parkWake), the launch that was to replace it would be gone, and every report of it decides
-// nothing while no launch waits only because one does (judge). A death already charged would be
-// charged again at the next report of it (died, chargeDeath).
+// nothing while no launch waits only because one does (judge). The next report of that process
+// would charge another launch failure, the death it already charged excepted (died).
 //
 // Four things it does not touch. A plugin-task wake replaces no process and holds no send back,
 // so the claim it parks goes on taking work and the round opens at its own turn (launchWaits,

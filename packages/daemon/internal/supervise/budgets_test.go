@@ -75,7 +75,7 @@ func TestAnAgentThatDiesWithWorkOutstandingIsFailedAtTheLimit(t *testing.T) {
 }
 
 // A death the daemon's orphan sweep reports again, over the process a refused relaunch left the
-// claim standing on, is the one death read twice and is charged once (judge, died). The refusal
+// claim standing on, is the one death read twice and is charged once (died). The refusal
 // kept that dead process and wrote nothing of the claim (relaunchRefused), and what brings such
 // a claim back is the next report of the same process: the runtimes stop watching a process once
 // they have reported it gone, so that report is the sweep's (the daemon's reconcileOrphans).
@@ -134,6 +134,56 @@ func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 			h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: row.before + 1})
 			h.relaunched()
 		})
+	}
+}
+
+// A death whose take-back write the store refused is charged at the report that does take the
+// task back, and that report is the next one of the same dead process: the first report ends on
+// the write, before the charge, and leaves the claim over the process it still records (died,
+// interrupted). So the deaths limit still bounds a crash loop when every take-back write fails,
+// which is what this walks — the claim dies, is relaunched and dies again, each death reported
+// twice — and the claim comes out failed at the limit with its task kept.
+//
+// The negative control is the skip keyed on the report rather than on the charge: the second
+// report then reads the death as one already charged, every death costs a launch failure alone,
+// the deaths budget stays at zero, and the claim relaunches for ever.
+func TestADeathWhoseTakeBackWriteFailedIsChargedAtTheReportThatTakesItBack(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	limit := testLimits().LaunchFailures
+
+	for death := 1; death <= limit; death++ {
+		// The report that finds the process gone cannot write the take-back, so it charges
+		// nothing and leaves the claim working over that process.
+		h.store.fail("PutDelivery", errBoom)
+		gone := RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}}
+		if err := h.handle(gone); err == nil {
+			t.Fatalf("death %d reported success with the take-back write failing", death)
+		}
+		h.wantState(StateWorking)
+		h.wantBudgets(Budgets{Deaths: death - 1})
+
+		// The sweep reports the same process again, and that report takes the task back and
+		// charges the death.
+		h.store.fail("PutDelivery", nil)
+		h.must(gone)
+
+		if death == limit {
+			break
+		}
+		h.wantState(StateLaunching)
+		h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: death})
+		h.relaunched()
+		h.must(StreamTurnStart{Claim: testToken})
+	}
+
+	h.wantState(StateFailed)
+	h.wantBudgets(Budgets{Deaths: limit})
+	if stored := h.store.load(testToken); stored.State != StateFailed || stored.Pending == nil {
+		t.Fatalf("stored claim %s with pending %+v, want it failed at the deaths limit with its task kept",
+			stored.State, stored.Pending)
 	}
 }
 

@@ -250,16 +250,14 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// My Pi started under the compaction and the hold waits for that turn's end. The claim
 		// was given back to neither its agent nor its task, so the caller is told that rather
 		// than a recovery that landed. What becomes of the owed task is the hold's own, and
-		// the hold has three ends, not two: an operator's suspension keeps the claim's phase
-		// and the task with it; the daemon's ends that phase, which retires the task queued
-		// for it; and a start the daemon runs against a claim still working for its turn
-		// drops a hold of the daemon's own unrun, where the claim works on and the turn's own
-		// end sends the task (supervise's settle, SuspendSource.RetiresPhaseTask, StartedBy,
-		// dropHeld, ErrCompactSuspended). Named only the first two, a caller would read a
-		// dropped hold as a task that was retired.
+		// the answer says so and stops there: each hold's end is written once, where that end
+		// is decided (supervise.ErrCompactSuspended, settle). A list copied here is a second
+		// copy to keep true — this one left out the idle release's hold, which keeps the task
+		// — and the caller acts on none of it: what it asked for did not happen, and the
+		// claim's own state says what it is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. What becomes of that task is the hold's own. An operator's suspension keeps it, and it goes when %s runs again; a suspension of the daemon's own ends the claim's phase, and the task queued for that phase is retired with it; and where the compaction left %s working for a turn Oh My Pi started under it, the hold waits for that turn's end, and a start the daemon runs against %s meanwhile drops a hold of its own, so the turn ends as any other turn does and sends the task", token, token, token, token))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. What becomes of that task is the hold's own", token))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError

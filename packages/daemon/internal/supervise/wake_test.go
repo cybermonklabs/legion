@@ -956,17 +956,18 @@ func TestATakeBackTheStoreRefusesAtTheTurnLeavesNoMarkBehind(t *testing.T) {
 // One death is charged once, however many reports of it arrive. A claim whose relaunch waits its
 // turn still records the process it found dead, so a second report of that same incarnation
 // reaches the judgement every report passes through — the runtime's own sweep makes one every
-// interval — and before this guard that second report ran the whole death again: another death
-// and another launch failure charged, and the waiting relaunch replaced by a fresh token at the
-// back of the queue. In a wave a claim with work outstanding then failed after two real deaths
-// rather than at launch_failure_limit, and the claim behind it lost the turn the queue had
-// already given it. The four other paths that report a process to that judgement — a closed
-// connection, the boot interval, the probe interval and the registration deadline — have a test
-// of their own below.
+// interval — and before this guard that second report ran the whole death again: another launch
+// failure charged, and the waiting relaunch replaced by a fresh token at the back of the queue.
+// In a wave a claim with work outstanding then failed after two real deaths rather than at
+// launch_failure_limit, and the claim behind it lost the turn the queue had already given it.
+// The death itself is charged once wherever its report is judged, on a record of its own
+// (died). The four other paths that report a process to that judgement — a closed connection,
+// the boot interval, the probe interval and the registration deadline — have a test of their
+// own below.
 //
 // The negative control is the guard reverted (judge's launchWaits): the budgets then read two
-// deaths and two launch failures, and the claim behind waits a turn longer, both of which this
-// test reads.
+// launch failures against the one death, and the claim behind waits a turn longer, both of
+// which this test reads.
 func TestASecondReportOfTheOneDeathOverAWaitingRelaunchChargesNothing(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	behind := h.machineFor(wakeClaim(secondToken, StateQueued))

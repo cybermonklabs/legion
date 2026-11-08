@@ -363,25 +363,26 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 // Such a claim is in no turn, whatever its session was doing when the process went, so the
 // refusal of a claim in a turn would send a controller back for an end that never comes — in
 // the one window these recoveries exist for. What does come is the daemon's own orphan sweep,
-// which reports that process again and raises the relaunch the refusal left owing: the
-// runtimes stop watching a process once they have reported it gone, so the sweep is what
-// reaches it (the daemon's reconcileOrphans, supervise's judge, died).
+// which reports that process again: the runtimes stop watching a process once they have
+// reported it gone, so the sweep is what reaches it (the daemon's reconcileOrphans,
+// supervise's judge, died).
 //
-// The relaunch is the whole of what that report brings, and the sentence promises it: the
-// machine reads the second report of the one death as the death it already has and charges it
-// nothing, so no deaths budget runs out on that report (supervise's died, chargeDeath). What
-// the sentence does not promise is that the claim cannot fail at all, because the relaunch it
-// raises is a launch like any other: a runtime that refuses it until the launch budget runs
-// out fails the claim there (supervise's launchNow). That is the end every relaunch of the
-// daemon's has, and the refusal of a claim whose relaunch waits its paced turn names it no
-// more than this one does (refuseParkedRelaunch).
+// That report raises the relaunch the refusal left owing, or ends the claim where a budget of
+// the claim's runs out on it, and the sentence names both. Two budgets can: the relaunch is a
+// launch like any other, so a runtime that refuses it until the launch budget runs out fails
+// the claim there (supervise's launchNow); and where the first report of this death charged
+// nothing — its take-back of the turn's task was the write that failed — this report is the
+// one that charges the death, and a claim already at the deaths limit fails on it rather than
+// relaunching (supervise's died, chargeDeath). Neither count is in the sentence: a budget is
+// not something the caller can act on, and the one a restart reads back would not be the one
+// the answer named.
 //
 // The code is the turn's: the claim is stored working, as a claim in a turn is, and what
 // differs is the wait (claimInATurn, refuseInATurn). It always reports false, so a caller
 // returns it as its own answer.
 func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
 	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
-		"%s is stored working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of %s is running and waiting for one to end waits for nothing. The daemon reads that process again at its runtime sweep, which it makes by itself, and raises the relaunch again. That report is the one death read twice, so it counts no second death against %s, and the relaunch is what it brings. Ask again once %s is running, which is when %s reaches it",
+		"%s is stored working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of %s is running and waiting for one to end waits for nothing. The daemon reads that process again at its runtime sweep, which it makes by itself, and that report raises the relaunch again, or fails %s where a budget of its own runs out on it. Ask again once %s is running, which is when %s reaches it",
 		token, token, token, token, op.name))
 	return false
 }

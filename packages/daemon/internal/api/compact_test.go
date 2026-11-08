@@ -326,17 +326,13 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 }
 
 // suspendedCompactionRefusal is the sentence the compaction gives a claim a held suspension's
-// end took in place of its agent (api's compact, supervise.ErrCompactSuspended). It names
-// every end that hold has, since the owed task's fate differs at each.
+// end took in place of its agent (api's compact, supervise.ErrCompactSuspended). It says what
+// the caller asked for and did not get, and leaves the owed task to the hold: what each hold
+// does with that task is written once, on supervise.ErrCompactSuspended.
 func suspendedCompactionRefusal(token claim.Token) string {
 	return string(token) + "'s session was compacted, and a suspension held over the claim ended that " +
 		"compaction rather than the claim coming back: it was not given back, and the task it owes " +
-		"was not sent. What becomes of that task is the hold's own. An operator's suspension keeps it, " +
-		"and it goes when " + string(token) + " runs again; a suspension of the daemon's own ends the " +
-		"claim's phase, and the task queued for that phase is retired with it; and where the compaction " +
-		"left " + string(token) + " working for a turn Oh My Pi started under it, the hold waits for " +
-		"that turn's end, and a start the daemon runs against " + string(token) + " meanwhile drops a " +
-		"hold of its own, so the turn ends as any other turn does and sends the task"
+		"was not sent. What becomes of that task is the hold's own"
 }
 
 // A suspension that arrives while the session is being compacted is held for the compaction's
@@ -344,9 +340,10 @@ func suspendedCompactionRefusal(token claim.Token) string {
 // owes unsent, which only the operator's resume starts again. The compaction says so rather
 // than answering 200 — the answer that promises the claim is back and whatever task it owed
 // has gone again (CompactResponse) — so a controller reads a recovery that did not land and
-// an operator is not told a stopped worker is running. The answer splits the holds, since the
-// task's fate is each hold's own: the operator's keeps it for the resume, which is what this
-// claim shows, and the daemon's ends the phase the task was queued for (supervise's settle,
+// an operator is not told a stopped worker is running. The answer leaves the owed task to the
+// hold rather than listing what each hold does with it: this claim's operator suspension keeps
+// the task for the resume, the daemon's own suspension ends the phase the task was queued for,
+// and an idle release keeps it as the operator's does (supervise's settle,
 // SuspendSource.RetiresPhaseTask).
 func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *testing.T) {
 	for _, door := range compactDoors() {

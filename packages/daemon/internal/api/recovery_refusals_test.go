@@ -216,14 +216,16 @@ func refusedRelaunchCauses() []refusedRelaunchCause {
 
 // processGoneRefusal is the sentence both recoveries give a claim left stored working over a
 // process the runtime's last report of it found gone, with the asking operation's own name in
-// it (api's refuseProcessGone, controllerOp).
+// it (api's refuseProcessGone, controllerOp). It names both ends the next report of that
+// process has: the relaunch, and the claim failed where a budget runs out on that report
+// (supervise's TestADeathWhoseTakeBackWriteFailedIsChargedAtTheReportThatTakesItBack).
 func processGoneRefusal(token claim.Token, operation string) string {
 	return string(token) + " is stored working over a process the daemon's last report of it found gone: the " +
 		"relaunch that replaces that process has not run, so no turn of " + string(token) + " is running and " +
 		"waiting for one to end waits for nothing. The daemon reads that process again at its runtime sweep, " +
-		"which it makes by itself, and raises the relaunch again. That report is the one death read twice, so " +
-		"it counts no second death against " + string(token) + ", and the relaunch is what it brings. Ask " +
-		"again once " + string(token) + " is running, which is when " + operation + " reaches it"
+		"which it makes by itself, and that report raises the relaunch again, or fails " + string(token) + " " +
+		"where a budget of its own runs out on it. Ask again once " + string(token) + " is running, which is " +
+		"when " + operation + " reaches it"
 }
 
 // workingAfterTheRelaunchWasRefused is the window the refusals below are asked in: a worker
