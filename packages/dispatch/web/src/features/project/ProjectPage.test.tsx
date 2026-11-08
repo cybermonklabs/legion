@@ -535,24 +535,17 @@ test("a project that names no Legion daemon is offered no Legion view", async ()
   }
 });
 
-test("a project that names a Legion daemon gets a third view button, and v cycles three ways", async () => {
+test("a Legion project keeps two views and its list includes the phase column", async () => {
   const viewKey = "dispatch.project.issue-view:alice";
   const sockets = installFakeLiveSockets();
   const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    const legion = await screen.findByRole("button", { name: "Legion" });
-    expect(legion.getAttribute("aria-pressed")).toBe("false");
+    expect(await screen.findByRole("button", { name: "Phase" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Legion" })).toBeNull();
 
     fireEvent.keyDown(document.body, { key: "v" });
     expect(screen.getByRole("button", { name: "Board" }).getAttribute("aria-pressed")).toBe("true");
-
-    fireEvent.keyDown(document.body, { key: "v" });
-    expect(screen.getByRole("button", { name: "Legion" }).getAttribute("aria-pressed")).toBe(
-      "true"
-    );
-    expect(window.localStorage.getItem(viewKey)).toBe("legion");
-    expect(await screen.findByRole("region", { name: "Legion" })).toBeDefined();
 
     fireEvent.keyDown(document.body, { key: "v" });
     expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
@@ -564,16 +557,16 @@ test("a project that names a Legion daemon gets a third view button, and v cycle
   }
 });
 
-test("the Legion view replaces the list, its board and the filter strip", async () => {
+test("the Legion columns keep the table's search and grouping controls", async () => {
   const viewKey = "dispatch.project.issue-view:alice";
   const sockets = installFakeLiveSockets();
   const page = renderPage("/projects/CORE", undefined, "alice", [], [], ["CORE"]);
   try {
     await screen.findByRole("heading", { name: "Core" });
-    fireEvent.click(await screen.findByRole("button", { name: "Legion" }));
-
-    expect(await screen.findByRole("region", { name: "Legion" })).toBeDefined();
-    expect(screen.queryByRole("search")).toBeNull();
+    expect(await screen.findByRole("button", { name: "Phase" })).toBeDefined();
+    expect(screen.getByRole("table", { name: "Project issues table" })).toBeDefined();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
+    expect(screen.getByRole("combobox", { name: "Group by" })).toBeDefined();
     expect(screen.queryByRole("button", { name: "Show lanes" })).toBeNull();
   } finally {
     page.restore();

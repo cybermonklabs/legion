@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { ApiError, api, issuePatchRequest, type WriteRequest } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
+import { legionBoardQuery } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { plainWrite, useWrites } from "../writes/write-store";
 import {
@@ -32,11 +33,13 @@ export function useIssueTableActions({
   issues,
   items,
   clearSelection,
+  hasLegion = false,
 }: {
   project: string;
   issues: readonly IssueSummary[];
   items: readonly Item[];
   clearSelection: () => void;
+  hasLegion?: boolean;
 }) {
   const client = useQueryClient();
   const writes = useWrites();
@@ -319,7 +322,15 @@ export function useIssueTableActions({
         );
       } else if (record.kind === "startNext") {
         for (const operation of remainingStartNextWrites(
-          buildItems(current, () => ""),
+          buildItems(
+            current,
+            () => "",
+            [],
+            hasLegion
+              ? (client.getQueryData(legionBoardQuery({ kind: "legion", project }).queryKey) ??
+                  null)
+              : undefined
+          ),
           record.keys
         )) {
           if (!recovery.active(record.id)) return undefined;

@@ -226,6 +226,19 @@ for (const [status, background, foreground] of [
     pair(foreground, foreground),
     pair(background, background)
   );
+/** Legion workflow segments reuse the lifecycle scale and its contrast-checked pairs. */
+export const legionPhaseScale: Record<string, string> = {
+  queue: issueStatusScale.todo ?? "",
+  design: issueStatusScale.triage ?? "",
+  planning: issueStatusScale.backlog ?? "",
+  implementing: issueStatusScale.in_progress ?? "",
+  testing: issueStatusScale.testing ?? "",
+  reviewing: issueStatusScale.needs_review ?? "",
+  accepting: issueStatusScale.retro ?? "",
+  merging: issueStatusScale.done ?? "",
+  awaiting_person: issueStatusScale.icebox ?? "",
+  held: issueStatusScale.icebox ?? "",
+};
 export const tableFilterActive = "bg-sky-100 text-sky-700 dark:bg-sky-900 dark:text-sky-300";
 registerText("active table filter", pair(P.SKY_700, P.SKY_300), pair(P.SKY_100, P.SKY_900));
 export const tableResizeActive = "bg-sky-500 dark:bg-sky-400";

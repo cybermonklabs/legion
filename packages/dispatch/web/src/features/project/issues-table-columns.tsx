@@ -1,7 +1,7 @@
 import type { ColumnDef, FilterFn, RowData } from "@tanstack/react-table";
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import type { UserState } from "../../api/types";
+import type { LegionBoardResponse, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { LabelPill, StatusPill } from "../../components/Pill";
 import { compareTimestamps } from "../../lib/timestamps";
@@ -17,6 +17,7 @@ import { ClaimChip } from "../issue/ClaimChip";
 import { PriorityControl } from "../issue/PriorityControl";
 import { ProgressChips } from "../issue/ProgressChips";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
+import { formatPhaseTime } from "../legion/lib/format";
 import { AgentName } from "../refs/AgentName";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import { buildIssuePath } from "../refs/routes";
@@ -49,6 +50,10 @@ export const COLUMN_SIZES: Record<string, number> = {
   key: 104,
   title: 380,
   status: 128,
+  phase: 220,
+  slot: 96,
+  roles: 200,
+  ci: 160,
   epic: 220,
   assignee: 180,
   author: 200,
@@ -66,6 +71,10 @@ export const COLUMN_MIN: Record<string, number> = {
   title: 116,
   queue: 124,
   status: 132,
+  phase: 132,
+  slot: 116,
+  roles: 196,
+  ci: 164,
   epic: 116,
   assignee: 148,
   author: 164,
@@ -83,7 +92,9 @@ export const PHONE_PINNED_SHARE = 0.85;
 
 export function useIssueTableColumns(
   userState: UserState | undefined,
-  compact: boolean
+  compact: boolean,
+  hasLegion = false,
+  board?: LegionBoardResponse
 ): ColumnDef<Item>[] {
   const columns = useMemo<ColumnDef<Item>[]>(
     () =>
@@ -239,6 +250,94 @@ export function useIssueTableColumns(
             },
             cell: ({ getValue }) => <StatusPill>{statusLabel(getValue<IssueStatus>())}</StatusPill>,
           },
+          ...(hasLegion
+            ? ([
+                {
+                  id: "phase",
+                  header: "Phase",
+                  accessorFn: (item: Item) => item.legion?.id ?? "No Legion phase",
+                  sortingFn: (a, b) =>
+                    (a.original.legion?.order ?? Number.MAX_SAFE_INTEGER) -
+                      (b.original.legion?.order ?? Number.MAX_SAFE_INTEGER) ||
+                    (a.original.queue ?? Number.MAX_SAFE_INTEGER) -
+                      (b.original.queue ?? Number.MAX_SAFE_INTEGER),
+                  sortDescFirst: false,
+                  filterFn: inPicks,
+                  meta: {
+                    order: [
+                      ...(board?.columns.map((column) => column.id) ?? []),
+                      "No Legion phase",
+                    ],
+                    show: (value: string) =>
+                      board?.columns.find((column) => column.id === value)?.label ?? value,
+                  },
+                  cell: ({ row }) =>
+                    row.original.legion ? (
+                      <span
+                        className="flex flex-col gap-1"
+                        data-legion-phase={row.original.legion.id}
+                      >
+                        <span>{row.original.legion.label}</span>
+                        <span
+                          className={`text-xs ${textMutedOnCanvas}`}
+                          data-legion-fact="phase-time"
+                          title={row.original.legion.card.phase_since ?? "Phase entry time unknown"}
+                        >
+                          {formatPhaseTime(row.original.legion.card.phase_since, Date.now())} in
+                          phase
+                        </span>
+                        {row.original.legion.card.blocked_by.length > 0 ? (
+                          <span className="text-xs" data-legion-fact="blocked-by">
+                            Blocked by {row.original.legion.card.blocked_by.join(", ")}
+                          </span>
+                        ) : null}
+                        {row.original.legion.card.waiting_on ? (
+                          <span className="text-xs" data-legion-fact="waiting-on">
+                            Waiting on {row.original.legion.card.waiting_on.kind}
+                            {row.original.legion.card.waiting_on.answered_at ? "; answered" : ""}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : (
+                      <span className={textMutedOnCanvas}>No Legion phase</span>
+                    ),
+                },
+                {
+                  id: "slot",
+                  header: "Slot",
+                  accessorFn: (item: Item) => item.legion?.card.slot ?? undefined,
+                  sortUndefined: "last",
+                  sortDescFirst: false,
+                  filterFn: inPicks,
+                  enableGrouping: false,
+                  cell: ({ getValue }) => (
+                    <span className="tabular-nums" data-legion-fact="slot">
+                      {getValue<number | undefined>() ?? "No slot"}
+                    </span>
+                  ),
+                },
+                {
+                  id: "roles",
+                  header: "Roles in a turn",
+                  accessorFn: (item: Item) => item.legion?.card.roles.join(", ") || "Nobody",
+                  filterFn: inPicks,
+                  enableGrouping: false,
+                  cell: ({ getValue }) => (
+                    <span data-legion-fact="roles">{getValue<string>()}</span>
+                  ),
+                },
+                {
+                  id: "ci",
+                  header: "CI verdict",
+                  accessorFn: (item: Item) => item.legion?.card.checks_verdict ?? "No verdict",
+                  filterFn: inPicks,
+                  enableGrouping: false,
+                  cell: ({ getValue }) => (
+                    <span data-legion-fact="checks">{getValue<string>()}</span>
+                  ),
+                },
+              ] as ColumnDef<Item>[])
+            : []),
           {
             id: "epic",
             header: "Epic",
@@ -346,7 +445,7 @@ export function useIssueTableColumns(
               : (COLUMN_MIN[column.id ?? ""] ?? 116),
         enableResizing: column.id !== "select",
       })),
-    [userState, compact]
+    [userState, compact, hasLegion, board]
   );
   return columns;
 }

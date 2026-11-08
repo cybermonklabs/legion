@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
-import type { IssueSummary } from "../../api/types";
+import type { IssueSummary, LegionBoardCard, LegionBoardResponse } from "../../api/types";
 import {
   buildItems,
+  countIssueStates,
   defaultView,
   facetCounts,
   matchesFilters,
@@ -194,4 +195,119 @@ test("a merge crosses closed intermediates but does not flatten an open subtree"
     issue("G", { parent: "F" }),
   ];
   expect(mergeMembers(rows, "A")).toEqual(["C", "E", "G"]);
+});
+
+function card(key: string, phase: string): LegionBoardCard {
+  return {
+    key,
+    title: key,
+    priority: null,
+    phase,
+    phase_since: "2026-09-10T00:00:00Z",
+    slot: null,
+    roles: [],
+    checks_verdict: null,
+    blocked_by: [],
+    waiting_on: null,
+    tree: key,
+    children: 0,
+  };
+}
+const legionBoard: LegionBoardResponse = {
+  project: "CORE",
+  header: {
+    slots_in_use: 1,
+    slot_cap: 4,
+    trees: 1,
+    queue_length: 2,
+    read_at: "2026-09-10T00:00:00Z",
+    read_ok: true,
+    read_error: null,
+  },
+  columns: [
+    {
+      id: "queue",
+      label: "Queue",
+      cards: [card("CORE-3", "admitted"), card("CORE-1", "admitted")],
+    },
+    { id: "planning", label: "Planning", cards: [card("CORE-4", "planning")] },
+    {
+      id: "implementing",
+      label: "Implementing",
+      cards: [
+        {
+          ...card("CORE-2", "implementing"),
+          slot: 0,
+          roles: ["implementer"],
+          checks_verdict: "failing",
+        },
+      ],
+    },
+  ],
+  settings: {},
+  setting_sources: {},
+  computed_at: "2026-09-10T00:00:00Z",
+};
+
+test("the daemon queue replaces Dispatch rank, including membership, without a derived fallback", () => {
+  const issues = [1, 2, 3, 4, 5].map((n) => issue(`CORE-${n}`, { labels: ["legion"] }));
+  const rows = buildItems(issues, (actor) => actor.id, [], legionBoard);
+  expect(rows.map((row) => row.queue)).toEqual([2, undefined, 1, undefined, undefined]);
+  expect(buildItems(issues, (actor) => actor.id, [], null).map((row) => row.queue)).toEqual([
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+  ]);
+  expect(buildItems(issues, (actor) => actor.id).map((row) => row.queue)).toEqual([1, 2, 3, 4, 5]);
+});
+
+test("phase facets and workflow ordering come from the board, not alphabetical or issue order", () => {
+  const rows = buildItems(
+    [2, 4, 3].map((n) => issue(`CORE-${n}`)),
+    (actor) => actor.id,
+    [],
+    legionBoard
+  );
+  expect(
+    rows
+      .slice()
+      .sort((a, b) => (a.legion?.order ?? 99) - (b.legion?.order ?? 99))
+      .map((row) => row.issue.key)
+  ).toEqual(["CORE-3", "CORE-4", "CORE-2"]);
+  expect(
+    rows
+      .filter((row) => matchesFilters(row, [{ id: "phase", value: ["implementing"] }]))
+      .map((row) => row.issue.key)
+  ).toEqual(["CORE-2"]);
+  expect(
+    rows
+      .filter((row) =>
+        matchesFilters(row, [
+          { id: "slot", value: ["0"] },
+          { id: "roles", value: ["implementer"] },
+          { id: "ci", value: ["failing"] },
+        ])
+      )
+      .map((row) => row.issue.key)
+  ).toEqual(["CORE-2"]);
+  const view = readUrl(new URLSearchParams("group=phase&sort=phase&f.phase=planning"));
+  expect(view.grouping).toEqual(["phase"]);
+  expect(view.sorting).toEqual([{ id: "phase", desc: false }]);
+});
+
+test("the bar counts each issue once, under its Legion phase or its Dispatch status", () => {
+  const rows = buildItems(
+    [1, 2, 3, 4, 5].map((n) => issue(`CORE-${n}`, { status: "todo" })),
+    (actor) => actor.id,
+    [],
+    legionBoard
+  );
+  expect(countIssueStates(rows)).toEqual([
+    { id: "queue", label: "Queue", column: "phase", count: 2 },
+    { id: "planning", label: "Planning", column: "phase", count: 1 },
+    { id: "implementing", label: "Implementing", column: "phase", count: 1 },
+    { id: "todo", label: "Todo", column: "status", count: 1 },
+  ]);
 });

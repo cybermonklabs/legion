@@ -12,14 +12,16 @@ import {
 import { createPortal } from "react-dom";
 import { Link, useSearchParams } from "react-router-dom";
 import { AGENT_LIST_REFILLING } from "../../api/client";
-import type { IssueSummary } from "../../api/types";
+import type { IssueSummary, LegionBoardResponse } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { MultiSelect } from "../../components/MultiSelect";
 import {
   borderDefault,
   card,
   checkboxAccent,
+  dangerText,
   issueStatusScale,
+  legionPhaseScale,
   linkHoverText,
   linkText,
   surfaceBg,
@@ -32,9 +34,9 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { buildIssuePath } from "../refs/routes";
-import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
+import { issueStatuses, statusLabel } from "./board-model";
 import { useIssueFilters } from "./issue-filters";
-import { ALL_ROWS, type Item, priorityName, readUrl, writeUrl } from "./issues-table-model";
+import { ALL_ROWS, countIssueStates, type Item, readUrl, writeUrl } from "./issues-table-model";
 
 function FunnelIcon(): ReactNode {
   return (
@@ -160,11 +162,10 @@ export function GroupRow({
   const leaves = row.getLeafRows().filter((leaf) => !leaf.getIsGrouped());
   const value = String(row.groupingValue ?? "");
   const shown =
-    grouping === "status"
-      ? statusLabel(value as IssueStatus)
-      : grouping === "priority"
-        ? priorityName(value)
-        : value;
+    row
+      .getAllCells()
+      .find((cell) => cell.column.id === grouping)
+      ?.column.columnDef.meta?.show?.(value) ?? value;
   const epicKey = grouping === "epic" ? leaves[0]?.original.epicKey : undefined;
   const byStatus = issueStatuses
     .map(
@@ -482,18 +483,20 @@ export function IssueTableStatus({
   items,
   epics,
   doneLoaded,
+  hasLegion = false,
+  board,
 }: {
   table: Table<Item>;
   items: readonly Item[];
   epics: readonly IssueSummary[];
   doneLoaded: boolean;
+  hasLegion?: boolean;
+  board?: LegionBoardResponse;
 }): ReactNode {
   const statusColumn = table.getColumn("status");
-  const statusPicks = (statusColumn?.getFilterValue() as string[] | undefined) ?? [];
-  const statusCounts = new Map<string, number>();
-  for (const item of items)
-    statusCounts.set(item.issue.status, (statusCounts.get(item.issue.status) ?? 0) + 1);
-  const queuedCount = items.filter((item) => item.queue !== undefined).length;
+  const stateCounts = countIssueStates(items);
+  const queuedCount =
+    board?.header.queue_length ?? items.filter((item) => item.queue !== undefined).length;
   const runningCount = items.filter((item) =>
     ["in_progress", "testing", "needs_review", "retro"].includes(item.issue.status)
   ).length;
@@ -513,28 +516,67 @@ export function IssueTableStatus({
           <b className={`text-lg tabular-nums ${textPrimaryOnCanvas}`}>{epics.length}</b>{" "}
           {epics.length === 1 ? "epic" : "epics"}
         </span>
+        {hasLegion && board ? (
+          <>
+            <span data-legion-slots>
+              {board.header.slots_in_use} of {board.header.slot_cap ?? "an unknown number of"} slots
+              in use
+            </span>
+            {board.header.read_ok && board.header.read_at ? (
+              <span className={`text-xs ${textMutedOnCanvas}`} data-legion-read-at>
+                Read{" "}
+                <time dateTime={board.header.read_at}>
+                  {new Date(board.header.read_at).toLocaleString()}
+                </time>
+              </span>
+            ) : (
+              <span role="status" className={`text-xs ${dangerText}`} data-legion-read-error>
+                {board.header.read_at ? (
+                  <>
+                    Legion data is stale since{" "}
+                    <time dateTime={board.header.read_at}>
+                      {new Date(board.header.read_at).toLocaleString()}
+                    </time>
+                    ; the last daemon read failed
+                  </>
+                ) : (
+                  "Legion data is stale: the daemon has never answered"
+                )}
+                {board.header.read_error ? `: ${board.header.read_error}` : ""}
+              </span>
+            )}
+          </>
+        ) : null}
       </div>
       <fieldset
-        aria-label="Issues by status"
+        aria-label={hasLegion ? "Issues by phase or status" : "Issues by status"}
         className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 ${surfaceMutedBg}`}
+        role={hasLegion ? "group" : undefined}
       >
-        {issueStatuses.map((status) => {
-          const count = statusCounts.get(status) ?? 0;
-          if (count === 0) return null;
-          const on = statusPicks.length === 0 || statusPicks.includes(status);
+        {stateCounts.map(({ id, label, column, count }) => {
+          const picks = (table.getColumn(column)?.getFilterValue() as string[] | undefined) ?? [];
+          const on = picks.length === 0 || picks.includes(id);
           return (
             <button
-              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
-              key={status}
+              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap ${(column === "phase" ? legionPhaseScale : issueStatusScale)[id] ?? ""} ${on ? "" : "opacity-30"}`}
+              key={`${column}:${id}`}
               onClick={() =>
-                statusColumn?.setFilterValue(
-                  statusPicks.length === 1 && statusPicks[0] === status ? undefined : [status]
-                )
+                table.setColumnFilters((filters) => {
+                  const next = filters.filter((filter) => !["phase", "status"].includes(filter.id));
+                  if (picks.length === 1 && picks[0] === id) return next;
+                  return [
+                    ...next,
+                    { id: column, value: [id] },
+                    ...(hasLegion && column === "status"
+                      ? [{ id: "phase", value: ["No Legion phase"] }]
+                      : []),
+                  ];
+                })
               }
-              title={`${statusLabel(status)}: ${count}`}
+              title={`${label}: ${count}`}
               type="button"
             >
-              {statusLabel(status)} {count}
+              {label} {count}
             </button>
           );
         })}

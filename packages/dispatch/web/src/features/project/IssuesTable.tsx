@@ -23,7 +23,13 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { issueQuery, projectIssuesQuery, userStateQuery } from "../../api/queries";
+import {
+  issueQuery,
+  legionBoardQuery,
+  legionSettingsQuery,
+  projectIssuesQuery,
+  userStateQuery,
+} from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { capSearchQuery } from "../../lib/query-param";
 import {
@@ -38,6 +44,7 @@ import {
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { claimIsTakeable } from "../issue/ClaimChip";
+import { LegionSettingsPanel } from "../legion/LegionSettingsPanel";
 import { useAgentText } from "../refs/AgentName";
 import { useAgentRegistry } from "../refs/agent-registry";
 import { useKeymap } from "../shell/keymap";
@@ -65,6 +72,7 @@ import {
 } from "./issues-table-controls";
 import {
   buildItems,
+  defaultView,
   type EpicAncestor,
   facetCounts,
   type Item,
@@ -89,7 +97,11 @@ interface Layout {
   visibility: VisibilityState;
 }
 function loadLayout(project: string): Layout {
-  const empty = { sizing: {}, order: [], visibility: { updated: false } };
+  const empty = {
+    sizing: {},
+    order: [],
+    visibility: { updated: false, slot: false, roles: false, ci: false },
+  };
   try {
     const saved = JSON.parse(localStorage.getItem(tableStorageKey(project)) ?? "{}");
     const sizing = Object.fromEntries(
@@ -129,7 +141,20 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const queryClient = useQueryClient();
   const text = useAgentText();
   const [params, setParams] = useSearchParams();
-  const view = useMemo(() => readUrl(params), [params]);
+  const legionSettings = useQuery(legionSettingsQuery());
+  const hasLegion = (legionSettings.data ?? []).some((setting) => setting.project === project);
+  const view = useMemo(() => {
+    const parsed = readUrl(params);
+    if (hasLegion) return parsed;
+    const available = (id: string) => !["phase", "slot", "roles", "ci"].includes(id);
+    const sorting = parsed.sorting.filter(({ id }) => available(id));
+    return {
+      ...parsed,
+      sorting: parsed.sorting.length && !sorting.length ? defaultView.sorting : sorting,
+      grouping: parsed.grouping.filter(available),
+      filters: parsed.filters.filter(({ id }) => available(id)),
+    };
+  }, [params, hasLegion]);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
   const updateView = (update: (current: View) => View) =>
@@ -171,6 +196,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const flags = useIssueFilters();
   const registry = useAgentRegistry(flags.unclaimed);
   const userState = useQuery(userStateQuery());
+  const legion = useQuery({ ...legionBoardQuery({ kind: "legion", project }), enabled: hasLegion });
   const [sizing, setSizing] = useState<ColumnSizingState>(layout.sizing);
   const [boxWidth, setBoxWidth] = useState(1000);
   const responsiveLayout = useMemo(() => {
@@ -262,8 +288,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   });
   const epics = useMemo(() => all.filter(isEpic), [all]);
   const allItems = useMemo(
-    () => buildItems(all, text.label, ancestry.data),
-    [all, text, ancestry.data]
+    () => buildItems(all, text.label, ancestry.data, hasLegion ? (legion.data ?? null) : undefined),
+    [all, text, ancestry.data, hasLegion, legion.data]
   );
   const items = useMemo(
     () =>
@@ -277,13 +303,16 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     [allItems, flags.needsYou, flags.unread, flags.unclaimed, registry, userState.data]
   );
 
-  const columns = useIssueTableColumns(userState.data, boxWidth < 640);
+  const columns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion, legion.data);
 
   const table = useReactTable({
     data: items,
     columns,
     state: {
-      sorting,
+      sorting:
+        grouping[0] === "phase" && !sorting.some(({ id }) => id === "phase")
+          ? [{ id: "phase", desc: false }, ...sorting]
+          : sorting,
       grouping,
       columnFilters: filters,
       columnVisibility: visibility,
@@ -341,6 +370,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     dismiss,
   } = useIssueTableActions({
     project,
+    hasLegion,
     issues: all,
     items: allItems,
     clearSelection: () => setSelection({}),
@@ -529,8 +559,33 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
             Loading closed issues…
           </p>
         ) : null}
-        {/* Issues by status: a click shows only that status, a second click every status. */}
-        <IssueTableStatus table={table} items={allItems} epics={epics} doneLoaded={doneLoaded} />
+        {hasLegion && legion.isError ? (
+          <p className={dangerText} role="alert">
+            Could not refresh Legion data.{" "}
+            <button type="button" onClick={() => void legion.refetch()}>
+              Retry Legion data
+            </button>
+          </p>
+        ) : null}
+        {hasLegion && legion.isPending ? (
+          <p className={textMutedOnCanvas}>Loading Legion data…</p>
+        ) : null}
+        <IssueTableStatus
+          table={table}
+          items={allItems}
+          epics={epics}
+          doneLoaded={doneLoaded}
+          hasLegion={hasLegion}
+          board={legion.data}
+        />
+        {hasLegion && legion.data ? (
+          <details>
+            <summary className={`cursor-pointer text-sm ${textSecondaryOnCanvas}`}>
+              Legion settings
+            </summary>
+            <LegionSettingsPanel board={legion.data} />
+          </details>
+        ) : null}
 
         <IssueTableToolbar table={table} />
 
@@ -600,6 +655,10 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           overflowAnchor: "none",
           height: boxHeight,
           scrollPaddingTop: 64,
+          scrollPaddingLeft: responsiveLayout.pinned.reduce(
+            (width, id) => width + (responsiveLayout.sizing[id] ?? 0),
+            0
+          ),
         }}
       >
         <ViewportAnchor

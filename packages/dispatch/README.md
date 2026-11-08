@@ -24,6 +24,20 @@ surface. Below the `xl` breakpoint, navigation is a drawer and the margin is a b
 opening a thread uses a full-height view with a bottom-pinned composer. Controls use 44 px
 minimum touch targets.
 
+The project's List is one issues table. Projects with a Legion daemon setting also show Phase,
+including time in phase, and offer Slot, Roles in a turn and CI verdict in Columns (hidden by
+default). Phase groups and sorts in the workflow order the board route supplies; its queue
+positions replace Dispatch-derived positions. Each column uses the table's searchable filters.
+The bar counts each issue under its Legion phase, or under its Dispatch status when it has no
+phase, and shows the daemon's slots in use against its cap and last read. A failed read keeps
+the known rows and marks the Legion data stale with its read time and error. Stored daemon
+events update the columns, groups and bar through `/ws/live`, without a reload or a second
+daemon reader. Legion settings remain available in the disclosure above the table. Projects
+without a Legion setting have no Legion columns and keep Dispatch-derived queue positions.
+
+The stored-observation browser coverage is `e2e/issues-table-legion.e2e.ts`, alongside
+`e2e/issues-table.e2e.ts` and `e2e/legion.e2e.ts`. Its fixture is `e2e/legion-seed.ts`.
+
 ## Development
 
 Run commands from this package:

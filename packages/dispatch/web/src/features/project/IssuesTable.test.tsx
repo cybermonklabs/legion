@@ -61,6 +61,8 @@ afterEach(() => {
   localStorage.clear();
 });
 function table(issues: IssueSummary[], search = "", full?: Promise<IssueSummary[]>) {
+  const settings = spyOn(api, "listLegionSettings").mockResolvedValue([]);
+  restores.push(() => settings.mockRestore());
   const parents = [
     ...new Set(
       issues.flatMap((row) =>

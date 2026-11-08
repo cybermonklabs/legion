@@ -1,12 +1,24 @@
 import { rankItem, rankings } from "@tanstack/match-sorter-utils";
 import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/react-table";
-import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
+import type {
+  Actor,
+  IssueSummary,
+  LegionBoardCard,
+  LegionBoardResponse,
+  UpdateIssueInput,
+} from "../../api/types";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
-import { issueStatuses } from "./board-model";
+import { type IssueStatus, issueStatuses, statusLabel } from "./board-model";
 
 export interface Item {
   readonly issue: IssueSummary;
+  readonly legion?: {
+    readonly card: LegionBoardCard;
+    readonly id: string;
+    readonly label: string;
+    readonly order: number;
+  };
   readonly queue?: number;
   readonly epic: string;
   readonly epicKey?: string;
@@ -22,6 +34,10 @@ export const columnIds = [
   "key",
   "title",
   "status",
+  "phase",
+  "slot",
+  "roles",
+  "ci",
   "epic",
   "assignee",
   "author",
@@ -34,6 +50,7 @@ export const columnIds = [
 const groupable = [
   "priority",
   "status",
+  "phase",
   "epic",
   "assignee",
   "author",
@@ -70,22 +87,37 @@ export type EpicAncestor = Pick<IssueSummary, "key" | "parent" | "status" | "lab
 export function buildItems(
   issues: readonly IssueSummary[],
   label: (actor: Actor) => string,
-  ancestors: readonly EpicAncestor[] = []
+  ancestors: readonly EpicAncestor[] = [],
+  // undefined: no Legion setting; null: configured but its board has not answered.
+  board?: LegionBoardResponse | null
 ): Item[] {
   const byKey = new Map<string, EpicAncestor>(
     [...ancestors, ...issues].map((issue) => [issue.key, issue])
   );
-  // Rank's alphabet is byte-ordered, not locale-ordered.
-  const queue = issues
-    .filter((issue) => !isEpic(issue) && isQueued(issue))
-    .sort((a, b) =>
-      a.rank < b.rank
-        ? -1
-        : a.rank > b.rank
-          ? 1
-          : compareTimestamps(a.created_at, b.created_at) || a.key.localeCompare(b.key)
-    );
-  const positions = new Map(queue.map((issue, index) => [issue.key, index + 1]));
+  const legion = new Map<string, NonNullable<Item["legion"]>>();
+  const positions = new Map<string, number>();
+  if (board !== undefined) {
+    board?.columns.forEach((column, order) => {
+      column.cards.forEach((card, index) => {
+        legion.set(card.key, { card, id: column.id, label: column.label, order });
+        if (column.id === "queue") positions.set(card.key, index + 1);
+      });
+    });
+  } else {
+    // Rank's alphabet is byte-ordered, not locale-ordered.
+    issues
+      .filter((issue) => !isEpic(issue) && isQueued(issue))
+      .sort((a, b) =>
+        a.rank < b.rank
+          ? -1
+          : a.rank > b.rank
+            ? 1
+            : compareTimestamps(a.created_at, b.created_at) || a.key.localeCompare(b.key)
+      )
+      .forEach((issue, index) => {
+        positions.set(issue.key, index + 1);
+      });
+  }
   return issues
     .filter((issue) => !isEpic(issue))
     .map((issue) => {
@@ -105,6 +137,7 @@ export function buildItems(
           : "No epic";
       return {
         issue,
+        legion: legion.get(issue.key),
         queue: positions.get(issue.key),
         epic: epicName,
         epicKey: epic?.key,
@@ -185,6 +218,14 @@ export function facets(item: Item, id: string): string[] {
       return [item.issue.key];
     case "status":
       return [item.issue.status];
+    case "phase":
+      return [item.legion?.id ?? "No Legion phase"];
+    case "slot":
+      return [item.legion?.card.slot == null ? "No slot" : String(item.legion.card.slot)];
+    case "roles":
+      return item.legion?.card.roles.length ? [...item.legion.card.roles] : ["Nobody"];
+    case "ci":
+      return [item.legion?.card.checks_verdict ?? "No verdict"];
     case "epic":
       return [item.epic];
     case "assignee":
@@ -233,6 +274,36 @@ export function facetCounts(
         counts.set(value, (counts.get(value) ?? 0) + 1);
     }
   return counts;
+}
+
+export interface IssueStateCount {
+  id: string;
+  label: string;
+  column: "phase" | "status";
+  count: number;
+}
+/** A phase takes precedence over Dispatch status; an issue contributes to exactly one segment. */
+export function countIssueStates(items: readonly Item[]): IssueStateCount[] {
+  const counts = new Map<string, IssueStateCount & { order: number }>();
+  for (const item of items) {
+    const phase = item.legion;
+    const column = phase ? "phase" : "status";
+    const id = phase?.id ?? item.issue.status;
+    const key = `${column}:${id}`;
+    const entry = counts.get(key);
+    if (entry) entry.count++;
+    else
+      counts.set(key, {
+        id,
+        column,
+        label: phase?.label ?? statusLabel(id as IssueStatus),
+        count: 1,
+        order: phase?.order ?? 1000 + issueStatuses.indexOf(id as IssueStatus),
+      });
+  }
+  return [...counts.values()]
+    .sort((a, b) => a.order - b.order)
+    .map(({ order: _order, ...entry }) => entry);
 }
 const paramFor = (id: string) =>
   id === "status" ? "status" : id === "labels" ? "label" : `f.${id}`;
