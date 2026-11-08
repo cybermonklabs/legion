@@ -232,13 +232,22 @@ func TestGitHubCredentialNarrowsEverySiblingRepositoryToItsOwnDirectory(t *testi
 // cybermonklabs: one repository under two names, whose owners the bundle holds one entry for.
 var legionRename = ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion")
 
-// A configured rename whose `to` the project owns is one pair of owners: the bundle's sjawhar
-// directory and its cybermonklabs directory hold one entry, minted once for the repository as
-// cybermonklabs holds it now, and the repository directories under them are the same pair twice
-// over. That one entry is the write lease whenever the issue's repository is the moved one — a
-// pod launched for an issue recorded on sjawhar before the transfer has to write the repository
-// as GitHub holds it now — and the read-only one for a role on any other repository. Every owner
-// outside the pair is minted for itself, as it always was.
+// A configured rename whose `to` the project owns puts the owner the repository moved from in
+// the bundle, with no repository of its own: its directory is minted for the owner the
+// repository moved to. Which lease that is turns on the issue's own repository. Where it is the
+// moved one, the recorded owner's directory and the serving owner's hold one write lease,
+// minted once for the repository as cybermonklabs holds it now, since a pod launched for an
+// issue recorded on sjawhar before the transfer has to write the repository as GitHub holds it;
+// where it is any other repository, or none, every directory of the pair is read-only, the
+// alias owner's over the repositories the owner that serves the moved repository serves. Every
+// owner outside the pair is minted for itself, as it always was.
+//
+// The repository directories are not the same pair twice over, and the two owners here are why:
+// the project serves cybermonklabs/tools and no sjawhar/tools, so the name `sjawhar/tools`
+// resolves to a repository the project does not serve and is no directory of the bundle. A
+// directory of that name could only carry cybermonklabs/tools' token, which is another owner's
+// repository: a `gh` command spelling sjawhar/tools would be answered with a token that cannot
+// reach it. cybermonklabs/tools keeps its own directory, which is where that lease is read.
 func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 	repos := projectRepos("Cybermonklabs/legion", "cybermonklabs/tools", "acme/widgets")
 	for _, tc := range []struct {
@@ -249,6 +258,11 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 		tokens  map[string]string
 		minted  []string
 		appName string
+		// oneLease are the directory pairs holding the one entry, minted once: the pair's two
+		// owner directories wherever one lease is theirs to share. A repository directory holds
+		// no lease any other directory of this bundle shares, each of them naming the one
+		// repository its own name resolves to.
+		oneLease [][2]string
 	}{
 		{
 			// The record still names sjawhar, so sjawhar's directory is the default and holds the
@@ -260,21 +274,24 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
 				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
 				"sjawhar":             "implement-token-for-cybermonklabs/legion",
-				"sjawhar/tools":       "implement-read-for-cybermonklabs/tools",
 			},
-			minted: []string{"acme/widgets", "cybermonklabs/legion", "cybermonklabs/tools"},
+			minted:   []string{"acme/widgets", "cybermonklabs/legion", "cybermonklabs/tools"},
+			oneLease: [][2]string{{"sjawhar", "cybermonklabs"}},
 		},
 		{
+			// The record names the repository as GitHub holds it, so the write lease stands in
+			// the cybermonklabs directory alone: sjawhar is neither the recorded owner nor the
+			// owner serving the issue's repository, and a directory only the rename puts in the
+			// bundle holds the read lease of the owner that serves the moved repository.
 			name: "an implementer on the repository as GitHub holds it now", role: claim.RoleImplementer,
 			repo: ghrepo.MustParse("Cybermonklabs/legion"), def: "cybermonklabs", appName: "implement",
 			tokens: map[string]string{
 				"acme":                "implement-read-for-acme/widgets",
 				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
 				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
-				"sjawhar":             "implement-token-for-cybermonklabs/legion",
-				"sjawhar/tools":       "implement-read-for-cybermonklabs/tools",
+				"sjawhar":             "implement-read-for-cybermonklabs/legion+tools",
 			},
-			minted: []string{"acme/widgets", "cybermonklabs/legion", "cybermonklabs/tools"},
+			minted: []string{"acme/widgets", "cybermonklabs/legion", "cybermonklabs/tools", "cybermonklabs/legion+tools"},
 		},
 		{
 			name: "an implementer on another owner of the project", role: claim.RoleImplementer,
@@ -284,7 +301,8 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 				"cybermonklabs": "implement-read-for-cybermonklabs/legion+tools",
 				"sjawhar":       "implement-read-for-cybermonklabs/legion+tools",
 			},
-			minted: []string{"acme/widgets", "cybermonklabs/legion+tools"},
+			minted:   []string{"acme/widgets", "cybermonklabs/legion+tools"},
+			oneLease: [][2]string{{"sjawhar", "cybermonklabs"}},
 		},
 		{
 			name: "the controller, which writes to nothing", role: claim.RoleController,
@@ -294,7 +312,8 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 				"cybermonklabs": "review-read-for-cybermonklabs/legion+tools",
 				"sjawhar":       "review-read-for-cybermonklabs/legion+tools",
 			},
-			minted: []string{"acme/widgets", "cybermonklabs/legion+tools"},
+			minted:   []string{"acme/widgets", "cybermonklabs/legion+tools"},
+			oneLease: [][2]string{{"sjawhar", "cybermonklabs"}},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -314,9 +333,10 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 			if !slices.Equal(minted, tc.minted) {
 				t.Errorf("minted for %v, want %v: the pair's directories hold one lease each, minted once", minted, tc.minted)
 			}
-			// The pair's two owner directories hold the one entry, and so do the two repository
-			// directories under them where the bundle has any.
-			for _, pair := range [][2]string{{"sjawhar", "cybermonklabs"}, {"sjawhar/tools", "cybermonklabs/tools"}} {
+			// Every pair of directories that shares a lease holds the one entry, minted once:
+			// the pair's two owner directories where one lease is theirs to share, and the two
+			// repository directories under them where the bundle has any.
+			for _, pair := range tc.oneLease {
 				from, to := bundle.Dirs[pair[0]], bundle.Dirs[pair[1]]
 				if _, held := bundle.Dirs[pair[0]]; !held {
 					continue
@@ -361,11 +381,14 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 		}
 	})
 
-	// Where the owner the repository moved from is itself an owner of the project, its own entry
-	// wins — its repositories are the project's and its token is its own. The conflict is warned
-	// of where the owners that decide it are read, once per mapping load (the daemon's
-	// logRenameOwnerConflicts), so nothing is logged here.
-	t.Run("the owner it moved from is an owner of the project", func(t *testing.T) {
+	// Where the project serves the pair's `from` as well as its `to`, the pair resolves for
+	// nobody (ghrepo.Renames.Serving: a name the project serves under its own name is a
+	// repository of its own, somebody having made one at the old location, which deletes
+	// GitHub's redirect). So the owner the repository moved from is no alias, its own entry
+	// wins — its repositories are the project's and its token is its own — and nothing is
+	// warned of anywhere: the rule decides it per repository rather than leaving two owners to
+	// argue over one directory.
+	t.Run("the owner it moved from is an owner of the project under the pair's own from", func(t *testing.T) {
 		var minted []string
 		both := projectRepos("Cybermonklabs/legion", "sjawhar/legion")
 		credential := GitHubCredential(countingTokens{minted: &minted}, both, ghrepo.MustRenames(legionRename), nil, quietBundleLog())
@@ -387,6 +410,362 @@ func TestGitHubCredentialBundlesARenamedPairAsOneOwner(t *testing.T) {
 			t.Fatalf("credential: %v", err)
 		}
 	})
+}
+
+// A resolving pair moves one repository, never an owner: the write lease stands in the directory
+// named for the issue's recorded owner and the one named for the owner whose installation serves
+// that repository, and in no other, so every directory named for an owner the project serves
+// repositories of under its own name keeps that owner's own read lease over that owner's own
+// repositories.
+//
+// Both cases are the state production was in on 2026-11-06: the pair sjawhar/legion ->
+// cybermonklabs/legion resolving while the project also serves sjawhar/oh-my-pi. Redirecting
+// every directory of the pair to the write lease, as the bundle did while an alias owner's
+// directory took its mint owner's lease whatever the issue's repository was, put a write lease
+// for sjawhar/oh-my-pi in the directory named cybermonklabs, and left sjawhar/oh-my-pi reachable
+// from no directory at all for an issue on cybermonklabs/legion. Neither case may change a
+// directory name, which is why each asserts the whole set against GitHubDirs as well: a pod's gh
+// projection is fixed when the pod is created, so a name this rule added or dropped would be
+// drift the sweep answers with an update round over every worker in the pod.
+//
+// Two further cases are that state with a third repository of the old owner served, which is
+// where composing the pair with the per-repository directories took reach away: a write lease
+// names one repository, so the old owner's directory reaches nothing else of that owner's own,
+// and where the pair resolves the owner serving the role's repository is not the owner the
+// issue is recorded on, so the serving clause names none of the recorded owner's repositories.
+// So each repository the issue's recorded owner serves beside the one the role writes to holds
+// a directory of its own, read-only and minted for that owner (bundleDirs' recorded clause),
+// and every case here asserts as well that no directory outside the two a write lease may
+// stand in holds a writing token.
+//
+// Where the project serves the role's own repository, the owner whose installation serves it
+// is an owner the project serves under its own name, so mintOwner answers that owner itself
+// and the serving clause cuts that owner's repositories. Four cases here pinned repository
+// directories that clause cut for the pair's `to` instead, while mintOwner redirected a served
+// owner: each of those directories named a repository the `to`'s own directory already reads,
+// so their going is the fault going and not reach going, and every repository the project
+// serves is still named by the lease of some directory of the bundle.
+//
+// One of those cases is that state with the tree recorded on the pair's `from`, which is the
+// tree the failure stopped: it is pinned here so that no later change can re-break the case
+// this rule exists for, and it may not be deleted.
+//
+// The last four cases are the rule each repository directory is held to, whichever cut named
+// it: the directory holds the lease of the repository its own name resolves to, and exists for
+// no other. Three of them are the state where both owners serve a repository called tools, and
+// they differ in which cut names sjawhar/tools and what the name means there: the recorded
+// clause names it for an issue recorded on the pair's `from`, where it holds sjawhar's own
+// tools, the repository the project serves under that name; no cut names it for an issue on
+// the moved repository, where the sjawhar directory's own read lease reaches that repository;
+// and no cut names it for an issue on sjawhar's own tools, where the sjawhar directory's write
+// lease is that repository's. cybermonklabs/tools stays reachable in all three, so one
+// directory name never answers for two repositories. The fourth is the two owners serving
+// repositories of different names, where the serving clause names sjawhar/widgets and that
+// name resolves to a repository the project does not serve. In each of them a directory named
+// for one owner would otherwise have answered with another owner's repository, which is a
+// token that cannot reach what a `gh` command spelling the name asked for.
+func TestEveryServedOwnerKeepsItsOwnReadLeaseWhileAPairResolves(t *testing.T) {
+	base := projectRepos("Cybermonklabs/legion", "acme/widgets", "sjawhar/oh-my-pi")
+	renames := ghrepo.MustRenames(legionRename)
+	for _, tc := range []struct {
+		name string
+		// served is the project's repositories where they are not the table's own three.
+		served []string
+		repo   ghrepo.Repository
+		dirs   []string
+		tokens map[string]string
+		minted []string
+		// writing are the directories R3's writing clause names, the only ones a write token
+		// may stand in: the issue's recorded owner's, and that of the owner whose installation
+		// serves the repository the role writes to.
+		writing []string
+	}{
+		{
+			// sjawhar's own repository is the issue's, so the sjawhar directory holds its write
+			// lease — and the cybermonklabs directory holds cybermonklabs's own read lease, not
+			// a write lease for a repository of another owner. The repository directories are
+			// cut for sjawhar, the owner whose installation serves the role's repository, and
+			// sjawhar serves nothing beside the repository that write lease names, so the
+			// bundle holds none: the cybermonklabs/legion and sjawhar/legion directories this
+			// case pinned while mintOwner redirected a served owner were the fault and not
+			// reach, cybermonklabs' own directory naming that repository already.
+			name: "an issue on the old owner's own other repository", repo: ghrepo.MustParse("sjawhar/oh-my-pi"),
+			dirs: []string{"acme", "cybermonklabs", "sjawhar"},
+			tokens: map[string]string{
+				"acme":          "implement-read-for-acme/widgets",
+				"cybermonklabs": "implement-read-for-cybermonklabs/legion",
+				"sjawhar":       "implement-token-for-sjawhar/oh-my-pi",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			writing: []string{"sjawhar"},
+		},
+		{
+			// The issue is the moved repository's, recorded under the name GitHub has, so the
+			// write lease stands in the cybermonklabs directory alone and the sjawhar directory
+			// reads sjawhar's own repositories: the project's own sjawhar/oh-my-pi is reachable.
+			name: "an issue on the repository the pair moved", repo: ghrepo.MustParse("cybermonklabs/legion"),
+			dirs: []string{"acme", "cybermonklabs", "sjawhar"},
+			tokens: map[string]string{
+				"acme":          "implement-read-for-acme/widgets",
+				"cybermonklabs": "implement-token-for-cybermonklabs/legion",
+				"sjawhar":       "implement-read-for-sjawhar/oh-my-pi",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			writing: []string{"cybermonklabs"},
+		},
+		{
+			// The production failure of 2026-11-06, which is why this case may not be deleted.
+			// The pair resolving while the old owner serves one other repository is the state
+			// adding sjawhar/oh-my-pi to the project's mapping put production in, and the owner
+			// test the rename rule replaced read that one repository as the old owner being the
+			// project's own, stopped resolving the pair, and left 47 trees unable to push. A
+			// tree recorded on the pair's `from` is such a tree: its recorded owner's directory
+			// and the directory of the owner whose installation serves the repository now hold
+			// the one write lease, minted for cybermonklabs, so a role writes the repository
+			// GitHub holds through either name — and sjawhar/oh-my-pi, which the recorded owner
+			// serves beside it, keeps a read-only directory of its own.
+			name: "an issue recorded on the pair's from while the old owner serves one other repository",
+			repo: ghrepo.MustParse("sjawhar/legion"),
+			dirs: []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/oh-my-pi"},
+			tokens: map[string]string{
+				"acme":             "implement-read-for-acme/widgets",
+				"cybermonklabs":    "implement-token-for-cybermonklabs/legion",
+				"sjawhar":          "implement-token-for-cybermonklabs/legion",
+				"sjawhar/oh-my-pi": "implement-read-for-sjawhar/oh-my-pi",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi"},
+			writing: []string{"cybermonklabs", "sjawhar"},
+		},
+		{
+			// The old owner serves a third repository beside the issue's own. The write lease
+			// in its directory names the issue's repository alone, so the third one holds a
+			// directory of its own, read-only and minted for the old owner over it alone: the
+			// repository directories are cut for sjawhar, the owner whose installation serves
+			// the role's repository, whatever the pair moved away from that owner.
+			//
+			// The cybermonklabs/legion and sjawhar/legion directories this case pinned while
+			// mintOwner redirected a served owner were the fault and not reach: both named
+			// cybermonklabs/legion, which the cybermonklabs directory's own read lease already
+			// holds.
+			name:   "an issue on the old owner's other repository while it serves a third",
+			served: []string{"Cybermonklabs/legion", "acme/widgets", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("sjawhar/oh-my-pi"),
+			dirs:   []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/tools"},
+			tokens: map[string]string{
+				"acme":          "implement-read-for-acme/widgets",
+				"cybermonklabs": "implement-read-for-cybermonklabs/legion",
+				"sjawhar":       "implement-token-for-sjawhar/oh-my-pi",
+				"sjawhar/tools": "implement-read-for-sjawhar/tools",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			writing: []string{"sjawhar"},
+		},
+		{
+			// The issue is the moved repository's, recorded under the name the old owner had,
+			// so the old owner's directory holds the write lease for the repository the pair's
+			// `to` serves and reaches neither of the old owner's own two. Each of those holds a
+			// directory of its own, minted for the old owner, while the sjawhar directory keeps
+			// the cybermonklabs write lease, which is the one entry the cybermonklabs directory
+			// holds too.
+			name:   "an issue on the moved repository as the record names it, the old owner serving two",
+			served: []string{"Cybermonklabs/legion", "acme/widgets", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("sjawhar/legion"),
+			dirs:   []string{"acme", "cybermonklabs", "sjawhar", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			tokens: map[string]string{
+				"acme":             "implement-read-for-acme/widgets",
+				"cybermonklabs":    "implement-token-for-cybermonklabs/legion",
+				"sjawhar":          "implement-token-for-cybermonklabs/legion",
+				"sjawhar/oh-my-pi": "implement-read-for-sjawhar/oh-my-pi",
+				"sjawhar/tools":    "implement-read-for-sjawhar/tools",
+			},
+			minted:  []string{"acme/widgets", "cybermonklabs/legion", "sjawhar/oh-my-pi", "sjawhar/tools"},
+			writing: []string{"cybermonklabs", "sjawhar"},
+		},
+		{
+			// Both owners serve a repository called tools. The serving clause cuts the
+			// repository directories for cybermonklabs, the owner that serves the role's
+			// repository, and the recorded clause cuts sjawhar's own beside the one the write
+			// lease names, which is where sjawhar/tools comes from. R3 gives that directory
+			// the lease of the repository its own name resolves to — sjawhar's own tools,
+			// which the project serves under that name — and cybermonklabs/tools stays
+			// reachable through the directory named for it, so one directory name never
+			// answers for two repositories.
+			name:   "an issue recorded on the pair's from while both owners serve a repository of one name",
+			served: []string{"Cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("sjawhar/legion"),
+			dirs:   []string{"cybermonklabs", "cybermonklabs/tools", "sjawhar", "sjawhar/tools"},
+			tokens: map[string]string{
+				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
+				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
+				"sjawhar":             "implement-token-for-cybermonklabs/legion",
+				"sjawhar/tools":       "implement-read-for-sjawhar/tools",
+			},
+			minted:  []string{"cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			writing: []string{"cybermonklabs", "sjawhar"},
+		},
+		{
+			// The same collide state with the issue recorded on the moved repository under the
+			// name GitHub has. The sjawhar directory writes nothing here, so it keeps its own
+			// read lease over sjawhar's tools, and the repository directories are cut for
+			// cybermonklabs, the owner serving the role's repository: cybermonklabs/tools is
+			// the one name they produce, the role's own repository needing none. The
+			// sjawhar/tools directory this case pinned while mintOwner redirected a served
+			// owner was the fault and not reach: it held the lease the sjawhar directory above
+			// it already holds.
+			name:   "an issue on the moved repository while both owners serve a repository of one name",
+			served: []string{"Cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("cybermonklabs/legion"),
+			dirs:   []string{"cybermonklabs", "cybermonklabs/tools", "sjawhar"},
+			tokens: map[string]string{
+				"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
+				"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
+				"sjawhar":             "implement-read-for-sjawhar/tools",
+			},
+			minted:  []string{"cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			writing: []string{"cybermonklabs"},
+		},
+		{
+			// The same collide state with the issue recorded on the old owner's own tools,
+			// which that owner serves under its own name. The repository directories are cut
+			// for sjawhar, the owner serving the role's repository, and the one repository
+			// sjawhar serves is the one its write lease names, so the bundle holds no
+			// repository directory at all: a read-only directory beside the owner's own would
+			// stand for a repository the directory above it reaches more widely, and
+			// cybermonklabs' directory reads both of that owner's repositories.
+			//
+			// The cybermonklabs/legion, cybermonklabs/tools and sjawhar/legion directories
+			// this case pinned while mintOwner redirected a served owner were the fault and
+			// not reach: the clause cut cybermonklabs' repositories because mintOwner answered
+			// cybermonklabs for sjawhar, the owner whose installation serves the role's own
+			// repository, and the cybermonklabs directory's own read lease names both of them.
+			name:   "an issue on the old owner's own repository of the colliding name",
+			served: []string{"Cybermonklabs/legion", "cybermonklabs/tools", "sjawhar/tools"},
+			repo:   ghrepo.MustParse("sjawhar/tools"),
+			dirs:   []string{"cybermonklabs", "sjawhar"},
+			tokens: map[string]string{
+				"cybermonklabs": "implement-read-for-cybermonklabs/legion+tools",
+				"sjawhar":       "implement-token-for-sjawhar/tools",
+			},
+			minted:  []string{"cybermonklabs/legion+tools", "sjawhar/tools"},
+			writing: []string{"sjawhar"},
+		},
+		{
+			// The two owners' repository-name sets differ: the project serves cybermonklabs'
+			// widgets and nothing of sjawhar's but the moved repository. The serving clause
+			// names sjawhar/widgets, since the repository directories are cut over the names
+			// the owner serving the role's repository holds, and that name resolves to
+			// sjawhar/widgets, which the project does not serve: no lease of this bundle may
+			// hold it, so the bundle holds no such directory. A directory of that name could
+			// only carry cybermonklabs/widgets' token, and a `gh` command spelling
+			// sjawhar/widgets means a repository that token cannot reach. cybermonklabs/widgets
+			// keeps its own directory, and the pair's own two owner directories are untouched.
+			name:   "an issue recorded on the pair's from while the two owners serve different names",
+			served: []string{"Cybermonklabs/legion", "cybermonklabs/widgets"},
+			repo:   ghrepo.MustParse("sjawhar/legion"),
+			dirs:   []string{"cybermonklabs", "cybermonklabs/widgets", "sjawhar"},
+			tokens: map[string]string{
+				"cybermonklabs":         "implement-token-for-cybermonklabs/legion",
+				"cybermonklabs/widgets": "implement-read-for-cybermonklabs/widgets",
+				"sjawhar":               "implement-token-for-cybermonklabs/legion",
+			},
+			minted:  []string{"cybermonklabs/legion", "cybermonklabs/widgets"},
+			writing: []string{"cybermonklabs", "sjawhar"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			repos := base
+			if tc.served != nil {
+				repos = projectRepos(tc.served...)
+			}
+			var minted []string
+			credential := GitHubCredential(countingTokens{minted: &minted}, repos, renames, nil, quietBundleLog())
+			bundle, err := credential(context.Background(), claim.RoleImplementer, tc.repo)
+			if err != nil {
+				t.Fatalf("credential: %v", err)
+			}
+			tokens := bundleTokens(t, bundle)
+			if !maps.Equal(tokens, tc.tokens) {
+				t.Errorf("tokens = %v, want %v", tokens, tc.tokens)
+			}
+			// The write lease stands in the directories R3's writing clause names and in no
+			// other: a repository directory the recorded clause adds is read-only, as is every
+			// directory of an owner the issue is not recorded on.
+			for dir, token := range tokens {
+				if strings.Contains(token, "-token-for-") != slices.Contains(tc.writing, dir) {
+					t.Errorf("%s holds %q; the writing token stands in %q and nowhere else", dir, token, tc.writing)
+				}
+			}
+			if !slices.Equal(minted, tc.minted) {
+				t.Errorf("minted for %v, want %v: one lease per scope, each owner's own", minted, tc.minted)
+			}
+			if got := bundle.DirNames(); !slices.Equal(got, tc.dirs) {
+				t.Errorf("the bundle's directories are %q, want %q: this rule renames none", got, tc.dirs)
+			}
+			if dirs := GitHubDirs(repos, renames, nil, Roles, tc.repo); !slices.Equal(dirs, tc.dirs) {
+				t.Errorf("GitHubDirs = %q, want the same set %q, which is what a running pod is compared against", dirs, tc.dirs)
+			}
+			if err := bundle.Validate(); err != nil {
+				t.Errorf("the bundle does not validate: %v", err)
+			}
+		})
+	}
+}
+
+// chainedRenames are two configured pairs whose owners chain while their repositories do not:
+// sjawhar/legion moved to cybermonklabs, and cybermonklabs/agent-infra moved on to
+// theorem-labs. NewRenames holds them — its chain check compares whole repositories, and no
+// owner's repositories move to two owners — so the owner whose installation serves a role's own
+// repository is itself an owner a configured pair moved a repository away from.
+var chainedRenames = ghrepo.MustRenames(legionRename, ghrepo.MustRename("cybermonklabs/agent-infra", "theorem-labs/agent-infra"))
+
+// An owner the project serves repositories of under its own name is minted for itself, so the
+// repository directories are cut for the owner whose installation serves the role's own
+// repository even where a second pair moved one of that owner's repositories on to a third
+// owner.
+//
+// This catches mintOwner redirecting that owner: the directories would be cut over
+// theorem-labs' repositories, which theorem-labs' own directory already reads, and
+// cybermonklabs/tools would be named by no lease of the bundle at all — `legion gh` and git for
+// it would fall back to the cybermonklabs directory, whose write lease names
+// cybermonklabs/legion alone, and GitHub would refuse them.
+func TestASecondPairDoesNotRedirectTheOwnerThatServesTheRolesRepository(t *testing.T) {
+	served := []string{"Cybermonklabs/legion", "cybermonklabs/tools", "theorem-labs/agent-infra", "theorem-labs/nats-server"}
+	repos := projectRepos(served...)
+	recorded := ghrepo.MustParse("sjawhar/legion")
+	credential := GitHubCredential(ownerTokens{}, repos, chainedRenames, nil, quietBundleLog())
+	bundle, err := credential(context.Background(), claim.RoleImplementer, recorded)
+	if err != nil {
+		t.Fatalf("credential: %v", err)
+	}
+	tokens := bundleTokens(t, bundle)
+	want := map[string]string{
+		"cybermonklabs":       "implement-token-for-cybermonklabs/legion",
+		"cybermonklabs/tools": "implement-read-for-cybermonklabs/tools",
+		"sjawhar":             "implement-token-for-cybermonklabs/legion",
+		"theorem-labs":        "implement-read-for-theorem-labs/agent-infra+nats-server",
+	}
+	if !maps.Equal(tokens, want) {
+		t.Errorf("tokens = %v, want %v", tokens, want)
+	}
+	reached := map[string]bool{}
+	for _, token := range tokens {
+		owner, names, ok := leaseNames(token)
+		if !ok {
+			t.Fatalf("the lease %q names no repository: the fakes render every lease as <app>-token-for-<owner>/<name> or <app>-read-for-<owner>/<name>[+<name>]", token)
+		}
+		for _, name := range names {
+			reached[owner+"/"+name] = true
+		}
+	}
+	for _, repo := range served {
+		if !reached[strings.ToLower(repo)] {
+			t.Errorf("no lease of the bundle names %s, which the project serves; the bundle holds %v reaching %v",
+				strings.ToLower(repo), slices.Sorted(maps.Keys(tokens)), slices.Sorted(maps.Keys(reached)))
+		}
+	}
+	if dirs := GitHubDirs(repos, chainedRenames, nil, Roles, recorded); !slices.Equal(dirs, bundle.DirNames()) {
+		t.Errorf("GitHubDirs = %q, want the bundle's own %q, which is what a running pod is compared against", dirs, bundle.DirNames())
+	}
 }
 
 // ControllerCredential is one read-only directory per owner, each narrowed to the repositories

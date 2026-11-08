@@ -180,15 +180,6 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # e2e/agent-view.e2e.ts imports AGENT_STREAM_LIMITS and capAgentStreamText as values
-        # (LEGION-548), which Playwright's own Node resolution reads from contracts' built
-        # dist/: under Node the package's "default" condition is dist/index.js. A type-only
-        # import needs none of it, and neither does the dashboard's own Vite build, which
-        # reaches contracts' src/ through the aliases at packages/dispatch/web/vite.config.ts
-        # (the "bun" export condition is Bun's own and is no part of how Vite resolves it).
-        run: bun run build
-        working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
@@ -532,25 +523,6 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # This job is a matrix and each leg runs one project, so the readers here are not the
-        # shard job's. The two every leg runs: e2e/heavy-bodies.ts:7, which imports
-        # DISPATCH_BLOCK_UNITS from @legion/contracts/dispatch-tools, reached from
-        # heavy-bodies.e2e.ts, which every leg runs; and e2e/agents.ts:1, which imports
-        # DELIVERY_CAPABILITIES from @legion/contracts, reached through e2e/seed.ts, which every
-        # clock spec imports. chromium-alone has one of its own, heavy-document-writes.e2e.ts:14,
-        # since it is the only leg that runs that spec: its testMatch is `clockSpecs`
-        # (e2e/playwright.config.ts:382), where firefox-alone and webkit-alone take
-        # /heavy-bodies\.e2e\.ts/ alone (:390, :402).
-        #
-        # Playwright's own Node resolution reads each from contracts' built dist/: under Node the
-        # package's "default" condition is dist/index.js, or dist/dispatch-tools.js for that
-        # subpath. A type-only import needs none of it, and neither does the dashboard's own Vite
-        # build, which reaches contracts' src/ through the aliases at
-        # packages/dispatch/web/vite.config.ts (the "bun" export condition is Bun's own and is no
-        # part of how Vite resolves it).
-        run: bun run build
-        working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
@@ -624,12 +596,12 @@ jobs:
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
         # legs run is a clock spec, and no clock spec uploads or downloads anything.
-        # chromium-alone runs all three (`clockSpecs`: heavy-bodies, heavy-document-writes and
-        # nested-directive, named at e2e/playwright.config.ts:201 and taken by that project at
-        # :382), firefox-alone and webkit-alone run
-        # heavy-bodies alone (:390, :402). And e2e/run.ts:126-130 makes no lane bucket at one
-        # worker. A container serving nothing would be charged to the very reading these rows
-        # exist for. A clock spec that later uploads fails here by name rather than quietly.
+        # chromium-alone runs both (`clockSpecs`: heavy-bodies and nested-directive, named at
+        # e2e/playwright.config.ts:200 and taken by that project at :389), firefox-alone and
+        # webkit-alone run heavy-bodies alone (:397, :409). And e2e/run.ts:126-130 makes no lane
+        # bucket at one worker. A container serving nothing would be charged to the very reading
+        # these rows exist for. A clock spec that later uploads fails here by name rather than
+        # quietly.
         #
         # The memory and CPU sampler both this job and the shard job run is
         # .github/scripts/dispatch-browser-samples.sh: MemAvailable and where the CPU goes,
@@ -798,11 +770,6 @@ jobs:
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # The e2e helpers the specs import read some of contracts' values from its built dist/,
-        # through Playwright's own Node resolution (the shard job's step of the same name).
-        run: bun run build
-        working-directory: packages/contracts
       - name: Build the Dispatch server
         # run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it
