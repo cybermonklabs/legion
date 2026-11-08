@@ -394,9 +394,9 @@ func (o *Outbox) tryHold(ctx context.Context) (*duty.Hold, time.Duration) {
 // stopped, which is no later than it, is at or before the moment Publishing() turned false;
 // cleared is read after that store, so stopped_by, which is no earlier than it unless the
 // deadline caps it at the stop itself, is at or after that moment. Reading the clock once only,
-// after the store, as this did until INFRA-1568, reports the stretch between the store and the
-// read as time this process had already stopped, while a /healthz read issued in there still
-// answers true, and answers it honestly: the reader calls a correct answer a disagreement.
+// after the store, reports the stretch between the store and the read as time this process had
+// already stopped, while a /healthz read issued in there still answers true, and answers it
+// honestly: the reader calls a correct answer a disagreement.
 // Reading it once only, before the store, hides the opposite stretch the same way. The stretch is
 // nanoseconds unless this goroutine is pre-empted between the two statements, which is exactly
 // what a loaded runner does.
@@ -425,10 +425,6 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 	returned := time.Now()
 	o.hold.Store(nil)
 	cleared := time.Now()
-	// The deadline caps both bounds: on every path that ran through Hold.Lost it is already behind
-	// both reads, which makes the two bounds one value and the stop exact, and on the paths that
-	// leave it ahead the store of nil above is the stop, with returned taken before it and cleared
-	// after it.
 	deadline := hold.Deadline()
 	stopped, stoppedBy := deadline, deadline
 	if returned.Before(stopped) {

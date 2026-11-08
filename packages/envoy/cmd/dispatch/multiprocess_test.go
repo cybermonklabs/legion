@@ -1316,12 +1316,12 @@ const logResolution = time.Millisecond
 // the real stop). A read that falls across either edge decides nothing, since the field
 // describes one instant inside the bracket and the row cannot say which.
 //
-// Reading the start from the line's own time alone, as this did until dispatch://INFRA-1568,
-// decided "not publishing" of a read that the process may honestly have answered true to: the
-// line is written after Publishing() turned true, so its time can be after the real start by a
-// millisecond plus however long the goroutine was pre-empted in between.
+// Reading the start from the line's own time alone would decide "not publishing" of a read that
+// the process may honestly have answered true to: the line is written after Publishing() turned
+// true, so its time can be after the real start by a millisecond plus however long the goroutine
+// was pre-empted in between.
 //
-// Reading the end from `stopped` alone had the same fault from the other side: that attribute is
+// Reading the end from `stopped` alone has the same fault from the other side: that attribute is
 // the clock read taken before the store that ends the turn, capped at the hold's deadline, so on
 // the paths that do not end at the deadline it is at or before the real stop, and a read
 // answered in between would be decided "publishing" where the process honestly answered false.

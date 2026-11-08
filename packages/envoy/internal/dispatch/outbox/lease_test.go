@@ -564,11 +564,10 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// and 0 < Renew < TTL - Margin): the first renewal tick falls five seconds after the take, so
 	// the take, the seed, the append and a whole scan have those five seconds to run in before
 	// any renewal of this hold can reach the record path, and the deadline - the take plus
-	// TTL - Margin - stays five minutes ahead for the whole row. Five seconds, and not the minute
-	// this row gave itself at first, because the count below has to wait that tick out to see
-	// whether the lost hold's renewal stopped, and a row cannot sleep a minute for it. The hold
-	// is the outbox's own, under its token and instance, so the batch that records under it finds
-	// the row another's exactly as it would in production.
+	// TTL - Margin - stays five minutes ahead for the whole row. Five seconds is also short
+	// enough for the count below to wait that tick out and see whether the lost hold's renewal
+	// stopped. The hold is the outbox's own, under its token and instance, so the batch that
+	// records under it finds the row another's exactly as it would in production.
 	recordPath := duty.HoldOptions{TTL: 6 * time.Minute, Renew: 5 * time.Second, Margin: time.Minute, Token: outbox.token}
 	taken := time.Now()
 	hold, err := duty.TryHold(ctx, outbox.deps.Store.Pool, publisherHold, outbox.instance, recordPath)
@@ -620,10 +619,7 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// before this turn began - passes every assertion above, since those bound it only from the
 	// future. began is read just ahead of publish, so this holds stopped inside [began, returned],
 	// the turn itself, which is what separates serve's return from a deadline tens of seconds
-	// further on. The bound that stood here, deadline - stopped against TTL - Margin - Renew,
-	// could not fail once the assertions above had passed: deadline is the take's send time plus
-	// TTL - Margin, that send is after taken, the guard above holds returned - taken under Renew,
-	// and stopped is before returned, so the gap was always wider than that bound.
+	// further on.
 	if stopped.Before(began) {
 		t.Errorf("the line dates the stop at %s, before publish was called at %s",
 			stopped.Format(time.RFC3339Nano), began.Format(time.RFC3339Nano))
