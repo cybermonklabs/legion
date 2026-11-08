@@ -1144,22 +1144,22 @@ func (p *dispatchProcess) outboxLines(t *testing.T) []outboxLine {
 	t.Helper()
 	var lines []outboxLine
 	// The processes are still running while this reads their output, so its last line can have
-	// been written only in part. logLines ranges over strings.Lines, which yields that part as a
-	// line of its own, and it trims the newline off every line it returns, so whole and partial
-	// are told apart here instead: the output holds a whole line followed by its newline, while
-	// the partial one is followed by whatever the process writes next. The snapshot is read after
-	// logLines so that it holds at least what logLines saw - the buffer only grows - which makes
-	// a line whole then whole here too.
+	// been written only in part. strings.Lines yields that part as a line of its own, and it is
+	// the one line it yields without a trailing newline, so whole and partial are told apart
+	// where the output is already split: a whole line is followed by its newline, while the
+	// partial one is followed by whatever the process writes next. One read of the output
+	// answers both questions, which is what this does rather than search a second copy for each
+	// matched line: waitForOutboxLine calls this every 50 ms while it waits, on the kind of
+	// runner whose stalls this row is about.
 	//
 	// Leaving a partial line out rather than parsing it is what this row wants: a took, released
 	// or lost line caught halfway carries no started, stopped or stopped_by yet, and the three
 	// requirements below would fail the row on a line the binary wrote correctly. Nothing is
 	// lost by it, since any later read of the output sees the line whole, and startOutboxPair
 	// prints both processes' whole output when the row fails.
-	matched := p.logLines(`msg="` + outboxLogPrefix)
-	output := p.Output.String()
-	for _, text := range matched {
-		if !strings.Contains(output, text+"\n") {
+	for raw := range strings.Lines(p.Output.String()) {
+		text, whole := strings.CutSuffix(raw, "\n")
+		if !whole || !strings.Contains(text, `msg="`+outboxLogPrefix) {
 			continue
 		}
 		attributes := map[string]string{}
@@ -1180,41 +1180,33 @@ func (p *dispatchProcess) outboxLines(t *testing.T) []outboxLine {
 			at: at, message: strings.TrimPrefix(attributes["msg"], outboxLogPrefix),
 			instance: attributes["instance"], reason: attributes["reason"], text: text,
 		}
-		if started, ok := attributes["started"]; ok {
-			if line.started, err = time.Parse(time.RFC3339Nano, started); err != nil {
-				t.Fatalf("read the start of the line %q: %v", text, err)
+		// moment reads one of the RFC3339Nano moments the hold's own lines carry, and fails the
+		// row when a line that must carry it does not.
+		moment := func(key string, required bool) time.Time {
+			value, ok := attributes[key]
+			if !ok {
+				if required {
+					t.Fatalf("the line %q carries no %s, so the publishing period it bounds cannot be read", text, key)
+				}
+				return time.Time{}
 			}
-		} else if line.message == tookHold {
-			// The row reads this attribute to date the moment the process began publishing, which
-			// the line's own time dates no better than a millisecond plus whatever ran between the
-			// store of the hold and the log call. A binary that stops writing it is a regression,
-			// and it is caught here rather than left to turn into a /healthz disagreement whose
-			// reader has to work out where it came from.
-			t.Fatalf("the line %q carries no started, so the moment the process began publishing cannot be read", text)
-		}
-		if stopped, ok := attributes["stopped"]; ok {
-			if line.stopped, err = time.Parse(time.RFC3339Nano, stopped); err != nil {
-				t.Fatalf("read the moment the process stopped publishing, of the line %q: %v", text, err)
+			at, err := time.Parse(time.RFC3339Nano, value)
+			if err != nil {
+				t.Fatalf("read the %s of the line %q: %v", key, text, err)
 			}
-		} else if line.message == releasedHold || line.message == lostHold {
-			// As with started, and for a sharper reason: the line is written before the release,
-			// and the release is a database round trip, so the line's own time has been seen 1.09 s
-			// later than the moment the process stopped (dispatch://INFRA-1568, job 42346322118).
-			// Falling back to it would turn a dropped attribute into a disagreement with /healthz.
-			t.Fatalf("the line %q carries no stopped, so the moment the process stopped publishing cannot be read", text)
+			return at
 		}
-		if stoppedBy, ok := attributes["stopped_by"]; ok {
-			if line.stoppedBy, err = time.Parse(time.RFC3339Nano, stoppedBy); err != nil {
-				t.Fatalf("read the moment by which the process had stopped publishing, of the line %q: %v", text, err)
-			}
-		} else if line.message == releasedHold || line.message == lostHold {
-			// The second bound on the stop, read after the store that ends it and capped at the
-			// hold's deadline just as stopped is. Without it a read of /healthz answered between
-			// the real stop and stopped - which is at or before that stop, so such a read is one
-			// the process honestly answered "publishing" to - would be decided against the log
-			// rather than left undecided (publishingAt).
-			t.Fatalf("the line %q carries no stopped_by, so the moment by which the process had stopped publishing cannot be read", text)
-		}
+		ends := line.message == releasedHold || line.message == lostHold
+		// A took line must date the start of the period and a released or lost line must bracket
+		// its end from both sides, because publishingAt reads those three and nothing else to
+		// decide a /healthz sample against the log - its doc comment says in full why the lines'
+		// own times will not do, the stop having been seen 1.09 s before the line that reports it
+		// (dispatch://INFRA-1568, job 42346322118). A binary that stops writing one of them is a
+		// regression, and it is caught here rather than left to turn into a /healthz
+		// disagreement whose reader has to work out where it came from.
+		line.started = moment("started", line.message == tookHold)
+		line.stopped = moment("stopped", ends)
+		line.stoppedBy = moment("stopped_by", ends)
 		lines = append(lines, line)
 	}
 	return lines
@@ -1791,6 +1783,11 @@ func TestOneProcessPublishesTheOutboxAtATime(t *testing.T) {
 	samples := sampleOutboxPublisher(pair, samplingSpan)
 	scene := newOutboxScene(t, pair, 3, 1, 1)
 	stop := scene.writeAtRate(t, 4, pair.a, pair.b)
+	// Deferred so that a t.Fatalf below - the wait for a publisher is one of the failures this
+	// row exists to catch - stops the writers too, rather than leaving the goroutine posting to
+	// stopped processes until the binary exits with its write failures reported to nobody. stop
+	// does nothing when it is called again, so the call after the wait stands as it is.
+	defer stop()
 	sampled := samples()
 	// The run ends with exactly one publisher, and the wait for it is the product's own bound: a
 	// renewal late over the final 100 ms of the span stops its holder there, and what INFRA-590
