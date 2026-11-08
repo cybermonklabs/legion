@@ -503,7 +503,7 @@ test("ProofDocument makes a schema-read-only admission non-editable and reloadab
     act(() => admit(true));
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
-    expect(editors[0]?.readOnly).toBe(true);
+    expect(editors[0]?.access).toBe("read");
     expect(within(view.container).getByRole("article").getAttribute("data-read-only")).toBe("true");
     expect(within(view.container).getByText("Reload to edit.")).toBeDefined();
     // A socket that is not connected names no reload: its reconnect's admission decides.
@@ -537,7 +537,7 @@ test("ProofDocument names a reload once a read-only admission's issue is open ag
     act(() => admit(true));
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
-    expect(editors[0]?.readOnly).toBe(true);
+    expect(editors[0]?.access).toBe("comment");
     expect(within(view.container).getByRole("article").getAttribute("data-read-only")).toBe("true");
     expect(closedLine()).not.toBeNull();
     expect(reloadLine()).toBeNull();
@@ -545,7 +545,7 @@ test("ProofDocument names a reload once a read-only admission's issue is open ag
     // Reopened while that socket still holds the document: the editor stays read-only, and the
     // page shows the reload that makes it editable again.
     act(() => rerender({ isClosed: false }));
-    expect(editors[0]?.readOnly).toBe(true);
+    expect(editors[0]?.access).toBe("read");
     expect(within(view.container).getByRole("article").getAttribute("data-read-only")).toBe("true");
     expect(closedLine()).toBeNull();
     expect(reloadLine()).not.toBeNull();
@@ -561,7 +561,7 @@ test("ProofDocument names a reload once a read-only admission's issue is open ag
 
     // A writable admission names neither line.
     act(() => admit(false));
-    expect(editors[0]?.readOnly).toBe(false);
+    expect(editors[0]?.access).toBe("edit");
     expect(within(view.container).getByRole("article").getAttribute("data-read-only")).toBe(
       "false"
     );
@@ -594,8 +594,69 @@ test("ProofDocument names a reload again for a schema's admission when a close a
     act(() => rerender({ isClosed: true }));
     expect(reloadLine()).toBeNull();
     act(() => rerender({ isClosed: false }));
-    expect(editors[0]?.readOnly).toBe(true);
+    expect(editors[0]?.access).toBe("read");
     expect(reloadLine()).not.toBeNull();
+  } finally {
+    view.unmount();
+  }
+});
+
+// The server admits every socket on a closed issue's document read-only, so that admission says
+// nothing about this editor's schema, and the document takes comments by quote through it. On an
+// open issue a read-only admission means an outdated schema, and the document takes nothing.
+test("a closed issue's document takes comments by quote through its read-only admission; an open one's does not", async () => {
+  const { admit, connections, editors, rerender, sync, view } = renderProofDocument({
+    isClosed: true,
+  });
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    act(() => admit(true));
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options).toMatchObject({ access: "comment" });
+    act(() => admit(true));
+    expect(editors[0]?.access).toBe("comment");
+
+    rerender({ isClosed: false });
+    expect(editors[0]?.access).toBe("read");
+  } finally {
+    view.unmount();
+  }
+});
+
+// The server decides a socket's admission once, as it connects, and admits every socket on a
+// closed issue read-only. Reopened from the page, the issue's document is admitted again: it stays
+// read-only until that admission arrives, and takes edits once it is read-write. A close asks
+// nothing of the page, since the server closes the issue's rooms itself.
+test("a reopened issue's document is admitted again and takes edits once that admission is read-write", async () => {
+  const { admit, connections, editors, rerender, sync, view } = renderProofDocument({
+    isClosed: true,
+  });
+
+  try {
+    await waitFor(() => expect(connections).toHaveLength(1));
+    act(() => admit(true));
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(connections[0]?.readmitted).toBe(0);
+
+    rerender({ isClosed: false });
+    expect(connections[0]?.readmitted).toBe(1);
+    expect(editors[0]?.access).toBe("read");
+
+    act(() => admit(false));
+    expect(editors[0]?.access).toBe("edit");
+    expect(within(view.container).getByRole("article").getAttribute("data-read-only")).toBe(
+      "false"
+    );
+    expect(within(view.container).queryByText("Reload to edit.")).toBeNull();
+
+    rerender({ isClosed: false });
+    rerender({ isClosed: true });
+    expect(connections[0]?.readmitted).toBe(1);
+    expect(connections).toHaveLength(1);
+    expect(editors[0]?.destroyed).toBe(false);
   } finally {
     view.unmount();
   }

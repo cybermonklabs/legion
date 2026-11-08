@@ -516,6 +516,7 @@ var routeShapes = map[string]routeShape{
 		// An If-None-Match that matches the answer's ETag is answered 304 and no body.
 		Also: []routeAnswer{{Status: http.StatusNotModified}},
 	},
+	"GET /api/v1/issues/{key}/collaborators":               {Status: http.StatusOK, Response: issueCollaborators{}},
 	"GET /api/v1/references":                               {Status: http.StatusOK, Response: model.GraphReferences{}, Params: referencesQuery{}},
 	"GET /api/v1/references/questions":                     {Status: http.StatusOK, Response: referenceQuestions{}, Params: referenceQuestionsQuery{}},
 	"GET /api/v1/block-links":                              {Status: http.StatusOK, Response: model.BlockLinks{}, Params: blockLinksQuery{}},

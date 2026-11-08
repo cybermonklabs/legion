@@ -5741,6 +5741,53 @@
         "x-write-scope": "project"
       }
     },
+    "/api/v1/issues/{key}/collaborators": {
+      "get": {
+        "description": "Everyone who worked an issue, running or not, as {issue_key, people, agents, legion_registry}. people (kind user) is one row per canonical login: the assignee, everyone who claimed it, posted a comment, message, ask or document version on it or its documents, or answered one of its asks. agents (kind session) is one row per session id: the same event actors that are sessions (the Legion daemon's legion-daemon:\u003cPROJECT\u003e writer left out), merged with every session the listener's Legion agent registry records for the issue, which adds legion {role, role_token, started_at, replaced_by, replaced_at} and its title. Each row carries reasons (assignee, claimed, posted, answered) and last_at; no running state. legion_registry is unavailable when the listener did not answer, and the rest still answers.",
+        "operationId": "getApiV1IssuesByKeyCollaborators",
+        "parameters": [
+          {
+            "name": "key",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "description": "the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH)",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "default": {
+            "description": "A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IssueCollaborators"
+                }
+              }
+            }
+          }
+        },
+        "x-auth": "any"
+      }
+    },
     "/api/v1/issues/{key}/comments": {
       "get": {
         "description": "List an issue's comments; ?artifact= scopes to a document.",
@@ -13438,6 +13485,121 @@
         ],
         "type": "object"
       },
+      "CollaboratorAgent": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "last_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "legion": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CollaboratorLegion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "null",
+              "string"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "session_id",
+          "title",
+          "reasons",
+          "last_at",
+          "legion"
+        ],
+        "type": "object"
+      },
+      "CollaboratorLegion": {
+        "properties": {
+          "replaced_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "replaced_by": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "role": {
+            "type": "string"
+          },
+          "role_token": {
+            "type": "string"
+          },
+          "started_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "role",
+          "role_token",
+          "started_at",
+          "replaced_by",
+          "replaced_at"
+        ],
+        "type": "object"
+      },
+      "CollaboratorPerson": {
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "last_at": {
+            "type": [
+              "null",
+              "string"
+            ]
+          },
+          "login": {
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "login",
+          "reasons",
+          "last_at"
+        ],
+        "type": "object"
+      },
       "Comment": {
         "properties": {
           "anchor": {
@@ -18089,6 +18251,41 @@
           "claim",
           "code",
           "error"
+        ],
+        "type": "object"
+      },
+      "IssueCollaborators": {
+        "properties": {
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/CollaboratorAgent"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "issue_key": {
+            "type": "string"
+          },
+          "legion_registry": {
+            "type": "string"
+          },
+          "people": {
+            "items": {
+              "$ref": "#/components/schemas/CollaboratorPerson"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "issue_key",
+          "people",
+          "agents",
+          "legion_registry"
         ],
         "type": "object"
       },

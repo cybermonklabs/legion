@@ -1394,6 +1394,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/issues/{key}/collaborators": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Everyone who worked an issue, running or not, as {issue_key, people, agents, legion_registry}. people (kind user) is one row per canonical login: the assignee, everyone who claimed it, posted a comment, message, ask or document version on it or its documents, or answered one of its asks. agents (kind session) is one row per session id: the same event actors that are sessions (the Legion daemon's legion-daemon:<PROJECT> writer left out), merged with every session the listener's Legion agent registry records for the issue, which adds legion {role, role_token, started_at, replaced_by, replaced_at} and its title. Each row carries reasons (assignee, claimed, posted, answered) and last_at; no running state. legion_registry is unavailable when the listener did not answer, and the rest still answers. */
+    get: operations["getApiV1IssuesByKeyCollaborators"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/issues/{key}/comments": {
     parameters: {
       query?: never;
@@ -3285,6 +3302,27 @@ export interface components {
       updated_at: string;
       verification_artifact_id: string;
     };
+    CollaboratorAgent: {
+      kind: string;
+      last_at: null | string;
+      legion: components["schemas"]["CollaboratorLegion"] | null;
+      reasons: string[] | null;
+      session_id: string;
+      title: null | string;
+    };
+    CollaboratorLegion: {
+      replaced_at: null | string;
+      replaced_by: null | string;
+      role: string;
+      role_token: string;
+      started_at: string;
+    };
+    CollaboratorPerson: {
+      kind: string;
+      last_at: null | string;
+      login: string;
+      reasons: string[] | null;
+    };
     Comment: {
       anchor: components["schemas"]["Anchor"] | null;
       anchor_block?: components["schemas"]["BlockPath"];
@@ -4279,6 +4317,12 @@ export interface components {
       claim: components["schemas"]["IssueClaim"] | null;
       code: string;
       error: string;
+    };
+    IssueCollaborators: {
+      agents: components["schemas"]["CollaboratorAgent"][] | null;
+      issue_key: string;
+      legion_registry: string;
+      people: components["schemas"]["CollaboratorPerson"][] | null;
     };
     IssueComponents: {
       ids: string[] | null;
@@ -8796,6 +8840,40 @@ export interface operations {
       };
     };
   };
+  getApiV1IssuesByKeyCollaborators: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["IssueCollaborators"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1IssuesByKeyComments: {
     parameters: {
       query?: {
@@ -11931,6 +12009,9 @@ export type CheckResult = components["schemas"]["CheckResult"];
 export type CheckResultRecorded = components["schemas"]["CheckResultRecorded"];
 export type ClaimIssueInput = components["schemas"]["ClaimIssueInput"];
 export type ClaimedIssue = components["schemas"]["ClaimedIssue"];
+export type CollaboratorAgent = components["schemas"]["CollaboratorAgent"];
+export type CollaboratorLegion = components["schemas"]["CollaboratorLegion"];
+export type CollaboratorPerson = components["schemas"]["CollaboratorPerson"];
 export type Comment = components["schemas"]["Comment"];
 export type CommentDelivery = components["schemas"]["CommentDelivery"];
 export type CommentMention = components["schemas"]["CommentMention"];
@@ -12047,6 +12128,7 @@ export type IssueCheckResults = components["schemas"]["IssueCheckResults"];
 export type IssueChild = components["schemas"]["IssueChild"];
 export type IssueClaim = components["schemas"]["IssueClaim"];
 export type IssueClaimedError = components["schemas"]["IssueClaimedError"];
+export type IssueCollaborators = components["schemas"]["IssueCollaborators"];
 export type IssueComponents = components["schemas"]["IssueComponents"];
 export type IssueComponentsInput = components["schemas"]["IssueComponentsInput"];
 export type IssueCoverage = components["schemas"]["IssueCoverage"];
