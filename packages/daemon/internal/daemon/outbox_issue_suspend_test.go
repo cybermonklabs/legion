@@ -718,11 +718,6 @@ func TestAStartThatOutlivesItsIssuesDepartureStartsNothing(t *testing.T) {
 // the real Sandbox runtime, because what it must show is the pod built again behind the issue that
 // came back, and the second over the stand-in runtime, because what it must show is which rows the
 // re-admission wrote and which claim each brought back.
-//
-// It runs at the head alone. The first door's arrangement holds a start row the fence declined,
-// which the commit before the fence cannot produce: there that start acted, building the pod again
-// and taking back the claim the park had just put down, so the claim this door is read against —
-// one no start of the old run ever touched — is not what that fixture would leave.
 func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 	// Door one. The rig is newFenceRig's, the one
 	// TestAStartThatOutlivesItsIssuesDepartureStartsNothing reads the fence in, cut to the single

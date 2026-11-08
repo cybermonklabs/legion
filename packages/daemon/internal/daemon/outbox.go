@@ -1157,12 +1157,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// The status read is the issue's own recorded Status and not its DispatchStatus: a close
 		// the daemon authored writes Status with the rows that carry it out and leaves
 		// DispatchStatus at what the board last showed until Dispatch's echo arrives, while
-		// Engine.keepStatus writes DispatchStatus alone for a status the daemon sets back, which
-		// leaves the issue in the workflow and its start a start. It is the issue's own status and
-		// not its root's, because a child carried into a tree of its own stands in the workflow
-		// while the tree it left lingers, and the tree is what the guard below reads. A production
-		// check's look is exempt — it is the one start an issue out of the workflow still runs —
-		// which the enclosing payload.CheckLook == 0 gives it.
+		// Engine.keepStatus writes DispatchStatus and keeps Status for a status the daemon sets
+		// back, which leaves the issue in the workflow and its start a start. It is the issue's own
+		// status and not its root's, because a child carried into a tree of its own stands in the
+		// workflow while the tree it left lingers, and the tree is what the guard below reads. A
+		// production check's look is exempt — it is the one start an issue out of the workflow
+		// still runs — which the enclosing payload.CheckLook == 0 gives it.
 		if payload.CheckLook == 0 {
 			if record.OutOfWorkflow(issue.Status) {
 				r.log.Info("outbox start of an issue that has left the workflow; finished without acting", "row", row.ID,
@@ -1172,7 +1172,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// A tree that lingers has left the workflow, and linger holds each member where it
 			// stood: a start that reaches its claim after the close (queued before it and backing
 			// off) finishes without acting and records no start, so the close's suspend still
-			// applies. Re-admission starts the member again (admit's startMidPhaseChildren). A
+			// applies. Re-admission starts the member again (admit's startMidPhaseMembers). A
 			// check start is the one start a lingering tree runs: a look of a closed issue's
 			// production check, which resumes the role that check records
 			// (record.ProductionCheck.Role) the linger suspended.
