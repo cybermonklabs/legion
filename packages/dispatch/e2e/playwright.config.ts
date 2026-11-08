@@ -172,7 +172,7 @@ const expectTimeout = 15_000;
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
 //
 // `retries: 0`, against the one retry the run takes on CI, and for a reason of its own: the
-// `-alone` projects below also set it, but their argument is about the wall clock and does not
+// `-alone` projects below also set it, but their argument is about a measurement and does not
 // reach here. This project's argument is that nothing publishes its flaky rows. The job that
 // runs it (.github/workflows/dispatch-browser.yaml's multiprocess job) writes no blob report,
 // and the merge job that reports the run's flake rate reads the shard and alone legs' blobs
