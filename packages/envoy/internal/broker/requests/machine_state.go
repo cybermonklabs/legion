@@ -1876,10 +1876,11 @@ func audit(ctx context.Context, tx pgx.Tx, kind, enrollmentID, requestID string,
 //
 // It is called after the transaction has committed, never inside it, and once per audit row of a
 // logged kind rather than once per transaction: a writer that ends several grants in one
-// statement (withhold) writes one audit row per grant and so logs one line per grant. Only a
-// request decision and a grant's end are logged — never a grant.used row, of which one session
-// writes one per release, and never an enrollment row, which internal/broker/enroll owns — so
-// the volume is one line per decision and per grant end.
+// statement (withhold) writes one audit row per grant and so logs one line per grant. A request
+// decision, a request.judged row the model judge wrote, and a grant's end are logged — never a
+// grant.used row, of which one session writes one per release, and never an enrollment row,
+// which internal/broker/enroll owns — so the volume is one line per decision, one per judge run
+// that reached a verdict, and one per grant end.
 //
 // A crash between the commit and the line loses the line and not the row.
 func grantLogEvent(kind, actor string, enr enrollmentRow) store.GrantLogEvent {

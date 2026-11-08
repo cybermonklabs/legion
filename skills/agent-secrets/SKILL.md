@@ -164,9 +164,10 @@ class:
 - The key of the issue you work on in `--reason`, for an issue that is not done.
 
 The rules of your deployment decide which secrets the judge may take, and you are told none of
-them, so ask this way and wait as you would anyway. The judge approves such a request or leaves
-it for the person who approves it today, and it never denies. Every other request waits for that
-person, as it does now.
+them, so ask this way and wait as you would anyway. One class is never judged, whatever those
+rules say: a secret tagged as an administrator's, of which a person approves every release. The
+judge approves a request in its class or leaves it for the person who approves it today, and it
+never denies. Every other request waits for that person, as it does now.
 
 ## Waiting, and a grant you already hold
 
@@ -186,7 +187,8 @@ The broker tells a session no names. A name comes from your deployment instructi
 prompt, a skill, or the issue you work on. There is no list to browse and nothing to guess.
 
 - Request a secret only to use it for the work in front of you. A request made to learn whether a
-  secret exists reaches a person's Inbox.
+  secret exists is recorded against your session with the reason you signed, and it reaches a
+  person's Inbox unless the model judge decides it first.
 - `UNKNOWN_SECRET` and a denial are final. Do not ask again, and do not try a name of your own.
 - A secret that a service owns, such as `LEGION_SLACK_BOT_TOKEN`, goes to that service's own pods
   and VMs and to nothing else: `Evaluate` in `packages/envoy/internal/broker/policy/policy.go`

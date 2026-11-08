@@ -221,9 +221,10 @@ agent-secrets machine list: IN_SESSION: pid 2857619 is inside a registered machi
 The refusal covers the session's process tree only: a process the session sends out of it (with
 `( cmd & )`, `setsid -f` or a tmux server it started) passes, and any process running as your user
 can stop the helper. Through these commands such a process can list and revoke your own machine
-logins, never a service's machine login, and your grants, which include grants you approved on any
-session. `agent-secrets enroll --helper` is open to any process of your user, so such a process can
-also enroll a box and read your agent secrets.
+logins, never a service's machine login, and your grants, which include every grant whose
+approver is you — those you approved and those the model judge approved in your stead — and
+every grant the judge approved in anyone's stead. `agent-secrets enroll --helper` is open to any
+process of your user, so such a process can also enroll a box and read your agent secrets.
 
 ## Write a secret and see it served
 
@@ -506,7 +507,7 @@ token endpoint the `azure` kind exchanges at, which also plays the resource host
 spent at, and an AWS service that verifies Signature Version 4. Each is a `.test` name no
 resolver answers, which `BROKER_AIRLOCK_TEST_RESOLVE` and `BROKER_AIRLOCK_TEST_DIAL_ALLOW` point
 at one loopback address each, so the proxy reaches those five and refuses every other private
-address, as it does in production. The judge's own run — its five checks, its one model call and
+address, as it does in production. The judge's own run — its six checks, its one model call and
 what it writes — is real as well, and three more of that command's stands serve it, on loopback
 addresses the broker reaches directly rather than through the proxy: a model endpoint that
 answers whatever was last set for it, a Dispatch holding one open issue and one done one, and a

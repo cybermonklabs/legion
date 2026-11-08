@@ -283,9 +283,10 @@ type Config struct {
 	// identity. Required with the rest of JudgeSettings.
 	JudgeModelAudience string
 	// BROKER_JUDGE_DISPATCH_URL: the base URL of the Dispatch the judge reads an issue from, an
-	// absolute http(s) URL. It reads one thing there — whether the issue a request's reason
-	// names is open — and writes nothing: no ask, no comment, no status. Required with the rest
-	// of JudgeSettings.
+	// absolute http(s) URL. It makes two GETs there — one for the issue a request's reason
+	// names, which answers that issue's key, title and status, and one for the whole markdown
+	// of the issue's spec document — and writes nothing: no ask, no comment, no status.
+	// Required with the rest of JudgeSettings.
 	JudgeDispatchURL string
 	// BROKER_JUDGE_DISPATCH_TOKEN_FILE: the file holding the broker's own projected
 	// ServiceAccount token for the Dispatch at BROKER_JUDGE_DISPATCH_URL. Read when the judge

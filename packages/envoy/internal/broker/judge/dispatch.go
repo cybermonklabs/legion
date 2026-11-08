@@ -15,7 +15,7 @@ import (
 
 // ErrNoIssue is Dispatch answering 404 for the key a request's reason named: the key has an
 // issue key's form, as record.IssueKeyInReason reads one, and no issue carries it. It is the
-// judge's fifth check failing rather than the read failing, so a run tells "no such issue" from
+// judge's issue check failing rather than the read failing, so a run tells "no such issue" from
 // "Dispatch could not be read" and records the one it met.
 var ErrNoIssue = errors.New("dispatch holds no issue with this key")
 

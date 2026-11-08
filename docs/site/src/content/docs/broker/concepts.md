@@ -304,7 +304,10 @@ marked with tags or annotations:
   Such a secret is human tier, names its `requesters` and bounds its grants to an hour, so a
   person approves every release, only someone the secret names may ask, and the grant is short
   enough to review while it is live; one that is not is refused `admin-tier`,
-  `admin-requesters` or `max-grant-required`. Set it with
+  `admin-requesters` or `max-grant-required`. A person approves every release of one even where
+  a deployment runs a model judge: the judge refuses an administrator's secret, so a rules entry
+  that gives the judge seconds of that name cannot undo the tag
+  ([The model judge](#the-model-judge)). Set it with
   `agent-secrets secret create|retag --admin true`.
 - **`max-grant`** is optional, except on an `admin` secret and on a `google-service-account` one:
   each of those needs it, of an hour or less, and is refused `max-grant-required` without it. It
@@ -821,18 +824,20 @@ person as before.
 
 The broker that wrote a request pending runs the judge in the background, for a request it wrote
 and never for one it joined to a request already pending, so one record is judged once. A run has
-30 seconds, and the model call inside it 20. The run makes five checks first, in order, and stops
+30 seconds, and the model call inside it 20. The run makes six checks first, in order, and stops
 at the first that fails, asking the model nothing:
 
 1. the secret's rules entry has a `judge` value;
 2. the request names one secret, and its grant's lifetime — the `--ttl` its session signed, else
    the broker's default for that secret — is at most 15 minutes and at most that entry's seconds;
 3. the tag policy, read again now, still answers approval for that name;
-4. the name is not withheld for that session;
-5. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
+4. the secret is not an administrator's (the `admin` tag), of which a person approves every
+   release, whatever seconds a rules entry gives the judge;
+5. the name is not withheld for that session;
+6. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
    status that is not `done`.
 
-A request that passes all five goes to one model, with the secret's name and rules, the reason and
+A request that passes all six goes to one model, with the secret's name and rules, the reason and
 the issue put to it as data to judge rather than as instructions, and the model answers `approve`
 or `refer`. The run reads the request's state once more immediately before that call and asks
 nothing about a request that is no longer pending — one its session cancelled, one a person
@@ -892,9 +897,10 @@ a session reads a grant, naming the secrets released), `grant.revoked` (naming, 
 the secrets an operator's revoke withheld from the session, and, on each other grant of the session
 that revoke ended, the withheld secrets that grant held), `grant.withheld` (an operator's revoke of
 a grant already revoked, naming under `withheld` the secrets it withheld from the session),
-`request.judged` (one row for each decision the model judge made: each check and its result, the
-model, whether the model was asked, the verdict, the reason, the token counts, that it priced
-nothing, and the raw answer where it did not parse) and
+`request.judged` (one row for every judge run that reached a verdict, its referrals and the runs
+a check stopped included: each check and its result, the model, whether the model was asked, the
+verdict, the reason, the token counts, that it priced nothing, and the raw answer where it did
+not parse) and
 `launcher_credential.revoked` (naming the machine login's `credential_id`, its `host`, its
 `service` for a service's login, and under `enrollments` the sessions the revoke ended) and
 `launcher_credential.token_login` (a service's token login: the `credential_id`, its `service`, the
