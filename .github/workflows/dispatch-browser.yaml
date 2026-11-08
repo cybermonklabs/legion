@@ -161,7 +161,7 @@ jobs:
     #
     # The image this repository builds and publishes for every CI job that can launch WebKit or
     # Firefox (.github/docker/browser.Dockerfile, the one `built:` row of .github/ci-images.yaml,
-    # tag browser-29449ffa): Playwright's own browser host, which bakes Chromium, WebKit and
+    # tag browser-55ba22b1): Playwright's own browser host, which bakes Chromium, WebKit and
     # Firefox and every host package they need under /ms-playwright - where its
     # PLAYWRIGHT_BROWSERS_PATH points - with PostgreSQL 18 and pgvector, the SeaweedFS `weed`
     # binary, jq, python3, flock, a C/C++ toolchain for the dependency whose install falls back
@@ -185,7 +185,7 @@ jobs:
     # container's first runs, so `--shm-size=2g` is not needed beside it. --init gives the
     # container a pid 1 that reaps the browsers' orphans, which four lanes of them make many of.
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:29449ffaf72f6a5d7f1adeb013092f362c1d43bea7ae909122aed63c4d9c88c1
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:55ba22b1d20f5ed49c59f33eb484aae5b941981bfbe21f4ea87372249757dd7c
       options: --user 1001 --ipc=host --init
     #
     # This job runs no `go` command, directly or through a script: the binaries job above builds
@@ -220,17 +220,18 @@ jobs:
     #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193, the build of this
     # same Dockerfile from before the last move of .github/ci-images.yaml's `built:` row, and not
-    # on the digest this file pins now. It carries to that digest all the same: the two are
-    # rebuilds of this one Dockerfile, ten layers each, and each build printed its own size --
-    # 1,160,268,762 bytes for sha256:ba003193 (job 128730667606) against 1,160,268,675 for the
-    # digest pinned now (job 128766793614), eighty-seven apart in one layer's comment text, with
-    # layers 8 to 10 differing because the apt installs are not pinned to versions. Eighty-seven
-    # bytes do not move a pull that took six seconds more when build-essential added real bytes to
-    # it, and a measured table carries the head it was measured at, which is worth saying plainly
-    # rather than claiming an identity that does not hold. The figures it replaces were read at
-    # 99bdf09cf435, which pinned the image from before build-essential was added to it
-    # (dispatch://INFRA-1443), over eight legs of two runs: not one of them ran a build carrying
-    # build-essential, and none is a leg of the reading below.
+    # on the digest this file pins, which every later rewording of a recipe file rebuilds afresh.
+    # It carries across those rebuilds: they are rebuilds of this one Dockerfile, ten layers each,
+    # and each build prints its own size -- 1,160,268,762 bytes for sha256:ba003193 (job
+    # 128730667606), 1,160,268,675 for the rebuild after it (job 128766793614) and 1,160,268,418
+    # for the one after that (job 128789111286), a few hundred bytes of one layer's comment text
+    # apart, with layers 8 to 10 differing because the apt installs are not pinned to versions.
+    # A few hundred bytes do not move a pull that took six seconds more when build-essential added
+    # real bytes to it, and a measured table carries the head it was measured at, which is worth
+    # saying plainly rather than claiming an identity that does not hold.
+    # The figures it replaces were read at 99bdf09cf435, which pinned the image from before
+    # build-essential was added to it (dispatch://INFRA-1443), over eight legs of two runs: not one
+    # of them ran a build carrying build-essential, and none is a leg of the reading below.
     # Three steps the job budget carries are higher here - `Initialize containers` 39 -> 45 s,
     # which is the larger image to pull, `./.github/actions/setup-bun` 3 -> 19 s and
     # `bun install --frozen-lockfile` 10 -> 62 s, those two the slowest download of 24 legs
@@ -609,7 +610,7 @@ jobs:
     # The container, the `sh -e {0}` rule and the `env:` rule of the shard job's head hold here
     # too, and so do their reasons.
     container:
-      image: ghcr.io/cybermonklabs/legion/ci@sha256:29449ffaf72f6a5d7f1adeb013092f362c1d43bea7ae909122aed63c4d9c88c1
+      image: ghcr.io/cybermonklabs/legion/ci@sha256:55ba22b1d20f5ed49c59f33eb484aae5b941981bfbe21f4ea87372249757dd7c
       options: --user 1001 --ipc=host --init
     # This job takes the container because its matrix holds webkit-alone and firefox-alone,
     # which launch the two engines the image exists for; chromium-alone is a leg of a container
@@ -632,9 +633,9 @@ jobs:
     # leg that outran it fails the browser step by name, which is a reading of its own.
     #
     # The job budget below is the rule's arithmetic, read on sha256:ba003193 and not on the
-    # digest this file pins now, for the reason the shard job's head gives, which also says why
-    # a reading taken on that build carries to this one: the figures it replaces were read at
-    # 99bdf09cf435, which pinned the image from before build-essential was added to it
+    # digest this file pins, for the reason the shard job's head gives, which also says why a
+    # reading taken on that build carries across the rebuilds after it: the figures it replaces
+    # were read at 99bdf09cf435, which pinned the image from before build-essential was added to it
     # (dispatch://INFRA-1443), over three legs of one run. The two steps that moved most are
     # `./.github/actions/setup-bun`, 2 -> 20 s, and `Initialize containers`, 38 -> 45 s, the
     # larger image to pull; neither carries a budget of its own, so both land in the sum that
