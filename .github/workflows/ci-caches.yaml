@@ -400,9 +400,12 @@ jobs:
   # which is the whole of what is saved.
   elan:
     runs-on: ubuntu-24.04
-    # One toolchain download and one build of the model on a miss; a run that finds the key
-    # costs the checkout alone.
-    timeout-minutes: 30
+    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 1800 s, the 30 minutes
+    # this job was written with — one toolchain download and one build of the model on a miss,
+    # and a run that finds the key costs the checkout alone — plus its slowest retried step
+    # alone: install-elan's curl of the elan release tarball, 8 x 60 + 127 = 607 s, this job's
+    # only retried call. 1800 + 607 = 2407 s -> 41 min.
+    timeout-minutes: 41
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

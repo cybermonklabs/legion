@@ -20,7 +20,20 @@ runs:
           exit 0
         fi
         tarball="$RUNNER_TEMP/elan-x86_64-unknown-linux-gnu.tar.gz"
-        curl -fsSL -o "$tarball" https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
+        # Retried, because a release host that answers 504 or resets the connection is what fails
+        # this step (dispatch://INFRA-1545, R1). Where the verb is curl no helper is needed:
+        # `--retry 7 --retry-all-errors` makes 8 attempts whose last starts 127 s after the first,
+        # and `--max-time` bounds each attempt on its own, since curl resets that clock for every
+        # retry. `--fail`, the `f` of `-fsSL`, stays: without it curl writes a 504's body into the
+        # tarball, and the sha256sum below is then the only thing between that body and the job.
+        # .github/actions/install-changie/action.yml carries the full explanation of that spelling.
+        #
+        # 60 s per attempt: this is a GitHub release asset, the bound every release-asset fetch of
+        # this repository's CI carries, measured against the Bun release zip's 51,794,595 bytes.
+        # This tarball is 4,996,571 bytes, read from the asset's own content-length on 2026-11-08,
+        # so an attempt that needs the whole 60 s is a host serving it at 83 kB/s.
+        curl -fsSL --retry 7 --retry-all-errors --max-time 60 \
+          -o "$tarball" https://github.com/leanprover/elan/releases/download/v4.2.4/elan-x86_64-unknown-linux-gnu.tar.gz
         echo "42b94d4244e8353142c456ec0e4ca6528fd898a6c604d4059f494e706e431f63  $tarball" | sha256sum -c -
         mkdir -p "$RUNNER_TEMP/elan-init"
         tar -xzf "$tarball" -C "$RUNNER_TEMP/elan-init" elan-init
