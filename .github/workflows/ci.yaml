@@ -351,6 +351,9 @@ jobs:
             # The envoy packages the daemon module compiles (`go list -deps -test` of
             # packages/daemon's ./..., with and without -tags e2e).
             daemon_envoy_deps: &daemon_envoy_deps
+              # The daemon's answer loop calls agentloop, the model loop the daemon and Dispatch
+              # share (internal/answer).
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/brokerclient/*'
               - 'packages/envoy/brokertest/*'
               - 'packages/envoy/daemonpermissions/*'
@@ -495,7 +498,10 @@ jobs:
             legion_command: &legion_command
               - 'packages/daemon/cmd/legion/*'
               - 'packages/daemon/internal/admit/*'
+              - 'packages/daemon/internal/agenthistory/*'
               - 'packages/daemon/internal/agentsecrets/*'
+              - 'packages/daemon/internal/answer/*'
+              - 'packages/daemon/internal/answerloop/*'
               - 'packages/daemon/internal/api/*'
               - 'packages/daemon/internal/appauth/*'
               - 'packages/daemon/internal/backoff/*'
@@ -508,6 +514,9 @@ jobs:
               - 'packages/daemon/internal/claudelaunch/*'
               - 'packages/daemon/internal/config/*'
               - 'packages/daemon/internal/controller/*'
+              - 'packages/daemon/internal/conversation/*'
+              - 'packages/daemon/internal/conversation/claude/*'
+              - 'packages/daemon/internal/conversation/omp/*'
               - 'packages/daemon/internal/credential/*'
               - 'packages/daemon/internal/daemon/**'
               - 'packages/daemon/internal/dispatch/*'
@@ -515,6 +524,8 @@ jobs:
               - 'packages/daemon/internal/ghbranch/*'
               - 'packages/daemon/internal/ghconfig/*'
               - 'packages/daemon/internal/ghrepo/*'
+              - 'packages/daemon/internal/ghroute/*'
+              - 'packages/daemon/internal/ghtool/*'
               - 'packages/daemon/internal/githubrest/*'
               - 'packages/daemon/internal/intake/*'
               - 'packages/daemon/internal/launcher/*'
@@ -554,6 +565,8 @@ jobs:
               - 'packages/daemon/internal/wakepace/*'
               - 'packages/daemon/internal/workflow/*'
               - 'packages/daemon/internal/workspace/*'
+              # The answer loop's model calls (internal/answer).
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/brokerclient/*'
               # packages/envoy/dispatchbody answers whether Dispatch would refuse a body with the
               # server's own splitter, which the close route and the merger's READY completion
@@ -1036,7 +1049,9 @@ jobs:
               # the migration identifier rule, the generated session timings the daemon reads
               # through their one public package, and the Dispatch body check the close route and
               # the merger's READY completion make with the server's own splitter
-              # (packages/envoy/dispatchbody, and the parser and contracts under it).
+              # (packages/envoy/dispatchbody, and the parser and contracts under it), and the
+              # model loop the answer loop calls (packages/envoy/agentloop).
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/dispatchbody/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/itemblocks/*'
@@ -1420,6 +1435,9 @@ jobs:
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # cmd/listener/legion_daemon_contract_test.go reads the writes the daemon's
+              # registry mirror makes (packages/daemon/internal/agenthistory writes the fixture).
+              - 'packages/envoy/cmd/listener/testdata/legion-daemon-writes.json'
               # The soak step takes the serverchange tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
             # `go test -tags multiprocess ./cmd/broker`, and the agent-secrets binary
