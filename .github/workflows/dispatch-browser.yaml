@@ -439,9 +439,9 @@ jobs:
   alone:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The three projects whose rows are measured rather than merely run, one machine each: two
-    # read a wall-clock time and one reads how many bytes a page fetched, and all three are
-    # wrong if anything else runs beside them. Each runs with
+    # The three projects whose rows are measured rather than merely run, one machine each: all
+    # three read a wall-clock time and chromium-alone also reads how many bytes a page fetched,
+    # and all three are wrong if anything else runs beside them. Each runs with
     # one worker and `--no-deps`, so nothing else is on the machine while it measures. The full
     # lane alone: a pull request runs no measured row, since a shard job's machine cannot hold one
     # still enough to measure.
