@@ -886,23 +886,34 @@ jobs:
   # job joins `merge`'s `needs:` and the verdict step's pair list instead, which is what makes a
   # red visual job fail the workflow.
   #
-  # The budgets below are measured, on the first full-lane run of this head: job 128655164325
-  # of run 42456027153, at 362b3197. In seconds: checkout 8, setup-go 7, the go cache restore 1,
-  # setup-bun 2, bun install 5, the contracts build 0, the dashboard build 33, the image pull 33,
-  # the browser step 90, the upload 1; the whole job 180.
+  # The budgets below are measured, over the two full-lane runs this job has had, in seconds:
   #
-  # The rule is in this file's head. The browser step's maximum is 90 s, so 90 x 1.15 = 104 s,
-  # which the rule's two-minute floor raises to 2 min. The job budget is that step's 120 s plus
-  # the 90 s of every step without one: 210 s -> 4 min.
+  #   step                                     job 128655164325   job 128661965627
+  #   checkout                                                8                  7
+  #   setup-go                                                7                  9
+  #   the go cache restore                                    1                  2
+  #   setup-bun                                               2                  1
+  #   bun install                                             5                  7
+  #   the contracts build                                     0                  0
+  #   the dashboard build                                    33                 37
+  #   the image pull                                         33                 26
+  #   Browser-test dispatch dashboard against its baselines  90                106
+  #   the upload                                              1                  1
+  #   the whole job                                         180                201
   #
-  # One run is a thin sample, thinner than the alone job's three legs, and this job has no
-  # install step whose own retry arithmetic would dominate it. What carries the thinness is the
-  # 15 per cent the rule adds and the two-minute floor, which is 30 s above the reading; a leg
-  # that outran it fails the browser step by name, which is a reading of its own.
+  # The rule is in this file's head. The browser step's maximum is 106 s, so 106 x 1.15 = 122 s
+  # -> 3 min. The job budget is that step's 180 s plus the 95 s of every step without one:
+  # 275 s -> 5 min.
+  #
+  # The first of those runs was the only one this job had when these budgets were first written,
+  # and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor,
+  # and the next run came in at 106 s, 14 s inside it. The figures above are the two together,
+  # and the 15 per cent the rule adds is what carries the rest. A leg that outran this fails the
+  # browser step by name, which is a reading of its own.
   visual:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    timeout-minutes: 4
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -945,7 +956,7 @@ jobs:
         # repository's own package, so it fails here and says so.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
       - name: Browser-test dispatch dashboard against its baselines
-        timeout-minutes: 2
+        timeout-minutes: 3
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts among
           # it. TMPDIR, the lane's image and the worker count are exported on the command line,
