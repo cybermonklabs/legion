@@ -12,7 +12,7 @@ import { ApiError, api } from "../../api/client";
 import type { ComposerAnchor, ComposerKind } from "../conversation/composer-model";
 import { MentionComposer } from "../conversation/MentionComposer";
 import type { RecordMarkPlacement } from "../doc/editor";
-import { buildIssuePath, composerReferences } from "../refs/routes";
+import { buildIssuePath } from "../refs/routes";
 import { Margin } from "./Margin";
 import {
   BRIDGE_BIND_WAIT_MS,
@@ -119,28 +119,6 @@ test("Composer uploads dropped files and inserts their references", async () => 
   }
 });
 
-test("Composer ignores a pasted project page URL because only documents are references", () => {
-  const origin = "https://dispatch.test";
-
-  expect(composerReferences(`${origin}/projects/CORE`, origin)).toEqual([]);
-});
-
-test("Composer preserves a project document reference with its document page href", () => {
-  const origin = "https://dispatch.test";
-
-  expect(composerReferences(`${origin}/projects/CORE/documents/design-notes`, origin)).toEqual([
-    {
-      href: "/projects/CORE/documents/design-notes",
-      reference: "dispatch://CORE/artifact/design-notes",
-    },
-  ]);
-  expect(composerReferences("dispatch://CORE/artifact/design-notes", origin)).toEqual([
-    {
-      href: "/projects/CORE/documents/design-notes",
-      reference: "dispatch://CORE/artifact/design-notes",
-    },
-  ]);
-});
 test("Composer posts a document ask and comment to the artifact routes", async () => {
   const user = userEvent.setup();
   const createArtifactAsk = spyOn(api, "createArtifactAsk").mockResolvedValue(undefined as never);

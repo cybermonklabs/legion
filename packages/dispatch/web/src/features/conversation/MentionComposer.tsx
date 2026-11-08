@@ -73,7 +73,8 @@ import { ASK_URGENCIES_ASCENDING, URGENCY_LABELS } from "../inbox/ask-urgency";
 import { useComposerRegistry } from "../margin/margin-context";
 import { AgentName, type AgentText, useAgentText } from "../refs/AgentName";
 import { ReferencePicker } from "../refs/ReferencePicker";
-import { composerReferences } from "../refs/routes";
+import { buildReferencePath } from "../refs/routes";
+import { readTextReferences } from "../refs/text-references";
 import { SendStoppedError } from "../writes/keyed-write";
 import { StopTrying } from "../writes/StopTrying";
 import {
@@ -142,6 +143,12 @@ interface AskOptionDraft {
   description: string;
   id: number;
   label: string;
+}
+
+/** One pill under the draft: the reference as the reader will store it, and the page it opens. */
+interface ReferencePill {
+  readonly href: string;
+  readonly reference: string;
 }
 
 /** How long after the last keystroke what the reader wrote over a refusal is written back to the
@@ -690,7 +697,23 @@ export function MentionComposer({
     replaceDraft(seededDraft(seedMentions, undefined, owner));
     setAskOptions([emptyAskOption()]);
   };
-  const references = useMemo(() => composerReferences(body), [body]);
+  // The pills read the draft through the one reader the rendered body, the document editors and
+  // the search palette read it through, so what the writer sees here is what the reader will see.
+  // The composer asks the server nothing about the draft, so a bare key and a `#id` name nothing
+  // yet and get no pill; a reference the text addresses outright gets one, at its first
+  // appearance, however often the body repeats it.
+  const references = useMemo(() => {
+    const pills: ReferencePill[] = [];
+    const seen = new Set<string>();
+    for (const found of readTextReferences(body).references) {
+      if (found.reference === undefined || found.route === undefined || seen.has(found.reference)) {
+        continue;
+      }
+      seen.add(found.reference);
+      pills.push({ href: buildReferencePath(found.route), reference: found.reference });
+    }
+    return pills;
+  }, [body]);
   const editBody = edit?.body;
 
   // The seed belongs to the channel the host addresses. When it changes - an Agents row's issue

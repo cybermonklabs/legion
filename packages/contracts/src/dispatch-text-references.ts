@@ -910,10 +910,9 @@ function inCodeRow(written: string, body: string): DispatchTextReferenceRow {
 /**
  * Markdown bodies with the references each one cites, in order of first appearance, as read
  * against the server origin `https://dispatch.test`, or the row's `origin` where it names one.
- * Four readers are tested against it - the dashboard's `composerReferences` (its composer's
- * reference pills, which read `dispatch://` references and dashboard addresses alone), the
- * dashboard's reader and resolver for text (what its rendered markdown, its unfurl cards and its
- * document editors share), those renderers (what they link), and the Go reader `text.Mentions`,
+ * Three readers are tested against it - the dashboard's one reader and resolver for text (what
+ * its composer's reference pills, its rendered markdown, its unfurl cards and its document
+ * editors share), those renderers (what they link), and the Go reader `text.Mentions`,
  * which writes the reference graph, through its JSON copy in
  * `packages/envoy/internal/dispatch/text/testdata` - so neither where a reference ends nor what
  * it names can change on one side only.

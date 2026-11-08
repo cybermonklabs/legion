@@ -20,7 +20,6 @@ import {
   parseBlockReference,
   withBlock,
 } from "./block-reference";
-import { referenceSpans } from "./reference-spans";
 import { pageInBound, routeInBound } from "./target-id";
 
 export type IssueRoute =
@@ -698,38 +697,6 @@ function pageRoutes(
   }
   const id = url.hash.startsWith("#b-") ? decodeBlockId(url.hash.slice(3)) : undefined;
   return { block: id === undefined ? undefined : withBlock(route, id), page: route };
-}
-
-/** A reference a text cites: the `dispatch://` form and the dashboard path it opens. */
-export interface ComposerReference {
-  href?: string;
-  reference: string;
-}
-
-/**
- * The references body cites, in order of first appearance: every `dispatch://` reference and
- * dashboard URL of `appOrigin` that names an issue, a document or an item. The composer's
- * reference pills and the unfurl cards read text through it.
- */
-export function composerReferences(
-  body: string,
-  appOrigin = window.location.origin
-): ComposerReference[] {
-  const references: ComposerReference[] = [];
-  const seen = new Set<string>();
-  for (const { value } of referenceSpans(body)) {
-    const route = referenceRouteFromHref(value, appOrigin);
-    if (route === undefined) {
-      continue;
-    }
-    const reference = buildDispatchReference(route);
-    if (seen.has(reference)) {
-      continue;
-    }
-    seen.add(reference);
-    references.push({ href: buildReferencePath(route), reference });
-  }
-  return references;
 }
 
 export function buildDispatchReference(route: DispatchReferenceRoute): string {
