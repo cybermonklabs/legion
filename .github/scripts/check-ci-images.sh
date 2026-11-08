@@ -79,11 +79,15 @@
 #      from anything else is a row nothing builds and nothing pushes: no image of the package
 #      was ever pushed from it, and rule 10 below would hold the row to the hash of a build
 #      recipe no build ever ran. Rule 10 does refuse such a row, in the package mode and over
-#      the network; this rule is that same refusal made in lint, which reads the files of this
-#      tree alone and runs on every change, so a row nothing builds is refused where it is
-#      written rather than in the one job that reads the package. A second image this
-#      repository builds is a second build workflow, and this rule and rule 10 would then name
-#      the Dockerfile each of them builds.
+#      the network, including one naming another file of .github/docker, because the recipe
+#      hash folds in the Dockerfile's own path and not only the files of the directory it
+#      sits in (.github/scripts/ci_images.py's recipe_sha256): without that path two rows
+#      naming two Dockerfiles of one directory would hash alike, and the second would pass
+#      rule 10 on the first one's published label. This rule is that same refusal made in
+#      lint, which reads the files of this tree alone and runs on every change, so a row
+#      nothing builds is refused where it is written rather than in the one job that reads
+#      the package. A second image this repository builds is a second build workflow, and
+#      this rule and rule 10 would then name the Dockerfile each of them builds.
 #
 # IN PACKAGE MODE:
 #
@@ -96,18 +100,19 @@
 #      in the push that adds the Dockerfile, and the row carrying the digest it pushed lands in
 #      a later push.
 #  10. a `built` row whose published image was built from another build recipe than the one
-#      this tree holds. THE RECIPE IS NOT THE DOCKERFILE ALONE: it is every file of the build
-#      context directory the Dockerfile sits in and .github/workflows/browser-image.yaml
-#      itself, whose `labels:`, `outputs:`, `platforms:`, `provenance:`, build-args and action
-#      pin decide the bytes a build pushes as surely as a `RUN` line does. One function hashes
-#      it, .github/scripts/ci_images.py's recipe_sha256; that workflow stamps the hash into the
-#      image it pushes, as the label legion.browser-image.source-sha256, and this rule reads
-#      the label back out of the image at the row's own digest and holds it equal to the hash
-#      of the recipe this tree holds. Without it an edit to the recipe merges green and changes
-#      nothing CI runs: the row still names a digest the package holds, so rule 9 passes, the
-#      tag still matches that digest, so rule 2 passes, and every `shard` and `alone` leg keeps
-#      running the image built before the edit. The tree mode cannot make this comparison,
-#      because the label is on the published image and only a read of the registry can see it.
+#      this tree holds. THE RECIPE IS NOT THE DOCKERFILE ALONE: it is the row's own Dockerfile
+#      path, every file of the build context directory that Dockerfile sits in, and
+#      .github/workflows/browser-image.yaml itself, whose `labels:`, `outputs:`, `platforms:`,
+#      `provenance:`, build-args and action pin decide the bytes a build pushes as surely as a
+#      `RUN` line does. One function hashes it, .github/scripts/ci_images.py's recipe_sha256;
+#      that workflow stamps the hash into the image it pushes, as the label
+#      legion.browser-image.source-sha256, and this rule reads the label back out of the image
+#      at the row's own digest and holds it equal to the hash of the recipe this tree holds.
+#      Without it an edit to the recipe merges green and changes nothing CI runs: the row still
+#      names a digest the package holds, so rule 9 passes, the tag still matches that digest,
+#      so rule 2 passes, and every `shard` and `alone` leg keeps running the image built before
+#      the edit. The tree mode cannot make this comparison, because the label is on the
+#      published image and only a read of the registry can see it.
 #      The remedy is the build: let .github/workflows/browser-image.yaml push the image this
 #      recipe makes, then move the row's digest onto what it pushed.
 #      What this rule does NOT prove is where the published bytes came from: the label is
@@ -281,11 +286,13 @@ MIRROR_JOB = "ci.yaml's ci-images job"
 # copies.
 BUILD_WORKFLOW = ".github/workflows/browser-image.yaml"
 # The one Dockerfile BUILD_WORKFLOW builds, and the label that build writes the hash of its
-# whole build recipe into — the context directory that Dockerfile sits in, and BUILD_WORKFLOW
-# itself (ci_images.py's recipe_sha256). Rule 8 holds every `built` row to that file, because
-# a row naming another is a row no build pushes; rule 10 reads the label back out of the image
-# the row's digest names, and so is the only half of this check that can tell an edited recipe
-# from the bytes the package serves.
+# whole build recipe into — that Dockerfile's own path, the context directory it sits in, and
+# BUILD_WORKFLOW itself (ci_images.py's recipe_sha256). Rule 8 holds every `built` row to that
+# file, because a row naming another is a row no build pushes, which the hash says too: the
+# path is folded into it, so a row naming another file of the context directory hashes to
+# something other than the label the published image carries. Rule 10 reads that label back
+# out of the image the row's digest names, and so is the only half of this check that can tell
+# an edited recipe from the bytes the package serves.
 BUILT_DOCKERFILE = ".github/docker/browser.Dockerfile"
 SOURCE_LABEL = "legion.browser-image.source-sha256"
 # How rule 10 reads an image's label: `crane config` answers the config a label is written in,
@@ -771,8 +778,9 @@ if MODE == PACKAGE:
             )
             problems.append(
                 f"{CI_IMAGES}:{line}: {REGISTRY}@{digest} ({tag}) is not the image this tree's "
-                f"build recipe makes: every file of {recipe} and {BUILD_WORKFLOW} hash to "
-                f"sha256 {tree_sha256} as this tree holds them, and {carried}. "
+                f"build recipe makes: the name {one_line(source)}, every file of {recipe} and "
+                f"{BUILD_WORKFLOW} hash to sha256 {tree_sha256} as this tree holds them, and "
+                f"{carried}. "
                 f"{BUILD_WORKFLOW} writes that recipe's own sha256 into the image it pushes, "
                 f"as that label, so the two differ when a file of the recipe changed and no "
                 f"build pushed the change: every job pinning this row would keep running the "
@@ -829,10 +837,14 @@ for row in readable:
 # `built` to a file this tree holds; this rule holds it to the file that workflow builds,
 # because a row built from any other file is a row no build pushes — so rule 10, which reads
 # the published image's recipe hash back out of the registry, would hold the row to a recipe
-# no build ever ran, and refuse it there. This rule is that refusal made in lint: the tree
-# alone says which file BUILD_WORKFLOW builds, so the row is refused on every change rather
-# than in the one job that reads the package. The path is compared as a path, which is how
-# BUILD_WORKFLOW reads the same key when it looks its own row up.
+# no build ever ran, and refuse it there. That holds for a file of BUILT_DOCKERFILE's own
+# directory as much as for one anywhere else, because recipe_sha256 folds the Dockerfile's
+# path in beside the files of the context: were it the files alone, two rows naming two
+# Dockerfiles of .github/docker would hash alike and rule 10 would pass the second on the
+# first one's label. This rule is that refusal made in lint: the tree alone says which file
+# BUILD_WORKFLOW builds, so the row is refused on every change rather than in the one job that
+# reads the package. The path is compared as a path, which is how BUILD_WORKFLOW reads the
+# same key when it looks its own row up.
 for row in readable:
     if row.kind == BUILT and Path(row.source) != Path(BUILT_DOCKERFILE):
         problems.append(
@@ -840,7 +852,9 @@ for row in readable:
             f"{BUILD_WORKFLOW} builds {BUILT_DOCKERFILE} and no other file, so nothing builds "
             f"this row: no build ever pushed an image from {one_line(row.source)}, and rule 10 "
             f"refuses this row in the package mode, where it holds the published image to the "
-            f"hash of a recipe no build ever ran. This is that refusal in lint, which reads "
+            f"hash of a recipe no build ever ran — the hash folds in the Dockerfile's own "
+            f"path, so a row naming another file of {BUILT_DOCKERFILE}'s own directory is "
+            f"refused there too. This is that refusal in lint, which reads "
             f"this tree alone. Name {BUILT_DOCKERFILE}, or give {BUILD_WORKFLOW} a build for "
             f"{one_line(row.source)} and this check the rule that holds the row it pushes to "
             f"it."

@@ -20,6 +20,15 @@
 #     has not read may name another tree the build receives — `build-contexts`, `secret-files`
 #     — which the trigger would then owe, so an unlisted key is refused. `cache-from` is
 #     listed but also read, since `type=local,src=…` is a local tree.
+#   * A file COMPUTED INTO a build's inputs is DATA (COMPUTED_BUILD_INPUTS). A `with:` value
+#     may be a step's output rather than a literal — browser-image.yaml's `labels:` is the
+#     recipe hash its row step computes — and the file that computes it decides the bytes the
+#     build pushes while no `COPY` names it and no key of the step holds its path. Such a file
+#     is listed by (workflow, job, path, the argument for it) and then read like a file of the
+#     context: the trigger owes it coverage, and the reverse check below does not call it a
+#     path no image build reads. Nothing is inferred — a file no entry names is not read — and
+#     an entry that reaches no build of a tree holding its workflow, or whose path that tree
+#     has not got, fails rather than rotting.
 #   * GATES are an ALLOWLIST: unknown means refused, never ungated. A gate resolves to
 #     `dorny/paths-filter` outputs tested `== 'true'` and joined by `||`, to event terms, or to
 #     terms that cannot narrow by path, or it is refused. The `changes` output such a test names
@@ -540,6 +549,32 @@ PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
 ]
 gate_excusals: list[str] = []
 gate_matches: dict[tuple[str, str, str, str], set[str]] = {}
+
+# A file of this tree that decides what a build pushes and that no Dockerfile names: a build
+# step's `with:` values are not all literals, and a step that computes one reads files. Such a
+# file is an input of that build like a file of its context — a change to it changes the image
+# — so this list holds it to both halves of this check: the trigger must cover it, and the
+# reverse check below counts it as read rather than calling it a path no build reads. It is
+# DATA, by (workflow file, job id, the path, the argument for it), so a file joins the reading
+# of a build only where a reviewer wrote down which build computes what from it, and an entry
+# naming no build of a tree that holds its workflow fails rather than rotting.
+COMPUTED_BUILD_INPUTS: list[tuple[str, str, str, str]] = [
+    (
+        ".github/workflows/browser-image.yaml",
+        "build",
+        ".github/scripts/ci_images.py",
+        "that job's build step writes one label, "
+        "legion.browser-image.source-sha256=<the row step's `source` output>, and the row "
+        "step computes that output with this file's recipe_sha256, so this file's bytes "
+        "decide a label of the image the build pushes as surely as a `RUN` line does. They "
+        "decide the publish gate too: the decide step compares that same hash with the label "
+        "the package serves. A change here that no build followed would leave the published "
+        "image carrying a hash this file no longer computes, which rule 10 of "
+        ".github/scripts/check-ci-images.sh refuses, so the build this trigger starts is the "
+        "only way the row can move onto an image that gate admits.",
+    ),
+]
+computed_matches: dict[tuple[str, str, str, str], bool] = {}
 
 
 def excused_gate_terms(workflow: Path, job_name: str) -> dict[str, tuple[str, str, str, str]]:
@@ -1604,6 +1639,13 @@ for workflow, job_name, step, context, dockerfile, _ in builds:
     ]
     if ignore_file:
         inputs.append((ignore_file, [ignore_file]))
+    # The files a reviewer wrote down as computed into this build's own inputs, read like the
+    # context's: the trigger owes them coverage, and they are not paths "no image build reads".
+    for entry in COMPUTED_BUILD_INPUTS:
+        if entry[0] != str(workflow) or entry[1] != job_name:
+            continue
+        computed_matches[entry] = True
+        inputs.append((f"{entry[2]} (computed into this build's inputs)", [entry[2]]))
     for line, instruction in joined_lines(Path(dockerfile).read_text()):
         command = instruction.split(maxsplit=1)[0].upper() if instruction else ""
         try:
@@ -1823,6 +1865,32 @@ for entry in PINNED_IMAGE_GATES:
         f"{entry[2]!r}, which gates no image build there: no `if:` of that job, and none of a "
         f"step of it, has that term as a whole &&-joined conjunct. Correct the term, or remove "
         f"the entry"
+    )
+
+# Every file this run read into a build because a reviewer wrote it down is printed with the
+# argument for it, so the list is audited against what it admitted; and an entry that reached
+# no build of a tree that holds its workflow fails, for the reason the gate list's does. A file
+# the tree has not got fails too: an entry standing for nothing would quietly stop asking the
+# trigger for a path, which is the whole of what it is here to ask.
+for entry in COMPUTED_BUILD_INPUTS:
+    if computed_matches.get(entry):
+        print(
+            f"listed in COMPUTED_BUILD_INPUTS: {entry[0]}: jobs.{entry[1]} reads {entry[2]} - "
+            f"{entry[3]}"
+        )
+        if not Path(entry[2]).is_file():
+            problems.append(
+                f"::error file={entry[0]}::COMPUTED_BUILD_INPUTS names {entry[2]}, which this "
+                f"tree has not got, as an input {entry[0]} jobs.{entry[1]} computes; correct "
+                f"the path, or remove the entry"
+            )
+        continue
+    if Path(entry[0]) not in documents:
+        continue
+    problems.append(
+        f"::error file={entry[0]}::COMPUTED_BUILD_INPUTS names {entry[0]} job {entry[1]}, "
+        f"which builds no image there, as the reader of {entry[2]}; name the job that builds, "
+        f"or remove the entry"
     )
 
 problems = list(dict.fromkeys(problems))

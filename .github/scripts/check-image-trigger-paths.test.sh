@@ -1266,6 +1266,78 @@ run_check "$root"
 check "the filter beside an excused term still decides" "$(is "$status" 1)"
 check "  and names the input that filter drops" "$(contains "$out" 'does not cover package.json')"
 
+echo "case: a file computed into a build's inputs is data, and then read like the context"
+# The live shape: browser-image.yaml's build step writes a `labels:` whose value is the recipe
+# hash its row step computes with .github/scripts/ci_images.py, so that file decides the bytes
+# the build pushes while no `COPY` names it and no key of the step holds its path. The hatch is
+# an entry in COMPUTED_BUILD_INPUTS, keyed to the workflow and the job that builds.
+#
+# computed_input <root> <workflow file> <job id> <path>: replaces the symlinked checker with a
+# copy whose COMPUTED_BUILD_INPUTS names one file - the reviewed edit this hatch asks for, as
+# pin_gate above does for a gate term.
+computed_input() {
+  local root=$1
+  rm -f "$root/.github/scripts/check-image-trigger-paths.sh"
+  python3 - "$check_script" "$root/.github/scripts/check-image-trigger-paths.sh" "$2" "$3" "$4" <<'PYEOF'
+import sys
+source, destination, workflow, job, path = sys.argv[1:6]
+text = open(source).read()
+anchor = "COMPUTED_BUILD_INPUTS: list[tuple[str, str, str, str]] = [\n"
+entry = f"    ({workflow!r}, {job!r}, {path!r}, 'the argument a reviewer read'),\n"
+assert anchor in text
+open(destination, "w").write(text.replace(anchor, anchor + entry, 1))
+PYEOF
+  chmod +x "$root/.github/scripts/check-image-trigger-paths.sh"
+}
+
+# Nothing is inferred from a file sitting in the tree: unlisted, it is no input of this build,
+# and the trigger that leaves it out is left alone.
+root=$(fixture computed-input-unlisted)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+run_check "$root"
+check "a file no entry names is no input of the build" "$(is "$status" 0)"
+
+root=$(fixture computed-input-listed)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+computed_input "$root" ".github/workflows/image.yaml" "docker" "scripts/recipe.py"
+run_check "$root"
+check "the trigger owes it coverage once listed" "$(is "$status" 1)"
+check "  and names the file the trigger leaves out" \
+  "$(contains "$out" "does not cover scripts/recipe.py (computed into this build's inputs): scripts/recipe.py is built into the image")"
+
+root=$(fixture computed-input-covered)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+sed -i 's|      - "docker/\*\*"|      - "docker/**"\n      - "scripts/recipe.py"|' \
+  "$root/.github/workflows/image.yaml"
+computed_input "$root" ".github/workflows/image.yaml" "docker" "scripts/recipe.py"
+run_check "$root"
+check "and goes green once the trigger covers it" "$(is "$status" 0)"
+check "  counting it among the inputs" \
+  "$(contains "$out" 'docker/Dockerfile: checked 6 inputs (8 files)')"
+check "  and printing the entry with the argument for it" \
+  "$(contains "$out" "listed in COMPUTED_BUILD_INPUTS: .github/workflows/image.yaml: jobs.docker reads scripts/recipe.py - the argument a reviewer read")"
+
+# An entry that reached no build fails rather than standing for nothing, as the gate list's
+# does: a job renamed or no longer building would otherwise stop asking the trigger for a path.
+root=$(fixture computed-input-other-job)
+mkdir -p "$root/scripts"
+echo 'print("the hash the labels: carries")' > "$root/scripts/recipe.py"
+computed_input "$root" ".github/workflows/image.yaml" "changes" "scripts/recipe.py"
+run_check "$root"
+check "an entry naming a job that builds nothing fails" "$(is "$status" 1)"
+check "  and says which entry" \
+  "$(contains "$out" 'COMPUTED_BUILD_INPUTS names .github/workflows/image.yaml job changes, which builds no image there, as the reader of scripts/recipe.py')"
+
+root=$(fixture computed-input-path-gone)
+computed_input "$root" ".github/workflows/image.yaml" "docker" "scripts/gone.py"
+run_check "$root"
+check "an entry naming a file this tree has not got fails" "$(is "$status" 1)"
+check "  and says which path" \
+  "$(contains "$out" 'COMPUTED_BUILD_INPUTS names scripts/gone.py, which this tree has not got')"
+
 # V5: an action that builds an image and is not the one this check reads.
 root=$(fixture tripwire-bake-action)
 python3 - "$root/.github/workflows/image.yaml" <<'PYEOF'

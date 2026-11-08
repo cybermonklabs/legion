@@ -133,7 +133,8 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
   The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
   A `built:` row's digest moving is read by hand too: rule 10 trusts a label its own run wrote.
-  `gh attestation verify oci://<the row's ref> --repo cybermonklabs/legion --format json` names the source commit, where the Dockerfile and `browser-image.yaml` must be this tree's.
+  `gh attestation verify oci://<the row's ref> --repo cybermonklabs/legion --format json` names GitHub's test merge commit of that push, whose second parent is the head the build read:
+  every file of `.github/docker` and `browser-image.yaml` there must be this tree's.
   Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.

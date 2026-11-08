@@ -124,14 +124,15 @@ jobs:
           # .github/ci-images.yaml this repository has: its row_kind is what says which rows are
           # built from a Dockerfile, so this step and .github/scripts/check-ci-images.sh cannot
           # disagree about which row this image's is.
-          row=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 - <<'PY'
+          output=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 - <<'PY'
           import yaml
           from pathlib import Path
 
-          from ci_images import BUILT, row_kind
+          from ci_images import BUILT, recipe_sha256, row_kind
 
           IMAGES = ".github/ci-images.yaml"
           DOCKERFILE = ".github/docker/browser.Dockerfile"
+          WORKFLOW = ".github/workflows/browser-image.yaml"
 
           document = yaml.safe_load(open(IMAGES))
           # The row's source is matched as a path and not as a string, because
@@ -157,30 +158,24 @@ jobs:
           # image runs in the push that adds the Dockerfile, and the row carrying the digest it
           # pushed lands in a later push (.github/ci-images.yaml says why the two are two).
           print(f"digest={built[0]['digest'] if built else ''}")
-          PY
-          )
           # The build recipe's own bytes, which the build below writes into the image as a label
           # and the decision below compares against the label the package carries. The recipe is
-          # the whole of what decides those bytes: every file of the build context directory and
-          # this workflow file, whose `labels:`, `outputs:`, `platforms:`, `provenance:` and
-          # action pin are as much of the build as the Dockerfile is. The rule is
-          # .github/scripts/ci_images.py's recipe_sha256, which rule 10 of
-          # .github/scripts/check-ci-images.sh reads the published image's label with, so the
-          # hash this run stamps and the hash that gate demands cannot drift apart. A second
-          # hashing rule here — `sha256sum` over the Dockerfile alone, which is what stood here —
-          # left every other part of the recipe out: a change to this file's build step selected
-          # the job through ci.yaml's `browser_image` filter and then built nothing, because the
-          # published label still matched the one file the hash covered.
-          # Assigned first, never `echo "…=$(…)"`, for the reason this step's first comment gives.
-          source=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
-          from ci_images import recipe_sha256
-
-          print(recipe_sha256(".github/docker/browser.Dockerfile", ".github/workflows/browser-image.yaml"))
-          ')
-          {
-            printf '%s\n' "$row"
-            echo "source=$source"
-          } | tee -a "$GITHUB_OUTPUT"
+          # the whole of what decides those bytes: the Dockerfile's own path, every file of the
+          # build context directory and this workflow file, whose `labels:`, `outputs:`,
+          # `platforms:`, `provenance:` and action pin are as much of the build as the
+          # Dockerfile is. The rule is .github/scripts/ci_images.py's recipe_sha256, which rule
+          # 10 of .github/scripts/check-ci-images.sh reads the published image's label with, so
+          # the hash this run stamps and the hash that gate demands cannot drift apart. A second
+          # hashing rule here -- `sha256sum` over the Dockerfile alone, which is what stood here
+          # -- left every other part of the recipe out: a change to this file's build step
+          # selected the job through ci.yaml's `browser_image` filter and then built nothing,
+          # because the published label still matched the one file the hash covered. It is
+          # printed from this one run of Python and not a second one beside it, which is a
+          # second import of the same module to say one more line about the same Dockerfile.
+          print(f"source={recipe_sha256(DOCKERFILE, WORKFLOW)}")
+          PY
+          )
+          printf '%s\n' "$output" | tee -a "$GITHUB_OUTPUT"
 
       # Both halves of this decide it, and neither alone would. The row's digest alone would leave
       # an edited recipe unbuilt, because the row still names a digest the package serves, so
@@ -208,7 +203,10 @@ jobs:
           if [ -n "$ROW_DIGEST" ]; then
             # crane's own stderr goes to the log, not into jq, so a failed read says why it
             # failed; the pipeline's failure then leaves `carried` empty and publish true.
-            carried=$(crane config "$REGISTRY@$ROW_DIGEST" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
+            # --platform is named for the reason rule 10 of .github/scripts/check-ci-images.sh
+            # names it on this same read: a config belongs to one platform, this build pushes
+            # linux/amd64 alone, and the three readers of this label must read the same image.
+            carried=$(crane config --platform linux/amd64 "$REGISTRY@$ROW_DIGEST" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
             if [ "$carried" = "$SOURCE" ]; then
               publish=false
               why="$REGISTRY@$ROW_DIGEST, the digest this row names, was built from this recipe ($SOURCE), so there is nothing to push"
@@ -464,12 +462,50 @@ jobs:
   # by the run that publishes, and on a pull request that run is the PULL REQUEST'S OWN COPY of
   # this workflow, which can stamp whatever hash it likes into whatever image it builds. The
   # certificate is the one part of this a workflow edit cannot write, so a reviewer who sees a
-  # `built:` row's digest move reads it by hand — the verify command above with `--format json`
-  # added — and compares two things: the commit its certificate's `sourceRepositoryDigest`
-  # names is the head whose review moved this row, and .github/docker/browser.Dockerfile and
-  # this workflow AT THAT COMMIT are the files this tree holds. AGENTS.md's "Container images"
-  # item carries that same check, and a gate that reads the attestation's source commit itself
-  # is a design decision for the architect, not something these two rules do today.
+  # `built:` row's digest move reads it by hand.
+  #
+  # WHAT THE CERTIFICATE NAMES IS NOT THE HEAD UNDER REVIEW. `sourceRepositoryDigest` is
+  # GitHub's own TEST MERGE COMMIT of the push that published the image — what
+  # `refs/pull/<n>/merge` pointed at for that run, a commit on no branch whose message is
+  # `Merge <head> into <base>`. Its SECOND PARENT is the pull request's head, which is the
+  # commit the build checked out (BUILT_SHA above, this job's `ref:`), and the row's `digest:`
+  # moves in a later push still, so a reviewer holding that commit to "the head whose review
+  # moved this row" rejects every correct move. The check, on the row this tree pins today:
+  #
+  #   gh attestation verify oci://ghcr.io/cybermonklabs/legion/ci@sha256:f77e9ae1c4a522c14bc6fb163e22c14797854e43e5acbf506484a5aef7a5f4fd \
+  #     --repo cybermonklabs/legion \
+  #     --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/browser-image.yaml@refs/pull/2938/merge \
+  #     --source-ref refs/pull/2938/merge --format json \
+  #     | jq -r '.[0].verificationResult.signature.certificate | .sourceRepositoryRef, .sourceRepositoryDigest'
+  #
+  # printed `refs/pull/2938/merge` and `42352a056ea30bf578dac9e4a7a251973bdf10e8`, and
+  #
+  #   gh api repos/cybermonklabs/legion/commits/42352a056ea30bf578dac9e4a7a251973bdf10e8 \
+  #     --jq '.commit.message, (.parents[].sha)'
+  #
+  # printed `Merge 1f240c0049b7bda0edc40891ffeb5307450262bf into
+  # 30f6270b5868f3561bb3bec4900c9cebde41f639`, then those two parents in that order: the base
+  # first, the head the build read second.
+  #
+  # AT THAT SECOND PARENT the reviewer compares the recipe, either way round. File by file:
+  # every file of .github/docker and this workflow, read at that commit with `gh api
+  # repos/cybermonklabs/legion/contents/<path>?ref=<head> -H 'Accept: application/vnd.github.raw'`
+  # (`…/contents/.github/docker?ref=<head> --jq '.[].path'` lists them), against the files this
+  # tree holds. Or the hash: recompute it in a tree of that head's own files WITH THAT HEAD'S
+  # OWN .github/scripts/ci_images.py, since that is the rule its build ran, and read the
+  # image's label back out of the package:
+  #
+  #   PYTHONPATH=.github/scripts python3 -c 'from ci_images import recipe_sha256; print(recipe_sha256(".github/docker/browser.Dockerfile", ".github/workflows/browser-image.yaml"))'
+  #   crane config --platform linux/amd64 ghcr.io/cybermonklabs/legion/ci@sha256:f77e9ae1c4a522c14bc6fb163e22c14797854e43e5acbf506484a5aef7a5f4fd \
+  #     | jq -r '.config.Labels["legion.browser-image.source-sha256"]'
+  #
+  # printed the same string, 31ca9a7777b6f441a952cabf3fea49f9d045b8ae154ec630b836277453355495,
+  # which is what "the image this row pins was built from the recipe that commit held" looks
+  # like. (That label was read here from the `.config.Labels` of the config blob ghcr.io
+  # serves for that manifest, which is what `crane config` reads, because this machine has no
+  # crane.) AGENTS.md's "Container images" item carries this same check, and a
+  # gate that reads the attestation's source commit itself is a design decision for the
+  # architect, not something these two rules do today.
   #
   # AGENTS.md's rule that an image is accepted only at a revision main contains is about
   # the worker and Envoy images a deployment runs, which no pull request's run may publish.

@@ -1808,10 +1808,21 @@ jobs:
             # .github/workflows/dispatch-browser.yaml, and this file declares no `container:`.
             # That check also fails the build when this list misses a file the image build reads;
             # it reads this filter only as a flat list, so it names no anchor.
+            # .github/scripts/ci_images.py is named, and is the one file here the build does
+            # not read as a file: the build's `labels:` is
+            # legion.browser-image.source-sha256=<the row step's source output>, and that step
+            # computes the output with that file's recipe_sha256, so the file's own bytes
+            # decide a label of the image this build pushes. Without it a change to the rule
+            # that defines the hash selected the ci-images job, whose rule 10 then refused the
+            # published image for carrying a hash this tree no longer computes, while no build
+            # ran and no row could move. check-image-trigger-paths.sh reads it as an input of
+            # this build for that reason, from the COMPUTED_BUILD_INPUTS entry that writes the
+            # argument down, and that entry is what refuses this filter if it stops naming it.
             browser_image:
               - '.github/workflows/ci.yaml'
               - '.github/workflows/browser-image.yaml'
               - '.github/docker/**'
+              - '.github/scripts/ci_images.py'
             # lint's notices step: the Go packages it loads for every release target (`legion`,
             # the listener, the agent-secrets binaries and client, every envoy-infra command), the
             # workspaces they build in, the target lists, the script holding the loops and the
