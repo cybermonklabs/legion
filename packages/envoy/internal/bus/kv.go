@@ -156,10 +156,12 @@ func namedRequest(request string, err error) error {
 //
 // A lookup or a create the server leaves unanswered is sent again rather than waited out for
 // longer (sentAgain): nats.go sends each request once, and a member answers neither while its
-// metadata group is younger than lostQuorumInterval or while it has not yet seen its leader go
-// (sentAgain lists the paths). A member that knows it has no leader answers an error instead,
-// which unanswered() does not match and this call still ends on. Every production caller opens
-// its JetStream context with nats.MaxWait(10 * time.Second) (cmd/listener/brokerauth.go:149,
+// metadata group is younger than lostQuorumInterval or while it has not yet seen its metadata
+// leader go, and a member that is not an existing bucket's stream leader leaves its lookup
+// unanswered while that stream's leader is gone (sentAgain lists the paths). A member that
+// knows it has no leader answers an error instead, which unanswered() does not match and this
+// call still ends on. Every production caller opens its JetStream context with
+// nats.MaxWait(10 * time.Second) (cmd/listener/brokerauth.go:149,
 // internal/cistore/cistore.go:357, internal/session/registry.go:369, internal/store/kv.go:94,
 // internal/bus/nats.go:508), which bounds one request and not one step of this call, so what a
 // step that draws no answer costs is counted a request at a time, and every case of it is

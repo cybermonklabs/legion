@@ -828,12 +828,10 @@ func unanswered(err error) bool {
 
 // unansweredSends bounds how many times a caller sends one JetStream request the server left
 // unanswered (sentAgain): EnsureKeyValue's lookup of a KV bucket and its create
-// (internal/bus/kv.go). A wait that runs out is a request that drew no answer rather than one
-// the server is still working on, since the paths sentAgain lists below return without
-// answering at all; and a create that was merely slow is safe to send again because the server
-// deduplicates it, finding the assignment the first send proposed or left inflight and
-// proposing that same one again when the two configurations are equal
-// (server/jetstream_cluster.go:11053-11063). A longer wait buys nothing for an answer that is
+// (internal/bus/kv.go). A wait that runs out is either a request the server will never answer,
+// on one of the paths sentAgain lists below, or one it is still working on, and either is safe
+// to send again: a lookup only reads, and a second identical create is deduplicated (the
+// comment on the create in EnsureKeyValue). A longer wait buys nothing for an answer that is
 // never coming. Three sends, because a start that lost two in a row has a bus that is not
 // serving JetStream at all, which is a start that must end. Each send carries the wait of each
 // request it makes, so this count times that wait is a caller's worst case only where the server
@@ -846,25 +844,31 @@ const unansweredSends = 3
 // Any answer, the server's refusal included, is returned at once, so a refused create is sent
 // once.
 //
-// A request is lost rather than slow because neither side sends it again: nats.go publishes each
-// JetStream request exactly once and waits (nats.go@v1.53.1 js.go:3559-3578), and nats-server
-// v2.15.1 returns from several paths these requests take with no response to the requester:
+// A request that draws no answer never draws one later, because neither side sends it again:
+// nats.go publishes each JetStream request exactly once and waits (nats.go@v1.53.1
+// js.go:3559-3578), and nats-server v2.15.1 returns from several paths these requests take with
+// no response to the requester:
 //   - the account $JS.API.INFO nats.go sends before a KV create (nats.go@v1.53.1 kv.go:432-434)
 //     and a STREAM.CREATE, each at a member that is not the metadata leader
-//     (server/jetstream_api.go:1461-1474 and :1550-1563), and a STREAM.INFO of a stream with no
-//     assignment, a bucket no member has created yet, at such a member (:2087-2093). Each of
-//     those answers JSClusterNotAvailError instead once js.isLeaderless() is true, which it is
-//     only once the metadata group is older than lostQuorumInterval and the member holds no
-//     leader (jetstream_cluster.go:1481-1497); so the silence is a young metadata group, or a
-//     member that has not yet seen its leader go. That error is an answer and is not sent again.
-//     The STREAM.INFO handler sends its own 500 ms late (sendDelayedAPIErrResponse, errRespDelay
-//     at jetstream_api.go:1211), to let the leader answer first;
+//     (server/jetstream_api.go:1461-1474 and :1550-1563), and a STREAM.INFO of a stream this
+//     member holds no assignment for (a bucket not yet created, or one whose create this member
+//     has not yet applied) at such a member (:2087-2093). Each of those answers
+//     JSClusterNotAvailError instead once js.isLeaderless() is true, which it is only once the
+//     metadata group is older than lostQuorumInterval and the member holds no leader
+//     (jetstream_cluster.go:1481-1497); so the silence is a young metadata group, or a member
+//     that has not yet seen its leader go. That error is an answer and is not sent again. The
+//     STREAM.INFO handler sends its own 500 ms late (sendDelayedAPIErrResponse, errRespDelay at
+//     jetstream_api.go:1211), to let the leader answer first;
+//   - a STREAM.INFO of an existing bucket at a member that is not its stream's leader, while
+//     that member does not yet see the stream's group as leaderless (:2100-2133): only the
+//     stream's leader answers it;
 //   - a STREAM.CREATE whose metadata proposal is refused because the term moved
 //     (jetstream_cluster.go:11110-11112, with raft.go:1046-1060);
-//   - every request pending in the API queue when a push reaches its 10,000 limit: the server
-//     drains the queue, answers none of them, logs a rate-limited warning and publishes
-//     JSAdvisoryAPILimitReached to the system account (jetstream_api.go:1029-1045), which is no
-//     answer to the caller.
+//   - every request pending in the JetStream API queue (a STREAM.CREATE) or the info queue (a
+//     STREAM.INFO, the account $JS.API.INFO) when a push reaches that queue's limit, 10,000 by
+//     default: the server drains that queue, answers none of them, logs a rate-limited warning
+//     and publishes JSAdvisoryAPILimitReached to the system account
+//     (jetstream_api.go:1029-1045), which is no answer to the caller.
 //
 // So a start that opens a bucket through a member in one of those states waits its whole bound
 // out and ends the program over one send that was never going to be answered.
