@@ -23,6 +23,28 @@ function noHits(): SearchResponse & SearchResultsPage {
   return { limit: 20, offset: 0, reachable: 0, results: [], took_ms: 1, total: 0 };
 }
 
+/** The search catching up with a press: it now matches the issue that press just made, which
+ *  is what the pause's own search does when it lands after the create. */
+function theMadeIssue(): SearchResponse & SearchResultsPage {
+  return {
+    limit: 20,
+    offset: 0,
+    reachable: 1,
+    results: [
+      {
+        href: "/issues/CORE-7",
+        id: "CORE-7",
+        kind: "issue",
+        owner: { key: "CORE-7", kind: "issue", status: "todo", title: words },
+        rank: 1,
+        snippet: words,
+      },
+    ],
+    took_ms: 1,
+    total: 1,
+  };
+}
+
 function issue(key: string): Issue {
   return {
     closed_at: null,
@@ -52,6 +74,7 @@ interface Stubs {
   readonly patchIssue: Mock<typeof api.patchIssue>;
   readonly queryClient: QueryClient;
   readonly restore: () => void;
+  readonly search: Mock<typeof api.search>;
   readonly uploadArtifact: Mock<typeof api.uploadArtifact>;
 }
 
@@ -96,6 +119,7 @@ function openBar(settings: { label: string; session: string }): Stubs {
       view.unmount();
       queryClient.clear();
     },
+    search,
     uploadArtifact,
   };
 }
@@ -165,6 +189,27 @@ test("with no session configured it makes the issue and says no conversation was
     fireEvent.click(screen.getByText("Open CORE-7"));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
+    );
+  } finally {
+    bar.restore();
+  }
+});
+
+// The search behind the bar re-answers after the create and matches the issue the press just
+// made, so the words the person typed no longer match nothing. The row goes, because there is
+// no second issue to make; the line stays, because it says what their press did.
+test("the search catching up withdraws the row and leaves the line about the press", async () => {
+  const bar = openBar({ label: "from-the-bar", session: "" });
+  try {
+    fireEvent.click(await offerFor());
+    await waitFor(() => expect(screen.getByText("Open CORE-7")).toBeDefined());
+
+    bar.search.mockResolvedValue(theMadeIssue());
+    await bar.queryClient.refetchQueries();
+
+    await waitFor(() => expect(screen.queryByText("Open CORE-7")).toBeNull());
+    expect(screen.getByTestId("search-new-issue-said").textContent).toContain(
+      "CORE-7 is made. No conversation was started"
     );
   } finally {
     bar.restore();

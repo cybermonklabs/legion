@@ -34,7 +34,9 @@ export type FileNewIssue = (
  * write landed, opens the issue, since a conversation is running on it; with no session named,
  * says so and leaves the row as the way to open it, because an issue nobody was asked about is
  * one the person decides what to do with; with a write onto the issue refused, says which write
- * it was and leaves the row as the way to open the issue, which is made either way.
+ * it was and leaves that row, since the issue is made either way. The row goes when the search
+ * catches up and finds the issue the press just made, because there is nothing left to offer;
+ * what the press did is said all the same, until the person types something else.
  */
 export function useNewIssueOffer({
   file = fileNewIssue,
@@ -64,8 +66,14 @@ export function useNewIssueOffer({
     enabled: offered && project !== undefined,
   });
   const [here, setState] = useWordsState<OfferState>(words);
+  // Nothing pressed and nothing to offer is no offer at all. Once a press has been made the
+  // line stays, whatever the list behind it does: the search re-answers after the create and
+  // now matches the issue that press just made, which withdraws the row - rightly, since there
+  // is no second issue to make - but the sentence is about the press, not about whether an
+  // offer is still on the table. Words the person has typed since drop it (`useWordsState`),
+  // because then it answers a question they have moved on from.
   if (!offered || project === undefined || settings.data === undefined) {
-    return undefined;
+    return here === undefined ? undefined : { row: undefined, said: <NewIssueSaid state={here} /> };
   }
   const filed = here?.kind === "made" ? here.filed : undefined;
   const accept = () => {
