@@ -36,16 +36,26 @@ concurrency:
   group: dispatch-browser-nightly
   cancel-in-progress: false
 
-# What the called workflow's jobs need: the clone and the pinned downloads (`contents: read`),
-# and the merge job's read of this run's own jobs through the API (`actions: read`). No
-# `checks: write`, which the ci-ok report would need: this call passes no `ci-ok-changes`, so
-# that step does not run and this workflow posts no check.
+# The default for a job of this workflow that declares none. The one job below declares its own,
+# which is what reaches the workflow it calls.
 permissions:
   contents: read
   actions: read
 
 jobs:
+  # A calling job that declares no `permissions:` hands the called workflow the default
+  # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
+  # "Supported keywords for jobs that call a reusable workflow"), so what dispatch-browser.yaml's
+  # jobs need is declared here. `contents: read` is the `actions/checkout` step every one of its
+  # four jobs starts with, and the pinned tools its setup steps download; `actions: read` is the
+  # merge job's "Reading one, the rows" step, which reads this run's own jobs with
+  # `gh api repos/<repo>/actions/runs/<id>/jobs` (and its "Reading three" step reads that same
+  # file). No `checks: write`, which the ci-ok report would need: this call passes no
+  # `ci-ok-changes`, so that step does not run and this workflow posts no check.
   full:
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/dispatch-browser.yaml
     with:
       lane: full

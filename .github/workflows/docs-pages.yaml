@@ -262,6 +262,15 @@ jobs:
   # No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
   # docs-site.yaml's own job carries the limit.
   build:
+    # A calling job that declares no `permissions:` hands the called workflow the default
+    # GITHUB_TOKEN permissions, not this file's block (GitHub's reusable-workflow reference,
+    # "Supported keywords for jobs that call a reusable workflow"), so the scopes docs-site.yaml
+    # needs are declared here. `contents: read` is its `actions/checkout` step's, and that step
+    # is the whole of what this call asks the token for: every other step reads the checkout,
+    # the Actions cache or the artifact service, and the ci-ok report step skips because this
+    # call passes no `ci-ok-changes`.
+    permissions:
+      contents: read
     uses: ./.github/workflows/docs-site.yaml
     with:
       upload-pages-artifact: true

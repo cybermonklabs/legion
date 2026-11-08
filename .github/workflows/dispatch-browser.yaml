@@ -42,6 +42,8 @@ name: Dispatch browser suite
 # ci.yaml's dispatch-browser job declares what these jobs need: `contents: read` for every job's
 # checkout, and the merge job's `actions: read` (it reads the run's jobs through the API) and
 # `checks: write` (the ci-ok report it ends with, which only that call turns on).
+# dispatch-browser-nightly.yaml's full job declares the first two: its call passes no
+# `ci-ok-changes` either, so the report step skips there and no check is posted.
 on:
   workflow_call:
     inputs:

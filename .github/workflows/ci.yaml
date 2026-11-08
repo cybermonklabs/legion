@@ -356,8 +356,8 @@ jobs:
           # recomputes those sets and fails naming each file a filter misses.
           #
           # dorny/paths-filter v4.0.3's `some-with-excludes` quantifier matches a change to a filter
-          # when one of its patterns without `!` matches and none of its `!` patterns does. Three
-          # filters have `!` patterns. worker_image's drop what the .dockerignore keeps out of the
+          # when one of its patterns without `!` matches and none of its `!` patterns does.
+          # worker_image's drop what the .dockerignore keeps out of the
           # worker image's build context. envoy_e2e_local and ci_images each end in '!**/*.md': no
           # step of either job reads a Markdown file, so a guide written under a directory pattern
           # of theirs (patches/**, packages/broker-client/**, .github/actions/install-crane/**)
@@ -367,7 +367,29 @@ jobs:
           # Every other filter of this file was tried with that pattern
           # and refused by rule 1 of .github/scripts/check-ci-filters.sh, which fails a filter that
           # stops matching a file its gate reads: those jobs read an embedded prompt, a README
-          # packed into a plugin or an image, or a guide a test compares with code. A filter
+          # packed into a plugin or an image, or a guide a test compares with code - go_notices
+          # among them, whose own Markdown pattern below therefore names packages/envoy/internal
+          # alone, the tree whose Markdown no release target's package directory holds.
+          #
+          # The '*_test.go' patterns are that same offer for a Go test file, made to every gate
+          # filter here one at a time (dispatch://INFRA-1413's R1: a job must not run for a test
+          # file of a package whose tests it never runs). Two gates took '!**/*_test.go', and the
+          # fourteen whose go commands all run in packages/envoy took
+          # '!packages/daemon/**/*_test.go', packages/daemon standing on their lists as its go.mod
+          # and go.sum alone. Every other gate refused one, for one of four reasons. Rule 1 of
+          # check-ci-filters.sh holds a filter to every file of each package directory its go
+          # commands load, and `go list` reads a directory's _test.go files to decide which of
+          # them are in the build, so a job that loads a package owes that package's test files:
+          # that is typecheck, daemon_go_tests, docs, pi_legion, text_checks, ci_filters and
+          # go_notices. The script-harness gates (release_push_test and its kin) are lists the
+          # test filter names through their anchors, so a `!` pattern written in one of them is a
+          # `!` pattern of the test job's own filter, and that job builds ./cmd/listener. A filter
+          # .github/scripts/ci_ts_programs.py pairs with a tsc program - claude_envoy, contracts,
+          # conflicts_script, envoy_client, dispatch_ui, pi_shared, pi_envoy and test - may carry
+          # no `!` pattern at all, since .github/scripts/check-ts-filters.sh refuses one: GitHub's
+          # paths and dorny/paths-filter's two quantifiers read it three ways. And worker_image's
+          # judge is the image check below, which refused it, the worker image's context holding
+          # packages/daemon's test files (the .dockerignore drops packages/envoy's alone). A filter
           # without a `!` pattern means what it would under the default, `some` (any pattern
           # matches), where a `!` pattern would match every file outside it.
           # .github/scripts/check-image-trigger-paths.sh reads the filters
@@ -1234,6 +1256,8 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
               - *guide_layout_files
+              # The step runs one Bun test over the guides the group above names: no Go at all.
+              - '!**/*_test.go'
             # docs/site's lint, typecheck, screenshots and build, with the sources its reference
             # generators and its screenshot harness read. docs-site.yaml holds those steps, and
             # both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
@@ -1579,6 +1603,9 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,
             # typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
             # Dispatch server: the job runs neither.
@@ -1651,6 +1678,9 @@ jobs:
               - '.github/workflows/ci-job-dispatch-memory.yaml'
               - '.github/workflows/ci-job-dispatch-multiprocess.yaml'
               - '.github/workflows/ci-job-broker-multiprocess.yaml'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # envoy-go's fast half (envoy-go-checks): the format, generated-contract and pmdoc
             # checks, the seven shell-script tests, and the build and pack of the envoy commands.
             # gofmt -l . walks every .go file under packages/envoy, those tests and the scripts
@@ -1673,6 +1703,9 @@ jobs:
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'
               - '.github/go-release-targets.json'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # The envoy-infra module's own workspace (packages/envoy/infra/go.work binds it and
             # packages/envoy), the envoy packages its tests compile, and the Dispatch server and
             # listener infra/core/permissions_live_test.go:298-299 builds in the root workspace.
@@ -1699,6 +1732,9 @@ jobs:
               - '.github/actions/pull-test-images/**'
               # Its natslive step takes that tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              # Every go command of this job runs in packages/envoy and packages/envoy/infra;
+              # packages/daemon is here as its go.mod and go.sum alone.
+              - '!packages/daemon/**/*_test.go'
             # The text checks of the three Go modules, and the Dispatch API's six source
             # guards: the tests whose subject is a file's words. Their job runs
             # packages/envoy/internal/textcheck, packages/envoy/infra/internal/textcheck and
@@ -1754,6 +1790,9 @@ jobs:
               - '.github/workflows/ci-job-listener-server-change.yaml'
               # The fixture cmd/listener/api_test.go:191,436,480 reads.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
             # because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go and
             # review_write_guard_test.go walk every non-test .go file of the module, and those
@@ -1872,6 +1911,9 @@ jobs:
               - 'packages/envoy/roleholder/*'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
             # a race job of twenty minutes or more must not run on every change under that tree
             # (INFRA-490). This is the closure of ./internal/dispatch/docs/ (`go list -deps -test
@@ -1929,6 +1971,9 @@ jobs:
               - 'packages/envoy/migrationid/*'
               # internal/dispatch/docs/approval_carry_test.go:26.
               - 'packages/contracts/fixtures/decision-blocks/**'
+              # Every go command of the two jobs on this filter runs in packages/envoy;
+              # packages/daemon is here as its go.mod and go.sum alone.
+              - '!packages/daemon/**/*_test.go'
             # `go test -tags memory ./cmd/dispatch`. memory_profile_test.go reads four guides only
             # when DISPATCH_EDIT_PROFILE_OUT is set (its line 126), which CI never sets, so they are
             # not here. cmd/dispatch/nats_unreachable_test.go, which carries no tag, starts the
@@ -1941,6 +1986,9 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
             dispatch_multiprocess:
               - *ci_router
@@ -1950,6 +1998,9 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # The server-change soak (listener-server-change): `go test -tags serverchange
             # ./cmd/listener`. The listener's own packages, and what its test binary compiles
             # beyond them - the in-process NATS and Postgres helpers, the builder of the binary it
@@ -2025,6 +2076,9 @@ jobs:
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               # The soak step takes the serverchange tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # `go test -tags multiprocess ./cmd/broker`, and the agent-secrets binary
             # cmd/broker/outage_test.go:317-318 builds.
             broker_multiprocess:
@@ -2073,6 +2127,9 @@ jobs:
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
+              # Every go command of this job runs in packages/envoy; packages/daemon is here as
+              # its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # Every file packages/envoy/docker/Dockerfile builds from, so envoy-smoke runs whenever
             # the image it smokes changes, every file the held-port image built on top of it reads
             # (packages/envoy/infra/host/heldportwrapper/Dockerfile and its .dockerignore), and what
@@ -2150,6 +2207,9 @@ jobs:
               - '.github/scripts/repo-paths.sh'
               # The disk the live tests leave: the two steps around them run this sampler.
               - '.github/scripts/disk_watch.py'
+              # The image build and every go command of this job read packages/envoy;
+              # packages/daemon is here as its go.mod and go.sum alone.
+              - '!packages/daemon/**/*_test.go'
             # The local acceptance run drives the Go listener and renders every frame with the
             # shared TypeScript renderer, so a change to either side, or to the contracts both
             # read, runs it.
@@ -2177,6 +2237,9 @@ jobs:
               # between them are its whole input, so a guide written under one of the directory
               # patterns above would start it for nothing.
               - '!**/*.md'
+              # The job's two go builds run in packages/envoy; packages/daemon is here as its
+              # go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # The session stall suites (envoy-session-stall): envoy-client's stall proxy and stack
             # (test/envoy-stack.ts) build natsd and the listener with go build in workspace mode and
             # run each plugin's NATS client through them; the plugins inline pi-shared.
@@ -2195,6 +2258,9 @@ jobs:
               # loads six of @legion/broker-client's seven modules through envoy-client's
               # src/broker-credential.ts:21-22.
               - 'packages/broker-client/**'
+              # The stack this job builds is packages/envoy's listener and natsd; packages/daemon
+              # is here as its go.mod and go.sum alone, so no daemon test file is an input.
+              - '!packages/daemon/**/*_test.go'
             # Every file packages/daemon/docker/worker.Dockerfile builds from, for the worker-image
             # job (.github/workflows/worker-image.yaml, which the build reads too): the root
             # manifest, lockfile, patches and every workspace manifest the plugin stage's frozen
@@ -2320,6 +2386,13 @@ jobs:
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/redact/*'
+              # The step loads each release target's packages and writes their notices; it runs no
+              # test, and no package directory it loads under packages/envoy/internal holds a
+              # Markdown file. The 230 that ride in today are the pmdoc parser's corpus
+              # (internal/dispatch/pmdoc/testdata), which only the jobs that run pmdoc's tests
+              # read, so a guide or a corpus case written under packages/envoy/internal starts no
+              # notices build (dispatch://INFRA-1413's A2).
+              - '!packages/envoy/internal/**/*.md'
             # check-ci-filters.sh, which holds every filter above to what its job reads: every file
             # whose change can move a Go closure (Go code anywhere, the modules' embedded files and
             # testdata, every module and workspace file, the target lists the go commands expand
@@ -2367,6 +2440,8 @@ jobs:
               # scripts that copy and check them, and the crane the action installs, so a guide
               # written under one of those directories would start it for nothing.
               - '!**/*.md'
+              # The job's two steps run shell over the image rows and compile no Go.
+              - '!**/*_test.go'
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
   lint:

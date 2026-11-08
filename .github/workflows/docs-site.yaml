@@ -25,8 +25,8 @@ name: Docs site
 # reference, "Supported keywords for jobs that call a reusable workflow"). So what this job gets is
 # the calling job's to declare: ci.yaml's docs job declares `contents: read` for the checkout and
 # the `actions: read` and `checks: write` its ci-ok report needs. docs-pages.yaml's build job
-# declares none, so this job runs there on the default token; that call passes no `ci-ok-changes`,
-# so the report step skips and the checkout is the whole of what it asks the token for.
+# declares `contents: read` alone; that call passes no `ci-ok-changes`, so the report step skips
+# and the checkout is the whole of what it asks the token for.
 #
 # .github/scripts/ci_job_reads.py's docs gate cites the steps below by name, and
 # .github/scripts/check-ci-filters.sh fails when a cited step is gone. The docs filter of ci.yaml
