@@ -2,15 +2,15 @@
  * A stored text the browser's own parser reads differently from Go shows as Go reads it.
  *
  * The text is `pmdoc`'s `html-block` corpus document, read from the corpus itself so this spec
- * and Go's fixture hold one text. An HTML block is the shape the two readers disagree on: the
- * Proof schema carries markup inline only, so the browser's read-only engine refuses the whole
+ * and Go's fixture hold one text. An HTML block is the shape the browser's own markdown parser
+ * refuses: the Proof schema carries markup inline only, so that parser cannot hold the whole
  * document ("Cannot create node for doc", its content being
- * `["paragraph", "html", "paragraph"]`), while Go reads it as three paragraphs and shows the
- * markup as the literal lines it is - the reading
- * `pmdoc/testdata/display.json` holds for `html-block` and
- * `pmdoc/display_test.go` pins. A parse the engine refuses leaves the body as its own literal
- * text under `data-markdown-fallback` (`useRenderedMarkdown.tsx`), which is what this comment
- * showed before the server sent its reading with the text.
+ * `["paragraph", "html", "paragraph"]`). Go's display read answers the block as a paragraph
+ * holding one inline `html` node, which is what the browser's read-only engine draws for a block
+ * of HTML (`proof-editor/src/html-blocks.ts`) and what `pmdoc/testdata/display.json` holds for
+ * `html-block`. A parse the engine refuses leaves the body as its own literal text under
+ * `data-markdown-fallback` (`useRenderedMarkdown.tsx`), which is what this comment showed before
+ * the server sent its reading with the text.
  */
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
@@ -56,8 +56,10 @@ test("Conversation draws Go's reading of a comment whose markdown the browser's 
     // the whole reading.
     await card.getByRole("button", { name: "Expand thread" }).click();
 
-    // Go's reading: three paragraphs, the markup among them as the lines an author wrote, each
-    // line of its own. A body the browser parsed itself holds nothing read out of it at all.
+    // Go's reading: three paragraphs, the markup among them as one inline `html` node, which is
+    // what the Proof schema carries and what the browser's read-only engine draws for a block of
+    // HTML (`proof-editor/src/html-blocks.ts`). A body the browser parsed itself holds nothing
+    // read out of it at all.
     const drawn = card.locator("div.dispatch-markdown").first();
     const paragraphs = drawn.locator("p");
     await expect(paragraphs).toHaveCount(3);
@@ -65,7 +67,7 @@ test("Conversation draws Go's reading of a comment whose markdown the browser's 
     await expect(paragraphs.nth(1)).toHaveText(
       /^<div class="note">\s*<p>Markup the Proof schema carries inline only\.<\/p>\s*<\/div>$/
     );
-    await expect(paragraphs.nth(1).locator("br")).toHaveCount(2);
+    await expect(paragraphs.nth(1).locator('span[data-type="html"]')).toHaveCount(1);
     await expect(paragraphs.last()).toHaveText("After the block.");
     // The markup is text, never markup: no element of it reaches the page.
     await expect(card.locator("div.note")).toHaveCount(0);

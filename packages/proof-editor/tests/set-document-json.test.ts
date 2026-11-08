@@ -31,7 +31,7 @@ test("setDocumentJSON draws a tree the editor never parses, a picture's own attr
       expect(view.dom.textContent).toBe("The plan ships behind a canary today.");
       expect(view.dom.querySelector("img")?.getAttribute("src")).toBe("shot.png");
     },
-    { access: 'read' }
+    { access: "read" }
   );
 });
 
@@ -50,7 +50,7 @@ test("setDocumentJSON keeps a mark the tree carries over its text", async () => 
       expect(span?.getAttribute("data-id")).toBe("comment-1");
       expect(span?.textContent).toBe("The plan ships behind a canary today.");
     },
-    { access: 'read' }
+    { access: "read" }
   );
 });
 
@@ -75,6 +75,6 @@ test("setDocumentJSON refuses a type this editor has no schema for, rather than 
       // The document the reader had is still the one on the page.
       expect(view.dom.textContent).toBe("An older document.");
     },
-    { access: 'read' }
+    { access: "read" }
   );
 });
