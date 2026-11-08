@@ -122,11 +122,9 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 
 // Migrate applies embedded migrations in version order. Unmarked files commit with their
 // version record in one transaction; marked concurrent indexes run outside a transaction under
-// the same advisory key until their version is recorded. Every one of the three waits for that
-// key polls pg_try_advisory_lock from here rather than waiting for it inside Postgres
-// (lockMigrations), and holds it session-level on a connection that serves nothing else while it
-// is held. It refuses a set pgmigrate.Load refuses before touching the database and bounds every
-// migration's lock waits by LockTimeout.
+// the same advisory key until their version is recorded. Every wait for that key polls, for the
+// reason lockMigrations gives. It refuses a set pgmigrate.Load refuses before touching the
+// database and bounds every migration's lock waits by LockTimeout.
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
@@ -152,12 +150,12 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	return nil
 }
 
-// migrationLockKey is the advisory key every Dispatch runner takes: session-level, at each of the
-// three places a boot waits for it (createVersionTable, applyMigrationOnce and
-// applyNonTransactionalMigration), on a connection of its own that goes back to the pool only
-// once the key is released. The auto-deployer (deploy/scripts/autodeploy.sh, schema_version)
-// takes it too before reading schema_migrations, so an in-flight migration ends first; a change
-// of key changes both.
+// migrationLockKey is the advisory key every Dispatch runner takes, session-level, on a
+// connection that serves nothing else while it is held: createVersionTable and
+// applyMigrationOnce through inMigrationLockTx, applyNonTransactionalMigration on its own
+// hijacked connection. The auto-deployer (deploy/scripts/autodeploy.sh, schema_applied) takes it
+// too before reading schema_migrations, so an in-flight migration ends first; a change of key
+// changes both.
 const migrationLockKey int64 = 8150001
 
 // migrationLockFirstPause and migrationLockMaxPause bound the sleep lockMigrations takes between
@@ -169,13 +167,6 @@ const (
 	migrationLockFirstPause = 50 * time.Millisecond
 	migrationLockMaxPause   = time.Second
 )
-
-// migrationLockConn is all lockMigrations needs of a connection: a session of its own that runs
-// one statement at a time. The pooled connection the two transactional sites hold the key on and
-// the hijacked one a concurrent build owns both satisfy it.
-type migrationLockConn interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}
 
 // lockMigrations takes migrationLockKey on conn, session-level, by polling: one
 // pg_try_advisory_lock statement, and, while another runner holds the key, a sleep with nothing
@@ -192,7 +183,7 @@ type migrationLockConn interface {
 // reports as a deadlock (SQLSTATE 40P01) and both boots fail on. Polling from the client is what
 // breaks the cycle: between two tries the waiter has no statement and no snapshot open, so the
 // holder's build sees it out at once.
-func lockMigrations(ctx context.Context, conn migrationLockConn) error {
+func lockMigrations(ctx context.Context, conn *pgx.Conn) error {
 	started := time.Now()
 	pause := migrationLockFirstPause
 	waited := false
@@ -222,38 +213,65 @@ func lockMigrations(ctx context.Context, conn migrationLockConn) error {
 	}
 }
 
-// lockMigrationsOnPooledConnection marks ctx as holding one of the shared pool's connections,
-// takes that connection and holds migrationLockKey on it until the returned release runs. The
-// release unlocks the key and gives the connection back, or keeps the connection out of the pool
-// when the unlock did not answer true (unlockMigrations), and clears the mark; the caller runs it
-// on every path. It hands back the marked context because the work the caller then does - its
-// transaction, every statement in it - belongs on this same connection and under this mark.
-func (s *Store) lockMigrationsOnPooledConnection(ctx context.Context) (context.Context, *pgxpool.Conn, func(), error) {
-	ctx = WithTransactionTracking(ctx)
+// inMigrationLockTx runs fn under migrationLockKey, inside a transaction of its own on the
+// connection that holds the key, and owns the whole sequence around it in one fixed order:
+// acquire a pooled connection, mark the context as holding it, take the key by polling
+// (lockMigrations), begin, run fn, end the transaction, release the key and give the connection
+// back - or, where the connection's lock state is unknown, close it out of the pool.
+//
+// It is one helper rather than a pair of calls each site repeats because two things nothing else
+// enforces hold the sequence together: the transaction must end before the key is released, which
+// here is the order of two defers in one function, and every statement of fn must run on the
+// marked context this hands it, on the connection that holds the key, which here fn cannot get
+// wrong because it is given no other.
+//
+// fn commits nothing. It returns nil for the work it wants kept, which this commits, or an error,
+// which rolls back. Both callers have a path that keeps a transaction they added nothing to - the
+// set needs no widening, the migration is already recorded - and nil-means-commit lets those read
+// as a plain `return nil` instead of a second tx.Commit call each; a path that forgot to commit
+// is then a path that forgot to return, which does not compile.
+func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, pgx.Tx) error) error {
 	conn, err := s.Pool.Acquire(ctx)
 	if err != nil {
-		return ctx, nil, nil, err
+		return err
 	}
 	// From here the caller holds a connection of this pool, so the pool refuses it a second one
-	// exactly as it refuses one asked for inside a transaction (ErrNestedAcquire).
-	unmark := hold(ctx)
-	if err := lockMigrations(ctx, conn); err != nil {
-		conn.Release()
-		unmark()
-		return ctx, nil, nil, err
+	// exactly as it refuses one asked for inside a transaction (ErrNestedAcquire). The mark goes
+	// on after the acquisition, which would otherwise refuse itself.
+	ctx, unmark := HoldsConnection(ctx)
+	defer unmark()
+	if err := lockMigrations(ctx, conn.Conn()); err != nil {
+		// This connection may hold the key: a server-side error can arrive after the grant - a
+		// pg_cancel_backend caught at the executor's next interrupt check, say - and the statement
+		// that failed is then the one that took it. Unlocking instead would not settle that, since
+		// pg_advisory_unlock answers false both on the session that never took the key, which is
+		// the ordinary failure here, and on the one whose unlock did not land, and the answer a
+		// connection must not go back on is the same false. So this closes on every failure, which
+		// ends the session and the key with it, and costs one connection on a path whose boot has
+		// failed anyway. (A cancelled Go context needs none of this - pgx closes the socket - but
+		// it cannot be told apart from the rest here either.)
+		closeOutOfPool(ctx, conn)
+		return err
 	}
-	return ctx, conn, func() {
-		unlockMigrations(ctx, conn)
-		unmark()
-	}, nil
+	defer unlockMigrations(ctx, conn)
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	// Runs before the unlock deferred above it, so the key is held until the transaction ends.
+	defer tx.Rollback(ctx)
+	if err := fn(ctx, tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // unlockMigrations releases migrationLockKey on conn and gives conn back to the pool. When the
 // release errors or answers false the connection is taken out of the pool and closed instead:
 // a connection that may still hold a session-level key must never serve another caller, who would
-// hand the key on to a request and hold every later boot's migrations behind it. Closing it
-// releases the key with the session. Like the concurrent builds' cleanup it runs on a context a
-// cancelled ctx does not cancel, so a cancelled boot still gives back what it took.
+// hand the key on to a request and hold every later boot's migrations behind it (closeOutOfPool).
+// The unlock itself runs on a context a cancelled ctx does not cancel, so a cancelled boot still
+// gives back what it took.
 func unlockMigrations(ctx context.Context, conn *pgxpool.Conn) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer cancel()
@@ -265,18 +283,26 @@ func unlockMigrations(ctx context.Context, conn *pgxpool.Conn) {
 	}
 	slog.Error("dispatch: the migration advisory lock was not released; its connection leaves the pool",
 		"key", migrationLockKey, "released", released, "error", err)
+	closeOutOfPool(ctx, conn)
+}
+
+// closeOutOfPool takes conn out of the pool and closes it, which ends its session and releases
+// whatever advisory key that session still holds. Like the concurrent builds' cleanup it runs on
+// a context a cancelled ctx does not cancel, so a cancelled boot still gives back what it took.
+func closeOutOfPool(ctx context.Context, conn *pgxpool.Conn) {
+	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
+	defer cancel()
 	_ = conn.Hijack().Close(cleanup)
 }
 
-// createVersionTable creates schema_migrations under the runner's advisory lock - taken by
-// polling, session-level, on a connection of its own (lockMigrations), and released before that
-// connection goes back to the pool - as the broker's runner creates its own, and, when widen is
-// set, widens the version column of a database that has the table from before the versions became
+// createVersionTable creates schema_migrations under the runner's advisory lock
+// (inMigrationLockTx), as the broker's runner creates its own, and, when widen is set, widens
+// the version column of a database that has the table from before the versions became
 // timestamps. Created outside the lock, two processes booting at once against an empty database
 // race `create table if not exists` on the catalog, and the loser exits on pg_type's unique index.
 //
-// The table and its widening still commit in one transaction, opened on the connection that holds
-// the key.
+// The table and its widening commit in one transaction, the one inMigrationLockTx opens on the
+// connection that holds the key.
 //
 // The column is a bigint because a migration added since the set stopped being numbered is named
 // for the UTC moment it was created, 14 digits, which is past the 2147483647 an integer column
@@ -289,38 +315,30 @@ func unlockMigrations(ctx context.Context, conn *pgxpool.Conn) {
 // out over processes of this one, which read the version cast. The type is read before the ALTER
 // TABLE, which on a column already bigint rewrites nothing but still takes ACCESS EXCLUSIVE.
 func (s *Store) createVersionTable(ctx context.Context, widen bool) error {
-	ctx, conn, release, err := s.lockMigrationsOnPooledConnection(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `
-		create table if not exists schema_migrations (
-			version bigint primary key,
-			applied_at timestamptz not null default now()
-		)
-	`); err != nil {
-		return fmt.Errorf("create schema migrations table: %w", err)
-	}
-	if !widen {
-		return tx.Commit(ctx)
-	}
-	var dataType string
-	if err := tx.QueryRow(ctx, `select data_type from information_schema.columns
-		where table_schema = current_schema() and table_name = 'schema_migrations' and column_name = 'version'`).Scan(&dataType); err != nil {
-		return fmt.Errorf("read the type of schema_migrations.version: %w", err)
-	}
-	if dataType == "integer" {
-		if _, err := tx.Exec(ctx, "alter table schema_migrations alter column version type bigint"); err != nil {
-			return fmt.Errorf("widen schema_migrations.version to bigint: %w", err)
+	return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			create table if not exists schema_migrations (
+				version bigint primary key,
+				applied_at timestamptz not null default now()
+			)
+		`); err != nil {
+			return fmt.Errorf("create schema migrations table: %w", err)
 		}
-	}
-	return tx.Commit(ctx)
+		if !widen {
+			return nil
+		}
+		var dataType string
+		if err := tx.QueryRow(ctx, `select data_type from information_schema.columns
+			where table_schema = current_schema() and table_name = 'schema_migrations' and column_name = 'version'`).Scan(&dataType); err != nil {
+			return fmt.Errorf("read the type of schema_migrations.version: %w", err)
+		}
+		if dataType == "integer" {
+			if _, err := tx.Exec(ctx, "alter table schema_migrations alter column version type bigint"); err != nil {
+				return fmt.Errorf("widen schema_migrations.version to bigint: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // applyMigration applies one migration, trying it again while its lock wait outlasts
@@ -339,38 +357,30 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 		return s.applyNonTransactionalMigration(ctx, migration)
 	}
 	// A migration is a transaction like any other, so it is marked like any other: nothing it
-	// runs may take a second pooled connection while it is open. The key is taken first, by
-	// polling, on the connection the transaction then runs on, so the migration and its version
-	// record still commit together under a lock no concurrent index build can deadlock with
-	// (lockMigrations), and it is released before RetryLockTimeouts pauses between attempts.
-	ctx, conn, release, err := s.lockMigrationsOnPooledConnection(ctx)
-	if err != nil {
-		return err
-	}
-	defer release()
-	tx, err := conn.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var applied bool
-	// The parameter is cast, here and in the insert below, because pgx encodes it for the column
-	// it finds: a database whose column this boot is about to widen, or one widened by a boot
-	// whose statement this connection has not prepared again, would otherwise refuse a 14-digit
-	// version as too large for an int4.
-	if err := tx.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = $1::bigint)", migration.Version).Scan(&applied); err != nil {
-		return fmt.Errorf("check migration: %w", err)
-	}
-	if applied {
-		return tx.Commit(ctx)
-	}
-	if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
-		return fmt.Errorf("execute migration: %w", err)
-	}
-	if _, err := tx.Exec(ctx, "insert into schema_migrations (version) values ($1::bigint)", migration.Version); err != nil {
-		return fmt.Errorf("record migration: %w", err)
-	}
-	return tx.Commit(ctx)
+	// runs may take a second pooled connection while it is open. The key is taken first, on the
+	// connection the transaction then runs on (inMigrationLockTx), so the migration and its
+	// version record still commit together, and it is released before RetryLockTimeouts pauses
+	// between attempts.
+	return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		var applied bool
+		// The parameter is cast, here and in the insert below, because pgx encodes it for the
+		// column it finds: a database whose column this boot is about to widen, or one widened by
+		// a boot whose statement this connection has not prepared again, would otherwise refuse a
+		// 14-digit version as too large for an int4.
+		if err := tx.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = $1::bigint)", migration.Version).Scan(&applied); err != nil {
+			return fmt.Errorf("check migration: %w", err)
+		}
+		if applied {
+			return nil
+		}
+		if err := pgmigrate.Exec(ctx, tx, migration, s.Pool.Config().BeforeConnect); err != nil {
+			return fmt.Errorf("execute migration: %w", err)
+		}
+		if _, err := tx.Exec(ctx, "insert into schema_migrations (version) values ($1::bigint)", migration.Version); err != nil {
+			return fmt.Errorf("record migration: %w", err)
+		}
+		return nil
+	})
 }
 
 // applyNonTransactionalMigration owns its connection so a cancellation or failed cleanup cannot
@@ -378,9 +388,8 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 // same key conflict, so this excludes older runners and schema-version readers too. Closing the
 // connection releases the lock only after the statement and its separate version record finish.
 //
-// The key is taken by polling (lockMigrations) rather than waited for: this is the site that
-// holds it while CREATE INDEX CONCURRENTLY runs, and a runner blocked on the key keeps a snapshot
-// the build waits for, so a blocking wait here is the deadlock the polling exists to avoid.
+// The key is taken by polling here too (lockMigrations), and this is the site whose build the
+// polling exists for: it holds the key while CREATE INDEX CONCURRENTLY runs.
 func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pgmigrate.Migration) error {
 	pooled, err := s.Pool.Acquire(ctx)
 	if err != nil {
