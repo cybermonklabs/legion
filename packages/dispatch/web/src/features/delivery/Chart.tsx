@@ -153,6 +153,10 @@ export interface ChartProps {
   readonly compare?: ChartCompare;
   /** What one row of its table is, where it is not a UTC day. */
   readonly rows?: ChartRows;
+  /** Called with a table row's name, and the column's header for a number's cell (null for the
+   *  row's own name): a host that filters its issues by the issues behind a number passes it,
+   *  and the table's names and numbers become buttons. */
+  readonly onSelect?: (row: string, column: string | null) => void;
 }
 
 /** What a day with nothing measured reads as: never a zero. */
@@ -443,11 +447,13 @@ function NumberTable({
   against,
   label,
   naming,
+  onSelect,
   series,
 }: {
   against: Comparison | null;
   label: string;
   naming: ChartRows;
+  onSelect?: (row: string, column: string | null) => void;
   series: readonly ChartSeries[];
 }): ReactNode {
   // Every number the series draw, and every number the compare range's draw, built once per run
@@ -498,7 +504,16 @@ function NumberTable({
           {rows.map(({ before, row }, index) => (
             <tr className={`border-t ${borderDefault}`} key={row?.day ?? before?.day ?? `${index}`}>
               <td className="px-2 py-0.5">
-                {row === undefined ? NOTHING : `${row.day}${row.partial ? " (partial)" : ""}`}
+                {row === undefined ? (
+                  NOTHING
+                ) : (
+                  <Selectable
+                    label={`Show the issues of ${row.day}`}
+                    onSelect={onSelect === undefined ? undefined : () => onSelect(row.day, null)}
+                  >
+                    {`${row.day}${row.partial ? " (partial)" : ""}`}
+                  </Selectable>
+                )}
               </td>
               {against === null ? null : (
                 <td className="px-2 py-0.5">
@@ -508,7 +523,16 @@ function NumberTable({
               {table.columns.map((column, at) => (
                 <Fragment key={column.header}>
                   <td className="px-2 py-0.5 text-right">
-                    {numberText(row?.values[at], column.format, false)}
+                    <Selectable
+                      label={`Show the issues behind ${column.header} of ${row?.day ?? ""}`}
+                      onSelect={
+                        onSelect === undefined || row === undefined || !row.values[at]
+                          ? undefined
+                          : () => onSelect(row.day, column.header)
+                      }
+                    >
+                      {numberText(row?.values[at], column.format, false)}
+                    </Selectable>
                   </td>
                   {against === null ? null : (
                     <>
@@ -527,6 +551,31 @@ function NumberTable({
         </tbody>
       </table>
     </div>
+  );
+}
+
+/** A table name or number: a button where the host filters by the issues behind it, plain text
+ *  otherwise. */
+function Selectable({
+  children,
+  label,
+  onSelect,
+}: {
+  children: ReactNode;
+  label: string;
+  onSelect: (() => void) | undefined;
+}): ReactNode {
+  if (onSelect === undefined) return children;
+  return (
+    <button
+      aria-label={label}
+      className="underline decoration-dotted underline-offset-2 hover:decoration-solid"
+      data-chart-select
+      onClick={onSelect}
+      type="button"
+    >
+      {children}
+    </button>
   );
 }
 
@@ -612,7 +661,14 @@ function CompareControl({
 
 /** One chart: its series as bars or as the table of every number they draw, under the two
  *  controls every chart of a measure over a range has. */
-export function Chart({ compare, label, range, rows = UTC_DAYS, series }: ChartProps): ReactNode {
+export function Chart({
+  compare,
+  label,
+  onSelect,
+  range,
+  rows = UTC_DAYS,
+  series,
+}: ChartProps): ReactNode {
   const [mode, setMode] = useState<ChartMode>("graph");
   const against: Comparison | null =
     compare === undefined || compare.range === null
@@ -623,7 +679,13 @@ export function Chart({ compare, label, range, rows = UTC_DAYS, series }: ChartP
       {mode === "graph" ? (
         <Graph against={against} range={range} series={series} />
       ) : (
-        <NumberTable against={against} label={label} naming={rows} series={series} />
+        <NumberTable
+          against={against}
+          label={label}
+          naming={rows}
+          onSelect={onSelect}
+          series={series}
+        />
       )}
       <div className="flex flex-wrap items-center gap-1.5">
         <SegmentedToggle label={`${label} view`} onChange={setMode} options={MODES} value={mode} />

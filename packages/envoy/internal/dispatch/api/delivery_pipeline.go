@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
+	"strings"
 	"time"
 
 	"golang.org/x/sync/errgroup"
@@ -134,7 +136,18 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	population, err := s.readPipelinePopulation(r.Context(), settings, window)
+	// ?repo= (repeatable) is a project's repositories (dispatch://INFRA-979 prototype): the runs
+	// are the one deploy repository's, so repositories that do not include it have nothing
+	// measured, and the lead times are their pull requests' alone.
+	repos := r.URL.Query()["repo"]
+	if len(repos) > 0 && !slices.ContainsFunc(repos, func(repo string) bool {
+		return strings.EqualFold(strings.TrimSpace(repo), settings.DeployRepo)
+	}) {
+		writeError(w, "DELIVERY_REPO_NOT_MEASURED", http.StatusNotFound,
+			"no deploy is measured for these repositories: the deployment measures "+settings.DeployRepo)
+		return
+	}
+	population, err := s.readPipelinePopulationFor(r.Context(), settings, window, repos)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -154,6 +167,12 @@ type pipelinePopulation struct {
 // Runs are read by start over the whole of those days, the last one included past the window's
 // end.
 func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, window pipelineWindow) (pipelinePopulation, error) {
+	return s.readPipelinePopulationFor(ctx, settings, window, nil)
+}
+
+// readPipelinePopulationFor is readPipelinePopulation with the lead times narrowed to repos, every
+// repository when repos is empty.
+func (s *server) readPipelinePopulationFor(ctx context.Context, settings delivery.DeliverySettings, window pipelineWindow, repos []string) (pipelinePopulation, error) {
 	pool := s.deps.Store.Pool
 	from, to := window.start(), window.readTo()
 
@@ -183,7 +202,11 @@ func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.D
 		return pipelinePopulation{}, err
 	}
 	var err error
-	if pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false); err != nil {
+	facets := url.Values{}
+	if len(repos) > 0 {
+		facets["repo"] = repos
+	}
+	if pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, facets, false, false); err != nil {
 		return pipelinePopulation{}, err
 	}
 	return pop, nil

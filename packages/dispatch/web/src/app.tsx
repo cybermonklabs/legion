@@ -144,15 +144,13 @@ const BroadcastPage = lazy(() =>
   import("./features/agents/BroadcastPage").then((module) => ({ default: module.BroadcastPage }))
 );
 
-const DeliveryPage = lazy(() =>
-  import("./features/delivery/DeliveryPage").then((module) => ({ default: module.DeliveryPage }))
+/** `/delivery` and `/pipeline` were Dispatch's deployment-wide Delivery and Pipeline pages until
+ *  dispatch://INFRA-979 put each project's own numbers on its issues page (LegionHealthPanel); a
+ *  bookmarked address lands on the default project's issues page. Named, as every other row's
+ *  element is, because the router's rows are a roster (`e2e/two-builds-routes.ts`). */
+const HealthRedirect = lazy(() =>
+  import("./features/project/HealthRedirect").then((module) => ({ default: module.HealthRedirect }))
 );
-/** `/pipeline` was Dispatch's Pipeline page until INFRA-1077 folded it into the Delivery page as
- *  that page's Pipeline section; the address a reader bookmarked lands them on it. Named, as
- *  every other row's element is, because the router's rows are a roster
- *  (`e2e/two-builds-routes.ts`) that `e2e/__tests__/two-builds-routes.test.ts` reads from this
- *  file by each row's element name. */
-const PipelineRedirect = () => <Navigate replace to="/delivery#pipeline" />;
 
 const AnswersPage = lazy(() =>
   import("./features/answers/AnswersPage").then((module) => ({ default: module.AnswersPage }))
@@ -847,8 +845,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />
                 <Route element={<SettingsPage />} path="/settings" />
-                <Route element={<DeliveryPage />} path="/delivery" />
-                <Route element={<PipelineRedirect />} path="/pipeline" />
+                <Route element={<HealthRedirect />} path="/delivery" />
+                <Route element={<HealthRedirect />} path="/pipeline" />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
             </Suspense>

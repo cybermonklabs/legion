@@ -1007,34 +1007,34 @@ test("a live socket refused once the person is signed out takes the page to sign
   }
 });
 
-test("/pipeline lands the reader on the Delivery page's Pipeline section", async () => {
-  // React.lazy loads the page module on its first render; loading it first keeps its cold
-  // compile out of findBy's window, as the project-routes test above does.
-  await import("./features/delivery/DeliveryPage");
-  const sockets = installFakeLiveSockets();
-  // What the page brought into view: the hash's own section, which is how the reader lands on it.
-  const scrolledTo: string[] = [];
-  const originalScrollIntoView = HTMLElement.prototype.scrollIntoView;
-  HTMLElement.prototype.scrollIntoView = function scrollIntoView(this: HTMLElement) {
-    scrolledTo.push(this.id);
-  };
-  const teardown = await renderSignedIn(
-    async () => ({ event_head: "0", kind: "user", login: "alice" }),
-    "/pipeline"
-  );
-  try {
-    // `/pipeline` is the Delivery page's Pipeline section since INFRA-1077, and the address a
-    // reader bookmarked redirects there, hash and all.
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "Delivery timeline" })
-    ).toBeDefined();
-    expect(
-      screen.getByRole("heading", { level: 2, name: "Pipeline: CI and deploy" })
-    ).toBeDefined();
-    await waitFor(() => expect(scrolledTo).toEqual(["pipeline"]));
-  } finally {
-    teardown();
-    HTMLElement.prototype.scrollIntoView = originalScrollIntoView;
-    sockets.restore();
-  }
-});
+// dispatch://INFRA-979: the deployment-wide Delivery and Pipeline pages are gone; each project's
+// issues page carries its own numbers, and the old addresses land on the default project's: the
+// one that maps the deployment's deploy repository.
+for (const path of ["/delivery", "/pipeline"]) {
+  test(`${path} lands the reader on the default project's issues page`, async () => {
+    await import("./features/project/HealthRedirect");
+    const sockets = installFakeLiveSockets();
+    const spies = [
+      spyOn(api, "listProjects").mockResolvedValue([
+        { created_at: "2026-09-01T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
+        { created_at: "2026-09-01T00:00:00Z", key: "OPS", name: "Ops", open_asks: 0 },
+      ]),
+      spyOn(api, "listRepoProjects").mockResolvedValue([
+        { default: true, project: "OPS", repo: "acme/ops", renamed_to: null } as never,
+      ]),
+      spyOn(api, "getDeliverySettings").mockResolvedValue({ deploy_repo: "acme/ops" } as never),
+      spyOn(api, "listLegionSettings").mockResolvedValue([]),
+    ];
+    const teardown = await renderSignedIn(
+      async () => ({ event_head: "0", kind: "user", login: "alice" }),
+      path
+    );
+    try {
+      expect(await screen.findByRole("heading", { level: 1, name: "Ops" })).toBeDefined();
+    } finally {
+      teardown();
+      for (const spy of spies) spy.mockRestore();
+      sockets.restore();
+    }
+  });
+}

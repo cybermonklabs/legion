@@ -9,7 +9,6 @@
 import { expect, test } from "@playwright/test";
 
 import { baseUrl, postLegionEvents, userHeaders } from "./api";
-import { PIPELINE_SECTION_URL, seedPipelineFixture } from "./delivery-seed";
 import {
   LEGION_PROJECT,
   seedLegionFixture,
@@ -311,79 +310,29 @@ test("a live push moves an issue's phase without reloading the table @legion @ph
   }
 });
 
-// A1: "`/pipeline` reaching the Pipeline section".
-test("/pipeline reaches the Delivery page's Pipeline section @legion", async ({ browser }) => {
-  await seedPipelineFixture();
-  const context = await asUser(browser, "alice");
-  const page = await context.newPage();
+// dispatch://INFRA-979: the Delivery and Pipeline pages are gone, and their old addresses land on
+// the default project's issues page — here the one project naming a Legion daemon.
+for (const path of ["/delivery", "/pipeline"]) {
+  test(`${path} lands on the default project's issues page @legion`, async ({ browser }) => {
+    const daemon = await startFakeLegionDaemon({});
+    await seedLegionFixture(daemon.url);
+    const context = await asUser(browser, "alice");
+    const page = await context.newPage();
 
-  try {
-    await page.goto("/pipeline");
-    await expect(page).toHaveURL(/\/delivery#pipeline$/);
-    const pipeline = page.locator("#pipeline");
-    await expect(pipeline).toBeVisible();
-    await expect(page.getByRole("heading", { name: /Pipeline/ })).toBeVisible();
-  } finally {
-    await context.close();
-  }
-});
+    try {
+      await page.goto(path);
+      await expect(page).toHaveURL(new RegExp(`/projects/${LEGION_PROJECT}/issues$`));
+      await expect(page.locator(`[data-legion-health="${LEGION_PROJECT}"]`)).toBeVisible();
+    } finally {
+      await context.close();
+      await daemon.close();
+    }
+  });
+}
 
-// A1: "every chart on the Delivery page switching to its table, back to its graph, and to a
-// compare range". Every chart the page draws is read off the page itself, so a chart added later
-// is covered without this spec being edited. The Legion section is seeded here too, so its four
-// metrics' charts are among them.
-test("every chart on the Delivery page shows its table, its graph again and a compare range @legion", async ({
+test("the issues page's health panel draws the four Legion metrics @legion", async ({
   browser,
 }) => {
-  // Four more charts than the Pipeline section's own: the Legion section's metrics are on this
-  // page too, and each one is toggled, compared and toggled again here.
-  test.setTimeout(120_000);
-  const daemon = await startFakeLegionDaemon({});
-  await seedPipelineFixture();
-  await seedLegionFixture(daemon.url);
-  await seedLegionMetricsCorpus();
-  const context = await asUser(browser, "alice");
-  const page = await context.newPage();
-  try {
-    await page.goto(PIPELINE_SECTION_URL);
-    await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
-    const labels = await page
-      .locator("[data-chart]")
-      .evaluateAll((charts) => charts.map((chart) => chart.getAttribute("data-chart") ?? ""));
-    expect(labels.length).toBeGreaterThan(0);
-
-    for (const label of labels) {
-      const chart = page.locator(`[data-chart="${label}"]`);
-      const view = chart.getByRole("group", { name: `${label} view` });
-      await view.getByRole("button", { name: "Table" }).click();
-      await expect(chart.locator(`[data-chart-table="${label}"]`)).toBeVisible();
-      await view.getByRole("button", { name: "Graph" }).click();
-      await expect(chart.locator(`[data-chart-table="${label}"]`)).toHaveCount(0);
-      await expect(chart.locator('[data-chart-range="window"]').first()).toBeVisible();
-
-      // The compare control's default second range: the range just before the window.
-      await chart.locator(`select[data-chart-compare="${label}"]`).selectOption("preceding");
-      await expect(chart.locator('[data-chart-range="compare"]').first()).toBeVisible();
-      await view.getByRole("button", { name: "Table" }).click();
-      // The compare column's heading names whatever a row of this chart is: a UTC day for the
-      // delivery and pipeline charts, an issue, a worker type or a UTC week for the Legion ones.
-      await expect(
-        chart.locator(`[data-chart-table="${label}"] th`, { hasText: /^Compare / }).first()
-      ).toBeVisible();
-      await view.getByRole("button", { name: "Graph" }).click();
-    }
-  } finally {
-    await context.close();
-    await daemon.close();
-  }
-});
-
-// Spec R3/R4 and the Design's "The Delivery page", section 1: the Legion section draws the four
-// metrics — work time to merge, phase time by worker type, rework, and splitting and
-// follow-ups — each through the one chart component, under a project picker and a toggle for
-// all issues, roots or children. The fixture's tree is one root and one child that finished in
-// the window (`seedLegionMetricsCorpus`).
-test("the Delivery page's Legion section draws the four metrics @legion", async ({ browser }) => {
   const daemon = await startFakeLegionDaemon({});
   await seedLegionFixture(daemon.url);
   await seedLegionMetricsCorpus();
@@ -391,12 +340,12 @@ test("the Delivery page's Legion section draws the four metrics @legion", async 
   const page = await context.newPage();
 
   try {
-    await page.goto("/delivery");
-    const section = page.getByRole("region", { name: "Legion: issue to merge" });
+    await page.goto(`/projects/${LEGION_PROJECT}/issues`);
+    const section = page.locator(`[data-legion-health="${LEGION_PROJECT}"]`);
     await expect(section).toBeVisible();
 
     // One card per metric, each drawing its numbers through `Chart`, so each has the
-    // graph-or-table toggle and the compare control every chart on this page has.
+    // graph-or-table toggle and the compare control every chart of a measure over a range has.
     for (const [metric, label] of [
       ["work_time", "Work time to merge"],
       ["phase_time", "Phase time by worker type"],
@@ -433,13 +382,6 @@ test("the Delivery page's Legion section draws the four metrics @legion", async 
     // The toggle reads the metrics again for the roots alone: one of the two finished.
     await section.getByRole("button", { name: "Roots" }).click();
     await expect(figure("work_time", "Issues finished")).toHaveText("1");
-    await expect(section.locator("[data-legion-metrics-scope]")).toHaveAttribute(
-      "data-legion-metrics-scope",
-      "roots"
-    );
-
-    // The project picker names the one project with a daemon.
-    await expect(section.locator("[data-legion-metrics-project]")).toHaveValue(LEGION_PROJECT);
   } finally {
     await context.close();
     await daemon.close();

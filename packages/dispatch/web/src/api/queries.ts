@@ -412,6 +412,37 @@ export const legionMetricsQuery = (query: {
     queryFn: () => api.getLegionMetrics(query),
   });
 
+/** A project's pipeline and delivery measures over one range, by GET, for the project's own
+ *  repositories: the Legion health panel's CI and deploy cards. */
+export const projectPipelineQuery = (query: {
+  from: string;
+  to: string;
+  repo: readonly string[];
+}) =>
+  queryOptions({
+    queryKey: ["delivery", "project-pipeline", query],
+    queryFn: () => api.getDeliveryPipeline(query),
+    retry: false,
+  });
+
+export const projectMeasuresQuery = (query: {
+  from: string;
+  to: string;
+  repo: readonly string[];
+}) =>
+  queryOptions({
+    queryKey: ["delivery", "project-measures", query],
+    queryFn: () => api.getDeliveryMeasures(query),
+    retry: false,
+  });
+
+/** Every repository-to-project mapping, which names each project's repositories. */
+export const repoProjectsQuery = () =>
+  queryOptions({
+    queryKey: ["repo-projects"],
+    queryFn: () => api.listRepoProjects(),
+  });
+
 /** Every project's Legion setting, by project key, read once for the whole app: the Issues page's
  *  view selector asks it whether this project has a Legion view. `[]` is a deployment where no
  *  project names a daemon, not a failure. */

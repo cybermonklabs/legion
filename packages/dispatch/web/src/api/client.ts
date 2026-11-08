@@ -57,6 +57,8 @@ import type {
   CredentialPendingResponse,
   CredentialRecord,
   DecisionKeep,
+  DeliveryMeasuresResponse,
+  DeliveryPipelineResponse,
   DeliveryRunDetail,
   DeliverySessionGroup,
   DeliverySettings,
@@ -1558,6 +1560,26 @@ export class DispatchApiClient {
     return this.json<ReferenceQuestions>(
       pathWithQuery("/api/v1/references/questions", { id, kind })
     );
+  }
+
+  /** The pipeline over `[from, to)` for a project's repositories (`repo`, repeatable), by GET:
+   *  `404 DELIVERY_REPO_NOT_MEASURED` when none of them is the deployment's deploy repository. */
+  getDeliveryPipeline(query: {
+    from: string;
+    to: string;
+    repo: readonly string[];
+  }): Promise<DeliveryPipelineResponse> {
+    return this.json<DeliveryPipelineResponse>(pathWithQuery("/api/v1/delivery/pipeline", query));
+  }
+
+  /** The delivery measures over `[from, to)` for a project's repositories (`repo`, repeatable),
+   *  by GET. */
+  getDeliveryMeasures(query: {
+    from: string;
+    to: string;
+    repo: readonly string[];
+  }): Promise<DeliveryMeasuresResponse> {
+    return this.json<DeliveryMeasuresResponse>(pathWithQuery("/api/v1/delivery/measures", query));
   }
 
   /** One deploy-repository run with every job it ran, for the drill-down's job lists. */

@@ -29,6 +29,7 @@ import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
+import { LegionHealthPanel } from "./LegionHealthPanel";
 
 type ProjectTab = "architecture" | "issues" | "documents";
 
@@ -275,7 +276,12 @@ export function ProjectPage(): ReactNode {
       >
         {activeTab === "issues" ? (
           issueView === "list" ? (
-            <IssuesTable key={route.project} project={route.project} />
+            <>
+              {/* The project's health numbers, above the table's status bar (dispatch://INFRA-979).
+                  The table's own session wires onSelectIssues to its filter chip. */}
+              <LegionHealthPanel key={`health-${route.project}`} project={route.project} />
+              <IssuesTable key={route.project} project={route.project} />
+            </>
           ) : (
             <>
               <IssueFilters key={route.project} project={route.project} showStatus={false} />

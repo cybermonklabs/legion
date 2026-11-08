@@ -5016,6 +5016,10 @@ export interface LegionRoleBar {
   readonly issues: number;
   readonly median_hours_per_issue: number;
   readonly segments: LegionSegments;
+  /** The finished issues that spent time on the bar, and on each segment of it: the issues
+   *  behind each number, which a page filters its issues table by. */
+  readonly issue_keys: readonly string[];
+  readonly segment_issues: Partial<Readonly<Record<keyof LegionSegments, readonly string[]>>>;
 }
 
 /** One bar's hours by how they were spent, in the order each hour is claimed: waiting on a

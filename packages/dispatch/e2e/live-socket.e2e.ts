@@ -18,7 +18,6 @@ import {
   rotateLiveSockets,
   setAgentStreamResponder,
 } from "./api";
-import { seedDeliveryFixture } from "./delivery-seed";
 import { resetDatabase } from "./seed";
 import { navigateInApp } from "./sends";
 import { asUser } from "./users";
@@ -195,14 +194,13 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-// SLOW(>=2s): one socket for every live view is read over three live views, so the row loads and
-// draws all three in the one tab - the project's board, the session's live thread and the
-// delivery timeline - and each is a page's worth of rendering the claim cannot do without.
+// SLOW(>=2s): one socket for every live view is read over two live views, so the row loads and
+// draws both in the one tab - the project's board and the session's live thread - and each is a
+// page's worth of rendering the claim cannot do without.
 // @webkit @firefox: the one-socket invariant, which must hold in every engine people read in.
 test("a tab holds one live socket for every live view @webkit @firefox", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Board issue" });
-  await seedDeliveryFixture();
   await setLiveSessions([agent]);
   await setAgentStreamResponder(agent.session_id, true);
 
@@ -220,17 +218,12 @@ test("a tab holds one live socket for every live view @webkit @firefox", async (
     await expect(page.getByTestId("agent-thread")).toBeVisible();
     await expect.poll(() => sockets.open.size).toBe(1);
 
-    await navigateInApp(page, "/delivery?mode=list");
-    await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
-    await expect.poll(() => sockets.open.size).toBe(1);
-
-    // Each view rode the one socket the page opened at its first load: the event feed, the
-    // session's agent view and the delivery timeline.
+    // Each view rode the one socket the page opened at its first load: the event feed and the
+    // session's agent view.
     const views = () =>
       sockets.sent.flatMap((frame) => (frame.type === "subscribe" ? [frame.view] : []));
     await expect.poll(views).toContainEqual({ kind: "events" });
     await expect.poll(views).toContainEqual({ kind: "agent", session_id: agent.session_id });
-    await expect.poll(views).toContainEqual(expect.objectContaining({ kind: "timeline" }));
     expect(sockets.opened).toHaveLength(1);
   } finally {
     await alice.close();
@@ -266,7 +259,6 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
   test.setTimeout(40_000);
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Board issue" });
-  await seedDeliveryFixture();
   await setLiveSessions([agent]);
   await setAgentStreamResponder(agent.session_id, true);
 
@@ -274,8 +266,7 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
   try {
     const board = await alice.newPage();
     const live = await alice.newPage();
-    const delivery = await alice.newPage();
-    const pages = [board, live, delivery];
+    const pages = [board, live];
     // Each page's timers are its own, and the silence check below is fired on them.
     for (const page of pages) await page.clock.install();
     const pending = pages.map(trackApiRequests);
@@ -286,8 +277,6 @@ test("no request to Dispatch stays open while the page idles", async ({ browser 
     await expect(board.getByRole("region", { name: "Todo" })).toBeVisible();
     await live.goto(`/agents/${agent.session_id}/live`);
     await expect(live.getByTestId("agent-thread")).toBeVisible();
-    await delivery.goto("/delivery?mode=list");
-    await expect(delivery.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
     // Each page's live views ride its socket, so the idle below holds them open; a page whose
     // socket had not opened would idle with nothing to hold.
     for (const pageSockets of sockets) await untilFeedStarts(pageSockets);

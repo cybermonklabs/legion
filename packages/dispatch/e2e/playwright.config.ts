@@ -265,7 +265,7 @@ const parallelProjects = [
     name: "webkit-iphone",
     testMatch:
       /(agent-view|agent-view-settings|phone-conversation|delivery-live|live-socket)\.e2e\.ts/,
-    grep: /on a phone the live view|a document-scrolling route|covers none of|a capped model name|on a phone the delivery page|the header shows the session's reported model|a tab holds one live socket for every live view/,
+    grep: /on a phone the live view|a document-scrolling route|covers none of|a capped model name|the header shows the session's reported model|a tab holds one live socket for every live view/,
     use: { ...devices["iPhone 13"] },
   },
   // Firefox runs the rows a Firefox decision can change, and nothing else: it selects by the

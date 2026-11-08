@@ -122,6 +122,11 @@ type RoleBar struct {
 	Issues              int      `json:"issues"`
 	MedianHoursPerIssue float64  `json:"median_hours_per_issue"`
 	Segments            Segments `json:"segments"`
+	// IssueKeys is the finished issues that spent time on this bar, and SegmentIssues the ones
+	// that spent time in each segment of it, by the segment's JSON name: the issues behind each
+	// number, which a page filters its issues table by.
+	IssueKeys     []string            `json:"issue_keys"`
+	SegmentIssues map[string][]string `json:"segment_issues"`
 }
 
 // Rework is metric 3.
@@ -457,6 +462,8 @@ func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 	perIssue := make([][]float64, len(bars))
 	for index, bar := range bars {
 		metric.Bars[index].Role = bar.Role
+		metric.Bars[index].IssueKeys = []string{}
+		metric.Bars[index].SegmentIssues = map[string][]string{}
 		perIssue[index] = make([]float64, 0, len(finished))
 	}
 	for _, issue := range finished {
@@ -474,6 +481,12 @@ func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 			}
 			metric.Bars[index].Segments.addSegments(segments)
 			metric.Bars[index].Issues++
+			metric.Bars[index].IssueKeys = append(metric.Bars[index].IssueKeys, issue.Key)
+			for name, spent := range segments.byName() {
+				if spent > 0 {
+					metric.Bars[index].SegmentIssues[name] = append(metric.Bars[index].SegmentIssues[name], issue.Key)
+				}
+			}
 		}
 	}
 	var whole, idle float64

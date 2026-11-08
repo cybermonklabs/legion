@@ -28,7 +28,6 @@ import {
   syncArchitectureSource,
   userHeaders,
 } from "./api";
-import { seedDeliveryFixture } from "./delivery-seed";
 import { connectedDot, documentEditor } from "./editor";
 import { seedFakeGithub } from "./fake-github-helpers";
 import {
@@ -210,7 +209,7 @@ interface Seeded {
 /** What every route needs to show its own content rather than an empty or missing state: a
  *  project with an architecture source, an issue with a spec, a child, a comment, a message
  *  holding a Mermaid diagram and a document artifact, a project document, a live session with a
- *  broadcast, a replayed conversation and a picture, and the delivery timeline's runs. */
+ *  broadcast, a replayed conversation and a picture. */
 async function seedEveryRoute(): Promise<Seeded> {
   await setLiveSessions([session]);
   await createProject({ key: "CORE", name: "Core" });
@@ -283,7 +282,6 @@ async function seedEveryRoute(): Promise<Seeded> {
     "replay"
   );
   const agentArtifact = await uploadAgentPicture(session.session_id);
-  await seedDeliveryFixture();
   return {
     agentArtifact,
     broadcast: broadcast.id,
@@ -318,9 +316,6 @@ function issueHeading(page: Page, name: string): Locator {
 function openDocument(page: Page, text: string): readonly Locator[] {
   return [documentEditor(page).filter({ hasText: text }), connectedDot(page)];
 }
-
-/** The timeline fixture's day (`seedDeliveryFixture`). */
-const deliveryWindow = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
 function visits(seed: Seeded): readonly Visit[] {
   const issue = `/issues/${seed.issue}`;
@@ -487,24 +482,14 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/settings", shows: (page) => [heading(page, "Settings")], url: "/settings" },
     {
-      // ECharts draws the timeline on a canvas it creates inside the chart's host.
-      loads: ["echarts"],
+      // `/delivery` and `/pipeline` land on the default project's issues page (dispatch://INFRA-979).
       route: "/delivery",
-      shows: (page) => [
-        heading(page, "Delivery timeline"),
-        page.getByTestId("delivery-chart").locator("canvas").first(),
-      ],
-      url: `/delivery?${deliveryWindow}`,
+      shows: (page) => [page.getByRole("region", { name: "Project issues" })],
+      url: "/delivery",
     },
     {
-      // `/pipeline` redirects to the Delivery page's Pipeline section (INFRA-1077), so this visit
-      // lands on that page and its timeline's chart comes with it.
-      loads: ["echarts"],
       route: "/pipeline",
-      shows: (page) => [
-        heading(page, "Delivery timeline"),
-        page.getByRole("heading", { exact: true, level: 2, name: "Pipeline: CI and deploy" }),
-      ],
+      shows: (page) => [page.getByRole("region", { name: "Project issues" })],
       url: "/pipeline",
     },
     { route: "*", shows: (page) => [heading(page, "Page not found")], url: "/no-such-page" },

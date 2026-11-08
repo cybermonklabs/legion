@@ -1,40 +1,27 @@
-// The Delivery page's first section (INFRA-1077's spec, R3, R4 and the Design's "The Delivery
-// page", section 1): Legion, issue to merge — the four metrics of the issues that finished in the
-// page's window, with a project picker and a toggle for all issues, roots or children.
+// The four Legion metrics of one project (INFRA-1077's spec, R3 and R4; dispatch://INFRA-979 puts
+// them on the project's issues page, in LegionHealthPanel): the work time to merge, the time by
+// worker type, rework, and splitting and follow-ups of the issues that finished in a range.
 //
 // Every number comes from `GET /api/v1/legion/metrics` and nothing is computed here: the server
-// holds the rules (the work time less parked and queued hours, the seven bars and their five
-// segments in their one precedence, the review rounds and send-backs, the four classes of filing),
-// and this draws what it answers. Each metric goes through `Chart` (`Chart.tsx`), so each has the
-// graph-or-table toggle and the compare range every chart of a measure over a range has; the
-// comparison is the page's own, read as a second call of the same route, the way `PipelineSection`
-// reads its own route twice.
-//
-// The page gives the section the window and the comparison it gives the Pipeline section and the
-// delivery timeline (`DeliverySectionProps`), so every chart on the page follows one window
-// control and one compare range. The route takes two instants rather than the page's preset, so a
-// preset is resolved to a range once per choice (`metricsRange`).
-import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+// holds the rules, and this draws what it answers. Each metric goes through `Chart`
+// (`delivery/Chart.tsx`), so each has the graph-or-table toggle and the compare range. A card's
+// table rows, its numbers and its headline counts name the issues behind them through
+// `onSelectIssues`, which the issues table filters itself by.
+import { type ReactNode, useMemo } from "react";
 
-import { legionMetricsQuery, legionSettingsQuery } from "../../api/queries";
 import type {
   LegionBarRole,
   LegionFilingClass,
   LegionMetricsResponse,
-  LegionMetricsScope,
   LegionReworkIssue,
   LegionSegments,
   LegionWorkTimeIssue,
 } from "../../api/types";
-import { QueryError } from "../../components/QueryError";
 import {
   borderDefault,
   surfaceBg,
-  textMutedOnCanvas,
   textMutedOnSurface,
   textPrimaryOnCanvas,
-  textSecondaryOnCanvas,
 } from "../../theme/classes";
 import {
   Chart,
@@ -42,22 +29,12 @@ import {
   type ChartRange,
   type ChartSeries,
   chartCompare,
-  type DeliverySectionProps,
-  fieldClass,
   PENDING,
-} from "./Chart";
-import { formatDuration, pct } from "./lib/format";
-import { DAY_MS, liveWindow, type WindowChoice } from "./lib/window";
-import { type SegmentedOption, SegmentedToggle } from "./SegmentedToggle";
+} from "../delivery/Chart";
+import { formatDuration, pct } from "../delivery/lib/format";
+import { DAY_MS, liveWindow, type WindowChoice } from "../delivery/lib/window";
 
 const CARD = `flex min-w-0 flex-col gap-1.5 rounded border px-3 py-2 ${surfaceBg} ${borderDefault}`;
-
-/** The three populations the section's toggle counts, in the order it offers them. */
-const SCOPES: readonly SegmentedOption<LegionMetricsScope>[] = [
-  { value: "all", label: "All issues" },
-  { value: "roots", label: "Roots" },
-  { value: "children", label: "Children" },
-];
 
 /** The five segments of a bar, in the precedence the server books an hour by (the spec's "Rule
  *  details — Precedence"), each a run of bars over the seven worker types. */
@@ -220,113 +197,17 @@ export function splittingSeries(report: LegionMetricsResponse): ChartSeries[] {
   ];
 }
 
-/** The Delivery page's `#legion` section: the four Legion metrics of one project over the page's
- *  window, each through `Chart`. A deployment where no project names a Legion daemon says so and
- *  reads nothing. */
-export function LegionSection({
-  compare,
-  onCompare,
-  window: chosen,
-}: DeliverySectionProps): ReactNode {
-  const settings = useQuery(legionSettingsQuery());
-  const projects = useMemo(
-    () => (settings.data ?? []).map((setting) => setting.project),
-    [settings.data]
-  );
-  // The project the reader picked, while it still names a daemon; otherwise the first that does,
-  // which is the project the route itself answers with no `project` of its own.
-  const [picked, setPicked] = useState<string | null>(null);
-  const project = (picked !== null && projects.includes(picked) ? picked : projects[0]) ?? "";
-  const [scope, setScope] = useState<LegionMetricsScope>("all");
-  // The window as two instants, resolved when the page's choice changes and not on every render:
-  // a preset's end is the minute it was resolved in, so a re-render reads no new range.
-  const range = useMemo(
-    () => metricsRange(chosen, Math.floor(Date.now() / 60_000) * 60_000),
-    [chosen]
-  );
-  const query = useQuery({
-    ...legionMetricsQuery({ from: range.from, project, scope, to: range.to }),
-    enabled: project !== "",
-  });
-  // The comparison's own read, as a range of its own: while nothing is compared the query names
-  // the section's own range and is disabled, so it reads nothing.
-  const compared = useQuery({
-    ...legionMetricsQuery({
-      from: (compare ?? range).from,
-      project,
-      scope,
-      to: (compare ?? range).to,
-    }),
-    enabled: compare !== null && project !== "",
-  });
-
-  return (
-    <section aria-labelledby="legion-heading" className="flex flex-col gap-3" id="legion">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-2">
-        <h2 className={`text-lg font-semibold ${textPrimaryOnCanvas}`} id="legion-heading">
-          Legion: issue to merge
-        </h2>
-        {projects.length === 0 ? null : (
-          <div className="flex flex-wrap items-center gap-2">
-            <select
-              aria-label="Legion project"
-              className={fieldClass}
-              data-legion-metrics-project
-              onChange={(event) => setPicked(event.target.value)}
-              value={project}
-            >
-              {projects.map((key) => (
-                <option key={key} value={key}>
-                  {key}
-                </option>
-              ))}
-            </select>
-            <div data-legion-metrics-scope={scope}>
-              <SegmentedToggle
-                label="Legion issues"
-                onChange={setScope}
-                options={SCOPES}
-                value={scope}
-              />
-            </div>
-          </div>
-        )}
-      </header>
-      {settings.isPending ? <p className={textMutedOnCanvas}>Loading Legion projects…</p> : null}
-      {projects.length === 0 && !settings.isPending ? (
-        <p className={`text-sm ${textSecondaryOnCanvas}`} data-legion-metrics-unconfigured>
-          No project names a Legion daemon, so there is nothing to measure here. The Settings page
-          names one.
-        </p>
-      ) : null}
-      {query.isPending && project !== "" ? (
-        <p className={textMutedOnCanvas}>Loading the Legion metrics…</p>
-      ) : null}
-      {query.isError ? (
-        <QueryError
-          message="Couldn't load the Legion metrics."
-          onRetry={() => void query.refetch()}
-          retrying={query.isFetching}
-        />
-      ) : null}
-      {query.data === undefined ? null : (
-        <LegionMetrics
-          compare={{ data: compared.data, onRange: onCompare, range: compare }}
-          report={query.data}
-        />
-      )}
-    </section>
-  );
-}
-
 /** The four cards for one answer of the route. `compare` is the page's comparison, which every
  *  card offers and one second answer serves; a host that reads no second range passes none and
  *  the cards show their graph-or-table control alone. */
 export function LegionMetrics({
   compare,
+  onSelectIssues,
   report,
 }: {
   compare?: ChartCompareSource<LegionMetricsResponse>;
+  /** Called with the issues behind a number and words naming it; omitted, nothing is a button. */
+  onSelectIssues?: (keys: string[], label: string) => void;
   report: LegionMetricsResponse;
 }): ReactNode {
   // What each card draws, and what the compare range's answer draws beside it: built once per
@@ -357,6 +238,14 @@ export function LegionMetrics({
   const range: ChartRange = { kind: "custom", from: report.from, to: report.to };
   const rework = report.rework;
   const splitting = report.splitting;
+  const select = useMemo(() => selectors(report), [report]);
+  // Each chart's selection, or none where the host filters nothing.
+  const on = (pick: (row: string, column: string | null) => [string[], string]) =>
+    onSelectIssues === undefined
+      ? undefined
+      : (row: string, column: string | null) => onSelectIssues(...pick(row, column));
+  const figureKeys = (keys: string[], label: string) =>
+    onSelectIssues === undefined ? undefined : () => onSelectIssues(keys, label);
 
   return (
     <div className="@container">
@@ -365,7 +254,11 @@ export function LegionMetrics({
           figures={[
             { label: "Median", value: hours(report.work_time.median_hours) },
             { label: "p90", value: hours(report.work_time.p90_hours) },
-            { label: "Issues finished", value: `${report.finished}` },
+            {
+              label: "Issues finished",
+              value: `${report.finished}`,
+              onSelect: figureKeys(select.finished, "Finished in the range"),
+            },
           ]}
           metric="work_time"
           title="Work time to merge"
@@ -373,6 +266,7 @@ export function LegionMetrics({
           <Chart
             compare={chartCompare(compare, compared?.workTime)}
             label="Work time to merge"
+            onSelect={on((row) => [[row], `Work time: ${row}`])}
             range={range}
             rows={{ header: "Issue", over: "issue", pair: "name" }}
             series={series.workTime}
@@ -386,6 +280,7 @@ export function LegionMetrics({
           <Chart
             compare={chartCompare(compare, compared?.phaseTime)}
             label="Phase time by worker type"
+            onSelect={on(select.phase)}
             range={range}
             rows={{ header: "Worker type", over: "worker type", pair: "name" }}
             series={series.phaseTime}
@@ -406,6 +301,7 @@ export function LegionMetrics({
           <Chart
             compare={chartCompare(compare, compared?.rework)}
             label="Rework"
+            onSelect={on((row) => [[row], `Rework: ${row}`])}
             range={range}
             rows={{ header: "Issue", over: "issue", pair: "name" }}
             series={series.rework}
@@ -413,8 +309,16 @@ export function LegionMetrics({
         </MetricCard>
         <MetricCard
           figures={[
-            { label: "Issues filed", value: `${splitting.filed.length}` },
-            { label: "Roots finished", value: `${splitting.finished_roots}` },
+            {
+              label: "Issues filed",
+              value: `${splitting.filed.length}`,
+              onSelect: figureKeys(select.filed, "Filed by Legion in the range"),
+            },
+            {
+              label: "Roots finished",
+              value: `${splitting.finished_roots}`,
+              onSelect: figureKeys(select.roots, "Roots finished in the range"),
+            },
             { label: "Children per root", value: splitting.children_per_root.toFixed(1) },
             {
               label: "Median work time, roots with children",
@@ -431,6 +335,7 @@ export function LegionMetrics({
           <Chart
             compare={chartCompare(compare, compared?.splitting)}
             label="Splitting and follow-ups"
+            onSelect={on(select.week)}
             range={range}
             rows={{ header: "Week", over: "UTC week", pair: "position" }}
             series={series.splitting}
@@ -449,7 +354,11 @@ function MetricCard({
   title,
 }: {
   children: ReactNode;
-  figures: readonly { readonly label: string; readonly value: string }[];
+  figures: readonly {
+    readonly label: string;
+    readonly value: string;
+    readonly onSelect?: (() => void) | undefined;
+  }[];
   metric: string;
   title: string;
 }): ReactNode {
@@ -464,7 +373,22 @@ function MetricCard({
               className={`text-base font-semibold ${textPrimaryOnCanvas}`}
               data-legion-figure={figure.label}
             >
-              {figure.value === "" ? PENDING : figure.value}
+              {figure.onSelect === undefined ? (
+                figure.value === "" ? (
+                  PENDING
+                ) : (
+                  figure.value
+                )
+              ) : (
+                <button
+                  aria-label={`Show the issues: ${figure.label}`}
+                  className="underline decoration-dotted underline-offset-2 hover:decoration-solid"
+                  onClick={figure.onSelect}
+                  type="button"
+                >
+                  {figure.value}
+                </button>
+              )}
             </dd>
           </div>
         ))}
@@ -472,4 +396,55 @@ function MetricCard({
       {children}
     </div>
   );
+}
+
+/** The Monday 00:00 UTC that begins `iso`'s UTC week, as `YYYY-MM-DD`: the name of a splitting
+ *  card's row. */
+function weekOf(iso: string): string {
+  const at = new Date(iso);
+  const day = (at.getUTCDay() + 6) % 7;
+  return new Date(Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate() - day))
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** The issues behind each number of the four cards, for one answer. */
+function selectors(report: LegionMetricsResponse) {
+  const finished = report.work_time.issues.map((issue) => issue.key);
+  const filed = report.splitting.filed;
+  return {
+    finished,
+    filed: filed.map((one) => one.key),
+    roots: report.work_time.issues.filter((issue) => issue.root).map((issue) => issue.key),
+    /** A worker type's row: every issue on its bar, or those of one segment of it. */
+    phase: (row: string, column: string | null): [string[], string] => {
+      const bar = report.phase_time.bars.find((one) => ROLES[one.role] === row);
+      const segment = SEGMENTS.find((one) => one.label === column);
+      if (bar === undefined) return [[], row];
+      if (segment === undefined) return [[...bar.issue_keys], `Time on the ${row} bar`];
+      return [[...(bar.segment_issues[segment.key] ?? [])], `${segment.label} on the ${row} bar`];
+    },
+    /** A UTC week's row: the issues filed that week, of one class, or the ones that finished. */
+    week: (row: string, column: string | null): [string[], string] => {
+      if (column === "Issues finished") {
+        return [
+          report.work_time.issues
+            .filter((issue) => weekOf(issue.closed_at) === row)
+            .map((issue) => issue.key),
+          `Finished in the week of ${row}`,
+        ];
+      }
+      const filing = CLASSES.find((one) => one.label === column);
+      return [
+        filed
+          .filter(
+            (one) => weekOf(one.at) === row && (filing === undefined || one.class === filing.key)
+          )
+          .map((one) => one.key),
+        filing === undefined
+          ? `Filed in the week of ${row}`
+          : `Filed in the week of ${row}: ${filing.label}`,
+      ];
+    },
+  };
 }

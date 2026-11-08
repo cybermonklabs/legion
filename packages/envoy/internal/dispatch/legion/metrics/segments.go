@@ -47,6 +47,14 @@ type Segments struct {
 	Idle              float64 `json:"idle"`
 }
 
+// byName is each segment's hours by its JSON name.
+func (s Segments) byName() map[string]float64 {
+	return map[string]float64{
+		"waiting_on_person": s.WaitingOnPerson, "in_a_turn": s.InATurn, "ci_wait": s.CIWait,
+		"waiting_on_children": s.WaitingOnChildren, "idle": s.Idle,
+	}
+}
+
 // add books a segment's time onto the bar.
 func (s *Segments) add(segment Segment, spent time.Duration) {
 	switch segment {

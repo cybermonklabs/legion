@@ -458,8 +458,7 @@ where a caret lands beside a collaborator's cursor, and `firefox` covers text ty
 follows a block's last line break, which that engine's own editing mishandles.
 `firefox-download-navigation` runs the one row of
 `e2e/shell.e2e.ts` that follows a Download link before a chunk fails. `webkit-iphone` runs the
-phone-layout rows of `e2e/agent-view.e2e.ts`, `e2e/agent-view-settings.e2e.ts` and
-`e2e/delivery-live.e2e.ts`, and the rows of `e2e/phone-conversation.e2e.ts` that check what the
+phone-layout rows of `e2e/agent-view.e2e.ts`, `e2e/agent-view-settings.e2e.ts`, and the rows of `e2e/phone-conversation.e2e.ts` that check what the
 Conversation's floating pills cover, selected by title, in WebKit with the iPhone 13 profile, since
 iOS Safari is the engine those layouts exist for.
 `chromium-plain-http` runs `e2e/plain-http-origin.e2e.ts` and `e2e/plain-http-proxy.e2e.ts`, with
