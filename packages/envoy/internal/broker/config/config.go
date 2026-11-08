@@ -580,8 +580,8 @@ var serviceAccountPattern = regexp.MustCompile(`^system:serviceaccount:[a-z0-9](
 const defaultServiceAccount = "default"
 
 // serviceAccountEntry is one <service>=system:serviceaccount:<namespace>:<name> entry of
-// BROKER_SERVICES or BROKER_SERVICE_LOGINS, with its text as the setting gave it.
-type serviceAccountEntry struct{ service, subject, text string }
+// BROKER_SERVICES or BROKER_SERVICE_LOGINS.
+type serviceAccountEntry struct{ service, subject string }
 
 // parseServiceAccounts reads setting's whitespace-separated <service>=<ServiceAccount subject>
 // entries, the form BROKER_SERVICES and BROKER_SERVICE_LOGINS share, in order. It refuses, naming
@@ -605,9 +605,23 @@ func parseServiceAccounts(setting, value string) ([]serviceAccountEntry, error) 
 		if err := bindOnce(seen, setting, subject, service); err != nil {
 			return nil, err
 		}
-		entries = append(entries, serviceAccountEntry{service: service, subject: subject, text: text})
+		entries = append(entries, serviceAccountEntry{service: service, subject: subject})
 	}
 	return entries, nil
+}
+
+// servicesByAccount keys parseServiceAccounts' entries by account, each answering its service,
+// the shape Config.ServicesByAccount and Config.ServiceLogins both hold. No entry, no map: a
+// setting left unset reads nil rather than an empty map.
+func servicesByAccount(entries []serviceAccountEntry) map[string]string {
+	if len(entries) == 0 {
+		return nil
+	}
+	byAccount := make(map[string]string, len(entries))
+	for _, entry := range entries {
+		byAccount[entry.subject] = entry.service
+	}
+	return byAccount
 }
 
 // isDefaultServiceAccount reports whether subject is a namespace's default account, the one
@@ -1277,31 +1291,17 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	for _, entry := range services {
-		if cfg.ServicesByAccount == nil {
-			cfg.ServicesByAccount = map[string]string{}
-		}
-		cfg.ServicesByAccount[entry.subject] = entry.service
-	}
+	cfg.ServicesByAccount = servicesByAccount(services)
 	logins, err := parseServiceAccounts("BROKER_SERVICE_LOGINS", getenv("BROKER_SERVICE_LOGINS"))
 	if err != nil {
 		return Config{}, err
 	}
-	// An account BROKER_SERVICES already binds may be listed here too, and a deployment that
-	// does so is saying that a pod of that service's own account logs the service in with its
-	// own projected token and enrols itself: what theorem-labs/agent-infra's session pods do
-	// with agent-secrets enroll --pod. Load refused that pair, because every pod of the account
-	// holds a token for it and so every one of them could log in as the service. What holds the
-	// narrowing is enroll.Service.podUnderTokenLogin, not this loader: a login whose token
-	// proves the login's own account enrols the one pod whose token made it (Credential.PodUID)
-	// and is ErrPodSelfEnrollOnly for any other pod UID, whatever BROKER_SERVICES binds the
-	// account to (internal/broker/enroll/enroll.go, pod_self_enroll_test.go).
-	for _, entry := range logins {
-		if cfg.ServiceLogins == nil {
-			cfg.ServiceLogins = map[string]string{}
-		}
-		cfg.ServiceLogins[entry.subject] = entry.service
-	}
+	// An account BROKER_SERVICES already binds may be listed here too, which is a pod of that
+	// service's own account logging the service in with its own projected token and enrolling
+	// itself (agent-secrets enroll --pod). What narrows such a login to one pod is
+	// enroll.Service.podUnderTokenLogin rather than this loader, as the ServiceLogins field
+	// doc says.
+	cfg.ServiceLogins = servicesByAccount(logins)
 	if cfg.ServiceAccountSecrets, err = parseServiceAccountSecrets("BROKER_SERVICE_ACCOUNT_SECRETS", getenv("BROKER_SERVICE_ACCOUNT_SECRETS")); err != nil {
 		return Config{}, err
 	}

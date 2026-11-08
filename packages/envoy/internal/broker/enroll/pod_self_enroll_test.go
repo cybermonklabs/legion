@@ -22,8 +22,10 @@ import (
 const (
 	// podLoginService is the service every login below logs in as.
 	podLoginService = "legion-daemon"
-	// selfAccount is an account BROKER_SERVICE_LOGINS lists and BROKER_SERVICES binds for no
-	// service's pods: the pods that run as it hold a login of their own and enrol themselves.
+	// selfAccount is an account BROKER_SERVICE_LOGINS lists: the pods that run as it hold a
+	// login of their own and enrol themselves. newPodRig leaves BROKER_SERVICES binding it for
+	// no service's pods, and the two tests of an account both settings name bind it to
+	// podLoginService.
 	selfAccount = "system:serviceaccount:legion:k8s-session"
 	// launcherAccount is the account a launcher logs in as, and workerPodAccount the account the
 	// pods it launches run as, which BROKER_SERVICES binds to the launcher's service.
@@ -165,7 +167,7 @@ func TestAPodsOwnLoginEnrolsItsOwnPodAlone(t *testing.T) {
 
 // TestAnAccountInBothListsEnrolsItsOwnPodAlone: a session pod runs as an account that
 // BROKER_SERVICE_LOGINS lists and BROKER_SERVICES binds for the service's pods, the pair
-// config.Load takes now, so every such pod logs the service in and enrols itself. The binding
+// config.Load accepts, so every such pod logs the service in and enrols itself. The binding
 // does not widen that login: podUnderTokenLogin reads the login's own account first, so the same
 // pod asking for another pod UID of the account is ErrPodSelfEnrollOnly and never allowed as a
 // pod its service launches.
@@ -410,12 +412,12 @@ func TestASelfEnrolledPodEndsNoOtherPodsEnrollment(t *testing.T) {
 }
 
 // TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment: an account BROKER_SERVICE_LOGINS
-// lists and BROKER_SERVICES binds for the service's pods — the pair config.Load takes now —
+// lists and BROKER_SERVICES binds for the service's pods — the pair config.Load accepts —
 // makes every session pod of that account both a login of the service and a pod that service
 // launches, so the launcher relation holds between any two of them and, left at that, either
 // could end the other's enrollment. Which pod of its own account a login reaches is decided by
-// the pod UID, the rule podUnderTokenLogin applies at Create, so sameLauncher is false for a
-// self-enrolment and the second pod is refused the first's enrollment. The half that keeps
+// the pod UID, the rule podUnderTokenLogin applies at Create (ownPod), so sameLauncher is false
+// for a self-enrolment and the second pod is refused the first's enrollment. The half that keeps
 // working: the credential that made the enrollment still ends it.
 func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
 	// Two session pods hold two logins at once only on the schema of the release after this
@@ -445,6 +447,49 @@ func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
 
 	if err := r.svc.Revoke(ctx, first, mine.ID.String(), "launcher:"+first.ID.String()); err != nil {
 		t.Fatalf("the pod ends the enrollment its own credential made: %v", err)
+	}
+	if !r.revoked(t, mine.ID.String()) {
+		t.Fatalf("enrollment %s is still live, want it ended by the credential that made it", mine.ID)
+	}
+}
+
+// TestOnTheShippedSchemaAnAccountHoldsOneCredentialWhateverItsPod: the two tests above run on the
+// schema the release after this one leaves (newPerPodRig), because two pods of one account hold
+// two live credentials only once 0015's launcher_credentials_live_subject index is dropped. On
+// the schema this release ships that index stands, so IssueTokenLoginTx resolves its conflict on
+// the subject alone and a second pod of the account takes the one credential over: same
+// credential id, the first pod's key replaced by the second's, one live row. The first pod
+// cannot authenticate at all after that, so the pair of live session pods sameLauncher fences is
+// not reachable here, and the second pod ends what that credential enrolled through the
+// enrolling-credential rule (enrolledBy == cred.ID), never through sameLauncher — the replaced-pod
+// takeover TestAReplacedLauncherPodEndsItsPredecessorsEnrollments names, which this release
+// depends on. Binding the account changes none of it, so this change neither opens nor widens
+// that path; what closes it is the per-pod login of the next release, where the two credentials
+// differ and sameLauncher decides.
+func TestOnTheShippedSchemaAnAccountHoldsOneCredentialWhateverItsPod(t *testing.T) {
+	r := newPodRig(t)
+	r.svc.ServicesByAccount[selfAccount] = podLoginService
+	ctx := context.Background()
+	first := r.login(t, selfAccount, "pod-uid-shipped-one")
+	mine, err := r.enroll(t, first, selfAccount, "pod-uid-shipped-one")
+	if err != nil {
+		t.Fatalf("Create(the first session pod's own enrollment) = %v", err)
+	}
+
+	second := r.login(t, selfAccount, "pod-uid-shipped-two")
+	if second.ID != first.ID {
+		t.Fatalf("the second pod's credential = %s, want the first's %s: this schema holds one live credential per account", second.ID, first.ID)
+	}
+	if got := r.liveRows(t, selfAccount); got != 1 {
+		t.Fatalf("live credentials of %s = %d, want its one", selfAccount, got)
+	}
+	taken, err := r.svc.Credential(ctx, first.ID.String())
+	if err != nil || taken.PodUID != "pod-uid-shipped-two" {
+		t.Fatalf("Credential(%s) = %+v, %v; want the row moved to pod-uid-shipped-two", first.ID, taken, err)
+	}
+
+	if err := r.svc.Revoke(ctx, second, mine.ID.String(), "launcher:"+second.ID.String()); err != nil {
+		t.Fatalf("the pod that took the credential over ends what it enrolled: %v", err)
 	}
 	if !r.revoked(t, mine.ID.String()) {
 		t.Fatalf("enrollment %s is still live, want it ended by the credential that made it", mine.ID)

@@ -1460,7 +1460,7 @@ func (s *Service) podUnderTokenLogin(cred Credential, claims PodClaims, runtimeI
 	if cred.Operator != nil || cred.Subject == nil {
 		return nil
 	}
-	if *cred.Subject == claims.Subject {
+	if ownPod(cred, claims.Subject) {
 		if cred.PodUID != runtimeID {
 			return fmt.Errorf("%w: this login is pod %q's, the enrollment names %q", ErrPodSelfEnrollOnly, cred.PodUID, runtimeID)
 		}
@@ -1488,6 +1488,15 @@ func (s *Service) launches(service *string, podAccount string) bool {
 	return listed && bound == *service
 }
 
+// ownPod reports whether podAccount, the ServiceAccount a pod runs as, is cred's own login
+// subject: a pod of the login's own account, which is a pod enrolling itself rather than one a
+// launcher enrols. The one comparison, read by Create through podUnderTokenLogin and by Revoke
+// through sameLauncher, so which pod of its own account a login reaches is decided by the pod
+// UID at both and never by the launcher relation.
+func ownPod(cred Credential, podAccount string) bool {
+	return cred.Subject != nil && *cred.Subject == podAccount
+}
+
 // sameLauncher reports whether cred is the same launcher as the credential that made a pod
 // enrollment, logging in again from another pod: the same ServiceAccount (both token logins of
 // one subject), the same service, and a pod running as an account BROKER_SERVICES binds to that
@@ -1496,11 +1505,9 @@ func (s *Service) launches(service *string, podAccount string) bool {
 // and the new pod holds a credential of its own.
 //
 // A pod of an account that BROKER_SERVICE_LOGINS lists and BROKER_SERVICES binds for its
-// service's pods — the pair config.Load takes now — enrols itself, and this gives it nothing:
-// where the enrollment's own pod account is the login's own subject account, which pod of that
-// account the login reaches is decided by the pod UID and never by the launcher relation, the
-// rule podUnderTokenLogin applies at Create, so this answers false there and one session pod can
-// never end another's enrollment
+// service's pods — the pair config.Load accepts — enrols itself, and this gives it nothing: the
+// pod UID decides which pod of its own account a login reaches (ownPod, podUnderTokenLogin), so
+// this is false there and one session pod can never end another's enrollment
 // (TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment). It gives nothing across services
 // either, and nothing to a credential a person approved, which carries no subject.
 // enrolledLoginSubject, enrolledLoginService and enrolledPodAccount are the enrolling
@@ -1510,9 +1517,7 @@ func (s *Service) sameLauncher(cred Credential, enrolledLoginSubject, enrolledLo
 	if cred.Operator != nil || cred.Subject == nil || enrolledLoginSubject == nil || enrolledPodAccount == nil {
 		return false
 	}
-	// A pod of the login's own account: that is the pod enrolling itself, which its pod UID
-	// decides (podUnderTokenLogin), so no launcher relation reaches it.
-	if *enrolledPodAccount == *cred.Subject {
+	if ownPod(cred, *enrolledPodAccount) {
 		return false
 	}
 	if *enrolledLoginSubject != *cred.Subject {
@@ -1567,8 +1572,8 @@ func machineCredential(cred Credential) bool {
 // relation POD_NOT_LAUNCHED reads at Create. A pod that enrolled itself is no launcher, whatever
 // BROKER_SERVICES binds its account to: sameLauncher is false where the enrollment's own pod
 // account is the login's own subject account, so a session pod of an account both settings name
-// ends its own enrollment and no other pod's. An
-// enrollment neither rule reaches — a service login a person approved before token logins, or
+// ends its own enrollment and no other pod's. An enrollment neither rule reaches — a service
+// login a person approved before token logins, or
 // the daemon's credential before someone revoked it — ends when its pod stops renewing, one lease
 // (BROKER_LEASE_SECONDS) after its renewer stops, or at once when a person revokes that credential
 // (RevokeCredential). A box or host enrollment keeps the operator rule alone: a helper that logs in

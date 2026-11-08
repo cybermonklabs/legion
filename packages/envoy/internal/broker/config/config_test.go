@@ -1116,14 +1116,12 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 // TestLoadTakesOneAccountInBothServiceLists pins that a deployment may name one ServiceAccount in
 // BROKER_SERVICES and in BROKER_SERVICE_LOGINS, which is a pod of a bound account enrolling itself
 // (agent-secrets enroll --pod): Load fills both maps from that pair rather than refusing it. What
-// the refusal protected is enroll.Service.podUnderTokenLogin's to hold: it gives such a login the
-// one pod whose token made it and answers ErrPodSelfEnrollOnly for every other pod of the account
+// narrows such a login is enroll.Service.podUnderTokenLogin: it gives the login the one pod whose
+// token made it and answers ErrPodSelfEnrollOnly for every other pod of the account
 // (internal/broker/enroll/pod_self_enroll_test.go).
 func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
 	const account = "system:serviceaccount:legion:agent-session"
-	e := validEnv()
-	e["BROKER_K8S_OIDC_ISSUER"] = "https://oidc.eks.example.invalid/id/EXAMPLE"
-	e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+	e := withK8sIssuer()
 	e["BROKER_SERVICES"] = "legion-daemon=" + account
 	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=" + account
 	cfg, err := Load(env(e))
