@@ -437,3 +437,148 @@ func TestRepeatedUploadUnderOneKeyIsAnsweredByItsFirstCall(t *testing.T) {
 		t.Fatalf("the repeat wrote: %d versions, want the %d its first call left", after, versionsAfterFirst)
 	}
 }
+
+// projectUploadBaseHandler is uploadBaseHandler with a project to upload documents into.
+func projectUploadBaseHandler(t *testing.T) (http.Handler, *store.Store) {
+	t.Helper()
+	handler, database := uploadBaseHandler(t, false)
+	if created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "TEST", "name": "Test project",
+	}, "alice"); created.Code != http.StatusCreated {
+		t.Fatalf("create the project the documents belong to: status=%d body=%s", created.Code, created.Body.String())
+	}
+	return handler, database
+}
+
+// A project document is replaced through a route of its own, and the base holds there as it
+// holds on the issue route, in the JSON body and in the multipart form alike: one that matches
+// the live document is taken, and one the document has moved past is refused 409
+// PRECONDITION_FAILED naming the token and the version number the document stands at, with
+// nothing written.
+func TestUploadReplacingAProjectDocumentHoldsTheBaseItNames(t *testing.T) {
+	const target = "/api/v1/projects/TEST/artifacts"
+	for _, test := range []struct {
+		name   string
+		upload func(t *testing.T, handler http.Handler, base map[string]string, content string) *httptest.ResponseRecorder
+	}{
+		{
+			name: "the JSON body",
+			upload: func(t *testing.T, handler http.Handler, base map[string]string, content string) *httptest.ResponseRecorder {
+				return dispatchRequest(t, handler, http.MethodPost, target, map[string]any{
+					"name": "notes.md", "content": content, "precondition": base,
+				}, "alice")
+			},
+		},
+		{
+			name: "the multipart form",
+			upload: func(t *testing.T, handler http.Handler, base map[string]string, content string) *httptest.ResponseRecorder {
+				t.Helper()
+				encoded, err := json.Marshal(base)
+				if err != nil {
+					t.Fatalf("encode the upload's base: %v", err)
+				}
+				return multipartRequest(t, handler, target,
+					map[string]string{"name": "notes.md", "precondition": string(encoded)},
+					"notes.md", "text/markdown", []byte(content), "alice")
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, database := projectUploadBaseHandler(t)
+			artifactID := createProjectDocument(t, handler, "TEST", "notes.md", "# Notes\n\nbefore\n").ID
+
+			base := uploadBase(t, handler, artifactID)
+			replaced := test.upload(t, handler, base, "# Notes\n\nfirst\n")
+			if replaced.Code != http.StatusCreated {
+				t.Fatalf("project upload naming the live base = %d (want 201) sending %q, body=%s", replaced.Code, base["document"], replaced.Body.String())
+			}
+			current := readDocumentPrecondition(t, handler, artifactID)
+			if current.Markdown != "# Notes\n\nfirst\n" {
+				t.Fatalf("the project document after the upload reads %q, want the text it named its base for", current.Markdown)
+			}
+			versionsBefore := uploadedVersionCount(t, database, artifactID)
+
+			refused := test.upload(t, handler, base, "# Notes\n\nsecond\n")
+			if refused.Code != http.StatusConflict {
+				t.Fatalf("project upload naming a base behind the document = %d (want 409) sending %q, body=%s", refused.Code, base["document"], refused.Body.String())
+			}
+			conflict := decodeBody[uploadPreconditionConflict](t, refused)
+			if conflict.Code != "PRECONDITION_FAILED" {
+				t.Fatalf("the project upload's refusal answered code %q, want PRECONDITION_FAILED: %s", conflict.Code, refused.Body.String())
+			}
+			if conflict.Current.Document != current.Token {
+				t.Fatalf("the refusal's current.document = %q, want the token the project document has now, %q (it was sent %q)",
+					conflict.Current.Document, current.Token, base["document"])
+			}
+			if conflict.Current.Version == nil || *conflict.Current.Version != versionsBefore {
+				t.Fatalf("the refusal's current.version = %v, want the project document's version %d: %s", conflict.Current.Version, versionsBefore, refused.Body.String())
+			}
+			if len(conflict.Mismatches) != 1 || conflict.Mismatches[0].Scope != "document" ||
+				conflict.Mismatches[0].Expected != base["document"] ||
+				conflict.Mismatches[0].Current == nil || *conflict.Mismatches[0].Current != current.Token {
+				t.Fatalf("the refusal's mismatches = %#v, want one document mismatch of %q against %q", conflict.Mismatches, base["document"], current.Token)
+			}
+			if after := uploadedVersionCount(t, database, artifactID); after != versionsBefore {
+				t.Fatalf("the refused project upload wrote: %d versions, want the %d standing before it", after, versionsBefore)
+			}
+			if read := readDocumentPrecondition(t, handler, artifactID); read.Markdown != current.Markdown || read.Token != current.Token {
+				t.Fatalf("the project document after the refused upload = %q (%s), want it as it was, %q (%s)", read.Markdown, read.Token, current.Markdown, current.Token)
+			}
+		})
+	}
+}
+
+// Two uploads of one project document read the same base, and both are in the server at once:
+// the first is held inside its transactional append, after its own base check and before it
+// commits, while the second reaches the handler and queues on the project's document lock the
+// first holds. Releasing the first commits it, and the second then runs against the document the
+// first wrote and is refused 409, though the base it named was live when it was sent and when it
+// entered the handler. That is what places the check inside the write's own lock: a check made
+// before the lock would have read the document as it stood while the first upload was still
+// uncommitted, found the base live, and taken the second upload, losing the first's text.
+func TestConcurrentUploadsOfOneBaseLandTheFirstAndRefuseTheSecond(t *testing.T) {
+	f := newUploadRaceFixture(t)
+	base := uploadBase(t, f.handler, f.document.ID)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	f.persistence.holdNextAppend()
+	firsts := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		firsts <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{
+			"name": f.document.Name, "content": "before\n\nfirst", "precondition": base,
+		})
+	}()
+	f.persistence.waitHeld(t)
+	seconds := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		seconds <- f.request(ctx, http.MethodPost, "/api/v1/projects/TEST/artifacts", map[string]any{
+			"name": f.document.Name, "content": "before\n\nsecond", "precondition": base,
+		})
+	}()
+	// The second upload holds no document operation of its own yet: it waits on the lock the
+	// first took, which is what this reads.
+	f.waitForWriteToEngage(t)
+	f.persistence.release()
+
+	first := awaitWithin(t, firsts, cancel, "the first upload of the base")
+	second := awaitWithin(t, seconds, cancel, "the second upload of the base")
+	if first.Code != http.StatusCreated {
+		t.Fatalf("the first upload of the base = %d (want 201), body=%s", first.Code, first.Body.String())
+	}
+	if second.Code != http.StatusConflict {
+		t.Fatalf("the second upload of the same base = %d (want 409) sending %q, body=%s", second.Code, base["document"], second.Body.String())
+	}
+	conflict := decodeBody[uploadPreconditionConflict](t, second)
+	current := readDocumentPrecondition(t, f.handler, f.document.ID)
+	if conflict.Code != "PRECONDITION_FAILED" || conflict.Current.Document != current.Token {
+		t.Fatalf("the second upload's refusal = %q on %q, want PRECONDITION_FAILED on the token the first upload left, %q: %s",
+			conflict.Code, conflict.Current.Document, current.Token, second.Body.String())
+	}
+	if current.Markdown != "before\n\nfirst\n" {
+		t.Fatalf("the document after the race reads %q, want the first upload's text, which the second must not have replaced", current.Markdown)
+	}
+	if versions := uploadedVersionCount(t, f.database, f.document.ID); versions != 2 {
+		t.Fatalf("the document holds %d versions after the race, want the 2 the seed and the first upload wrote", versions)
+	}
+}

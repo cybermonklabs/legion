@@ -25,6 +25,10 @@ const (
 const composedUploadDocument = "Context\n\n" +
 	":::ask{#transport urgency=\"med\" multiple=\"false\"}\n" + composedUploadQuestion + "\n\n- REST: Matches the platform.\n- gRPC: Streams.\n:::\n"
 
+// composedUploadSurroundedDocument is that same document with a paragraph below the ask as well,
+// so an upload can change the block above the ask and the block below it at once.
+const composedUploadSurroundedDocument = composedUploadDocument + "\nThe decision lands this week.\n"
+
 // composedUploadAnsweredOpener is the ask block's opener once the settlement has written the
 // person's answer onto it (setAskServerAttributes), and composedUploadComposedOpener is the
 // opener an agent composing the body again writes in its place: the question is the same, and the
@@ -49,7 +53,7 @@ var composedUploadAgent = model.Actor{Kind: "session", ID: "session-0123456789ab
 func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	ask := composedUploadAnsweredAsk(t, service, artifactID)
+	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
 	answered := documentText(t, service, artifactID)
 	composed := strings.Replace(answered, composedUploadAnsweredOpener, composedUploadComposedOpener, 1)
 	if composed == answered {
@@ -99,7 +103,7 @@ func TestAnAgentsComposedUploadLeavesTheAnsweredAskOnItsBlockAndItsRow(t *testin
 func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T) {
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
-	ask := composedUploadAnsweredAsk(t, service, artifactID)
+	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadDocument)
 	answered := documentText(t, service, artifactID)
 	composed := strings.Replace(answered, composedUploadAnsweredOpener, composedUploadComposedOpener, 1)
 	composed = strings.Replace(composed, composedUploadQuestion, composedUploadOtherQuestion, 1)
@@ -140,12 +144,73 @@ func TestAnAgentsComposedUploadOfAnotherQuestionOpensAnAskOfItsOwn(t *testing.T)
 	}
 }
 
-// composedUploadAnsweredAsk seeds composedUploadDocument on artifactID, lets the settlement index
-// its ask, answers that ask as alice the way its route stores an answer, and lets the settlement
-// write the answer onto the block. It returns the answered row.
-func composedUploadAnsweredAsk(t *testing.T, service *Service, artifactID string) model.Ask {
+// The shape the orphaned answer was first measured in is wider than the two cases above: the
+// agent writes the question word for word, and rewrites the paragraph above the ask and the
+// paragraph below it, and puts a heading, a block of another type, above the ask. The alignment
+// the upload's write uses pairs the uploaded children with the live ones from both ends
+// (pmdoc.carryChildren). Both ends are a paragraph facing a paragraph, and the two are equally
+// changed, so the left end is taken first and the rewritten opening paragraphs are paired and
+// consumed. The heading then faces the live ask and is no pair for it, so the right end is taken
+// instead, pairing the rewritten closing paragraphs. That leaves the live ask at both ends at
+// once, and it is paired with the uploaded ask from the right. The pair is unchanged outside the
+// server state an upload resets, so the id is carried: a block of another type inserted above
+// the ask does not cost the ask its id, and the heading alone takes a fresh one. The row holding
+// the person's answer stays the issue's one row for the question, and the settlement writes the
+// answer onto the block again.
+func TestAnAgentsComposedUploadKeepsTheAnsweredAskWhenItsNeighboursChange(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	ask := composedUploadAnsweredAsk(t, service, artifactID, composedUploadSurroundedDocument)
+	answered := documentText(t, service, artifactID)
+	composed := strings.Replace(answered, composedUploadAnsweredOpener, "## Transport\n\n"+composedUploadComposedOpener, 1)
+	composed = strings.Replace(composed, "Context\n", "Context, revised.\n", 1)
+	composed = strings.Replace(composed, "The decision lands this week.\n", "The decision lands on Friday.\n", 1)
+	neighbourhood := []string{"Context, revised.\n", "## Transport\n", "The decision lands on Friday.\n"}
+	for _, want := range append([]string{composedUploadComposedOpener}, neighbourhood...) {
+		if !strings.Contains(composed, want) {
+			t.Fatalf("the composed body reads\n%s\nwant it to hold %q", composed, want)
+		}
+	}
+
+	if _, err := joinedReplaceText(service, artifactID, composed, composedUploadAgent); err != nil {
+		t.Fatalf("upload the body the agent composed around the ask: %v", err)
+	}
+	if ids := documentAskBlockIDs(t, service, artifactID); len(ids) != 1 || ids[0] != *ask.BlockID {
+		t.Errorf("the document after the upload holds the ask blocks %q, want the one block %q the answered ask was given on, which the alignment reaches from the end of the document", ids, *ask.BlockID)
+	}
+
+	settleCurrentGeneration(t, service, artifactID)
+	text := documentText(t, service, artifactID)
+	if !strings.Contains(text, composedUploadAnsweredOpener) {
+		t.Errorf("the document after the upload and its settlement reads\n%s\nwant the answer written onto the block again, under the opener %s", text, composedUploadAnsweredOpener)
+	}
+	for _, want := range neighbourhood {
+		if !strings.Contains(text, want) {
+			t.Errorf("the document after the upload and its settlement reads\n%s\nwant the neighbourhood the agent composed, holding %q", text, want)
+		}
+	}
+	rows := askRowsOn(t, service, artifactID)
+	if len(rows) != 1 {
+		t.Fatalf("the issue holds %d ask rows after the upload, want the one row %s the person answered: %s", len(rows), ask.ID, askRowSummaries(rows))
+	}
+	row := rows[0]
+	if row.ID != ask.ID || row.Question != composedUploadQuestion {
+		t.Fatalf("the issue's one ask row after the upload is %s, want the answered row %s on %q", askRowSummary(row), ask.ID, composedUploadQuestion)
+	}
+	if row.BlockID == nil || *row.BlockID != *ask.BlockID {
+		t.Fatalf("the ask row after the upload is on block %s, want the block %q it was answered on: %s", blockOf(row), *ask.BlockID, askRowSummary(row))
+	}
+	if row.State != "answered" || row.Answer == nil || row.Answer.User != "alice" || !slices.Equal(row.Answer.Selected, []string{"REST"}) {
+		t.Fatalf("the ask row after the upload is %s, want it still answered with alice's answer selecting REST", askRowSummary(row))
+	}
+}
+
+// composedUploadAnsweredAsk seeds document on artifactID, lets the settlement index its ask,
+// answers that ask as alice the way its route stores an answer, and lets the settlement write the
+// answer onto the block. It returns the answered row.
+func composedUploadAnsweredAsk(t *testing.T, service *Service, artifactID, document string) model.Ask {
 	t.Helper()
-	seedServiceText(t, service, artifactID, composedUploadDocument)
+	seedServiceText(t, service, artifactID, document)
 	settleCurrentGeneration(t, service, artifactID)
 	ask := blockAskOn(t, service, artifactID, "transport")
 	if ask.State != "open" || ask.Question != composedUploadQuestion {
