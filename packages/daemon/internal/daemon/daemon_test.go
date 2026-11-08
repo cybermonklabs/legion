@@ -975,7 +975,9 @@ func (d *daemon) state() api.State {
 }
 
 // claims is the operator's view of every claim the daemon holds, in one read: what a caller that
-// asks about more than one of them takes, rather than listing them again per claim.
+// asks about more than one of them takes, rather than listing them again per claim. One listing
+// serves the rig's release wave (idleWakeRig.awaitReleased), where nine reads a poll would take
+// the daemon's own Postgres away from the work they wait for.
 func (d *daemon) claims() []api.OperatorClaim {
 	d.t.Helper()
 	status, body := d.request(http.MethodGet, "/legion/v1/operator/claims", nil, true)
@@ -992,17 +994,26 @@ func (d *daemon) claims() []api.OperatorClaim {
 // claim is the operator's view of one claim.
 func (d *daemon) claim(token claim.Token) api.OperatorClaim {
 	d.t.Helper()
-	listed := d.claims()
-	for _, c := range listed {
+	return listedClaim(d.t, d.claims(), token)
+}
+
+// listedClaim is one token's claim in a listing already read. A token the daemon does not list is
+// a failure of its own, named here: answered with the zero claim instead, a caller takes its empty
+// state for a state the claim is in and a wait takes it for one the claim has not reached yet, so
+// the run ends at a deadline rather than at the missing token.
+func listedClaim(t *testing.T, claims []api.OperatorClaim, token claim.Token) api.OperatorClaim {
+	t.Helper()
+	for _, c := range claims {
 		if c.Token == token {
 			return c
 		}
 	}
-	tokens := make([]string, 0, len(listed))
-	for _, c := range listed {
+	tokens := make([]string, 0, len(claims))
+	for _, c := range claims {
 		tokens = append(tokens, string(c.Token))
 	}
-	d.t.Fatalf("the daemon lists no claim %s; it lists %d: %s", token, len(listed), strings.Join(tokens, " "))
+	slices.Sort(tokens)
+	t.Fatalf("the daemon lists no claim %s; it lists %d: %s", token, len(claims), strings.Join(tokens, " "))
 	return api.OperatorClaim{}
 }
 

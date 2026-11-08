@@ -41,10 +41,16 @@ runs the Vite development server for interface work.
 
 ## End-to-end tests
 
-`bun run e2e` builds the SPA and drives Playwright against the real Go Dispatch
+`bun run e2e` builds `@legion/contracts` and the SPA and drives Playwright
+against the real Go Dispatch
 server and Postgres. It runs Playwright through `e2e/run.ts`, which starts the
 harness (`e2e/harness-start.ts`: the fakes, then `e2e/run-server.sh`, then the
-plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server. The
+plain-HTTP proxy) unless `PLAYWRIGHT_BASE_URL` selects a deployed server.
+Playwright runs under Node, which reads `@legion/contracts` from that package's
+built `dist/`, so the script builds it first: a fresh checkout has no `dist/`
+and `bun install` makes none. `e2e/run.ts` refuses the run before it starts a
+harness or a Postgres when Playwright has not downloaded a browser the run
+needs, naming `bun run e2e:install` and how large that download is. The
 script builds the server
 with the caller's `go` into `packages/envoy/dispatch-e2e` and execs it, so a
 SIGTERM to the pid it hands its caller stops the server. It pins every server
@@ -458,10 +464,9 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
-themselves: `chromium-alone` runs `e2e/heavy-document-writes.e2e.ts` (a document write answers in
-under a second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
-holding the main thread for a second), and `firefox-alone` and `webkit-alone` run
-`e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
+themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
+(a card draws without holding the main thread for a second), and `firefox-alone` and
+`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
 the run and takes one row at a time: four lanes on one machine make a second of wall clock
 unmeasurable. A project whose dependency has a failing row does not run at all.

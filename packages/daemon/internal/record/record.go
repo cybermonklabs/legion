@@ -1200,6 +1200,10 @@ type Store interface {
 	OpenProductionChecksOfTree(ctx context.Context, tx pgx.Tx, tree string) ([]ProductionCheck, error)
 	// SessionClaimsTree says whether the agent session holds a claim in the tree.
 	SessionClaimsTree(ctx context.Context, tx pgx.Tx, tree, session string) (bool, error)
+	// SessionClaimsAnywhere says whether the agent session holds a claim in any tree the daemon
+	// records. It is what tells a holder the daemon records in another tree from one it records
+	// nowhere, which SessionClaimsTree's one boolean cannot.
+	SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error)
 	// AddParkedDecision keeps a relayed decision under the issue it was decided on, for the next
 	// start or catch-up of the tree that issue stands in. A ref that issue already keeps keeps its
 	// newest decision: a later one, by At, replaces it, KEPT again, so a changes request the
