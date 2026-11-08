@@ -170,6 +170,8 @@ def bun_job(job, workflow=""):
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:50-59 patchedDependencies"),
+        ("packages/proof-editor/proof-sdk-*.tgz",
+         f"{install} installs proof-sdk-upstream from it, the file: dependency of packages/proof-editor/package.json"),
         *[(f"{w}/package.json", f"{install}: package.json:19-31 lists {w}; a frozen install reads every workspace manifest")
           for w in WORKSPACES],
     )
@@ -1531,7 +1533,7 @@ GATES = [
                            "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it); "
                            "@legion/broker-client does not come with them, since no source of this program reaches "
                            "packages/envoy-client/src/broker-credential.ts"),
-        (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them"),
+        (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the shard legs, the three `-alone` projects, the
@@ -1937,6 +1939,18 @@ GATES = [
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
       + setup_go("ci-filters", f"{DAEMON}/go.mod")),
+
+    # The proof-sdk-offline job: a frozen install behind a proxy that answers 504 for every host
+    # the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used, which proves the
+    # install reaches none of them. It reads what any frozen install reads (bun_job: setup-bun,
+    # the manifests, the lockfile, the patches and the tarball the proof editor installs
+    # proof-sdk-upstream from), the proxy program its first step starts, and this file.
+    gate("proof_sdk_offline", "proof-sdk-offline", reads=reads(
+        (".github/scripts/ci-fault-proxy.py",
+         f"{at('proof-sdk-offline', 'Start the fault proxy over the old proof-sdk route')} runs it; "
+         f"the hosts it faults (the job's FAULT_HOSTS) and the log its refusals are counted from "
+         f"are that step's arguments"),
+    ) + bun_job("proof-sdk-offline")),
 
     # The ci-images job: the copy, and the package mode of the image gate, which reads ghcr.io.
     # These are the files that decide what those two steps do. The gate's tree mode is a step of

@@ -166,6 +166,7 @@ env:
       "envoy-session-stall": "envoy_session_stall",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
+      "proof-sdk-offline": "proof_sdk_offline",
       "worker-image": "worker_image"
     }
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
@@ -344,6 +345,7 @@ jobs:
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.ci_images }}
+      proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter2.outputs.proof_sdk_offline }}
       # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
       # the seven outputs the eight slow suites run behind. On a pull request without that
       # label each of those seven is `false` whether its paths matched or not, so a reader of the
@@ -449,9 +451,10 @@ jobs:
             ci_router:
               - &ci_router '.github/workflows/ci.yaml'
             # A frozen Bun install and the Bun it runs: `bun install --frozen-lockfile` reads the
-            # root manifest, the lockfile, the patches package.json:50-59 applies, and the manifest
-            # of every workspace package.json:19-31 lists; .github/actions/setup-bun installs the
-            # Bun .bun-version pins.
+            # root manifest, the lockfile, the patches package.json:50-59 applies, the manifest of
+            # every workspace package.json:19-31 lists, and the tarball
+            # packages/proof-editor/package.json installs proof-sdk-upstream from;
+            # .github/actions/setup-bun installs the Bun .bun-version pins.
             bun_install: &bun_install
               - 'package.json'
               - 'bun.lock'
@@ -464,6 +467,7 @@ jobs:
               - 'packages/pi-shared/package.json'
               - 'packages/claude-envoy/package.json'
               - 'packages/proof-editor/package.json'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/dispatch/package.json'
               - 'packages/test-fixtures/package.json'
               - 'packages/envoy/internal/dispatch/pmdoc/gen/package.json'
@@ -1987,6 +1991,7 @@ jobs:
               - 'packages/pi-shared/package.json'
               - 'packages/claude-envoy/package.json'
               - 'packages/proof-editor/package.json'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/dispatch/package.json'
               - 'packages/test-fixtures/package.json'
               - 'packages/envoy/internal/dispatch/pmdoc/gen/package.json'
@@ -2931,15 +2936,16 @@ jobs:
               # change to it must start the build.
               - '.github/workflows/ci-job-envoy-smoke.yaml'
               # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
-              # install (every workspace manifest) and the Bun pin that stage holds its own Bun
-              # to, the packages it builds the SPA and the Go binaries from, and the notices
-              # scripts.
+              # install (every workspace manifest and the tarball packages/proof-editor/package.json
+              # installs proof-sdk-upstream from) and the Bun pin that stage holds its own Bun to,
+              # the packages it builds the SPA and the Go binaries from, and the notices scripts.
               - 'packages/envoy/docker/Dockerfile'
               - '.dockerignore'
               - '.bun-version'
               - 'package.json'
               - 'bun.lock'
               - 'patches/**'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/envoy-client/package.json'
               - 'packages/broker-client/package.json'
               - 'packages/pi-envoy/package.json'
@@ -3117,6 +3123,7 @@ jobs:
               - 'patches/**'
               - 'packages/claude-envoy/**'
               - 'packages/proof-editor/package.json'
+              - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/dispatch/package.json'
               - 'packages/test-fixtures/package.json'
               - 'docs/site/package.json'
@@ -3219,6 +3226,23 @@ jobs:
               # scripts that copy and check them, and the crane the action installs, so a guide
               # written under one of those directories would start it for nothing.
               - '!**/*.md'
+
+            # The proof-sdk-offline job: a frozen install behind a proxy that answers 504
+            # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
+            # What can send that install to one of those hosts again is every file the install
+            # reads, which is the shared group above, so the filter names it whole rather than
+            # the four sites of it this job is really about: bun.lock, which a reintroduced
+            # remote dependency necessarily moves, package.json, the root manifest the frozen
+            # install reads, packages/proof-editor/package.json, the manifest that names the
+            # tarball, and packages/proof-editor/proof-sdk-*.tgz, the file itself. Beside it:
+            # .github/scripts/ci-fault-proxy.py, the program that drives the install, and the
+            # two files that hold the job: ci.yaml, which carries its `if:`, and the called
+            # file its steps live in.
+            proof_sdk_offline:
+              - *bun_install
+              - '.github/scripts/ci-fault-proxy.py'
+              - *ci_router
+              - '.github/workflows/ci-job-proof-sdk-offline.yaml'
 
       # filter_verdicts above is one object over both steps, the shape .github/scripts/ci-ok.jq
       # reads. A GitHub expression can build no object from two, so jq merges them here; the two
@@ -3977,6 +4001,21 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # The proof that no install of this repository fetches the proof editor's upstream sources over
+  # the network: a frozen install runs behind a proxy that answers HTTP 504 for the hosts of the
+  # old `github:sjawhar/proof-sdk#<sha>` route, and the job fails when the proxy's log holds a
+  # single refusal. The steps, and why those hosts, are in the called file.
+  proof-sdk-offline:
+    needs: changes
+    if: needs.changes.outputs.proof_sdk_offline == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-proof-sdk-offline.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # The worker image's pull-request build: worker-image.yaml builds the head and publishes its
   # sha- tag only. Main's image builds are release.yaml's call of the same workflow.
   worker-image:
@@ -4227,6 +4266,7 @@ jobs:
       - envoy-e2e-local
       - envoy-session-stall
       - ci-filters
+      - proof-sdk-offline
       - worker-image
     if: ${{ always() }}
     runs-on: ubuntu-24.04
