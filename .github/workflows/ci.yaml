@@ -269,6 +269,7 @@ jobs:
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
+      check_daemon_api_contract_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
       playwright_deps_current_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.playwright_deps_current_test }}
@@ -414,7 +415,7 @@ jobs:
           # and `.github/scripts/check-ci-filters.sh write` puts them in that filter's own block
           # between a BEGIN and an END comment. The ordinary run of that check refuses a block
           # that is not what it computes, naming the first pattern that differs, so an edit by
-          # hand is lost; 19 of this job's filters carry one today, 525 patterns in all. That is
+          # hand is lost; 19 of this job's filters carry one today, 528 patterns in all. That is
           # dispatch://INFRA-1413's R18, the selection half of the rule whose coverage half is
           # rule 1: a job must not run for a change to a test file of a package whose tests it
           # never runs, and the pattern that selects such a file (packages/envoy/** and its kin)
@@ -966,6 +967,7 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261105231916_test.go'
               - '!packages/daemon/internal/store/migration_20261106143638_test.go'
               - '!packages/daemon/internal/store/migration_20261106150254_test.go'
+              - '!packages/daemon/internal/store/migration_20261107052815_test.go'
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
@@ -1194,6 +1196,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-fireevent-reasons.test.sh'
               - '.github/scripts/check-fireevent-reasons.sh'
+            check_daemon_api_contract_test: &check_daemon_api_contract_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-daemon-api-contract.test.sh'
+              - '.github/scripts/check-daemon-api-contract.sh'
             check_release_credentials_test: &check_release_credentials_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1398,6 +1406,7 @@ jobs:
               - *check_private_names_test
               - *check_plugin_names_test
               - *check_fireevent_reasons_test
+              - *check_daemon_api_contract_test
               - *check_release_credentials_test
               - *repo_paths_test
               - *playwright_deps_current_test
@@ -1621,6 +1630,7 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261105231916_test.go'
               - '!packages/daemon/internal/store/migration_20261106143638_test.go'
               - '!packages/daemon/internal/store/migration_20261106150254_test.go'
+              - '!packages/daemon/internal/store/migration_20261107052815_test.go'
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
@@ -1966,6 +1976,7 @@ jobs:
               - '!packages/daemon/internal/store/migration_20261105231916_test.go'
               - '!packages/daemon/internal/store/migration_20261106143638_test.go'
               - '!packages/daemon/internal/store/migration_20261106150254_test.go'
+              - '!packages/daemon/internal/store/migration_20261107052815_test.go'
               - '!packages/daemon/internal/store/migration_20261108000545_test.go'
               - '!packages/daemon/internal/store/release_records_test.go'
               - '!packages/daemon/internal/store/store_test.go'
@@ -3305,12 +3316,15 @@ jobs:
     if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
     # The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
     # with `checks: write` and names the run's jobs in it with `actions: read`. `contents: read`
-    # is the checkout's. The pull request's text is the `pr-title` job's, which declares the
-    # scopes its own routes read.
+    # is the checkout's. `pull-requests: read` is the daemon API contract check's: when it is
+    # about to refuse a change it reads every open pull request of the repository, with the paths
+    # each changes, to name a number no other one has taken. The pull request's text is the
+    # `pr-title` job's, which declares the scopes its own routes read.
     permissions:
       contents: read
       actions: read
       checks: write
+      pull-requests: read
     uses: ./.github/workflows/ci-job-lint.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
@@ -3391,6 +3405,7 @@ jobs:
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
       check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
+      check_daemon_api_contract_test: ${{ needs.changes.outputs.check_daemon_api_contract_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
       playwright_deps_current_test: ${{ needs.changes.outputs.playwright_deps_current_test }}

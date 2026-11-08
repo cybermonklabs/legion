@@ -354,7 +354,7 @@ def directory_reads(dir_rel: str, tests: set, why: str) -> list:
     lines here only to find that constraint. Counting it as a read of this run would say a job
     that compiles it nowhere must run on a change to it, which rule 17 could then not exclude:
     the 97 test files under a build constraint here would hold their unconstrained siblings in
-    the gate filters that way, 4,566 generated patterns where there are now 525."""
+    the gate filters that way, 4,566 generated patterns where there are now 528."""
     names = sorted(os.listdir(REPO / dir_rel))
     left_out = {name for name in names if name in tests or name.endswith(TEST_SUFFIX)}
     if not left_out:
@@ -850,6 +850,11 @@ ENV_ALLOWED = frozenset({
     "DATABASE_URL",
     "DISPATCH_E2E_FILE_STORE_BUCKET", "DISPATCH_E2E_FILE_STORE_ENDPOINT",
     "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE", "ENVOY_SMOKE_IMAGE",
+    # The token gh reads. A step of the lint job sets it for the daemon API contract check, and
+    # env_reason reads every step's block whatever its order, so without this name here every go
+    # command of that job would count as unreduced and go_notices would have to match every Go
+    # file of the repository again. go reads it nowhere.
+    "GH_TOKEN",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",

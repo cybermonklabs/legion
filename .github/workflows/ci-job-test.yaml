@@ -113,6 +113,12 @@ on:
           check-fireevent-reasons.test.sh and what it tests.
         type: string
         required: true
+      check_daemon_api_contract_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_daemon_api_contract_test:
+          check-daemon-api-contract.test.sh and what it tests.
+        type: string
+        required: true
       check_release_credentials_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_release_credentials_test:
@@ -337,6 +343,10 @@ jobs:
       - name: Test the fireEvent reason check
         if: inputs.changes-result != 'success' || inputs.check_fireevent_reasons_test == 'true'
         run: .github/scripts/check-fireevent-reasons.test.sh
+
+      - name: Test the daemon API contract number check
+        if: inputs.changes-result != 'success' || inputs.check_daemon_api_contract_test == 'true'
+        run: .github/scripts/check-daemon-api-contract.test.sh
 
       - name: Test the release credential check
         if: inputs.changes-result != 'success' || inputs.check_release_credentials_test == 'true'

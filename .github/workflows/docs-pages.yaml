@@ -323,6 +323,7 @@ on:
       - '!packages/daemon/internal/store/migration_20261105231916_test.go'
       - '!packages/daemon/internal/store/migration_20261106143638_test.go'
       - '!packages/daemon/internal/store/migration_20261106150254_test.go'
+      - '!packages/daemon/internal/store/migration_20261107052815_test.go'
       - '!packages/daemon/internal/store/migration_20261108000545_test.go'
       - '!packages/daemon/internal/store/release_records_test.go'
       - '!packages/daemon/internal/store/store_test.go'
