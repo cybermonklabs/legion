@@ -476,12 +476,10 @@ func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connI
 // the grant no longer carries this connection.
 //
 // What shuts that window is the connection under the TLS, which carries no byte it reads once
-// the cut is decided (cutConn): the flag goes first because it is the decision, and a read
-// deadline is a request rather than a stop - it wakes a read parked in the poller, but the one
-// read already in flight on a socket that had become readable can still come back with its
-// bytes. The deadline follows all the same, since it is what wakes a read that is parked, and
-// the close follows it, which still writes close_notify, so the command reads a clean end of
-// stream; a read deadline bounds no write.
+// the cut is decided (cutConn, where why a read deadline does not decide it is written out).
+// The flag goes first because it is the decision; the deadline follows, since it is what wakes
+// a read parked in the poller; and the close follows that, still writing close_notify, so the
+// command reads a clean end of stream, a read deadline bounding no write.
 func cutJoined(cut *cutConn, c net.Conn) {
 	cut.stopped.Store(true)
 	_ = c.SetReadDeadline(time.Now())

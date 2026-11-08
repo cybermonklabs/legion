@@ -774,13 +774,13 @@ func TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst(t *testing.T) {
 	)
 	for _, row := range []struct {
 		name  string
-		close func(*cutConn, net.Conn)
+		close func(*joinedStandIn)
 		// crosses is whether the late frame reaches the service, which is what the
 		// control shows and what the cut must not.
 		crosses bool
 	}{
-		{"the cut before the close carries no frame written after it", cutJoined, false},
-		{"a plain close carries one, which is the window the cut shuts", func(_ *cutConn, c net.Conn) { _ = c.Close() }, true},
+		{"the cut before the close carries no frame written after it", func(j *joinedStandIn) { cutJoined(j.cut, j.joined) }, false},
+		{"a plain close carries one, which is the window the cut shuts", func(j *joinedStandIn) { _ = j.joined.Close() }, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			join := newJoinedStandIn(t)
@@ -791,7 +791,7 @@ func TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst(t *testing.T) {
 
 			// In a goroutine because the socket under the close is held: the close sits
 			// in the window this row is about until the release below.
-			go row.close(join.cut, join.joined)
+			go row.close(join)
 			if row.crosses {
 				join.readEnd(t)
 			} else {
@@ -839,8 +839,7 @@ func TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut(t *testing.T
 		late    = "a frame after the grant stopped carrying it"
 	)
 	released := make(chan struct{})
-	var once sync.Once
-	release := func() { once.Do(func() { close(released) }) }
+	release := sync.OnceFunc(func() { close(released) })
 
 	held := make(chan *heldConn, 1)
 	r := newRig(t, Options{Watch: watchFast}, func(c net.Conn) net.Conn {
