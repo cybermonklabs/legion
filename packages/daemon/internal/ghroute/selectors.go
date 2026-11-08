@@ -362,14 +362,25 @@ func (s *selectors) query(words []string) error {
 // whose q field is its query too. A placeholder in the owner's place names none (GH_REPO's, or
 // the working directory's, fills it), and one in the repository's names the owner alone, since
 // what fills it is read where gh reads it (fromOwnRepository); a repository named by id
-// (repositories/<id>) and another host are errors. gh reads an endpoint holding "://" as a whole
-// URL.
+// (repositories/<id>) is an error.
+//
+// gh reads an endpoint holding "://" as a whole URL and sends the command's token to the host
+// and scheme it names, so an absolute endpoint is GitHub's own https://api.github.com/… or it is
+// refused: another host is no GitHub API, and `http://api.github.com/…` hands the token over in
+// the clear, GitHub's 301 to https coming only once it has it. A path is the form to use.
 func (s *selectors) endpoint(endpoint string) (search bool, err error) {
 	path := endpoint
 	if strings.Contains(endpoint, "://") {
 		parsed, err := url.Parse(endpoint)
-		if err != nil || !strings.EqualFold(parsed.Host, "api.github.com") {
-			return false, cannotPlace(endpoint, "names another host than api.github.com", true)
+		why := ""
+		switch {
+		case err != nil || !strings.EqualFold(parsed.Host, "api.github.com"):
+			why = "names another host than api.github.com"
+		case !strings.EqualFold(parsed.Scheme, "https"):
+			why = "names the scheme " + parsed.Scheme + ", which is not https"
+		}
+		if why != "" {
+			return false, fmt.Errorf("the endpoint %q %s, so the command sends no token; name it as a path, repos/<owner>/<repo>/…, or as an https://api.github.com/… URL", endpoint, why)
 		}
 		path = parsed.Path
 		if parsed.RawQuery != "" {

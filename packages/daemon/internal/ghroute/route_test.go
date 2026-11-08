@@ -572,6 +572,14 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"api", "repositories/12345"}, err: "by its id"},
 		{argv: []string{"api", "https://ghe.example.com/api/v3/repos/acme/w"}, err: "another host"},
 		{argv: []string{"api", "--hostname", "ghe.example.com", "repos/acme/w"}, err: "another host"},
+		// An absolute endpoint is GitHub's own https://api.github.com/… or nothing: gh sends the
+		// bundle's token to whatever host and scheme it names, so an http:// one hands the token
+		// over in the clear, GitHub's 301 to https coming only after it has it.
+		{argv: []string{"api", "http://api.github.com/repos/acme/w"}, err: "is not https"},
+		{argv: []string{"api", "HTTP://API.GITHUB.COM/repos/acme/w"}, err: "is not https"},
+		{argv: []string{"api", "ftp://api.github.com/repos/acme/w"}, err: "is not https"},
+		{argv: []string{"api", "-X", "POST", "http://api.github.com/repos/acme/w/issues/1/comments"}, err: "is not https"},
+		{argv: []string{"api", "https://api.github.com/repos/Acme/w"}, owner: "acme"},
 		{argv: []string{"api", "repos/../x/y"}, err: `"..", which is no GitHub login`},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "../x/y"}, err: `names another host`},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "../y"}, err: "no GitHub login"},

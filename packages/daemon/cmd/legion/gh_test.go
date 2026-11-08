@@ -126,6 +126,10 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 	}{
 		{[]string{"pr", "view", "https://github.com/other/thing/pull/1"}, `"other" is not an owner of this project`},
 		{[]string{"api", "repos/Other/thing"}, `"other" is not an owner of this project`},
+		// An absolute `gh api` endpoint that is not GitHub's own https://api.github.com/…: the
+		// real gh would send the bundle's token over the scheme it names.
+		{[]string{"api", "http://api.github.com/repos/sjawhar/legion"}, "is not https"},
+		{[]string{"api", "https://ghe.example.com/api/v3/repos/sjawhar/legion"}, "another host than api.github.com"},
 		{[]string{"pr", "view", "1", "--bogus"}, `"--bogus" is no option`},
 		{[]string{"issue", "view", "1"}, "cannot read `gh issue view`"},
 		{[]string{"co", "1"}, `"co" is a gh alias`},

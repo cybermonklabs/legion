@@ -1346,9 +1346,20 @@ the tool runs only what is safe there, and decides before anything runs:
   `search`, `repo view`, `release view` and `list`, `issue view`, `list` and `comment`, `label list`
   and `cache list`. Everything else is refused, `extension`, `alias`, `config`, `auth`,
   `codespace`, `browse`, `gist`, `secret`, `ssh-key`, `gpg-key`, `repo clone` and `release download`
-  among them, and so is, anywhere in a command, `--web` or `-w`, `gh api --hostname`, and an option
-  reading a file or standard input on the daemon's host (`--body-file`, a `pr` or `issue` command's
-  `-F`, `pr create --recover`, a workflow field's `@<path>`).
+  among them, and so is an option opening a browser (`--web`, `-w`), `gh api --hostname`, and an
+  option reading a file or standard input on the daemon's host (`--body-file`, a `pr` or `issue`
+  command's `-F`, `pr create --recover`, a workflow field's `@<path>`). Each is refused as an
+  option and never inside the value an option is given: the tool holds the options of every
+  command the allow list names, from gh's own help, and reads a call's arguments against them as
+  pflag does, so a body, a title, a merge subject, a search query or a `jq` expression beginning
+  with a hyphen — `--body "-worker.Stop() is gone"`, `--search "-wip in:title"` — is text. Where
+  an argument names an option no such table holds, a later gh's new one among them, every
+  argument that could be an option is read as one again.
+- **One API host.** A `gh api` endpoint is a path, `repos/<owner>/<repo>/…`, or the one absolute
+  URL `https://api.github.com/…`; another host or another scheme is refused before gh starts, for
+  this tool and for a pane's `legion gh` alike (`internal/ghroute`). gh sends the bundle's token
+  to whatever an absolute endpoint names, so `http://api.github.com/…` would hand it over in the
+  clear, GitHub's redirect to https coming only once it has it.
 - **The footer.** Every comment or review a call posts carries the agent's Legion footer,
   `<!-- legion: {"session":"<session>","phase":"<phase>","answer":"<question>.<seq>"} -->`, which
   the tool adds itself: after a `pr comment`, `issue comment` or `pr review` `--body`, after a

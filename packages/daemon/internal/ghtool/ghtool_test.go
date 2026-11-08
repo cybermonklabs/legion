@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -361,6 +363,12 @@ func TestRefusedFormsNeverRun(t *testing.T) {
 		{argv: []string{"api", "repos/other/thing"}, want: `"other" is not an owner of this project`, readHelp: true},
 		{argv: []string{"pr", "view", "5", "-R", "acme/widgets", "--bogus"}, want: `"--bogus" is no option`, readHelp: true},
 		{argv: []string{"pr", "view", "https://github.com/sjawhar/legion/pull/1", "-R", "acme/widgets"}, want: "more than one owner", readHelp: true},
+		// An absolute endpoint that is not GitHub's own https://api.github.com/…: gh sends the
+		// agent's token to the host and scheme it names, so an http:// one hands it over in the
+		// clear before GitHub's 301 (the routing refuses it, for this caller and `legion gh`).
+		{argv: []string{"api", "http://api.github.com/repos/acme/widgets"}, want: "is not https", readHelp: true},
+		{argv: []string{"api", "-X", "POST", "HTTP://API.GITHUB.COM/repos/acme/widgets/issues/5/comments", "-f", "body=Done."}, want: "is not https", readHelp: true},
+		{argv: []string{"api", "https://ghe.example.com/api/v3/repos/acme/widgets"}, want: "another host than api.github.com", readHelp: true},
 	} {
 		seq := i + 1
 		f.clearInvocations()
@@ -556,6 +564,238 @@ func TestTheFooterIsAddedToEveryWriteForm(t *testing.T) {
 		posted := want[slices.IndexFunc(want, func(arg string) bool { return strings.Contains(arg, "<!-- legion:") })]
 		if session := (intake.PullRequestReview{Body: posted}).LegionSession(); session != "s-1" {
 			t.Errorf("the review intake reads the session %q from %q, want s-1", session, posted)
+		}
+	}
+}
+
+// A body whose text begins with a hyphen — a removed line of a diff quoted back, `-Fixed in
+// abc123` — is text, not an option: the tool reads a write form's options as pflag does and never
+// reads the values they are given, so the call runs with the footer added to the body as given.
+// A browser or file option of its own is still refused, in either spelling, and nothing runs.
+func TestABodyBeginningWithAHyphenIsTextAndTheCallRuns(t *testing.T) {
+	f := newFixture(t, implementer, behaviour{Stdout: "posted\n"})
+	foot := func(seq int) string {
+		return `<!-- legion: {"session":"s-1","phase":"implement","answer":"dispatch:m-1.` + fmt.Sprint(seq) + `"} -->`
+	}
+	repo := []string{"-R", "acme/widgets"}
+	leak := "-worker.Stop() is gone, so the leak is fixed"
+	fixed := "-Fixed in abc123"
+	seq := 0
+	for _, tc := range []struct {
+		argv []string
+		want func(foot string) []string
+	}{
+		{append([]string{"pr", "comment", "5", "--body", leak}, repo...), func(s string) []string {
+			return append([]string{"pr", "comment", "5", "--body", leak + "\n\n" + s}, repo...)
+		}},
+		{append([]string{"pr", "comment", "5", "-b", fixed}, repo...), func(s string) []string {
+			return append([]string{"pr", "comment", "5", "-b", fixed + "\n\n" + s}, repo...)
+		}},
+		{append([]string{"issue", "comment", "3", "--body", fixed}, repo...), func(s string) []string {
+			return append([]string{"issue", "comment", "3", "--body", fixed + "\n\n" + s}, repo...)
+		}},
+		{append([]string{"pr", "review", "5", "--approve", "--body", leak}, repo...), func(s string) []string {
+			return append([]string{"pr", "review", "5", "--approve", "--body", leak + "\n\n" + s}, repo...)
+		}},
+		{append([]string{"pr", "close", "5", "--comment", fixed}, repo...), func(s string) []string {
+			return append([]string{"pr", "close", "5", "--comment", fixed + "\n\n" + s}, repo...)
+		}},
+		{[]string{"api", "-X", "POST", "repos/acme/widgets/issues/5/comments", "-f", "body=" + fixed}, func(s string) []string {
+			return []string{"api", "-X", "POST", "repos/acme/widgets/issues/5/comments", "-f", "body=" + fixed + "\n\n" + s}
+		}},
+		// A pull request of the agent's own carries no footer, and its title and body are text
+		// too: the call runs with the arguments as given.
+		{append([]string{"pr", "create", "--title", fixed, "--body", leak}, repo...), func(string) []string {
+			return append([]string{"pr", "create", "--title", fixed, "--body", leak}, repo...)
+		}},
+	} {
+		seq++
+		f.clearInvocations()
+		got := f.run(seq, tc.argv...)
+		want := tc.want(foot(seq))
+		ran := f.invocations(false)
+		if !got.Ran || len(ran) != 1 || !slices.Equal(ran[0].Argv, want) {
+			t.Errorf("gh %q = %+v, ran %+v; want gh run once with %q", tc.argv, got, ran, want)
+		}
+	}
+	for _, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{append([]string{"pr", "comment", "5", "--web"}, repo...), "opens a web browser"},
+		{append([]string{"pr", "comment", "5", "-w"}, repo...), "opens a web browser"},
+		{append([]string{"pr", "comment", "5", "--body-file", "body.md"}, repo...), "pass the text itself with --body"},
+		{append([]string{"pr", "review", "5", "--approve", "-F", "body.md"}, repo...), "pass the text itself with --body"},
+	} {
+		seq++
+		f.clearInvocations()
+		got := f.run(seq, tc.argv...)
+		if got.Ran || !strings.Contains(got.Output, tc.want) || len(f.invocations(true)) != 0 {
+			t.Errorf("gh %q = %+v, ran %+v; want a refusal containing %q with gh never started", tc.argv, got, f.invocations(true), tc.want)
+		}
+	}
+}
+
+// No value an allowed command is given is read as an option: a body, a title, a merge subject,
+// a lock reason, a search query and a query word after `--` all begin with a hyphen where the
+// text does, and the tool reads each command's options as pflag does (optionSpecs) rather than
+// every argument. An option of its own — a browser, a file read on the daemon's host, a typed
+// field reading one — is still refused, and so is a `-w` of a command whose own `-w` opens a
+// browser, while `gh run list -w <workflow>`, where gh's own `-w` is --workflow, runs. gh's
+// saved help holds no `pr edit`, `pr merge` or `pr lock`, which the routing would refuse for
+// that alone, so the forms are read here rather than run.
+func TestNoValueOfAnAllowedCommandIsReadAsAnOption(t *testing.T) {
+	for _, argv := range [][]string{
+		{"pr", "create", "-R", "acme/widgets", "--title", "-Fix the leak", "--body", "-worker.Stop() is gone"},
+		{"pr", "create", "-R", "acme/widgets", "--fill", "--body", "-Fixed in abc123"},
+		{"pr", "create", "-R", "acme/widgets", "-t", "-Fix", "-b", "-worker.Stop() is gone"},
+		{"pr", "edit", "5", "-R", "acme/widgets", "--body", "-worker.Stop() is gone"},
+		{"pr", "edit", "5", "-R", "acme/widgets", "--title", "-Fix the leak"},
+		{"pr", "edit", "5", "-R", "acme/widgets", "--add-label", "-weird-label"},
+		{"pr", "merge", "5", "-R", "acme/widgets", "--squash", "--body", "-worker.Stop() is gone"},
+		{"pr", "merge", "5", "-R", "acme/widgets", "--squash", "-t", "-Fix the leak"},
+		{"pr", "merge", "5", "-R", "acme/widgets", "--merge", "-A", "-weird@example.com"},
+		{"pr", "lock", "5", "-R", "acme/widgets", "--reason", "-off_topic"},
+		{"pr", "revert", "5", "-R", "acme/widgets", "--title", "-Fix", "--body", "-worker.Stop() is gone"},
+		{"pr", "list", "-R", "acme/widgets", "--search", "-wip in:title"},
+		{"pr", "ls", "-R", "acme/widgets", "--search", "-wip in:title"},
+		{"issue", "list", "-R", "acme/widgets", "--search", "-wip in:title"},
+		{"label", "list", "-R", "acme/widgets", "--search", "-wip"},
+		{"search", "issues", "--", "-wip", "repo:acme/widgets"},
+		{"pr", "view", "5", "-R", "acme/widgets", "--jq", "-1 + .number"},
+		{"run", "list", "-R", "acme/widgets", "-w", "ci.yml"},
+	} {
+		if why := refusal(argv, commandWords(argv)); why != "" {
+			t.Errorf("gh %q is refused: %s; want it run, since the hyphen begins a value and no option", argv, why)
+		}
+	}
+	for _, tc := range []struct {
+		argv []string
+		want string
+	}{
+		{[]string{"pr", "create", "-R", "acme/widgets", "--web"}, "opens a web browser"},
+		{[]string{"pr", "create", "-R", "acme/widgets", "--fill", "-w"}, "opens a web browser"},
+		{[]string{"pr", "create", "-R", "acme/widgets", "--body-file", "body.md"}, "pass the text itself with --body"},
+		{[]string{"pr", "create", "-R", "acme/widgets", "-F", "body.md"}, "pass the text itself with --body"},
+		{[]string{"pr", "create", "-R", "acme/widgets", "--recover", "state.json"}, "reads a file on the daemon's host"},
+		{[]string{"pr", "edit", "5", "-R", "acme/widgets", "--body-file", "body.md"}, "pass the text itself with --body"},
+		{[]string{"pr", "edit", "5", "-R", "acme/widgets", "-Fbody.md"}, "pass the text itself with --body"},
+		{[]string{"pr", "merge", "5", "-R", "acme/widgets", "--squash", "-F", "body.md"}, "pass the text itself with --body"},
+		{[]string{"pr", "revert", "5", "-R", "acme/widgets", "--body-file", "body.md"}, "pass the text itself with --body"},
+		{[]string{"pr", "list", "-R", "acme/widgets", "--web"}, "opens a web browser"},
+		{[]string{"search", "issues", "-w", "repo:acme/widgets"}, "opens a web browser"},
+		{[]string{"workflow", "run", "ci.yml", "-R", "acme/widgets", "-F", "token=@/etc/passwd"}, "reads a field's value from a file"},
+		// An option no spec holds is read as every argument is: a later gh's new option never
+		// lets a browser through.
+		{[]string{"pr", "create", "-R", "acme/widgets", "--brand-new", "x", "-w"}, "opens a web browser"},
+	} {
+		if why := refusal(tc.argv, commandWords(tc.argv)); !strings.Contains(why, tc.want) {
+			t.Errorf("gh %q is refused with %q; want a refusal containing %q", tc.argv, why, tc.want)
+		}
+	}
+}
+
+// ghReferenceCommand is one command of gh's saved reference
+// (cmd/legion/testdata/gh-help/reference.txt): the options it names, by long name, and the
+// cobra aliases gh runs it under.
+type ghReferenceCommand struct {
+	flags   map[string]flagSpec
+	aliases []string
+}
+
+// ghReferenceHeading opens a command of the reference, `### gh pr list [flags]`, and
+// ghReferenceFlag is one of its option lines, `  -b, --body text   The comment body text`: the
+// shorthand, the long name, and a placeholder one space after the name where the option takes a
+// value, the description two or more spaces after it.
+var (
+	ghReferenceHeading = regexp.MustCompile(`^#+ gh ([a-z0-9][a-z0-9 -]*?)(?: [\[{<].*)?$`)
+	ghReferenceFlag    = regexp.MustCompile(`^ {2,}(?:-([A-Za-z]), )?--([a-z0-9-]+)(?: ([^\s]+))?(?: {2,}|\s*$)`)
+)
+
+// ghReferenceCommands reads every command of gh 2.98.0's saved reference.
+func ghReferenceCommands(t *testing.T) map[string]ghReferenceCommand {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(helpDir(t), "reference.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands, name, inAliases := map[string]ghReferenceCommand{}, "", false
+	for _, line := range strings.Split(string(data), "\n") {
+		switch heading := ghReferenceHeading.FindStringSubmatch(line); {
+		case heading != nil:
+			name, inAliases = strings.TrimSpace(heading[1]), false
+			commands[name] = ghReferenceCommand{flags: map[string]flagSpec{}}
+		case name == "":
+		case strings.TrimSpace(line) == "Aliases":
+			inAliases = true
+		case inAliases:
+			if alias, ok := strings.CutPrefix(line, "gh "); ok {
+				command := commands[name]
+				command.aliases = append(command.aliases, strings.TrimSpace(alias))
+				commands[name] = command
+			}
+		default:
+			if flag := ghReferenceFlag.FindStringSubmatch(line); flag != nil {
+				spec := flagSpec{value: flag[3] != ""}
+				if flag[1] != "" {
+					spec.short = flag[1][0]
+				}
+				commands[name].flags[flag[2]] = spec
+			}
+		}
+	}
+	return commands
+}
+
+// The options the tool reads each allowed command's arguments against are gh's own: every
+// option of gh 2.98.0's reference, with its shorthand and its arity, and nothing besides the
+// inherited --help and -R/--repo the reference leaves out; every cobra alias gh lists is read
+// as the command it runs; and every command the allow list holds has them, so no allowed call
+// falls back to reading its values as options. A gh that adds, drops or re-spells an option
+// fails here when its saved help is updated, rather than silently refusing a body or letting an
+// option through.
+func TestEveryAllowedCommandsOptionsAreGhsOwn(t *testing.T) {
+	reference := ghReferenceCommands(t)
+	inherited := commandSpec{"help": helpFlag, "repo": repoFlag}
+	specs := maps.Clone(optionSpecs)
+	specs["api"] = apiSpec
+	for name, spec := range specs {
+		command, ok := reference[name]
+		if !ok {
+			t.Errorf("the gh tool holds the options of `gh %s`, which gh's reference does not name", name)
+			continue
+		}
+		for option, flag := range command.flags {
+			if read, ok := spec[option]; !ok || read != flag {
+				t.Errorf("the gh tool reads `gh %s`'s --%s as %+v (held: %t); gh's own help names it %+v", name, option, read, ok, flag)
+			}
+		}
+		for option, flag := range spec {
+			if _, ok := command.flags[option]; ok {
+				continue
+			}
+			if want, ok := inherited[option]; !ok || want != flag {
+				t.Errorf("the gh tool reads an option --%s (%+v) of `gh %s` gh's own help does not name", option, flag, name)
+			}
+		}
+		for _, alias := range command.aliases {
+			if ghAliases[alias] != name && specs[alias] == nil {
+				t.Errorf("gh runs `gh %s` as `gh %s`, and the gh tool reads it as %q", alias, name, ghAliases[alias])
+			}
+		}
+	}
+	for name := range reference {
+		words := strings.Fields(name)
+		if len(words) != 2 || allowed(words) != "" {
+			continue
+		}
+		if spec, _ := specOf(words); spec == nil {
+			t.Errorf("`gh %s` is one of the gh tool's commands and the tool holds none of its options, so it reads every argument of such a call as an option", name)
+		}
+	}
+	for alias, name := range ghAliases {
+		if spec, key := specOf(strings.Fields(alias)); key != name || spec == nil {
+			t.Errorf("`gh %s` is read as `gh %s` (%t), want the options of `gh %s`", alias, key, spec != nil, name)
 		}
 	}
 }

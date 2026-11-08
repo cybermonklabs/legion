@@ -90,9 +90,30 @@ func allowed(words []string) string {
 // standard input on the daemon's host (--body-file, a pr or issue command's -F, pr create's
 // --recover, a typed field's @<path> for workflow run) — gh api's own options are read with its
 // footer (withFooter).
+//
+// A command whose options the tool holds (specOf: every command the allow list holds) is read
+// as pflag reads it (parseArgs) and refused by the long name of an option it gave, never by the
+// value an option was given: a body, a title, a merge subject, a search query or a jq
+// expression is text, `--body "-worker.Stop() is gone, so the leak is fixed"` among it, and a
+// body quoting a removed line of a diff is ordinary. A write form parseArgs cannot read is left
+// to withFooter, which reads the same arguments and names what it cannot read; any other form
+// it cannot read, one a later gh's new option spells among them, falls back to reading every
+// argument, as a command the tool holds no options of does: without the command's options a
+// value cannot be told from an option, and a browser the model opens is never worth the doubt.
 func refusal(argv, words []string) string {
 	if why := allowed(words); why != "" {
 		return why
+	}
+	if spec, key := specOf(words); spec != nil {
+		parsed, err := parseArgs(argv, spec, key)
+		_, write := writes[key]
+		if err == nil {
+			return optionRefusal(parsed, write)
+		}
+		if write {
+			// withFooter reads the same arguments and names what it cannot read.
+			return ""
+		}
 	}
 	for i, arg := range argv {
 		switch {
@@ -107,6 +128,31 @@ func refusal(argv, words []string) string {
 		case words[0] == "workflow":
 			if value, ok := typedField(argv, i); ok && fieldReadsFile(value) {
 				return fmt.Sprintf("%q reads a field's value from a file or standard input; pass the value itself with -f", value)
+			}
+		}
+	}
+	return ""
+}
+
+// optionRefusal is the reason the options of a command, read against the command's own
+// (parseArgs), refuse it before anything runs, "" for none: one opening a browser, one reading
+// the text from a file, in either spelling, pr create's --recover, which reads a file an
+// earlier run left on the daemon's host, and, for a command that is no write form (write), a
+// typed field reading a file (`workflow run -F key=@<path>`). A write form's own fields and the
+// forms its footer cannot be added to are withFooter's, which reads the text it posts (gh api's
+// -F key=@<path>, --input and --hostname, --editor, a GraphQL mutation).
+func optionRefusal(parsed parsedArgs, write bool) string {
+	for _, o := range parsed.options {
+		switch o.name {
+		case "web":
+			return fmt.Sprintf("%q opens a web browser (-w, --web), which the gh tool never does", o.arg)
+		case "body-file":
+			return fmt.Sprintf("%q reads the text from a file (-F, --body-file), to which the gh tool cannot add the agent's footer; pass the text itself with --body", o.arg)
+		case "recover":
+			return fmt.Sprintf("%q reads a file on the daemon's host; pass the title and body with --title and --body", o.arg)
+		case "field":
+			if !write && fieldReadsFile(o.value) {
+				return fmt.Sprintf("%q reads a field's value from a file or standard input; pass the value itself with -f", o.value)
 			}
 		}
 	}
@@ -185,7 +231,7 @@ func footer(agent Agent, question string, seq int) string {
 // footerMarker opens a Legion footer (intake's legionFooterMarker).
 const footerMarker = "<!-- legion:"
 
-// flagSpec is one option of a command the tool reads for its footer: its shorthand (0 for none)
+// flagSpec is one option of a command the tool reads argv against: its shorthand (0 for none)
 // and whether it takes a value.
 type flagSpec struct {
 	short byte
@@ -226,6 +272,206 @@ var writes = map[string]commandSpec{
 	"api":           apiSpec,
 }
 
+// optionSpecs are the options of every command the allow list holds, by the words that name it,
+// from gh 2.98.0's own help (the reference `legion gh`'s tests keep,
+// cmd/legion/testdata/gh-help/reference.txt, which TestEveryAllowedCommandsOptionsAreGhsOwn
+// reads this against, and the CI check ties to the worker image's gh). The tool reads a call's
+// arguments against them so that it never reads a value as an option: a body, a title, a merge
+// subject, a search query or a jq expression beginning with a hyphen is text (refusal). The
+// inherited --help and -R/--repo are listed where gh's help lists them for the command.
+var optionSpecs = map[string]commandSpec{
+	"pr checks": {
+		"fail-fast": {}, "interval": {'i', true}, "jq": {'q', true}, "json": {value: true}, "required": {},
+		"template": {'t', true}, "watch": {}, "web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"pr close":   closeSpec,
+	"pr comment": commentSpec,
+	"pr create": {
+		"assignee": {'a', true}, "base": {'B', true}, "body": {'b', true}, "body-file": {'F', true},
+		"draft": {short: 'd'}, "dry-run": {}, "editor": {short: 'e'}, "fill": {short: 'f'}, "fill-first": {},
+		"fill-verbose": {}, "head": {'H', true}, "label": {'l', true}, "milestone": {'m', true},
+		"no-maintainer-edit": {}, "project": {'p', true}, "recover": {value: true}, "reviewer": {'r', true},
+		"template": {'T', true}, "title": {'t', true}, "web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"pr diff": {
+		"allow-escape-sequences": {}, "color": {value: true}, "exclude": {'e', true}, "name-only": {}, "patch": {},
+		"web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"pr edit": {
+		"add-assignee": {value: true}, "add-label": {value: true}, "add-project": {value: true},
+		"add-reviewer": {value: true}, "base": {'B', true}, "body": {'b', true}, "body-file": {'F', true},
+		"milestone": {'m', true}, "remove-assignee": {value: true}, "remove-label": {value: true},
+		"remove-milestone": {}, "remove-project": {value: true}, "remove-reviewer": {value: true},
+		"title": {'t', true}, "repo": repoFlag, "help": helpFlag,
+	},
+	"pr list": {
+		"app": {value: true}, "assignee": {'a', true}, "author": {'A', true}, "base": {'B', true},
+		"draft": {short: 'd'}, "head": {'H', true}, "jq": {'q', true}, "json": {value: true}, "label": {'l', true},
+		"limit": {'L', true}, "search": {'S', true}, "state": {'s', true}, "template": {'t', true},
+		"web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"pr lock": {"reason": {'r', true}, "repo": repoFlag, "help": helpFlag},
+	"pr merge": {
+		"admin": {}, "author-email": {'A', true}, "auto": {}, "body": {'b', true}, "body-file": {'F', true},
+		"delete-branch": {short: 'd'}, "disable-auto": {}, "match-head-commit": {value: true}, "merge": {short: 'm'},
+		"rebase": {short: 'r'}, "squash": {short: 's'}, "subject": {'t', true}, "repo": repoFlag, "help": helpFlag,
+	},
+	"pr ready":  {"undo": {}, "repo": repoFlag, "help": helpFlag},
+	"pr reopen": reopenSpec,
+	"pr revert": {
+		"body": {'b', true}, "body-file": {'F', true}, "draft": {short: 'd'}, "title": {'t', true}, "repo": repoFlag,
+		"help": helpFlag,
+	},
+	"pr review": reviewSpec,
+	"pr status": {
+		"conflict-status": {short: 'c'}, "jq": {'q', true}, "json": {value: true}, "template": {'t', true},
+		"repo": repoFlag, "help": helpFlag,
+	},
+	"pr unlock":        {"repo": repoFlag, "help": helpFlag},
+	"pr update-branch": {"rebase": {}, "repo": repoFlag, "help": helpFlag},
+	"pr view": {
+		"comments": {short: 'c'}, "jq": {'q', true}, "json": {value: true}, "template": {'t', true},
+		"web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"run cancel": {"force": {}, "repo": repoFlag, "help": helpFlag},
+	"run delete": {"repo": repoFlag, "help": helpFlag},
+	"run list": {
+		"all": {short: 'a'}, "branch": {'b', true}, "commit": {'c', true}, "created": {value: true},
+		"event": {'e', true}, "jq": {'q', true}, "json": {value: true}, "limit": {'L', true}, "status": {'s', true},
+		"template": {'t', true}, "user": {'u', true}, "workflow": {'w', true}, "repo": repoFlag, "help": helpFlag,
+	},
+	"run rerun": {"debug": {short: 'd'}, "failed": {}, "job": {'j', true}, "repo": repoFlag, "help": helpFlag},
+	"run view": {
+		"attempt": {'a', true}, "exit-status": {}, "job": {'j', true}, "jq": {'q', true}, "json": {value: true},
+		"log": {}, "log-failed": {}, "template": {'t', true}, "verbose": {short: 'v'}, "web": {short: 'w'},
+		"repo": repoFlag, "help": helpFlag,
+	},
+	"run watch":        {"compact": {}, "exit-status": {}, "interval": {'i', true}, "repo": repoFlag, "help": helpFlag},
+	"workflow disable": {"repo": repoFlag, "help": helpFlag},
+	"workflow enable":  {"repo": repoFlag, "help": helpFlag},
+	"workflow list": {
+		"all": {short: 'a'}, "jq": {'q', true}, "json": {value: true}, "limit": {'L', true}, "template": {'t', true},
+		"repo": repoFlag, "help": helpFlag,
+	},
+	"workflow run": {
+		"field": {'F', true}, "json": {}, "raw-field": {'f', true}, "ref": {'r', true}, "repo": repoFlag,
+		"help": helpFlag,
+	},
+	"workflow view": {
+		"ref": {'r', true}, "web": {short: 'w'}, "yaml": {short: 'y'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"search code": {
+		"extension": {value: true}, "filename": {value: true}, "jq": {'q', true}, "json": {value: true},
+		"language": {value: true}, "limit": {'L', true}, "match": {value: true}, "owner": {value: true},
+		"repo": {'R', true}, "size": {value: true}, "template": {'t', true}, "web": {short: 'w'}, "help": helpFlag,
+	},
+	"search commits": {
+		"author": {value: true}, "author-date": {value: true}, "author-email": {value: true},
+		"author-name": {value: true}, "committer": {value: true}, "committer-date": {value: true},
+		"committer-email": {value: true}, "committer-name": {value: true}, "hash": {value: true}, "jq": {'q', true},
+		"json": {value: true}, "limit": {'L', true}, "merge": {}, "order": {value: true}, "owner": {value: true},
+		"parent": {value: true}, "repo": {'R', true}, "sort": {value: true}, "template": {'t', true},
+		"tree": {value: true}, "visibility": {value: true}, "web": {short: 'w'}, "help": helpFlag,
+	},
+	"search issues": {
+		"app": {value: true}, "archived": {}, "assignee": {value: true}, "author": {value: true},
+		"closed": {value: true}, "commenter": {value: true}, "comments": {value: true}, "created": {value: true},
+		"include-prs": {}, "interactions": {value: true}, "involves": {value: true}, "jq": {'q', true},
+		"json": {value: true}, "label": {value: true}, "language": {value: true}, "limit": {'L', true}, "locked": {},
+		"match": {value: true}, "mentions": {value: true}, "milestone": {value: true}, "no-assignee": {},
+		"no-label": {}, "no-milestone": {}, "no-project": {}, "order": {value: true}, "owner": {value: true},
+		"project": {value: true}, "reactions": {value: true}, "repo": {'R', true}, "search-type": {value: true},
+		"sort": {value: true}, "state": {value: true}, "team-mentions": {value: true}, "template": {'t', true},
+		"updated": {value: true}, "visibility": {value: true}, "web": {short: 'w'}, "help": helpFlag,
+	},
+	"search prs": {
+		"app": {value: true}, "archived": {}, "assignee": {value: true}, "author": {value: true}, "base": {'B', true},
+		"checks": {value: true}, "closed": {value: true}, "commenter": {value: true}, "comments": {value: true},
+		"created": {value: true}, "draft": {}, "head": {'H', true}, "interactions": {value: true},
+		"involves": {value: true}, "jq": {'q', true}, "json": {value: true}, "label": {value: true},
+		"language": {value: true}, "limit": {'L', true}, "locked": {}, "match": {value: true},
+		"mentions": {value: true}, "merged": {}, "merged-at": {value: true}, "milestone": {value: true},
+		"no-assignee": {}, "no-label": {}, "no-milestone": {}, "no-project": {}, "order": {value: true},
+		"owner": {value: true}, "project": {value: true}, "reactions": {value: true}, "repo": {'R', true},
+		"review": {value: true}, "review-requested": {value: true}, "reviewed-by": {value: true},
+		"sort": {value: true}, "state": {value: true}, "team-mentions": {value: true}, "template": {'t', true},
+		"updated": {value: true}, "visibility": {value: true}, "web": {short: 'w'}, "help": helpFlag,
+	},
+	"search repos": {
+		"archived": {}, "created": {value: true}, "followers": {value: true}, "forks": {value: true},
+		"good-first-issues": {value: true}, "help-wanted-issues": {value: true}, "include-forks": {value: true},
+		"jq": {'q', true}, "json": {value: true}, "language": {value: true}, "license": {value: true},
+		"limit": {'L', true}, "match": {value: true}, "number-topics": {value: true}, "order": {value: true},
+		"owner": {value: true}, "size": {value: true}, "sort": {value: true}, "stars": {value: true},
+		"template": {'t', true}, "topic": {value: true}, "updated": {value: true}, "visibility": {value: true},
+		"web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"repo view": {
+		"branch": {'b', true}, "jq": {'q', true}, "json": {value: true}, "template": {'t', true}, "web": {short: 'w'},
+		"repo": repoFlag, "help": helpFlag,
+	},
+	"release list": {
+		"exclude-drafts": {}, "exclude-pre-releases": {}, "jq": {'q', true}, "json": {value: true},
+		"limit": {'L', true}, "order": {'O', true}, "template": {'t', true}, "repo": repoFlag, "help": helpFlag,
+	},
+	"release view": {
+		"jq": {'q', true}, "json": {value: true}, "template": {'t', true}, "web": {short: 'w'}, "repo": repoFlag,
+		"help": helpFlag,
+	},
+	"issue comment": commentSpec,
+	"issue list": {
+		"app": {value: true}, "assignee": {'a', true}, "author": {'A', true}, "jq": {'q', true},
+		"json": {value: true}, "label": {'l', true}, "limit": {'L', true}, "mention": {value: true},
+		"milestone": {'m', true}, "search": {'S', true}, "state": {'s', true}, "template": {'t', true},
+		"type": {value: true}, "web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"issue view": {
+		"comments": {short: 'c'}, "jq": {'q', true}, "json": {value: true}, "template": {'t', true},
+		"web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"label list": {
+		"jq": {'q', true}, "json": {value: true}, "limit": {'L', true}, "order": {value: true}, "search": {'S', true},
+		"sort": {value: true}, "template": {'t', true}, "web": {short: 'w'}, "repo": repoFlag, "help": helpFlag,
+	},
+	"cache list": {
+		"jq": {'q', true}, "json": {value: true}, "key": {'k', true}, "limit": {'L', true}, "order": {'O', true},
+		"ref": {'r', true}, "sort": {'S', true}, "template": {'t', true}, "repo": repoFlag, "help": helpFlag,
+	},
+}
+
+// ghAliases are the cobra aliases gh's help lists for a command of optionSpecs, each with the
+// words that command is held under: `gh pr ls` runs `gh pr list`, whose options it is given.
+var ghAliases = map[string]string{
+	"pr new":      "pr create",
+	"pr ls":       "pr list",
+	"run ls":      "run list",
+	"workflow ls": "workflow list",
+	"release ls":  "release list",
+	"issue ls":    "issue list",
+	"label ls":    "label list",
+	"cache ls":    "cache list",
+}
+
+// specOf is the options of the command words name, by the key they are held under, nil for a
+// command the tool holds none of: `gh api`, whose second word is its endpoint, by its first word
+// alone, and every other by its two, a cobra alias read as the command it runs (ghAliases).
+func specOf(words []string) (commandSpec, string) {
+	if len(words) == 0 {
+		return nil, ""
+	}
+	if key := writeOf(words); key == "api" {
+		return apiSpec, key
+	}
+	if len(words) < 2 {
+		return nil, ""
+	}
+	key := words[0] + " " + words[1]
+	if canonical, ok := ghAliases[key]; ok {
+		key = canonical
+	}
+	return optionSpecs[key], key
+}
+
 // writeOf is the key of writes a command's words name, "" for none.
 func writeOf(words []string) string {
 	if len(words) > 0 && words[0] == "api" {
@@ -239,11 +485,13 @@ func writeOf(words []string) string {
 	return ""
 }
 
-// occurrence is one option given: its long name, and for one taking a value the value and the
+// occurrence is one option given: its long name, the argument that spelled it (a shorthand run's
+// whole word, `-ew`, for each option of the run), and for one taking a value the value and the
 // index of the argument whose suffix the value is (the next argument, or the rest of the option's
 // own word); for a boolean, its value and index -1.
 type occurrence struct {
 	name  string
+	arg   string
 	value string
 	index int
 }
@@ -307,12 +555,12 @@ func parseArgs(argv []string, spec commandSpec, command string) (parsedArgs, err
 				if !hasValue {
 					value = "true"
 				}
-				parsed.options = append(parsed.options, occurrence{name: name, value: value, index: -1})
+				parsed.options = append(parsed.options, occurrence{name: name, arg: arg, value: value, index: -1})
 			case hasValue:
-				parsed.options = append(parsed.options, occurrence{name: name, value: value, index: i})
+				parsed.options = append(parsed.options, occurrence{name: name, arg: arg, value: value, index: i})
 			case i+1 < len(argv):
 				i++
-				parsed.options = append(parsed.options, occurrence{name: name, value: argv[i], index: i})
+				parsed.options = append(parsed.options, occurrence{name: name, arg: arg, value: argv[i], index: i})
 			default:
 				return parsedArgs{}, fmt.Errorf("%q has no value", arg)
 			}
@@ -325,16 +573,16 @@ func parseArgs(argv []string, spec commandSpec, command string) (parsedArgs, err
 				rest = rest[1:]
 				switch {
 				case !spec[name].value:
-					parsed.options = append(parsed.options, occurrence{name: name, value: "true", index: -1})
+					parsed.options = append(parsed.options, occurrence{name: name, arg: arg, value: "true", index: -1})
 				case len(rest) > 1 && rest[0] == '=':
-					parsed.options = append(parsed.options, occurrence{name: name, value: rest[1:], index: i})
+					parsed.options = append(parsed.options, occurrence{name: name, arg: arg, value: rest[1:], index: i})
 					rest = ""
 				case rest != "":
-					parsed.options = append(parsed.options, occurrence{name: name, value: rest, index: i})
+					parsed.options = append(parsed.options, occurrence{name: name, arg: arg, value: rest, index: i})
 					rest = ""
 				case i+1 < len(argv):
 					i++
-					parsed.options = append(parsed.options, occurrence{name: name, value: argv[i], index: i})
+					parsed.options = append(parsed.options, occurrence{name: name, arg: arg, value: argv[i], index: i})
 				default:
 					return parsedArgs{}, fmt.Errorf("%q has no value", arg)
 				}
@@ -454,6 +702,8 @@ func apiWithFooter(run []string, parsed parsedArgs, foot string) ([]string, stri
 }
 
 // apiPath is a gh api endpoint as a path, for matching: no API host, leading slash or query.
+// https://api.github.com/ is the one host form a call that runs can carry, since the routing
+// refuses every other absolute endpoint before gh starts (ghroute's selectors.endpoint).
 func apiPath(endpoint string) string {
 	path := endpoint
 	if lower := strings.ToLower(path); strings.HasPrefix(lower, "https://api.github.com/") {
