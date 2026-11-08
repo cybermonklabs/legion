@@ -462,22 +462,28 @@ func (s *Server) watchJoined(ctx context.Context, decrypted net.Conn, info connI
 		s.log.Info(joinMessage, s.callFields(info, r, chosen, status, why)...)
 		// The cut ends the copy in both directions, so the ServeHTTP this watcher was
 		// started for returns and the cancel there stops this goroutine.
-		cutJoined(decrypted)
+		cutJoined(info.cut, decrypted)
 		return
 	}
 }
 
-// cutJoined stops the bytes of a joined connection and then closes it. The cut comes first
+// cutJoined stops the bytes of a joined connection and then closes it. The stop comes first
 // because the connection is a *tls.Conn, and tls.Conn.Close writes close_notify, which the
 // command reads as the end of the stream, and closes the socket under it only after that
 // write, which crypto/tls gives five seconds of its own: in that window the copy from the
 // command is still running on an open socket, so a command that answers the end of the stream
 // with one more frame would have that frame carried to the service after the airlock decided
-// the grant no longer carries this connection. A read deadline in the past ends every read of
-// the command's side at once, the one in flight included, so nothing crosses after the
-// decision; the close then ends the connection as it did, close_notify and all, since a read
-// deadline bounds no write.
-func cutJoined(c net.Conn) {
+// the grant no longer carries this connection.
+//
+// What shuts that window is the connection under the TLS, which carries no byte it reads once
+// the cut is decided (cutConn): the flag goes first because it is the decision, and a read
+// deadline is a request rather than a stop - it wakes a read parked in the poller, but the one
+// read already in flight on a socket that had become readable can still come back with its
+// bytes. The deadline follows all the same, since it is what wakes a read that is parked, and
+// the close follows it, which still writes close_notify, so the command reads a clean end of
+// stream; a read deadline bounds no write.
+func cutJoined(cut *cutConn, c net.Conn) {
+	cut.stopped.Store(true)
 	_ = c.SetReadDeadline(time.Now())
 	_ = c.Close()
 }

@@ -516,6 +516,7 @@ func (s *copySink) waitFor(t *testing.T, want, when string) {
 type joinedStandIn struct {
 	command *tls.Conn     // the command's side, which writes the frames
 	joined  *tls.Conn     // the side watchJoined closes
+	cut     *cutConn      // the connection under that side's TLS, which the cut stops
 	sink    *copySink     // the service the join copies the command's side to
 	copied  chan struct{} // closed when that copy returns
 	release func()        // lets the socket under joined close
@@ -546,6 +547,7 @@ func newJoinedStandIn(t *testing.T) *joinedStandIn {
 
 	type served struct {
 		conn *tls.Conn
+		cut  *cutConn
 		err  error
 	}
 	serving := make(chan served, 1)
@@ -555,12 +557,13 @@ func newJoinedStandIn(t *testing.T) *joinedStandIn {
 			serving <- served{err: err}
 			return
 		}
-		joined := tls.Server(&blockedClose{Conn: raw, release: released}, &tls.Config{Certificates: []tls.Certificate{*certificate}})
+		cut := &cutConn{Conn: &blockedClose{Conn: raw, release: released}}
+		joined := tls.Server(cut, &tls.Config{Certificates: []tls.Certificate{*certificate}})
 		if err := joined.Handshake(); err != nil {
 			serving <- served{err: err}
 			return
 		}
-		serving <- served{conn: joined}
+		serving <- served{conn: joined, cut: cut}
 	}()
 
 	trust := x509.NewCertPool()
@@ -578,6 +581,7 @@ func newJoinedStandIn(t *testing.T) *joinedStandIn {
 	join := &joinedStandIn{
 		command: command,
 		joined:  answered.conn,
+		cut:     answered.cut,
 		sink:    &copySink{writes: make(chan struct{}, 8)},
 		copied:  make(chan struct{}),
 		release: release,
@@ -640,13 +644,13 @@ func TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst(t *testing.T) {
 	)
 	for _, row := range []struct {
 		name  string
-		close func(net.Conn)
+		close func(*cutConn, net.Conn)
 		// crosses is whether the late frame reaches the service, which is what the
 		// control shows and what the cut must not.
 		crosses bool
 	}{
 		{"the cut before the close carries no frame written after it", cutJoined, false},
-		{"a plain close carries one, which is the window the cut shuts", func(c net.Conn) { _ = c.Close() }, true},
+		{"a plain close carries one, which is the window the cut shuts", func(_ *cutConn, c net.Conn) { _ = c.Close() }, true},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			join := newJoinedStandIn(t)
@@ -657,7 +661,7 @@ func TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst(t *testing.T) {
 
 			// In a goroutine because the socket under the close is held: the close sits
 			// in the window this row is about until the release below.
-			go row.close(join.joined)
+			go row.close(join.cut, join.joined)
 			if row.crosses {
 				join.readEnd(t)
 			} else {

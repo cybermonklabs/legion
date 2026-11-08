@@ -1,11 +1,13 @@
 // packages/envoy/internal/broker/airlockproxy/conn.go
-// The four connection pieces every CONNECT on the proxy port goes through: the listener that
+// The five connection pieces every CONNECT on the proxy port goes through: the listener that
 // hands a decrypted connection to the inner server, the bytes a client pipelined behind its
-// CONNECT, the idle limit, and the registry of hijacked connections the drain closes.
+// CONNECT, the idle limit, the cut that carries no byte once a joined connection's grant has
+// stopped carrying it, and the registry of hijacked connections the drain closes.
 package airlockproxy
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"sync"
@@ -147,6 +149,43 @@ func (c *idleConn) Close() error {
 	c.timer.Stop()
 	c.mu.Unlock()
 	return c.Conn.Close()
+}
+
+// cutConn carries no byte it reads once the cut is decided. A read deadline in the past is a
+// request and not a stop: it wakes a read parked in the poller, but a read whose socket became
+// readable before that goroutine ran finds the poller already ready, and poll_runtime_pollWait
+// answers pollNoError without reading the deadline again (runtime/netpoll.go), so the syscall
+// runs and hands back the bytes. That is how the one read in flight when the grant stops
+// carrying a joined connection can still return a frame the command wrote after it was told
+// the stream had ended, and carry it to the service. This wrapper decides that in the proxy
+// instead of in the kernel, where the decision is a flag the read is checked against rather
+// than a deadline the read may never look at again.
+//
+// It sits under the decrypted connection's TLS rather than over it because net/http fills
+// r.TLS only for a *tls.Conn it accepted, and every decision on a bound host reads
+// r.TLS.ServerName (sniOf): a wrapper over the TLS would leave every one of those decisions
+// with nothing to read.
+type cutConn struct {
+	net.Conn
+	stopped atomic.Bool
+}
+
+// errCut ends the copy of a cut connection. Nothing answers it: the join's copy returns with
+// it, the upgrade's ServeHTTP returns with it, and the call logs its own line as it always
+// does, since the cut has already logged why the join ended where it was decided.
+var errCut = errors.New("airlock: the grant no longer carries this connection")
+
+func (c *cutConn) Read(b []byte) (int, error) {
+	if c.stopped.Load() {
+		return 0, errCut
+	}
+	n, err := c.Conn.Read(b)
+	if c.stopped.Load() {
+		// The read was in flight when the cut was decided, so these bytes were written
+		// after the command could learn the stream had ended: they are dropped.
+		return 0, errCut
+	}
+	return n, err
 }
 
 // bothEnds closes a tunnel's two connections as one, so the registry holds one entry per tunnel
