@@ -340,11 +340,8 @@ func suspendedCompactionRefusal(token claim.Token) string {
 // owes unsent, which only the operator's resume starts again. The compaction says so rather
 // than answering 200 — the answer that promises the claim is back and whatever task it owed
 // has gone again (CompactResponse) — so a controller reads a recovery that did not land and
-// an operator is not told a stopped worker is running. The answer leaves the owed task to the
-// hold rather than listing what each hold does with it: this claim's operator suspension keeps
-// the task for the resume, the daemon's own suspension ends the phase the task was queued for,
-// and an idle release keeps it as the operator's does (supervise's settle,
-// SuspendSource.RetiresPhaseTask).
+// an operator is not told a stopped worker is running. What each hold does with the owed task
+// is supervise.ErrCompactSuspended's.
 func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *testing.T) {
 	for _, door := range compactDoors() {
 		t.Run(door.name, func(t *testing.T) {

@@ -219,10 +219,8 @@ type Claim struct {
 	// while one waits its paced turn both doors read that launch first, so a claim whose
 	// process died under a park is answered by the launch rather than by this (relaunchWaits).
 	//
-	// The next report of that same process is what raises the relaunch the refusal left owing,
-	// and that report is charged no second death, which is what makes the relaunch the end such
-	// a claim reaches (api's refuseProcessGone). One dead process is one death whatever reports
-	// it, and the rule is written where it is applied (died).
+	// What the next report of that same process is charged, and what it can end in, is died's
+	// (deathCharged).
 	ProcessGone bool
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
@@ -866,12 +864,13 @@ type Machine struct {
 	// and reads one stored working as a claim whose agent it asks where it is (askFirst,
 	// askTurnOver), which ends such a turn without it.
 	processGone bool
-	// deathCharged is whether the death of the process the claim records has already been
-	// charged against the deaths budget: died sets it where it reaches that charge, and the
-	// rule it keeps — one dead process is one death, however often the process is reported
-	// gone — is written there. It is cleared wherever processGone is, by a report that found
-	// the process running and by letGo with the process it is about (reportedProcess), so it
-	// is never read of a process the claim no longer records.
+	// deathCharged is whether died has made the charge decision for the death of the process
+	// the claim records — charged it, or found nothing to charge (chargeDeath). died sets it
+	// where it reaches that decision, and the rule it keeps — one dead process is one death,
+	// however often the process is reported gone — is written there. It is cleared wherever
+	// processGone is, by a report that found the process running and by letGo with the process
+	// it is about (reportedProcess), so it is never read of a process the claim no longer
+	// records.
 	//
 	// It is memory only, as processGone is: a restart has charged nothing for the process of
 	// any claim it reads back.
@@ -1859,19 +1858,19 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // a death at all (displaced).
 //
 // One dead process is one death, however often the runtime reports that process gone. The report
-// that reaches the charge below charges it and records that it did (deathCharged), and a later
-// report of that same process is charged nothing: it raises the relaunch the charged report's
-// was refused at, and that is all it brings. What leaves a claim to be reported twice is a step
-// that wrote nothing of it — the take-back above that the store would not write, or the
-// lifecycle's refusal of the relaunch, which keeps the claim over its dead process
-// (relaunchRefused) — and the report that reaches it is the daemon's own orphan sweep, since the
-// runtimes stop watching a process once they have reported it gone (the daemon's
-// reconcileOrphans). Charged twice, the one death would walk that claim to the deaths limit and
-// fail it in the very window the claim is waiting to be relaunched out of — the window both
-// recovery doors read it in and promise the relaunch to (api's refuseProcessGone). The claim is
-// relaunched for as long as one process's death leaves budget for it, which is what the count
-// bounds; a death of the process that relaunch starts is a death of its own, since the launch
-// clears the record with the process it lets go (letGo).
+// that reaches the charge below makes the charge decision and records it (deathCharged), and a
+// later report of that same process is charged nothing: it raises the relaunch the charged
+// report's was refused at, or fails the claim where its launch budget runs out. What leaves a
+// claim to be reported twice is a step that wrote nothing of it — the take-back above that the
+// store would not write, or the lifecycle's refusal of the relaunch, which keeps the claim over
+// its dead process (relaunchRefused) — and the report that reaches it is the daemon's own orphan
+// sweep, since the runtimes stop watching a process once they have reported it gone (the
+// daemon's reconcileOrphans). Charged twice, the one death would walk that claim to the deaths
+// limit and fail it in the very window the claim is waiting to be relaunched out of — the window
+// both recovery doors read it in (api's refuseProcessGone). The claim is relaunched for as long
+// as one process's death leaves budget for it, which is what the count bounds; a death of the
+// process that relaunch starts is a death of its own, since the launch clears the record with
+// the process it lets go (letGo).
 //
 // The record is of the charge and not of the report, because a report can end before the charge:
 // one whose take-back the store would not write returns above, and a death under a held

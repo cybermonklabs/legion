@@ -249,12 +249,9 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// hold ran there and left the claim suspended, or the claim is working for a turn Oh
 		// My Pi started under the compaction and the hold waits for that turn's end. The claim
 		// was given back to neither its agent nor its task, so the caller is told that rather
-		// than a recovery that landed. What becomes of the owed task is the hold's own, and
-		// the answer says so and stops there: each hold's end is written once, where that end
-		// is decided (supervise.ErrCompactSuspended, settle). A list copied here is a second
-		// copy to keep true — this one left out the idle release's hold, which keeps the task
-		// — and the caller acts on none of it: what it asked for did not happen, and the
-		// claim's own state says what it is now.
+		// than a recovery that landed. What becomes of the owed task is the hold's own, written
+		// once on supervise.ErrCompactSuspended, and the caller acts on none of it: what it
+		// asked for did not happen, and the claim's own state says what it is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
 			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. What becomes of that task is the hold's own", token))
