@@ -635,6 +635,24 @@ spec_block_ask() {
 # approval_requests_in counts the approval requests ever opened on an issue in the event log it
 # reads on stdin: the ask.opened events whose ask is an approval, not a question.
 approval_requests_in() { jq '[.[] | select(.type == "ask.opened" and .payload.kind == "approval")] | length'; }
+# bot_thread_answered COMMENT ROLE: the bot's thread carries a reply by ROLE's App, whatever its
+# resolution — the implementer answers a bot's thread and resolves none, so its round is read by
+# this and by bot_thread_open, and the reviewer, which resolves the threads it has judged, by
+# bot_thread_resolved (lib/workflow.sh). No word of the reply is read: nothing resolves or
+# answers a thread on a magic form.
+bot_thread_answered() {
+  local author replies
+  author=$(role_app_slug "$2") || return 1
+  replies=$(bot_thread_replies "$1") || return 1
+  grep -q "^$author"$'\t' <<<"$replies"
+}
+# bot_thread_open COMMENT: the bot's thread is unresolved, which is how the implementer's round
+# leaves every thread it answers.
+bot_thread_open() {
+  local replies
+  replies=$(bot_thread_replies "$1") || return 1
+  [ "$(head -1 <<<"$replies")" = false ]
+}
 
 begin prerequisites
 refuse_leftovers legion-e2e3
@@ -919,10 +937,10 @@ primary_issue() {
     # names one concrete correction the spec permits.
     review_note=""
     if [ "$round" = 2 ]; then
-      # Round 1 left the bot's thread answered and resolved by the implementer: the reviewer, the
-      # independent party, adjudicates the finding now, with its reply, and names the thread to the
-      # implementer as accepted (already resolved, the implementer having closed it first).
-      review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and name its thread id to the implementer as accepted, as your role says for a bot's thread (the change is needed: the spec asks for it)."
+      # Round 1 left the bot's thread answered by the implementer and open, since the implementer
+      # resolves none: the reviewer, the independent party, adjudicates the finding now, with its
+      # reply, and resolves the thread itself.
+      review_note="A bot's review thread on the pull request asks whether the file change is needed, and the implementer answered it: judge the answer, reply on that thread in your own words, and resolve it yourself, as your role says for a bot's thread (the change is needed: the spec asks for it)."
     fi
     request_changes_as_reviewer "$root_issue" "$round" "Stage 3 proof review, round $round: append the line \`$(round_line "$round")\` to the end of the same file this pull request changes, below the lines already there, and change nothing else. The spec permits one more line in that file for a review round, so this correction is in scope." "$review_note"
     # The round ends when the reviewer completes it: its review, its handoff record, its completion.
@@ -941,12 +959,11 @@ primary_issue() {
     bot_note=""
     if [ "$round" = 1 ]; then
       # A CI bot's review thread: the proof human is a GitHub App, a bot account that is none of
-      # Legion's role Apps. The implementer answers it as any thread it answers and resolves it
-      # with its own gh (the pull request author's resolveReviewThread); the reviewer adjudicates
-      # the finding in round 2.
+      # Legion's role Apps. The implementer answers it as any thread it answers and resolves
+      # nothing; the reviewer adjudicates the finding in round 2 and resolves the thread there.
       bot_thread=$(post_bot_thread 2>"$work/bot-thread.err") ||
         fail "the proof human could not open a bot review thread on pull request #$pr_number: $(cat "$work/bot-thread.err")"
-      bot_note=" A bot also left one review thread on the pull request asking whether the file change is needed: answer it and resolve it as your role says for a thread you answer (it is needed: the spec asks for it), before you complete."
+      bot_note=" A bot also left one review thread on the pull request asking whether the file change is needed: answer it as your role says for a thread you answer (it is needed: the spec asks for it), resolving nothing, before you complete."
     fi
     send_agent "$root_issue" implementer "Stage 3 proof correction round $round: make the correction the review names (append the line \`$(round_line "$round")\` to the file this pull request changes), push it to the existing pull request #$pr_number, write the implementation handoff, then call the legion tool's handoff_complete: a push alone does not finish this round.$bot_note"
     # A correction round runs the implementer's whole loop (the edit, the push, the handoff record,
@@ -954,12 +971,14 @@ primary_issue() {
     wait_for_phase "$root_issue" testing 1200
     until_true 120 "round $round's correction on pull request #$pr_number" round_correction_pushed "$round"
     if [ "$round" = 1 ]; then
-      until_true 120 "the implementer's answer on the bot's review thread, and its own resolution of it" bot_thread_resolved "$bot_thread" implementer
-      note "the implementer answered the bot's review thread $bot_thread and resolved it with its own gh"
+      until_true 120 "the implementer's answer on the bot's review thread, which it leaves open" bot_thread_answered "$bot_thread" implementer
+      bot_thread_open "$bot_thread" ||
+        fail "the bot's review thread $bot_thread reads resolved after round $round's correction: the implementer resolves none, and the reviewer resolves it when it adjudicates the finding in round 2"
+      note "the implementer answered the bot's review thread $bot_thread and left it open for the reviewer"
     fi
     if [ "$round" = 2 ]; then
       until_true 120 "the Legion reviewer's reply on the bot's review thread, the thread resolved" bot_thread_resolved "$bot_thread" reviewer
-      note "the bot's review thread $bot_thread carries the Legion reviewer's reply and is resolved: the reviewer adjudicated it and named it to the implementer"
+      note "the bot's review thread $bot_thread carries the Legion reviewer's reply and is resolved: the reviewer adjudicated the finding and resolved its own thread"
     fi
     assert_round_handoff "$root_issue" "$round"
     assert_handoff_record "$root_issue" implementer implementing "$round"

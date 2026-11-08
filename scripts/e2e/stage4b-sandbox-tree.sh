@@ -4731,21 +4731,20 @@ assert_handoff_record "$tree1" tester testing 2
 on_tree "$tree1" wait_for_worker "$tree1" reviewer
 # A bot's thread for the re-review (acceptance 4d): the proof human, a GitHub App and so a bot
 # account that is none of Legion's role Apps, opens one now, after the implementer's correction
-# round and before the reviewer's, so the implementer's own round of resolutions never touches it:
-# the reviewer, which GitHub refuses resolveReviewThread on the implementer's pull request, replies
-# on it and names its node id to the implementer over Envoy as accepted, and the implementer, live
-# after its phase, resolves it with its own gh as the pull request's author (LEGION-631: the daemon
-# has no thread route).
+# round and before the reviewer's, so the implementer never sees it: the reviewer adjudicates the
+# finding, replies on the thread and resolves it with its own gh, which GitHub does not refuse
+# the review App (probed on this pull request at 2026-11-08T03:13:33Z, which answered
+# `isResolved: true`). No daemon route resolves a thread (LEGION-631).
 bot_thread=$(post_bot_thread 2>"$work/bot-thread.err") ||
   fail "the proof human could not open a bot review thread on pull request #$pr_number: $(cat "$work/bot-thread.err")"
 bot_thread_id=$(bot_thread_node_id "$bot_thread") || fail "the bot's review thread (first comment $bot_thread) has no node id on pull request #$pr_number"
 note "the proof bot opened review thread $bot_thread_id (first comment $bot_thread) on pull request #$pr_number"
 # The re-review's decision is the reviewer's own: the proof names the head, never the verdict.
-on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof re-review: review pull request #$pr_number in $repo as your role requires, the thread your round 1 review opened included. A bot also left one review thread on the pull request asking whether the file change is needed: reply on it (the change is needed: the spec asks for it) and name its thread id to the implementer as accepted with envoy_publish to the implementer's role topic, as your role says for a bot's thread; the implementer resolves it. The decision is yours; take the round's steps in the order your role gives, and complete the reviewer handoff."
+on_tree "$tree1" send_agent "$tree1" reviewer "Stage 4b proof re-review: review pull request #$pr_number in $repo as your role requires, the thread your round 1 review opened included. A bot also left one review thread on the pull request asking whether the file change is needed: reply on it (the change is needed: the spec asks for it) and resolve it yourself, as your role says for a bot's thread. The decision is yours; take the round's steps in the order your role gives, and complete the reviewer handoff."
 on_tree "$tree1" until_true 1800 "$review_app's re-review decision on pull request #$pr_number" reviewer_decision 2
-# Read both threads at once: the reviewer's own, and the bot's, as the approval left them (the
-# bot's may still be open here: the implementer resolves it on the reviewer's message, which the
-# approval does not wait for; review-thread waits).
+# Read both threads at once: the reviewer's own, and the bot's, as the approval left them (either
+# may still be open here: the reviewer resolves each in its round, and this read may catch the
+# round before it did; review-thread waits).
 decision=$(<"$work/review-decision")
 review_thread "$thread_id" >"$evidence/review-thread-at-approval.json" ||
   fail "read the reviewer's thread $thread_id when its re-review decision landed"
@@ -4765,8 +4764,8 @@ state_file accepting
 until_true 180 "the architect to receive the reviewer's phase-finished notice, its acceptance cue" notice_delivered "$tree1" architect \
   "$(notice_needle phase-finished "$tree1")"'\n  message:\n    kind: phase-finished\n    role: reviewer\n    phase: reviewing'
 # No worker starts at accepting: the implementer's claim holds no retro task (a start row's task is
-# the claim's `pending` until the turn it started ends; the implementer may still be in the turn
-# that resolves the bot's thread, so its state alone says nothing), and the daemon queued no status
+# the claim's `pending` until the turn it started ends, and the implementer may still be in the
+# turn its own completion ended, so its state alone says nothing), and the daemon queued no status
 # write.
 pending_phase=$(claim_pending_phase "$tree1" implementer)
 [ "$pending_phase" != retro ] || fail "the implementer of $tree1 holds a retro task at accepting: the approval started a worker"
@@ -4878,39 +4877,46 @@ note "$tree1 moved planner → implementer → tester → reviewer (changes requ
 pass
 
 begin review-thread
-# Threads are resolved by id, by the pull request's author, and on no magic word (LEGION-631): the
-# implementer answered the reviewer's round 1 thread in its correction round and resolved it with
-# its own gh (the pull request author's resolveReviewThread) before it completed, so the record
-# tree-reviewed took after the correction reads resolved with the implementer's reply newest; the
-# reviewer's re-review answered it in its own words and left the resolution standing, so the
-# record at the approval reads resolved with the reviewer's reply newest. The bot's thread, opened
-# after the implementer's last run, was answered by the reviewer alone, which GitHub refuses
-# resolveReviewThread as the review App: it named the thread's node id to the implementer over
-# Envoy, and the implementer, live after its phase, resolved it with its own gh, so the thread
-# reads resolved with the reviewer's reply on it, and the implementer's session holds the
-# reviewer's delivery naming the id (the resolver is not read from GitHub: only the author's App
-# can resolve, and the daemon has no route to). The route a plugin before `DaemonAPIVersion`'s
-# LEGION-631 entry (`internal/api/version.go`) posted to answers 404 (acceptance 4).
-thread_resolved_by "$evidence/review-thread-after-correction.json" implementer ||
-  fail "after the correction round the reviewer's thread $thread_id read $(jq -c . "$evidence/review-thread-after-correction.json"), want isResolved true with the implementer's reply as its newest submitted comment"
+# Threads are resolved by id, by the reviewer that judged them, and on no magic word
+# (LEGION-631): the implementer answered the reviewer's round 1 thread in its correction round
+# and resolved nothing, so the record tree-reviewed took after the correction reads unresolved
+# with the implementer's reply newest; the reviewer's re-review read the fix, answered in its own
+# words and resolved the thread there, so the record at the approval reads resolved with the
+# reviewer's reply newest. The bot's thread, opened after the implementer's last run, the
+# reviewer alone adjudicated: it replied on it and resolved it with its own gh, which GitHub does
+# not refuse the review App (probed on this pull request at 2026-11-08T03:13:33Z, which answered
+# `isResolved: true`), so the thread reads resolved with the reviewer's reply on it. The resolver
+# is not read from GitHub, which records no App against a resolution; what is read is that the
+# role that judged the thread answered it and that the thread is closed. The route a plugin
+# before `DaemonAPIVersion`'s LEGION-631 entry (`internal/api/version.go`) posted to answers 404
+# (acceptance 4).
+# thread_answered_open FILE ROLE: the thread FILE holds (review_thread's output) is unresolved and
+# its newest submitted comment is ROLE's App's — the implementer's `Fixed in <commit>` reply,
+# which closes nothing, since the reviewer resolves the threads it opened.
+thread_answered_open() {
+  local author
+  author=$(role_app_slug "$2") || return 1
+  jq -e --arg author "$author" '.isResolved == false
+    and ([.comments[] | select(.state == "SUBMITTED")] | last | .author == $author)' "$1" >/dev/null
+}
+thread_answered_open "$evidence/review-thread-after-correction.json" implementer ||
+  fail "after the correction round the reviewer's thread $thread_id read $(jq -c . "$evidence/review-thread-after-correction.json"), want isResolved false with the implementer's reply as its newest submitted comment: the implementer answers and resolves none"
 thread_resolved_by "$evidence/review-thread-at-approval.json" reviewer ||
   fail "when the reviewer approved, its thread $thread_id read $(jq -c . "$evidence/review-thread-at-approval.json"), want isResolved true with the reviewer's reply as its newest submitted comment"
-on_tree "$tree1" until_true 600 "the implementer's resolution of the bot's thread $bot_thread_id, which the reviewer named to it" bot_thread_resolved "$bot_thread" reviewer
+on_tree "$tree1" until_true 600 "the reviewer's reply on the bot's thread $bot_thread_id and its own resolution of it" bot_thread_resolved "$bot_thread" reviewer
 review_thread "$bot_thread_id" >"$evidence/bot-thread-resolved.json" || fail "read the bot's thread $bot_thread_id once resolved"
 thread_resolved_with_reply "$evidence/bot-thread-resolved.json" reviewer ||
   fail "the bot's thread $bot_thread_id read $(jq -c . "$evidence/bot-thread-resolved.json"), want isResolved true with a submitted reply of the reviewer's"
-on_tree "$tree1" until_true 120 "the reviewer's Envoy message naming $bot_thread_id in the implementer's session" notice_delivered "$tree1" implementer "$bot_thread_id"
-notice_line "$tree1" implementer "$bot_thread_id" >"$evidence/bot-thread-named-to-implementer.jsonl"
 threads_code=$(curl -sS --max-time 20 -o "$evidence/threads-resolve-404.json" -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   --data '{"grantId":"stage4b-none","threads":["stage4b-none"]}' "http://$host:$port_daemon/legion/v1/threads/resolve" 2>&1) ||
   fail "the daemon's API did not answer the deleted threads route probe: $(scrub <<<"$threads_code")"
 [ "$threads_code" = 404 ] || fail "POST /legion/v1/threads/resolve answered $threads_code $(cat "$evidence/threads-resolve-404.json"), want 404: the daemon still serves a thread route"
-# Controls: the implementer's record left unresolved (an answer that closed nothing, the rule before
+# Controls: the implementer's record read resolved (a thread it closed itself, the rule before
 # this head), and the reviewer's thread with a later implementer reply appended (a resolution the
 # reviewer did not answer), both fail; the bot's record left unresolved, or stripped of the
 # reviewer's reply (a resolution of a thread nobody adjudicated), fails too.
-jq '.isResolved = false' "$evidence/review-thread-after-correction.json" >"$evidence/review-thread-unresolved-negative.json"
-expect_failure review-thread-answered-unresolved thread_resolved_by "$evidence/review-thread-unresolved-negative.json" implementer
+jq '.isResolved = true' "$evidence/review-thread-after-correction.json" >"$evidence/review-thread-resolved-negative.json"
+expect_failure review-thread-answered-and-resolved thread_answered_open "$evidence/review-thread-resolved-negative.json" implementer
 jq --arg author "$(role_app_slug implementer)" '.comments += [{author: $author, body: "Fixed in 0000000: the line is appended.", state: "SUBMITTED"}]' \
   "$evidence/review-thread-at-approval.json" >"$evidence/review-thread-unanswered-negative.json"
 expect_failure review-thread-not-answered-by-reviewer thread_resolved_by "$evidence/review-thread-unanswered-negative.json" reviewer
@@ -4918,8 +4924,8 @@ jq '.isResolved = false' "$evidence/bot-thread-resolved.json" >"$evidence/bot-th
 expect_failure bot-thread-answered-unresolved thread_resolved_with_reply "$evidence/bot-thread-unresolved-negative.json" reviewer
 jq --arg author "$(role_app_slug reviewer)" '.comments |= [.[0]] + [.[1:][] | select(.author != $author)]' "$evidence/bot-thread-resolved.json" >"$evidence/bot-thread-unanswered-negative.json"
 expect_failure bot-thread-not-answered-by-reviewer thread_resolved_with_reply "$evidence/bot-thread-unanswered-negative.json" reviewer
-thread_resolved_by "$evidence/review-thread-after-correction.json" implementer || fail "the thread record failed its own check after its controls"
-note "the reviewer's thread $thread_id: resolved by the implementer after the correction ($(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .body | split("\n")[0]' "$evidence/review-thread-after-correction.json")), answered by the reviewer at the approval; the bot's thread $bot_thread_id: answered by the reviewer ($(jq -r --arg author "$(role_app_slug reviewer)" '[.comments[] | select(.state == "SUBMITTED" and .author == $author)] | last | .body | split("\n")[0]' "$evidence/bot-thread-resolved.json")), named to the implementer over Envoy ($evidence/bot-thread-named-to-implementer.jsonl) and resolved by the implementer's gh (isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json") at the approval, true now); POST /legion/v1/threads/resolve answers $threads_code"
+thread_answered_open "$evidence/review-thread-after-correction.json" implementer || fail "the thread record failed its own check after its controls"
+note "the reviewer's thread $thread_id: answered by the implementer after the correction and left open ($(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .body | split("\n")[0]' "$evidence/review-thread-after-correction.json")), answered and resolved by the reviewer at the approval; the bot's thread $bot_thread_id: answered by the reviewer ($(jq -r --arg author "$(role_app_slug reviewer)" '[.comments[] | select(.state == "SUBMITTED" and .author == $author)] | last | .body | split("\n")[0]' "$evidence/bot-thread-resolved.json")) and resolved with its own gh (isResolved $(jq -r .isResolved "$evidence/bot-thread-at-approval.json") at the approval, true now); POST /legion/v1/threads/resolve answers $threads_code"
 pass
 
 begin completion-closed
@@ -6276,9 +6282,9 @@ on_tree "$tree1" wait_for_worker "$tree1" merger
 hold_smoke_main
 send_agent "$tree1" merger "Stage 4b proof READY operation: verify pull request #$pr_number is ready to merge and call the legion tool's handoff_complete with ready true."
 on_tree "$tree1" wait_for_phase "$tree1" awaiting_merge 900
-# READY is posted with every review thread on the pull request resolved: the implementer resolved
-# the reviewer's thread in its correction round and the bot's once the reviewer named it as
-# accepted (review-thread). The merger resolves nothing and the daemon's READY reads no thread
+# READY is posted with every review thread on the pull request resolved: the reviewer resolved
+# its own thread in the re-review that read the fix, and the bot's thread it adjudicated there
+# too (review-thread). The merger resolves nothing and the daemon's READY reads no thread
 # state, so this is the end state the roles left, read here as the merger found it.
 ready_packet() {
   dispatch_events "$tree1" | jq -er --arg ready "READY #$pr_number at " \

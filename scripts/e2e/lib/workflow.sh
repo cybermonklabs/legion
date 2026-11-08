@@ -1066,9 +1066,9 @@ assert_handoff_record() {
 # post_bot_thread opens one file-level review thread on the proof's pull request as the proof human,
 # a GitHub App and so a bot account, as a CI bot is, and none of Legion's role Apps; it prints the
 # thread's first comment's node id. The account is the devbox gh's, which acts as the user when its
-# App routing fails; the roles treat a bot's thread by its author (the implementer answers and
-# resolves it as any thread, the reviewer adjudicates it and names it to the implementer, who
-# resolves it), so the thread's author is read back and anything but a bot outside Legion's Apps is
+# App routing fails; the roles treat a bot's thread by its author (the implementer answers it and
+# resolves nothing, and the reviewer adjudicates it and resolves it itself, as it does every thread
+# it judged), so the thread's author is read back and anything but a bot outside Legion's Apps is
 # refused, naming it.
 post_bot_thread() {
   local head posted id login type implement review
@@ -1109,8 +1109,9 @@ bot_thread_node_id() {
 }
 # bot_thread_resolved COMMENT ROLE: the bot's thread is resolved and carries a reply by ROLE's App
 # (role_app_slug: the implementer's, which answered it; the reviewer's, which adjudicated it and
-# named it to the implementer). Only the pull request author's App resolves, so the resolver is not
-# read; no word of the reply is read either: nothing resolves a thread on a magic form.
+# resolved it). The review App resolves its own threads, probed on sjawhar/legion#2827 at
+# 2026-11-08T03:13:33Z, where GitHub answered isResolved true; the resolver is not read back, and
+# no word of the reply is read either: nothing resolves a thread on a magic form.
 bot_thread_resolved() {
   local replies author
   author=$(role_app_slug "$2") || return 1
