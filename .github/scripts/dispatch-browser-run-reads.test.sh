@@ -12,9 +12,11 @@
 # them; paying for them here would add 150 s to every case that exhausts the ladder, so `sleep`
 # is a no-op stand-in on this PATH, as the retry delay this file used to set to zero was. It
 # records the seconds each call asked for, so a case still reads which waits the ladder made
-# without waiting them, and one case reads bash's own SECONDS to hold that a drive of five
-# refused attempts costs no time at all - which is where a lost stand-in shows up as a red
-# check rather than as a suite that takes two and a half minutes longer.
+# without waiting them. Those recordings are what catch a stand-in lost from this PATH: with
+# the real `sleep` running, nothing is written under `$work/sleeps`, so `waited` answers an
+# empty line where a case holds it to `10 20 40 80` and `sleeps` answers 0 where a case holds
+# it to one. Both fail the moment a case drives the ladder, whatever else the machine is busy
+# with, and they name the ladder rather than the 150 s the suite would have spent on it.
 #
 # NO CASE REACHES THE NETWORK: every case is files, a stand-in gh, a stand-in `sleep`, a
 # stand-in `timeout` that four cases opt into call by call and that otherwise execs the real
@@ -222,16 +224,15 @@ fixture() {
 }
 
 # drive <argument>...: the real script with the stand-in first on PATH. Sets `out` to its
-# combined output, `status` to its exit code and `seconds` to how long the drive took. Not a
-# subshell, so all three survive the call.
+# combined output and `status` to its exit code. Not a subshell, so both survive the call. It
+# times nothing: what a case reads of the ladder's waits is `waited` and `sleeps`, which the
+# stand-in records, and a wall clock under a loaded machine measured only the machine.
 drive() {
-  local started=$SECONDS
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
     GITHUB_RUN_ATTEMPT=$run_attempt "$read_script" "$@" 2>&1)
   status=$?
   set -e
-  seconds=$((SECONDS - started))
 }
 
 calls() { find "$work/calls" -maxdepth 1 -type f | wc -l | tr -d ' '; }
@@ -257,8 +258,6 @@ errors() { grep -c '::error::' <<<"$out" || true; }
 # The script's own line of those two: the ladder's is the one that says it failed to download.
 error_line() { grep '::error::' <<<"$out" | grep -v 'failed to download after' || true; }
 wrote_out_file() { [ -e "$work/out.json" ] && echo yes || echo no; }
-at_least() { [ "$1" -ge "$2" ] && echo true || echo false; }
-at_most() { [ "$1" -le "$2" ] && echo true || echo false; }
 
 echo "case: this attempt's jobs become the four fields the readings consume"
 fixture 0
@@ -325,10 +324,6 @@ check "while the ladder's own line says it exhausted the five" \
 check "every attempt's gh output still reaches the log" \
   "$(is "$(grep -c '^HTTP 502$' <<<"$out" || true)" 5)"
 check "and the ladder waited 10, 20, 40 and 80 s between them" "$(is "$(waited)" '10 20 40 80')"
-# Where a lost stand-in `sleep` shows up: those four waits are 150 s, and this drive pays none
-# of them. The bound is an upper one because SECONDS counts whole seconds and a drive that
-# straddles a tick reads 1 however short it was.
-check "and the drive waited none of those 150 s" "$(at_most "$seconds" 2)"
 
 echo "case: a refusal gh printed no HTTP status for"
 # A resolution failure prints no status line, and a line that named one anyway would send a
@@ -411,7 +406,6 @@ check "while the ladder bounds the wrapper around each of them, ten calls in all
 check "at 40 seconds, above the bound inside it" \
   "$(contains "$(ladder_args)" '^40 bash -c ')"
 check "so no gh call is made outside the bound" "$(is "$(calls)" 0)"
-check "and the drive waits for none of it" "$(at_most "$seconds" 2)"
 check "prints its own ::error:: line and the ladder's, and no third" "$(is "$(errors)" 2)"
 check "naming the bound that ended the attempt that decided the failure" \
   "$(contains "$(error_line)" 'attempt 5, which decided the failure, stopped at its 30 s bound')"
@@ -607,7 +601,6 @@ drive jobs "$work/out.json"
 check "exits 0" "$(is "$status" 0)"
 check "calls gh once" "$(is "$(calls)" 1)"
 check "and the ladder waits not at all" "$(is "$(sleeps)" 0)"
-check "which the drive measures too" "$(at_most "$seconds" 1)"
 
 echo "case: blobs-refused names the download step that failed and nothing beyond it"
 # What this job knows of a refused blob download is which step failed and on which attempt.
