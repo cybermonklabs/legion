@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ArtifactBlock } from "@legion/contracts";
 import { DISPATCH_BLOCK_UNITS, IDEMPOTENCY_KEY_HEADER, PROJECT_KEY_RULE } from "@legion/contracts";
-import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { cliRefusals, fitOutput, runDispatchCli } from "../dispatch-cli";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { forgetKeyedLayerMemory, KEYED_LAYER_MEMORY_MS } from "../dispatch-http";
@@ -15,6 +15,8 @@ interface Recorded {
   readonly body: unknown;
 }
 
+const makeDirectory = temporaryDirectories("dispatch-cli");
+
 const PNG = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
 const requests: Recorded[] = [];
 let triage = false;
@@ -23,15 +25,47 @@ let replyLength = 1;
 const LONG_THREAD = "11111111-1111-4111-8111-111111111111";
 const human = { kind: "human", id: "h" };
 
-/** How the Dispatch server refuses a one-paragraph body over the per-block bound, worded as
- *  `itemblocks.CapExceeded` words it. The fake server below answers it, and the command prints
- *  it as it came. */
-function blockCapRefusal(units: number): string {
+/** How the Dispatch server refuses a body whose block `block`, a paragraph, is `units` UTF-16
+ *  units long, past the bound it holds each block to, worded as `itemblocks.CapExceeded` words
+ *  it. The fake server below answers it, and the command prints it as it came. */
+function blockCapRefusal(block: number, units: number): string {
   return (
-    `body block 1 (paragraph) is ${units - DISPATCH_BLOCK_UNITS} characters over the ` +
+    `body block ${block} (paragraph) is ${units - DISPATCH_BLOCK_UNITS} characters over the ` +
     `${DISPATCH_BLOCK_UNITS}-character block limit (${units}/${DISPATCH_BLOCK_UNITS})`
   );
 }
+
+/** The server's refusal of `body`, where a paragraph of it is over the bound Dispatch holds each
+ *  block to, and undefined where none is: Dispatch bounds a body block by block and never as a
+ *  whole, so a body of any length in paragraphs posts and one long paragraph does not. */
+function capExceeded(body: string): { code: string; error: string } | undefined {
+  for (const [index, block] of body.split(/\n[ \t]*\n/).entries()) {
+    if (block.length > DISPATCH_BLOCK_UNITS) {
+      return { code: "CAP_EXCEEDED", error: blockCapRefusal(index + 1, block.length) };
+    }
+  }
+  return undefined;
+}
+
+/** A body of exactly `length` UTF-16 units made of paragraphs, each short enough for the bound
+ *  Dispatch holds one block to, so the body passes that bound however long the whole text is.
+ *  The line number opens every line, so the text changes along its whole span and a body cut
+ *  anywhere fails the equality, not only one of another length. */
+function paragraphsOf(length: number): string {
+  let text = "";
+  for (let line = 0; text.length < length; line += 1) {
+    text += `${line}: the quick brown fox jumps over the lazy dog.\n\n`;
+  }
+  return text.slice(0, length);
+}
+
+/** Fifteen JSON records, one per line, as a records upload holds them: the text `dispatch
+ *  artifact --path` must send unchanged, and the text `--content-file` refuses to store as a
+ *  Markdown document, which would join the lines into one paragraph. */
+const rows = `${Array.from(
+  { length: 15 },
+  (_, index) => `{"row_id": ${index}, "file_name": "wave_${index}.json", "note": "*kept*"}`
+).join("\n")}\n`;
 
 /** The Envoy listener's answer for session ses-1's subscriptions. */
 let interests: () => Response = () => Response.json({ error: "unset" }, { status: 500 });
@@ -165,6 +199,24 @@ const blocksIssue = {
   ],
 };
 
+/** DSP-5's spec as Dispatch stores it: every code block fenced, holding the whitespace-only
+ *  lines its engine keeps in it, so the text `dispatch doc-read` prints is text whose line ends
+ *  matter. `packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go` holds the writer to
+ *  this spelling; here it is the bytes the command must print as they came. */
+const storedCode =
+  "> - ```\n>   code\n>   \n>   note\n>   ```\n\nBetween.\n\n- a\n\n  ```\n      x\n    \n  ```\n- b\n\nAfter.\n\n```\n      y\n    \n   \n```\n\nEnd.\n";
+
+const codeIssue = {
+  ...issue,
+  key: "DSP-5",
+  title: "Indented code whitespace lines",
+  primary_artifact_id: "doc-5",
+  open_asks: [],
+  artifacts: [
+    { id: "doc-5", slug: "spec", name: "spec.md", kind: "doc", primary: true, versions: [] },
+  ],
+};
+
 /** DSP-3 as a Dispatch server from before the repository fields answers it: no repo or
  *  resolved_repo at all. */
 const olderServerIssue = {
@@ -207,6 +259,31 @@ const server = Bun.serve({
   port: 0,
   async fetch(request) {
     const { pathname, search, searchParams } = new URL(request.url);
+    // An upload is multipart where it carries a file and JSON where it carries inline content,
+    // as the route takes both: a file's part is recorded as the text it carried, since the
+    // recorder below parses every body as JSON and would throw on those bytes
+    // (`dispatch-askgate.test.ts` reads an upload the same way).
+    if (pathname === "/api/v1/issues/DSP-1/artifacts" && request.method === "POST") {
+      const sent = request.headers.get("content-type")?.startsWith("multipart/")
+        ? (await request.formData()).get("file")
+        : await request.json();
+      requests.push({
+        method: request.method,
+        path: pathname,
+        body: sent instanceof Blob ? await sent.text() : sent,
+      });
+      return Response.json({
+        artifact: {
+          id: "artifact-1",
+          issue_key: "DSP-1",
+          name: "rows.jsonl",
+          slug: "rows-jsonl",
+          kind: "file",
+          primary: false,
+        },
+        version: { number: 1 },
+      });
+    }
     const text = await request.text();
     const body = text === "" ? undefined : JSON.parse(text);
     requests.push({ method: request.method, path: pathname, body });
@@ -227,6 +304,15 @@ const server = Bun.serve({
         blocksServer.tableRows ? specBlocks : specBlocks.map(({ table: _, ...block }) => block)
       );
     }
+    if (pathname === "/api/v1/issues/DSP-5" && request.method === "GET") {
+      return Response.json(codeIssue);
+    }
+    if (pathname === "/api/v1/artifacts/doc-5/text") {
+      return Response.json({ markdown: storedCode, version: 1, token: "sha256:code" });
+    }
+    if (pathname === "/api/v1/issues/DSP-5/comments") {
+      return Response.json([]);
+    }
     if (pathname === "/api/v1/issues/DSP-1/asks" && request.method === "POST") {
       return Response.json({
         id: "ask-a",
@@ -237,6 +323,8 @@ const server = Bun.serve({
       });
     }
     if (pathname === "/api/v1/issues/DSP-1/messages" && request.method === "POST") {
+      const refusal = capExceeded(body.body as string);
+      if (refusal !== undefined) return Response.json(refusal, { status: 400 });
       return Response.json({
         id: "message-1",
         issue_key: "DSP-1",
@@ -248,14 +336,8 @@ const server = Bun.serve({
       });
     }
     if (pathname === "/api/v1/issues/DSP-1/comments" && request.method === "POST") {
-      // The bodies posted here are each one paragraph, so the body's only block is the body.
-      const units = (body.body as string).length;
-      if (units > DISPATCH_BLOCK_UNITS) {
-        return Response.json(
-          { code: "CAP_EXCEEDED", error: blockCapRefusal(units) },
-          { status: 400 }
-        );
-      }
+      const refusal = capExceeded(body.body as string);
+      if (refusal !== undefined) return Response.json(refusal, { status: 400 });
       return Response.json({
         id: "comment-1",
         issue_key: "DSP-1",
@@ -411,7 +493,6 @@ const server = Bun.serve({
 });
 
 afterAll(() => server.stop(true));
-afterAll(removeTemporaryDirectories);
 
 let stateDir = "";
 beforeEach(() => {
@@ -422,7 +503,7 @@ beforeEach(() => {
   eventLog = { last: 40, served: 40, queries: [] };
   handoffs.length = 0;
   interests = () => Response.json({ error: "unset" }, { status: 500 });
-  stateDir = temporaryDirectory("dispatch-cli-");
+  stateDir = makeDirectory();
   // Each run is its own process in production: nothing the library remembers carries over.
   resetAdviceMemory();
   forgetKeyedLayerMemory();
@@ -699,7 +780,7 @@ describe("the dispatch CLI", () => {
     );
 
     expect(code).toBe(1);
-    expect(stdout.trim()).toBe(blockCapRefusal(DISPATCH_BLOCK_UNITS + 1));
+    expect(stdout.trim()).toBe(blockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1));
     const posted = requests.find((request) => request.path === "/api/v1/issues/DSP-1/comments");
     expect(posted?.body).toMatchObject({ body });
   });
@@ -731,6 +812,43 @@ describe("the dispatch CLI", () => {
       ]);
     }
     expect(requests).toEqual([]);
+  });
+
+  // --path is what the refusal above names, so it must do what the refusal promises: the file's
+  // bytes go to Dispatch as they are, the fifteen lines of a JSONL file among them.
+  test("artifact --path sends the file's bytes unchanged", async () => {
+    writeFileSync(join(stateDir, "rows.jsonl"), rows);
+
+    const { code, stdout } = await run(
+      ["artifact", "--issue", "DSP-1", "--name", "rows.jsonl", "--path", "rows.jsonl"],
+      omp
+    );
+
+    expect(code, stdout).toBe(0);
+    expect(stdout).toContain("Uploaded rows.jsonl as version 1");
+    const uploaded = requests.filter((request) => request.path.endsWith("/artifacts"));
+    expect(uploaded.map((request) => request.body)).toEqual([rows]);
+  });
+
+  // INFRA-370: `dispatch comment` and `dispatch message` carry no length of their own. A body of
+  // 40,000 characters in paragraphs posts whole, because Dispatch bounds a body block by block,
+  // and the command sends the text it was handed, not a cut of it.
+  test("a comment and a message of 40,000 characters in paragraphs are posted whole", async () => {
+    const whole = paragraphsOf(40_000);
+
+    for (const command of ["comment", "message"] as const) {
+      const { code, stdout } = await run([command, "--issue", "DSP-1", "--body", whole], omp);
+      expect(code, stdout).toBe(0);
+    }
+
+    const posted = requests.filter((request) => request.method === "POST");
+    expect(posted.map((request) => request.path)).toEqual([
+      "/api/v1/issues/DSP-1/comments",
+      "/api/v1/issues/DSP-1/messages",
+    ]);
+    for (const request of posted) {
+      expect(request.body, request.path).toMatchObject({ body: whole });
+    }
   });
 
   // A dry run runs the call's own pre-send check, so a call it refuses is refused alike, before
@@ -1209,6 +1327,21 @@ describe("the dispatch CLI", () => {
     expect(stdout).toContain("dispatch: Dispatch took the call, but this session's state");
   });
 
+  // What an agent reads of a document is the markdown Dispatch stored, byte for byte, with the
+  // trailer after a blank line and nothing of the command's own between them: a document whose
+  // code blocks hold whitespace-only lines is text whose line ends matter, and a trailer run
+  // onto its last line would read as part of it.
+  test("doc-read prints the stored markdown, a blank line, then the document's token", async () => {
+    const { code, stdout } = await run(["doc-read", "--issue", "DSP-5", "--artifact", "spec"], omp);
+
+    expect(code, stdout).toBe(0);
+    const trailer = stdout.indexOf("Document token:");
+    expect(trailer, stdout).toBeGreaterThan(-1);
+    // The stored markdown, its own line ending, then the blank line before the trailer.
+    expect(stdout.slice(0, trailer)).toBe(`${storedCode}\n\n`);
+    expect(stdout.slice(trailer)).toBe("Document token: sha256:code\n");
+  });
+
   describe("doc-read --blocks", () => {
     const listing = [
       "Blocks of spec.md, in document order, each indented under the block holding it: id, type, (token; anchored comments and asks), opening words, then a typed block's serves and needs. A table lists its rows by the index delete_row takes and its cells by the row and the column delete_column takes.",
@@ -1350,6 +1483,83 @@ describe("the dispatch CLI", () => {
   });
 });
 
+// Two refusals an agent meets as the exit status of a command and the words on its own stdout,
+// which a call inside this process cannot make: the command is its own process in production,
+// and `packages/dispatch/e2e/dispatch-cli.ts:6-8` spawns this same entry for that reason. The
+// child's environment is written rather than inherited, as that module writes it:
+// `DISPATCH_TOKEN_FILE` wins over `DISPATCH_TOKEN` in this command, and a Legion pane exports
+// one, so an inherited environment would send another Dispatch's token - or point the command at
+// another Dispatch entirely. `HOME` and `DISPATCH_STATE_DIR` are the row's own temporary
+// directory, so the command reads no developer's `envoy.json`.
+describe("the dispatch entry as its own process", () => {
+  const entry = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
+
+  /** The entry run as the shell runs it, under the same Bun as this test. */
+  async function spawnDispatch(
+    argv: readonly string[]
+  ): Promise<{ code: number; stdout: string; stderr: string }> {
+    const child = Bun.spawn([process.execPath, entry, ...argv], {
+      cwd: stateDir,
+      env: {
+        PATH: process.env.PATH,
+        HOME: stateDir,
+        DISPATCH_STATE_DIR: stateDir,
+        DISPATCH_HOST: "omp",
+        DISPATCH_SESSION_ID: "ses-1",
+        DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+        DISPATCH_TOKEN: "test-token",
+      },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    return { code, stdout, stderr };
+  }
+
+  // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
+  // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
+  // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  test("exits 2 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
+    writeFileSync(join(stateDir, "rows.jsonl"), rows);
+
+    const { code, stdout, stderr } = await spawnDispatch([
+      "artifact",
+      "--issue",
+      "DSP-1",
+      "--name",
+      "rows.jsonl",
+      "--content-file",
+      "rows.jsonl",
+    ]);
+
+    expect({ code, stderr }, stdout).toEqual({ code: 2, stderr: "" });
+    expect(stdout).toContain('"rows.jsonl" is not a Markdown name');
+    expect(stdout).toContain("--path <file>");
+    expect(requests).toEqual([]);
+  });
+
+  test("exits nonzero on the server's block-cap refusal, printing it and nothing of its own", async () => {
+    const refusal = blockCapRefusal(1, DISPATCH_BLOCK_UNITS + 1);
+    const body = "x".repeat(DISPATCH_BLOCK_UNITS + 1);
+
+    for (const command of ["comment", "message"] as const) {
+      const { code, stdout, stderr } = await spawnDispatch([
+        command,
+        "--issue",
+        "DSP-1",
+        "--body",
+        body,
+      ]);
+      expect(code, `${command}: ${stdout}${stderr}`).not.toBe(0);
+      expect(stdout.trim(), command).toBe(refusal);
+    }
+  });
+});
+
 describe("the dispatch CLI's envoy.json", () => {
   /** No Dispatch in the environment: the command reads it from a file. */
   const fromFile = { ...omp, DISPATCH_URL: undefined, DISPATCH_TOKEN: undefined };
@@ -1373,7 +1583,7 @@ describe("the dispatch CLI's envoy.json", () => {
 
   /** A directory whose envoy.json is not JSON, so a command that reads it exits 2. */
   function brokenConfigDirectory(): string {
-    const dir = temporaryDirectory("dispatch-cli-broken-");
+    const dir = makeDirectory("broken");
     writeFileSync(join(dir, "envoy.json"), "{not json");
     return dir;
   }
@@ -1709,7 +1919,7 @@ describe("the dispatch CLI's subscription note", () => {
     ] as const) {
       interests = answer;
       requests.length = 0;
-      stateDir = temporaryDirectory("dispatch-cli-");
+      stateDir = makeDirectory();
       nextProcess("ses-1");
       const { code, stdout } = await run(ask, withListener);
       expect(code).toBe(0);
@@ -1911,7 +2121,7 @@ describe("cliRefusals", () => {
     expect(unreadable.code).toBe(2);
     expect(cliRefusals(unreadable.stdout)).toEqual(refusal(unreadable.stdout, null));
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     writeFileSync(join(stateDir, "sessions"), "a file where the directory goes");
     const unlisted = await run(["projects"], omp);
     expect(unlisted.code).toBe(2);
@@ -1926,14 +2136,14 @@ describe("cliRefusals", () => {
     expect(warned.stderr).toStartWith("dispatch: warning: ");
     expect(cliRefusals(`${warned.stderr}${warned.stdout}`)).toEqual([]);
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     mkdirSync(join(stateDir, "sessions", "ses-1", "results.jsonl"), { recursive: true });
     const unrecorded = await run(["message", "--issue", "DSP-1", "--body", "x"], omp);
     expect(unrecorded.code).toBe(0);
     expect(unrecorded.stdout).toContain("\ndispatch: Dispatch took the call, but this session's");
     expect(cliRefusals(unrecorded.stdout)).toEqual([]);
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     mkdirSync(join(stateDir, ".config", "legion"), { recursive: true });
     writeFileSync(
       join(stateDir, ".config", "legion", "envoy.json"),
@@ -1983,7 +2193,7 @@ describe("cliRefusals", () => {
       ],
     ];
     for (const [name, argv, env, tool] of cases) {
-      stateDir = temporaryDirectory("dispatch-cli-");
+      stateDir = makeDirectory();
       const { code, stdout } = await run(argv, env);
       expect(code, name).toBeGreaterThan(0);
       const logged = ledger("ses-1");
@@ -2004,7 +2214,7 @@ describe("cliRefusals", () => {
     expect(code).toBe(2);
     expect(existsSync(join(stateDir, "sessions"))).toBe(false);
 
-    stateDir = temporaryDirectory("dispatch-cli-");
+    stateDir = makeDirectory();
     await run(["doc-edit", "--help"], omp);
     await run(["message", "--issue", "DSP-1", "--body", "hi", "--dry-run"], omp);
     expect(existsSync(join(stateDir, "sessions", "ses-1", "results.jsonl"))).toBe(false);

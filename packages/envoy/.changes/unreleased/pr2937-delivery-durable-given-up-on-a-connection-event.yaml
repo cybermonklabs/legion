@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  A Dispatch process whose NATS connection drops and comes back no longer delivers every GitHub
+  event a second time beside the process that took its delivery durable over while it was away.
+  Which process delivers from a durable is settled by that durable's hold, which is renewed on
+  Postgres: a holder that goes on renewing keeps the durable through the outage, and the process
+  standing by takes nothing; a holder that stops renewing loses the hold, and the standby's
+  take-over recreates the durable at its ack floor on a deliver subject minted while that holder
+  was away. So a subscription nats.go re-sends inside its own reconnect, and one the client binds
+  again on a connection it dialled to replace a closed one, both reach a subject the durable no
+  longer delivers to, and what the holder had not acknowledged reaches the process that holds the
+  durable now rather than waiting out that durable's five-minute ack wait.
+  `bus.Client.DrainSubscription` drains the handle while the client has a live connection, as it
+  always did, and unsubscribes it when it has none: a drain begun while the link is down leaves
+  the server reporting the durable push-bound to a client that delivers nothing, for the life of
+  that connection, which no process can take over. A drain the link drops under is unsubscribed
+  at that event too, before the reconnect can re-send it.

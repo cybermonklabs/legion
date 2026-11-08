@@ -915,17 +915,50 @@ func (c *Client) registerSubscription(next recoverableSubscription, conn *nats.C
 
 // DrainSubscription ends for good the JetStream registration the Subscribe that returned sub made:
 // it gives the registration up, so that no reconnect or recovery binds it again and a later
-// Subscribe, on any subject, registers anew, and drains the subscription the client held for it.
-// It returns that subscription, for its caller to wait until it is no longer valid, which is how
-// nats.go reports the drain's end; the handler is handed what the client had buffered meanwhile,
-// and nothing new. That subscription is sub until the client replaces its connection, and after
-// that the handle the client bound on the new connection: sub went with the old one, and draining
-// it would fail while the rebound handle went on delivering. With no valid handle to drain (the
-// connection was replaced and the registration not bound again yet) it returns nil, having given
-// the registration up all the same. A sub the client no longer holds -- one a later Subscribe
-// replaced -- gives up and drains nothing, and returns nil. A bind of the registration in flight,
-// a restore's, is waited for first, as registerSubscription does, so what it bound is the handle
-// drained.
+// Subscribe, on any subject, registers anew, and ends the subscription the client held for it.
+// While the client's connection is live it drains that subscription and returns it, for its caller
+// to wait until it is no longer valid, which is how nats.go reports the drain's end; the handler is
+// handed what the client had buffered meanwhile, and nothing new. That subscription is sub until
+// the client replaces its connection, and after that the handle the client bound on the new
+// connection: sub went with the old one, and draining it would fail while the rebound handle went
+// on delivering. With no valid handle to end (the connection was replaced and the registration not
+// bound again yet) it returns nil, having given the registration up all the same. A sub the client
+// no longer holds -- one a later Subscribe replaced -- gives up and ends nothing, and returns nil.
+// A bind of the registration in flight, a restore's, is waited for first, as registerSubscription
+// does, so what it bound is the handle ended.
+//
+// While the client has no live connection it unsubscribes the handle instead, and so returns nil:
+// an unsubscribe leaves the handle invalid at once, and there is nothing left to wait on. The test
+// is Connected(), which is false for every status but CONNECTED, so a client whose connection is
+// reconnecting, draining or closed takes this branch, not only one whose link has just dropped.
+// The two cases differ because of what a drain begun while the link is down leaves behind. In
+// nats.go v1.53.1, Conn.unsubscribe in drain mode keeps the subscription in the connection's list,
+// starts checkDrained on a goroutine, and writes the UNSUB only when the connection is not
+// reconnecting. checkDrained opens with a flush, which does not return until the connection is
+// back; meanwhile doReconnect's resendSubscriptions sends a SUB for every subscription the
+// connection still holds, the draining one among them. checkDrained then drops it from the client
+// without ever writing an UNSUB, so the server goes on reporting the durable push-bound, to a
+// client that delivers nothing, for the life of that connection, and no other process can take the
+// durable over. An unsubscribe drops the subscription from the connection's list at once, so the
+// reconnect's resend does not find it, and the UNSUB it would have written is not needed: the
+// server released that interest with the connection that dropped. Dispatch's delivery intake gives
+// its subscription up exactly when its link is down (INFRA-1551), which is why this is the rule
+// rather than a caller's choice.
+//
+// A drain begun on a live link leaves the same thing behind when the link drops before that drain
+// has ended, which is a window of its own: checkDrained holds the draining subscription in the
+// connection's list for its flush's round trip and then passes of 100 ms, until the handler has
+// taken what was buffered. The drop itself releases that flush (processOpError clears the pending
+// flush calls), so what holds the window open past it is a handler still inside a delivery, which
+// is what a drain is for. So the drain is watched (watchDrain): at the client's next connection
+// event, while the handle is still valid, the watch unsubscribes it, and the resend finds nothing
+// to send. That event is taken (ConnectionChanged) before the Connected() read below, which is
+// that method's contract, so a drop between the read and the drain wakes the watch rather than
+// being missed by it. The returned handle keeps its meaning: a caller waiting for the drain's end
+// waits for the handle to turn invalid, which is what an unsubscribe by the watch leaves it. What
+// the handler had not yet been handed is dropped with the drain, which is the price of leaving
+// the durable free: those deliveries were buffered against a link that is gone, and the server
+// redelivers them to whoever binds the durable next.
 func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, error) {
 	if sub == nil {
 		return nil, nil
@@ -943,10 +976,66 @@ func (c *Client) DrainSubscription(sub *nats.Subscription) (*nats.Subscription, 
 	if active == nil || !active.IsValid() {
 		return nil, nil
 	}
+	// Taken before the state it guards is read, so that an event between the two still wakes the
+	// watch below.
+	changed := c.ConnectionChanged()
+	if !c.Connected() {
+		if err := active.Unsubscribe(); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
 	if err := active.Drain(); err != nil {
 		return nil, err
 	}
+	go c.watchDrain(active, changed)
 	return active, nil
+}
+
+// drainWatchStep is how long watchDrain goes without reading the drained handle again. nats.go
+// reports a drain's end only by the handle turning invalid, so the watch has nothing to wait on
+// and polls; the step costs it one timer wakeup per 10 ms of the drain, which checkDrained itself
+// holds to its flush's round trip plus passes of 100 ms.
+const drainWatchStep = 10 * time.Millisecond
+
+// watchDrain turns the drain DrainSubscription began on a live link into an unsubscribe at the
+// client's next connection event, while the handle is still valid: a drain still in the
+// connection's subscription list when a reconnect lands is re-sent by resendSubscriptions and then
+// dropped by checkDrained with no UNSUB ever written, which is what DrainSubscription's doc
+// describes. An unsubscribe takes the subscription out of that list, so the resend finds nothing.
+// changed is the channel taken before DrainSubscription's Connected() read, so a drop between that
+// read and the drain wakes the watch too. With one NATS URL there is room for it: doReconnect
+// queues the disconnect callback this channel reports and then waits a full ReconnectWait (1 s)
+// before the resend.
+//
+// The watch ends with the drain, so it is never a goroutine parked for the life of the process.
+// The drain always ends: checkDrained opens with nc.Flush(), which carries the client's flush
+// timeout (10 s in nats.go v1.53.1) and so returns whether or not the link came back, and its loop
+// then ends at the first pass where the handler has taken what was buffered, or the subscription
+// or the connection is closed -- each of which leaves the handle invalid, which the watch reads at
+// its next step. An unsubscribe here ends it too: checkDrained's next pass finds the subscription
+// closed. For a consumer the library created, that unsubscribe deletes it, as the drain's own end
+// would have, and checkDrained's pass then asks for a delete the server answers not found, which
+// reaches the async error callback; Dispatch's intakes bind durables they add themselves, which
+// nats.go deletes for neither.
+func (c *Client) watchDrain(active *nats.Subscription, changed <-chan struct{}) {
+	step := time.NewTicker(drainWatchStep)
+	defer step.Stop()
+	for {
+		select {
+		case <-changed:
+			if active.IsValid() {
+				// Its error would be the handle's own end -- the drain ended between the read and
+				// here, or the connection closed under it -- which is all this watch waits for.
+				_ = active.Unsubscribe()
+			}
+			return
+		case <-step.C:
+			if !active.IsValid() {
+				return
+			}
+		}
+	}
 }
 
 // ReleaseFailed gives up the JetStream registration a Subscribe on subject left behind when its own

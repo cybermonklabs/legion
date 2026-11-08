@@ -2045,14 +2045,18 @@ func requirePublishedAfterReceipt(t *testing.T, pair *dispatchPair, holder *test
 // request, made at boot - until release is closed, which is how a row makes one process hold that
 // sweep's lease long enough for the other to find it held. It counts those listings too: the
 // listing is the call the webhook-redelivery lease exists to make once however many processes
-// sweep, so a row about that lease reads the count rather than the log alone.
+// sweep, so a row about that lease reads the count rather than the log alone. It counts the pull
+// requests the processes fetch for the same reason: one envelope handed to one intake is one
+// fetch, and the count is the only thing that tells one bound subscriber from two
+// (TestAProcessBackFromANATSCutLeavesDeliveryEventsToTheProcessThatTookIt).
 type githubFake struct {
 	server  *httptest.Server
 	release chan struct{}
 	once    sync.Once
 
-	mu     sync.Mutex
-	listed int
+	mu      sync.Mutex
+	listed  int
+	fetched int
 }
 
 // startGitHubFake serves on loopback until the test ends.
@@ -2063,6 +2067,9 @@ func startGitHubFake(t *testing.T) *githubFake {
 		if strings.Contains(r.URL.Path, "/hook/deliveries") {
 			fake.countDeliveryListing()
 			fake.holdFirstDeliveryListing(r.Context())
+		}
+		if pullRequestPath.MatchString(r.URL.Path) {
+			fake.countPullRequestFetch()
 		}
 		status, body := githubFakeAnswer(r)
 		w.Header().Set("Content-Type", "application/json")
@@ -2138,6 +2145,26 @@ func (f *githubFake) deliveryListings() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.listed
+}
+
+// pullRequestPath is GitHub's path for one pull request, /repos/<owner>/<repo>/pulls/<number>,
+// and nothing under it: a pull request's commits and its files are calls of their own, made for
+// their own reasons, and a row counting how many processes fetched one pull request counts that
+// one path.
+var pullRequestPath = regexp.MustCompile(`^/repos/[^/]+/[^/]+/pulls/[0-9]+$`)
+
+// countPullRequestFetch records one pull-request fetch, whichever process made it.
+func (f *githubFake) countPullRequestFetch() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.fetched++
+}
+
+// pullRequestFetches is how many pull requests the processes have fetched between them.
+func (f *githubFake) pullRequestFetches() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.fetched
 }
 
 // githubHoldCap bounds the hold whatever the test does, well inside githubapp.RequestTimeout (20
@@ -2820,6 +2847,202 @@ func waitForDurableDrained(t *testing.T, pair *dispatchPair, js natsgo.JetStream
 				info.AckFloor.Consumer, info.AckFloor.Stream, info.Delivered.Consumer, info.Delivered.Stream, pair.buffers())
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// A process whose NATS connection drops while it holds delivery-events keeps it, and goes on
+// delivering from it once the link is back. What says which process delivers from a durable is
+// its hold, and a hold is Postgres's (delivery.intakeHoldName): a cut link takes nothing of it
+// away, the holder renews it throughout the outage, and the process standing by polls for a hold
+// another process holds live and takes nothing. So a process back from a NATS cut has no second
+// subscriber to deliver beside, which is what INFRA-1551 is about: nats.go re-sends a
+// subscription inside its own reconnect, and the client binds its registration again on a
+// replacement connection, so a durable another process had taken meanwhile would be delivered to
+// both, with no bind of its own in any log to say so.
+//
+// A holder that stops renewing is the case where the durable does move, and there the take-over
+// leaves the returned process nothing to deliver from: it recreates the durable on a deliver
+// subject minted while that process was away. Two rows hold that already -- in process,
+// delivery.TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver, and over two real
+// processes, TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed.
+//
+// What two real processes show here, and one cannot, is the fan-out: one pull request merged
+// after the link is restored is fetched exactly once from the GitHub the two share. A second
+// bound subscriber is handed that same envelope and fetches that same pull request, which no log
+// line reports and which ConsumerInfo.PushBound -- one bool for one subscriber and for two --
+// cannot say either.
+//
+// The fake answers the fetch GitHub's 404, which is all this row needs: it counts the fetch, not
+// its answer. The intake logs the failed fetch at WARN ("process event") and acknowledges the
+// message, so the 404 is redelivered to nobody and neither process logs a delivery error for the
+// durable, which this row requires, as the one-binder row does.
+//
+// The delivery reconcile runs its pass as each process starts (DISPATCH_TEST_RECONCILE_AT_START)
+// and takes the lease for that whole ReconcileInterval with it, so the next pass is five minutes
+// away and none lands in the window the fetches are counted in: the pull-request head this row's
+// envelope writes is re-read by that pass, outside the row, rather than by one inside it.
+func TestAProcessBackFromANATSCutKeepsDeliveryEventsAndDeliversThemOnce(t *testing.T) {
+	durable := bus.DispatchDeliveryDurable
+	// The merged pull request the row publishes. Its author has to be one the settings name: a
+	// merge by an author outside the population costs no GitHub call at all
+	// (Intake.handlePullRequestEnvelope), and the call is what this row counts.
+	const (
+		owner  = "acme"
+		repo   = "widgets"
+		number = "7"
+		author = "octocat"
+	)
+
+	pair := newPair(t)
+	seedDeliverySettings(t, pair.database)
+	addPopulationAuthor(t, pair.database, author)
+	fake := startGitHubFake(t)
+	fake.Release()
+	env := githubAppEnv(t, fake.URL())
+	env["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
+	pair.start(t, env)
+
+	conn := testnats.Connect(t, pair.nats)
+	js, err := conn.JetStream()
+	if err != nil {
+		t.Fatalf("JetStream context: %v", err)
+	}
+
+	binding, holder := waitForDurableBinder(t, pair, js, durable, 60*time.Second)
+	standby := pair.other(holder)
+	t.Logf("%s delivers from %s (%s) and %s is standing by for it", pair.name(holder), durable, binding, pair.name(standby))
+	requireOneHoldPerDurable(t, pair)
+
+	// The link drops under the holder, as an outage drops it, and stays down for the whole window
+	// a lapsed hold would be taken over in.
+	proxy := pair.proxy(holder)
+	proxy.Cut()
+	cutAt := time.Now()
+	for time.Since(cutAt) < deliveryHoldSurvivesACutFor {
+		time.Sleep(oneBinderSampleEvery)
+		if hold := readDurableHold(t, pair.database, durable); !hold.found || !hold.live || hold.token != binding.subject {
+			t.Fatalf("%s's hold is %s %v into %s's NATS outage, want it still live and still recording the deliver subject that process delivers at (%s): the renewal is a Postgres statement, which the cut leaves alone.\n%s",
+				durable, hold, time.Since(cutAt).Round(time.Millisecond), pair.name(holder), binding.subject, pair.buffers())
+		}
+		if bound := deliveryOutcomeFor(standby, durable).bound; len(bound) > 0 {
+			t.Fatalf("%s bound %s %v into the other process's NATS outage, when the hold %s moves under stayed %s's throughout:\n%s\n%s",
+				pair.name(standby), durable, time.Since(cutAt).Round(time.Millisecond), durable, pair.name(holder),
+				strings.Join(bound, "\n"), pair.buffers())
+		}
+	}
+
+	proxy.Restore()
+	waitUntil(t, 30*time.Second, "the cut process's NATS connection coming back", func() bool {
+		report, err := holder.readHealthReport()
+		return err == nil && report.NATS != nil && *report.NATS
+	})
+	// The binding the two servers report is the one the process had before the cut: the same
+	// deliver subject, one client connection subscribed to it, and the same holder of the same
+	// live hold recording it (durableBinding.bound). The connection's own id is the one thing
+	// here the cut does change -- nats.go reconnects on a new one -- so the two bindings are
+	// compared by those three and not by the whole line. The wait is for that reconnect to have
+	// re-sent the subscription, which is when the server counts the subscriber again.
+	backBy := time.Now().Add(30 * time.Second)
+	for {
+		back := readDurableBinding(t, pair, js, durable)
+		if back.bound() && back.subject == binding.subject && back.hold.holder == binding.hold.holder {
+			break
+		}
+		if time.Now().After(backBy) {
+			t.Fatalf("%s was %s before the cut and is %s 30s after the link came back, want the same deliver subject, one subscriber on it and the same holder: a NATS outage takes no durable from the process whose hold names it.\n%s",
+				durable, binding, back, pair.buffers())
+		}
+		time.Sleep(oneBinderSampleEvery)
+	}
+	t.Logf("%s was delivering from %s again %v after the cut", pair.name(holder), durable, time.Since(cutAt).Round(time.Millisecond))
+	requireOneHoldPerDurable(t, pair)
+
+	// One envelope, published on the pair's own NATS once the link is back: a pull request merged
+	// by a population author, in the shape Envoy's publisher gives a GitHub resource event
+	// (cmd/dispatch/shutdown_test.go). The pair's NATS server is this test's own, so the stream
+	// holds no envelope of another run under this event id.
+	payload, err := json.Marshal(map[string]string{
+		"kind": "pr", "action": "closed", "merged": "true",
+		"repo": owner + "/" + repo, "number": number, "author": author,
+	})
+	if err != nil {
+		t.Fatalf("encode the merged pull request's payload: %v", err)
+	}
+	subject := contracts.GithubResourceSubject(owner, repo, "pr", number)
+	eventID := "nats-cut-pr-" + number
+	envelope, err := json.Marshal(contracts.Envelope{
+		EventID: eventID, Source: "github", SourceEventID: eventID, TraceID: eventID,
+		Topic: subject, Payload: string(payload), IssuedAt: time.Now().Unix(),
+	})
+	if err != nil {
+		t.Fatalf("encode the merged pull request's envelope: %v", err)
+	}
+	publishedAt := time.Now()
+	if _, err := js.Publish(subject, envelope); err != nil {
+		t.Fatalf("publish the merged pull request on %s: %v", subject, err)
+	}
+
+	deadline := publishedAt.Add(deliveryEnvelopeFetchWithin)
+	for fake.pullRequestFetches() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the pull request of the one envelope published on %s after the restore was never fetched within %v, so no process delivered it:\n%s",
+				subject, deliveryEnvelopeFetchWithin, pair.buffers())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Logf("the merged pull request was fetched %v after it was published", time.Since(publishedAt).Round(time.Millisecond))
+	// The count is watched after it reaches one rather than read the moment it does: two bound
+	// subscribers are handed one envelope at the same moment, so the second fetch is milliseconds
+	// behind the first and a read taken at once would miss what this row exists to catch.
+	time.Sleep(deliverySecondFetchWindow)
+	if fetches := fake.pullRequestFetches(); fetches != 1 {
+		t.Errorf("the one pull request published after the restore was fetched %d times from the GitHub the two processes share, and a process standing by for %s fetches nothing:\n%s",
+			fetches, durable, pair.buffers())
+	}
+
+	for _, process := range []*dispatchProcess{pair.a, pair.b} {
+		if errorLines := deliveryOutcomeFor(process, durable).errors; len(errorLines) > 0 {
+			t.Errorf("%s logged a delivery error for %s; a NATS outage under the holder and a standby polling for a hold another process holds are both ordinary, and so is the fake's 404 for the pull request, which the intake logs at WARN and acknowledges:\n%s\n%s",
+				pair.name(process), durable, strings.Join(errorLines, "\n"), pair.buffers())
+		}
+	}
+	pair.requireRunning(t)
+}
+
+// deliveryHoldSurvivesACutFor is how long a holder cut off from NATS is watched still holding its
+// durable's hold: the whole of delivery.intakeHoldTTL (15 s), since a hold is at its oldest the
+// moment before a renewal, and three of the standby's poll intervals
+// (delivery.durableBindInterval, 2 s), so a standby that had read the hold as lapsed had three
+// turns to take it. It is the window TestAFrozenHolderIsTakenOverAndHandlesNothingOnceResumed
+// gives a take-over to land in, read here as the window in which none may.
+const deliveryHoldSurvivesACutFor = 15*time.Second + 3*2*time.Second
+
+// deliveryEnvelopeFetchWithin is how long the envelope published after the restore gets to reach
+// the process holding the durable and have its pull request fetched: one push delivery and one
+// GitHub call on loopback, milliseconds of work, so this is a hang guard.
+const deliveryEnvelopeFetchWithin = 30 * time.Second
+
+// deliverySecondFetchWindow is how long the fetch count is watched after it has reached one. A
+// second bound subscriber is handed the envelope at the same moment as the first, so its fetch is
+// milliseconds behind; a second of stillness is the margin, not the expectation.
+const deliverySecondFetchWindow = time.Second
+
+// addPopulationAuthor adds author to the delivery settings' population, leaving every other
+// setting as it is: the row is read back and written whole, which is the write the Delivery page's
+// own save makes (delivery.PutSettings). seedDeliverySettings names no population author, and a
+// merge by an author outside the population costs no GitHub call
+// (Intake.handlePullRequestEnvelope), so a row that counts the fetch of a merged pull request puts
+// its author in the population before the processes start.
+func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
+	t.Helper()
+	settings, err := delivery.GetSettings(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings to add %s to the population: %v", author, err)
+	}
+	settings.PopulationAuthors = append(settings.PopulationAuthors, author)
+	if _, err := delivery.PutSettings(context.Background(), database.Pool, settings,
+		model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
+		t.Fatalf("add %s to the delivery population: %v", author, err)
 	}
 }
 

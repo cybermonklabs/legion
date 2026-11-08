@@ -1226,7 +1226,7 @@ func TestDispatchServesOnTheListenSocketItInheritsWithNoAddressSet(t *testing.T)
 	}
 	// healthyWithin waits for this line and a 200 from /healthz on the held port.
 	process.waitHealthy(t)
-	if listening := `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(process.port); !strings.Contains(process.Output.String(), listening) {
+	if listening := process.listeningLine(); !strings.Contains(process.Output.String(), listening) {
 		t.Errorf("Dispatch did not log %q:\n%s", listening, process.Output.String())
 	}
 }
@@ -1406,6 +1406,13 @@ func (p *dispatchProcess) url(path string) string {
 	return "http://127.0.0.1:" + strconv.Itoa(p.port) + path
 }
 
+// listeningLine is the line the process writes once it serves on its own port (shutdown.go), as
+// a reader of its output matches it: the message and the address, which is the port this test
+// holds.
+func (p *dispatchProcess) listeningLine() string {
+	return `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(p.port)
+}
+
 // waitHealthy waits up to 30 s for the process to be healthy (healthyWithin), and fails the test
 // when it is not.
 func (p *dispatchProcess) waitHealthy(t *testing.T) {
@@ -1423,7 +1430,7 @@ func (p *dispatchProcess) waitHealthy(t *testing.T) {
 // took it next. The process serves after the SIGTERM handler is installed, so a server that
 // answers is one a signal stops in order.
 func (p *dispatchProcess) healthyWithin(within time.Duration) error {
-	listening := `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(p.port)
+	listening := p.listeningLine()
 	exited := func() bool {
 		select {
 		case <-p.Exited:
