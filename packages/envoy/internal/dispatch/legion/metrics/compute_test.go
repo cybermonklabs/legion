@@ -484,21 +484,24 @@ func TestWorkHoursBeforeTheFirstPhaseMarkAreOnThatPhasesBar(t *testing.T) {
 	}
 }
 
-// TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar: the same rule on the other timeline.
-// The sampler reads a daemon once a minute and records a phase only when it changes, so an issue
-// whose first worker event comes before the sampler ever saw it has work hours ahead of every
-// observation. They are on the bar of the phase it is first seen in, as the fallback's are, or
-// the seven bars would not add up to the work time for any issue the sampler met late.
-func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
+// TestAnIssueTheDaemonMetLateReadsItsWholeLifeOffTheFallback: observed phases stand in for the
+// status history only when the daemon's observations of the issue begin at or before its first
+// worker event (dispatch://INFRA-979). An issue first seen after its work began has hours no
+// observation covers, so its whole timeline is the event log's fallback, and the seven bars still
+// add up to its work time.
+func TestAnIssueTheDaemonMetLateReadsItsWholeLifeOffTheFallback(t *testing.T) {
 	issue := newIssue("INFRA-1").
 		worked("implementer", hour(0)).
 		observeString(legion.FieldPhase, hour(2), "implementing").
 		observeString(legion.FieldPhase, hour(4), "testing").
 		closedAt(hour(6))
 	population := fixture(hour(-24), hour(24), issue)
-	want := []string{"implementing 0-4", "testing 4-6"}
+	if _, observed := population.Phases(issue); observed {
+		t.Fatalf("the timeline reads as observed, though the daemon first saw the issue two hours into its work")
+	}
+	want := []string{"implementing 0-6"}
 	if got := timelineOf(population, issue); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the observed timeline is %v, want %v", got, want)
+		t.Fatalf("the fallback timeline is %v, want %v", got, want)
 	}
 	report := Compute(population, ScopeAll, hour(24))
 	hoursPerBar := map[string]float64{}
@@ -508,7 +511,7 @@ func TestWorkHoursBeforeTheFirstObservedMarkAreOnThatPhasesBar(t *testing.T) {
 		whole += bar.Hours
 	}
 	want2 := map[string]float64{
-		"architect": 0, "planner": 0, "implementer": 4, "tester": 2, "reviewer": 0, "merger": 0, barNoRole: 0,
+		"architect": 0, "planner": 0, "implementer": 6, "tester": 0, "reviewer": 0, "merger": 0, barNoRole: 0,
 	}
 	if !reflect.DeepEqual(hoursPerBar, want2) {
 		t.Fatalf("the bars are %v, want %v", hoursPerBar, want2)

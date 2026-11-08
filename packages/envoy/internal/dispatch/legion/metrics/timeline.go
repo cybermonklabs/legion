@@ -112,11 +112,40 @@ type PhaseSpan struct {
 // the stretch that mark opens has no duration, so observedPhases keeps nothing of it, and the
 // rules that read a phase before observations (metric 3's review rounds, its send-backs and the
 // first review its hours are counted from) must read the status history instead.
+//
+// The observed timeline stands in for the status history only where the daemon's phase
+// observations of the issue begin at or before its first worker event (or, for an issue no worker
+// touched, before its end): a daemon that first reported an issue later — a snapshot that reached
+// it after its close, or a daemon that started after its work began — saw none of the phases
+// before that, so every rule reads the event log's fallback for the whole issue instead.
 func (p *Population) Phases(issue *Issue) ([]PhaseSpan, bool) {
-	if observed := p.observedPhases(issue); len(observed) > 0 {
-		return observed, true
+	if p.phasesObservedFromStart(issue) {
+		if observed := p.observedPhases(issue); len(observed) > 0 {
+			return observed, true
+		}
 	}
 	return p.fallbackPhases(issue), false
+}
+
+// phasesObservedFromStart is whether the issue's first phase observation is at or before the
+// moment its life on the timeline starts: its first worker event, or its end for one no worker
+// touched.
+func (p *Population) phasesObservedFromStart(issue *Issue) bool {
+	marks := issue.Observed[legion.FieldPhase]
+	if len(marks) == 0 {
+		return false
+	}
+	first := marks[0].At
+	for _, mark := range marks[1:] {
+		if mark.At.Before(first) {
+			first = mark.At
+		}
+	}
+	start, worked := firstWorkerEvent(issue)
+	if !worked {
+		return first.Before(p.issueEnd(issue))
+	}
+	return !first.After(start)
 }
 
 // observedPhases is the timeline the sampler's `phase` observations draw, with each admitted

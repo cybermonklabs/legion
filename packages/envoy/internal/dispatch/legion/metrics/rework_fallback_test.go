@@ -199,3 +199,50 @@ func TestAFilingUnderAGrandchildOfTheFilersRootIsInTheTree(t *testing.T) {
 			class, ClassInTreeLater)
 	}
 }
+
+// TestObservationsThatBeginAfterTheFirstWorkerEventLeaveTheStatusHistory: observed phases stand in
+// for the status history only when the daemon's observations of the issue begin at or before its
+// first worker event (dispatch://INFRA-979). A daemon that reached an issue after it closed — a
+// snapshot, then a few pushed moves of the phase it still held — draws spans of positive length
+// after the close; those say nothing of the issue's life, so its rounds, its send-back and its
+// phase time come from its status history.
+func TestObservationsThatBeginAfterTheFirstWorkerEventLeaveTheStatusHistory(t *testing.T) {
+	late := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(8)).
+		statusAt(hour(0), "in_progress").
+		statusAt(hour(2), "needs_review").
+		statusAt(hour(3), "in_progress").
+		statusAt(hour(5), "needs_review").
+		statusAt(hour(8), "done").
+		// A snapshot hours after the close, then two pushed moves of the phase it still held.
+		observeString("phase", hour(12), "reviewing").
+		observeString("phase", hour(13), "implementing").
+		observeString("phase", hour(14), "reviewing")
+	// Observed from its first worker event on: its observed timeline stands in.
+	early := newIssue("INFRA-2").worked("implementer", hour(1)).closedAt(hour(8)).
+		statusAt(hour(1), "in_progress").
+		statusAt(hour(4), "needs_review").
+		statusAt(hour(8), "done").
+		observeString("phase", hour(1), "implementing").
+		observeString("phase", hour(4), "reviewing").
+		observeString("phase", hour(8), "done")
+
+	population := fixture(hour(-24), hour(24), late, early)
+	if _, observed := population.Phases(late); observed {
+		t.Errorf("INFRA-1's phases read as observed, though the daemon first reported it after its close")
+	}
+	if _, observed := population.Phases(early); !observed {
+		t.Errorf("INFRA-2's phases read as not observed, though the daemon reported it from its first worker event")
+	}
+	report := Compute(population, ScopeAll, hour(24))
+	rounds := map[string]int{}
+	sentBack := map[string]bool{}
+	for _, row := range report.Rework.Issues {
+		rounds[row.Key], sentBack[row.Key] = row.ReviewRounds, row.SentBack
+	}
+	if rounds["INFRA-1"] != 2 || !sentBack["INFRA-1"] {
+		t.Errorf("INFRA-1: %d rounds, sent back %v; want 2 and true from its status history", rounds["INFRA-1"], sentBack["INFRA-1"])
+	}
+	if rounds["INFRA-2"] != 1 || sentBack["INFRA-2"] {
+		t.Errorf("INFRA-2: %d rounds, sent back %v; want 1 and false from its observed phases", rounds["INFRA-2"], sentBack["INFRA-2"])
+	}
+}
