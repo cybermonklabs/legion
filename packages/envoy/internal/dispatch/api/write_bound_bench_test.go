@@ -18,6 +18,16 @@ import (
 // writeBoundProjectKey is the project every issue these benchmarks write to is opened in.
 const writeBoundProjectKey = "BOUND"
 
+// writeBoundIssueTitles are the titles of the four issues the benchmark opens, one per write
+// path, in the order its sub-benchmarks open them. They are named here rather than at each
+// b.Run so that a test can open the same four and prove the benchmark's setup runs.
+var writeBoundIssueTitles = [4]string{
+	"A document its version write edits",
+	"A document uploaded again",
+	"An issue people comment on",
+	"An issue whose ask is reworded",
+}
+
 // writeBoundParagraphs is how many paragraphs the document a version write and an upload rewrite
 // holds: a ~20 KB spec, the size of a document people upload a new version of, so the markdown
 // the write renders and the tree its commit stores are the size a real write carries.
@@ -73,7 +83,7 @@ func BenchmarkTheWritePathsThatStoreADisplayTree(b *testing.B) {
 	writeBoundProject(b, handler)
 
 	b.Run("the document version write", func(b *testing.B) {
-		issue := writeBoundIssue(b, handler, "A document its version write edits")
+		issue := writeBoundIssue(b, handler, writeBoundIssueTitles[0])
 		target := "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/edits"
 		revision := 0
 		b.ReportAllocs()
@@ -88,7 +98,7 @@ func BenchmarkTheWritePathsThatStoreADisplayTree(b *testing.B) {
 	})
 
 	b.Run("an upload", func(b *testing.B) {
-		issue := writeBoundIssue(b, handler, "A document uploaded again")
+		issue := writeBoundIssue(b, handler, writeBoundIssueTitles[1])
 		target := "/api/v1/issues/" + issue.Key + "/artifacts"
 		version := 1
 		b.ReportAllocs()
@@ -101,7 +111,7 @@ func BenchmarkTheWritePathsThatStoreADisplayTree(b *testing.B) {
 	})
 
 	b.Run("a comment write", func(b *testing.B) {
-		issue := writeBoundIssue(b, handler, "An issue people comment on")
+		issue := writeBoundIssue(b, handler, writeBoundIssueTitles[2])
 		target := "/api/v1/issues/" + issue.Key + "/comments"
 		comment := 0
 		b.ReportAllocs()
@@ -114,7 +124,7 @@ func BenchmarkTheWritePathsThatStoreADisplayTree(b *testing.B) {
 	})
 
 	b.Run("the event append", func(b *testing.B) {
-		issue := writeBoundIssue(b, handler, "An issue whose ask is reworded")
+		issue := writeBoundIssue(b, handler, writeBoundIssueTitles[3])
 		target := "/api/v1/asks/" + writeBoundAsk(b, handler, issue.Key)
 		edit := 0
 		b.ReportAllocs()
@@ -132,7 +142,7 @@ func BenchmarkTheWritePathsThatStoreADisplayTree(b *testing.B) {
 }
 
 // writeBoundProject records the project the benchmarks' issues are opened in.
-func writeBoundProject(b *testing.B, handler http.Handler) {
+func writeBoundProject(b testing.TB, handler http.Handler) {
 	b.Helper()
 	writeBoundRequest(b, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": writeBoundProjectKey, "name": "Write bound project",
@@ -141,7 +151,7 @@ func writeBoundProject(b *testing.B, handler http.Handler) {
 
 // writeBoundIssue opens one issue, whose spec is the document a version write and an upload
 // rewrite, and answers its key and the id of that document.
-func writeBoundIssue(b *testing.B, handler http.Handler, title string) struct {
+func writeBoundIssue(b testing.TB, handler http.Handler, title string) struct {
 	Key               string `json:"key"`
 	PrimaryArtifactID string `json:"primary_artifact_id"`
 } {
@@ -163,7 +173,7 @@ func writeBoundIssue(b *testing.B, handler http.Handler, title string) struct {
 }
 
 // writeBoundAsk opens the ask the event-append benchmark rewords, and answers its id.
-func writeBoundAsk(b *testing.B, handler http.Handler, issueKey string) string {
+func writeBoundAsk(b testing.TB, handler http.Handler, issueKey string) string {
 	b.Helper()
 	response := writeBoundRequest(b, handler, http.MethodPost, "/api/v1/issues/"+issueKey+"/asks", map[string]any{
 		"question": writeBoundBody,
@@ -185,7 +195,7 @@ func writeBoundAsk(b *testing.B, handler http.Handler, issueKey string) string {
 // writeBoundRequest makes one write through the server under benchmark, signed in as alice, and
 // fails the benchmark where it was not answered want: a benchmark may never report the cost of a
 // write the server refused.
-func writeBoundRequest(b *testing.B, handler http.Handler, method, target string, body any, want int) *httptest.ResponseRecorder {
+func writeBoundRequest(b testing.TB, handler http.Handler, method, target string, body any, want int) *httptest.ResponseRecorder {
 	b.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
