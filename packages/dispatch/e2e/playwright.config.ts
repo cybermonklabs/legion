@@ -24,9 +24,16 @@ import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 const plainHttpSpecs = /plain-http-(origin|proxy)\.e2e\.ts/;
 // The `iphone`, `webkit` and `firefox` projects run only the rows tagged `@phone`, `@webkit` and
 // `@firefox`, written at the end of the test's title. Which tests take `@phone` is in
-// `packages/dispatch/AGENTS.md`, "Phone acceptance"; each engine tag names a row that exercises
-// one engine behaviour the comment above those projects lists, and a comment above the row names
-// which; a row that only repeats an assertion Chromium already made carries no tag. An untagged
+// `packages/dispatch/AGENTS.md`, "Phone acceptance"; an engine tag names a row for one of two
+// reasons, and a comment above the row says which. Either the row exercises one engine behaviour
+// the comment above those projects lists - the usual reason - or every measured failure of that
+// row was in that engine, so the row is kept where its cause lives: a row green only on an engine
+// its defect was never seen on proves nothing about that defect. Two rows carry a tag for the
+// second reason today, each named in `packages/dispatch/AGENTS.md`: `keyed-writes.e2e.ts`'s ask
+// answer whose answer is lost (two timeouts in 213 CI runs, both in WebKit) and
+// `keyboard-agents-picker.e2e.ts`'s row back after the reader left mid-send (six failures on six
+// branches, every one in WebKit). A row that only repeats an assertion Chromium already made, and
+// whose failures are not an engine's, carries no tag. An untagged
 // test drops out with no failure. The pattern is anchored so a tag matches only as a whole
 // whitespace-separated token, never inside a longer one such as `@phones`, `x@phone`,
 // `@webkit-iphone` or `@firefox-alone`.
@@ -168,6 +175,60 @@ if (process.env[laneCountVariable] === undefined && workerCount() > 1) {
 // timeout when that deadline is its observable contract (the keyboard chord-expiry test).
 const expectTimeout = 15_000;
 
+// The per-test budget, measured rather than inherited. Playwright's own default is 30 s, chosen
+// when this suite ran one row at a time; it now runs four lanes on a four-core runner. Read from
+// the report.json artifact of 201 ci.yaml runs between 2026-11-05T08:56:19Z and
+// 2026-11-05T20:32:13Z (78 merge_group, 119 pull_request, 4 push), at base b7866f96d7fe.
+//
+// The population is the one this number governs, and the filter is the point of it: the results
+// that passed, in that window, on rows of the spec files this tree has that ran under the
+// inherited budget rather than one of their own. The filter is per row, not per file, because
+// 29 of the tree's 32 `test.setTimeout`/`test.slow()` calls sit inside a single row: a file is
+// not out of the population, a row is, and the other rows of `keyed-writes`, `live-socket`,
+// `phone`, `refetch-budget`, `claim-refilling`, `composer-body-cap`, `machine-login` and
+// `threads-order` are governed by this budget whatever their one slow neighbour asks for. Only
+// `prefix-links`, `reference-cards` and `reference-titles` set a timeout for every row they hold.
+//
+// Derive it from the measurement rather than from the sources: a report carries, per row, the
+// timeout that row ran under, so a result taken at its project's own timeout is one this budget
+// governed, and the filter cannot age. A source-level filter cannot be written as one line - a
+// call inside a row's body is the row's and a call at module scope is the file's, which is an AST
+// question, and `--list` reads module scope only, so it misses all 29.
+//
+//   jq -r '(.config.projects|map({key:.name,value:.timeout})|from_entries) as $c
+//     | [..|objects|select(has("specs"))|.specs[]][] | . as $s | $s.tests[]
+//     | select(.timeout == $c[.projectName]) | .results[] | select(.status=="passed")
+//     | [($s.file|sub(".*/";"")), .projectName, .duration] | @tsv' <report.json…>
+//
+// then keep the rows of files `ls e2e/*.e2e.ts` lists, which drops the window's results of files
+// this tree does not have - 1,560 of them in 12 files, other branches' rows. Compare `passed`
+// results alone: a skipped row reports the static timeout, never the one its body would have set.
+//
+// Over that population: 320,101 results, median 2,543 ms, 95th percentile 6,773 ms, 99th
+// 9,886 ms, 99.9th about 15,097 ms (15,056 by floor, 15,101 by nearest rank), maximum 29,856 ms,
+// in deep-links.e2e.ts's "emitted document item hrefs select and scroll their anchored thread" on
+// WebKit. Over the whole of what this tree has, rows with their own timeout included, the
+// maximum is 126,560 ms, and the 21 results above this budget are all in three rows of
+// agent-list-refilling.e2e.ts, whose rows ask for 150 s to 300 s themselves.
+//
+// What the window bounds, and what it does not. The population is passing results, and every
+// governed row of the window ran under Playwright's 30 s default, so a row that wanted longer was
+// killed rather than measured: 27 governed results timed out at that cap and are not in the
+// population at all - 19 in pictures.e2e.ts on chromium, 5 in deep-links.e2e.ts on firefox and
+// one on WebKit, which is the very row that set the figure below, and 2 in keyed-writes.e2e.ts on
+// WebKit, each ending between 30,000 and 30,006 ms. So 29,856 ms is the slowest result that
+// survived the cap, not the distribution's maximum, and the tail above 30 s is unknown.
+//
+// The budget does not rest on that figure being a maximum. It is sized to let a healthy row
+// finish, and the distribution of rows that did finish says what healthy costs: 60 s is 2.01
+// times the slowest survivor, 4.0 times the 99.9th percentile and 24 times the median, no
+// governed result of the window reaches it, and nothing in the window shows a row finishing its
+// work and needing more. A censored tail changes what the maximum means, not what the budget has
+// to cover; a row that hangs still fails inside a minute.
+// It lengthens no row's work; a row that needs it has already lost whatever it was waiting for.
+// Raise it only from a measurement of the same shape, over the same population.
+const testTimeout = 60_000;
+
 // Two-process mode's one project: the multiprocess specs, in Chromium, the sign-in spec alone under
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
 //
@@ -225,11 +286,16 @@ const parallelProjects = [
   // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
   // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
   // and all five of `keyboard-session-pickers`.
+  // A send held open across two in-app navigations, with the row's draft, its picker and its
+  // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
+  // left mid-send, which carries `@webkit` alone because each of its six measured failures was
+  // in WebKit.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
-  // margin hold's frame and scroll order: six `deep-links` rows - the held chunk's, the press
+  // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
-  // animation frames held, the per-frame scroll of a past version's landing, and the placement
-  // the margin's own scroll must not move.
+  // animation frames held, the per-frame scroll of a past version's landing, the placement the
+  // margin's own scroll must not move, and the composer opened from the document after a comment
+  // link, whose selection bar the landing's frames can carry off screen.
   // IndexedDB-backed recovery of an edit the server has not taken: three `offline-edits` rows -
   // the edit restored across a reload, the acknowledged one cleared, and two tabs holding two
   // connections to one store.
@@ -241,9 +307,10 @@ const parallelProjects = [
   // The one-socket invariant: `live-socket`'s row that a tab holds one live socket for every live
   // view, since WebKit is the engine iOS Safari opens every subscription in.
   // The keyed write path's request failure, its abort, a tab's storage across a reload and the
-  // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, one of which
+  // ask before a tab unloads: nine `keyed-writes` rows and two `keyed-send` rows, one of which
   // asks whether the engine's IndexedDB gives a kept upload its `File` back, which WebKit's does
-  // not.
+  // not. One of those nine, the ask answer whose answer is lost, carries `@webkit` alone: both of
+  // its measured failures were in WebKit.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
@@ -283,10 +350,11 @@ const parallelProjects = [
   // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
   // and all five of `keyboard-session-pickers`.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
-  // margin hold's frame and scroll order: six `deep-links` rows - the held chunk's, the press
+  // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
-  // animation frames held, the per-frame scroll of a past version's landing, and the placement
-  // the margin's own scroll must not move.
+  // animation frames held, the per-frame scroll of a past version's landing, the placement the
+  // margin's own scroll must not move, and the composer opened from the document after a comment
+  // link, whose selection bar the landing's frames can carry off screen.
   // IndexedDB-backed recovery of an edit the server has not taken: three `offline-edits` rows -
   // the edit restored across a reload, the acknowledged one cleared, and two tabs holding two
   // connections to one store.
@@ -444,6 +512,7 @@ export default defineConfig({
   reporter: measuring
     ? [["list"], [fileURLToPath(new URL("./measure-reporter.ts", import.meta.url))]]
     : "list",
+  timeout: testTimeout,
   expect: { timeout: expectTimeout },
   use: {
     ...devices["Desktop Chrome"],
