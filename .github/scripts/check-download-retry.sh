@@ -290,29 +290,42 @@
 #      WHAT IT COUNTS ONCE, which is the other half of this rule and the half a reader is owed
 #      plainly. A shape this check reads as neither a loop nor a call of a function is no
 #      refusal: the call is counted once, the budget is judged against that one figure, and a
-#      step whose real cost is several ladders passes. Each shape below is a step at
-#      `timeout-minutes: 6` around a 300 s call that this check passes in a scratch tree, and
-#      none of them is in this tree: review round 3 of dispatch://INFRA-1545 read every step
-#      and every script of it with this check's own parser and found no instance.
+#      step whose real cost is several ladders passes. Each shape below was driven at
+#      398ee1e88c83 as a step at `timeout-minutes: 6` around a 300 s call, in a scratch tree,
+#      and none of them is in this tree: review round 3 of dispatch://INFRA-1545 read every
+#      step and every script of it with this check's own parser and found no instance.
 #
 #        * two loops written on one line: a loop is keyed by the line it sits on, so the
-#          second overwrites the first and the call is multiplied by one of the two.
-#        * a loop or a function call this check finds only where it is the first word of its
-#          command: a fetch written as the condition of an `if` inside the loop, a fetch
-#          behind an assignment prefix such as `GH_HOST=x`, and a one-line
-#          `for x in a b c; do fetch; done` whose fetch sits in a function.
-#        * a loop written inside an `if`, and a function written in the `function name { … }`
-#          form, neither of which this check reads as what it is.
-#        * a function that calls itself, and one whose calls this check cannot find: counted
-#          once, because a reading that cannot see the second call cannot price it.
+#          second overwrites the first and the call is multiplied by the wrong one of the two
+#          (a five-pass loop's call, with a three-pass loop after it on its line, is 900 s and
+#          not 1500 s). A loop opened on the line of an `if`, as in
+#          `if true; then for a in 1 2; do`, is not read either, and its call counts once.
+#        * a call of a function that this check finds only where the function's name is the
+#          first word of its command: a function called as the condition of an `if` inside a
+#          loop, one called behind an assignment prefix such as `GH_HOST=x`, and one called
+#          inside a one-line `for x in a b c; do fetch; done`. A function written in the
+#          `function name { … }` or `function name() { … }` form is not read as a function at
+#          all. In each case the retried call inside the function is counted once.
+#        * a function that calls itself: counted once, because a reading that cannot see the
+#          second call cannot price it.
 #        * a script run through another program rather than by its own path, such as an
 #          `xargs -n1 .github/scripts/x.sh`.
-#        * a `for` whose list is an array this check cannot write out as words: one built from
-#          `($var)`, one from a brace expansion, one `mapfile` fills, one an element
-#          assignment extends.
+#        * a `for ((i = 0; i < ${#name[@]}; i++))` over an array the body writes as words this
+#          check takes literally: `($var)` and `(a{1,2,3})` are one word each, so the loop is
+#          one pass; and an element assignment such as `name[2]=c` is not read, so the count is
+#          the words written at the array's definition alone.
 #        * one script that two of a step's paths reach, counted once, because the `seen` set
 #          is shared across a step's scripts. That set exists to stop a cycle, and this is the
 #          same mechanism read from the other side.
+#
+#      What is read correctly, though a reader may expect otherwise: a retried call written
+#      directly, not through a function, as the condition of an `if` inside a loop or behind an
+#      assignment prefix such as `GH_HOST=x`, and a loop written on its own line inside an
+#      `if`, are each multiplied by their loop. A
+#      `for x in` over `"${name[@]}"`, `$var` or a brace expansion, and a
+#      `for ((…; i < ${#name[@]}; …))` over an array `mapfile` fills, are loops whose passes
+#      this check cannot read, and are refused, as the paragraph below that begins "A step
+#      whose budget reaches a loop" says.
 #
 #      One shape goes the other way and over-counts: a script call and a loop written on one
 #      line are read as the loop holding the call, which buys a budget a margin it does not
