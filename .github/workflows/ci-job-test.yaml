@@ -173,6 +173,12 @@ on:
           dispatch-browser-latest-blobs.test.sh and what it tests.
         type: string
         required: true
+      dispatch_browser_run_reads_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.dispatch_browser_run_reads_test:
+          dispatch-browser-run-reads.test.sh and what it tests.
+        type: string
+        required: true
       dispatch_browser_samples_test:
         description: >-
           ci.yaml's needs.changes.outputs.dispatch_browser_samples_test:
@@ -403,6 +409,13 @@ jobs:
       - name: Test the browser lane's blob attempt selection
         if: inputs.changes-result != 'success' || inputs.dispatch_browser_latest_blobs_test == 'true'
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
+      # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
+      # refusal messages are checked here rather than on a runner against GitHub.
+      - name: Test the browser lane's run reads
+        if: inputs.changes-result != 'success' || inputs.dispatch_browser_run_reads_test == 'true'
+        run: .github/scripts/dispatch-browser-run-reads.test.sh
 
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the

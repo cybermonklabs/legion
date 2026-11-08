@@ -283,6 +283,7 @@ jobs:
       merge_group_cancels_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.main_bypass_check_test }}
       dispatch_browser_latest_blobs_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_latest_blobs_test }}
+      dispatch_browser_run_reads_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_samples_test }}
       apt_archive_cache_key_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.apt_archive_cache_key_test }}
       race_memory_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.race_memory_test }}
@@ -1296,6 +1297,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.test.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
+            dispatch_browser_run_reads_test: &dispatch_browser_run_reads_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/dispatch-browser-run-reads.test.sh'
+              - '.github/scripts/dispatch-browser-run-reads.sh'
             dispatch_browser_samples_test: &dispatch_browser_samples_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1421,6 +1428,7 @@ jobs:
               - *merge_group_cancels_test
               - *main_bypass_check_test
               - *dispatch_browser_latest_blobs_test
+              - *dispatch_browser_run_reads_test
               - *dispatch_browser_samples_test
               - *apt_archive_cache_key_test
               - *race_memory_test
@@ -1734,13 +1742,16 @@ jobs:
               # the check that the list has not fallen behind Playwright; the key their apt
               # archive cache is read and written under, which their "Compute the apt archive
               # cache key" steps call; the memory and CPU sampler their browser steps start and
-              # read back; and the script the merge job runs to take each leg's newest attempt.
+              # read back; the script the merge job runs to take each leg's newest attempt; and
+              # the script that makes the merge job's two reads of its own run, which reads this
+              # run's own attempt's jobs and says a refused blob download was a refused read.
               - '.github/scripts/playwright-install.sh'
               - '.github/playwright-apt-packages.txt'
               - '.github/scripts/playwright-deps-current.sh'
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
+              - '.github/scripts/dispatch-browser-run-reads.sh'
               # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its
               # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
               # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
@@ -3424,6 +3435,7 @@ jobs:
       merge_group_cancels_test: ${{ needs.changes.outputs.merge_group_cancels_test }}
       main_bypass_check_test: ${{ needs.changes.outputs.main_bypass_check_test }}
       dispatch_browser_latest_blobs_test: ${{ needs.changes.outputs.dispatch_browser_latest_blobs_test }}
+      dispatch_browser_run_reads_test: ${{ needs.changes.outputs.dispatch_browser_run_reads_test }}
       dispatch_browser_samples_test: ${{ needs.changes.outputs.dispatch_browser_samples_test }}
       apt_archive_cache_key_test: ${{ needs.changes.outputs.apt_archive_cache_key_test }}
       race_memory_test: ${{ needs.changes.outputs.race_memory_test }}
