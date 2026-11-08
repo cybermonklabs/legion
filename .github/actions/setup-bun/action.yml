@@ -31,16 +31,32 @@ description: >-
 runs:
   using: composite
   steps:
-    # The pin, as half the cache key. Read with tr rather than `cat`, so a trailing carriage
+    # The pin, as part of the cache key. Read with tr rather than `cat`, so a trailing carriage
     # return or a stray space in the file cannot reach the key: a key is matched byte for byte,
     # and the mismatch would show only as a restore that never hits.
+    #
+    # The build variant is the other part, and it is read the way setup-bun reads it: for one
+    # Bun version on linux x64 it downloads bun-linux-x64-baseline.zip where /proc/cpuinfo holds
+    # no avx2 and bun-linux-x64.zip where it does, so two different binaries answer to one
+    # version. Its own adoption test does not tell them apart — isVersionMatch splits
+    # `bun --revision` at `+` and compares the version alone — so an entry saved from one kind of
+    # runner is adopted on the other without a word: a baseline binary runs on an avx2 machine
+    # and merely costs it the faster build, while an avx2 binary on a machine without it dies on
+    # an illegal instruction. A file this step cannot read is taken as no avx2, which is
+    # setup-bun's own fallback, so the two agree on which asset the key names even then.
     - id: bun-pin
       shell: bash
-      run: echo "version=$(tr -d '[:space:]' < .bun-version)" >> "$GITHUB_OUTPUT"
+      run: |
+        echo "version=$(tr -d '[:space:]' < .bun-version)" >> "$GITHUB_OUTPUT"
+        variant=''
+        if [ "$RUNNER_OS" = Linux ] && [ "$RUNNER_ARCH" = X64 ] && ! grep -q avx2 /proc/cpuinfo 2>/dev/null; then
+          variant='-baseline'
+        fi
+        echo "variant=$variant" >> "$GITHUB_OUTPUT"
 
-    # One entry per runner architecture and Bun version, and no restore-keys: a near-miss Go
-    # module cache is still most of a module cache, while a Bun binary of another version is one
-    # setup-bun rejects after paying for the restore.
+    # One entry per runner architecture, build variant and Bun version, and no restore-keys: a
+    # near-miss Go module cache is still most of a module cache, while a Bun binary of another
+    # version is one setup-bun rejects after paying for the restore.
     #
     # runner.arch is in the key because one job of this repository's CI runs on arm64 —
     # release-envoy-listener.yaml's docker job builds its arm64 leg on ubuntu-24.04-arm — and an
@@ -54,7 +70,7 @@ runs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bun/bin
-        key: bun-${{ runner.os }}-${{ runner.arch }}-${{ steps.bun-pin.outputs.version }}
+        key: bun-${{ runner.os }}-${{ runner.arch }}${{ steps.bun-pin.outputs.variant }}-${{ steps.bun-pin.outputs.version }}
 
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       with:
@@ -68,4 +84,4 @@ runs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bun/bin
-        key: bun-${{ runner.os }}-${{ runner.arch }}-${{ steps.bun-pin.outputs.version }}
+        key: bun-${{ runner.os }}-${{ runner.arch }}${{ steps.bun-pin.outputs.variant }}-${{ steps.bun-pin.outputs.version }}
