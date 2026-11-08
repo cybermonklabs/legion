@@ -33,7 +33,10 @@ header says what is proved).
             cover every file the tag step's filter covers.
 
 A Read's glob is expanded over the repository's files; a why cites the step (at()) or the
-source line that reads it. at()'s third argument is the workflow file that holds the step, and
+source line that reads it - the line that performs the read, not the one naming its path, and
+never a line of the file the why itself lives in, which moves with every line added above it:
+inside its own file a comment names the filter, the anchor, the glob or the path instead, which
+a grep resolves. at()'s third argument is the workflow file that holds the step, and
 it is ci.yaml unless a job gives its steps away: ci.yaml's docs job calls docs-site.yaml, so the
 docs gate cites that file's build job (at_docs). The Read lists of the jobs without Go steps
 (the Bun packages) are as hand-kept as RULES: the check proves the filter covers them, not that
