@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A worker registered while its agent's own turn was already running gets its task when that turn
+  ends. The daemon never saw such a turn start, so the claim stood ready rather than working, where
+  a turn end matched no transition at all and the task the busy refusal left unread waited for a
+  turn start that had already happened. Three workers sat idle holding their phase task for 35 to
+  75 minutes that way, each completion from the blind turn refused as belonging to no run. Nothing
+  is sent into the turn itself.

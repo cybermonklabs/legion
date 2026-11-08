@@ -767,7 +767,14 @@ func fillTable(t *builder) {
 	// A turn whose end runs a stale-plugin relaunch held for it (refreshPlugin) ends launching, or
 	// failed when that launch spends the claim's budget, as the stale-plugin row itself does.
 	t.row(onTurnEnd, "the turn ended", turnEnded, []ClaimState{StateIdle, StateWorking, StateLaunching, StateFailed}, StateWorking)
-	t.ignore(onTurnEnd, "no turn is in flight", prompted...)
+	// A turn the daemon never saw begin ends here: a claim registered while the agent's own turn
+	// was already running is ready rather than working, and the end is the only stream event of
+	// that turn it will ever get. The task it holds unread is sent now, which is what left three
+	// workers idle holding a task for 35 to 75 minutes (dispatch://INFRA-1691, INFRA-1545,
+	// INFRA-722, A9) — a send reached only through a turn the daemon watched begin waits on an
+	// event that has already happened.
+	t.row(onTurnEnd, "a turn the daemon never saw begin ended: send the task it holds", blindTurnEnded,
+		[]ClaimState{StateReady, StateIdle, StateWorking}, prompted...)
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a delivery is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
 
@@ -1589,6 +1596,25 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 	if err := m.takeSlotForUpdate(ctx, false); err != nil {
 		return err
 	}
+	return m.sendPending(ctx)
+}
+
+// blindTurnEnded is a turn ending on a claim the daemon never saw start one: it is ready or idle,
+// so no delivery of its own was in flight, and what the end tells it is that the agent's own turn
+// is over. A task it holds that no agent has read goes now (sendPending, which holds it back from
+// a turn in flight on this claim or another of its issue, so R6's fence stands); a task already
+// read, or no task at all, leaves nothing to do, as this event did before.
+//
+// The busy refusal is how such a claim comes to hold an unread task: Oh My Pi acknowledges the
+// prompt and then refuses it because a turn of its own is running (takeBackPending puts the task
+// back under a new id). Every other path to this state ends with the task sent or none held.
+func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
+	p := m.claim.Pending
+	if p == nil || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
+		return nil
+	}
+	m.log.Info("supervise: a turn this daemon never saw begin has ended; the task it holds unread is sent now",
+		"delivery", p.ID, "phase", string(p.Phase), "generation", p.Generation)
 	return m.sendPending(ctx)
 }
 

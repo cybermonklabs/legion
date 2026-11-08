@@ -389,6 +389,48 @@ func TestABusyAgentsRefusalOfTheSendIsChargedNothingAndItsTurnsEndSendsTheTask(t
 	h.wantState(StateIdle)
 }
 
+// A claim registered while the agent's own turn was already running never sees that turn start:
+// the daemon's only stream event of it is its end, and until this release a turn end in ready
+// matched no row at all (table.go's onTurnEnd), so the task the busy refusal left unread waited
+// for a turn start that had already happened. Three workers sat idle holding their phase task for
+// 35 to 75 minutes that way, and each completion from the blind turn was refused HANDOFF_NO_RUN
+// (dispatch://INFRA-1691, INFRA-1545, INFRA-722, A9). The end sends it now, and nothing goes into
+// the turn itself.
+//
+// The busy-refusal test above drives the same refusal with a turn start before each end, which is
+// why this never showed: that is the agent whose turn the daemon watched begin.
+func TestATurnEndTheDaemonNeverSawBeginSendsTheTaskItHolds(t *testing.T) {
+	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+	h := newHarness(t)
+	h.reach(StateReady)
+	base := len(h.prompts())
+
+	h.must(RequestDeliver{Claim: testToken, Task: "the phase task", Generation: 7})
+	sent := h.pending().ID
+	h.wantPrompts(base + 1)
+
+	// The prompt is acknowledged and then refused: a turn of the agent's own is running, one that
+	// began before this claim was registered. The refusal takes the task back under a new id.
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: sent, Error: busy})
+	if p := h.pending(); p.Task != "the phase task" || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
+		t.Fatalf("after the busy refusal the task is %+v, want it waiting unread", p)
+	}
+	h.wantPrompts(base + 1)
+	h.wantState(StateReady)
+
+	// The blind turn ends. This is the only stream event of it the daemon ever gets.
+	h.must(StreamTurnEnd{Claim: testToken})
+
+	if prompt := h.wantPrompts(base + 2)[base+1]; prompt.DeliveryID != h.pending().ID {
+		t.Fatalf("the send after the blind turn went under %s, want the task's %s", prompt.DeliveryID, h.pending().ID)
+	}
+	h.must(StreamTurnStart{Claim: testToken})
+	if run := h.claim().ServingRun(); run != 7 {
+		t.Fatalf("during the task's own turn the claim serves run %d, want the task's 7: a completion from it would be refused HANDOFF_NO_RUN", run)
+	}
+	h.wantBudgets(Budgets{})
+}
+
 // The notice's turn usually starts while the task's send is still in flight, so its agent_start
 // confirms the task (turnStarted's in-flight rule) before the busy answer arrives. The refusal takes
 // that confirmation back and is still charged nothing; the claim stays working, and the turn's end
