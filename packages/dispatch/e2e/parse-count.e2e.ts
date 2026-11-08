@@ -47,6 +47,7 @@ const searchTerm = "astrolabe";
 interface Seeded {
   readonly documentSlug: string;
   readonly issueKey: string;
+  readonly openAskID: string;
   readonly targetKey: string;
 }
 
@@ -77,7 +78,7 @@ async function seedStoredTexts(): Promise<Seeded> {
   await createMessage(issue.key, { body: "A **message** body." }, session);
   // An open ask, which the Inbox draws, and an answered one, whose answer the Answers page
   // draws.
-  await createAsk(issue.key, { question: "An **open** question?" }, session);
+  const openAsk = await createAsk(issue.key, { question: "An **open** question?" }, session);
   const ask = await createAsk(
     issue.key,
     { options: [{ label: "Ship" }, { label: "Hold" }], question: "An **ask** question?" },
@@ -118,7 +119,12 @@ async function seedStoredTexts(): Promise<Seeded> {
     { as: "agent" }
   );
 
-  return { documentSlug: document.artifact.slug, issueKey: issue.key, targetKey: target.key };
+  return {
+    documentSlug: document.artifact.slug,
+    issueKey: issue.key,
+    openAskID: openAsk.id,
+    targetKey: target.key,
+  };
 }
 
 /** One page this spec counts the parses of: its name, and what it does to put a stored text on
@@ -150,6 +156,13 @@ function surfaces(seeded: Seeded): Surface[] {
       name: "the Inbox",
       show: async (page) => {
         await page.goto("/");
+        // The row is selected by this spec rather than left to the pane's own first choice: the
+        // list is fed by two reads (the asks and the reply threads), and whichever lands first
+        // decides what the pane opens, so waiting on the ask's question alone is a race this
+        // spec would lose about half the time. Selecting it draws the same body deterministically.
+        const row = page.locator(`[data-inbox-row="${seeded.openAskID}"]`);
+        await expect(row).toBeVisible();
+        await row.click();
         await expect(bold(page, "open")).toBeVisible();
       },
     },
