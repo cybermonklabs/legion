@@ -898,6 +898,9 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			if err := w.holdForCatchUp(scoped, tx); err != nil {
 				return err
 			}
+			if err := w.releaseParkedClaims(scoped, tx, scope); err != nil {
+				return err
+			}
 		}
 		return w.admission.Reconcile(scoped, tx, listed, target, position)
 	}); err != nil {

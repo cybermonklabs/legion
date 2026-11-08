@@ -34,7 +34,9 @@ import (
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo starts fresh. An issue leaving disarms
-// its open pull request (disarmOpen), as a root's linger disarms every member's.
+// its open pull request (disarmOpen), as a root's linger disarms every member's. Those are the
+// issue's Legion claims; its Dispatch claim is the board's, and Dispatch releases one at a close
+// alone, so every departure short of a close queues the row that releases it (record.ClaimRelease).
 //
 // A member's leave may be the last one a merged issue above it waited for: an issue whose pull
 // request merged stands in awaiting_merge while any issue beneath it is in the workflow
@@ -55,13 +57,16 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if issue.Lingers() {
 			return nil
 		}
-		if held, err := e.operatorHoldsTree(ctx, tx, issue); err != nil || held {
+		if held, err := record.OperatorHoldsTree(ctx, e.store, tx, issue); err != nil || held {
 			if err != nil {
 				return err
 			}
 			return e.leaveUnderOperator(ctx, tx, issue, status)
 		}
 		if err := e.beginLinger(ctx, tx, issue); err != nil {
+			return err
+		}
+		if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
 			return err
 		}
 		if status != "done" {
@@ -91,6 +96,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		except = e.checkRole()
 	}
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
+		return err
+	}
+	if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
 		return err
 	}
 	members, err := e.treeMembers(ctx, tx, issue)
@@ -151,20 +159,14 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	return e.openCheck(ctx, tx, issue, *pr, lingers)
 }
 
-// operatorHoldsTree says whether the operator opened the lifetime of root's tree (an operator root
-// spawn under the root's key) and its cleanup has not confirmed. Only a root waiting for its slot
-// can meet one: promotion waits on the operator's lifetime (treelifecycle.ErrAuthorityHeld) and
-// never opens a workflow tree under it.
-func (e *Engine) operatorHoldsTree(ctx context.Context, tx pgx.Tx, root record.Issue) (bool, error) {
-	project, err := claim.ProjectToken(root.Project)
-	if err != nil {
-		return false, err
+// releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
+// parked rather than closed: Dispatch releases a claim at a close alone. The row carries
+// nothing of the holder, which it reads with the issue's record when it runs.
+func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+	if status == "done" {
+		return nil
 	}
-	lifecycle, found, err := e.store.TreeLifecycle(ctx, tx, project, root.Tree)
-	if err != nil {
-		return false, err
-	}
-	return found && lifecycle.HeldByOperator(), nil
+	return e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{})
 }
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under
