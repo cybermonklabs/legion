@@ -1110,13 +1110,16 @@ jobs:
               - 'packages/broker-client/**'
               # The one markdown fixture table: the browser row each parity family keeps reads it
               # at web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44. This
-              # entry declares that read explicitly and selects nothing on its own:
-              # `*dispatch_server` above (:1079) already matches it through
-              # 'packages/envoy/internal/dispatch/pmdoc/**' (:457), as it does the block schema
+              # entry declares that read explicitly and selects nothing on its own: the
+              # `*dispatch_server` anchor this filter takes above already matches it through its
+              # own 'packages/envoy/internal/dispatch/pmdoc/**', as it does the block schema
               # e2e/engine-reading.ts:13 reads. Measured with ci_filter_coverage.changes_filters
               # and workflow_paths.PathsFilter under both quantifiers: this filter covers the
-              # table with the entry and without it, where dispatch-ui's own copy (:1183) covers
-              # it only with, that filter naming no anchor that reaches the table.
+              # table with the entry and without it, where dispatch-ui's own entry for this same
+              # path covers it only with, that filter naming no anchor that reaches the table.
+              # Those three are named rather than cited by line: a citation into this file moves
+              # with every comment added above it, which is how :1179 became :1183 and :1183 went
+              # stale in the commit that wrote it.
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
               # The file store image: the pull step names its declaration to the pull-test-images
               # action, and the S3 step reads the same declaration for its docker run.
