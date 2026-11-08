@@ -138,11 +138,14 @@ pg_client() {
 # the digest is what changes whenever the set changes.
 #
 # It reads under the advisory lock Dispatch's migration runner holds for each migration
-# (internal/dispatch/store/store.go, migrationLockKey): one statement takes the key and reads the
-# versions only if it got it, in that one psql session, so a migration transaction still in
-# flight, one a stopped image sent its commit for included, ends before the read takes its
-# snapshot, the versions come back ordered by the database, and the key is still held as they do.
-# The session's end releases it.
+# (internal/dispatch/store/store.go, migrationLockKey): two statements of one psql session, the
+# try for the key and then the read, so a migration transaction still in flight, one a stopped
+# image sent its commit for included, ends before the read takes its snapshot, the versions come
+# back ordered by the database, and the key is still held as they do. The session's end releases
+# it. One statement could not take the key and read behind it: a statement's snapshot is taken
+# when it starts, before its own one-time filter calls pg_try_advisory_lock, so its read would
+# still be of the schema as it stood before the migration committed (measured on PostgreSQL
+# 18.6).
 #
 # It polls the key rather than waiting for it, because any blocking wait on this key deadlocks
 # against the runner that holds it. A backend blocked on a lock keeps the snapshot its statement
@@ -150,26 +153,28 @@ pg_client() {
 # building an index concurrently and a waiter on the key wait for each other (PostgreSQL 18.6,
 # SQLSTATE 40P01). The runner polls for the same reason (store.go, lockMigrations). So each try is
 # a psql session of its own, with no statement open between two tries: a try refused the key
-# matches no row, prints nothing and takes nothing, and the next one follows a second later. Once
-# the deadline passes with the key still held the read fails, and the caller refuses to deploy
-# rather than wait for ever.
+# answers f and takes nothing, the read that follows it in that session is of no account and is
+# dropped with the rest of the answer, and the next try follows a second later as a fresh session
+# holding nothing. Once the deadline passes with the key still held the read fails, and the
+# caller refuses to deploy rather than wait for ever.
 #
 # psql's stderr is dropped, since its diagnostics can quote the connection; a failure prints
 # nothing and returns psql's status, or 1 for an answer that is no list of versions.
 schema_applied() {
-  local sql answer versions line count max digest deadline
-  sql="select 'granted' || coalesce((select E'\n' || string_agg(version::text, E'\n' order by version) from schema_migrations), '') where pg_try_advisory_lock(8150001)"
+  local sql_try sql_read answer versions line count max digest deadline
+  sql_try="select pg_try_advisory_lock(8150001)"
+  sql_read="select version from schema_migrations order by version"
   deadline=$((SECONDS + 60))
   while true; do
-    answer=$(pg_client 60 "psql -X -q -At -v ON_ERROR_STOP=1 -c \"set lock_timeout = 30000\" -c \"$sql\" \"\$DATABASE_URL\"" 2>/dev/null) ||
+    answer=$(pg_client 60 "psql -X -q -At -v ON_ERROR_STOP=1 -c \"set lock_timeout = 30000\" -c \"$sql_try\" -c \"$sql_read\" \"\$DATABASE_URL\"" 2>/dev/null) ||
       return
-    [[ "$answer" == granted || "$answer" == "granted"$'\n'* ]] && break
-    # No row at all: another session holds the key. Any other answer is none of this read's.
-    [[ -z "$answer" ]] || return 1
+    [[ "$answer" == t || "$answer" == t$'\n'* ]] && break
+    # f: another session holds the key. Any other answer is none of this read's.
+    [[ "$answer" == f || "$answer" == f$'\n'* ]] || return 1
     ((SECONDS < deadline)) || return 1
     sleep 1
   done
-  versions="${answer#granted}"
+  versions="${answer#t}"
   versions="${versions#$'\n'}"
   count=0
   max=0

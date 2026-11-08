@@ -16,6 +16,9 @@ mkdir -p "$compose" "$backups" "$bin" "$tools"
 # appear in the deployer's output or in any process's arguments.
 password='s@cret-canary'
 url_without_password='postgres://dispatch@db.test:5432/dispatch?sslmode=require'
+# The schema read, as it reaches psql: the try for the key and the read of the versions, two
+# statements of the one run, in that order.
+schema_read='-c select pg_try_advisory_lock(8150001) -c select version from schema_migrations order by version'
 fresh_env() {
   cat >"$compose/.env" <<EOF
 ENVOY_IMAGE_TAG=old-image
@@ -198,11 +201,11 @@ if [[ "${AUTODEPLOY_TEST_SCHEMA_UNREADABLE:-}" == 1 ||
 fi
 # The migration advisory key, as the server holds it. $schema.key, holding a number above zero,
 # stands for another session holding the key; every statement that reaches for it takes one off
-# that number, so the key comes free after that many tries. A try (pg_try_advisory_lock) refused
-# the key matches no row and prints nothing. A blocking wait (pg_advisory_lock) on a held key ends
-# as the real server ends it, with a diagnostic on stderr and a non-zero status: the deadlock
-# (SQLSTATE 40P01) between a waiter, which keeps its statement's snapshot, and a holder building
-# an index concurrently, which waits for every older snapshot.
+# that number, so the key comes free after that many tries. The deployer sends two statements in
+# one psql run, the try for the key first and the read of the versions second; a try
+# (pg_try_advisory_lock) refused the key answers f, and one that took it answers t. No fake can
+# model the snapshot the second statement takes, so what this pins is the two statements, in
+# that order, in the one run.
 key_held() {
   local remaining
   [[ -s "$AUTODEPLOY_TEST_SCHEMA.key" ]] || return 1
@@ -211,20 +214,16 @@ key_held() {
   printf '%s\n' "$((remaining - 1))" >"$AUTODEPLOY_TEST_SCHEMA.key"
 }
 case "$*" in
-  *'pg_try_advisory_lock(8150001)'*'from schema_migrations'*)
-    printf 'unexpected read of schema_migrations before the key: %s\n' "$*" >&2
-    exit 3
-    ;;
-  *'from schema_migrations'*'pg_try_advisory_lock(8150001)'*)
-    key_held && exit 0
-    printf 'granted\n'
-    ;;
-  *'pg_advisory_lock(8150001)'*'from schema_migrations'*)
+  *'-c select pg_try_advisory_lock(8150001) -c select version from schema_migrations order by version'*)
     if key_held; then
-      printf 'psql: error: ERROR:  deadlock detected\npsql: detail: SQLSTATE 40P01\n' >&2
-      exit 1
+      printf 'f\n'
+      exit 0
     fi
-    printf '\n'
+    printf 't\n'
+    ;;
+  *schema_migrations*)
+    printf 'unexpected read of schema_migrations outside the two statements under the key: %s\n' "$*" >&2
+    exit 3
     ;;
 esac
 # The versions as `order by version` returns them.
@@ -290,8 +289,8 @@ if [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]
   fail 'deployer did not record the set of migrations old-image runs against'
 fi
 if [[ $(grep -c "^pg_dump -Fc $url_without_password\$" "$argv") -ne 1 ]] ||
-  [[ $(grep -c "^psql .*from schema_migrations.*pg_try_advisory_lock(8150001).* $url_without_password\$" "$argv") -ne 2 ]]; then
-  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, the read under the runner key'
+  [[ $(grep -c "^psql .*$schema_read $url_without_password\$" "$argv") -ne 2 ]]; then
+  fail 'deployer did not run pg_dump once and psql twice (before the deploy and after the stop) on the URL without its password, the read two statements under the runner key'
 fi
 # Each client container runs under an init that passes on a signal, so `timeout` ends it.
 if [[ $(grep -c '^docker run ' "$argv") -ne 3 || $(grep -c '^docker run --init ' "$argv") -ne 3 ]]; then
@@ -444,9 +443,10 @@ no_secret 'the held migration key'
 if [[ $(<"$schema.key") -ne 0 ]]; then
   fail 'deployer did not try the held migration key more than once'
 fi
-# Four psql runs: two refused the key, the third read the set, and one more after the stop. An
-# empty answer taken for the applied set would record 0 versions and refuse the rollback.
-if [[ $(grep -c "^psql .*from schema_migrations.*pg_try_advisory_lock(8150001).* $url_without_password\$" "$argv") -ne 4 ]] ||
+# Four psql runs: the key refused the first two, the third took it and read the set, and one more
+# after the stop. An f answer taken for the applied set would record 0 versions and refuse the
+# rollback.
+if [[ $(grep -c "^psql .*$schema_read $url_without_password\$" "$argv") -ne 4 ]] ||
   [[ "$output" != *"rolling back to old-image"* ]] || [[ "$output" == *"could not read the schema version"* ]] ||
   [[ "$output" == *"refusing to roll back"* ]] || [[ $(<"$compose/.env") != *"ENVOY_IMAGE_SCHEMA=old-image:$(schema_value)"* ]]; then
   fail 'deployer did not poll the held migration key and deploy once it came free'
