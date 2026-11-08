@@ -89,36 +89,49 @@ const [PHASE = "", HANDOFF_WORD = ""] = runDaemonPane(DAEMON_MODULE, ["phase", r
  * carries it empty, as a daemon at this contract serves a caller in no pod holding no wake.
  * `settings` is the daemon's resolved legion.yaml with no credential in it, also required; the rig
  * has no file, so it carries the two keys the reader types at the daemon's defaults. */
-const STATE = LegionStateResponse.parse({
-  daemon: { project, schemaVersion: 1, boots: 1, firstBootAt: startedAt, startedAt },
-  admission: { cap: 1, active: [issue], waiting: [], trees: [issue], blocked: [] },
-  issues: {
-    [issue]: {
-      key: issue,
-      generation: 1,
-      phase: PHASE,
-      status: "in_progress",
-      tree: issue,
-      repo: "sjawhar/legion-smoke",
-      defaultBranch: "main",
-      workers: {},
+const stateIn = (phase: string) =>
+  LegionStateResponse.parse({
+    daemon: { project, schemaVersion: 1, boots: 1, firstBootAt: startedAt, startedAt },
+    admission: { cap: 1, active: [issue], waiting: [], trees: [issue], blocked: [] },
+    issues: {
+      [issue]: {
+        key: issue,
+        generation: 1,
+        phase,
+        status: "in_progress",
+        tree: issue,
+        repo: "sjawhar/legion-smoke",
+        defaultBranch: "main",
+        workers: {},
+      },
     },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  wakesWaiting: [],
-  capabilities: [],
-  repositories: {
-    owners: ["sjawhar"],
-    mapped: [{ repo: "sjawhar/legion-smoke", default: true }],
-    refused: [],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-});
+    pendingStatusWrites: [],
+    heldOutboxRows: [],
+    strandedClaims: [],
+    wakesWaiting: [],
+    capabilities: [],
+    repositories: {
+      owners: ["sjawhar"],
+      mapped: [{ repo: "sjawhar/legion-smoke", default: true }],
+      refused: [],
+      withoutWebhookApp: [],
+      caches: [],
+    },
+    settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
+    consumers: [],
+  });
+
+/** The phase the stand-in serves now, which starts as the role's own and moves when that phase
+ * ends. The daemon ends a review round on both halves, the review fact and the completion, and
+ * the issue then stands in `accepting`, where the loop after an approval that leaves text
+ * findings open runs (`skills/legion-worker/references/review-threads.md`, step 1). That step has
+ * the reviewer read its record and send to the implementer only once the record shows
+ * `accepting`, so a stand-in whose state never moved would answer `reviewing` for ever and make
+ * the step unreachable: a reviewer that obeyed the rule would score as one that never sent.
+ * Measured on the batch of 2026-11-08T13:08Z, where all five head runs approved correctly and
+ * every one read `toldImplementer=false` for this reason. Only `reviewing` moves: the rig's run
+ * ends with any other phase's completion, and no scenario reads the record after it. */
+let servedPhase = PHASE;
 
 interface LogLine {
   readonly at: string;
@@ -238,6 +251,9 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
           ),
         };
       }
+      // The round the completion ends takes the issue with it: a reviewing phase that completes
+      // leaves the issue in `accepting`, which is what the reviewer's next step reads.
+      if (PHASE === "reviewing") servedPhase = "accepting";
       return { response: json(200, {}) };
     }
     case "/legion/v1/phase/backward": {
@@ -278,7 +294,7 @@ const server = Bun.serve({
       request.method === "POST"
         ? handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
-          ? { response: json(200, STATE) }
+          ? { response: json(200, stateIn(servedPhase)) }
           : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
     const line: LogLine = {
       at: new Date().toISOString(),

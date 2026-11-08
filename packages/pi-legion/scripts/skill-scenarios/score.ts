@@ -999,7 +999,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // message and from nothing else (review-threads.md step 1). The round is clean only when that
   // message was sent, naming the head the fix must land above (`toldImplementer`). A
   // `REQUEST_CHANGES` round opens no such loop and sends none.
-  const toldImplementer = publishedTo(session(runDir), "implementer", [world.head]);
+  const toldImplementer = publishedTo(session(runDir), "implementer", [world.head], runDir);
   const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
@@ -1082,25 +1082,126 @@ function jsonObject(text: string): Record<string, unknown> | undefined {
     ? (value as Record<string, unknown>)
     : undefined;
 }
-/** What a tool call published on Envoy — the topic it sent to and the message it carried — or
- * undefined when the call published nothing. `envoy_publish` takes both as its own arguments,
- * and a session that reaches the device as an xd:// one writes them as the JSON `content` of a
- * `write` to `xd://envoy_publish`. A call that names the device anywhere else, a `bash` command
- * or a message about publishing among them, published nothing. */
-function publishedIn(call: {
-  tool: string;
-  path: string;
-  args: string;
-}): { topic: string; message: string } | undefined {
+/** The object literal that starts at `text[from]`, which must be `{`, with its own braces
+ * balanced and braces inside a string left alone, or undefined when it never closes. */
+function braced(text: string, from: number): string | undefined {
+  let depth = 0;
+  let quote = "";
+  for (let i = from; i < text.length; i += 1) {
+    const c = text[i];
+    if (quote !== "") {
+      if (c === "\\") i += 1;
+      else if (c === quote) quote = "";
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") quote = c;
+    else if (c === "{") depth += 1;
+    else if (c === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(from, i + 1);
+    }
+  }
+  return undefined;
+}
+/** The string `source` holds when it begins with one, read as Python and JavaScript both write
+ * one: `'…'`, `"…"`, `` `…` `` and Python's triple quotes, with `\n`, `\t`, `\"`, `\'`, `\\` and
+ * `\`` as they are written. A template literal that interpolates (`${`) is not a string this
+ * reads: its text is not in the call. */
+function stringLiteral(source: string): string | undefined {
+  const text = source.trimStart();
+  const triple = ['"""', "'''"].find((q) => text.startsWith(q));
+  const quote = triple ?? ['"', "'", "`"].find((q) => text.startsWith(q));
+  if (quote === undefined) return undefined;
+  let out = "";
+  for (let i = quote.length; i < text.length; i += 1) {
+    if (text.startsWith(quote, i)) {
+      return quote === "`" && out.includes("${") ? undefined : out;
+    }
+    if (text[i] === "\\") {
+      const escape = text[i + 1] ?? "";
+      out += { n: "\n", t: "\t", r: "\r" }[escape] ?? escape;
+      i += 1;
+      continue;
+    }
+    out += text[i];
+  }
+  return undefined;
+}
+/** The value of `key` in the object literal `object`, read as a string: its own literal, or the
+ * string the name it holds was assigned in `code` — a literal, or the contents of a file the
+ * same code opens, which a run writes under its own directory and this reads from there alone.
+ * undefined when the value is none of those, which leaves the publish unreadable rather than
+ * empty: an empty message would read as a message that named nothing. */
+function fieldIn(object: string, key: string, code: string, runDir: string): string | undefined {
+  const at = object.search(new RegExp(`['"]?${key}['"]?\\s*:`));
+  if (at < 0) return undefined;
+  const value = object.slice(object.indexOf(":", at) + 1);
+  const literal = stringLiteral(value);
+  if (literal !== undefined) return literal;
+  const name = /^\s*([A-Za-z_$][\w$]*)\s*[,}]/.exec(value)?.[1];
+  if (name === undefined) return undefined;
+  const assigned = new RegExp(`(?:^|\\n)\\s*(?:const |let |var )?${name}\\s*=\\s*([^\\n]*)`).exec(
+    code
+  )?.[1];
+  if (assigned === undefined) return undefined;
+  const assignedLiteral = stringLiteral(code.slice(code.indexOf(assigned)));
+  if (assignedLiteral !== undefined) return assignedLiteral;
+  const file = /open\(\s*(['"])(.*?)\1\s*\)/.exec(assigned)?.[2];
+  if (file === undefined) return undefined;
+  const resolved = path.resolve(runDir, file);
+  return resolved.startsWith(`${path.resolve(runDir)}/`) && existsSync(resolved)
+    ? readFileSync(resolved, "utf8")
+    : undefined;
+}
+/** What a tool call published on Envoy — each topic it sent to with the message it carried, and
+ * how many publishes of it this could not read. `envoy_publish` takes both as its own arguments,
+ * a session that reaches the device as an xd:// one writes them as the JSON `content` of a
+ * `write` to `xd://envoy_publish`, and a session may call the same tool from `eval`, where the
+ * call sits in the code the tool ran. Which tool carries the publish is no part of the rule —
+ * the rule asks the agent to publish the wake — so a scorer that reads one tool scores the
+ * harness rather than the agent; measured on the batch of 2026-11-08T13:08Z, where two
+ * `threads-closed` reviewers published to the architect's topic from `eval` and read as having
+ * sent nothing. A publish whose topic or message this cannot read is counted in `unreadable`
+ * and never scored as a send: `unscored` makes such a run a rig error, so an instrument that
+ * cannot see an act never reports it as an act not done. A call that names the device anywhere
+ * else, a `bash` command or a message about publishing among them, published nothing. */
+function publishesIn(
+  call: { tool: string; path: string; args: string },
+  runDir: string
+): { sent: { topic: string; message: string }[]; unreadable: number } {
   const args = jsonObject(call.args);
-  const sent =
+  const direct =
     call.tool === "envoy_publish"
       ? args
       : call.tool === "write" && call.path === "xd://envoy_publish"
         ? jsonObject(typeof args?.content === "string" ? args.content : "")
         : undefined;
-  if (typeof sent?.topic !== "string") return undefined;
-  return { topic: sent.topic, message: typeof sent.message === "string" ? sent.message : "" };
+  if (direct !== undefined) {
+    return typeof direct.topic === "string"
+      ? {
+          sent: [
+            {
+              topic: direct.topic,
+              message: typeof direct.message === "string" ? direct.message : "",
+            },
+          ],
+          unreadable: 0,
+        }
+      : { sent: [], unreadable: 0 };
+  }
+  const code = call.tool === "eval" && typeof args?.code === "string" ? args.code : undefined;
+  if (code === undefined) return { sent: [], unreadable: 0 };
+  const sent: { topic: string; message: string }[] = [];
+  let unreadable = 0;
+  for (const match of code.matchAll(/envoy_publish\s*\(/g)) {
+    const open = code.indexOf("{", match.index + match[0].length - 1);
+    const object = open < 0 ? undefined : braced(code, open);
+    const topic = object === undefined ? undefined : fieldIn(object, "topic", code, runDir);
+    const message = object === undefined ? undefined : fieldIn(object, "message", code, runDir);
+    if (topic === undefined || message === undefined) unreadable += 1;
+    else sent.push({ topic, message });
+  }
+  return { sent, unreadable };
 }
 /** Whether the agent published to `role`'s topic with `envoy_publish`, the call sitting in the
  * transcript because `envoy_publish` is a tool of the session and no `gh` call records it. The
@@ -1115,23 +1216,35 @@ function publishedIn(call: {
  * hexadecimal digits or more, as a reply names one (namesCommit). A message that names none of
  * them is no wake, since the next role cannot act on it, and a caller with nothing to require
  * passes an empty list, which no message satisfies rather than every message satisfying it. */
-function publishedTo(entries: SessionEntry[], role: Role, names: string[]): boolean {
-  return toolCalls(entries).some((call) => {
-    const sent = publishedIn(call);
-    if (sent?.topic.endsWith(`-${role}`) !== true) return false;
-    return names.some(
-      (name) => name !== "" && (sent.message.includes(name) || namesCommit(sent.message, name))
-    );
-  });
+function publishedTo(
+  entries: SessionEntry[],
+  role: Role,
+  names: string[],
+  runDir: string
+): boolean {
+  return toolCalls(entries).some((call) =>
+    publishesIn(call, runDir).sent.some(
+      (sent) =>
+        sent.topic.endsWith(`-${role}`) &&
+        names.some(
+          (name) => name !== "" && (sent.message.includes(name) || namesCommit(sent.message, name))
+        )
+    )
+  );
 }
 /** Whether the agent sent the architect the message a thread no text fix can close takes: one
  * route, and the architect is the only role that can move the issue for it
  * (review-threads.md step 4). */
-function toldArchitect(entries: SessionEntry[], threads: z.infer<typeof Threads>): boolean {
+function toldArchitect(
+  entries: SessionEntry[],
+  threads: z.infer<typeof Threads>,
+  runDir: string
+): boolean {
   return publishedTo(
     entries,
     "architect",
-    threads.flatMap((thread) => [thread.id, thread.path])
+    threads.flatMap((thread) => [thread.id, thread.path]),
+    runDir
   );
 }
 
@@ -1292,7 +1405,8 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   );
   const fixSession = session(runDir);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
-  const told = toldArchitect(fixSession, threads) || toldArchitect(reviewSession, threads);
+  const told =
+    toldArchitect(fixSession, threads, runDir) || toldArchitect(reviewSession, threads, runDir);
   // The two sends this scenario's agents own. The loop runs in `accepting`, where the daemon
   // starts no phase, so a step that sends none leaves the next role never learning its turn
   // began: the implementer's push is told to the reviewer's topic with the new head, and the
@@ -1300,11 +1414,12 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // which is the architect's gate because READY reads the round's first approval. The first
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
-  const toldReviewer = publishedTo(fixSession, "reviewer", tip === undefined ? [] : [tip]);
+  const toldReviewer = publishedTo(fixSession, "reviewer", tip === undefined ? [] : [tip], runDir);
   const toldArchitectOfHead = publishedTo(
     reviewSession,
     "architect",
-    tip === undefined ? [] : [tip]
+    tip === undefined ? [] : [tip],
+    runDir
   );
   // code-defect: the finding has one route, and it is the message to the architect. A review
   // submitted here is submitted in `accepting`, where the daemon records none
@@ -3679,6 +3794,24 @@ function unscored(
     const booted = sessionIn(path.join(runDir, "sessions", role));
     if (!booted.some((entry) => entry.message?.role === "assistant"))
       return `the ${role} half never started: sessions/${role} holds no transcript, or one with no assistant message`;
+  }
+  // A publish the scorer cannot read is the scorer's limit, not an act the agent did not do, so
+  // the run is a rig error rather than a failure: the send conditions of this loop would
+  // otherwise read a message that exists as a message never sent. It happens when a call made
+  // from `eval` builds its topic or its message out of something that is not in the code and
+  // not in a file of the run (publishesIn).
+  for (const [role, booted] of [
+    ["", entries],
+    ...(BOOTS[scenario] ?? []).map(
+      (role) => [role, sessionIn(path.join(runDir, "sessions", role))] as const
+    ),
+  ] as const) {
+    const unreadable = toolCalls(booted).reduce(
+      (count, call) => count + publishesIn(call, runDir).unreadable,
+      0
+    );
+    if (unreadable > 0)
+      return `${unreadable} publish call${unreadable === 1 ? "" : "s"} of ${role === "" ? "the run's own agent" : `the ${role} half`} name${unreadable === 1 ? "s" : ""} a topic or a message this scorer cannot read`;
   }
   for (const call of calls) {
     const named: string[] = [];

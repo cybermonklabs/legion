@@ -3158,6 +3158,17 @@ const reviewRecord = {
 };
 /** A message one of a run's agents sent on Envoy: the `envoy_publish` write to `role`'s topic,
  * as the run's transcript records the tool call. */
+/** A publish the agent made from `eval`, the tool that runs code in its own session: the call
+ * the transcript records is the `eval` one, and the publish is inside its code. */
+const evalCall = (code: string) => ({
+  type: "message",
+  message: {
+    role: "assistant",
+    content: [
+      { type: "toolCall", id: "call-eval", name: "eval", arguments: { language: "py", code } },
+    ],
+  },
+});
 const publishTo = (role: string, text: string) => ({
   type: "message",
   message: {
@@ -3560,6 +3571,9 @@ const fixNames = [
   "threads-closed-text-fixes-head-22",
   "threads-closed-text-fixes-head-23",
   "threads-closed-text-fixes-head-24",
+  "threads-closed-text-fixes-head-25",
+  "threads-closed-text-fixes-head-26",
+  "threads-closed-text-fixes-head-27",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -3845,6 +3859,70 @@ fixRun(
       publishTo(
         "implementer",
         `I approved the head the fix landed on, ${fix.fixed}; the architect's gate is open.`
+      ),
+    ],
+  }
+);
+// The same two wakes, each carried by `eval` rather than by the publish tool: a session may
+// call `envoy_publish` from code, and which tool carries the publish is no part of the rule.
+// head-25 writes both messages into the call's own code; head-26 has the reviewer read its
+// message out of a file of its own run, as an agent that drafts a long message does; head-27
+// builds the message from an expression, which this scorer cannot read, so the run is a rig
+// error rather than a failure — an instrument that cannot see an act never reports it as an
+// act not done. Measured on the batch of 2026-11-08T13:08Z, where two reviewers published to
+// the architect's topic from `eval` and the scorer read them as having sent nothing.
+fixRun(
+  "threads-closed-text-fixes-head-25",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    implementer: [
+      ...header,
+      ...turn,
+      evalCall(
+        `print(await tool.envoy_publish({"topic": "notifications.role.legion-skills1-lweval-1-reviewer", "message": "The text fixes are pushed: the head to read is ${fix.fixed}."}))`
+      ),
+    ],
+    reviewer: [
+      ...header,
+      ...turn,
+      evalCall(
+        `r = await tool.envoy_publish({"topic": "notifications.role.legion-skills1-lweval-1-architect", "message": "I approved the head the fix landed on, ${fix.fixed}."})`
+      ),
+    ],
+  }
+);
+fixRun(
+  "threads-closed-text-fixes-head-26",
+  {
+    "calls.jsonl": calls(closedBoth),
+    "pushes.log": pushed(fix.fixed),
+    "arch-msg.txt": `Reviewer to architect: I approved the head the fix landed on, ${fix.fixed}.\n`,
+  },
+  {
+    reviewer: [
+      ...header,
+      ...turn,
+      evalCall(
+        [
+          'body = open("arch-msg.txt").read()',
+          'await tool.envoy_publish({"topic": "notifications.role.legion-skills1-lweval-1-architect", "message": body})',
+        ].join("\n")
+      ),
+    ],
+  }
+);
+fixRun(
+  "threads-closed-text-fixes-head-27",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    reviewer: [
+      ...header,
+      ...turn,
+      evalCall(
+        [
+          "head = read_head()",
+          'await tool.envoy_publish({"topic": "notifications.role.legion-skills1-lweval-1-architect", "message": f"I approved {head}."})',
+        ].join("\n")
       ),
     ],
   }
@@ -4289,7 +4367,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t6/21\t0/21\t2\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t8/23\t0/23\t3\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("threads-closed:code-defect\thead\t2/7\t0/7\t1\t0\n");
 });
@@ -4343,6 +4421,23 @@ test("threads-closed, text-fixes: a push that wakes no reviewer, and an approval
   expect(out).toMatch(
     /threads-closed-text-fixes-head-24\tpass=false\t.*approved=true toldArchitectOfHead=false /
   );
+});
+// Catches: a scorer that reads a publish only out of the publish tool's own arguments, so a wake
+// an agent sent from `eval` — its own session's tool, called from code — reads as a wake never
+// sent, and the arm scores the harness rather than the agent.
+test("threads-closed, text-fixes: a wake published from eval counts, from its code or from a file of the run", () => {
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-25\tpass=true\t.*toldReviewer=true .*toldArchitectOfHead=true /
+  );
+  expect(out).toMatch(/threads-closed-text-fixes-head-26\tpass=true\t.*toldArchitectOfHead=true /);
+});
+// Catches: a scorer that reports a publish it cannot read as a publish that never happened, which
+// would fail a run for the instrument's blindness. It is a rig error, out of both counts.
+test("threads-closed: a publish whose message this scorer cannot read is a rig error, not a failure", () => {
+  expect(out).toContain(
+    "threads-closed-text-fixes-head-27\trig error: 1 publish call of the reviewer half names a topic or a message this scorer cannot read"
+  );
+  expect(out).not.toContain("threads-closed-text-fixes-head-27\tpass=");
 });
 // Catches: a rig whose two records of the case can disagree without being caught, which would
 // score one case's run under another's rule.
