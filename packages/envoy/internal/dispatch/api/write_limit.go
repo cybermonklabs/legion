@@ -7,6 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/semaphore"
+
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 )
 
 // This file holds the limiter every transaction the API opens waits at, and the transaction it
@@ -54,11 +56,19 @@ func (l *writeLimiter) semaphore() *semaphore.Weighted {
 	return l.free
 }
 
-// take holds one of the limit for a caller about to open a transaction, waiting within ctx, and
-// answers what gives it back. A wait the caller's request ends is answered 503, which is what
-// every other wait a request outlives is answered: the caller has gone or run out of time, and
-// nothing of its write has been opened, read or locked.
+// take holds one of the limit for a caller about to open a transaction, waiting within ctx and
+// within the server's own bound on what a caller's request spends waiting at the pod's memory
+// bounds (docs.BoundWriteWait), and answers what gives it back. A wait the caller's request ends
+// is answered 503, which is what every other wait a request outlives is answered: the caller has
+// gone or run out of time, and nothing of its write has been opened, read or locked. A wait that
+// reaches the server's bound first is answered the same 503, with the caller's patience left for
+// the retry rather than spent waiting here - a write left unanswered until its caller gives up is
+// resent, which is worse for the pod than a refusal it can act on (dispatch://INFRA-179). The
+// bound is shared with the load slot a write's fork waits for (docs' liveWrite.coverFork), so a
+// write that waits at both is answered within it, and the server's own writes are not bounded.
 func (l *writeLimiter) take(ctx context.Context) (func(), error) {
+	ctx, cancel := docs.BoundWriteWait(ctx)
+	defer cancel()
 	if err := l.semaphore().Acquire(ctx, 1); err != nil {
 		return nil, errorf(http.StatusServiceUnavailable, "SERVICE_BUSY",
 			"the server is serving as many writes at once as its connection pool allows; retry")

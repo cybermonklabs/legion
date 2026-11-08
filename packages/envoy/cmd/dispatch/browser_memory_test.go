@@ -2930,12 +2930,14 @@ func TestTheHeaviestApplyBesideAFullCopyBoundStaysUnderThePodsMemory(t *testing.
 }
 
 // liveWriteDeadline is the deadline each write of the drive below runs under, which is the one a
-// real caller's write has. No deadline is the server's: its http.Server names ReadHeaderTimeout
-// and IdleTimeout and leaves WriteTimeout zero, deliberately, because the event stream is
-// long-lived (newHTTPServer, conn_age.go:46-53), and no handler of the API wraps a request's
-// context in a timeout of its own, so a write waits for a load slot exactly as long as its
-// client keeps the request (docs' liveWrite.coverFork). The client is the one every
-// agent's `dispatch` command goes through, which bounds each HTTP call at
+// real caller's write has. The server's own http.Server names ReadHeaderTimeout and IdleTimeout
+// and leaves WriteTimeout zero, deliberately, because the event stream is long-lived
+// (newHTTPServer, conn_age.go:46-53), and no handler wraps a request in a timeout of its own; what
+// the server does bound is the time a caller's request may spend WAITING at the pod's memory
+// bounds - its write limiter and its load slots - which is fifteen seconds from the request's
+// arrival, after which the write is refused 503 rather than left waiting for the client to give
+// up (docs.WriteWaitBound, docs.BoundWriteWait, api's trackTransactions). The client is the one
+// every agent's `dispatch` command goes through, which bounds each HTTP call at
 // DISPATCH_TOOL_DEADLINE_MS, 60 seconds (packages/envoy-client/src/dispatch-http.ts:291,
 // requestSignal).
 const liveWriteDeadline = 60 * time.Second

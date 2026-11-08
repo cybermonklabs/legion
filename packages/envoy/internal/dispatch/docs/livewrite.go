@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 	"weak"
 
 	"github.com/reearth/ygo/crdt"
@@ -475,12 +476,69 @@ func (w *liveWrite) coverFork(ctx context.Context) error {
 	if w.holdsSlot || w.slot == nil {
 		return nil
 	}
+	ctx, cancel := BoundWriteWait(ctx)
+	defer cancel()
 	if err := w.slot.slot.take(ctx); err != nil {
 		return fmt.Errorf("%w: %w", errWriteBusy, err)
 	}
 	w.slot.forks++
 	w.holdsSlot = true
 	return nil
+}
+
+// WriteWaitBound is how long a caller's request may spend waiting at the pod's memory bounds
+// before its write is refused 503 rather than left waiting.
+//
+// The bound is the SERVER's, because the caller's is not on the server at all: HTTP carries no
+// deadline, this API's http.Server leaves WriteTimeout zero deliberately (the event stream is
+// long-lived, cmd/dispatch's newHTTPServer) and no handler wrapped a request in a timeout, so a
+// write's wait for a load slot ended only when the client gave up and its connection closed.
+// Measured under a burst of 320 concurrent writes over 24 rooms at the 4 GiB calibration, where
+// the pod has one load slot: a fork's wait for that slot ran 44 to 57 s, so of the 320 writes
+// only 18 were answered at all, 302 reached the 60-second deadline of the client every agent's
+// `dispatch` command goes through with no answer from the server, and the server answered 503 to
+// none of them. The writes were not lost, which is the worse half: given ten minutes they were
+// answered 200 late, after their callers had given up and resent, which is the amplification the
+// edit handler's own comment describes (dispatch://INFRA-179, the tester's
+// TestAWriteThatCannotGetALoadSlotIsAnswered503BeforeItsDeadline).
+//
+// Fifteen seconds is a quarter of that client deadline, so a refused caller has three quarters
+// of its patience left to retry with, and the figure is held against the whole request rather
+// than against each wait: the deadline is taken from when the request began (WithCallerRequest),
+// so a write that meets both of the waits a caller's write can meet - the API's write limiter
+// and this slot - is answered within fifteen seconds of its arrival whichever of them it spends
+// the time at, and a wait that starts past the bound is refused at once. It bounds the WAITS
+// alone: once the write holds what it waited for, its work runs under the caller's own context
+// as before, so no apply and no commit is cut short by this.
+//
+// A write the server makes of its own is not bounded: a settlement's publish, a repair, a
+// backfill, and the continuation a handler detaches from its request
+// (context.WithoutCancel, whose Done is nil) have no caller to answer 503 to and nothing to
+// resend them, so they wait as they always did. BoundWriteWait tells the two apart by the mark
+// the API puts on a live caller's request, not by the write's kind.
+const WriteWaitBound = 15 * time.Second
+
+// callerRequestKey carries, on a caller's request context, when that request began.
+type callerRequestKey struct{}
+
+// WithCallerRequest marks ctx as the context of an HTTP caller's request, beginning now, so that
+// the memory waits a write of that request makes share one bound of the server's own
+// (WriteWaitBound). The API marks every request it serves, in the one place each of them passes
+// through (api's trackTransactions).
+func WithCallerRequest(ctx context.Context) context.Context {
+	return context.WithValue(ctx, callerRequestKey{}, time.Now())
+}
+
+// BoundWriteWait is ctx with the server's bound on what a caller's write may spend waiting at a
+// memory bound, and a context left as it is for every other caller: a write of the server's own,
+// and a continuation detached from its request, which keeps the mark but loses its cancellation
+// (ctx.Done() is nil) and is the server's work from then on.
+func BoundWriteWait(ctx context.Context) (context.Context, context.CancelFunc) {
+	began, marked := ctx.Value(callerRequestKey{}).(time.Time)
+	if !marked || ctx.Done() == nil {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(ctx, began.Add(WriteWaitBound))
 }
 
 // giveFork drops this write's share of the transaction's slot (releaseFork), and gives the slot
@@ -497,10 +555,11 @@ func (w *liveWrite) giveFork() {
 	}
 }
 
-// errWriteBusy refuses a write whose wait for a slot of the pod's load concurrency ended with
-// its request (liveWrite.coverFork): the pod is already building as many whole-document copies
-// as its memory allows (MemoryBounds.LoadSlots), and this write's own caller has gone or run out
-// of time. Nothing of the write has been built or appended when it is answered. It is
+// errWriteBusy refuses a write whose wait for a slot of the pod's load concurrency ended
+// (liveWrite.coverFork): the pod is already building as many whole-document copies as its memory
+// allows (MemoryBounds.LoadSlots), and either the server's bound on what a caller's request
+// spends waiting has passed (WriteWaitBound) or this write's own caller has gone. Nothing of the
+// write has been built or appended when it is answered. It is
 // ErrServiceUnavailable, which the API answers 503 DOC_SERVICE_UNAVAILABLE and the client
 // contract is to retry (api's documentErrorCode, writeHandlerError), rather than the 500 an error
 // that maps to no status becomes.

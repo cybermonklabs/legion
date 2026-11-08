@@ -697,9 +697,16 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 	return s
 }
 
+// trackTransactions marks the request's context for the pool's nested-acquire check and, with it,
+// as a live caller's request beginning now (docs.WithCallerRequest), which is what bounds the
+// time a write of this request may spend waiting at the pod's memory bounds before it is refused
+// 503 (docs.WriteWaitBound). It is the one place every route of this API passes through, which
+// is why the mark is put here rather than in each write's handler; a request whose work a handler
+// detaches to outlive it keeps the mark and loses its cancellation, and is the server's own work
+// from then on (docs.BoundWriteWait).
 func trackTransactions(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+		handler(w, r.WithContext(docs.WithCallerRequest(store.WithTransactionTracking(r.Context()))))
 	}
 }
 
