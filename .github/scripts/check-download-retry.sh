@@ -197,6 +197,12 @@
 #      are rule 3's business. Measured in run 42386541065's job logs: 63 steps at
 #      `/usr/bin/bash -e {0}`.
 #
+#      That reading is the rule rather than a grep over the workflows, and the difference is not
+#      academic: a rule refusing every workflow `run:` would be one line and would refuse
+#      main-bypass-check.yaml's step, the one site in the tree that named a pipefail shell on
+#      purpose. A scope taken from "no step sets a shell here" punishes the careful site and
+#      passes the careless one the day either changes, so the question is asked of each step.
+#
 #      No site in the tree is refused by this rule today, and three lines look as though they
 #      would be. Both pipeline spellings count: `|`, and `|&`, which is bash's pipe of standard
 #      error beside standard output and loses the fetch's status the same way. `||` is neither
