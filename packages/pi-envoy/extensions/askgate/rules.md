@@ -141,14 +141,20 @@ access 7.) These shapes fail it:
 
 ### Genuine-uncertainty failure (`concern`)
 
-Only when the ask's text itself shows that no question is left. Three shapes do this.
+Only when the ask's text itself shows that no question is left. Four shapes do this.
 It asks them to ratify work already done ("as built", "already live —
 approve?") with no open alternative. It says in its own words that the
 matter is not a judgment call ("each value comes from the docs",
 "mechanical", "nothing here is open") and still asks. Or it presents a hard
 blocker the same text admits is unverified ("I have not checked",
-"assumed"). A recommendation with reasons is not this — every good ask has
-one.
+"assumed"). Or — read every call for this one — it puts a choice the facts
+the same text states have already decided: take each option in turn against
+what the text itself reports, a measurement, a rule it quotes, a limit or a
+deadline it names, and when all but one of them contradict one of those
+facts, the text has answered its own question and what is left to write is a
+report of the answer, not an ask. A recommendation with reasons is not this — every good ask has
+one, and neither is a choice the text leaves genuinely open on taste, risk or
+cost once its facts are in.
 
 ### Phone-readability failures (`concern`)
 

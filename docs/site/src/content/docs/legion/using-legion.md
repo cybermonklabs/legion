@@ -85,8 +85,10 @@ options and a recommendation, and it reaches your Inbox.
 
 No code is written until you approve. The approval is for that version of the spec: if the spec
 changes afterwards, you are asked again, and Legion will not send `READY` for the change until you
-approve the new version. (A deployment can turn the design gate off with `gates.design: off`; then
-the work starts as soon as the spec is written, and nobody is asked.)
+approve the new version. (`gates.design` says which documents of the root issue a person approves:
+by default the spec alone, and a deployment can add the issue's decisions document or its
+Verification document, each approved the same way. A deployment that sets `gates.design: []` turns
+the design gate off; then the work starts as soon as the spec is written, and nobody is asked.)
 
 If a phase gets stuck, or the architect hits something only a person can decide, it asks you the
 same way: a question in your Inbox that says what is blocked, the options, and what it recommends.
@@ -149,7 +151,8 @@ an issue beneath it is still being worked, so a parent is accepted after its chi
 close the role your project's `production_check` names — the tester, unless the setting is `off` —
 checks the change in production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check and no other write, so look in both places.
+closed issue takes a result for such a check, a comment and a message, and no other write, so
+look in both places.
 Each look that finds the deploy missing says when it wants to look again, and nothing else brings
 it back.
 The tree's workspace is kept for three days (`linger_hours`, 72 by default) in case the work

@@ -1,4 +1,5 @@
 import { expect, jest, type Mock, spyOn, test } from "bun:test";
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { type MutationKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { type ReactNode, useState } from "react";
@@ -7,9 +8,15 @@ import { MemoryRouter } from "react-router-dom";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type { Agent, Comment, ItemBlock, ItemBlocks, Message } from "../../api/types";
 import { useSending } from "../../hooks/useSending";
-import { KEYED_SEND_ATTEMPT_MS, SEND_DEADLINE_MS, SendStoppedError } from "../writes/keyed-write";
+import type { AgentText } from "../refs/AgentName";
+import {
+  KEYED_SEND_ATTEMPT_MS,
+  SEND_DEADLINE_MS,
+  SendExpiredError,
+  SendStoppedError,
+} from "../writes/keyed-write";
 import type { ComposerOwner, ReplyTarget } from "./composer-model";
-import { MentionComposer, reconcileMentions } from "./MentionComposer";
+import { MentionComposer, reconcileMentions, stoppedRoleOptions } from "./MentionComposer";
 import { KEYED_SEND_LATE_TEXT } from "./send-request";
 
 /** What each attempt of a send is held to, beside the request it carries: its deadline and the
@@ -764,6 +771,191 @@ test("the mention picker draws each agent with its state and no link", async () 
   }
 });
 
+/** One collaborators answer in the order the server sends it (the contract's: the registry's
+ *  agents by role in workflow order and then newest first, then the rest newest first) - the
+ *  planner, the reviewer role's newest session and the one it replaced, then a session with no
+ *  registry entry. */
+const collaboratorsAnswer = {
+  agents: [
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: null,
+        replaced_by: null,
+        role: "planner",
+        role_token: "legion-planner",
+        started_at: "2026-10-26T00:00:00Z",
+      },
+      reasons: [],
+      session_id: "old-planner",
+      title: "Old planner",
+    },
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: null,
+        replaced_by: null,
+        role: "reviewer",
+        role_token: "legion-p-core-1-reviewer",
+        started_at: "2026-10-26T02:00:00Z",
+      },
+      reasons: [],
+      session_id: "new-reviewer",
+      title: "New reviewer",
+    },
+    {
+      kind: "session",
+      last_at: null,
+      legion: {
+        replaced_at: "2026-10-26T02:00:00Z",
+        replaced_by: "new-reviewer",
+        role: "reviewer",
+        role_token: "legion-p-core-1-reviewer",
+        started_at: "2026-10-26T01:00:00Z",
+      },
+      reasons: [],
+      session_id: "old-reviewer",
+      title: "Old reviewer",
+    },
+    {
+      kind: "session",
+      last_at: "2026-10-26T03:00:00Z",
+      legion: null,
+      reasons: ["posted"],
+      session_id: "helper",
+      title: "Helper",
+    },
+  ],
+  issue_key: "CORE-1",
+  legion_registry: "ok",
+  people: [],
+} as const;
+
+/** The naming the picker does outside React: no stopped session is in the registry cache, so each
+ *  name falls back to the title the collaborators read stamped on it. */
+const storedNames: Pick<AgentText, "sessionText"> = {
+  sessionText: (_sessionId, storedTitle) => storedTitle ?? "",
+};
+
+// The picker offers each of the issue's Legion roles no live agent holds, once, under "Not
+// running", drawn by its newest session and addressed to the role.
+test("the picker offers a stopped role once under Not running and sends it as a role mention", async () => {
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
+  const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
+  // The live planner holds `legion-planner`, so only the reviewer role is not running.
+  const { view } = renderComposer({ agents: [planner] });
+
+  try {
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    fireEvent.change(field, { target: { value: "@" } });
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
+    expect(collaborators).toHaveBeenCalledWith("CORE-1");
+    const options = within(stopped).getAllByRole("option");
+    expect(options.map((option) => option.getAttribute("aria-label"))).toEqual([
+      "legion-p-core-1-reviewer",
+    ]);
+    expect(options[0]?.textContent).toContain("New reviewer · reviewer · not running");
+    expect(options[0]?.querySelector('[data-agent-name="new-reviewer"]')).not.toBeNull();
+
+    fireEvent.click(within(stopped).getByRole("option", { name: "legion-p-core-1-reviewer" }));
+    await waitFor(() => expect(field.value).toBe("@legion-p-core-1-reviewer"));
+    fireEvent.change(field, { target: { value: "@legion-p-core-1-reviewer please look" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(createComment).toHaveBeenCalledWith(
+        "CORE-1",
+        {
+          body: "@legion-p-core-1-reviewer please look",
+          delivery: "steer",
+          mentions: [{ target: "role:legion-p-core-1-reviewer" }],
+        },
+        keyedAttempt
+      )
+    );
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    createComment.mockRestore();
+  }
+});
+
+// The case this feature exists for: every agent of the issue has stopped, so the picker holds the
+// "Not running" group alone. It must not say no agent matches underneath the list it is showing.
+test("a picker holding only stopped roles does not say no agent matches", async () => {
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
+  const { view } = renderComposer({ agents: [] });
+
+  try {
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "@" } });
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    const stopped = await within(listbox).findByRole("group", { name: "Not running" });
+    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
+    expect(within(stopped).getAllByRole("option").length).toBeGreaterThan(0);
+    expect(screen.queryByText("No live agents match.")).toBeNull();
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+  }
+});
+
+// The rule the "Not running" options follow: a role a live agent holds is the live options'
+// (never offered twice), and a role is offered once by its newest session whatever replaced it.
+// A live list whose state is unknown is the caller's case, which the picker test below proves.
+test("stopped role options leave out held roles and name each role once", () => {
+  const reviewerOnly = stoppedRoleOptions([planner], collaboratorsAnswer.agents, storedNames);
+  expect(reviewerOnly.map((option) => [option.target, option.sessionId, option.detail])).toEqual([
+    ["role:legion-p-core-1-reviewer", "new-reviewer", "reviewer · not running"],
+  ]);
+  // The holder the filter matches and the detail tooltip names: that session's own name.
+  expect(reviewerOnly.map((option) => option.holder)).toEqual(["New reviewer"]);
+  // Nobody live holds either role: both, in the order the server sent them (planner, reviewer).
+  expect(
+    stoppedRoleOptions([worker], collaboratorsAnswer.agents, storedNames).map(
+      (option) => option.target
+    )
+  ).toEqual(["role:legion-planner", "role:legion-p-core-1-reviewer"]);
+  // A session the live list names is no stopped option, whatever roles it claims: offered here it
+  // would draw its own `Running` mark inside the "Not running" group.
+  expect(
+    stoppedRoleOptions(
+      [{ ...worker, session_id: "new-reviewer" }],
+      collaboratorsAnswer.agents,
+      storedNames
+    ).map((option) => option.target)
+  ).toEqual(["role:legion-planner"]);
+});
+
+// The composer reads the live list itself when its host supplies none: until that read lands, or
+// once it fails, the picker shows no "Not running" option beside the unknown live state.
+test("the picker adds no stopped option while the live agents list failed", async () => {
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue(collaboratorsAnswer);
+  const listAgents = spyOn(api, "listAgents").mockRejectedValue(new Error("listener down"));
+  const { view } = renderComposer();
+
+  try {
+    fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "@" } });
+    const listbox = await screen.findByRole("listbox", { name: "Mention suggestions" });
+    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
+    await waitFor(() => expect(listAgents).toHaveBeenCalled());
+    // Both reads have answered - the collaborators with a stopped reviewer, the live list with
+    // its failure - before the picker is read.
+    await act(async () => {
+      await collaborators.mock.results[0]?.value;
+      await Promise.allSettled(listAgents.mock.results.map((result) => result.value));
+    });
+    await screen.findByText("Could not load live agents — Envoy listener unreachable.");
+    expect(within(listbox).queryByRole("group", { name: "Not running" })).toBeNull();
+    expect(within(listbox).queryAllByRole("option")).toHaveLength(0);
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
 test("two accepted mentions receive one comment-level delivery mode", async () => {
   const createComment = spyOn(api, "createComment").mockResolvedValue(createdComment);
   const { view } = renderComposer({ agents: [planner] });
@@ -1138,15 +1330,15 @@ test("a direct message to a session that advertises no mode warns that it takes 
   try {
     fireEvent.change(screen.getByLabelText("Comment"), { target: { value: "Ship it." } });
     const warning = screen.getByText(/Worker advertises no delivery mode, so sending it records/);
-    expect(warning.textContent).toContain("started with its Envoy channel");
+    expect(warning.textContent).toContain("while its plugin cannot reach its conversation");
     expect(warning.textContent).not.toContain("Prefix with");
   } finally {
     view.unmount();
   }
 });
 
-// A session that refuses Send but takes Aside - a Claude Code session - gets a plain message as
-// an Aside, and the composer says so instead of warning that the Send would fail.
+// A session that refuses Send but takes Aside gets a plain message as an Aside, and the composer
+// says so instead of warning that the Send would fail.
 for (const capabilities of [["aside"], ["aside", "btw"]]) {
   test(`a plain message to a session advertising ${capabilities.join(" and ")} goes as an Aside`, async () => {
     const createAgentMessage = spyOn(api, "createAgentMessage").mockResolvedValue(createdMessage);
@@ -2014,7 +2206,7 @@ function sentKeys(createAgentMessage: Mock<typeof api.createAgentMessage>): stri
   return createAgentMessage.mock.calls.map(([, , bounds]) => bounds.key);
 }
 
-const SEND_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const SEND_KEY = /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /** Dispatch's verdict on a message to a session, which a Retry of the same message meets again. */
 const messageRefused = new ApiError(400, {
@@ -2257,29 +2449,119 @@ test("a send kept failing shows Stop trying once late, which stops it for Retry 
   }
 });
 
-// A closed owner takes no send. Its composer stays mounted for a send it still has out and for
-// that send's refusal - Send refused, Discard draft in place of Retry - and shows nothing else.
-test("a closed composer shows only a send of its own still out, then its refusal with Discard", async () => {
-  const refused = Promise.withResolvers<Comment>();
-  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
-  const { rerender, view } = renderComposer();
+// A stopped send waits for the reader, and a day later Dispatch has forgotten the key its
+// attempts went out under: the Retry sends nothing under that key. The composer says what
+// happened in the refusal's own words - a Retry is a new message, delivered a second time if the
+// first one was - and keeps the draft, Retry and Discard draft. As `api.createAgentMessage` does,
+// each attempt tells its request before anything goes out: that is how the key is known to have
+// carried one, and the Retry is a press of its own whose entry has sent nothing yet.
+test("a stopped send the reader comes back to a day later says its key has run out", async () => {
+  const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
+    (sessionID, input, bounds) => {
+      bounds.sent?.({ body: input, method: "POST", path: `/api/v1/agents/${sessionID}/messages` });
+      return Promise.reject(
+        new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+      );
+    }
+  );
+  jest.useFakeTimers();
+  const { view } = renderComposer({ owner: { kind: "session", sessionId: "A" } });
 
   try {
-    rerender({ closed: true });
-    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
-    rerender({});
+    const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
+    fireEvent.change(field, { target: { value: "Status please" } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    });
+    await failToTheDeadline();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stop trying" }));
+    });
+    await tick(0);
+    const tried = createAgentMessage.mock.calls.length;
+
+    await tick(IDEMPOTENCY_KEY_TTL_MS);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    });
+    await tick(0);
+    expect(createAgentMessage).toHaveBeenCalledTimes(tried);
+    expect(screen.getByText(new SendExpiredError().message)).toBeTruthy();
+    expect(field.value).toBe("Status please");
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Discard draft" })).toBeTruthy();
+  } finally {
+    jest.advanceTimersByTime(1);
+    jest.useRealTimers();
+    view.unmount();
+    createAgentMessage.mockRestore();
+  }
+});
+
+// A closed issue takes comments: its composer shows and sends one, and a refusal still shows,
+// with Retry, as on an open issue. It refuses suggestions and asks, so the kind switch offers
+// neither there.
+test("a closed composer sends a comment, hides Suggest and Ask, and still shows a refusal", async () => {
+  const createComment = spyOn(api, "createComment")
+    .mockRejectedValueOnce(commentRefused)
+    .mockResolvedValueOnce(createdComment);
+  const anchor = { artifact: "artifact-1", mark_id: "mark-1", quote: "brown" };
+  const props = { anchor, closed: true, onKindChange: () => undefined };
+  const { rerender, view } = renderComposer(props);
+
+  try {
+    expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Suggest" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Ask" })).toBeNull();
+    rerender({ anchor, onKindChange: () => undefined });
+    expect(screen.getByRole("button", { name: "Suggest" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ask" })).toBeTruthy();
+    rerender(props);
 
     const field = screen.getByLabelText<HTMLTextAreaElement>("Comment");
-    fireEvent.change(field, { target: { value: "Closing under me" } });
+    fireEvent.change(field, { target: { value: "After the close" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await screen.findByText(`Couldn't send — ${COMMENT_REFUSED}`);
+    expect(field.value).toBe("After the close");
+    expect(screen.queryByRole("button", { name: "Discard draft" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
+    expect(createComment.mock.calls.at(-1)?.[1]).toEqual({
+      anchor: { artifact: "artifact-1", mark_id: "mark-1" },
+      body: "After the close",
+    });
+    await waitFor(() => expect(field.value).toBe(""));
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// A suggestion is a proposed edit a closed issue refuses. Its composer stays mounted for a send it
+// still has out and for that send's refusal - Send refused, Discard draft in place of Retry - and
+// shows nothing else.
+test("a closed suggestion composer shows only a send of its own still out, then its refusal with Discard", async () => {
+  const refused = Promise.withResolvers<Comment>();
+  const createComment = spyOn(api, "createComment").mockReturnValueOnce(refused.promise);
+  const anchor = { artifact: "artifact-1", mark_id: "mark-1", quote: "brown" };
+  const { rerender, view } = renderComposer({ anchor, kind: "suggestion" });
+
+  try {
+    rerender({ anchor, closed: true, kind: "suggestion" });
+    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+    rerender({ anchor, kind: "suggestion" });
+
+    fireEvent.change(screen.getByLabelText("Replacement"), { target: { value: "red" } });
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    rerender({ closed: true });
+    rerender({ anchor, closed: true, kind: "suggestion" });
     expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
     expect(holdControls().disabled).toBe(true);
 
     refused.reject(new ApiError(409, { code: "ISSUE_CLOSED", error: "issue is closed" }));
     await screen.findByText("Couldn't send — issue is closed");
-    expect(screen.getByLabelText<HTMLTextAreaElement>("Comment").value).toBe("Closing under me");
+    expect(screen.getByLabelText<HTMLTextAreaElement>("Replacement").value).toBe("red");
     expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
     const send = screen.getByRole("button", { name: "Send" });
     expect(send.getAttribute("aria-disabled")).toBe("true");

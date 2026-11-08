@@ -19,7 +19,6 @@ function attempt(overrides: Partial<TargetedMessageAttempt> = {}): TargetedMessa
 function card(props: {
   attempts: readonly TargetedMessageAttempt[];
   capabilities?: readonly string[];
-  isClosed?: boolean;
   onRetry?: (delivery: "aside" | "btw" | "steer") => void;
 }) {
   const capabilities = props.capabilities ?? ["aside", "btw", "steer"];
@@ -32,7 +31,6 @@ function card(props: {
         canSteer={capabilities.includes("steer")}
         deliveries={props.attempts}
         header={null}
-        isClosed={props.isClosed ?? false}
         onRetry={props.onRetry ?? (() => {})}
         targetName="planner"
         turnID="turn-1"
@@ -85,9 +83,9 @@ test("Retry is disabled with a visible reason when the recipient dropped the att
   }
 });
 
-// A reason that names a way out names only one the session takes: an aside-only session (a
-// Claude Code session) refuses a BTW as well, so its "Use Send instead" is not told to use
-// BTW, while a session that takes BTW is.
+// A reason that names a way out names only one the session takes: an aside-only session refuses
+// a BTW as well, so its "Use Send instead" is not told to use BTW, while a session that takes
+// BTW is.
 for (const [capabilities, reason] of [
   [["aside"], "planner does not support Send."],
   [["aside", "btw"], "planner does not support Send — use BTW."],
@@ -195,13 +193,6 @@ test("an attempt the session answered with an error points at a mode change inst
     expect(screen.getByRole("button", { name: "Use Send instead" })).toBeTruthy();
   } finally {
     view.unmount();
-  }
-  // A closed issue shows no retry row, so there is no mode change to point at.
-  const closed = render(card({ attempts: [answered], isClosed: true }));
-  try {
-    expect(screen.getByText("Failed: side turn failed")).toBeTruthy();
-  } finally {
-    closed.unmount();
   }
 });
 

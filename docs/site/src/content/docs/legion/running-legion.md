@@ -453,10 +453,23 @@ What each part is for:
   Both names are compared without case, wherever the daemon compares a repository name. The
   equivalence is read-side only: no record is rewritten, and a tree keeps the repository name it
   was recorded under for its whole life, so a pair must stay in the file for as long as any record
-  names the old repository. The loader refuses a pair whose two names are one repository, a
+  names the old repository.
+
+  The daemon calls GitHub under the name GitHub holds the repository under now: a recorded name
+  resolves to the other name of its pair exactly when the recorded name is the pair's `from`, the
+  project serves the pair's `to`, and the project does not serve the pair's `from`. Every other
+  recorded name, the pair's `to` included, is used as it stands. The rule asks whether the project
+  serves each of the pair's two repositories, one repository at a time, and never which owners the
+  project's repositories have, so mapping another repository of either owner to the project leaves
+  the pair resolving exactly as it did. A role's gh bundle still holds one directory per owner,
+  named for the owner the record keeps, which a transfer does not move; the token in the directory
+  a role writes through is minted for the owner whose installation holds that repository now.
+
+  The loader refuses a pair whose two names are one repository, a
   repository renamed twice, a chain of two pairs (`a/b` to `c/d` with `c/d` to `e/f`), and one
-  owner's repositories moved to two owners (`a/b` to `c/d` with `a/e` to `f/g`), since the gh
-  bundle holds one directory for that owner and one installation's token in it; several
+  owner's repositories moved to two owners (`a/b` to `c/d` with `a/e` to `f/g`), since the daemon
+  keys the owner a pair moved a repository away from to the owner it moved to, one key per owner,
+  so the second pair would overwrite the first with nothing said; several
   repositories of one owner may move to one owner, and a rename inside the owner (`a/b` to `a/c`)
   counts as a move to that owner, so `a/b` to `a/c` beside `a/e` to `f/g` is refused.
   `legion start --check-config` prints one line
@@ -471,8 +484,16 @@ What each part is for:
 - **`github_apps`**: each App takes exactly one of `private_key` (the PEM itself),
   `private_key_command` (a command whose output is the PEM) or `private_key_secret`. The daemon
   finds each App's installations itself; `installations` (owner to installation id) is optional.
-- **`gates.design`**: `root-issues` asks a person to approve every root issue's spec before any
-  phase starts; `off` skips the approval. There is no other way past the gate.
+- **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
+  document), `criteria` (its Verification document) and `spec` (its primary document), in the
+  order a person approves them. No phase of the tree starts, no released child starts and no
+  merger's READY is accepted until a person has approved the document of every step listed. The
+  default is `[spec]`, which the word `root-issues` also means; the empty list `[]` skips the
+  approval, which the word `off` also means. A list naming one step twice, and any other word,
+  is refused at load. There is no other way past the gate. `legion state --json` answers the
+  resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
+  Dispatch, which `GET /api/v1/projects` answers as
+  `gated_steps`.
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
   secret.
@@ -669,7 +690,7 @@ command or writing a file:
 
 ```sh
 legion start --config legion.yaml --check-config
-# Config OK: project=WIDGETS
+# Config OK: project=WIDGETS design-gate-steps=spec
 ```
 
 Then start it:
@@ -882,8 +903,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    session with fresh budgets; `legion claims retry --failed` retries every failed claim, and a
    failed phase worker whose issue is held for its own role retries that phase), and bring a suspended phase worker back as
    [A tree does not move after a restart](/legion/legion/troubleshooting/#a-tree-does-not-move-after-a-restart)
-   shows for its `suspendedBy`. Never resume or retry by hand a claim of a lingering tree or of an
-   issue parked out of the workflow: re-admission or the issue's return to `todo` starts it.
+   shows for its `suspendedBy`. A claim the state names `retired` takes neither resume nor retry —
+   `legion claims retry` refuses a claim that has not failed — and comes back only on a workflow
+   start of the phase it owns, as that page's `needsWorkflowStart` shows.
+   Never resume or retry by hand a claim of a lingering tree or of an issue parked out of the
+   workflow: re-admission or the issue's return to `todo` starts it.
 
    **Rolling back across this release.** The earlier daemon boots on this schema but never writes
    `suspendedBy`, so a value this release wrote survives the earlier daemon's own suspends and
@@ -980,7 +1004,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `--json` prints everything the daemon records: `admission` (`cap`, `active` the issues holding a slot, `waiting` the issues in the line, `trees` the roots of the live trees, and `blocked`), each
   issue under `issues` with its `phase`, `status`, `tree` (the root of its tree), `repo` and `defaultBranch`, `holdReason`,
   `architect` and `workers` (each claim's `state`), `pullRequest` (`repo`, `head`, `checksVerdict`,
-  `fixAttempts`), `designGate` (`currentVersion`, `approvedVersion`), for a root in `awaiting_person`
+  `fixAttempts`), `designGate` (`currentVersion`, `approvedVersion`) with `gatedSteps` beside it
+  (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
+  — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
   `answeredAt` with `answeredBy` once it was answered) and, for a closed
   issue whose
@@ -1006,7 +1032,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   broker is configured:
 
   ```sh
-  legion state --config legion.yaml --json | jq '.issues["WIDGETS-12"] | {phase, status, holdReason, pullRequest, designGate}'
+  legion state --config legion.yaml --json | jq '.issues["WIDGETS-12"] | {phase, status, holdReason, pullRequest, designGate, gatedSteps}'
   ```
 
 - **The daemon's log** (standard error) names every launch, death, refusal and relaunch; the lines

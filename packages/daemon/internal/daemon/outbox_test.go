@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -133,6 +134,11 @@ type outboxDispatch struct {
 	postErr        error
 	approval       dispatch.Approval
 	approvalErr    error
+	// gatedSteps is each list a gated_steps_publish row published, gatedStepsOf the project each
+	// went to, and gatedStepsErr what the publish answers.
+	gatedSteps    [][]string
+	gatedStepsOf  []string
+	gatedStepsErr error
 }
 
 func (d *outboxDispatch) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
@@ -175,6 +181,11 @@ func (d *outboxDispatch) ListRepoProjects(context.Context) ([]dispatch.RepoProje
 	return nil, nil
 }
 func (d *outboxDispatch) WebhookAppInstalled(context.Context, string) (bool, error) { return true, nil }
+func (d *outboxDispatch) PutGatedSteps(_ context.Context, project string, steps []string) error {
+	d.gatedStepsOf = append(d.gatedStepsOf, project)
+	d.gatedSteps = append(d.gatedSteps, append(make([]string, 0, len(steps)), steps...))
+	return d.gatedStepsErr
+}
 
 func TestOutboxStatusWriteCallsDispatchOnlyForItsObservedStatus(t *testing.T) {
 	row := mustOutboxRow(t, "LEGION-208", record.StatusWrite{ObservedStatus: "todo", Status: "in_progress"}, time.Now())
@@ -276,7 +287,7 @@ func TestAReopenBetweenTheHandOverCheckAndItsPatchKeepsTheChild(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed hand-over: %v", err)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	reopen := func() error {
 		_, err := intake.ApplyFact(context.Background(), pool, "dispatch", "root-reopened", intake.DispatchIssue{
@@ -345,7 +356,7 @@ func TestAnAlreadyTodoAndLabelledChildConsumesItsHandover(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed hand-over: %v", err)
 	}
-	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	client := &outboxDispatch{issue: dispatch.Issue{Key: child, Status: "todo", HandedOver: true, Labels: []string{"legion"}}}
 	row := mustOutboxRow(t, child, record.StatusWrite{ObservedStatus: "in_progress", Status: "todo", HandOver: true, HandOverTree: root, HandOverLinger: 1}, time.Now())
@@ -401,7 +412,7 @@ func TestAHandOverWriteIsConsumedWithoutWaitingForItsEvent(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("seed hand-over: %v", err)
 			}
-			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
+			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 			admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 			client := &outboxDispatch{issue: tc.shown}
 			row := mustOutboxRow(t, child, record.StatusWrite{ObservedStatus: "in_progress", Status: "todo", HandOver: true, HandOverTree: root, HandOverLinger: 1}, time.Now())
@@ -630,8 +641,8 @@ func TestAPermanentlyRefusedHandOverDropsItsFence(t *testing.T) {
 	}
 }
 
-// A done write with a reason posts the reason on the issue before it writes the status, since
-// Dispatch refuses a message on a closed issue, and no status is written until the message posts.
+// A done write with a reason posts the reason on the issue before it writes the status, so the
+// reason is there before the close, and no status is written until the message posts.
 // The message is the row's own, under its marker, so a retry after a failed status write finds it
 // and posts none.
 func TestADoneWriteWithAReasonPostsItFirstAndOnce(t *testing.T) {
@@ -1191,7 +1202,7 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("seed the gate above Dispatch's version: %v", err)
 			}
-			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
+			engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: records, dispatch: &outboxDispatch{approval: tc.approval},
 				handlers: []intake.Handler{engine}, now: time.Now}
 			if err := runner.execute(ctx, mustOutboxRow(t, "LEGION-208", record.GateSeed{ArtifactID: "artifact-208", Version: 7, Generation: 1}, time.Now())); err != nil {
@@ -1199,8 +1210,8 @@ func TestTheGateSeedResetsAGateAboveTheVersionDispatchHolds(t *testing.T) {
 			}
 			var gate *record.DesignGate
 			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-				var err error
-				gate, err = records.Gate(ctx, tx, "LEGION-208")
+				gates, err := records.GatesOf(ctx, tx, "LEGION-208")
+				gate = record.SpecGate(gates)
 				return err
 			}); err != nil || gate == nil {
 				t.Fatalf("read the gate: %#v, %v", gate, err)
@@ -1858,7 +1869,7 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 	}
 	conn := fake.NewConn()
 	sup.deps.Conns.(*fake.Conns).Register(token, conn)
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	clock := time.Now().Add(time.Minute)
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -1987,7 +1998,7 @@ func TestAResidentWorkerIsHandedItsNewPhaseNotATaskLeftPendingFromTheLast(t *tes
 			sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 			sup.deps.PhaseHolds = (&workflowRuntime{pool: pool, records: records}).phaseHolds // exactly what the daemon wires
 			const reviewApp = "legion-reviewer[bot]"
-			engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, ReviewRoundCap: 10, ReviewAppLogin: reviewApp}, quietLogger())
+			engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(), ReviewRoundCap: 10, ReviewAppLogin: reviewApp}, quietLogger())
 			clock := time.Now()
 			runner := &outbox{
 				dispatchProject: "LEGION",
@@ -2160,7 +2171,7 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 		t.Fatalf("persisted claim state = %s, want failed before the terminal hook", persisted.State)
 	}
 
-	engine := workflow.New(records, workflow.Config{Project: issue.Project, Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: issue.Project, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	restarted := &workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}
 	if err := restarted.replayTerminal(context.Background(), []supervise.Claim{persisted}, bootTimeout); err != nil {
 		t.Fatalf("replay persisted failure: %v", err)
@@ -2208,7 +2219,7 @@ func TestTerminalReplayAfterPersistedFailureHoldsOnceAndEmitsOneWorkerDiedNotice
 	}
 }
 
-// A production check has no later wake after its implementer exhausts a failed launch. The
+// A production check has no later wake after the role that works it exhausts a failed launch. The
 // architect receives the launch failure immediately instead of waiting for the look's bound.
 func TestAProductionCheckLaunchFailureNotifiesTheArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
@@ -2219,7 +2230,7 @@ func TestAProductionCheckLaunchFailureNotifiesTheArchitect(t *testing.T) {
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Limits.LaunchFailures = 1
 	runtime.ScriptResume(fake.SpawnResult{Err: errors.New("workspace-init could not fetch the clone")})
-	engine := workflow.New(records, workflow.Config{Project: root.Project, Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: root.Project, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	active := &workflowRuntime{pool: pool, records: records, handlers: []intake.Handler{engine}, log: quietLogger()}
 	sup.OnDurableState(active.claimDurableState)
 	_, _ = suspendedImplementer(t, sup, root, supervise.SuspendedByDaemon)
@@ -2304,8 +2315,9 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 	}{
 		{name: "the issue's own phase and run", issue: "LEGION-208", queuedFor: phase.Implementing, generation: 2, want: true},
 		{name: "a phase the issue has not reached", issue: "LEGION-208", queuedFor: phase.Testing, generation: 2, want: false},
-		// The implementer works implementing, retro and the production check: a task written for
-		// one of them is not the work of another, which the role alone cannot tell.
+		// One role works several phases — the implementer implementing and retro, and the role the
+		// check records each of its looks — and a task written for one of them is not the work of
+		// another, which the role alone cannot tell.
 		{name: "another phase of the same role", issue: "LEGION-208", queuedFor: phase.Retro, generation: 2, want: false},
 		// A re-admission restarts the issue in the phase it stood in: the run that is over's task
 		// of that phase is not the new run's work.
@@ -2587,11 +2599,14 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U", LastDispatchSeq: 5}
+	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 3, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
+	// The record is written twice: the architect's start below is a start of the tree while it ran,
+	// and a start of a closed issue starts nothing, so the root stands in the workflow for it and
+	// takes its closed shape only afterwards.
 	putOutboxIssue(t, pool, records, root)
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
 	provisioned, removed := 0, 0
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "legion", quietLogger())
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -2621,7 +2636,7 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 
 	// The tree closes and lingers, then its linger expires: every claim stops and the workspace goes.
 	until := time.Now().Add(-time.Minute)
-	root.LingerUntil = &until
+	root.Phase, root.Status, root.LingerUntil = phase.Done, "done", &until
 	putOutboxIssue(t, pool, records, root)
 	if _, err := intake.ApplyFact(ctx, pool, "outbox", "linger:LEGION-208:3", intake.LingerExpired{Issue: root.Key, Generation: 3}, engine, admission); err != nil {
 		t.Fatalf("apply linger expiry: %v", err)
@@ -2667,7 +2682,7 @@ func TestAnEarlierGenerationsWorkspaceRemovalLeavesTheReadmittedTreesWorkspace(t
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U", LingerUntil: &until, LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "legion", quietLogger())
 	clock := time.Now().Add(time.Hour)
 	removals, busy := 0, true
@@ -2801,7 +2816,7 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, root)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	admission := admit.New(records, engine, 2, "legion", quietLogger())
 	runner := &outbox{
 		dispatchProject: "LEGION",
@@ -2867,5 +2882,213 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 	}
 	if told := catchUpReasons(); len(told) != 0 {
 		t.Fatalf("the retried start queued catch-ups %q; want none, the row having told the architect already", told)
+	}
+}
+
+// A Dispatch write queued while its issue was open, which Dispatch then refuses with 409
+// ISSUE_CLOSED because the issue was closed before the row ran, ends on that attempt instead of
+// retrying for ever. The code is not PARENT_CONTENDED, so dispatch.PermanentRefusal calls the
+// refusal permanent, and both Dispatch kinds take that reading (permanentRefusal): each row is
+// finished with its architect's notice written in the finish's own transaction. Before, one
+// dispatch_message row of a closed issue failed ISSUE_CLOSED once a minute for days with nobody
+// told. The issue's tree has finished here, which is how a Dispatch issue usually comes to be
+// closed, so neither notice reaches anyone either: the architect stopped with the tree
+// (stoppedWithTree), and each notice is finished undelivered with its own line rather than
+// published. So a closed issue costs the outbox one attempt per row and leaves it empty.
+func TestADispatchRowForAnIssueClosedAfterItWasQueuedEndsAfterOneAttempt(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	now := time.Now().UTC()
+	// The root LEGION-1 lingers (its tree has finished) and its architect is suspended with it,
+	// the pair stoppedWithTree reads. LEGION-2's notices are that root architect's, since
+	// LEGION-2 has no sub-architect of its own running.
+	noticeTree(t, pool, records, true)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaim(t, sup, "LEGION-1", supervise.StateSuspended)
+	const body = "READY #42 at head\n\nthe rest of the packet"
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2", record.MessagePost{Body: body}, now))
+	// The status write carries no reason, so it makes the one Dispatch call its status is.
+	enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-2",
+		record.StatusWrite{ObservedStatus: "in_progress", Status: "done"}, now))
+	refusal := &dispatch.Error{Status: http.StatusConflict, Code: "ISSUE_CLOSED", Message: "issue is closed"}
+	client := &outboxDispatch{issue: dispatch.Issue{Key: "LEGION-2", Status: "in_progress"}, postErr: refusal, statusErr: refusal}
+	publisher := &holderPublisher{}
+	logs := &syncBuffer{}
+	runner := &outbox{
+		project: "legion", dispatchProject: "LEGION", log: slog.New(slog.NewJSONHandler(logs, nil)),
+		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: sup,
+		now: func() time.Time { return now },
+	}
+
+	// dispatchRows is every Dispatch row the outbox holds, by id, with the attempts it has made
+	// and when it next runs: a finished row leaves none of itself, a retried row leaves one.
+	type dispatchRow struct {
+		Kind     string
+		Attempts int
+		NextAt   time.Time
+	}
+	dispatchRows := func() map[int64]dispatchRow {
+		t.Helper()
+		rows, err := pool.Query(ctx, `select id, kind, attempts, next_at from outbox
+			where kind = any($1::text[]) order by id`,
+			[]string{string(record.OutboxKindDispatchMessage), string(record.OutboxKindDispatchStatus)})
+		if err != nil {
+			t.Fatalf("read the Dispatch rows: %v", err)
+		}
+		defer rows.Close()
+		held := map[int64]dispatchRow{}
+		for rows.Next() {
+			var id int64
+			var row dispatchRow
+			if err := rows.Scan(&id, &row.Kind, &row.Attempts, &row.NextAt); err != nil {
+				t.Fatalf("read the Dispatch rows: %v", err)
+			}
+			held[id] = row
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the Dispatch rows: %v", err)
+		}
+		return held
+	}
+	var messageRow, statusRow int64
+	queued := dispatchRows()
+	for id, row := range queued {
+		switch row.Kind {
+		case string(record.OutboxKindDispatchMessage):
+			messageRow = id
+		case string(record.OutboxKindDispatchStatus):
+			statusRow = id
+		}
+	}
+	if messageRow == 0 || statusRow == 0 {
+		t.Fatalf("queued Dispatch rows %+v, want one message and one status write", queued)
+	}
+
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the outbox: %v", err)
+	}
+
+	// Each row made its one call and met the refusal there.
+	if len(client.messages) != 1 || !strings.Contains(client.messages[0], "READY #42 at head") {
+		t.Fatalf("messages posted = %q, want the one attempt the refused message is", client.messages)
+	}
+	if fmt.Sprint(client.statuses) != "[done]" {
+		t.Fatalf("statuses written = %v, want the one attempt the refused status write is", client.statuses)
+	}
+	// The rows' attempts never reached 2, read from what the run left: a row the outbox finished
+	// is deleted, so no Dispatch row is in the outbox at all — none retried with attempts 1 and a
+	// next_at past this run, none with more — and the one call each above is every call either
+	// row will ever make. A retry would leave its row here, which is what this reports.
+	if left := dispatchRows(); len(left) != 0 {
+		t.Fatalf("Dispatch rows left after one run at %s: %+v; want both finished on their first attempt rather than retried",
+			now.Format(time.RFC3339Nano), left)
+	}
+
+	// refusalNotice is one of the notices the refusals wrote, by row id, so that the two can be
+	// told apart from the rows left behind later.
+	type refusalNotice struct {
+		id     int64
+		notice record.Notice
+	}
+	refusalNotices := func() []refusalNotice {
+		t.Helper()
+		rows, err := pool.Query(ctx, "select id, payload from outbox where kind = $1 order by id", string(record.OutboxKindNotice))
+		if err != nil {
+			t.Fatalf("read the notice rows: %v", err)
+		}
+		defer rows.Close()
+		var written []refusalNotice
+		for rows.Next() {
+			var row refusalNotice
+			var payload []byte
+			if err := rows.Scan(&row.id, &payload); err != nil {
+				t.Fatalf("read the notice rows: %v", err)
+			}
+			if err := json.Unmarshal(payload, &row.notice); err != nil {
+				t.Fatalf("decode the notice of row %d: %v", row.id, err)
+			}
+			written = append(written, row)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read the notice rows: %v", err)
+		}
+		return written
+	}
+	var messageNotice, statusNotice refusalNotice
+	written := refusalNotices()
+	for _, row := range written {
+		switch {
+		case strings.Contains(row.notice.Reason, "READY #42 at head"):
+			messageNotice = row
+		case strings.Contains(row.notice.Reason, "The status done is not set"):
+			statusNotice = row
+		}
+	}
+	if len(written) != 2 || messageNotice.id == 0 || statusNotice.id == 0 {
+		t.Fatalf("notice rows after the run = %+v, want one naming the refused message and one the refused status write", written)
+	}
+	for _, tc := range []struct {
+		name string
+		row  refusalNotice
+	}{
+		{"the refused message", messageNotice},
+		{"the refused status write", statusNotice},
+	} {
+		if tc.row.notice.Kind != "message-refused" || tc.row.notice.Role != claim.RoleArchitect ||
+			!strings.Contains(tc.row.notice.Reason, refusal.Error()) {
+			t.Fatalf("the notice of %s = %+v, want a message-refused notice to the architect carrying %q",
+				tc.name, tc.row.notice, refusal.Error())
+		}
+	}
+
+	// rowOf is the outbox row a log line names.
+	rowOf := func(line map[string]any) int64 {
+		t.Helper()
+		number, ok := line["row"].(float64)
+		if !ok {
+			t.Fatalf("the log line %v names no row", line)
+		}
+		return int64(number)
+	}
+	for _, tc := range []struct {
+		name, text string
+		row        int64
+	}{
+		{"the refused message", "outbox Dispatch message refused and dropped; its architect is told", messageRow},
+		{"the refused status write", "outbox status write refused by Dispatch; its architect is told what the issue holds now", statusRow},
+	} {
+		lines := loggedLines(t, logs.String(), tc.text)
+		if len(lines) != 1 {
+			t.Fatalf("logged %q %d times for %s, want once: %s", tc.text, len(lines), tc.name, logs.String())
+		}
+		if rowOf(lines[0]) != tc.row || lines[0]["issue"] != "LEGION-2" ||
+			!strings.Contains(fmt.Sprint(lines[0]["error"]), refusal.Error()) {
+			t.Fatalf("the line for %s = %v, want it naming row %d, LEGION-2 and Dispatch's %q",
+				tc.name, lines[0], tc.row, refusal.Error())
+		}
+	}
+
+	// The notices the finishes wrote run on the next drain, and reach nobody: the architect that
+	// owns them stopped with the tree that finished, so each is finished undelivered with its own
+	// line rather than published.
+	if err := runner.RunOnce(ctx); err != nil {
+		t.Fatalf("run the outbox notices: %v", err)
+	}
+	if attempts, delivered := publisher.snapshot(); attempts != 0 || len(delivered) != 0 {
+		t.Fatalf("published %d notices (%+v), want none to an architect stopped with its finished tree", attempts, delivered)
+	}
+	const undelivered = "outbox notice finished undelivered: its architect stopped with its finished tree"
+	told := map[int64]bool{}
+	lines := loggedLines(t, logs.String(), undelivered)
+	for _, line := range lines {
+		told[rowOf(line)] = true
+	}
+	if len(lines) != 2 || !told[messageNotice.id] || !told[statusNotice.id] {
+		t.Fatalf("logged %q for rows %v, want it once for the refused message's notice %d and once for the status write's %d: %s",
+			undelivered, told, messageNotice.id, statusNotice.id, logs.String())
+	}
+	if remaining := outboxRows(t, pool); remaining != 0 {
+		t.Fatalf("%d rows left in the outbox, want the refusals and their notices all finished", remaining)
 	}
 }

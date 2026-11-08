@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -51,7 +52,16 @@ func TestEachKindReachesItsOwnMinter(t *testing.T) {
 		secrets.GitHubApp{Base: github.URL, HTTP: github.Client()},
 		secrets.GoogleLogin{TokenURL: google.URL, HTTP: google.Client()},
 		secrets.AzureLogin{},
-		&secrets.GoogleServiceAccount{BaseURL: iam.URL, HTTP: iam.Client(), Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "broker-own-token"})},
+		&secrets.GoogleServiceAccount{
+			BaseURL: iam.URL, HTTP: iam.Client(),
+			Source: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "broker-own-token"}),
+			// The minter mints only for the account the deployment binds to the secret the
+			// request names, so this stands in for BROKER_SERVICE_ACCOUNT_SECRETS; with no
+			// binding every mint of the kind would be refused before the IAM endpoint below
+			// were asked anything, and this test would prove nothing about which minter the
+			// kind reaches.
+			Accounts: map[string]string{"DEV_ADITYA": "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"},
+		},
 	)
 
 	app, err := json.Marshal(map[string]string{"app_id": "123456", "private_key": pemText})
@@ -59,18 +69,18 @@ func TestEachKindReachesItsOwnMinter(t *testing.T) {
 		t.Fatal(err)
 	}
 	minted, err := minters[policy.KindGitHubApp](context.Background(), secrets.MintRequest{Value: string(app), GitHubOwners: []string{"acme-org"}})
-	if err != nil || !strings.Contains(minted, "github-installation-token") {
-		t.Fatalf("github-app minter = %q, %v; want the GitHub endpoint's installation token", minted, err)
+	if err != nil || !strings.Contains(minted.Value, "github-installation-token") {
+		t.Fatalf("github-app minter = %q, %v; want the GitHub endpoint's installation token", minted.Value, err)
 	}
 	login := `{"type":"authorized_user","client_id":"c","client_secret":"s","refresh_token":"r"}`
 	minted, err = minters[policy.KindGoogleLogin](context.Background(), secrets.MintRequest{Value: login})
-	if err != nil || minted != "google-access-token" {
-		t.Fatalf("google-login minter = %q, %v; want the Google endpoint's access token", minted, err)
+	if err != nil || minted.Value != "google-access-token" {
+		t.Fatalf("google-login minter = %q, %v; want the Google endpoint's access token", minted.Value, err)
 	}
 	account := `{"service_account":"dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"}`
-	minted, err = minters[policy.KindGoogleServiceAccount](context.Background(), secrets.MintRequest{Value: account})
-	if err != nil || minted != "service-account-access-token" {
-		t.Fatalf("google-service-account minter = %q, %v; want the IAM endpoint's access token", minted, err)
+	minted, err = minters[policy.KindGoogleServiceAccount](context.Background(), secrets.MintRequest{Name: "DEV_ADITYA", Value: account})
+	if err != nil || minted.Value != "service-account-access-token" {
+		t.Fatalf("google-service-account minter = %q, %v; want the IAM endpoint's access token", minted.Value, err)
 	}
 }
 
@@ -100,7 +110,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 	if err := os.WriteFile(file, []byte(token), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil)
+	machine := newRequestMachine(config.Config{AzureTokenFile: file, AzureLoginSecret: "AZURE_LOGIN"}, nil, nil, nil, nil, airlock.Rules{}, "")
 	for _, kind := range policy.Kinds {
 		if machine.Minters[kind] == nil {
 			t.Fatalf("request machine has no minter for %s", kind)
@@ -115,7 +125,7 @@ func TestRequestMachineReleasesAzureLoginFromTheConfiguredFile(t *testing.T) {
 		t.Fatalf("Mint: %v", err)
 	}
 	var value map[string]string
-	if json.Unmarshal([]byte(got), &value) != nil || len(value) != 4 || value["tenant_id"] != "tenant" || value["client_id"] != "client" || value["federated_token"] != token || value["expires_at"] != "2100-01-01T00:00:00Z" {
+	if json.Unmarshal([]byte(got.Value), &value) != nil || len(value) != 4 || value["tenant_id"] != "tenant" || value["client_id"] != "client" || value["federated_token"] != token || value["expires_at"] != "2100-01-01T00:00:00Z" {
 		t.Fatal("request machine did not release the Azure login from its configured token file")
 	}
 }

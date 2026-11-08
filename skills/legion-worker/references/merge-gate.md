@@ -55,13 +55,17 @@ other change to the head voids it.
   (`gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'`):
   every required name present, `completed` and `success` (GitHub counts `neutral` and `skipped`
   as passing for a required check). A required check
-  `queued` or `in_progress`: wait. One `completed` as `cancelled`, or absent: re-run that run's
+  `queued` or `in_progress`: wait. One `completed` as `cancelled`, or absent: on a `pull_request`
+  run, re-run that run's
   failed and cancelled jobs, once, then wait — never the whole run, which runs again every job that
-  succeeded too. Find the run and job at the head: the head's runs
+  succeeded too. A merge-group run is never re-run: the implementer finishes its round instead,
+  and the pull request is tested again when it is queued again.
+  Find the run and job at the head: the head's runs
   (`gh api 'repos/<o>/<r>/actions/runs?head_sha=<headRefOid>&per_page=100' --jq '.workflow_runs[] | [.id, .name, .event, .status, .conclusion] | @tsv'`),
   then each candidate run's jobs
   (`gh api repos/<o>/<r>/actions/runs/<run-id>/jobs --jq '.jobs[] | [.id, .name, .status, .conclusion] | @tsv'`).
-  A cancelled job: `gh run rerun <run-id> --failed`, which GitHub applies to the run's failed and
+  A cancelled job of a pull-request run: `gh run rerun <run-id> --failed`, which GitHub applies to
+  the run's failed and
   cancelled jobs and the jobs that depend on them, and to nothing that succeeded. Never
   `--job <job-id>` alone: under a routing workflow, re-running only the final job reads the
   cancelled results again and stays red. GitHub refuses a re-run while an attempt of that run is
@@ -145,7 +149,9 @@ reviewing until you finish.
   the architect as a gap the tester and the reviewer named and neither refused, so the
   architect's acceptance is the only gate on it: the acceptance comment names that gap and
   decides there, accepting the issue or sending it back with the checks the architect writes,
-  which closes no design gate while dispatch://INFRA-175 has not shipped. The architect also
+  which closes the root's `criteria` step where the deployment gates that step, since that step
+  records the root's Verification document and each new version of a step's document closes it;
+  a child's Verification document is gated by nothing. The architect also
   reads the reviewer's own prose commits here, with the rest of the evidence, and that read is no
   new round. It does not
   accept while the issue holds a finding ask no controller has taken (`findings.md`, "When no
@@ -259,8 +265,10 @@ reviewing until you finish.
   ordinary arm cannot merge the person-only head. Ordinary READY does not wait for the disarm. The
   daemon tells that READY with the note at its head and the packet's `Merge:` line replaced, so the
   issue and the merge queue role are never asked to arm it. A READY the design gate refused is
-  submitted by the daemon when the approval that opens the gate moves the issue to
-  `awaiting_merge`. A push that moves the head past a READY the gate holds voids it before then:
+  submitted by the daemon once every gated step of the root's design gate is open, when the
+  approval that opens the last closed one moves the issue to `awaiting_merge`; the refusal named
+  one step and the version to approve, and no second READY is asked for however many steps held
+  it. A push that moves the head past a READY the gate holds voids it before then:
   the architect is told `READY_HEAD_MOVED` and has the merger build a new READY at the new head.
   The packet's second line records the step,
   `Merge: the daemon submits pull request #<n> at <head> once READY is accepted`.
@@ -305,13 +313,14 @@ reviewing until you finish.
   turn of the look's task.
 - **Each look does three things.** Do what the deployment instructions say to reach the deploy:
   when they name an agent or role for it, `envoy_publish` the merge commit to that role's topic
-  with `expects_reply: none`, and await no reply. Read whether production carries the merge. Then
+  with `expects_reply: false`, and await no reply. Read whether production carries the merge. Then
   report one of three outcomes:
   - `pass`, once you drove the changed path in production through the user's own access path and
     recorded the result: `dispatch result` against the issue's `after_merge` check, at the merge
     commit, its `observed` ending `woken by <event>`, with the printed line in the PR body's
     `Checks` block and one pull-request comment carrying the Legion footer. A closed issue takes a
-    result for an `after_merge` or `default_branch` check and refuses every other write. A staging
+    result for an `after_merge` or `default_branch` check, a comment and a message, and refuses
+    every other write. A staging
     pass is not this, since a
     staging gate does not run every resource production does.
   - `pending`, when production does not carry the merge yet (a shared profile still holding the
@@ -363,9 +372,9 @@ reviewing until you finish.
   check as not run, and before reporting it you write on the pull request, in the check's line and
   a comment, that the check did not run because production did not carry the merge within the
   bound.
-- **The record lives on the pull request and in the result.** Dispatch refuses a message, a
-  comment or an ask on a closed issue (`ISSUE_CLOSED`) and takes only a result for an
-  `after_merge` or `default_branch` check, so the deployment instructions' "on the pull request
+- **The record lives on the pull request and in the result.** Dispatch takes a comment, a message
+  and a result for an `after_merge` or `default_branch` check on a closed issue, and refuses an
+  ask there (`ISSUE_CLOSED`), so the deployment instructions' "on the pull request
   and the issue" is the pull request and that result. A defect reaches Dispatch by the two paths above:
   a clear defect as the message to the controller, which gives it to the tree that owns that code,
   and any other as the ask on the
