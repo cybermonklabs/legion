@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -1269,13 +1270,22 @@ func failedFallbackCopy(held fallbackCopy) fallbackRecord {
 // and the mark leaves the claim, and the repeat carries the same dedupe key, which the host, and
 // the stream within its duplicate window, drop.
 //
-// The pass is fenced by the publisher hold as a batch is: it claims nothing once the hold's loss
-// deadline has passed, sends through the hold's window (Publisher.WindowUntil), and leaves its
-// record unwritten when that deadline passed during it, the record being the last act checked
-// against it - the rows it claimed are then left claimed until fallbackClaim lapses, which the
-// next holder's pass waits out. Every write of a pass's record is guarded on the claim the pass
-// took (recordFallbackCopies), so a pass that outlasts fallbackClaim writes nothing to a row a
-// later pass has claimed since.
+// The pass is fenced by the publisher hold as a batch is (scanBatch, recordBatch). The hold's
+// deadline governs its sends: they go through the hold's window (Publisher.WindowUntil), which
+// refuses every send at or past it (bus.ErrWindowDeadline), and a row whose send met that
+// refusal is released having counted nothing. What the sends that did go out came to is
+// recorded however long their answers took, the deadline passing while the pass waited for them
+// included: the hold covers the window it opened, and a copy NATS has taken is no less taken
+// for the answer being slow. The record is fenced on the database's clock instead: the claim
+// reads which process holds the publisher hold then, and the record is written only while that
+// hold is still that holder's and live, checked in the record's own statement
+// (claimFallbackCopies, recordFallbackCopies). A pass another process has taken the hold from
+// records nothing at all - every row it claimed keeps the claim the pass took, falls due again
+// when that claim lapses, and is decided by the pass of whoever holds the hold by then, which
+// publishes the copy again under the dedupe key this pass published it under, a repeat the host
+// and the stream's duplicate window drop. Every write of a pass's record is guarded on the
+// claim the pass took as well (recordFallbackCopies), so a pass that outlasts fallbackClaim
+// writes nothing to a row a later pass has claimed since.
 //
 // Races. A person's Retry of the mention opens or resumes an attempt the pass reads as being
 // sent, so the row waits for it, and a Retry that is sent settles the row with nothing sent. A
@@ -1301,12 +1311,7 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence) (full, fa
 		// left for whatever process runs next, as a pass that claimed them would leave them.
 		return false, false
 	}
-	if !time.Now().Before(hold.Deadline()) {
-		// Past the publisher hold's loss deadline this process publishes nothing: the hold is
-		// another's to take, and its pass decides these rows.
-		return false, false
-	}
-	copies, err := claimFallbackCopies(ctx, deps)
+	copies, holder, err := claimFallbackCopies(ctx, deps)
 	if err != nil {
 		slog.Error("dispatch outbox: claim fallback copies", "error", err)
 		return false, true
@@ -1318,16 +1323,16 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence) (full, fa
 	var records []fallbackRecord
 	// Written even when ctx has ended: a process stopping mid-pass records what NATS accepted and
 	// releases what it did not decide, rather than leave those rows claimed for fallbackClaim.
+	// Whether it may still be written is the statement's own check, on the database's clock.
 	defer func() {
-		if !time.Now().Before(hold.Deadline()) {
-			slog.Error("dispatch outbox: the publisher hold's deadline passed before the fallback pass was recorded, so it is left unrecorded",
-				"copies", len(records))
-			return
-		}
 		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 		defer cancel()
-		if err := recordFallbackCopies(record, deps, records); err != nil {
+		switch recorded, err := recordFallbackCopies(record, deps, holder, records); {
+		case err != nil:
 			slog.Error("dispatch outbox: record fallback copies", "error", err)
+		case !recorded:
+			slog.Warn("dispatch outbox: the publisher hold passed to another process before the fallback pass was recorded, so the rows it claimed are left to that holder's own pass",
+				"copies", len(records))
 		}
 	}()
 	// release leaves the row to a later pass, counting no attempt: it is due again once delay has
@@ -1407,8 +1412,10 @@ func publishFallbackCopies(ctx context.Context, deps Deps, hold fence) (full, fa
 			slog.Error("dispatch outbox: fallback copy refused", "comment_id", item.held.commentID, "destination", item.held.destination, "error", err)
 		case errors.Is(err, bus.ErrWindowDeadline):
 			// The hold's deadline refused the send: it never left this process, so it is no
-			// failure of the row and counts nothing. The record below is left unwritten too, so
-			// the row keeps its claim until it lapses.
+			// failure of the row and counts nothing. The row is released due at once, which the
+			// record writes while the hold is still this holder's on the database's clock -
+			// the deadline is the margin ahead of that - and leaves to the holder that took it
+			// otherwise (recordFallbackCopies): either way the next pass to claim it decides it.
 			release(item.held, 0)
 			continue
 		default:
@@ -1614,35 +1621,51 @@ func decideFallbackCopy(
 // claim. It reads the partial index of unsettled rows, so a pass with nothing to decide reads no
 // row.
 //
+// The same statement reads which process holds the publisher hold then, live on the database's
+// clock, and answers it beside the rows: the pass's record is written only while that hold is
+// still that holder's (recordFallbackCopies), as a batch's bookkeeping is written only while
+// the hold is its own (recordBatch). No live hold - no row, or one that has lapsed - answers
+// none, and such a pass's record is guarded on its rows' claims alone: no process is publishing
+// the outbox under a name nobody holds.
+//
 // The statement runs outside the pass's context, under claimTimeout of its own, as the record
 // step does: a context that ends once it has committed would answer context canceled and lose the
 // rows it claimed, which would then sit claimed for fallbackClaim with no pass deciding them. The
 // pass reads its own ctx instead and releases every row it claimed at once (publishFallbackCopies).
-func claimFallbackCopies(ctx context.Context, deps Deps) ([]fallbackCopy, error) {
+func claimFallbackCopies(ctx context.Context, deps Deps) ([]fallbackCopy, *uuid.UUID, error) {
 	claim, cancel := context.WithTimeout(context.WithoutCancel(ctx), claimTimeout)
 	defer cancel()
 	rows, err := deps.Store.Pool.Query(claim, `
-		update comment_fallback_copies set next_attempt_at = now() + $2
-		where (comment_id, destination) in (
-			select comment_id, destination from comment_fallback_copies
-			where settled_at is null and (next_attempt_at is null or next_attempt_at <= now())
-			order by created_at
-			limit $1
-			for update skip locked
+		with claimed as (
+			update comment_fallback_copies set next_attempt_at = now() + $2
+			where (comment_id, destination) in (
+				select comment_id, destination from comment_fallback_copies
+				where settled_at is null and (next_attempt_at is null or next_attempt_at <= now())
+				order by created_at
+				limit $1
+				for update skip locked
+			)
+			returning comment_id, destination, event_id, session_id, target, attempt_count, next_attempt_at
 		)
-		returning comment_id::text, destination, event_id, session_id, target, attempt_count, next_attempt_at
-	`, batchSize, fallbackClaim)
+		select comment_id::text, destination, event_id, session_id, target, attempt_count, next_attempt_at,
+		       (select holder from duty_holds where name = $3 and expires_at > now())
+		from claimed
+	`, batchSize, fallbackClaim, publisherHold)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (fallbackCopy, error) {
+	var holder *uuid.UUID
+	copies, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (fallbackCopy, error) {
 		var held fallbackCopy
 		var sessionID, target *string
+		var heldBy *uuid.UUID
 		if err := row.Scan(
-			&held.commentID, &held.destination, &held.eventID, &sessionID, &target, &held.attempts, &held.claim,
+			&held.commentID, &held.destination, &held.eventID, &sessionID, &target, &held.attempts,
+			&held.claim, &heldBy,
 		); err != nil {
 			return fallbackCopy{}, err
 		}
+		holder = heldBy
 		if target != nil {
 			held.key, held.kind = *target, targetMentions
 		} else if sessionID != nil {
@@ -1650,6 +1673,7 @@ func claimFallbackCopies(ctx context.Context, deps Deps) ([]fallbackCopy, error)
 		}
 		return held, nil
 	})
+	return copies, holder, err
 }
 
 // loadFallbackEvents reads, by id, the comment.created events copies are the envelopes of, with
@@ -1701,13 +1725,27 @@ func loadFallbackEvents(ctx context.Context, deps Deps, copies []fallbackCopy) (
 // marked so, published when it published the copy; each failed row counts one more attempt and
 // waits retry.Delay of its new count from now (failedFallbackCopy); and each row left for a later
 // pass has its claim replaced by the wait it was released with, which counts no attempt, or
-// cleared when that wait is none (fallbackRecord). Every write is guarded on the claim the pass
-// took (fallbackCopy's claim): a row whose next_attempt_at is no longer that claim was claimed
-// again by a later pass, once the claim lapsed, and is that pass's, so it is not written. A row a
-// pass did not reach is not written either and keeps its claim.
-func recordFallbackCopies(ctx context.Context, deps Deps, records []fallbackRecord) error {
+// cleared when that wait is none (fallbackRecord). It reports whether holder, the process that
+// held the publisher hold when the pass claimed (claimFallbackCopies), holds it still.
+//
+// The record is fenced on the database's clock, as a batch's bookkeeping is (recordBatch): the
+// same statement reads whether holder's hold is live, and writes no row at all when it is not.
+// The hold is another process's by then - or lapsed, with its next holder's pass to come - and
+// what this pass came to is that pass's to decide, which is why the refusal takes the whole
+// record rather than part of it: every row stays exactly as the claim left it, none half
+// written. Each then falls due again when that claim lapses, fallbackClaim after it was taken,
+// and the next pass claims it, reads the comment's attempts afresh and publishes the copy again
+// where it must, under the key this pass published it under, which the host and the stream's
+// duplicate window drop. A pass that claimed under no live hold at all has no holder to check
+// and is guarded on its rows' claims alone.
+//
+// Every write is guarded on the claim the pass took as well (fallbackCopy's claim): a row whose
+// next_attempt_at is no longer that claim was claimed again by a later pass, once the claim
+// lapsed, and is that pass's, so it is not written. A row a pass did not reach is not written
+// either and keeps its claim.
+func recordFallbackCopies(ctx context.Context, deps Deps, holder *uuid.UUID, records []fallbackRecord) (bool, error) {
 	if len(records) == 0 {
-		return nil
+		return true, nil
 	}
 	commentIDs := make([]string, 0, len(records))
 	destinations := make([]string, 0, len(records))
@@ -1732,16 +1770,29 @@ func recordFallbackCopies(ctx context.Context, deps Deps, records []fallbackReco
 			retryAfter = append(retryAfter, nil)
 		}
 	}
-	_, err := deps.Store.Pool.Exec(ctx, `
-		update comment_fallback_copies c set
-			settled_at = case when o.settled then now() end,
-			published = o.published,
-			attempt_count = c.attempt_count + case when o.counted then 1 else 0 end,
-			next_attempt_at = now() + o.retry_after
-		from unnest($1::uuid[], $2::text[], $3::timestamptz[], $4::bool[], $5::bool[], $6::interval[], $7::bool[])
-			as o(comment_id, destination, claim, settled, published, retry_after, counted)
-		where c.comment_id = o.comment_id and c.destination = o.destination and c.settled_at is null
-			and c.next_attempt_at = o.claim
-	`, commentIDs, destinations, claims, settled, published, retryAfter, counted)
-	return err
+	var holds bool
+	if err := deps.Store.Pool.QueryRow(ctx, `
+		with hold as (
+			select ($8::uuid is null or exists (
+				select 1 from duty_holds where name = $9 and holder = $8 and expires_at > now()
+			)) as mine
+		), outcome as (
+			select * from unnest($1::uuid[], $2::text[], $3::timestamptz[], $4::bool[], $5::bool[], $6::interval[], $7::bool[])
+				as o(comment_id, destination, claim, settled, published, retry_after, counted)
+		), recorded as (
+			update comment_fallback_copies c set
+				settled_at = case when o.settled then now() end,
+				published = o.published,
+				attempt_count = c.attempt_count + case when o.counted then 1 else 0 end,
+				next_attempt_at = now() + o.retry_after
+			from outcome o
+			cross join hold h
+			where c.comment_id = o.comment_id and c.destination = o.destination and c.settled_at is null
+				and c.next_attempt_at = o.claim and h.mine
+		)
+		select mine from hold
+	`, commentIDs, destinations, claims, settled, published, retryAfter, counted, holder, publisherHold).Scan(&holds); err != nil {
+		return false, err
+	}
+	return holds, nil
 }
