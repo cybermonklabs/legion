@@ -246,3 +246,54 @@ func TestReadForDisplayEndsAnUnknownBlocksLinesAtEveryLineEnding(t *testing.T) {
 		})
 	}
 }
+
+// TestReadForDisplayReplacesANulAsEveryOtherReaderDoes holds the display read to the one rule
+// every other reader of the same text already follows: CommonMark replaces U+0000 with U+FFFD,
+// which is what Parse does and what the browser's own engines do, so a reader is shown the
+// replacement character. The display read keeps the NUL, so a text holding one is served to the
+// dashboard as a tree whose text node carries a raw U+0000 where every other reading of the same
+// bytes carries U+FFFD - the disagreement the differential's two cross-reader gates report on
+// testdata/corpus/nul-characters.md, the document main added with #2507.
+func TestReadForDisplayReplacesANulAsEveryOtherReaderDoes(t *testing.T) {
+	markdown, err := os.ReadFile(filepath.Join("testdata", "corpus", "nul-characters.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	written, err := Parse(string(markdown))
+	if err != nil {
+		t.Fatalf("the writer refuses the document this test is about: %v", err)
+	}
+	if nulTexts(written) != 0 {
+		t.Fatalf("Parse keeps %d NUL-bearing text nodes; this test assumes it replaces them", nulTexts(written))
+	}
+	for _, mode := range []struct {
+		name string
+		mode DisplayMode
+	}{{"the latest mode", DisplayLatest}, {"the version mode", DisplayVersion}} {
+		t.Run(mode.name, func(t *testing.T) {
+			doc := ReadForDisplay(string(markdown), mode.mode)
+			if err := doc.Validate(); err != nil {
+				t.Fatalf("the display read is outside the schema: %v", err)
+			}
+			if held := nulTexts(doc); held != 0 {
+				t.Errorf("the display read keeps a NUL in %d text nodes, where Parse and both browser engines answer U+FFFD", held)
+			}
+		})
+	}
+}
+
+// nulTexts is how many text nodes of doc hold a U+0000.
+func nulTexts(doc *Node) int {
+	held := 0
+	var walk func(node *Node)
+	walk = func(node *Node) {
+		if strings.ContainsRune(node.Text, 0) {
+			held++
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	walk(doc)
+	return held
+}
