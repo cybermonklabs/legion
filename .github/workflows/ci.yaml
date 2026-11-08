@@ -363,6 +363,10 @@ jobs:
       # are all 'true'.
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || steps.verdicts.outputs.verdicts }}
     steps:
+      # Probe for dispatch://INFRA-1413's review round 2, never merged: the same step as
+      # t15-changesfail, on the head before the fix, so the two runs name what changed.
+      - name: Fail the changes job on purpose
+        run: exit 1
       # On pull_request dorny/paths-filter reads the file list from the API and never reads the
       # tree; merge_group diffs with git and needs the clone (a merge group diffs its
       # base_sha..head_sha, fetching what the clone lacks). A dispatched run clones too, and
