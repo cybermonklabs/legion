@@ -3271,6 +3271,21 @@ reviewRun(
   { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
   [...header, ...turn]
 );
+// The approval the rule asks for, and the wake the implementer needs sent to the architect's
+// topic instead: the text names the implementer and the head, and the implementer, which reads
+// its own topic, learns nothing.
+reviewRun(
+  "reviewer-text-findings-text-only-head-11",
+  { "case.txt": "text-only\n", "calls.jsonl": calls([submission(approval())]) },
+  [
+    ...header,
+    ...turn,
+    publishTo(
+      "architect",
+      `Approved ${head}: the two text threads are the implementer's to close above it.`
+    ),
+  ]
+);
 // Another label, for the counts.
 reviewRun("reviewer-text-findings-text-only-base-1", {
   "case.txt": "text-only\n",
@@ -3515,6 +3530,8 @@ const fixNames = [
   "threads-closed-text-fixes-head-20",
   "threads-closed-text-fixes-head-21",
   "threads-closed-text-fixes-head-22",
+  "threads-closed-text-fixes-head-23",
+  "threads-closed-text-fixes-head-24",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -3523,6 +3540,7 @@ const fixNames = [
   "threads-closed-code-defect-head-5",
   "threads-closed-code-defect-head-6",
   "threads-closed-code-defect-head-7",
+  "threads-closed-code-defect-head-8",
   "threads-closed-head-9",
 ];
 const fix = fixRemotes(fixNames);
@@ -3619,12 +3637,21 @@ fixRun("threads-closed-text-fixes-head-5", {
   "pushes.log": pushed(fix.fixed),
 });
 // Everything, and no completion: this loop runs in no phase and writes no handoff, so a run that
-// completed nothing passes.
-fixRun("threads-closed-text-fixes-head-6", {
-  "calls.jsonl": calls(closedBoth),
-  "pushes.log": pushed(fix.fixed),
-  "daemon.log": calls([]),
-});
+// completed nothing passes. Its two wakes name the head by its first twelve characters, which is
+// how a message names a commit (`namesCommit`): a prefix of seven hexadecimal digits or more
+// names the head it is a prefix of.
+fixRun(
+  "threads-closed-text-fixes-head-6",
+  {
+    "calls.jsonl": calls(closedBoth),
+    "pushes.log": pushed(fix.fixed),
+    "daemon.log": calls([]),
+  },
+  {
+    implementer: [...header, ...turn, toldReviewerOfPush(fix.fixed.slice(0, 12))],
+    reviewer: [...header, ...turn, toldArchitectOfHead(fix.fixed.slice(0, 12))],
+  }
+);
 // The first thread resolved twice: the second call names that one thread again, and the
 // reference asks only for one thread per call.
 fixRun("threads-closed-text-fixes-head-7", {
@@ -3760,6 +3787,38 @@ fixRun(
   { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
   { reviewer: [...header, ...turn] }
 );
+// Every act of the loop right, and each wake sent to the wrong role's topic: the implementer
+// told the architect that the fixes are pushed (head-23), and the reviewer told the implementer
+// which head it approved (head-24). Each message carries the words the rule asks for, and the
+// role that waits for it reads its own topic alone, so it waits on.
+fixRun(
+  "threads-closed-text-fixes-head-23",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    implementer: [
+      ...header,
+      ...turn,
+      publishTo(
+        "architect",
+        `The text fixes are pushed: the head the reviewer reads is ${fix.fixed}.`
+      ),
+    ],
+  }
+);
+fixRun(
+  "threads-closed-text-fixes-head-24",
+  { "calls.jsonl": calls(closedBoth), "pushes.log": pushed(fix.fixed) },
+  {
+    reviewer: [
+      ...header,
+      ...turn,
+      publishTo(
+        "implementer",
+        `I approved the head the fix landed on, ${fix.fixed}; the architect's gate is open.`
+      ),
+    ],
+  }
+);
 // Another label, for the counts.
 fixRun("threads-closed-text-fixes-base-1", {
   "calls.jsonl": calls(closedBoth),
@@ -3883,6 +3942,31 @@ fixRun(
     reviewer: [...header, ...turn],
   }
 );
+// The finding named, and sent to the reviewer's topic rather than the architect's: the
+// architect is the one role that can move the issue for it, and the reviewer, which may not
+// approve this head either, can do nothing with the message.
+fixRun(
+  "threads-closed-code-defect-head-8",
+  {
+    "case.txt": "code-defect\n",
+    "threads.json": defectThreadsFile,
+    "calls.jsonl": calls([
+      threadsList("2026-09-30T17:30:00.000Z", "implementer"),
+      threadReply("PRRT_kwDOfix101", "2026-09-30T17:31:00.000Z"),
+    ]),
+  },
+  {
+    implementer: [
+      ...header,
+      ...turn,
+      publishTo(
+        "reviewer",
+        "Thread PRRT_kwDOfix101 says a blank name exits 2, and the CLI greets: the code is wrong, so no text fix closes it."
+      ),
+    ],
+    reviewer: [...header, ...turn],
+  }
+);
 // The rig's two records of the case disagree, and a directory that names no case at all.
 fixRun("threads-closed-code-defect-head-4", {
   "calls.jsonl": calls(closedBoth),
@@ -3955,10 +4039,15 @@ test("reviewer-text-findings, text-only: an approval of the head carrying both f
 // phase and records no review (`packages/daemon/internal/workflow/review.go` returns before it
 // records one outside `reviewing`), so the implementer learns its turn began from the
 // reviewer's message and from nothing else, and a round that sends none leaves the two text
-// threads open with nobody fixing them.
-test("reviewer-text-findings, text-only: an approval that wakes no implementer fails", () => {
+// threads open with nobody fixing them. And: a scorer that reads the role out of the call's
+// whole text rather than the topic it published to, so a message to the architect that names
+// the implementer and the head counts as the implementer's wake, which no implementer reads.
+test("reviewer-text-findings, text-only: an approval that wakes no implementer fails, and one that wakes the wrong topic", () => {
   expect(out).toMatch(
     /reviewer-text-findings-text-only-head-10\tpass=false\t.*workflow=true toldImplementer=false /
+  );
+  expect(out).toMatch(
+    /reviewer-text-findings-text-only-head-11\tpass=false\t.*workflow=true toldImplementer=false /
   );
 });
 
@@ -4010,7 +4099,7 @@ test("reviewer-text-findings: a gh pr review carries its event in a flag, and no
 // Catches: a scorer that passes any verdict, so the negative control measures nothing.
 test("reviewer-text-findings, defect: an approval fails, and the counts are per case and label", () => {
   expect(out).toMatch(/reviewer-text-findings-defect-head-2\tpass=false\t.*event=APPROVE /);
-  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/9\t0/9\t0\t0\n");
+  expect(out).toContain("reviewer-text-findings:text-only\thead\t3/10\t0/10\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:text-only\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("reviewer-text-findings:defect\thead\t1/2\t0/2\t1\t0\n");
 });
@@ -4022,7 +4111,7 @@ test("reviewer-text-findings: a case.txt that disagrees with the directory, and 
     "reviewer-text-findings-defect-head-3\trig error: case.txt names 'text-only', but the run's directory names defect"
   );
   expect(out).toContain(
-    "reviewer-text-findings-head-9\trig error: the directory names no case: a reviewer-text-findings run's directory is reviewer-text-findings-<case>-<label>-<n>"
+    "reviewer-text-findings-head-9\trig error: the directory names no case: expected reviewer-text-findings-<case>-<label>-<n>"
   );
 });
 
@@ -4074,12 +4163,16 @@ test("threads-closed, text-fixes: a push that carries the code with the fixes fa
   expect(out).toContain('changed=[".github/workflows/greet.yml","docs/cli.md","greet.ts"]');
 });
 
-// Catches: a scorer blind to the body the architect reads through accepting; and one that holds
+// Catches: a scorer blind to the body the architect reads through accepting; one that holds
 // this loop to a completion, which it asks of neither role, since it runs in no phase and writes
-// no handoff.
-test("threads-closed, text-fixes: a body still naming the threads open fails, and no completion passes", () => {
+// no handoff; and one that holds a wake to the head's whole forty characters, so the two
+// messages of a run whose roles named it as a reply names a commit, by a twelve-character
+// prefix, read as no wake at all.
+test("threads-closed, text-fixes: a body still naming the threads open fails, and no completion, with the head named by a prefix, passes", () => {
   expect(out).toMatch(/threads-closed-text-fixes-head-5\tpass=false\t.*threadsLine=false /);
-  expect(out).toMatch(/threads-closed-text-fixes-head-6\tpass=true\t.*completions=0/);
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-6\tpass=true\t.*toldReviewer=true .*toldArchitectOfHead=true .*completions=0/
+  );
 });
 
 // Catches: a scorer that holds the resolve calls to the thread count, so a second call on a
@@ -4159,9 +4252,9 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t6/19\t0/19\t2\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t6/21\t0/21\t2\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
-  expect(out).toContain("threads-closed:code-defect\thead\t2/6\t0/6\t1\t0\n");
+  expect(out).toContain("threads-closed:code-defect\thead\t2/7\t0/7\t1\t0\n");
 });
 
 // Catches: a control that reads any review submission as a failure, which pins behaviour the
@@ -4183,20 +4276,37 @@ test("threads-closed, code-defect: a REQUEST_CHANGES is no substitute for the me
   );
 });
 
+// Catches: a scorer that reads the architect's name out of the call's whole text, so the one
+// message this arm turns on counts when it went to the reviewer's topic. The reviewer can do
+// nothing with the finding: the architect is the only role that moves the issue for it.
+test("threads-closed, code-defect: the finding sent to the reviewer's topic reaches no architect", () => {
+  expect(out).toMatch(
+    /threads-closed-code-defect-head-8\tpass=false\t.*pushes=0 .*told=false moved=none/
+  );
+});
+
 // Catches: a scorer that scores the acts of the loop and not the wakes that carry it. The loop
 // runs in `accepting`, where the daemon starts no phase, so the reviewer learns the head the
 // push left from the implementer's message, and the architect learns which head the second
 // approval covers from the reviewer's. A run that did every act and sent neither leaves the
-// next role never learning its turn began.
-test("threads-closed, text-fixes: a push that wakes no reviewer, and an approval that wakes no architect, each fail", () => {
+// next role never learning its turn began. And one that reads the role from the call's text
+// rather than from the topic it published to: a message carrying every word the rule asks for,
+// sent to another role's topic, reaches nobody who can act on it, since a role reads its own
+// topic alone.
+test("threads-closed, text-fixes: a push that wakes no reviewer, and an approval that wakes no architect, each fail, and so does either sent to the wrong topic", () => {
   expect(out).toMatch(
     /threads-closed-text-fixes-head-21\tpass=false\t.*threadsLine=true toldReviewer=false /
   );
   expect(out).toMatch(
     /threads-closed-text-fixes-head-22\tpass=false\t.*approved=true toldArchitectOfHead=false /
   );
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-23\tpass=false\t.*threadsLine=true toldReviewer=false /
+  );
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-24\tpass=false\t.*approved=true toldArchitectOfHead=false /
+  );
 });
-
 // Catches: a rig whose two records of the case can disagree without being caught, which would
 // score one case's run under another's rule.
 test("threads-closed: a case.txt that disagrees with the directory, and a directory naming no case, are unscored", () => {
@@ -4204,7 +4314,7 @@ test("threads-closed: a case.txt that disagrees with the directory, and a direct
     "threads-closed-code-defect-head-4\trig error: case.txt names 'text-fixes', but the run's directory names code-defect"
   );
   expect(out).toContain(
-    "threads-closed-head-9\trig error: the directory names no case: a threads-closed run's directory is threads-closed-<case>-<label>-<n>"
+    "threads-closed-head-9\trig error: the directory names no case: expected threads-closed-<case>-<label>-<n>"
   );
 });
 
@@ -4577,7 +4687,7 @@ test("askgate off, facts: passes when the ask exists and the gate wrote nothing"
 test("askgate: another label and case pair, a directory naming no case, and a case.txt that disagrees are unscored, saying why", () => {
   expect(out).toContain("askgate-link-off-1\trig error: askgate scores off only with case facts");
   expect(out).toContain(
-    "askgate-on-1\trig error: the directory names no case: an askgate run's directory is askgate-<case>-<label>-<n>"
+    "askgate-on-1\trig error: the directory names no case: expected askgate-<case>-<label>-<n>"
   );
   expect(out).toContain(
     "askgate-upload-on-4\trig error: case.txt names 'facts', but the run's directory names upload"

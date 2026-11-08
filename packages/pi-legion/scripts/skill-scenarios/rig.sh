@@ -93,8 +93,10 @@
 #                   per thread, `resolveReviewThread` answers as GitHub answers a role with
 #                   write access, and the issue holds the implementer's and the tester's passing
 #                   results and the reviewer's handoff (seed.ts tester-proof, implement-handoff,
-#                   tester-result and review-handoff). Then the reviewer, told the implementer
-#                   has finished its pass over those threads. Each agent's calls carry the role
+#                   tester-result and review-handoff). Then the reviewer, woken by the message
+#                   the implementer published to its role topic and by nothing else, or by
+#                   nothing at all when the implementer published none (reviewer_wake,
+#                   <run>/reviewer-wake.json). Each agent's calls carry the role
 #                   that made them (SKILL_SCENARIO_AGENT, a recorded call's `by`), so the run's
 #                   one calls.jsonl and one pushes.log hold both halves and the score reads each.
 #                   SKILL_SCENARIOS_THREADS_CASE names the world: `text-fixes`, two threads whose
@@ -1549,42 +1551,62 @@ tester_proof_world() {
   fixture_write '[]' '""' '[]'
 }
 
-# The world a review round reads, which reviewer-text-findings' two cases build: the tester-proof
-# world and what a round after the implementer reads — docs/cli.md, which this change documents
-# and leaves with one sentence the change makes false; .github/workflows/greet.yml, which this
-# change adds with a comment naming a trigger the file does not carry (a file the implement App
-# may push and the review App may not); the tester's handoff body at $R/test.json, which the
-# runner records beside the implementer's; the tester's own check line in the PR body; and the
-# pull request's diff, which `gh pr diff` serves. Both findings are text: closing either changes
-# no code that runs.
+# round_world INDEX START GUARD [DOC_LINE] [TRIGGER] builds the base both worlds of a round after
+# the implementer are built on, every step they share: the tester-proof world's commits, the two
+# files such a round reads — docs/cli.md, whose last sentence is DOC_LINE, and
+# .github/workflows/greet.yml, whose comment names TRIGGER beside the pull request trigger `on:`
+# carries (a file the implement App may push and the review App may not) — the implementer's
+# handoff over the four files its change touches, the tester's handoff body at $R/test.json,
+# which the runner records beside the implementer's, the issue workspace, and the diff `gh pr
+# diff` serves, which fixture_round_handoff leaves in $diff. DOC_LINE and TRIGGER default to the
+# two text findings every world but the dropped guard's carries: the sentence this change makes
+# false, and a comment naming a push trigger the file does not carry. Closing either changes no
+# code that runs. GUARD is fixture_cli's: `dropped` drops the CLI's blank-name guard, so a blank
+# name prints a greeting where R2 of the seeded spec asks for the usage line and exit 2, and a
+# behavioural finding stands.
 #
-# Its gh routes add the pull request's one unresolved bot thread, whose finding is a wording nit
-# the reviewer answers and closes nothing for, and the resolution, which answers success, as it
-# does in every world of this fixture. `dropped` is that same change with the CLI's blank-name
-# guard gone, so a blank name prints a greeting where R2 of the seeded spec asks for the usage
-# line and exit 2, and a behavioural finding stands. A push to legion/<key> is this world's own
-# failure too, since a review round pushes nothing at all.
-review_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff extra
+# It leaves the caller's own $src, $when, $C1, $diff, $worker_pr and $worker_pr_url set, as the
+# steps it calls do, and in $base_routes the two gh routes both worlds serve: `resolveReviewThread`,
+# which answers success, as GitHub answers a role with write access and as it does in every world
+# of this fixture, and `gh pr diff`. Each world adds its own routes around them, in the order the
+# stand-in matches them (gh-standin.ts).
+round_world() {
+  local index=$1 start=$2 guard=$3
+  local doc_line=${4-'It prints the name exactly as it was given, spaces and all.'}
+  local workflow_trigger=${5-' and on every push to main'}
   fixture_open "$index" "$start"
   fixture_docs_before
   fixture_first_commit
   fixture_cli "$guard"
-  fixture_round_files 'It prints the name exactly as it was given, spaces and all.' \
-    ' and on every push to main'
+  fixture_round_files "$doc_line" "$workflow_trigger"
   fixture_head_commit
   fixture_implement '["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
   fixture_round_handoff
   fixture_workspace
+  base_routes=$(jq -n --arg diff "$diff" '{
+    resolve:{match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
+    diff:{match:"^gh pr diff", stdout:$diff}
+  }')
+}
+
+# The world a review round reads, which reviewer-text-findings' two cases build: the round's base
+# world (round_world), whose two findings this round is the first to read, and the pull request's
+# one unresolved bot thread, whose finding is a wording nit the reviewer answers and closes
+# nothing for. `dropped` is that change with the blank-name guard gone, the negative control's
+# behavioural finding. A push to legion/<key> is this world's own failure, since a review round
+# pushes nothing at all.
+review_world() {
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff base_routes extra
+  round_world "$index" "$start" "$guard"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
-  extra=$(jq -n --arg diff "$diff" '[
-    {match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
+  extra=$(jq -n --argjson base "$base_routes" '[
+    $base.resolve,
     {match:"^gh api .*graphql",
      stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
        nodes:[{id:"PRRT_kwDOrig0001", isResolved:false,
                comments:{nodes:[{author:{login:"style-bot[bot]"},
                  body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}}]}}}}}},
-    {match:"^gh pr diff", stdout:$diff}
+    $base.diff
   ]')
   fixture_write "$extra" '""' '[]'
 }
@@ -1613,17 +1635,16 @@ review_world() {
 # blank name exits 2: that sentence is false only because the code is wrong, so no text fix closes
 # the thread and it is a message to the architect. It is the negative control.
 approved_world() {
-  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff extra
-  local doc_line workflow_trigger threads entries threads_line reviews
-  # The sentence this world makes false, and the threads the approval left on it. Every world but
-  # the dropped guard's documents the name as printed exactly as given, which the trim makes
-  # false, and carries a workflow comment naming a push trigger the file does not carry: two text
-  # findings, in the order the reviewThreads route lists them, each with what the reviewer wrote
-  # and what its PR body entry says still stands. The dropped guard's documents what R2 asks for,
-  # which only that guard makes false, and carries an honest comment, so its one finding is the
-  # code's and no text fix closes it.
-  doc_line='It prints the name exactly as it was given, spaces and all.'
-  workflow_trigger=' and on every push to main'
+  local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body diff base_routes extra
+  local threads entries threads_line reviews
+  # The threads the approval left, and the two files the dropped guard's world needs in place of
+  # round_world's own. Every world but that one documents the name as printed exactly as given,
+  # which the trim makes false, and carries a workflow comment naming a push trigger the file
+  # does not carry: two text findings, in the order the reviewThreads route lists them, each with
+  # what the reviewer wrote and what its PR body entry says still stands. The dropped guard's
+  # documents what R2 asks for, which only that guard makes false, and carries an honest comment,
+  # so its one finding is the code's and no text fix closes it.
+  local -a guard_files=()
   threads=$(jq -n '[
     {id:"PRRT_kwDOfix001", path:"docs/cli.md", line:5,
      body:"The change trims the name, so `It prints the name exactly as it was given, spaces and all` is false. Say that it trims the spaces around the name.",
@@ -1633,23 +1654,14 @@ approved_world() {
      open:"the comment still names a push trigger the file does not carry"}
   ]')
   if [ -n "$guard" ]; then
-    doc_line='A blank name, like no name at all, prints the usage line on stderr and exits 2.'
-    workflow_trigger=''
+    guard_files=('A blank name, like no name at all, prints the usage line on stderr and exits 2.' '')
     threads=$(jq -n '[
       {id:"PRRT_kwDOfix101", path:"docs/cli.md", line:5,
        body:"`bun greet.ts \"  \"` prints a greeting and exits 0, so this sentence is false. R2 of the issue asks for the usage line and exit 2 on a blank name.",
        open:"a blank name still prints a greeting, so the sentence does not hold"}
     ]')
   fi
-  fixture_open "$index" "$start"
-  fixture_docs_before
-  fixture_first_commit
-  fixture_cli "$guard"
-  fixture_round_files "$doc_line" "$workflow_trigger"
-  fixture_head_commit
-  fixture_implement '["greet.ts","greet.test.ts","docs/cli.md",".github/workflows/greet.yml"]'
-  fixture_round_handoff
-  fixture_workspace
+  round_world "$index" "$start" "$guard" "${guard_files[@]}"
   # The section as the approval left it (skill://legion-worker/references/pr-body.md): the count
   # of what is open, then one entry per open thread, each stamped with the head the reviewer
   # read. The count line says what the counts are and nothing about who answers or resolves a
@@ -1675,9 +1687,9 @@ $entries"
   # would create, ahead of the route that reads the reviews already there, which are the one
   # approval. Nothing here records what a run did: the score reads the calls the stand-in
   # recorded, never these answers.
-  extra=$(jq -n --arg diff "$diff" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
+  extra=$(jq -n --argjson base "$base_routes" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
     --argjson threads "$threads" --argjson reviews "$reviews" '[
-    {match:"^gh api .*resolveReviewThread", stdout:{data:{resolveReviewThread:{thread:{isResolved:true}}}}},
+    $base.resolve,
     {match:"^gh api .*addPullRequestReviewThreadReply",
      stdout:{data:{addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/comments/[0-9]+/replies"),
@@ -1691,7 +1703,7 @@ $entries"
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews.*(-X|--method) ?POST"),
      stdout:{id:5002, html_url:($url+"#pullrequestreview-5002")}},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews},
-    {match:"^gh pr diff", stdout:$diff}
+    $base.diff
   ]')
   fixture_write "$extra" '"APPROVED"' "$reviews"
 }
@@ -2044,6 +2056,29 @@ run_reviewer_text_findings() {
   seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
+# reviewer_wake prints the message the implementer published to the reviewer's role topic, as one
+# JSON object of its topic and its text, or `null` when it published none: the call score.ts's
+# publishedTo reads (`toldReviewer`), which is either the `envoy_publish` tool's own arguments or
+# the JSON `content` of a `write` to `xd://envoy_publish`, in the first agent's transcript
+# (<run>/sessions, worker_boot). Of several it takes the last, the message the reviewer would
+# have read last.
+reviewer_wake() {
+  local transcript
+  transcript=$(find "$R/sessions" -maxdepth 1 -name '*.jsonl' | sort | sed -n 1p)
+  if [ -z "$transcript" ]; then
+    echo null
+    return
+  fi
+  jq -s '[.[] | select(.message.role? == "assistant") | (.message.content // [])[]
+    | select(.type == "toolCall")
+    | (if .name == "envoy_publish" then (.arguments? // {})
+       elif .name == "write" and (.arguments.path? == "xd://envoy_publish")
+       then ((.arguments.content? | strings | fromjson?) // {})
+       else {} end)
+    | select((.topic? | strings | endswith("-reviewer")) // false)
+    | {topic, message: (.message? // "")}] | last // null' "$transcript"
+}
+
 # The loop after an approval that left text threads open, on the world worker_fixture's <case>
 # builds: the reviewer approved the head and left its text findings as open threads (text-fixes),
 # or left the one thread whose sentence the code makes false (code-defect). The issue carries the
@@ -2051,12 +2086,11 @@ run_reviewer_text_findings() {
 # handoff, so neither agent reads a gate of its own as open. Two agents run, one after the other
 # in the order the loop runs, on the one run directory (worker_boot): first the implementer, in
 # its own live session, which the reviewer's approval reaches with the threads that approval
-# names; then the reviewer, told the implementer has finished its pass, at the head the remote
-# carries by then. Neither is told what to do with a thread: that is the rule the scenario
-# measures. The case is in the run's name and in <run>/case.txt, which threadsClosed reads back
-# and holds to the name.
+# names; then the reviewer, woken by the implementer's own message and by nothing else. Neither
+# is told what to do with a thread: that is the rule the scenario measures. The case is in the
+# run's name and in <run>/case.txt, which threadsClosed reads back and holds to the name.
 run_threads_closed() {
-  local name=$1 n=$2 index=$3 start=$4 threads_case=$5 pr head tip open
+  local name=$1 n=$2 index=$3 start=$4 threads_case=$5 pr head open wake
   worker_run_world "$index" "$start" "$threads_case"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
   seed_ts review-handoff "$R/fixture.json" "$R/review.json"
@@ -2066,11 +2100,21 @@ run_threads_closed() {
   printf 'Reviewer → implementer, %s. I approved PR #%s (%s, repository %s) at %s. Its only open findings are text, and each is the review thread I wrote on it:\n%s\nOver to you.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$open" >"$R/prompt.txt"
   worker_boot "$name-implementer" "$n" implementer
-  # The reviewer's own wake, at the head the run's remote carries once the implementer has run:
-  # the head its push made, or the approved head when it pushed nothing.
-  tip=$(git -C "$R/remote.git" rev-parse "refs/heads/legion/$worker_key")
-  printf 'Architect → reviewer, %s. The implementer has finished its pass over the threads your approval left open: PR #%s (%s, repository %s) is at %s. Over to you.\n' \
-    "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$tip" >"$R/prompt.txt"
+  # The reviewer's own wake is the implementer's message and nothing else: this loop runs in
+  # `accepting`, where the daemon starts no phase and no architect speaks, so the reviewer learns
+  # the fix is pushed from that message alone (review-threads.md step 2). An implementer that
+  # published none leaves the reviewer with no wake at all, which is what the loop's second half
+  # then is; the run fails on the send itself (threadsClosed's `toldReviewer`), and inventing a
+  # wake here would hand the reviewer the head the implementer never named. What the reviewer was
+  # given is kept whole in <run>/reviewer-wake.json, the two cases apart in its `wake`.
+  wake=$(reviewer_wake)
+  if [ "$wake" = null ]; then
+    : >"$R/prompt.txt"
+  else
+    printf 'Implementer → reviewer, %s. %s\n' "$worker_key" "$(jq -r .message <<<"$wake")" >"$R/prompt.txt"
+  fi
+  jq -n --argjson wake "$wake" --rawfile prompt "$R/prompt.txt" \
+    '{from:"implementer", wake:$wake, prompt:$prompt}' >"$R/reviewer-wake.json"
   worker_boot "$name-reviewer" "$n" reviewer
   # What the run left on its issue: every handoff record, each with its body, beside the calls the
   # gh stand-in recorded and the pushes the remote logged, which are what the score reads.

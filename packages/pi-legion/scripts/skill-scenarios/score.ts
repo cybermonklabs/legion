@@ -502,10 +502,8 @@ function runPattern(scenario: string, cases: string[]): RegExp {
  * refusal, its directory pattern and the shape a directory that names no case should have had. */
 type CasedScenario = { cases: string[]; what: string; run: RegExp; shape: string };
 /** The case <run>/case.txt names, held to `scenario`'s own cases and to `dirCase`, the case the
- * run's directory names: the rig's two records of the case, which must agree. A scenario that
- * takes no case (undefined) reads no file and has no case. */
-function runCase(runDir: string, scenario: CasedScenario | undefined, dirCase: string): string {
-  if (scenario === undefined) return "";
+ * run's directory names: the rig's two records of the case, which must agree. */
+function runCase(runDir: string, scenario: CasedScenario, dirCase: string): string {
   const named = readFileSync(path.join(runDir, "case.txt"), "utf8").trim();
   if (!scenario.cases.includes(named))
     throw new Error(
@@ -1001,7 +999,7 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // message and from nothing else (review-threads.md step 1). The round is clean only when that
   // message was sent, naming the head the fix must land above (`toldImplementer`). A
   // `REQUEST_CHANGES` round opens no such loop and sends none.
-  const toldImplementer = publishedTo(session(runDir), FIXES, [world.head]);
+  const toldImplementer = publishedTo(session(runDir), "implementer", [world.head]);
   const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
@@ -1067,22 +1065,62 @@ function namesHead(sha: string, named: string): boolean {
 function namesCommit(text: string, sha: string): boolean {
   return [...text.matchAll(/\b[0-9a-f]{7,40}\b/g)].some(([found]) => sha.startsWith(found));
 }
+/** The role a message of this loop is addressed to, which its topic ends with: a role topic is
+ * `notifications.role.legion-<project>-<issue>-<role>` (contracts' roleToken, rig.sh's
+ * run_project). The words are the role names themselves, not the `by` constants above, which
+ * name the roles of the gh calls the stand-in recorded. */
+type Role = "implementer" | "reviewer" | "architect";
+/** `text` as a JSON object, or undefined when it is neither. */
+function jsonObject(text: string): Record<string, unknown> | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return typeof value === "object" && value !== null
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+/** What a tool call published on Envoy — the topic it sent to and the message it carried — or
+ * undefined when the call published nothing. `envoy_publish` takes both as its own arguments,
+ * and a session that reaches the device as an xd:// one writes them as the JSON `content` of a
+ * `write` to `xd://envoy_publish`. A call that names the device anywhere else, a `bash` command
+ * or a message about publishing among them, published nothing. */
+function publishedIn(call: {
+  tool: string;
+  path: string;
+  args: string;
+}): { topic: string; message: string } | undefined {
+  const args = jsonObject(call.args);
+  const sent =
+    call.tool === "envoy_publish"
+      ? args
+      : call.tool === "write" && call.path === "xd://envoy_publish"
+        ? jsonObject(typeof args?.content === "string" ? args.content : "")
+        : undefined;
+  if (typeof sent?.topic !== "string") return undefined;
+  return { topic: sent.topic, message: typeof sent.message === "string" ? sent.message : "" };
+}
 /** Whether the agent published to `role`'s topic with `envoy_publish`, the call sitting in the
  * transcript because `envoy_publish` is a tool of the session and no `gh` call records it. The
  * loop after an approval that leaves text threads open runs in `accepting`, where the daemon
  * starts no phase and records no review, so every step of it is carried by one of these
  * messages and a step that sends none leaves the next role never learning its turn began
- * (review-threads.md, *After an approval that leaves text threads open*). `names` are the
- * strings the rule says the message must carry; a message that names none of them is no wake,
- * since the next role cannot act on it. The topic carries the role, so a call naming the tool,
- * the role and one of `names` is that message. */
-function publishedTo(entries: SessionEntry[], role: string, names: string[]): boolean {
+ * (review-threads.md, *After an approval that leaves text threads open*). The role is read from
+ * the topic the call sent to and from nothing else: a message to the architect that says "the
+ * reviewer can resolve these" is no wake of the reviewer, and the call's own text names both
+ * roles. `names` are the strings the rule says the message must carry, matched against the
+ * message body alone for the same reason, and a commit is named by any prefix of seven
+ * hexadecimal digits or more, as a reply names one (namesCommit). A message that names none of
+ * them is no wake, since the next role cannot act on it, and a caller with nothing to require
+ * passes an empty list, which no message satisfies rather than every message satisfying it. */
+function publishedTo(entries: SessionEntry[], role: Role, names: string[]): boolean {
   return toolCalls(entries).some((call) => {
-    const text = `${call.tool}\n${call.path}\n${call.args}`;
-    return (
-      text.includes("envoy_publish") &&
-      text.includes(role) &&
-      names.some((name) => name !== "" && text.includes(name))
+    const sent = publishedIn(call);
+    if (sent?.topic.endsWith(`-${role}`) !== true) return false;
+    return names.some(
+      (name) => name !== "" && (sent.message.includes(name) || namesCommit(sent.message, name))
     );
   });
 }
@@ -1262,7 +1300,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // which is the architect's gate because READY reads the round's first approval. The first
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
-  const toldReviewer = publishedTo(fixSession, RESOLVES, tip === undefined ? [] : [tip]);
+  const toldReviewer = publishedTo(fixSession, "reviewer", tip === undefined ? [] : [tip]);
   const toldArchitectOfHead = publishedTo(
     reviewSession,
     "architect",
@@ -1326,21 +1364,26 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
 /** A cased scenario: the cases rig.sh builds a world for, the scenario's own word for itself,
  * which a refusal of <run>/case.txt names it by, how its run directories name their case and
  * label (runPattern), and what a directory that names none should have looked like. */
-function casedScenario(scenario: string, cases: string[], what = scenario) {
+function casedScenario(scenario: string, cases: string[], what = scenario): CasedScenario {
   return {
     cases,
     what,
     run: runPattern(scenario, cases),
-    shape: `${/^[aeiou]/.test(scenario) ? "an" : "a"} ${scenario} run's directory is ${scenario}-<case>-<label>-<n>`,
+    shape: `expected ${scenario}-<case>-<label>-<n>`,
   };
 }
-/** Each cased scenario, by the name its runs' directories start with. A scenario absent here
- * takes no case. */
-const CASED: Record<string, CasedScenario> = {
-  askgate: casedScenario("askgate", ASKGATE_CASES),
-  "reviewer-text-findings": casedScenario("reviewer-text-findings", REVIEWER_CASES, "reviewer"),
-  "threads-closed": casedScenario("threads-closed", THREADS_CASES),
-};
+/** Each cased scenario, by the name its runs' directories start with, which is the name it is
+ * built from: the scenario, its cases, and the word a refusal names it by when that is not the
+ * scenario itself. A scenario absent here takes no case. */
+const CASED: Record<string, CasedScenario> = Object.fromEntries(
+  (
+    [
+      ["askgate", ASKGATE_CASES],
+      ["reviewer-text-findings", REVIEWER_CASES, "reviewer"],
+      ["threads-closed", THREADS_CASES],
+    ] as [string, string[], string?][]
+  ).map((scenario) => [scenario[0], casedScenario(...scenario)])
+);
 
 /** The agents a scenario's run boots after the first, each by the session directory it gets under
  * `<run>/sessions/` (rig.sh's worker_boot gives the first agent the run's own transcript and every
@@ -3962,7 +4005,13 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       const own = [ran, profile, labels.get(label) ?? profile].map((place) => `${place}/`);
       reason = unscored(dir, scenario, dispatch, label, labels, sharing, calls, own);
       if (reason === undefined) {
-        const scored = score(dir, run, label, runCase(dir, cased, dirCase));
+        // A scenario that takes no case reads no case.txt and is handed "".
+        const scored = score(
+          dir,
+          run,
+          label,
+          cased === undefined ? "" : runCase(dir, cased, dirCase)
+        );
         const outside = outsideReaches(calls, [work, labels.get(label) ?? work]);
         const skills = skillReaches(calls, own, label, labels);
         const flags = [
