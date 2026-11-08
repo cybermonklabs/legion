@@ -160,6 +160,7 @@ env:
       "envoy-session-stall": "envoy_session_stall",
       "ci-filters": "ci_filters",
       "ci-images": "ci_images",
+      "proof-sdk-offline": "proof_sdk_offline",
       "worker-image": "worker_image"
     }
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
@@ -275,6 +276,7 @@ jobs:
       go_notices: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_notices }}
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
+      proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.proof_sdk_offline }}
     steps:
       # On pull_request dorny/paths-filter reads the file list from the API and never reads the
       # tree; merge_group diffs with git and needs the clone (a merge group diffs its
@@ -1750,6 +1752,20 @@ jobs:
               - '.github/scripts/check-ci-images.sh'
               - '.github/scripts/ci_images.py'
               - '.github/actions/install-crane/**'
+              - '.github/workflows/ci.yaml'
+            # ci.yaml's proof-sdk-offline job: a frozen install behind a proxy that answers 504
+            # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
+            # What can send that install to one of those hosts again is every file the install
+            # reads, which is the shared group above, so the filter names it whole rather than
+            # the four sites of it this job is really about: bun.lock, which a reintroduced
+            # remote dependency necessarily moves, package.json, the root manifest the frozen
+            # install reads, packages/proof-editor/package.json, the manifest that names the
+            # tarball, and packages/proof-editor/proof-sdk-*.tgz, the file itself. Beside it:
+            # .github/scripts/ci-fault-proxy.py, the program that drives the install, and this
+            # file, which holds the job.
+            proof_sdk_offline:
+              - *bun_install
+              - '.github/scripts/ci-fault-proxy.py'
               - '.github/workflows/ci.yaml'
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
@@ -4027,6 +4043,152 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
+  # The proof that no install of this repository fetches the proof editor's upstream sources over
+  # the network: packages/proof-editor/package.json installs proof-sdk-upstream from the tarball
+  # committed beside it, so a frozen install reads those bytes out of the checkout and asks no
+  # host for them. This job runs that install behind a proxy that answers HTTP 504 for every host
+  # the old `github:sjawhar/proof-sdk#<sha>` route used - api.github.com, github.com,
+  # codeload.github.com and objects.githubusercontent.com - and fails when the proxy's log holds
+  # a single request for one of them, on a cold install and on a warm one. It refuses the
+  # behaviour rather than the text: a gate on the string `github:sjawhar/proof-sdk` would pass
+  # the same dependency spelled another way, and this one asks what the install actually
+  # reaches. It is permanent because a reintroduced remote dependency necessarily moves bun.lock,
+  # which the proof_sdk_offline filter selects on, and the install then asks the proxy for one of
+  # the four hosts: that host's count goes above zero and the report step fails naming it.
+  proof-sdk-offline:
+    needs: changes
+    if: needs.changes.outputs.proof_sdk_offline == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+
+      # .github/scripts/ci-fault-proxy.py is Python 3 from the runner image and installs nothing.
+      # `--port 0` takes a free port from the kernel and `--port-file` is written, whole and by
+      # rename, once it is listening, so this step waits for that file rather than for a fixed
+      # time and fails when it never appears. The port reaches the later steps through
+      # $GITHUB_OUTPUT; http_proxy and its three spellings stay in the `env:` of the steps that
+      # must be behind the proxy, so neither the report step below nor the Actions service is
+      # proxied. The proxy's stderr is the log every count in this job is read from, opened for
+      # appending so that the probe step can empty it after printing its own two lines and the
+      # proxy's next write still lands at the start of the emptied file.
+      - name: Start the fault proxy over the old proof-sdk route
+        id: proxy
+        run: |
+          log="$RUNNER_TEMP/ci-fault-proxy.log"
+          port_file="$RUNNER_TEMP/proxy.port"
+          rm -f "$log" "$port_file"
+          .github/scripts/ci-fault-proxy.py --mode fail \
+            --hosts api.github.com,github.com,codeload.github.com,objects.githubusercontent.com \
+            --bind 127.0.0.1 --port 0 --port-file "$port_file" </dev/null >/dev/null 2>>"$log" &
+          pid=$!
+          for _ in $(seq 1 100); do
+            if [ -s "$port_file" ]; then
+              break
+            fi
+            sleep 0.1
+          done
+          if [ ! -s "$port_file" ]; then
+            echo "::error::the fault proxy wrote no port file in 10 s, so it never listened; its log follows"
+            cat "$log"
+            exit 1
+          fi
+          {
+            echo "pid=$pid"
+            echo "port=$(cat "$port_file")"
+          } >> "$GITHUB_OUTPUT"
+          cat "$log"
+
+      # The pair that proves the proxy is in the path and that what it passes is what the install
+      # needs: api.github.com, a host of the old route, must be refused, and registry.npmjs.org,
+      # the host a frozen install of this repository still fetches every package from, must be
+      # answered. A proxy that refused everything would make the installs' silence about GitHub
+      # mean nothing. Both probes run through the same four variables the installs use, and each
+      # prints the proxy's own log line for it. The log is emptied at the end, so the counts the
+      # report step reads are the installs' alone.
+      - name: Probe the proxy before the installs
+        env:
+          http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          HTTP_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          HTTPS_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+        run: |
+          log="$RUNNER_TEMP/ci-fault-proxy.log"
+          if curl -sS -o /dev/null --max-time 30 https://api.github.com/meta; then
+            echo "::error::the proxy answered https://api.github.com/meta, so the installs below are not behind it and this job would prove nothing"
+            exit 1
+          fi
+          grep -F 'ci-fault-proxy: 504 CONNECT api.github.com:443' "$log"
+          if ! curl -sS -o /dev/null --max-time 60 https://registry.npmjs.org/; then
+            echo "::error::the proxy refused https://registry.npmjs.org/, the registry the frozen install reads, so it faults more than the four hosts of the old route"
+            exit 1
+          fi
+          grep -F 'ci-fault-proxy: pass CONNECT registry.npmjs.org:443' "$log"
+          : > "$log"
+
+      # A runner is cold by nature: it has no Bun install cache and no node_modules, and
+      # setup-bun restores the Bun binary alone (and off main not even that), so this install is
+      # the cold one without any cache being deleted to make it so.
+      - name: Frozen install behind the proxy, cold
+        env:
+          http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          HTTP_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          HTTPS_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+        run: bun install --frozen-lockfile
+
+      # The same install again, over the cache and the node_modules the step above left: the
+      # requirement is that no install reaches those hosts, warm or cold.
+      - name: Frozen install behind the proxy, warm
+        env:
+          http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          HTTP_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          HTTPS_PROXY: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+        run: bun install --frozen-lockfile
+
+      # The verdict, read off the proxy's log: the host of every refusal it wrote while the two
+      # installs ran, counted per host. Zero for each of the four is the proof. The step is
+      # behind no proxy itself - it reaches nothing - and it stops the proxy, whose liveness the
+      # kill also confirms: a proxy that had died would have failed the installs first.
+      - name: Count what the installs asked the proxy for
+        env:
+          PROXY_PID: ${{ steps.proxy.outputs.pid }}
+        run: |
+          log="$RUNNER_TEMP/ci-fault-proxy.log"
+          refused=$(awk '$2 == "504" {
+            target = $4
+            if ($3 != "CONNECT") { sub(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "", target); sub(/\/.*$/, "", target) }
+            sub(/:[0-9]*$/, "", target)
+            print target
+          }' "$log")
+          passed=$(grep -c '^ci-fault-proxy: pass ' "$log" || true)
+          reached=""
+          for host in api.github.com github.com codeload.github.com objects.githubusercontent.com; do
+            count=$(printf '%s\n' "$refused" | grep -c -x -F "$host" || true)
+            echo "$host: $count request(s) refused"
+            if [ "$count" != 0 ]; then
+              reached="$reached $host=$count"
+            fi
+          done
+          echo "requests the proxy passed through: $passed"
+          kill "$PROXY_PID"
+          if [ -n "$reached" ]; then
+            echo "::error::the frozen install reached the old proof-sdk route through the proxy:$reached; a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"
+            exit 1
+          fi
+          echo "no request for api.github.com, github.com, codeload.github.com or objects.githubusercontent.com: every byte of the proof editor's upstream sources came out of the checkout"
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+
   # The worker image's pull-request build: worker-image.yaml builds the head and publishes its
   # sha- tag only. Main's image builds are release.yaml's call of the same workflow.
   worker-image:
@@ -4270,6 +4432,7 @@ jobs:
       - envoy-e2e-local
       - envoy-session-stall
       - ci-filters
+      - proof-sdk-offline
       - worker-image
     if: ${{ always() }}
     runs-on: ubuntu-24.04

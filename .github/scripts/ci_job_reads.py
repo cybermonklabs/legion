@@ -1288,6 +1288,17 @@ GATES = [
                 for name, path in PUSH_WORKFLOWS.items()))
       + setup_go("ci-filters", f"{DAEMON}/go.mod") + CI_SELF),
 
+    # The proof-sdk-offline job: a frozen install behind a proxy that answers 504 for every host
+    # the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used, which proves the
+    # install reaches none of them. It reads what any frozen install reads (bun_job: setup-bun,
+    # the manifests, the lockfile, the patches and the tarball the proof editor installs
+    # proof-sdk-upstream from), the proxy program its first step starts, and this file.
+    gate("proof_sdk_offline", "proof-sdk-offline", reads=reads(
+        (".github/scripts/ci-fault-proxy.py",
+         f"{at('proof-sdk-offline', 'Start the fault proxy over the old proof-sdk route')} runs it; "
+         f"the four hosts it faults and the log its refusals are counted from are that step's arguments"),
+    ) + bun_job("proof-sdk-offline") + CI_SELF),
+
     # The ci-images job: the copy, and the package mode of the image gate, which reads ghcr.io.
     # These are the files that decide what those two steps do. The gate's tree mode is a step of
     # lint, which runs on every change, and no filter gates it.
