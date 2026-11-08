@@ -892,7 +892,7 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // gone, and what keeps a row from writing such a statement in its own words is the residue
 // property, which reads the row's words out of the rendered notice by taking the daemon's away
 // (stallTurnClause, stallStopClause, stallChargeClause,
-// TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn).
+// TestTheRowsOwnWordsSayNothingOfTheSubjectsTheDaemonDerives).
 //
 // It catches an end added with no opening or no sentence, an end whose sentence claims the
 // wrong thing, a clause whose values nothing fills in (stallFill), and a row left behind for an
@@ -1013,20 +1013,21 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 	}
 }
 
-// What the notice says about the claim's stalled process and about its stalled turn is the
-// daemon's own, derived from the machine's record of the stop at the moment of the stall
-// (stallTurnClause, stallStopClause), and a row of the table says nothing of either subject at
-// all — however that row is worded and whoever adds it.
+// What the notice says about the claim's stalled process, about its stalled turn and about
+// what that claim was charged is the daemon's own, derived from the machine's record of the
+// stop at the moment of the stall (stallTurnClause, stallStopClause, stallChargeClause), and a
+// row of the table says nothing of any of those subjects at all — however that row is worded
+// and whoever adds it.
 //
 // The rounds before this one answered that with phrasings: a list of the ways a row could say
 // the turn was ended, another of the ways it could say the process was stopped, both read over
 // the rendered notice. A list of phrasings is indexed by predication — this subject, that verb
 // — and that product is open, so each list let through the next verb nobody had thought of: a
 // row that said it had shut the stalled process down walked through a list holding "stopped
-// the stalled process". This is indexed by reference instead. To say anything whatever of
-// either subject a row must refer to it, and this notice's prose refers to those two by name,
-// so the row's own words are read out of the rendered notice and must name neither — whatever
-// they would have gone on to predicate of it.
+// the stalled process". This is indexed by reference instead. To say anything whatever of one
+// of those subjects a row must refer to it, and this notice's prose refers to each of them by
+// name, so the row's own words are read out of the rendered notice and must name none of them
+// — whatever they would have gone on to predicate of it.
 //
 // The row's words are read out by subtraction rather than taken from the table on trust: the
 // notice is written twice, once from the end's row and once from no words at all
@@ -1038,7 +1039,10 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 // a row writes is on the other. The charge clause is on the daemon's side of it now
 // (stallChargeClause), which is why no row has one to subtract, and the renderings below run
 // over a replacement that charged nothing and one that charged two launch failures so that
-// side is read in both of its shapes.
+// side is read in both of its shapes. Being on the daemon's side is not enough on its own: a
+// row that wrote a charge sentence of its own would leave that sentence in the residue beside
+// the derived one, and the notice would carry both, so the charge is a subject of
+// stallSubjectNames like the other two and a row that names it fails here.
 //
 // What this cannot catch is a row that refers to a subject without naming it: a pronoun bound
 // to the derived clause its words are appended to ("and shut it down"), or some name for a
@@ -1046,7 +1050,7 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 // different shape from the lists' — it needs a row that talks about the stalled process while
 // avoiding every word for the thing it is talking about, where a list needed only a verb
 // nobody had listed.
-func TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn(t *testing.T) {
+func TestTheRowsOwnWordsSayNothingOfTheSubjectsTheDaemonDerives(t *testing.T) {
 	c := rigClaim()
 	for _, end := range supervise.ProcessEnds() {
 		for _, charged := range []int{0, 2} {
@@ -1091,27 +1095,28 @@ func renderTheRowsOwnWords(t *testing.T, c supervise.Claim, end supervise.Proces
 		return
 	}
 	if named, _ := stallNamesASubject(bare); named == "" {
-		t.Errorf("the daemon's own words in the notice of %q are %q, and no word of stallSubjectNames is in them: those names are how this property finds a row talking about the stalled process or the stalled turn, and names the daemon's own sentences do not use are names that catch nothing", end, bare)
+		t.Errorf("the daemon's own words in the notice of %q are %q, and no word of stallSubjectNames is in them: those names are how this property finds a row talking about the stalled process, the stalled turn or the charge, and names the daemon's own sentences do not use are names that catch nothing", end, bare)
 	}
 	for _, said := range residue {
 		named, subject := stallNamesASubject(said)
 		if named == "" {
 			continue
 		}
-		t.Errorf("the row for %q writes %q, and the word %q in it names %s: every statement this notice makes about the claim's stalled process and about its stalled turn is derived from the machine's own record of the stop, read at the stall (stallTurnClause, stallStopClause), and a row is written once and knows neither — so a row may say nothing of them, not even something true. Say what the daemon did to the launch, the session, the claim or the task, and leave %s to the daemon's own sentences",
+		t.Errorf("the row for %q writes %q, and the word %q in it names %s: every statement this notice makes about the claim's stalled process, about its stalled turn and about what that claim was charged is derived from the machine's own record of the stop and of the replacement, read at the stall (stallTurnClause, stallStopClause, stallChargeClause), and a row is written once and knows none of them — so a row may say nothing of them, not even something true. Say what the daemon did to the launch, the session, the claim or the task, and leave %s to the daemon's own sentences",
 			end, said, named, subject, subject)
 	}
 }
 
-// The three subjects the derived clauses answer for, which a row may not speak of, as this
+// The four subjects the derived clauses answer for, which a row may not speak of, as this
 // notice's own prose names them.
 const (
 	stallTurnSubject    = "the stalled turn"
 	stallProcessSubject = "the claim's stalled process"
 	stallStopSubject    = "the stop of that process"
+	stallChargeSubject  = "what the claim was charged"
 )
 
-// stallSubjectNames is what this notice's own prose can name those three by. The names of the
+// stallSubjectNames is what this notice's own prose can name those four by. The names of the
 // running thing are what a deployment of this daemon calls it, since a row that called the pod
 // or the worker stopped would be read by an owner as the stalled process stopped; "session" is
 // not among them, because a session is what outlives the stop and is brought back on a process
@@ -1124,8 +1129,12 @@ const (
 // "sandbox", and the tmux deployment's rows could have said either. What is written out is
 // what belongs to no runtime in particular — the turn, the process itself, the worker and the
 // agent that is in it, the container it runs in, the incarnation that is its address
-// (runtime.Locator's own word for a process rather than a slot), and the stop this notice
-// answers for.
+// (runtime.Locator's own word for a process rather than a slot), the stop this notice answers
+// for, and the charge: the charge itself, and the launch failure that is the only thing this
+// replacement can charge (the daemon's stallChargeClause). The claim's launch budget is not
+// among them, since the budget is the claim's standing allowance and holds every failure of
+// its life, where the charge is what this one replacement took out of it — and the rows name
+// that budget to say what can end the claim while it waits.
 //
 // It is a list of words, and that is worth saying plainly: what the residue cannot do is judge
 // what it finds without one. What it is not is a list of phrasings. A new verb buys nothing
@@ -1138,8 +1147,10 @@ var stallSubjectNames = stallNamesOfTheSubjects()
 // every runtime's own names for the process it runs beside them.
 func stallNamesOfTheSubjects() map[string]string {
 	named := map[string]string{
-		// The stop is named by its verb as well, which has no plural of its own.
+		// The stop and the charge are named by their verbs as well, which have no plural of
+		// their own.
 		"stopped": stallStopSubject, "stopping": stallStopSubject,
+		"charged": stallChargeSubject, "charging": stallChargeSubject,
 	}
 	add := func(subject string, names ...string) {
 		for _, name := range names {
@@ -1149,6 +1160,7 @@ func stallNamesOfTheSubjects() map[string]string {
 	add(stallTurnSubject, "turn")
 	add(stallStopSubject, "stop")
 	add(stallProcessSubject, "process", "worker", "agent", "container", "incarnation")
+	add(stallChargeSubject, "charge", "failure")
 	for _, runtimes := range stallRuntimeProcessNames() {
 		add(stallProcessSubject, runtimes.member, runtimes.label)
 	}

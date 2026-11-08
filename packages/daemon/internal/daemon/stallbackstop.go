@@ -227,8 +227,9 @@ const stallBackstopNotice = "worker-stalled"
 // about the stalled turn and about the charge. A row of stallBackstopEnds words none of them,
 // and what holds every row to that is read from the notice itself rather than from the rows:
 // the daemon's own words are taken out of the rendered text, and what is left, which is the
-// row's own words and nothing else, must contain none of the names the test lists for either
-// subject (stallRecordInWords, TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn). That
+// row's own words and nothing else, must contain none of the names the test lists for any of
+// those three subjects (stallRecordInWords,
+// TestTheRowsOwnWordsSayNothingOfTheSubjectsTheDaemonDerives). That
 // is a list of names, so a row that speaks of a subject by pronoun, or by a name the list
 // lacks, passes it; the rows are reviewed constants, and the test's own comment states the gap.
 func stallBackstopRecord(c supervise.Claim, stop supervise.StallBackstopStop, silent time.Duration) string {
@@ -444,16 +445,18 @@ func stallChargeClause(stop supervise.StallBackstopStop) string {
 // stopPrevious), so both subjects belong to the clauses the daemon derives from the machine's
 // own record of the stop (stallTurnClause, stallStopClause, stallProcessFate). A row that names
 // either of them by a name the property lists is a row the property fails
-// (TestTheRowsOwnWordsSayNothingOfTheStalledProcessOrTheTurn), so each row below says what the
-// daemon did to the launch, the session, the claim or the task, and leaves those two subjects
-// to the daemon's own sentences.
+// (TestTheRowsOwnWordsSayNothingOfTheSubjectsTheDaemonDerives), so each row below says what
+// the daemon did to the launch, the session, the claim or the task, and leaves those two
+// subjects to the daemon's own sentences.
 //
 // No row says what the claim was charged either, for the same reason: a start the runtime
 // refuses inside the replacement is charged like any other launch failure (supervise's
 // launchNow), and the end can still be the relaunch that worked, so a row claiming the stall
 // charged nothing would be a sentence the claim's own budgets contradict. That clause is the
 // third the daemon derives, from what the machine says this replacement charged
-// (stallChargeClause).
+// (stallChargeClause), and the charge is the third subject that property holds the rows off:
+// a row that wrote a charge sentence of its own would reach the owner beside the derived one,
+// and the two would say different things in the one notice.
 var stallBackstopEnds = map[supervise.ProcessEnd]stallEndWords{
 	supervise.EndRelaunched: {
 		did:     "and started a replacement in its place",

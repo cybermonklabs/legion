@@ -959,6 +959,30 @@ func TestTheBackstopReportsTheFailuresThisReplacementCharged(t *testing.T) {
 	}
 }
 
+// And what an earlier replacement of the same claim charged is not what this one charged, so
+// the count this notice is rendered from starts at nothing at the head of every replacement
+// (replaceProcess, failuresCharged, StallBackstopStop.LaunchFailures). The case above reads
+// the claim's budget, which is a different field and one no replacement resets: a machine
+// that never cleared its own count would still report nothing there, since the count is zero
+// until something charges it. So the earlier charge is written onto the machine directly,
+// exactly as the earlier refusal is below, because every path that charges one either fails
+// the claim or goes on to a start that clears it (launchNow): the clear at the head of the
+// replacement is what this pins, and without it a notice tells the owner of a stall that its
+// relaunch cost launch failures another replacement charged.
+func TestTheBackstopReportsNoChargeFromAnEarlierReplacement(t *testing.T) {
+	h, stops := backstopReports(t)
+	last, swept := stalledSweep(h)
+	h.m.failuresCharged = 2
+
+	h.must(h.backstop(last))
+
+	h.wantState(StateLaunching)
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the relaunch it made with nothing of its own charged, %+v", *stops, want)
+	}
+}
+
 // The daemon's own stop inside the start: the launch wrote itself, the runtime was asked, and
 // the context ended there. The process the launch let go was never stopped, and nothing stops
 // it before the next boot's orphan reconciliation, so the owner hears that rather than that it
