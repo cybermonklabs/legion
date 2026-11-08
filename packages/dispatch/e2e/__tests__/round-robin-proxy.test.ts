@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Server, Subprocess } from "bun";
 
 import type { DispatchProcess } from "../harness-processes";
@@ -135,11 +138,15 @@ const b = startUpstream("b");
 const proxyPort = freePort();
 const origin = `http://127.0.0.1:${proxyPort}`;
 let proxy: Subprocess<"ignore", "pipe", "inherit">;
+/** A home for every child this file starts, so none of them reads the caller's. */
+const childHome = temporaryDirectory("round-robin-proxy-home");
 
 beforeAll(async () => {
   proxy = Bun.spawn(["bun", proxyScript], {
     env: {
-      ...process.env,
+      PATH: process.env.PATH ?? "",
+      HOME: childHome,
+      TMPDIR: tmpdir(),
       DISPATCH_E2E_PORT: String(proxyPort),
       DISPATCH_E2E_PORT_A: String(a.server.port),
       DISPATCH_E2E_PORT_B: String(b.server.port),
@@ -380,7 +387,7 @@ describe("round-robin proxy", () => {
 describe("DISPATCH_E2E_PROCESSES", () => {
   const run = async (argv: string[], env: Record<string, string>) => {
     const child = Bun.spawn(argv, {
-      env: { PATH: process.env.PATH ?? "", ...env },
+      env: { PATH: process.env.PATH ?? "", HOME: childHome, TMPDIR: tmpdir(), ...env },
       stderr: "pipe",
       stdout: "pipe",
     });
