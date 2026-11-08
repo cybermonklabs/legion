@@ -49,7 +49,7 @@ const maxMessageBytes = 64 << 20
 // such socket hold 1,538,884,096 bytes, more than a third of the pod, for the 20,992 bytes it
 // uploaded.
 //
-// 60 MiB, 62,914,560 bytes, is that bound, from three figures:
+// 70 MiB, 73,400,320 bytes, is that bound, from three figures:
 //
 //   - It clears every frame a room can send one socket, because a frame arriving while the budget
 //     or more waits closes a socket whatever it is doing: a budget at or under the largest frame
@@ -103,7 +103,7 @@ const maxMessageBytes = 64 << 20
 // either way, and the bytes it was holding are the pod's loss, not its allowance. The arithmetic
 // above stays true at every limit at or above the calibration: what the limit leaves above the
 // room budget grows with the limit, since the budget is a fixed share of it, and the frames the
-// rooms under a full budget can send grow with the budget, while these twenty queues stay 60 MiB
+// rooms under a full budget can send grow with the budget, while these twenty queues stay 70 MiB
 // each. Below the calibration it is the limit, not the budget, that gives way: fewer than twenty
 // silent sockets fit beside a full room budget, and no budget that clears the largest frame
 // could make twenty fit, since twenty frames at the message floor are 1,342,177,280 bytes on
