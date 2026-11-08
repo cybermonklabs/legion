@@ -29,8 +29,11 @@ const autoMergeTimeout = 30 * time.Second
 // inside. Each read is bounded in itself at the log client's githubrest.Client.JobLogTimeBound,
 // a minute in production, and they go eight at a time (ghautomerge's jobLogReads), so three
 // minutes is three such waves: twenty-four failing jobs of a merge group read at the production
-// bound. A read this deadline cuts short is a log the daemon could not read, told in that run's
-// own line as every other unread log is, and the removal is recorded either way.
+// bound. Those eight are this removal's own: the process reads no more than githubrest's
+// jobLogReadsAtOnce logs at once over every issue lane together, so a removal reading
+// while other lanes read waits for its places inside this deadline. A read this deadline cuts
+// short is a log the daemon could not read, told in that run's own line as every other unread
+// log is, and the removal is recorded either way.
 const removalLogReads = 3 * time.Minute
 
 // mergeWaitWarn is how long a ready_merge row waits before its issue's architect is told once that
@@ -274,7 +277,7 @@ func (r *outbox) queueConflict(ctx context.Context, row record.OutboxRow, payloa
 	now := r.now().UTC()
 	if payload.Unmergeable.IsZero() || payload.UnmergeableBase != armed.QueueBase {
 		payload.Unmergeable, payload.UnmergeableBase = now, armed.QueueBase
-		if err := r.markPayload(ctx, row, *payload); err != nil {
+		if _, err := r.replacePayload(ctx, row, *payload, nil); err != nil {
 			return false, fmt.Errorf("record the merge-queue entry outbox row %d found unmergeable: %w", row.ID, err)
 		}
 		return false, nil
@@ -353,7 +356,7 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 			return "", conflict
 		}
 		payload.ConflictUnknown = now
-		if err := r.markPayload(ctx, row, *payload); err != nil {
+		if _, err := r.replacePayload(ctx, row, *payload, nil); err != nil {
 			return "", fmt.Errorf("record the merge state GitHub had not computed when outbox row %d read its conflict removal: %w", row.ID, err)
 		}
 		return "", conflict
@@ -367,21 +370,12 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 	if err != nil {
 		return "", err
 	}
-	// The message is written in the payload's own transaction, which owns the commit hook that
-	// write registers (projectRecords, intake.OnCommit), so its lane is woken as the payload
-	// commits.
-	scoped, committed := intake.WithCommitHooks(ctx)
-	var replaced bool
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		var err error
-		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, *payload); err != nil || !replaced {
-			return err
-		}
-		return r.records.Enqueue(scoped, tx, told)
-	}); err != nil {
+	// The message is enqueued in the payload's own transaction (replacePayload), so its lane is
+	// woken as the payload commits and a replacement that did not take writes neither.
+	replaced, err := r.replacePayload(ctx, row, *payload, &told)
+	if err != nil {
 		return "", fmt.Errorf("record the further submission outbox row %d makes after the merge queue's conflict: %w", row.ID, err)
 	}
-	committed()
 	if !replaced {
 		return "", conflict
 	}
@@ -390,18 +384,33 @@ func (r *outbox) conflictRemoval(ctx context.Context, row record.OutboxRow, payl
 	return resubmit(ctx)
 }
 
-// markPayload writes payload back to row under the row's lease, in a transaction of its own: the
-// mark a merge row's decision leaves for its next run (queueConflict's unmergeable entry,
-// conflictRemoval's uncomputed merge state), which nothing else accompanies. A replacement that
-// did not take — the row's lease gone to another worker — is no failure here, since that worker
-// reads GitHub itself; a write that failed is, and its caller says which mark it was.
-// rememberWait's write and conflictRemoval's own are not this: each enqueues a row with the
-// payload, under the transaction's commit hooks, and reads whether the replacement took.
-func (r *outbox) markPayload(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge) error {
-	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		_, err := r.records.ReplaceOutboxPayload(ctx, tx, row.ID, row.LeaseToken, payload)
-		return err
-	})
+// replacePayload writes payload back to row under the row's lease, with told enqueued in the same
+// transaction where there is one to enqueue (nil where there is none), and answers whether the
+// replacement took. It is the one lease-guarded payload write a merge row makes: the marks a
+// decision leaves for the row's next run (queueConflict's unmergeable entry, conflictRemoval's
+// uncomputed merge state), the message the further submission is told by (conflictRemoval) and
+// the notice of a wait (rememberWait).
+//
+// A replacement that did not take — the row's lease gone to another worker — is no failure, since
+// that worker reads GitHub itself; nothing at all is written then, told included, so a payload
+// never records something as told without the row that tells it. A write that failed is a
+// failure, and each caller says in its own sentence which write it was. The transaction owns the
+// commit hook write registers (projectRecords, intake.OnCommit), so an enqueued row's lane is
+// woken as the payload commits.
+func (r *outbox) replacePayload(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge, told *record.OutboxRow) (bool, error) {
+	scoped, committed := intake.WithCommitHooks(ctx)
+	var replaced bool
+	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
+		var err error
+		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, payload); err != nil || !replaced || told == nil {
+			return err
+		}
+		return r.records.Enqueue(scoped, tx, *told)
+	}); err != nil {
+		return false, err
+	}
+	committed()
+	return replaced, nil
 }
 
 // factApplied reports whether the fact under key has already been applied, the mark
@@ -472,27 +481,21 @@ func (r *outbox) rememberWait(ctx context.Context, row record.OutboxRow, payload
 	}
 	payload.Armed = payload.Armed || arm
 	payload.Warned = payload.Warned || warn
-	var notice record.OutboxRow
+	// The notice is enqueued in the payload's own transaction (replacePayload), so the row is
+	// never recorded as warned without it, a replacement that did not take writes neither, and
+	// the notice's lane is woken as the payload commits.
+	var notice *record.OutboxRow
 	if warn {
-		var err error
-		if notice, err = record.NewOutboxRow(row.Issue, readyMergeWaiting(payload, waited, cause), now); err != nil {
+		told, err := record.NewOutboxRow(row.Issue, readyMergeWaiting(payload, waited, cause), now)
+		if err != nil {
 			return err
 		}
+		notice = &told
 	}
-	// The notice is written in the payload's own transaction, which owns the commit hook that write
-	// registers (projectRecords, intake.OnCommit), so its lane is woken as the payload commits.
-	scoped, committed := intake.WithCommitHooks(ctx)
-	var replaced bool
-	if err := pgx.BeginFunc(scoped, r.pool, func(tx pgx.Tx) error {
-		var err error
-		if replaced, err = r.records.ReplaceOutboxPayload(scoped, tx, row.ID, row.LeaseToken, payload); err != nil || !replaced || !warn {
-			return err
-		}
-		return r.records.Enqueue(scoped, tx, notice)
-	}); err != nil {
+	replaced, err := r.replacePayload(ctx, row, payload, notice)
+	if err != nil {
 		return fmt.Errorf("record what outbox row %d learned while it waits: %w", row.ID, err)
 	}
-	committed()
 	if warn && replaced {
 		r.log.Warn("outbox READY merge is still waiting on GitHub; its architect is told once", "row", row.ID, "issue", row.Issue,
 			"number", payload.Number, "head", payload.Head, "waited", waited.Round(time.Minute), "error", cause)
@@ -557,15 +560,15 @@ func readyMergeWaiting(payload record.ReadyMerge, waited time.Duration, cause er
 // awaiting_merge at the same head and the daemon submits it — so the architect's topic is left
 // alone, and the issue's own record carries why a second submission of the same head stands on
 // it. The commit the queue built for such a removal usually carries no failing run at all, which
-// the message says; one that does names each, with what its job's log says failed
-// (ghautomerge.Removed.Runs), so the tree reads the cause here rather than fetching a
-// merge-group log.
+// the message says; one that does names each, with what its job's log says failed, in the one
+// sentence every telling of a removal names them with (ghautomerge.Removed.Failures), so the
+// tree reads the cause here rather than fetching a merge-group log.
 func readyMergeResubmitted(payload record.ReadyMerge, conflict *ghautomerge.ConflictRemoval) record.MessagePost {
-	checks := "and no check failed"
-	if runs := conflict.Removal.Runs; len(runs) > 0 {
-		checks = "while these checks failed on the commit the queue built for it: " + ghautomerge.FailingRuns(runs)
+	checks := "No check failed on the commit the queue built for it."
+	if failures := conflict.Removal.Failures(); failures != "" {
+		checks = failures + "."
 	}
-	return record.MessagePost{Body: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s once more: GitHub's merge queue took the pull request out at %s without merging it (%s), while GitHub reports its merge state %s. That merge state leaves the conflict with an entry ahead of it in the queue rather than with the base, %s, so nothing else would ever submit this merge again. This is the one further submission this head gets: a second removal of it for a conflict ends the merge and tells the architect.",
+	return record.MessagePost{Body: fmt.Sprintf("Legion submitted the merge of pull request #%d at READY's head %s once more: GitHub's merge queue took the pull request out at %s without merging it (%s), while GitHub reports its merge state %s. That merge state leaves the conflict with an entry ahead of it in the queue rather than with the base, so nothing else would ever submit this merge again. %s This is the one further submission this head gets: a second removal of it for a conflict ends the merge and tells the architect.",
 		payload.Number, payload.Head, conflict.Removal.At.UTC().Format(time.RFC3339), conflict.Removal.Reason, conflict.MergeState, checks)}
 }
 

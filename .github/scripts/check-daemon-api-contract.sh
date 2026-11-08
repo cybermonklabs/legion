@@ -60,6 +60,7 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import quote
 
@@ -172,14 +173,20 @@ def built_on(what: str) -> str:
     )
 
 
-def number_in(text: str, what: str) -> int:
+def number_in(text: str, what: str, advice: Callable[[], str] | None = None) -> tuple[int, int]:
+    """The contract number text declares and the line it is declared on, so the one pattern is
+    applied once wherever a number is read: the line is what a refusal names to say where to
+    edit. advice is called for what a refusal adds after its own sentence, the free number to
+    take where the caller already knows the base's; it is called only when the refusal is made,
+    since reading it costs this check its reads of the open pull requests."""
     match = DECLARED.search(text)
     if match is None:
         fatal(
             DECLARATION,
-            f"could not read {what}: it declares no `const DaemonAPIVersion = <number>` line",
+            f"could not read {what}: it declares no `const DaemonAPIVersion = <number>` line"
+            f"{advice() if advice else ''}",
         )
-    return int(match.group(1))
+    return int(match.group(1)), text.count("\n", 0, match.start()) + 1
 
 
 def payload_field(payload: dict, *path: str) -> str:
@@ -235,7 +242,7 @@ def declared_by_open_pull_requests(repository: str) -> dict[int, list[int]]:
             ref = f"refs/pull/{number}/head"
             head = node.get("headRefOid")
             at = f"{DECLARATION} at {ref} (#{number}, head {head})"
-            holders.setdefault(number_in(read_at(repository, ref, at), at), []).append(number)
+            holders.setdefault(number_in(read_at(repository, ref, at), at)[0], []).append(number)
         info = listing.get("pageInfo") or {}
         if not info.get("hasNextPage"):
             return holders
@@ -300,7 +307,7 @@ else:
     base_is = f"the tip of {base_ref}"
 
 base_text = read_at(repository, base_ref, f"{DECLARATION} on the base, {base_is}")
-base_number = number_in(base_text, f"{DECLARATION} on the base, {base_is}")
+base_number, _ = number_in(base_text, f"{DECLARATION} on the base, {base_is}")
 
 # Every refusal from here on knows the base's number, so each one names a free number.
 try:
@@ -318,15 +325,11 @@ except (OSError, UnicodeDecodeError) as error:
         f"could not read {DECLARATION} in this checkout: {one_line(error)}; the base, {base_is}, "
         f"carries {base_number}. {renumber(repository, base_number)}",
     )
-match = DECLARED.search(tree_text)
-if match is None:
-    fatal(
-        DECLARATION,
-        f"{DECLARATION} declares no `const DaemonAPIVersion = <number>` line, so what contract "
-        f"this change declares cannot be read; the base, {base_is}, carries {base_number}. "
-        f"{renumber(repository, base_number)}",
-    )
-tree_number = int(match.group(1))
+tree_number, line = number_in(
+    tree_text,
+    f"{DECLARATION} in this checkout",
+    lambda: f"; the base, {base_is}, carries {base_number}. {renumber(repository, base_number)}",
+)
 
 if tree_number > base_number:
     print(
@@ -354,9 +357,6 @@ if tree_text.rstrip("\n") == built_text.rstrip("\n"):
     )
     raise SystemExit(0)
 
-# The line the declaration is on, so the refusal names where to edit: the newlines before the
-# match the search above already holds.
-line = tree_text.count("\n", 0, match.start()) + 1
 fatal(
     DECLARATION,
     f"{DECLARATION}:{line}: this change touches {DECLARATION} and declares daemon "

@@ -48,20 +48,21 @@ func TestAJobLogReadKeepsTheEndOfTheLog(t *testing.T) {
 			defer server.Close()
 			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 			tail, err := client.JobLog(context.Background(), 7)
+			kept := string(tail)
 			switch {
 			case err != nil:
 				t.Fatalf("JobLog = %v, want the log's end", err)
 			case len(tail) > JobLogTail:
 				t.Fatalf("JobLog kept %d bytes, want no more than the %d of its tail", len(tail), JobLogTail)
-			case !strings.HasSuffix(tail, tc.log[len(tc.log)-len(logLine(0)):]):
-				t.Fatalf("JobLog ends %q, want the log's last line", tail[max(0, len(tail)-80):])
-			case !strings.HasPrefix(tail, "line "):
-				t.Fatalf("JobLog starts %q, want a whole line: the line the cut fell in is left out", tail[:min(len(tail), 80)])
+			case !strings.HasSuffix(kept, tc.log[len(tc.log)-len(logLine(0)):]):
+				t.Fatalf("JobLog ends %q, want the log's last line", kept[max(0, len(kept)-80):])
+			case !strings.HasPrefix(kept, "line "):
+				t.Fatalf("JobLog starts %q, want a whole line: the line the cut fell in is left out", kept[:min(len(kept), 80)])
 			}
-			if len(tc.log) <= JobLogTail && tail != tc.log {
+			if len(tc.log) <= JobLogTail && kept != tc.log {
 				t.Fatalf("JobLog of a log that fits the tail = %d bytes, want all %d of it", len(tail), len(tc.log))
 			}
-			if len(tc.log) > JobLogTail && strings.Contains(tail, logLine(0)) {
+			if len(tc.log) > JobLogTail && strings.Contains(kept, logLine(0)) {
 				t.Fatalf("JobLog of a log longer than its tail carries the log's first line, want its end alone")
 			}
 		})
@@ -83,7 +84,7 @@ func TestAJobLogReadFollowsGitHubsRedirectToBlobStorage(t *testing.T) {
 	defer server.Close()
 	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
 	tail, err := client.JobLog(context.Background(), 7)
-	if err != nil || tail != logOf(3) || redirects != 1 {
+	if err != nil || string(tail) != logOf(3) || redirects != 1 {
 		t.Fatalf("JobLog = %q, %v after %d redirects; want the blob's log read through GitHub's one redirect", tail, err, redirects)
 	}
 }
@@ -139,7 +140,7 @@ func TestAJobLogReadSaysWhyItReadNoLog(t *testing.T) {
 			defer server.Close()
 			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets", JobLogTimeout: tc.bound}
 			tail, err := client.JobLog(context.Background(), 7)
-			if tail != "" {
+			if len(tail) > 0 {
 				t.Fatalf("JobLog kept %d bytes of a read that answered no log", len(tail))
 			}
 			if tc.want != nil {
@@ -173,5 +174,73 @@ func TestAJobLogReadTellsItsOwnBoundFromItsCallers(t *testing.T) {
 	_, err := client.JobLog(ctx, 7)
 	if err == nil || errors.Is(err, ErrJobLogSlow) || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("JobLog under a caller's spent budget = %v, want that budget's own error", err)
+	}
+}
+
+// A body GitHub names no length for — a chunked answer, or a connection the store closes to end
+// it — is read into a ring that grows as its bytes arrive, where the whole 64 MiB tail used to be
+// allocated before the first of them: the memory of a 54 MB log spent on a log of a few lines.
+// The ring is what the read answers with, so what one cost is the capacity of what it answers.
+func TestAJobLogReadGrowsItsRingWithABodyOfUnnamedLength(t *testing.T) {
+	// Some 108,000 bytes: past the length the ring starts at, under the leap to the whole tail.
+	log := logOf(4000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A flushed answer carries no Content-Length: its head is already sent when the body is
+		// written, which is how GitHub's store answers a log it streams.
+		w.(http.Flusher).Flush()
+		_, _ = io.WriteString(w, log)
+	}))
+	defer server.Close()
+	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	tail, err := client.JobLog(context.Background(), 7)
+	if err != nil || string(tail) != log {
+		t.Fatalf("JobLog = %d bytes, %v; want all %d of a body whose length GitHub named none for", len(tail), err, len(log))
+	}
+	if cap(tail) > 2*len(log) {
+		t.Fatalf("JobLog read %d bytes into a ring of %d, want one grown with the body rather than the %d of the whole tail", len(tail), cap(tail), JobLogTail)
+	}
+}
+
+// Every job-log read this process makes takes one of jobLogReadsAtOnce places, whatever issue's
+// removal asked for it. One removal reads eight logs at once (ghautomerge's jobLogReads), which
+// bounds that removal and nothing else: with no limit over the lanes together, every removal
+// being told reads its own eight, each holding a ring of up to JobLogTail against the daemon
+// pod's 8 GiB.
+func TestJobLogReadsTakeOneOfTheProcessesPlaces(t *testing.T) {
+	reads := jobLogReadsAtOnce + 1
+	arrived, release := make(chan struct{}, reads), make(chan struct{}, reads)
+	free := func() {
+		for range reads {
+			release <- struct{}{}
+		}
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- struct{}{}
+		<-release
+		_, _ = io.WriteString(w, logOf(1))
+	}))
+	defer server.Close()
+	defer free() // every read is let go before the server is closed, which waits for them
+	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	done := make(chan error, reads)
+	for range reads {
+		go func() {
+			_, err := client.JobLog(context.Background(), 7)
+			done <- err
+		}()
+	}
+	for range jobLogReadsAtOnce {
+		<-arrived
+	}
+	select {
+	case <-arrived:
+		t.Fatalf("read %d of %d reached GitHub while the other %d were in flight, want it waiting for a place", reads, reads, jobLogReadsAtOnce)
+	case <-time.After(50 * time.Millisecond):
+	}
+	free()
+	for range reads {
+		if err := <-done; err != nil {
+			t.Fatalf("a read that waited for its place = %v, want the log it waited for", err)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package ghautomerge
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -347,7 +348,9 @@ func ReadFailingTests(ctx context.Context, logs githubrest.Client, err error) {
 // daemon's readyMerge). Read one after another, three failing jobs — an ordinary matrix shape —
 // would hold the row three minutes; read at once they cost about one read instead, and the limit
 // is what holds a merge group with dozens of failing jobs to eight reads of GitHub open at a
-// time, and so to eight rings of githubrest.JobLogTail, rather than one per job.
+// time, and so to eight rings of githubrest.JobLogTail, rather than one per job. It bounds this
+// one removal: the reads of every removal running at once are counted together by githubrest's
+// own jobLogReadsAtOnce, which a read of this eight waits for its place among.
 const jobLogReads = 8
 
 // jobFailures is what the log of Actions job id says failed, written as the end of that run's own
@@ -498,10 +501,14 @@ func cutLine(line string) string {
 // The "✘ <n> [project] › …" rows a browser runner prints as it goes are deliberately left out:
 // they stand in the middle of the stream, which a read of the end never reaches. A tail stating
 // neither shape names no test, which the caller reports as a log it could not read (jobFailures).
-func failingTests(tail string) ([]string, string, int) {
-	lines := strings.Split(tail, "\n")
+//
+// tail is the bytes of the log as the read answers them, parsed where they lie: githubrest.JobLog
+// hands over the ring it streamed the body through, so a 54 MB log is never copied into a string
+// of its own first, and what this read copies out of it is the names and the one line it keeps.
+func failingTests(tail []byte) ([]string, string, int) {
+	lines := bytes.Split(tail, []byte("\n"))
 	for i, line := range lines {
-		if stamp := logStamp.FindStringIndex(line); stamp != nil {
+		if stamp := logStamp.FindIndex(line); stamp != nil {
 			lines[i] = line[stamp[1]:]
 		}
 	}
@@ -518,21 +525,21 @@ func failingTests(tail string) ([]string, string, int) {
 		more++
 	}
 	for _, line := range lines {
-		failure := goFailure.FindStringSubmatch(line)
+		failure := goFailure.FindSubmatch(line)
 		if failure == nil {
 			continue
 		}
 		if first == "" {
-			first = cutLine(strings.TrimSpace(line))
+			first = cutLine(string(bytes.TrimSpace(line)))
 		}
-		name(failure[1])
+		name(string(failure[1]))
 	}
 	if len(names) > 0 {
 		return names, first, more
 	}
 	block := -1
 	for i, line := range lines {
-		if browserCount.MatchString(line) {
+		if browserCount.Match(line) {
 			block = i
 		}
 	}
@@ -540,8 +547,8 @@ func failingTests(tail string) ([]string, string, int) {
 		return nil, "", 0
 	}
 	for _, line := range lines[block+1:] {
-		row := strings.TrimSpace(line)
-		if !strings.HasPrefix(line, " ") || !strings.Contains(row, browserSeparator) {
+		row := string(bytes.TrimSpace(line))
+		if !bytes.HasPrefix(line, []byte(" ")) || !strings.Contains(row, browserSeparator) {
 			break
 		}
 		if first == "" {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -21,7 +22,11 @@ import (
 // shorter than JobLogBound loses by being read as its end alone is told under JobLogBound.
 //
 // What one read costs in memory is this, not the log's length: the ring the answer is streamed
-// through is this long, or the body's own length where GitHub names a shorter one.
+// through is never longer than this, it is the body's own length where GitHub names a shorter
+// one and grows to what arrives where GitHub names none (jobLogRingStart), and it is what the
+// read answers, since its bytes are handed to their parser where they lie rather than copied
+// into a string of their own. How many such rings stand in this process at once is
+// jobLogReadsAtOnce.
 const JobLogTail = 64 << 20
 
 // JobLogBound is how far into a job's log JobLog reads before it gives up: a log longer than this
@@ -67,6 +72,33 @@ func (c Client) JobLogTimeBound() time.Duration {
 // sends.
 const jobLogRefusalBody = 64 << 10
 
+// jobLogReadsAtOnce is how many job-log reads this process makes at once, over every issue lane
+// together: one place per read in flight, taken before the request is made and given back once
+// the body has been read, so a read that waits for a place has allocated no ring at all. One
+// read holds a ring of up to JobLogTail, so sixteen is a gigabyte of rings at the worst, an
+// eighth of the 8 GiB the daemon pod runs in. The eight a single removal reads at a time
+// (ghautomerge's jobLogReads) bounds that one removal and nothing else: without this limit every
+// issue lane's removal reads its own eight at once, and the lanes are counted by nobody. Sixteen
+// is two such waves, so two removals read at full speed together and a third waits for them
+// rather than the pod's memory running out.
+const jobLogReadsAtOnce = 16
+
+var jobLogReaders = make(chan struct{}, jobLogReadsAtOnce)
+
+// jobLogRingStart is how long the ring is before a byte of the body has arrived where GitHub
+// names no length for it, and jobLogRingLeap how long a ring that is growing gets before it
+// takes the whole of JobLogTail at once. A body whose length GitHub names is read into exactly
+// that much memory; one that names none — a chunked answer, or a connection the store closes to
+// end the body — used to cost the whole 64 MiB tail before its first byte, which is the memory
+// of a 54 MB log spent on a log of two lines. Doubling from 64 KiB costs each step a copy of
+// what has arrived, which is why the steps stop at a mebibyte: past it the read is plainly a
+// long log and takes the tail in one step, so the largest copy a growing ring ever makes is that
+// mebibyte and the most it ever holds beside the tail is the same.
+const (
+	jobLogRingStart = 64 << 10
+	jobLogRingLeap  = 1 << 20
+)
+
 // The three ways JobLog reads no log that are not a failed fetch, each told apart from the others
 // so the caller can say which it was: the body passed JobLogBound, the read passed the client's
 // time bound (JobLogTimeBound), and GitHub refused the read, which for this route means the
@@ -98,81 +130,119 @@ var (
 // part.
 //
 // This is a call shape of its own beside call: call reads a whole body and parses it as JSON,
-// where a job's log is neither JSON nor bounded. The answer is streamed through a ring of
-// JobLogTail bytes, so a log of any length costs that much memory and no more, and the read gives
-// up when the body passes JobLogBound (ErrJobLogTooLong) or the read passes the client's time
-// bound, JobLogTimeBound (ErrJobLogSlow). A 403 that is not GitHub's rate limit is
-// ErrJobLogForbidden, the grant a deployment may not have; every other answer other than 2xx is
-// an *Answer, as call's is, and a request that never arrived is its own error. A log longer than
-// the ring wraps it, and the tail then begins after its first line break, since the line it
-// begins in is a line only by accident.
-func (c Client) JobLog(ctx context.Context, id int64) (string, error) {
+// where a job's log is neither JSON nor bounded. The answer is streamed through a ring of at
+// most JobLogTail bytes, so a log of any length costs that much memory and no more, and those
+// bytes are what the read answers: the caller parses the ring where it lies (ghautomerge's
+// failingTests), so a log costs its own length once rather than twice. The read gives up when
+// the body passes JobLogBound (ErrJobLogTooLong) or the read passes the client's time bound,
+// JobLogTimeBound (ErrJobLogSlow), which bounds the wait for one of this process's
+// jobLogReadsAtOnce places as well as the read that follows it. A 403 that is not GitHub's rate
+// limit is ErrJobLogForbidden, the grant a deployment may not have; every other answer other
+// than 2xx is an *Answer, as call's is, and a request that never arrived is its own error. A log
+// longer than the ring wraps it, and the tail then begins after its first line break, since the
+// line it begins in is a line only by accident.
+func (c Client) JobLog(ctx context.Context, id int64) ([]byte, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.JobLogTimeBound())
 	defer cancel()
+	// A place among the process's reads is taken before the request is made, under the read's own
+	// time bound: a read that waited its bound out for one is a read that passed that bound, and
+	// it holds no ring while it waits.
+	select {
+	case jobLogReaders <- struct{}{}:
+		defer func() { <-jobLogReaders }()
+	case <-bounded.Done():
+		return nil, jobLogBound(ctx, bounded, bounded.Err())
+	}
 	target := fmt.Sprintf("%s/actions/jobs/%d/logs", c.API, id)
 	request, err := http.NewRequestWithContext(bounded, http.MethodGet, target, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	request.Header.Set("Authorization", "Bearer "+c.Token)
 	request.Header.Set("Accept", "application/vnd.github+json")
 	response, err := http.DefaultClient.Do(request)
 	if err != nil {
-		return "", jobLogBound(ctx, bounded, err)
+		return nil, jobLogBound(ctx, bounded, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, jobLogRefusalBody))
 		limited := RateLimited(response, body)
 		if response.StatusCode == http.StatusForbidden && !limited {
-			return "", ErrJobLogForbidden
+			return nil, ErrJobLogForbidden
 		}
-		return "", c.refusal(http.MethodGet, request.URL, response, body, limited, BudgetCore)
+		return nil, c.refusal(http.MethodGet, request.URL, response, body, limited, BudgetCore)
 	}
-	// The ring is the tail, or the answer's own length where GitHub names a shorter one: a body
-	// whose length is known is never read into more memory than it has.
-	size := JobLogTail
-	if length := response.ContentLength; length > 0 && length < int64(size) {
-		size = int(length)
+	// The ring is the answer's own length where GitHub names one shorter than the tail, and
+	// jobLogRingStart where GitHub names none, grown as the body arrives (growJobLogRing).
+	size := jobLogRingStart
+	if length := response.ContentLength; length > 0 {
+		size = int(min(length, int64(JobLogTail)))
 	}
-	// The body is streamed through the ring, oldest bytes overwritten as it goes: at is where the
-	// next byte goes, and read the whole body's length, which says whether the ring wrapped.
-	ring, at, read := make([]byte, size), 0, 0
+	ring := make([]byte, size)
+	// The body is streamed through the ring: at is where the next byte goes, and read the whole
+	// body's length, which says whether the ring wrapped. A ring shorter than the tail grows
+	// instead of wrapping, since the bytes it would overwrite are bytes the tail still holds.
+	at, read := 0, 0
 	for {
 		if at == len(ring) {
-			at = 0
+			if len(ring) < JobLogTail {
+				ring = growJobLogRing(ring)
+			} else {
+				at = 0
+			}
 		}
 		n, err := response.Body.Read(ring[at:])
 		at, read = at+n, read+n
 		if read > JobLogBound {
-			return "", ErrJobLogTooLong
+			return nil, ErrJobLogTooLong
 		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			return "", jobLogBound(ctx, bounded, err)
+			return nil, jobLogBound(ctx, bounded, err)
 		}
 	}
-	tail := ring[:at]
-	switch {
-	case read < len(ring): // the ring holds the whole body, in the order it arrived
-	case at == 0 || at == len(ring): // the body filled the ring exactly, in that order too
-		tail = ring
-	default: // the ring wrapped: its oldest byte is the one at the write position
-		tail = make([]byte, 0, len(ring))
-		tail = append(tail, ring[at:]...)
-		tail = append(tail, ring[:at]...)
+	if read <= len(ring) { // the ring holds the whole body, in the order it arrived
+		return ring[:read], nil
 	}
-	// The ring wrapped — more of the body arrived than it holds — so its oldest byte stands in
-	// the middle of a line, and so of a rune: everything before the first line break is the
-	// remains of a line that is a line only by accident, and nothing is to parse it.
-	if read > len(ring) {
-		if first := bytes.IndexByte(tail, '\n'); first >= 0 {
-			tail = tail[first+1:]
-		}
+	// The ring wrapped — more of the body arrived than it holds — so its oldest byte is the one
+	// at the write position, and the bytes are put back in order where they lie (rotateJobLogRing)
+	// rather than appended to a second buffer of JobLogTail. That oldest byte stands in the middle
+	// of a line, and so of a rune: everything before the first line break is the remains of a line
+	// that is a line only by accident, and nothing is to parse it.
+	if at %= len(ring); at > 0 {
+		rotateJobLogRing(ring, at)
 	}
-	return string(tail), nil
+	if first := bytes.IndexByte(ring, '\n'); first >= 0 {
+		return ring[first+1:], nil
+	}
+	return ring, nil
+}
+
+// growJobLogRing is ring one step longer, with what has arrived in it: twice its length while
+// that is under jobLogRingLeap, and the whole of JobLogTail once it is past, which is the last
+// step any ring takes. The copy each step makes is what the read pays for not knowing the body's
+// length, and the leap is what holds that copy to a mebibyte.
+func growJobLogRing(ring []byte) []byte {
+	size := 2 * len(ring)
+	if size > jobLogRingLeap {
+		size = JobLogTail
+	}
+	grown := make([]byte, size)
+	copy(grown, ring)
+	return grown
+}
+
+// rotateJobLogRing puts the bytes of a wrapped ring back into the order they arrived in, where
+// they lie: the oldest stands at at, and the three reversals a rotation is made of move each byte
+// twice and allocate nothing, where appending the ring's two halves to a buffer of their own
+// would hold a second JobLogTail beside it for as long as the copy ran.
+func rotateJobLogRing(ring []byte, at int) {
+	slices.Reverse(ring[:at])
+	slices.Reverse(ring[at:])
+	slices.Reverse(ring)
 }
 
 // jobLogBound is err as ErrJobLogSlow where JobLog's own time bound is what ended the read, and

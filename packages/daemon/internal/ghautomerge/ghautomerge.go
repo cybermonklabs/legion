@@ -473,14 +473,28 @@ func (r *Removed) Error() string {
 	return text + " without merging it: the daemon submits it no further, and the issue stays in awaiting_merge" + r.failures()
 }
 
-// failures is what a removal's failing runs add to the sentence told of it, and nothing at all
-// where the commit the queue built for it failed no run, which is what a removal GitHub explains
-// by itself usually leaves.
+// failures is Failures as a sentence of its own after the text a removal is told in, and nothing
+// at all where nothing failed: the two errors this package renders a removal as both end with it.
 func (r *Removed) failures() string {
+	if failures := r.Failures(); failures != "" {
+		return ". " + failures
+	}
+	return ""
+}
+
+// Failures is the sentence a removal's failing runs are told in, wherever one is told of: the
+// checks that failed on the commit the merge queue built for the pull request, each as a line of
+// its own (FailingRuns). It is empty where that commit failed no run at all, which is what a
+// removal GitHub explains by itself usually leaves.
+//
+// The sentence is written here and nowhere else: this removal's own Error carries it, and so does
+// the message the daemon posts when it submits the merge of such a removal once more (its
+// readyMergeResubmitted), which is the same fact told on the issue instead of to the architect.
+func (r *Removed) Failures() string {
 	if len(r.Runs) == 0 {
 		return ""
 	}
-	return fmt.Sprintf(". These checks failed on the commit the queue built for it: %s", FailingRuns(r.Runs))
+	return fmt.Sprintf("These checks failed on the commit the queue built for it: %s", FailingRuns(r.Runs))
 }
 
 // ConflictRemoval is the merge queue taking a pull request out at READY's head because the merge
