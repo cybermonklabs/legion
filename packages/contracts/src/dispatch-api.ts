@@ -1529,9 +1529,9 @@ const askEventPayloadFields = {
   id: z.string().optional(),
   opened_event_id: z.number().int().positive(),
   // Inbound only: JetStream retains ask.* envelopes for 72 h, so a renderer may still see a
-  // kind the server no longer writes (the removed `action`). The route's own answer carries the
-  // kind as the generated `Ask.kind`, a plain string, since model.Ask declares one: this field
-  // is wider than nothing only in that it is optional on an envelope that may predate it.
+  // kind the server no longer writes (the removed `action`). It is optional because an envelope
+  // retained from before the field existed carries none, and a plain string because model.Ask
+  // declares one, which is what the route's own answer carries as the generated `Ask.kind`.
   kind: z.string().optional(),
   question: z.string().optional(),
   // An option and the answer carry the part id of the block each is stored as, and the payload the

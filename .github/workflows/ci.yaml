@@ -911,8 +911,9 @@ jobs:
               # `bun run check:api` renders schemas/dispatch-openapi.json into
               # src/dispatch-api.generated.ts and compares, and reads no Go at all
               # (scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
-              # a change to it is judged by envoy-go-checks' `openapi --check`, which runs on every
-              # push and whose filter selects both that Go and this document.
+              # a change to it is judged by envoy-go-checks' `openapi --check`, whose filter
+              # (envoy_go_checks) selects both that Go and this document, so either one alone
+              # starts the job.
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
             # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.
