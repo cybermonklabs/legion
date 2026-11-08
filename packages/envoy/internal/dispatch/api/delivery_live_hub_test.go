@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // hubRig is a delivery hub on the API test server: the handler a test writes through, the store
@@ -225,10 +226,8 @@ func (r *hubRig) settle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the newest delivery change: %v", err)
 	}
-	for deadline := time.Now().Add(eventFeedWait); r.changeCursor() < latest; time.Sleep(10 * time.Millisecond) {
-		if time.Now().After(deadline) {
-			t.Fatalf("the hub's change cursor did not reach %d within %s", latest, eventFeedWait)
-		}
+	if !testwait.Holds(eventFeedWait, 10*time.Millisecond, func() bool { return r.changeCursor() >= latest }) {
+		t.Fatalf("the hub's change cursor did not reach %d within %s", latest, eventFeedWait)
 	}
 	r.waitForEventCursor(t, eventHead(t, r.database), "the log's head before the measurement")
 	if r.clock.standsStill() {
@@ -272,17 +271,17 @@ func (r *hubRig) waitNothingOwed(t *testing.T, latest int64) {
 		slices.Sort(busy)
 		return generation.changeSeq, busy
 	}
-	for deadline := time.Now().Add(eventFeedWait); ; time.Sleep(10 * time.Millisecond) {
-		intake := r.intakeOwes()
+	var intake string
+	var changeSeq int64
+	var busy []string
+	if !testwait.Holds(eventFeedWait, 10*time.Millisecond, func() bool {
+		intake = r.intakeOwes()
 		r.hub.catchUpNow()
-		changeSeq, busy := owed()
-		if intake == "" && changeSeq >= latest && len(busy) == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the hub still owed work after %s: change cursor %d of %d, views dirty or computing %v, the intake owes %q",
-				eventFeedWait, changeSeq, latest, busy, intake)
-		}
+		changeSeq, busy = owed()
+		return intake == "" && changeSeq >= latest && len(busy) == 0
+	}) {
+		t.Fatalf("the hub still owed work after %s: change cursor %d of %d, views dirty or computing %v, the intake owes %q",
+			eventFeedWait, changeSeq, latest, busy, intake)
 	}
 }
 
@@ -340,12 +339,12 @@ func (r *hubRig) cursors() (changeSeq, eventCursor int64) {
 // open write anywhere on the test cluster holds back the safe horizon the relay publishes up to.
 func (r *hubRig) waitForEventCursor(t *testing.T, want int64, what string) {
 	t.Helper()
-	for deadline := time.Now().Add(eventFeedWait); ; time.Sleep(10 * time.Millisecond) {
-		if got := r.eventsThrough(); got >= want {
-			return
-		} else if time.Now().After(deadline) {
-			t.Fatalf("the hub holds the event log through %d after %s, want %d (%s)", got, eventFeedWait, want, what)
-		}
+	var got int64
+	if !testwait.Holds(eventFeedWait, 10*time.Millisecond, func() bool {
+		got = r.eventsThrough()
+		return got >= want
+	}) {
+		t.Fatalf("the hub holds the event log through %d after %s, want %d (%s)", got, eventFeedWait, want, what)
 	}
 }
 
@@ -411,12 +410,8 @@ func (r *hubRig) count(since int, match func(deliveryHubNote) bool) int {
 // waitFor waits up to within for a note since mark that matches.
 func (r *hubRig) waitFor(t *testing.T, since int, within time.Duration, what string, match func(deliveryHubNote) bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for r.count(since, match) == 0 {
-		if time.Now().After(deadline) {
-			t.Fatalf("no %s within %s", what, within)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if !testwait.Holds(within, 10*time.Millisecond, func() bool { return r.count(since, match) > 0 }) {
+		t.Fatalf("no %s within %s", what, within)
 	}
 }
 

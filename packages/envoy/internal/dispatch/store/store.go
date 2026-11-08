@@ -119,10 +119,10 @@ func declaresPoolSize(databaseURL string) (bool, error) {
 	return declared, nil
 }
 
-// Migrate applies the embedded migrations in version order, each committed with its version
-// record in one transaction. It refuses a set pgmigrate.Load refuses before it touches the
-// database, so a set it cannot apply as written applies nothing, and it bounds every lock wait a
-// migration makes by pgmigrate.LockTimeout.
+// Migrate applies embedded migrations in version order. Unmarked files commit with their
+// version record in one transaction; marked concurrent indexes run outside a transaction under
+// the same advisory key until their version is recorded. It refuses a set pgmigrate.Load
+// refuses before touching the database and bounds every migration's lock waits by LockTimeout.
 func (s *Store) Migrate(ctx context.Context) error {
 	return s.migrate(ctx, migrationFiles)
 }
@@ -148,10 +148,10 @@ func (s *Store) migrate(ctx context.Context, fsys fs.FS) error {
 	return nil
 }
 
-// migrationLockKey is the pg_advisory_xact_lock every Dispatch process's runner takes, so two
-// processes booting at once migrate one after the other. The auto-deployer
-// (deploy/scripts/autodeploy.sh, schema_version) takes it too before it reads schema_migrations, so
-// a migration in flight ends first; a change of key changes both.
+// migrationLockKey is the advisory key every Dispatch runner takes: transaction-level for an
+// ordinary migration, session-level for a concurrent index. The auto-deployer
+// (deploy/scripts/autodeploy.sh, schema_version) takes it too before reading schema_migrations,
+// so an in-flight migration ends first; a change of key changes both.
 const migrationLockKey int64 = 8150001
 
 // createVersionTable creates schema_migrations under the runner's advisory lock, as the broker's
@@ -204,10 +204,10 @@ func (s *Store) createVersionTable(ctx context.Context, widen bool) error {
 	return tx.Commit(ctx)
 }
 
-// applyMigration applies one migration in a transaction of its own, trying it again while its lock
-// wait outlasts its lock_timeout, up to pgmigrate.LockTimeoutAttempts times, holding nothing between
-// attempts (pgmigrate.RetryLockTimeouts). A migration that times out on every attempt fails the
-// runner, and boot with it.
+// applyMigration applies one migration, trying it again while its lock wait outlasts
+// lock_timeout, up to pgmigrate.LockTimeoutAttempts times, holding nothing between attempts.
+// A concurrent build's retry first refuses any INVALID index the previous attempt left.
+// A migration that times out on every attempt fails the runner and boot with it.
 func (s *Store) applyMigration(ctx context.Context, migration pgmigrate.Migration) error {
 	return pgmigrate.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {
 		return s.applyMigrationOnce(ctx, migration)
@@ -215,6 +215,9 @@ func (s *Store) applyMigration(ctx context.Context, migration pgmigrate.Migratio
 }
 
 func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migration) error {
+	if migration.NonTransactional {
+		return s.applyNonTransactionalMigration(ctx, migration)
+	}
 	// A migration is a transaction like any other, so it is marked like any other: nothing it
 	// runs may take a second pooled connection while it is open.
 	ctx = WithTransactionTracking(ctx)
@@ -244,4 +247,43 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 		return fmt.Errorf("record migration: %w", err)
 	}
 	return tx.Commit(ctx)
+}
+
+// applyNonTransactionalMigration owns its connection so a cancellation or failed cleanup cannot
+// return a session-level advisory lock to the pool. Session and transaction advisory locks on the
+// same key conflict, so this excludes older runners and schema-version readers too. Closing the
+// connection releases the lock only after the statement and its separate version record finish.
+func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pgmigrate.Migration) error {
+	pooled, err := s.Pool.Acquire(ctx)
+	if err != nil {
+		return err
+	}
+	conn := pooled.Hijack()
+	defer func() {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
+		defer cancel()
+		_ = conn.Close(cleanup)
+	}()
+	if _, err := conn.Exec(ctx, "select pg_advisory_lock($1)", migrationLockKey); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+	var applied bool
+	if err := conn.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = $1::bigint)", migration.Version).Scan(&applied); err != nil {
+		return fmt.Errorf("check migration: %w", err)
+	}
+	if applied {
+		return nil
+	}
+	// Keep the version insert bounded too, just as the transactional runner's SET LOCAL
+	// remains in force until commit. ExecNonTransactional restores this same session bound.
+	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false)", pgmigrate.LockTimeout.String()); err != nil {
+		return fmt.Errorf("bound migration version lock waits: %w", err)
+	}
+	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
+		return err
+	}
+	if _, err := conn.Exec(ctx, "insert into schema_migrations (version) values ($1::bigint)", migration.Version); err != nil {
+		return fmt.Errorf("record migration: %w", err)
+	}
+	return nil
 }
