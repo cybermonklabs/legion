@@ -1480,9 +1480,11 @@ async function settle(): Promise<void> {
 // Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
 // (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
 // machine runs it later than any fixed sleep allows; the deadline is measured on the monotonic
-// clock, which `setSystemTime` leaves alone.
-async function until(condition: () => boolean, what: string): Promise<void> {
-  const deadline = performance.now() + 2_000;
+// clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
+// than on this process's own work passes a longer bound: starting a shell and killing its group
+// is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
+async function until(condition: () => boolean, what: string, timeoutMs = 2_000): Promise<void> {
+  const deadline = performance.now() + timeoutMs;
   while (!condition()) {
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await settle();
@@ -13378,7 +13380,7 @@ console.log(JSON.stringify(args));
         agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
         // The command itself, not the agent's copy of its report: nothing is sent until the
         // command ends, and this one would run for ten minutes.
-        await until(() => existsSync(pidFile), "the command to be running");
+        await until(() => existsSync(pidFile), "the command to be running", 10_000);
         const pid = Number(readFileSync(pidFile, "utf8").trim());
         expect(Number.isInteger(pid)).toBe(true);
         // The command is still running: nothing but the shutdown below ends it.
@@ -13386,7 +13388,7 @@ console.log(JSON.stringify(args));
 
         await fixture.handlers.get("session_shutdown")?.({}, context);
 
-        await until(() => !alive(pid), "the command's process group to be killed");
+        await until(() => !alive(pid), "the command's process group to be killed", 10_000);
         // The person is answered all the same, and the message is taken.
         await replied(1);
         expect(replies[0]?.body).toMatchObject({
