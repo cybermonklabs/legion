@@ -5,6 +5,7 @@ import {
   AGENT_STREAM_TRUNCATION_SUFFIX,
   AGENT_STREAM_WATCH_TTL_MS,
   type AgentStreamFrame,
+  PICTURE_PLACEHOLDER,
 } from "@legion/contracts";
 
 import { AgentStreamPublisher, type AgentStreamSettingsState } from "./agent-stream";
@@ -61,6 +62,34 @@ describe("AgentStreamPublisher", () => {
     expect(last?.kind === "message" && last.message.streaming).toBe(false);
     expect(last?.kind === "message" && last.message.parts).toEqual([
       { text: "Hello", type: "text" },
+    ]);
+  });
+
+  // The Agents page's guard on what a streamed row may say of a person's message reads this one
+  // spelling (`turnSaysBody`, `packages/dispatch/web/src/features/agent-view/conversation.ts`),
+  // so the writer and the guard take it from `@legion/contracts`. Spelled in both files, a
+  // change to the writer refused every honest picture row and the message showed twice, with no
+  // error anywhere (INFRA-1026 review).
+  test("a picture a person's message carried is the shared placeholder, never its bytes", () => {
+    const { published, publisher } = harness();
+    publisher.noteViewer();
+    publisher.record(
+      SUBJECT,
+      {
+        content: [
+          { text: "Look at this", type: "text" },
+          { data: "the picture's bytes", mime: "image/png", type: "image" },
+        ],
+        role: "user",
+        timestamp: 50,
+      },
+      false
+    );
+
+    const last = published.at(-1);
+    expect(last?.kind === "message" && last.message.parts).toEqual([
+      { text: "Look at this", type: "text" },
+      { text: PICTURE_PLACEHOLDER, type: "text" },
     ]);
   });
 
