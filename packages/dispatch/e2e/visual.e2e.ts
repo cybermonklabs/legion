@@ -123,18 +123,20 @@ for (const route of shotRoutes) {
         await waitForRouteSettled(page, route);
         await expect(page).toHaveScreenshot(`${route.name}-${colorScheme}.png`, {
           fullPage: true,
-          // Everything on these pages that is not the same twice, and there are two kinds.
+          // The one thing on these pages that is not the same twice and cannot be waited for:
+          // the moment the page answered. A `<time>` carries the relative labels of the Inbox
+          // and the Agents page, and the page's own clock is pinned above so each reads the
+          // same; the Delivery and Pipeline pages write that moment as plain text instead
+          // ("Generated 11/8/2026, 2:27:03 AM", DeliveryPage.tsx and PipelinePage.tsx), and a
+          // measures card dates its claim the same way, so those two are masked by the words
+          // they begin with.
           //
-          // A clock. A `<time>` carries the relative labels of the Inbox and the Agents page;
-          // the Delivery and Pipeline pages write the moment they answered as plain text
-          // instead ("Generated 11/8/2026, 2:27:03 AM", DeliveryPage.tsx and PipelinePage.tsx),
-          // and a measures card dates its claim the same way, so those two are masked by the
-          // words they begin with.
-          //
-          // An identifier the server makes. The Decisions panel prints the id of the spec block
-          // a decision shaped ("Block 0c1f…"), and that is a fresh uuid in every seeded corpus:
-          // unlike an issue's key, which e2e/workspace.ts now writes one at a time so the
-          // numbering is the same twice, a uuid cannot be pinned and is masked instead.
+          // Nothing else is masked, and the Decisions panel is why that matters. It prints the
+          // id of the spec block a decision shaped until the reference graph answers, and a
+          // mask over that id did NOT settle it: a uuid is a fixed count of characters and not
+          // a fixed width, so the painted rectangle moved with the glyphs. That row waits for
+          // the block's own words instead (`e2e/review-routes.ts`). A mask is the last resort
+          // here and not the first, because it hides only a difference whose box holds still.
           //
           // Each of these was found by reading a diff image of a container run against the run
           // before it, not by widening the bound until the rows passed.
@@ -142,7 +144,6 @@ for (const route of shotRoutes) {
             page.locator("time"),
             page.getByText(/^Generated /),
             page.getByText(/, as of /),
-            page.getByText(/^Block [0-9a-f]{8}/),
           ],
           // MEASURED IN CI: placeholder. This is the zero the measurement starts from
           // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with

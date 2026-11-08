@@ -235,7 +235,17 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "issue-decisions",
     path: (seed) => `/issues/${seed.issue}/decisions`,
     pattern: "/issues/:key/*",
-    ready: (page) => [page.getByRole("region", { name: "Waiting for your review" })],
+    // The panel's region, and the link to the spec block the decision shaped once the
+    // reference graph has answered. Until it does, `DecisionsPanel.tsx` draws that link as
+    // `Block <uuid>`, and a uuid is fresh in every seeded corpus - so a page read on the
+    // region alone was captured sometimes with the words and sometimes with the id. Masking
+    // the id does not settle it either: a uuid is a fixed count of characters and not a fixed
+    // width, so the painted rectangle moves with the glyphs. Waiting for the words settles it
+    // and needs no mask, because the words are the spec block `e2e/review-seed.ts` names.
+    ready: (page) => [
+      page.getByRole("region", { name: "Waiting for your review" }),
+      page.getByRole("link", { name: "One command, a seeded corpus, a signed-in browser." }),
+    ],
   },
   {
     kind: "reviewed",

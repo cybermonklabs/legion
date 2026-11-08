@@ -82,7 +82,6 @@ for (const route of phoneRoutes) {
             page.locator("time"),
             page.getByText(/^Generated /),
             page.getByText(/, as of /),
-            page.getByText(/^Block [0-9a-f]{8}/),
           ],
           // MEASURED IN CI: placeholder, exactly as in `e2e/visual.e2e.ts`, and measured
           // separately: a phone emulation lays the page out at another scale, so its legitimate
