@@ -577,6 +577,8 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	every := []Notice{
 		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass"},
 		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing},
+		{Kind: "worker-stalled", Role: claim.RoleImplementer,
+			Reason: "the daemon ended the implementer's turn and started a replacement in its place: its agent last stepped at 2026-11-08T08:00:00Z, past the bound this deployment gives the role, and its session was brought back on the replacement the daemon started"},
 		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
 		{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "pull request #42 is blocked: ci is red at head", Resends: 1},
 		{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: "pull request #42 merged at c0de"},

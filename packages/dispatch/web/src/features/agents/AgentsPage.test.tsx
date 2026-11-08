@@ -1495,7 +1495,7 @@ test("an agent's unread reply shows on its row and in the navigation until its c
     expect(within(planner).queryByText("At /dash.")).not.toBeInTheDocument();
 
     await user.click(
-      await within(planner).findByRole("button", { name: "Planner replied: 1 unread" })
+      await within(planner).findByRole("button", { name: "New reply 1 from Planner" })
     );
     await expect(within(planner).findByText("At /dash.")).resolves.toBeTruthy();
     await waitFor(() =>
@@ -1563,7 +1563,7 @@ test("opening a row shows an older exchange's unread follow-up instead of foldin
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await user.click(
-      await within(planner).findByRole("button", { name: "Planner replied: 1 unread" })
+      await within(planner).findByRole("button", { name: "New reply 1 from Planner" })
     );
     await expect(within(planner).findByText("First answer, followed up")).resolves.toBeTruthy();
     expect(within(planner).getByText("Third question")).toBeTruthy();
@@ -1929,7 +1929,7 @@ test("Agents marks read and clears through the newest reply even within one mill
   try {
     const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
     await user.click(
-      await within(planner).findByRole("button", { name: "Planner replied: 1 unread" })
+      await within(planner).findByRole("button", { name: "New reply 1 from Planner" })
     );
     await expect(within(planner).findByText("First answer")).resolves.toBeTruthy();
     await waitFor(() =>

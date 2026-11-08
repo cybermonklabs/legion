@@ -132,7 +132,7 @@ func TestTheWaitingLinePlaceIsStrippedBelowItsContract(t *testing.T) {
 // waitingLineContract is the contract whose entry in version.go added the field, and this
 // daemon's own contract is never below it: a caller at this contract is served the place.
 func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
-	const addedWaitingLine = 57
+	const addedWaitingLine = 58
 	if waitingLineContract != addedWaitingLine {
 		t.Fatalf("waitingLineContract = %d, want %d, the contract whose entry in version.go added each waiting issue's place in the line",
 			waitingLineContract, addedWaitingLine)
@@ -155,8 +155,8 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 // WaitingLineField, and that window names neither the retired stranded state nor the stranded
 // report, which is the other contract these same files discuss; the window is where the
 // sentences that state the boundary fall. Both forms are read because a passage commonly writes
-// the number twice — a headline "Daemon API contract 57:" and then "a caller from a pod below
-// 57 is served the state without the field" — and a reader of the first form alone passes a
+// the number twice — a headline "Daemon API contract 58:" and then "a caller from a pod below
+// 58 is served the state without the field" — and a reader of the first form alone passes a
 // text whose headline was corrected and whose boundary sentence was not. A file that names no
 // such pair is passed over, so a later text in another file is covered the moment it names the
 // two together.

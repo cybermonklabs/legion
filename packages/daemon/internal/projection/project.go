@@ -87,6 +87,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			PluginContract: current.PluginContract,
 			UpdateRound:    current.UpdateRound,
 			UpdateHead:     current.UpdateHead,
+			// What the daemon last saw this claim's agent do, which the stall backstop and an
+			// operator read alike; nil for a claim whose agent has not stepped (api.StepViewOf).
+			Step: api.StepViewOf(current.Step),
 		}
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
@@ -278,7 +281,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	trees := record.LiveRoots(own, facts)
 	projected.Admission.Trees = slices.Sorted(maps.Keys(trees))
 	projected.Admission.Waiting = make([]string, len(waiting))
-	// Each issue the line names carries its own place in it (contract 57), counted from 1 at the
+	// Each issue the line names carries its own place in it (contract 58), counted from 1 at the
 	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
 	// Dispatch link blocks stands in the line and takes its place like every other member, and
 	// what holds it is `admission.blocked` beside this. Every issue of the line has a view here

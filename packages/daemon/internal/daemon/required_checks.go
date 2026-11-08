@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -71,9 +72,14 @@ func (w *workflowRuntime) watchRequiredChecks(ctx context.Context) {
 // webhooks would have carried them, and goes on with the record that leaves (followHead); when
 // following fails short of GitHub's rate limit, it goes on with the record as it stands. It applies
 // an intake.PullRequestMergeability fact whenever GitHub's lazily computed mergeability is
-// CONFLICTING or differs from the one recorded - workflow's mergeability decides a CONFLICTING read
+// CONFLICTING, differs from the one recorded, or the record holds the pull request's own head
+// conflicting (classify.ConflictRound) - workflow's mergeability decides a CONFLICTING read
 // every time it is applied, even one that only confirms the stored value, so a conflict the poll
-// recorded before the issue reached awaiting_merge is still acted on once it gets there; it is
+// recorded before the issue reached awaiting_merge is still acted on once it gets there, and a
+// MERGEABLE read of a head the record holds conflicting is what clears that mark
+// (record.PullRequest.ConflictingHead), which a mark written while the record already read
+// MERGEABLE - the return the merge queue's own state makes (workflow's mergeQueueConflict) -
+// would otherwise outlast every round until the head moved; it is
 // applied again only once the record or the issue's phase changed (applyJudged). It then reads the
 // pull request's reviews and applies a deciding one the daemon has not recorded, whose webhook
 // never arrived (readReviews), whatever phase the issue is in. For a head no CI settlement stands
@@ -141,7 +147,12 @@ func (w *workflowRuntime) readRequiredChecks(ctx context.Context) {
 		// which the GitHub consumer's backlog can hold for a while.
 		prCtx, cancel := context.WithTimeout(ctx, requiredChecksRead)
 		base, mergeable := pull.Base.Ref, mergeability(pull)
-		if pr.Mergeability != mergeable || mergeable == record.MergeabilityConflicting {
+		// A read that says what is recorded is applied all the same when it is CONFLICTING, which
+		// the workflow decides every time, or when the record holds this head conflicting: that
+		// mark is cleared by a read finding the same head mergeable, and the merge queue's own
+		// return writes it while the record already reads MERGEABLE, where the clearing read is a
+		// change in nothing else.
+		if pr.Mergeability != mergeable || mergeable == record.MergeabilityConflicting || classify.ConflictRound(pr) {
 			fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, Mergeable: mergeable}
 			w.applyJudged(ctx, pr, fact, "mergeability", "whether a pull request's head can be merged into its base", pull.Head.SHA, clock(pull.UpdatedAt))
 		}
