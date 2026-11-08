@@ -54,7 +54,8 @@ type recordView struct {
 	Approver    string
 	// State is the record's state, "expired" too for one past its expiry the sweeper has not
 	// ended yet; DecidedBy, DecidedAt and Detail are its decision's. DecidedBy is empty for a
-	// record nobody decided, and names the model judge where the judge decided it (decidedBy).
+	// record nobody decided; it names the model judge where the judge decided it, and the
+	// current policy where the policy made the answer (decidedBy).
 	State, DecidedBy, DecidedAt, Detail string
 	// DecidedByJudge is whether DecidedBy names the model judge rather than a person. The page
 	// prints the two differently: a person's login as it is, and the judge's name as the literal
@@ -236,10 +237,17 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 	return v
 }
 
+// policyDecider is who the page names for an event the current policy answered rather than the
+// person or the model judge that pressed Approve: requests.PolicyDeniedActor's own. It is
+// worded for a reader instead of printed as the actor string the row holds, since nobody signs
+// in as "broker:policy" and every other name this file prints is a login or the judge's id.
+const policyDecider = "the current policy"
+
 // decidedBy is who the page says decided a record, read from its terminal event: the model judge
-// where the event's actor is the judge's, and the deciding person's login otherwise. It is empty
-// where nobody decided the record — an expiry, or a cancellation the requesting session's end
-// wrote — since such an event carries no login and no judge actor either.
+// where the event's actor is the judge's, the current policy where the policy made the answer,
+// and the deciding person's login otherwise. It is empty where nobody decided the record — an
+// expiry, or a cancellation the requesting session's end wrote — since such an event carries no
+// login and neither of those two actors.
 //
 // The judge's event carries no login at all, on purpose: the person who would otherwise have
 // decided is named nowhere in it (decider.eventLogin). Its actor is therefore the only thing
@@ -248,9 +256,20 @@ func (p *Page) recordView(d requests.RecordDetail, login string, now time.Time) 
 // "judge:<model id>", which is also what requests.decided_by keeps and what
 // `agent-secrets status` prints under decided_by: one name for the judge everywhere a person
 // reads one.
+//
+// The policy's own denial is where that leaves the judge with no name at all. A judge's approval
+// of a request whose session the current policy has dropped from the secret's requesters tag is
+// recorded denied under requests.PolicyDeniedActor (applyDecisionAttempt), which overwrites the
+// judge's actor, so the event holds neither a login nor a judge actor and the page named nobody.
+// The policy is what such an event names, since the policy and not the decider made the answer.
+// A person's own approval the policy denies keeps the login of whoever pressed Approve beside
+// that same actor, and reads as it always has.
 func decidedBy(d requests.RecordDecision) (name string, judge bool) {
 	if _, byTheJudge := record.JudgeLogin(d.Actor); byTheJudge {
 		return d.Actor, true
+	}
+	if d.Login == "" && d.Actor == requests.PolicyDeniedActor {
+		return policyDecider, false
 	}
 	return d.Login, false
 }
@@ -297,10 +316,10 @@ func (p *Page) outcomes(ctx context.Context, decided, login string, now time.Tim
 // outcome says what became of a record a decision named, from its state now.
 //
 // "already decided: " opens the line whenever somebody other than the reader decided the record,
-// the model judge included: the reader clicked Approve and got the broker's refusal, and what
-// they must read first is that the record was already decided and by whom. A record nobody
-// decided — one that expired, or that its requesting session withdrew — has no decider to
-// compare, and its own line says what became of it.
+// the model judge and the current policy included: the reader clicked Approve and got the
+// broker's refusal, and what they must read first is that the record was already decided and by
+// whom. A record nobody decided — one that expired, or that its requesting session withdrew —
+// has no decider to compare, and its own line says what became of it.
 func outcome(d requests.RecordDetail, login string, now time.Time) string {
 	what := strings.Join(d.Identifiers, ", ") + ": "
 	switch {
