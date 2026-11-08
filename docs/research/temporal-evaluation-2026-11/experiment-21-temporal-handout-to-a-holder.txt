@@ -1,0 +1,165 @@
+Experiment 21, Temporal: a handout reaching a process that holds a working copy and a credential, out of band and on a queue of its own.
+Recorded 2026-11-08T03:40:46Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit bd5f4809bb1326281750f7a717335ce4d7d8b25f,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+mechanism: Temporal Asynchronous Activity Completion: an activity body that returns activity.ErrResultPending, completed later by whoever holds the task token
+sdk-completion-call: client.CompleteActivity(ctx, taskToken, result, nil)
+question: can a server that holds none of a session's state hand work to a process that holds all of it -- a working copy and a credential -- and take the outcome back?
+holder: a process standing for a Legion pod: it makes a jj repository of its own under its work directory, writes a placeholder credential file, and does work only it could do -- a file written in that repository and committed with jj, whose commit id exists in no other repository
+holder-holds-of-the-engines-state: none: no history, no task queue of the engine's, no workflow and no workflow state; what it holds is its working copy and a file standing in for a credential
+credential: a placeholder file this experiment writes itself: it holds no secret, is sent nowhere and reaches no service, so nothing in this run measures credential handling
+workflow-and-activity: experiment 19's, imported rather than repeated: the same handout workflow, the same activity whose body returns activity.ErrResultPending, and -- in case A -- the same worker process to run that body
+handout-start-to-close-timeout: 4h0m0s
+handout-heartbeat-timeout: none: the activity is scheduled without one, so no heartbeat of either handout can expire
+handout-maximum-attempts: 1
+workflow-execution-timeout: 5h0m0s
+workflow-task-queue: exp21-workflow-1794109081060510382
+driver-process-registered-the-handout-activity: false
+case-a: out of band: the activity's body hands its task token out from a worker process that is not the holder, the token reaches the holder as a file in the holder's own work directory, and the holder -- which runs no Temporal worker and registers no activity -- does its work and calls client.CompleteActivity with the commit id
+a-activity-task-queue: exp21-a-activity-1794109081060510382
+a-holder-work-directory: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382
+a-holder-repository: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/repo
+a-holder-credential-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/credential
+a-holder-token-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/handed-task-token
+[holder-a] exp21holder: pid=64267 host=legion-infra-infra-1546 mode=out-of-band queue=none identity=none ran-worker=false repository-ready=true credential-ready=true
+a-holder-pid: 64267
+a-holder-host: legion-infra-infra-1546
+a-holder-ran-a-temporal-worker: false
+a-holder-registered-the-handout-activity: false
+a-holder-task-queue: none
+a-holder-held-its-working-copy-before-the-workflow-started: true
+[dispatch-worker] exp19worker: pid=64279
+a-dispatch-worker-pid: 64279
+a-dispatch-worker-is-the-holder: false
+a-handout-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-a-handout-effects-1794109081060510382
+a-handout-workflow-id: exp21-a-handout-1794109081060510382
+a-handout-run-id: 01a1b93c-0906-7f04-855e-e7274894e6b0
+a-handout-first-body-line: attempt=1 pid=64279 at=2026-11-08T03:38:02.18472199Z
+a-handout-body-ran-in-pid: 64279
+a-handout-body-ran-in-the-holder: false
+a-handout-body-executions-before-the-handover: 1
+a-handout-activity-state-before-the-handover: Started
+a-handout-activity-attempt-before-the-handover: 1
+a-handout-last-worker-identity-reported-by-the-server: 64279@legion-infra-infra-1546@
+a-handout-workflow-status-before-the-handover: Running
+a-dispatch-worker-stopped-before-the-handover: true
+a-dispatch-worker-alive-after-it-was-stopped: false
+a-token-bytes: 144
+a-token-handed-to-the-holder-by: a file written into the holder's own work directory, /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/handed-task-token: no task queue, no worker and no Temporal connection of the holder's carried it
+a-activity-task-queue-pollers: 1
+a-activity-task-queue-pollers-that-polled-after-the-dispatch-worker-was-stopped: 0
+a-activity-task-queue-poller-identities: 64279@legion-infra-infra-1546@ last-polled-at=2026-11-08T03:38:02.185890009Z
+a-holder-jj-version: jj 0.45.1-sami.20260910-043938-bb5ffc8f23b1e2a9dac6fdf05b0540058a3a21d0
+a-holder-repository-made-by-the-holder: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/repo
+a-holder-credential-written-by-the-holder: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/credential
+a-holder-credential-bytes: 296
+a-holder-credential-is-a-placeholder: true
+a-holder-credential-first-line: EXP21-PLACEHOLDER-NOT-A-CREDENTIAL: a placeholder file this experiment writes itself: it holds no secret, is sent nowhere and reaches no service, so nothing in this run measures credential handling
+a-holder-read-the-token-from: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/handed-task-token
+a-holder-token-bytes: 144
+a-holder-work: wrote /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/repo/handout-work.txt in its own working copy and committed it with jj as "exp21 holder pid 64267 did the work handed to it"
+a-holder-commit-id: f59385eadca201678a53fd11d84a86111ad4f9e4
+a-holder-commit-read-back-from-its-own-repository: f59385eadca201678a53fd11d84a86111ad4f9e4 exp21 holder pid 64267 did the work handed to it
+timed: a-holder-work-took: 272ms
+a-completion-called-by-pid: 64267
+a-completion-accepted-by-the-server: true
+a-completion-error-type: none
+a-completion-error-message: none
+a-completion-caller-is-the-holder: true
+timed: a-handout-stayed-open-from-the-body-running-until-the-holder-had-answered: 382ms
+a-handout-workflow-returned: true
+a-handout-workflow-received-result: f59385eadca201678a53fd11d84a86111ad4f9e4
+a-handout-workflow-received-the-holders-commit-id: true
+a-handout-workflow-activity-error-type: none
+a-handout-workflow-activity-error-is-timeout: false
+a-handout-workflow-activity-error: none
+a-handout-body-executions-total: 1
+a-handout-activity-task-scheduled-events: 1
+a-handout-activity-task-started-events: 1
+a-handout-activity-task-completed-events: 1
+a-handout-activity-task-failed-events: 0
+a-handout-activity-task-timed-out-events: 0
+a-handout-last-activity-history-event: EVENT_TYPE_ACTIVITY_TASK_COMPLETED
+a-handout-history-event-count: 11
+a-handout-workflow-status: Completed
+case-b: a queue named for the holder: the holder registers a worker on a task queue it names for itself, in the <resourceID>@<hostname> shape experiment 3 saw Temporal's session framework use, the workflow schedules the same handout activity on that queue, the body runs inside the holder, and the holder completes it by token from its own process
+b-holder-work-directory: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382
+b-holder-repository: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/repo
+b-holder-credential-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/credential
+b-holder-token-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/own-task-token
+[holder-b] exp21holder: pid=64302 host=legion-infra-infra-1546 mode=queue queue=exp21-holder-64302-1794109082863030993@legion-infra-infra-1546 identity=exp21-holder-64302-1794109082863030993-worker@legion-infra-infra-1546 ran-worker=true repository-ready=true credential-ready=true
+b-holder-pid: 64302
+b-holder-host: legion-infra-infra-1546
+b-holder-ran-a-temporal-worker: true
+b-holder-registered-the-handout-activity: true
+b-task-queue: exp21-holder-64302-1794109082863030993@legion-infra-infra-1546
+b-task-queue-named-by: the holder process itself, which reported it to the driver before any workflow was started; nothing else in this run could have known it
+b-task-queue-shape: <resourceID>@<hostname>, the shape experiment 3 read out of the history for the queue a Temporal session's own worker process made: here the resource is the holder, and the hostname is legion-infra-infra-1546
+b-holder-worker-identity: exp21-holder-64302-1794109082863030993-worker@legion-infra-infra-1546
+b-handout-side-effect-file: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-b-handout-effects-1794109081060510382
+b-handout-workflow-id: exp21-b-handout-1794109081060510382
+b-handout-run-id: 01a1b93c-0d88-706b-90be-4a6467b6fcf9
+b-handout-first-body-line: attempt=1 pid=64302 at=2026-11-08T03:38:03.370291992Z
+b-handout-body-ran-in-pid: 64302
+b-handout-body-ran-in-the-holder: true
+b-handout-body-executions-before-the-completion: 1
+b-handout-activity-state-while-the-holder-works: Started
+b-handout-activity-attempt: 1
+b-handout-task-queue-in-the-servers-own-history: exp21-holder-64302-1794109082863030993@legion-infra-infra-1546
+b-handout-task-queue-in-the-history-is-the-holders: true
+b-handout-last-worker-identity-reported-by-the-server: exp21-holder-64302-1794109082863030993-worker@legion-infra-infra-1546
+b-handout-last-worker-identity-is-the-holders: true
+b-handout-workflow-status-while-the-holder-works: Running
+b-task-queue-pollers: 1
+b-task-queue-pollers-that-polled-after-the-workflow-was-started: 1
+b-task-queue-poller-identities: exp21-holder-64302-1794109082863030993-worker@legion-infra-infra-1546 last-polled-at=2026-11-08T03:38:03.372858662Z
+b-task-queue-pollers-other-than-the-holder: 0
+b-processes-this-run-started-that-registered-the-handout-activity-on-this-queue: 1, the holder in pid 64302: the driver registered the workflow and no activity, and case A's dispatch worker registered the activity on exp21-a-activity-1794109081060510382, another queue, and was stopped before this case began
+b-holder-jj-version: jj 0.45.1-sami.20260910-043938-bb5ffc8f23b1e2a9dac6fdf05b0540058a3a21d0
+b-holder-repository-made-by-the-holder: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/repo
+b-holder-credential-written-by-the-holder: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/credential
+b-holder-credential-bytes: 296
+b-holder-credential-is-a-placeholder: true
+b-holder-credential-first-line: EXP21-PLACEHOLDER-NOT-A-CREDENTIAL: a placeholder file this experiment writes itself: it holds no secret, is sent nowhere and reaches no service, so nothing in this run measures credential handling
+b-holder-read-the-token-from: /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/own-task-token
+b-holder-token-bytes: 144
+b-holder-work: wrote /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/repo/handout-work.txt in its own working copy and committed it with jj as "exp21 holder pid 64302 did the work handed to it"
+b-holder-commit-id: 8f56e75a70ae110b8a0683f89ff78c3b5fa43cc9
+b-holder-commit-read-back-from-its-own-repository: 8f56e75a70ae110b8a0683f89ff78c3b5fa43cc9 exp21 holder pid 64302 did the work handed to it
+timed: b-holder-work-took: 311ms
+b-completion-called-by-pid: 64302
+b-completion-accepted-by-the-server: true
+b-completion-error-type: none
+b-completion-error-message: none
+b-completion-caller-is-the-process-the-body-ran-in: true
+timed: b-handout-stayed-open-from-the-body-running-until-the-holder-had-answered: 406ms
+b-handout-workflow-returned: true
+b-handout-workflow-received-result: 8f56e75a70ae110b8a0683f89ff78c3b5fa43cc9
+b-handout-workflow-received-the-holders-commit-id: true
+b-handout-workflow-activity-error-type: none
+b-handout-workflow-activity-error-is-timeout: false
+b-handout-workflow-activity-error: none
+b-handout-body-executions-total: 1
+b-handout-activity-task-scheduled-events: 1
+b-handout-activity-task-started-events: 1
+b-handout-activity-task-completed-events: 1
+b-handout-activity-task-failed-events: 0
+b-handout-activity-task-timed-out-events: 0
+b-handout-last-activity-history-event: EVENT_TYPE_ACTIVITY_TASK_COMPLETED
+b-handout-history-event-count: 11
+b-handout-workflow-status: Completed
+reasoned: a-did-the-work-reach-the-holder: yes, carried by a file and nothing else: the body ran once in pid 64279, a worker process that is not the holder, and the driver copied the 144-byte task token into the holder's own work directory; the holder, pid 64267, ran no Temporal worker, registered no activity and polled no task queue, and it already held the working copy /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/repo and the placeholder credential /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-a-1794109081060510382/credential before the workflow was started
+reasoned: a-did-the-outcome-come-back: yes, by value: the holder committed f59385eadca201678a53fd11d84a86111ad4f9e4 in its own repository, answered with client.CompleteActivity from a process that runs no worker, the server accepted the call, and the workflow received "f59385eadca201678a53fd11d84a86111ad4f9e4" -- the same string, which existed nowhere before the holder made it
+reasoned: a-what-the-engine-had-to-be-told: nothing whatever about the holder: the server was told an activity type, the task queue exp21-a-activity-1794109081060510382 that its own dispatch worker polls, a 4h0m0s start-to-close timeout and one attempt, and it was never told the holder's host, its repository, its credential, its queue or that it existed. The whole of the integration was 144 bytes of task token carried out of band and one client.CompleteActivity call carrying the result back, so the price of addressing this process was a byte string and a connection the holder opens itself
+reasoned: a-the-bound: the 4h0m0s start-to-close timeout is a bound this run gave the server, not a duration it observed: what was observed is 382ms, the time from the body running to the holder's answer. The longest anything in this directory has watched a handout stay open is experiment 20's five-minute hold with no worker alive; neither that run nor this one observed hours, so nothing here supports a claim about a handout of hours beyond saying that the bound the server enforces is the one it is given
+reasoned: b-did-the-work-reach-the-holder: yes, carried by the task queue the holder named for itself: the server's own history records the activity as scheduled on exp21-holder-64302-1794109082863030993@legion-infra-infra-1546, the server reported 1 poller(s) on that queue (exp21-holder-64302-1794109082863030993-worker@legion-infra-infra-1546 last-polled-at=2026-11-08T03:38:03.372858662Z), and the body ran in pid 64302, which is the holder's own pid; the holder held the working copy /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/repo and the placeholder credential /legion/scratch/tmp/temporal-evaluation-2026-11/run/work/e21/exp21-holder-b-1794109081060510382/credential before the workflow was started
+reasoned: b-did-the-outcome-come-back: yes, by value: the holder committed 8f56e75a70ae110b8a0683f89ff78c3b5fa43cc9 in its own repository, answered with client.CompleteActivity from the same process the body ran in, the server accepted the call, and the workflow received "8f56e75a70ae110b8a0683f89ff78c3b5fa43cc9" -- the same string, which existed nowhere before the holder made it
+reasoned: b-what-the-engine-had-to-be-told: one string and one worker: the workflow's ActivityOptions.TaskQueue had to carry the exact name exp21-holder-64302-1794109082863030993@legion-infra-infra-1546, which the holder made for itself and which the driver could only learn from the holder before it started the workflow, and the holder had to be a Temporal worker on that name -- an SDK client, a long poll against the server and the activity type registered in the holder's own process. That is the integration cost this case prices, and it is more than case A's, which was the task token alone
+reasoned: b-could-anything-else-have-taken-it: the server reported 1 poller(s) on exp21-holder-64302-1794109082863030993@legion-infra-infra-1546 and 0 of them other than the holder itself (exp21-holder-64302-1794109082863030993-worker@legion-infra-infra-1546 last-polled-at=2026-11-08T03:38:03.372858662Z); the driver registered no handout activity, and the only other worker this run started, case A's dispatch worker in pid 64279, polled exp21-a-activity-1794109081060510382 and was stopped before this case began
+reasoned: b-the-bound: the 4h0m0s start-to-close timeout is a bound this run gave the server, not a duration it observed: what was observed is 406ms, the time from the body running to the holder's answer. The longest anything in this directory has watched a handout stay open is experiment 20's five-minute hold with no worker alive; neither that run nor this one observed hours, so nothing here supports a claim about a handout of hours beyond saying that the bound the server enforces is the one it is given
+reasoned: what-the-two-routes-cost-differently: both routes reached a process holding a working copy and a credential and both brought a commit id back (f59385eadca2 out of band, 8f56e75a70ae through the holder's own queue, two commits that exist in two different repositories). What separates them is what the engine was told: out of band it was told nothing about the holder and the token was carried by whatever the caller likes, while the queue route made the holder a worker and made its name part of what the workflow schedules
+limit: one dev server on one pod, one holder per case, a scratch jj repository each holder made for itself and a credential that is a placeholder: it shows that a handout reached a process holding a working copy, that the commit that process made came back to the workflow as the activity's result, and what each route had to be told. It does not show what handling a real credential costs, because none was used; not what a pod-sized working copy or a session of hours costs; not what carrying a task token to a pod on another machine costs, because this holder read it from a file on the same filesystem; not what a cluster or a restarted server would hold; and not that Legion's pods would map onto either route. The 4h0m0s start-to-close timeout above is a bound the server was given, and what this run observed is 382ms for case A and 406ms for case B
+experiment 21: PASS
+temporal-evaluation: the dev server is stopped: experiments 1 to 6 and 19 to 21 are done, and 7 to 18 measure libraries and a server of their own
