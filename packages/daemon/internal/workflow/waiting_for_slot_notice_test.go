@@ -96,12 +96,14 @@ func TestTheOutboxTakesAWaitingForSlotNotice(t *testing.T) {
 // (record.WaitingLineBand).
 //
 // The first nine files are everything a root's architect and an operator read about a root whose
-// wait a person answered while every slot was taken: each must say that the architect is sent
-// the notice, that the issue's record carries the field, and that neither asks anything of its
-// reader, because the daemon starts the architect again by itself. The thirteen below them carry
-// the fourteen texts that state where the line puts an answered root — admit.go carries two of
-// them — and each had said it stands at the front of the line, which record.Waiting does not do:
-// it stands in the line's first part, oldest first. (INFRA-1100.)
+// wait a person answered while every slot was taken, with gate.go among them because the daemon's
+// own comment is where the next reader of this path looks. This loop reads presence and nothing
+// else: that each file names the notice and the field, so no shipped text forgot the new words.
+// Whether the sentence around a name is true is a reader's to judge, and twice in this issue it
+// was false while this test was green, so green here is coverage, never correctness. The thirteen
+// below them carry the fourteen texts that state where the line puts an answered root — admit.go
+// carries two of them — and each had said it stands at the front of the line, which record.Waiting
+// does not do: it stands in the line's first part, oldest first. (INFRA-1100.)
 func TestTheShippedWordsNameTheWaitingLineNotice(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 	body := func(file string) string {

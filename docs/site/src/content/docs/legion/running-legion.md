@@ -964,9 +964,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   publish, is counted by nobody. An
   unanswered one is in neither admission list, only among the live trees, so without this line the
   capacity it freed looks idle.
-  While an answered root waits for its slot, its architect is sent one `waiting-for-slot` notice
-  saying what answered the wait, where the root stands in the line and that the daemon starts the
-  architect again by itself; nobody acts on it.
+  While an answered root waits for its slot, its architect, while its session is live and holds its
+  Envoy role, is sent one `waiting-for-slot` notice saying what answered the wait, where the root
+  stands in the line and that the daemon starts the architect again by itself; nobody acts on it,
+  and a root whose architect the daemon released while it waited carries its place with no notice
+  behind it.
 
   The `open production checks` line counts the closed issues whose production check is still
   open and names the oldest: its pull request, merge commit, the role working it, which look it
