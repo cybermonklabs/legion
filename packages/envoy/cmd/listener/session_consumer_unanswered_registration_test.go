@@ -6,7 +6,7 @@ package main
 // reaches no entry runs neither: it leaves the filter of a plan nothing stored on the consumer,
 // over the filter the registration that won the row set. Both exits are here - every plan
 // outrun, and the session entry's write failing - and each ends with the consumer filtered on
-// the row the bucket holds (settleUnanswered).
+// the row the bucket holds (registerSession's deferred settle).
 
 import (
 	"context"
@@ -25,9 +25,10 @@ import (
 
 // A registration whose row is rewritten under every plan it makes is answered the
 // bus-unavailable 503, and the last plan it filtered the consumer on is one it never stored:
-// the writer that won the row holds topics that filter leaves out, and a filter update keeps the
-// consumer's position, so every message published on them would be skipped for good. The
-// registration sets the filter back to the row the bucket holds before it answers.
+// the writer that won the row holds topics that filter leaves out, and a message stored on one
+// of them would be lost once the consumer's position moves past it, which the delivery of
+// anything stored after it does. The registration sets the filter back to the row the bucket
+// holds before it answers.
 func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_outrun_filter"

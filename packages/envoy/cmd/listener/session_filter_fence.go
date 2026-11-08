@@ -54,8 +54,11 @@ const (
 // written (confirmRegistered); both of those are behind it by the time this listener's write
 // lands over them, so that registration is answered and gone, and the topic it added stays
 // filtered out of the consumer until the session's next heartbeat, 90 s away
-// (contracts.SessionHeartbeat), every message published on it in between skipped for good, since
-// a filter update keeps the consumer's position.
+// (contracts.SessionHeartbeat). What that window costs is a message stored on that topic once
+// the consumer's position moves past it, which the delivery of anything stored after it does: a
+// filter update keeps that position, and so does the registration the heartbeat makes
+// (bus.SessionConsumers.UpdateFilter, bus.SessionConsumers.Ensure), so a consumer nothing moved
+// in the window is offered that message still once the heartbeat sets the filter.
 //
 // Against that a pass is cheap: one bucket read and one consumer call, under that session's own
 // lock and no other session's. The count is what the caller's budget can really spend, since the
@@ -76,12 +79,15 @@ const filterFenceAttempts = 5
 // listener did not answer, which both write through storedFilterWrite, and the relay restart
 // (sessionRelays.settleFilter). A row stored between the two makes what lands an older row's
 // filter, over the filter a newer registration set, and the session is then answered 200 for a
-// topic its consumer does not filter on; because a filter update keeps the consumer's position,
-// the messages that pass in that window are skipped for good. The server holds no conditional
-// consumer update to write that filter under, so the fence is the interest row's KV revision read
-// again after the write (storedTopics): a write that landed answers the revision of the row it
-// was built from, and while the bucket answers a higher one (rowMovedUnder) the loop plans and
-// writes again, ending when the row the write was built from is still the newest.
+// topic its consumer does not filter on; a message stored on that topic in the window is lost
+// once the consumer's position moves past it, which the delivery of anything stored after it
+// does, and is offered still where nothing moved the consumer before the filter is set again,
+// since neither a filter update nor the registration the heartbeat makes moves that position
+// (bus.SessionConsumers.UpdateFilter, bus.SessionConsumers.Ensure). The server holds no
+// conditional consumer update to write that filter under, so the fence is the interest row's KV
+// revision read again after the write (storedTopics): a write that landed answers the revision
+// of the row it was built from, and while the bucket answers a higher one (rowMovedUnder) the
+// loop plans and writes again, ending when the row the write was built from is still the newest.
 //
 // A loop that ends on an older row's filter converges no further here: it logs that at WARN,
 // naming the session, the revision it wrote from and the one the bucket answered, and leaves the
@@ -90,8 +96,8 @@ const filterFenceAttempts = 5
 // back to the repair path instead would buy nothing, since every pass already plans from the
 // bucket's newest record and row and a hand-back would only take the session's lock again to do
 // the same thing. What the passes cost is a longer hold of that one session's lock; what stopping
-// costs is the messages on the topics the two rows differ by until that heartbeat, and
-// filterFenceAttempts is where the two are weighed.
+// costs is the messages stored on the topics the two rows differ by that the consumer's position
+// moves past before that heartbeat, and filterFenceAttempts is where the two are weighed.
 //
 // A loop whose read of the bucket after a write that landed failed ends on a filter it cannot
 // judge, and logs a line of its own at WARN, naming the session, the revision that write was
@@ -101,18 +107,19 @@ const filterFenceAttempts = 5
 // next heartbeat, which registers again and writes both the row and the filter of it, as it
 // repairs a loop that ended out of passes.
 //
-// What the fence leaves open, each window costing those messages until that heartbeat: a row
-// stored after the loop's last read stands unfenced, since nothing reads the bucket again to
-// find it; a corrective pass that plans nothing, or whose write the server refused, leaves the
-// filter of the pass before it standing, which the bucket has already answered a newer row
-// than; a loop out of passes leaves the filter of its last pass, under which the row moved once
-// more; and a read that failed after a write that landed ends the loop unjudged, since a fence
-// that cannot read the bucket cannot say whether the write it made is an older row's. The second
-// and third log the first of the two lines below; the first is not known here, and the fourth
-// logs the second line, which names the revision that write was built from and the failure. A
-// pass that finds the consumer already filtering on what its row asks, or the stream holding no
-// consumer at all, opens none of these windows and ends the loop with no line, whichever pass it
-// is: nothing of such a pass stands anywhere (filterWriteSettled).
+// What the fence leaves open, each window costing the messages the consumer's position moves
+// past before that heartbeat: a row stored after the loop's last read stands unfenced, since
+// nothing reads the bucket again to find it; a corrective pass that plans nothing, or whose
+// write the server refused, leaves the filter of the pass before it standing, which the bucket
+// has already answered a newer row than; a loop out of passes leaves the filter of its last
+// pass, under which the row moved once more; and a read that failed after a write that landed
+// ends the loop unjudged, since a fence that cannot read the bucket cannot say whether the
+// write it made is an older row's. The second and third log the first of the two lines below;
+// the first is not known here, and the fourth logs the second line, which names the revision
+// that write was built from and the failure. A pass that finds the consumer already filtering
+// on what its row asks, or the stream holding no consumer at all, opens none of these windows
+// and ends the loop with no line, whichever pass it is: nothing of such a pass stands anywhere
+// (filterWriteSettled).
 //
 // Both reads are direct gets, so with ENVOY_NATS_REPLICAS above 1 a copy one write behind the
 // leader can answer an older row, and an older revision, at either end of the loop
@@ -208,7 +215,7 @@ func storedTopics(ctx context.Context, registry *store.Registry, sessionID strin
 // filterAfterUnsubscribe, filterAfterUnansweredRegistration and filterAfterRestart name what a
 // write of a session consumer's filter built from the bucket's newest row follows, which its log
 // line carries (storedFilterStep): the unsubscribe that removed topics from the row (refollow),
-// the registration this listener could not answer (settleUnanswered), or the relay restart whose
+// the registration this listener could not answer (registerSession), or the relay restart whose
 // own filter write the fence is correcting (sessionRelays.settleFilter).
 const (
 	filterAfterUnsubscribe            = "unsubscribe"
@@ -220,7 +227,7 @@ const (
 // row holds, every pass of it fenced on the revision that row was read at (fenceFilterWrite,
 // storedFilterStep). after names what the write follows, for the log.
 //
-// It owns the three things its callers would otherwise each repeat (refollow, settleUnanswered):
+// It owns the three things its callers would otherwise each repeat (refollow, registerSession):
 // the listener that holds no session-consumer connection, which only a test builds and which
 // writes nothing; the budget every consumer call this listener makes is bounded by
 // (sessionConsumerCallTimeout), which here covers the whole loop, as it covers a relay restart's

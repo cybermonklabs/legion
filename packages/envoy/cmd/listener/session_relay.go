@@ -736,9 +736,10 @@ func (m *sessionRelays) restart(ctx context.Context, run *relayRun) (bus.Session
 // The row is read from the bucket and not from the watched cache (storedTopics): a registration
 // on another listener may have added a topic this listener's watch has not delivered
 // yet, and a restart filtering on the cached row would drop a topic that registration was
-// answered 200 for while keeping the consumer's position, so every message published on it in
-// that window would be skipped for good. The revision is what the write of this filter is fenced
-// on (settleFilter).
+// answered 200 for while keeping the consumer's position, so a message stored on it in that
+// window is lost once the consumer's position moves past it, which the delivery of anything
+// stored after it does, and is offered still where nothing moved the consumer before the filter
+// is set again. The revision is what the write of this filter is fenced on (settleFilter).
 func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]string, uint64, bool) {
 	topics, revision, err := storedTopics(ctx, m.registry, sessionID)
 	if err != nil {

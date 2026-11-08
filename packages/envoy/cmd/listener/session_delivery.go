@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
-	"github.com/sjawhar/envoy/internal/store"
 )
 
 // deliveryModeConsumer is the one mode a registration is answered (deliveryAnswer.Mode): the
@@ -103,8 +102,8 @@ type deliveryRefusal struct {
 	// filtered is set on the one refusal decided after a consumer call was sent, the call that
 	// failed (consumerFor): that call may have set the session consumer's filter to the plan it
 	// was made for, so the registration that is not answered holds the filter to the row the
-	// bucket holds before it returns (registerSession, sessionDelivery.settleUnanswered). Every
-	// other refusal is decided before anything is sent.
+	// bucket holds before it returns (registerSession). Every other refusal is decided before
+	// anything is sent.
 	filtered bool
 }
 
@@ -658,8 +657,7 @@ func versionPart(version string, i int) (int, bool) {
 // followed topic once the registration is answered is the consumer's to deliver. It is a plan
 // and not a row the bucket holds, so something judges it against the bucket afterwards every
 // time: the repair that follows the session entry of a registration that is answered
-// (confirmRegistered), and the settle of one that is not (registerSession,
-// sessionDelivery.settleUnanswered).
+// (confirmRegistered), and the settle of one that is not (registerSession).
 //
 // It returns the session's lock held over that filter, which the caller releases (register); a
 // refusal decided before the lock was taken returns noUnlock. A refusal decided after the call
@@ -847,29 +845,6 @@ func (m *sessionDelivery) refollow(ctx context.Context, d *listenerDeps, session
 		return
 	}
 	m.storedFilterWrite(ctx, d.registry, sessionID, filterAfterUnsubscribe)
-}
-
-// settleUnanswered holds the filter of a registration this listener did not answer to the row
-// the bucket holds. A registration filters the session's consumer on the plan it is about to
-// store, before it stores it (consumerFor), and the repair that follows its session entry is
-// what judges that filter against the bucket's newest record and row (confirmRegistered). A
-// registration that reaches no entry - every plan it made was outrun, or its entry write failed
-// (registerSession) - leaves the filter of a plan nothing stored over the filter the
-// registration that won the row set: that session is answered 200 for a topic its consumer does
-// not filter on, and a filter update keeps the consumer's position, so every message published
-// on that topic until its next heartbeat is skipped for good.
-//
-// It writes the filter alone and creates no consumer, where the repair of an answered
-// registration creates one: this registration was answered nothing, so it promises no consumer,
-// and a session whose consumer a delete took away has one again at its next registration. A
-// session the bucket holds no row for is left filtering on its own agent subject alone, which is
-// every topic such a row would name.
-//
-// It takes the session's lock, as every consumer call this listener makes for a session does, so
-// its caller holds none: the pass that set the filter has released it by then (registerPass).
-// The lock is storedFilterWrite's, with the call budget and the nil check beside it (refollow).
-func (m *sessionDelivery) settleUnanswered(ctx context.Context, registry *store.Registry, sessionID string) {
-	m.storedFilterWrite(ctx, registry, sessionID, filterAfterUnansweredRegistration)
 }
 
 // sessionLocks holds one lock per session id, kept only while somebody holds or waits for it.

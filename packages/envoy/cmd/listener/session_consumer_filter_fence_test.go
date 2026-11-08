@@ -4,13 +4,13 @@ package main
 // lands at the server after it. A registration on another listener that stores its row in between
 // takes no lock of this process, so the bucket is what orders the two: a write built from the row
 // that registration replaced would leave the session answered 200 for a topic its consumer does
-// not filter on, and a filter update keeps the consumer's position, so every message published on
-// that topic in the window would be skipped for good. The five writes - a registration's confirm,
-// a delete's restore, an unsubscribe's refollow, a registration this listener did not answer
-// (settleUnanswered, whose cases are session_consumer_unanswered_registration_test.go's) and a
-// relay restart - are fenced on the row they were built from (fenceFilterWrite), and each case
-// below holds one of them open over a registration on another listener and then publishes on the
-// topic that registration added.
+// not filter on, and a message stored on that topic in the window would be lost once the
+// consumer's position moves past it, which the delivery of anything stored after it does. The
+// five writes - a registration's confirm, a delete's restore, an unsubscribe's refollow, a
+// registration this listener did not answer (registerSession's deferred settle, whose cases are
+// session_consumer_unanswered_registration_test.go's) and a relay restart - are fenced on the row
+// they were built from (fenceFilterWrite), and each case below holds one of them open over a
+// registration on another listener and then publishes on the topic that registration added.
 //
 // Two defences stand in that window, and a case pins one of them at a time. A row stored before
 // a write's read is kept by that read being of the bucket and never of this listener's cache,

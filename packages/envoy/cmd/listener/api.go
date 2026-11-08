@@ -2199,7 +2199,7 @@ func (e *sessionEntryWriteError) Unwrap() error { return e.cause }
 // (sessionDelivery.confirmRegistered): the plan it filtered on may be one nothing stored - every
 // plan outrun, the row written and the entry refused - while the registration that won the row
 // was answered 200 for topics the filter leaves out. So every exit that answers no registration
-// holds the filter to the row the bucket holds first (sessionDelivery.settleUnanswered), on a
+// holds the filter to the row the bucket holds first (sessionDelivery.storedFilterWrite), on a
 // context the client's own cannot cancel but this registration's store budget bounds, since the
 // answer waits on it. One deferred settle behind an answered flag is what makes that true of
 // every exit, an exit added later included. A registration refused before any consumer call was
@@ -2218,10 +2218,38 @@ func (d *listenerDeps) registerSession(
 	// answers.
 	gap := false
 	// Whether a pass of this registration sent a consumer call, which is the call that sets the
-	// filter: what settle holds to the bucket's newest row.
+	// filter: what the settle below holds to the bucket's newest row.
 	filtered := false
-	settle := func() {
-		if !filtered {
+	// answered is set on the one return that answers this registration, and the settle below
+	// runs on every other exit.
+	answered := false
+	// The settle holds the filter of a registration this listener did not answer to the row the
+	// bucket holds. A registration filters the session's consumer on the plan it is about to
+	// store, before it stores it (sessionDelivery.consumerFor), and the repair that follows its
+	// session entry is what judges that filter against the bucket's newest record and row
+	// (sessionDelivery.confirmRegistered). A registration that reaches no entry - every plan it
+	// made was outrun, or its entry write failed - leaves the filter of a plan nothing stored
+	// over the filter the registration that won the row set: that session is answered 200 for a
+	// topic its consumer does not filter on, and a message stored on that topic is lost once the
+	// consumer's position moves past it, which the delivery of anything stored after it does,
+	// since neither a filter update nor the registration the session's next heartbeat makes
+	// moves that position (bus.SessionConsumers.UpdateFilter, bus.SessionConsumers.Ensure).
+	//
+	// It writes the filter alone and creates no consumer, where the repair of an answered
+	// registration creates one: this registration was answered nothing, so it promises no
+	// consumer, and a session whose consumer a delete took away has one again at its next
+	// registration. A session the bucket holds no row for is left filtering on its own agent
+	// subject alone, which is every topic such a row would name.
+	//
+	// The session's lock, the call budget and the listener that holds no session consumers at
+	// all are sessionDelivery.storedFilterWrite's, as they are every caller of it; nothing here
+	// holds that lock, since the pass that set the filter released it by then (registerPass).
+	//
+	// It is deferred rather than written at each exit that answers no registration because an
+	// exit added later would otherwise leave the filter of a plan nothing stored on the
+	// session's consumer, which is the bug the settle was added for.
+	defer func() {
+		if answered || !filtered {
 			return
 		}
 		// The settle outlives the client's own context, as the confirm of an answered
@@ -2237,17 +2265,7 @@ func (d *listenerDeps) registerSession(
 			settleCtx, cancel = context.WithDeadline(settleCtx, deadline)
 			defer cancel()
 		}
-		d.consumers.settleUnanswered(settleCtx, d.registry, body.SessionID)
-	}
-	// answered is set on the one return that answers this registration, and the settle runs on
-	// every other exit. It is deferred rather than written at each of them because an exit added
-	// later would otherwise leave the filter of a plan nothing stored on the session's consumer,
-	// which is the bug the settle was added for.
-	answered := false
-	defer func() {
-		if !answered {
-			settle()
-		}
+		d.consumers.storedFilterWrite(settleCtx, d.registry, body.SessionID, filterAfterUnansweredRegistration)
 	}()
 	for attempt := 1; attempt <= registrationPlanAttempts; attempt++ {
 		plan := store.InterestPlan{}
