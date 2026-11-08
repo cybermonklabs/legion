@@ -275,9 +275,13 @@ jobs:
     # The three uploads are three steps of this job and not one, so the sum below counts each
     # of them: 3 + 2 + 4, not 4.
     #
-    # The browser step's own 9 minutes above still holds: 356 s is the most it took over these
-    # 24 legs, under the 419 s that budget was derived from, so the pooled maximum the rule
-    # reads is still that 419 s and the budget the rule gives is still 9 minutes.
+    # The browser step's own 9 minutes above still holds at the merged head, where #2958's
+    # accessibility rows joined the shards: its maxima here are 381 s (run 42521581875, job
+    # 128856388199), 355 s (job 128851420516) and 283 s (nightly run 42522550380), all under the
+    # 419 s that budget was derived from, so the pooled maximum the rule reads is still that
+    # 419 s and the budget the rule gives is still 9 minutes. The 474 s main measured for this
+    # step, which raised it to 10 minutes there, is not in that sample: it was taken on the bare
+    # runner with the Playwright install this change removes still in the job.
     #
     # The browser step is the one step of this job that carries a budget, so the job's budget is
     # that budget plus the maxima above of every step without one, which sum to 219 s:
@@ -429,9 +433,9 @@ jobs:
         # reporter's output, so a green run reports what it ran too.
         #
         # The budget below is the 9 minutes the job's head derives from the sharded head's own
-        # runs, and the containerised reading taken on sha256:ba003193 does not move it: the
-        # most this step took over the 24 legs the job's head lists is 356 s, under the sharded
-        # head's 419 s and well under the budget, so the pooled maximum the rule reads is still
+        # runs, and neither the container nor #2958's added rows move it: at the merged head this
+        # step's maxima are 381 s, 355 s and 283 s, which the job's head lists with their runs,
+        # all under the sharded head's 419 s, so the pooled maximum the rule reads is still
         # 419 s.
         timeout-minutes: 9
         run: |
@@ -1023,7 +1027,7 @@ jobs:
   # Why a `docker run` inside a step and not a job-level `container:`. A `container:` on any job
   # of this file drops every `go build` the suite starts out of check-ci-filters.sh's reduction
   # (ci_filter_coverage.py's `shell_reason`, "the job runs in a container:"), which then counts
-  # each as reading every Go file of the repository. The shard and alone jobs below do take one,
+  # each as reading every Go file of the repository. The shard and alone jobs above do take one,
   # since the browsers they run are in it, and the `dispatch_browser` gate answers for them by
   # listing no script Run at all and pinning the binaries job's build whole instead
   # (.github/scripts/ci_job_reads.py's gate says why). This job needs no container of its own:

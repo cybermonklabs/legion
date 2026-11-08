@@ -1635,10 +1635,12 @@ own lane's values under the plain names.
 
 A lane's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one lane that names neither is refused naming both.
-`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names,
-which is a developer's path on a machine with Docker and no Postgres binaries.
+`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
+a developer's path on a machine with Docker and no Postgres binaries, and the
+visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
+runner with only its Playwright command in a container.
 `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is
-CI's path and an issue pod's: the shard and alone jobs of
+the shard and alone jobs' path and an issue pod's: those two jobs of
 `.github/workflows/dispatch-browser.yaml` run in a container that carries
 PostgreSQL 18 with `vector`, where there are Postgres binaries and no Docker
 socket, and they name that installation's directory. That provider runs

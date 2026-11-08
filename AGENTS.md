@@ -141,7 +141,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
 
 - **What those rules do not prove is where an image's bytes came from**, and that is an accepted limit rather than a gap to patch.
-  Rules 9 and 10 read only the image's label, which the run that publishes the image writes, so they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
+  Rule 9 reads only that the package holds the row's digest and rule 10 only the image's label, which the run that publishes the image writes, so together they pass any image at the row's digest whose label carries this tree's recipe hash, whatever built its bytes:
   on a pull request that run executes the pull request's own copy of the build workflow, and of the `install-crane` action and `.github/scripts/ci_images.py` it runs before the build, none of which is checked against the bytes it pushed.
   A gate on the bytes would read the attestation's source commit; none exists, by the controller's decision, no such attack having been seen, and no by-hand reading stands in for it (one was written and withdrawn, dispatch://INFRA-1443)
 
