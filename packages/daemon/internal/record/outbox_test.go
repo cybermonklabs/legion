@@ -540,44 +540,95 @@ func TestNoRowsPostMeasuresAboveLongestPost(t *testing.T) {
 	}
 }
 
-// A notice the publish strips of a field its kind requires cannot be re-held: the daemon builds
-// a re-held copy from the payload the publish carried (the daemon's noticeAnswered, reholdNotice)
-// and NewOutboxRow validates that copy, so the copy of such a notice would be refused and its
-// architect never told. Published therefore has to carry every field validateOutboxPayload
-// requires, which today is a waiting-for-slot notice's own wait.
+// A published notice of every kind the validation takes is still a payload NewOutboxRow accepts,
+// so every kind can be re-held. The daemon builds a re-held copy out of the payload the publish
+// carried — the listener's report decoded back into a notice (the daemon's exceptionNotice,
+// reholdNotice), with the two paced moments put back by hand on the one path that keeps them
+// (noticeAnswered) — and validates that copy before queueing it, so a field Published drops that
+// the kind's own validation requires makes every re-hold of that kind refused and its architect
+// never told, with nothing else to say so.
 //
-// The check is the validation itself rather than a list of field names, so it holds for the next
-// required field as it holds for this one: a field added to that list and dropped by Published
-// fails here without anybody remembering to name it.
+// The table holds one notice of each kind, and the coverage assertion holds it against the
+// validation's own list (validNoticeKinds), in both directions, so a kind added to that list
+// tomorrow is a row missing here rather than a kind nobody checked, and a kind the table names
+// that the validation refuses is named too. Each row is judged by the validation itself rather
+// than against a list of field names, so a field a kind comes to require is covered the day it
+// is required: Published dropping it fails this test without anybody remembering to name it here.
 func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	paced := answered.Add(time.Minute)
-	notice := Notice{
-		Kind:           "waiting-for-slot",
-		Role:           claim.RoleArchitect,
-		Reason:         "a person answered the root's ask, and the admission cap has no free slot now",
-		WaitingForSlot: &WaitingForSlot{AnsweredAt: answered},
-		PacedAt:        paced,
-		PacedFrom:      answered,
-	}
-	if _, err := NewOutboxRow("LEGION-208", notice, paced); err != nil {
-		t.Fatalf("the notice the daemon writes is refused before any publish: %v", err)
+	// One notice per kind, each as its own kind's requirements have it: a catch-up carries its
+	// account of the tree, a waiting-for-slot the wait it was written for, the three spec
+	// decisions the person who decided and the reference, and no other kind carries any of those.
+	// The pacing's two moments are a catch-up's alone (Notice.PacedAt), so that row alone carries
+	// them; the re-hold's restore of them below is a no-op on the rest, as it is in the daemon.
+	every := []Notice{
+		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass"},
+		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing},
+		{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: string(HoldEscalated)},
+		{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "pull request #42 is blocked: ci is red at head"},
+		{Kind: "pr-merged", Role: claim.RoleArchitect, Reason: "pull request #42 merged at c0de"},
+		{Kind: "pr-closed-unmerged", Role: claim.RoleArchitect, Reason: "pull request #42 was closed without a merge"},
+		{Kind: "pull-request-missing", Role: claim.RoleArchitect, Reason: "the record holds no pull request for LEGION-208"},
+		{Kind: "message-refused", Role: claim.RoleArchitect, Reason: "Dispatch refused the message Legion was posting on LEGION-208"},
+		{Kind: "merge-refused", Role: claim.RoleArchitect, Reason: "GitHub refused the merge of pull request #42"},
+		{Kind: "merge-stalled", Role: claim.RoleArchitect, Reason: "GitHub has shown pull request #42 open at another head since 2026-11-08T09:00:00Z"},
+		{Kind: "merge-removed", Role: claim.RoleArchitect, Reason: "pull request #42 left the merge queue"},
+		{Kind: "merge-waiting", Role: claim.RoleArchitect, Reason: "Legion submitted the merge of pull request #42 an hour ago and GitHub has not completed it"},
+		{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec"},
+		{Kind: "design-changes-requested", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "name the rollback path"},
+		{Kind: "carried-gate-opened", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-208/spec", Reason: "the gate came with the hand-over"},
+		{Kind: "ready-refused", Role: claim.RoleArchitect, Version: 3, Reason: "the spec a person approved is version 2, and READY names version 3"},
+		{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-209 is done"},
+		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
+		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
+		{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: "LEGION-209 has waited for its release since 2026-11-08T09:00:00Z"},
+		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: its repository is not one Legion serves"},
+		{Kind: "catch-up", Role: claim.RoleArchitect, PacedAt: paced, PacedFrom: answered,
+			Reason: "the tree of LEGION-208 at generation 3 as the daemon records it now; start or resume it as your role says",
+			CatchUp: &CatchUp{Generation: 3, Launch: 2,
+				Gates:  []CatchUpGate{{Step: DesignStepSpec, Gated: true, Artifact: "artifact-208", Version: 3, Approved: 3, Open: true}},
+				Issues: []CatchUpIssue{{Key: "LEGION-208", Title: "The outbox's notices", Phase: phase.Implementing, Status: "in_progress"}}}},
+		{Kind: "checks-red", Role: claim.RoleArchitect, Phase: phase.Testing, Reason: "CI is red at head: pytest"},
+		{Kind: "review-stuck", Role: claim.RoleReviewer, Phase: phase.Reviewing, Summary: "alice", Reason: "the review round has not ended",
+			Topic: "notifications.role.legion-LEGION-208-reviewer"},
+		{Kind: "status-reasserted", Role: claim.RoleArchitect, Reason: "session ses_1 set LEGION-208 to todo, and the daemon set it back to in_progress"},
+		{Kind: "waiting-for-slot", Role: claim.RoleArchitect, Reason: "a person answered the root's ask, and the admission cap has no free slot now",
+			WaitingForSlot: &WaitingForSlot{AnsweredAt: answered}},
 	}
 
-	published, key := notice.Published(41)
-	if key != OutboxKey(41) {
-		t.Errorf("the published notice goes under %q, want the key of row 41", key)
+	byKind := make(map[NoticeKind]Notice, len(every))
+	for _, notice := range every {
+		if _, twice := byKind[notice.Kind]; twice {
+			t.Fatalf("the table holds two %s notices, want one of each kind", notice.Kind)
+		}
+		byKind[notice.Kind] = notice
 	}
-	// The copy the re-hold builds is this payload, with the two paced moments put back by hand at
-	// the site that builds it; what Published dropped of the kind's own fields is not put back
-	// anywhere, so the copy is refused for want of it.
-	copied := published
-	copied.PacedAt, copied.PacedFrom = notice.PacedAt, notice.PacedFrom
-	if _, err := NewOutboxRow("LEGION-208", copied, paced); err != nil {
-		t.Fatalf("the re-held copy of a published waiting-for-slot notice is refused, so its architect is never told: %v", err)
+	for _, kind := range validNoticeKinds {
+		if _, named := byKind[kind]; !named {
+			t.Errorf("the validation takes a %s notice and the table holds none: add one, or a publish that drops what that kind requires passes here unseen", kind)
+		}
 	}
-	if published.WaitingForSlot == nil || !published.WaitingForSlot.AnsweredAt.Equal(answered) {
-		t.Errorf("the published notice names the wait %+v, want the moment %s it was written for: the daemon reads it to decide whether the wait still stands",
-			published.WaitingForSlot, answered)
+	for kind := range byKind {
+		if !validNoticeKind(kind) {
+			t.Errorf("the table holds a %s notice, which is no kind the validation takes", kind)
+		}
+	}
+
+	for _, notice := range every {
+		t.Run(string(notice.Kind), func(t *testing.T) {
+			if _, err := NewOutboxRow("LEGION-208", notice, paced); err != nil {
+				t.Fatalf("the notice the daemon writes is refused before any publish: %v", err)
+			}
+			published, _ := notice.Published(41)
+			// The copy the re-hold builds is this payload, with the two paced moments put back by
+			// hand at the site that builds it; what Published dropped of the kind's own fields is
+			// not put back anywhere, so the copy is refused for want of it.
+			copied := published
+			copied.PacedAt, copied.PacedFrom = notice.PacedAt, notice.PacedFrom
+			if _, err := NewOutboxRow("LEGION-208", copied, paced); err != nil {
+				t.Fatalf("the re-held copy of a published %s notice is refused, so its architect is never told: %v", notice.Kind, err)
+			}
+		})
 	}
 }

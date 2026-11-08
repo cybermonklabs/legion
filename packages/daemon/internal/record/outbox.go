@@ -1210,13 +1210,22 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	return nil
 }
 
+// validNoticeKinds is the set of notice kinds the validation accepts: a kind reaches the outbox
+// only by being on this list, since validNoticeKind decides from it alone and NewOutboxRow
+// refuses a notice of any other kind. It is a list rather than a switch so a test can range over
+// it, and a kind added here turns up as a row that test is missing rather than as a kind nobody
+// checked.
+var validNoticeKinds = []NoticeKind{
+	"phase-finished", "worker-died", "held",
+	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
+	"merge-refused", "merge-stalled", "merge-removed", "merge-waiting",
+	"design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused",
+	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
+	"catch-up", "checks-red", "review-stuck", "status-reasserted", "waiting-for-slot",
+}
+
 func validNoticeKind(kind NoticeKind) bool {
-	switch kind {
-	case "phase-finished", "worker-died", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused", "merge-refused", "merge-stalled", "merge-removed", "merge-waiting", "design-approved", "design-changes-requested", "carried-gate-opened", "ready-refused", "child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted", "waiting-for-slot":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(validNoticeKinds, kind)
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an
