@@ -1,0 +1,5 @@
+kind: Added
+body: 'Daemon API contract 59: each issue the state''s `admission.waiting` names carries `waitingLine`, its `place` in that line, 1 at the front, and the `length` of the line at that read. An issue the list does not name carries none, and a caller from a pod below 59 is served the state without the field.'
+time: 2026-11-08T07:40:56.665329166Z
+custom:
+    Issue: pr2989

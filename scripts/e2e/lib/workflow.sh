@@ -309,9 +309,9 @@ architect_registers_gate() {
 # enters awaiting_person: legion state shows waitingOn {kind: "gate", gateVersion} with no
 # answeredAt, the root holds no slot (no .slot, absent from .admission.active), and the architect
 # stays live. The person's review answers the wait (waitingOn.answeredAt), and the answered root
-# goes to the front of the line, with the issues whose work came back and ahead of every issue
-# whose first phase has yet to start: at planning when an approval opened the gate, at admitted
-# with the same architect session given its task when changes were requested. A
+# waits in the line among the issues whose work came back, oldest first: at planning when an
+# approval opened the gate, at admitted with the same architect session given its task when
+# changes were requested. A
 # slot free at the answer is taken in the same transaction, so the answer reads as answeredAt or as
 # the root holding a slot again. Nothing of the root's tree advances until the root resumes, and
 # each issue of it that then has work waits for a slot of its own.

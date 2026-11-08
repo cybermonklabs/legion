@@ -1005,7 +1005,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   admission: 3 issues hold a slot, cap 4, 1 waiting; 2 live trees; 9 issues
   blocked on Dispatch links: none
   memory: none
-  roots waiting on a person: 1, 0 answered and waiting for a slot — WIDGETS-9 waits on ask 7f3c2a10, unanswered
+  roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
@@ -1023,11 +1023,20 @@ Closing the terminal leaves the project without one, and the daemon logs
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
   The `roots waiting on a person` line counts the roots that gave their admission slot back to
-  wait on a person (phase `awaiting_person`), how many have been answered — each first in line,
-  and each resuming at once and taking no slot once its design gate has opened — and each by key
-  with what it waits on (`none` when no root waits). An
+  wait on a person (phase `awaiting_person`), how many of them a person answered and the
+  published line still names — each standing
+  among the issues whose work came back, oldest first, until the pass that resumes it — and each by key
+  with what it waits on (`none` when no root waits). A daemon older than contract 59 serves no
+  `waitingLine`, so that count reads 0 against one, which is the true answer for a caller that
+  cannot see the line, and a root of another Dispatch project, whose line this daemon does not
+  publish, is counted by nobody. An
   unanswered one is in neither admission list, only among the live trees, so without this line the
   capacity it freed looks idle.
+  While an answered root waits for its slot, its architect, while its session is live and holds its
+  Envoy role, is sent one `waiting-for-slot` notice saying what answered the wait, where the root
+  stands in the line and that the daemon starts the architect again by itself; nobody acts on it,
+  and a root whose architect the daemon released while it waited carries its place with no notice
+  behind it.
 
   The `open production checks` line counts the closed issues whose production check is still
   open and names the oldest: its pull request, merge commit, the role working it, which look it
@@ -1090,7 +1099,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   (one entry per gated step: `step`, `artifactId`, `currentVersion`, `approvedVersion`, `status`
   — `unregistered`, `waiting`, `approved` or `changes_requested` — and `changesReason`), for a root in `awaiting_person`
   `waitingOn` (`kind` `ask` with its `ask`, or `gate` with `gateVersion` and `artifactId`; `since`; and
-  `answeredAt` with `answeredBy` once it was answered) and, for a closed
+  `answeredAt` with `answeredBy` once it was answered), for an issue `admission.waiting` names
+  `waitingLine` (`place`, 1 being first in the line, and `length`, the line's length at this
+  read; a daemon below contract 59 serves none) and, for a closed
   issue whose
   production check is open, `check` (`repo`, `pullRequest`, `mergeCommit`, `openedAt`, `role` —
   the role the check recorded as the one that works it — `looks`,

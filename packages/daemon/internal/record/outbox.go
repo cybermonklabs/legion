@@ -253,6 +253,9 @@ type Notice struct {
 	ResendOf int64 `json:"resend_of,omitempty"`
 	// CatchUp is a catch-up notice's account of the tree, and absent from every other kind.
 	CatchUp *CatchUp `json:"catch_up,omitempty"`
+	// WaitingForSlot is which wait a waiting-for-slot notice was written for, and absent from
+	// every other kind.
+	WaitingForSlot *WaitingForSlot `json:"waiting_for_slot,omitempty"`
 	// OpenCapabilities names every open row of the deployment's capability report
 	// (capabilities.Deployment.Open) when the daemon reports them: a deployment row with no
 	// decision, or a live row a live session's check failed (LEGION-663). Only a tick controller
@@ -416,13 +419,44 @@ type CatchUpIssue struct {
 	Status string      `json:"status"`
 }
 
+// WaitingForSlot is the wait a waiting-for-slot notice was written for, named by the moment a
+// person's act answered it (Awaiting.AnsweredAt). A wait is answered once and that moment never
+// moves while the wait stands, so it names the wait; the root's next wait is answered at another
+// moment, and a wait no act has answered earns no such notice at all.
+//
+// The row carries it because the notice can outlive its wait. The publish is held while no
+// session holds the architect's role, and in that window the root can be resumed, wait again, be
+// answered and be told again. With nothing on the row to say which wait it speaks of, the held
+// row would read the new wait's answer and the new wait's mark, and publish beside that wait's
+// own notice: two notices for one wait, the older one naming the old answer and a place from
+// before the resume. The daemon publishes a held row only while the record's wait is still the
+// one answered here (the daemon's stillWaitsForSlot).
+//
+// It is the daemon's own bookkeeping of which wait the row belongs to, and the architect reads
+// none of it: what the notice says is its Reason, which names the answer in words
+// (workflow.WaitingForSlotNotice). It goes out with the publish all the same, as a catch-up's
+// account of its tree does and unlike the pacing's two moments (Published): a re-held copy is
+// built from the payload the publish carried, read back off the listener's report (the daemon's
+// exceptionNotice, reholdNotice), so a field dropped there is a field the copy would be refused
+// for want of.
+type WaitingForSlot struct {
+	AnsweredAt time.Time `json:"answered_at"`
+}
+
 func (Notice) OutboxKind() OutboxKind { return OutboxKindNotice }
 
 // Published is the notice the runner publishes for outbox row id, and the dedupe key it goes under:
 // a re-held copy goes under the key of the row it copies, and without ResendOf. The reserved
 // moment and the moment it was reserved from go out with neither: all three are the daemon's own
 // bookkeeping of the row, and what the pacing did says nothing to the architect that reads the
-// notice (the daemon's wakeRan writes it to the log instead).
+// notice (the daemon's wakeRan writes it to the log instead). A re-held copy carries only what
+// the publish carried: the daemon's exceptionNotice decodes the listener's report into a notice
+// and puts nothing back, and only the receipt-timeout path restores the two paced moments by
+// hand (the daemon's noticeAnswered). Both then validate the copy before queueing it
+// (reholdNotice, through NewOutboxRow), so a field validateOutboxPayload requires for its kind,
+// as it requires WaitingForSlot of a waiting-for-slot notice, is stripped here only together
+// with a restore of its own there, or every re-hold of that kind is refused for want of it
+// (record's TestAPublishedNoticeIsStillAValidOutboxPayload).
 func (n Notice) Published(id int64) (Notice, string) {
 	n.PacedAt, n.PacedFrom = time.Time{}, time.Time{}
 	if n.ResendOf == 0 {
@@ -986,6 +1020,12 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
+		if (value.Kind == "waiting-for-slot") != (value.WaitingForSlot != nil) {
+			return fmt.Errorf("a %s notice names the wait it was written for only when it is a waiting-for-slot notice", value.Kind)
+		}
+		if wait := value.WaitingForSlot; wait != nil && wait.AnsweredAt.IsZero() {
+			return fmt.Errorf("a waiting-for-slot notice names the moment its wait was answered")
+		}
 		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
 		}
@@ -1096,10 +1136,14 @@ func validateOutboxPayload(payload OutboxPayload) error {
 	return nil
 }
 
-// validNoticeKind is every notice kind the daemon publishes, which is also every kind a row may
-// decode as (DecodeOutboxPayload). `ready-refused` is not one of them: READY went with the
-// daemon's merge, so nothing writes the kind, and migration 20261029120800 deletes every row an older
-// daemon left carrying it, in the same migration that drops the four merge kinds from this list.
+// validNoticeKinds is every notice kind the daemon publishes, which is also every kind a row may
+// decode as (DecodeOutboxPayload) and every kind the validation accepts: a kind reaches the
+// outbox only by being on this list, since validNoticeKind decides from it alone and NewOutboxRow
+// refuses a notice of any other kind. It is a list rather than a switch so a test can range over
+// it, and a kind added here turns up as a row that test is missing rather than as a kind nobody
+// checked. `ready-refused` is not one of them: READY went with the daemon's merge, so nothing
+// writes the kind, and migration 20261029120800 deletes every row an older daemon left carrying
+// it, in the same migration that drops the four merge kinds from this list.
 //
 // `worker-stalled` is what the daemon's stall backstop did to a worker whose agent stopped
 // stepping, with the task it was serving still owed (internal/daemon's backstopStalledTurns),
@@ -1110,13 +1154,18 @@ func validateOutboxPayload(payload OutboxPayload) error {
 // says what became of that stalled process as well, where the end let it go: that it was
 // stopped, or that the runtime did not confirm the stop and it may be running still
 // (internal/daemon's stallBackstopEnds, stallStopClause).
+var validNoticeKinds = []NoticeKind{
+	"phase-finished", "worker-died", "worker-stalled", "held",
+	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
+	"design-approved", "design-changes-requested", "carried-gate-opened",
+	"child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded",
+	"catch-up", "checks-red", "review-stuck", "status-reasserted", "waiting-for-slot",
+	"session-lost", "session-store-fault",
+}
+
+// validNoticeKind says whether kind is a notice an architect is told.
 func validNoticeKind(kind NoticeKind) bool {
-	switch kind {
-	case "phase-finished", "worker-died", "worker-stalled", "held", "pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused", "design-approved", "design-changes-requested", "carried-gate-opened", "child-closed", "child-status", "children-first", "child-release-stalled", "child-not-recorded", "catch-up", "checks-red", "review-stuck", "status-reasserted", "session-lost", "session-store-fault":
-		return true
-	default:
-		return false
-	}
+	return slices.Contains(validNoticeKinds, kind)
 }
 
 // controllerOnlyNoticeKind says whether kind is a notice for the controller alone, never an

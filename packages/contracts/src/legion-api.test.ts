@@ -774,7 +774,7 @@ test("the state golden carries a worker's handoff record", () => {
 // in, and the length and fingerprint of that call's arguments, never their text. A call still
 // open carries `startedAt` and no `endedAt`, which is the shape a turn that stopped moving
 // leaves behind; a claim whose agent has not stepped carries no `step` at all, as does every
-// claim view served to a pod below contract 57.
+// claim view served to a pod below contract 59.
 test("the state golden carries what the daemon last saw an agent do", () => {
   const state = fixture("state.json") as {
     issues: Record<
@@ -1017,7 +1017,7 @@ test("the state golden names what every blocked issue waits on", () => {
     { issue: "LEGION-209", blockedBy: ["LEGION-210", "LEGION-213"] },
     { issue: "LEGION-211", blockedBy: ["LEGION-210"] },
   ]);
-  expect(state.admission.waiting).toEqual(["LEGION-211"]);
+  expect(state.admission.waiting).toEqual(["LEGION-211", "LEGION-212"]);
 
   const dropped = fixture("state.json") as { admission: Record<string, unknown> };
   delete dropped.admission.blocked;

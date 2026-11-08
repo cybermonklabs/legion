@@ -98,7 +98,8 @@ const (
 // request for it (bindGateRequest); and the hold itself, which keeps that root out of the boot's
 // own admission pass — no pass decides whether it waits on a person, and none resumes it once
 // answered, until the catch-up applies its window and releases it, which the same boot does. It
-// keeps its place at the front of the waiting line while held, so the cost is the boot's reads
+// keeps its place in the waiting line while held,
+// among the issues whose work came back, oldest first, so the cost is the boot's reads
 // and a pass of latency, not a lost turn, and that is what buys the hold.
 func (w *workflowRuntime) catchesUp(issue record.Issue, gate record.TreeGate, slotted map[string]struct{}) bool {
 	if issue.Project != w.dispatchProject || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() {

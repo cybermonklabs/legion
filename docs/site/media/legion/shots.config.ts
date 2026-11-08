@@ -79,7 +79,7 @@ async function markRequirements(issue: Tracked, markdown: string, count: number)
     summary: "Mark the requirements",
   });
   await expect
-    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements.length)
+    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements?.length ?? 0)
     .toBe(count);
 }
 

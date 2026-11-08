@@ -141,7 +141,7 @@ const legionCapabilityReportView = z.object({
 });
 
 /** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
- * its worker stream (contract 57): `at`, when the daemon received that step; `turnStartedAt`,
+ * its worker stream (contract 59): `at`, when the daemon received that step; `turnStartedAt`,
  * when the turn it belongs to began; `tool` and `callId`, the call the agent is in, which the
  * start and end frames pair by; `argsBytes` and `argsHash`, the length of that call's arguments
  * and an eight-byte fingerprint of them; and `startedAt` and `endedAt`, when the daemon received
@@ -199,7 +199,7 @@ const legionClaimView = z.object({
   lastReady: timestamp.optional(),
   /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
    * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
-   * contract below 57 is served the state with no such key at all (the daemon's
+   * contract below 59 is served the state with no such key at all (the daemon's
    * `withoutStallRecord`), so every reader takes it as optional. */
   step: legionStepView.optional(),
 });
@@ -288,6 +288,14 @@ const legionSlotView = z.object({
   lentTo: issueKey.optional(),
 });
 
+/** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
+ * in the line, and `length`, how long that list was at this read. It says where the issue stands,
+ * not what holds it, which `admission.blocked` names. */
+const legionWaitingLineView = z.object({
+  place: z.number().int().positive(),
+  length: z.number().int().positive(),
+});
+
 /** `api.CheckWakeView` — what woke a production check's latest look: `kind` names the cause
  * (`merge` for the look the close opens, `check wake` for one the checking agent's own `wake_at`
  * or the retry of a look nobody reported starts, and `bound` for the last look; a check whose
@@ -344,8 +352,8 @@ export const LEGION_WAIT_ANSWERS = [
 
 /** The fields every `waitingOn` shape shares: `since`, Dispatch's time of the hand-back the wait
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
- * (`answeredBy` names how, not always by a person), when the root waits at the front of
- * admission's waiting line for its slot. */
+ * (`answeredBy` names how, not always by a person), when the root waits in admission's waiting
+ * line for its slot, among the issues whose work came back, oldest first. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),
@@ -472,6 +480,10 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
+  /** Where the issue stands in `admission.waiting` (contract 59): present only for an issue that
+   * list names, so a slot holder and every other issue the line does not carry have none, and a
+   * daemon before contract 59 writes none at all, which is why a reader takes it as optional. */
+  waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's

@@ -101,24 +101,21 @@ func TestTheStateServedToAPodBeforeTheStallRecordContractLeavesTheNextCallersSta
 }
 
 // stallRecordContract is the number DaemonAPIVersion took at the bump this record forced, which
-// was a task of its own: the two are equal now, so a pod at this daemon's contract is served the
-// record and a pod still running an older plugin is not. A constant above DaemonAPIVersion would
-// be a key no pod is ever served; one below would serve it to a plugin whose schema refuses the
-// body for it.
+// was a task of its own, and this daemon's own contract is never below it: a pod at 57 is served
+// the record as every pod at or above the contract that added it is, and only a pod still running
+// a plugin below 57 is not. A constant above DaemonAPIVersion would be a key no pod is ever
+// served.
 func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
-	// main landed the record at 57 and this branch's own shapes ride the first number above every
-	// number main declares, so the entry that adds `step` reaches a deployment as 58.
-	const addedStallRecord = 58
+	// main landed the record at 57 and its own waiting line at 58, and this branch's shapes ride
+	// the first number above every number main declares, so the entry that adds `step` reaches a
+	// deployment as 59, the one number this release's two shape changes share.
+	const addedStallRecord = 59
 	if stallRecordContract != addedStallRecord {
 		t.Fatalf("stallRecordContract = %d, want %d, the contract whose entry in version.go adds the claim views' `step`",
 			stallRecordContract, addedStallRecord)
 	}
-	if stallRecordContract > DaemonAPIVersion+1 {
-		t.Fatalf("stallRecordContract = %d, more than one above DaemonAPIVersion %d: no caller could be served the key",
-			stallRecordContract, DaemonAPIVersion)
-	}
-	if stallRecordContract < DaemonAPIVersion {
-		t.Fatalf("stallRecordContract = %d, below DaemonAPIVersion %d: a pod of a plugin that refuses the key would be served it",
+	if stallRecordContract > DaemonAPIVersion {
+		t.Fatalf("stallRecordContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
 			stallRecordContract, DaemonAPIVersion)
 	}
 }

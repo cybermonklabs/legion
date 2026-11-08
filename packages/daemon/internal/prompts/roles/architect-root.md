@@ -61,6 +61,12 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
+While that resume waits for an admission slot, you get one `waiting-for-slot` notice saying what
+answered the wait, where your root stands in the admission line then and that the daemon starts
+you again by itself at the next free slot; your record's `waitingLine` gives the live place and
+the line's length. You get the notice only while this session holds its Envoy role: a session
+whose pod the daemon released while the root waited is told nothing, and its resume task says
+what answered the wait. Act on neither.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
 Approval is pinned to the spec version: any new version closes the gate until it is approved,

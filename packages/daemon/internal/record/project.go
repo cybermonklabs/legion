@@ -568,6 +568,16 @@ func CanWaitOnPerson(root Issue, gate TreeGate, slotted bool) bool {
 	return slotted && root.Phase == phase.Admitted && !root.Lingers() && InWorkflow(root) && AtWork(root, gate)
 }
 
+// WaitingLineBand is where the line puts an issue whose work came back: in its first part, oldest
+// first (Waiting). It states a placement, never a position: which place in the line that gives an
+// issue depends on what else waits. The texts that state the line's order carry this fragment
+// word for word — the daemon's own comments, the architect's skills and the operator's guides —
+// and workflow's TestTheShippedWordsNameTheWaitingLineNotice reads it from here and holds the
+// files it lists to it. That test reads whether a file carries the words, never whether the
+// sentence around them is true, and a file it lists in neither place is held to nothing: both are
+// why it also bans, in every file it lists, the wording that claims a position instead.
+const WaitingLineBand = "among the issues whose work came back, oldest first"
+
 // Waiting is the line of issues that wait for an admission slot, in the order admission gives
 // them one. The cap counts the issues at work rather than the trees, so a child waits in this
 // line as a root does, and the line has two parts.
