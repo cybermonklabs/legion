@@ -384,6 +384,48 @@ test("the issue read's own holder_state outranks an agent list that does not nam
   }
 });
 
+// A registry that could not be read judges nothing, so the chip may not pass the claim off as
+// held and may not call it gone either. On the issue page no tooltip carries that refusal, so
+// the chip draws it (dispatch://INFRA-1196 R21).
+test("a claim whose registry could not be read says the running state is unknown", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
+  const view = header({ ...base, claim });
+  try {
+    const unjudged = await screen.findByTestId("issue-claim-unchecked");
+    expect(unjudged.textContent).toBe("running state unknown");
+    expect(screen.queryByTestId("issue-claim-lapsed")).toBeNull();
+    expect(screen.queryByText("not running")).toBeNull();
+    // Drawn, not hovered: this surface raises no tooltip at all.
+    expect(screen.getByTestId("issue-claim").getAttribute("title")).toBeNull();
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
+// Where a tooltip does carry it - a List row, a Board card - the chip says it there and draws
+// no word of its own, which would say the same thing twice and widen a chip those hosts have
+// no room for.
+test("a host that raises a tooltip keeps the unread registry in the title and draws no word", async () => {
+  const subscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
+  const agents = spyOn(api, "listAgents").mockRejectedValue(new Error("Envoy unavailable"));
+  const view = header({ ...base, claim }, {}, { tooltips: true });
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("issue-claim").getAttribute("title")).toContain(
+        "Couldn't check whether that session is still running"
+      )
+    );
+    expect(screen.queryByTestId("issue-claim-unchecked")).toBeNull();
+  } finally {
+    view.unmount();
+    agents.mockRestore();
+    subscribers.mockRestore();
+  }
+});
+
 /** A registry holding one unresponsive session, as `claimIsTakeable` reads one. */
 function stalledRegistry(sessionID: string, lastSeen: number | undefined) {
   return {

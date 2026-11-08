@@ -70,13 +70,16 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
     .map((artifact) => artifact.id);
   // `combine` is what keeps one value for every document's blocks: TanStack holds its answer and
   // replaces it only when a document's own read changes, where a map over the results would be a
-  // new array every render and build the tree again with it.
+  // new array every render and build the tree again with it. It answers whether any of them is
+  // still waiting too, which is part of what holds the one batched name read back below.
   const documents = useQueries({
-    combine: (answers): DocumentBlocks[] =>
-      answers.map((answer, index) => ({
+    combine: (answers): { blocks: DocumentBlocks[]; pending: boolean } => ({
+      blocks: answers.map((answer, index) => ({
         artifactId: documentIds[index] ?? "",
         blocks: answer.data ?? [],
       })),
+      pending: answers.some((answer) => answer.isPending),
+    }),
     queries: documentIds.map((id) => artifactBlocksQuery(id)),
   });
   // One value, so the model is given the reads and nothing else.
@@ -86,7 +89,7 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
       comments: comments.data,
       coverage: coverage.data,
       decisions: decisions.data,
-      documents,
+      documents: documents.blocks,
       issue,
       messages: messages.data,
       references: references.data,
@@ -97,7 +100,7 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
       comments.data,
       coverage.data,
       decisions.data,
-      documents,
+      documents.blocks,
       issue,
       messages.data,
       references.data,
@@ -106,7 +109,24 @@ export function useIssueTree(issue: IssueDetails): TreeNode {
   );
   const unnamed = useMemo(() => buildIssueTree(reads), [reads]);
   const refs = useMemo(() => treeReferences(unnamed), [unnamed]);
-  const targets = useQuery(referenceTargetsQuery(refs));
+  // One request for every name, not one per read that landed. Each of these reads adds nodes to
+  // the tree as it arrives, so asking while any is still out would ask for the addresses known
+  // so far and ask again for the rest: measured on this pod, that cost the first load two reads
+  // and sometimes three, where the design is "the names come last and all at once" (above) and
+  // the issue's own budget is 40 requests (dispatch://INFRA-1196 c-requests). Every one of these
+  // reads is always enabled, so each ends in an answer or an error and none of them holds the
+  // names for good. Nothing waits on the names: until they land the tree draws with each chip
+  // naming its target's address.
+  const treeRead =
+    !asks.isPending &&
+    !comments.isPending &&
+    !coverage.isPending &&
+    !decisions.isPending &&
+    !messages.isPending &&
+    !references.isPending &&
+    !results.isPending &&
+    !documents.pending;
+  const targets = useQuery(referenceTargetsQuery(treeRead ? refs : []));
   const named = targets.data?.targets;
   // The same answer every link of this page would otherwise read one pointer at a time: a
   // block's own words, which a link in a document, in a decision's card or in a comment's

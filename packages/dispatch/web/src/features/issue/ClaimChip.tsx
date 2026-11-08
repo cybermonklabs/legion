@@ -112,11 +112,15 @@ export function claimIsTakeable(
  * server uses. The judgement is remade on each render, so it follows the registry poll and the
  * issue read rather than a timer of the chip's own.
  *
- * The `title` says what no word of the chip does - what a claim is for, each instant to the
- * second, and that the registry could not be read at all - and the chip carries it only where
- * its host raises a tooltip. The issue page raises none (R21, `components/tooltips.tsx`), so
- * everything a reader there has to act on is drawn instead: the holder's state in words, and
- * both instants after their ages (`Timestamp`'s `exact`).
+ * The `title` says what no word of the chip does - what a claim is for and each instant to the
+ * second - and the chip carries it only where its host raises a tooltip. The issue page raises
+ * none (R21, `components/tooltips.tsx`), so everything a reader there has to act on is drawn
+ * instead: the holder's state in words, both instants after their ages (`Timestamp`'s `exact`),
+ * and "· running state unknown" where the registry could not be read at all, which is a claim
+ * nobody has judged rather than a held one, and the one fact of the four a tooltip would
+ * otherwise keep to itself. Each of the three is drawn on that surface alone: where a tooltip
+ * carries it, a Board card and a List row, drawing it as well would say the same thing twice
+ * and widen a chip those hosts have no room for.
  *
  * A session title can be any length, and no name may widen the page (the rule
  * `IssueHeader.tsx` cites for the metadata rail). `pillClassName` sets `shrink-0`, and no class
@@ -173,14 +177,15 @@ export function ClaimChip({
             : `It keeps this issue until ${new Date(takeableAt).toLocaleString()}, when another agent may take it.`
       }`;
   // A session claim the registry could not judge says so, rather than pass for a held one.
-  const uncheckedNote =
-    claim.actor.kind === "session" && registry.isError
-      ? ` Couldn't check whether that session is still running: ${
-          registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
-        }`
-      : "";
+  const unchecked = claim.actor.kind === "session" && registry.isError;
+  const uncheckedNote = !unchecked
+    ? ""
+    : ` Couldn't check whether that session is still running: ${
+        registry.refilling ? AGENT_LIST_REFILLING : "Envoy listener unreachable."
+      }`;
   // No tooltip on a surface that raises none (the issue page, R21): what the chip means is
-  // drawn below instead, down to each instant (`Timestamp`'s `exact`).
+  // drawn below instead, down to each instant (`Timestamp`'s `exact`) and to the unjudged
+  // running state, which no word of the chip would otherwise carry.
   return (
     <span
       className={`${pillClassName(takeable ? "label" : "selected-label")} min-w-0 max-w-full gap-1`}
@@ -238,6 +243,19 @@ export function ClaimChip({
                 )}
               </span>
             )}
+          </span>
+        </>
+      ) : null}
+      {/* Where a tooltip carries it, `uncheckedNote` above says it; where none is raised, the
+          page says it, because a claim nobody could judge is not a held one and a reader on a
+          phone or on the keyboard has no other way to that (R21). */}
+      {unchecked && !tooltips ? (
+        <>
+          <span aria-hidden="true" className="shrink-0" {...pageChrome}>
+            ·
+          </span>
+          <span className="shrink-0" data-testid="issue-claim-unchecked" {...pageChrome}>
+            {CONTROL_LABELS.unchecked}
           </span>
         </>
       ) : null}

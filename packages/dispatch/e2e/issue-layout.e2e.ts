@@ -135,7 +135,7 @@ import {
 } from "./issue-page";
 import { assertInventoryCarried, type InventoryEntry } from "./page-inventory";
 import { resetDatabase } from "./seed";
-import { watchApiRequests } from "./traffic";
+import { type ApiRequests, watchApiRequests } from "./traffic";
 import { assertPageFits, assertWhole, assertWholeAcross } from "./unclipped";
 import { asUser } from "./users";
 
@@ -203,6 +203,25 @@ async function expectIssuePageDrawn(page: Page): Promise<void> {
     tree(page),
     'the page draws no role="tree" named "Issue tree" inside [data-issue-page]'
   ).toHaveCount(1);
+}
+
+/** How long nothing may be in flight before a load is counted finished. It is the recorded
+ *  baseline's own window (dispatch://INFRA-1196/artifact/request-baseline-md: "between
+ *  navigation and network idle (nothing in flight for 1500 ms)"). */
+const LOAD_QUIET_MS = 1_500;
+
+/** Fails unless the page has gone quiet, which is the moment a load's cost is read at. Measured
+ *  on this pod, the same unchanged page counted 39, 35 and 38 requests when the count was taken
+ *  at Playwright's `networkidle` instead: that window closes after 500 ms of quiet, which is
+ *  less than a read waiting on another read's answer takes under load, so what it yields is
+ *  whatever had arrived by then rather than what the load costs. */
+async function expectLoadSettled(traffic: ApiRequests): Promise<void> {
+  await expect
+    .poll(() => traffic.quietFor(LOAD_QUIET_MS), {
+      message: "the page never went quiet, so its first load has no settled cost",
+      timeout: 30_000,
+    })
+    .toBe(true);
 }
 
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
@@ -682,6 +701,12 @@ test("the spine is the reasoning and an unexplained node sits under the issue", 
 // `last_read_back_at` are dispatch://INFRA-1278, so the head names that gap and this test never
 // asserts that an author is drawn.
 test("the three things are at the head of every preset @phone", async ({ browser }) => {
+  // Ten loads of the page - the five presets at each of two widths - each read for its head,
+  // its boxes and the page's own draw. Measured on an issue pod's two CPUs across four whole
+  // runs: 25.3 s to 29.1 s, against a default deadline of 30 s, so the row failed the run it
+  // was slowest in rather than on anything it asserts. Four times the measurement leaves room
+  // for a loaded box.
+  test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
@@ -1369,6 +1394,13 @@ test("documents are nodes and nothing is a file list", async ({ browser }) => {
 
 // c-reflow.
 test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
+  // Six widths, each a load of the page and a clipping walk over every row the tree draws at
+  // it - 56 rows on the whole issue, each read in the browser - plus the page's own fit and the
+  // panel's. Measured on an issue pod's two CPUs: 28.6 s in the phone project, which reads the
+  // same six widths, and past 30 s in the desktop one, so the default deadline fails this row
+  // on the machine it was written for rather than on a loaded one. The deadline below is four
+  // times the measurement, which leaves room for a box under load.
+  test.setTimeout(120_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // The test sets the viewport and writes no width rule of its own: every measure is the page's.
     for (const width of [320, 390, 768, 1024, 1280, 1440]) {
@@ -1470,14 +1502,27 @@ test("the new page carries every element of the old one @phone", async ({ browse
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}/activity`);
       },
+      // Each of the two says the control is there before it reaches for it. A click waits for
+      // its element with no deadline of its own (Playwright's `actionTimeout` is unset here), so
+      // a page drawing neither control would spend this row's whole 15 minutes inside one click
+      // and report a timeout; asserted first, such a page says which control is missing.
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}`);
+        await expect(
+          nodeMenuButton(page),
+          `the page draws no ${CONTROL_LABELS.other_nodes} control: its view is unreadable`
+        ).toHaveCount(1);
         await nodeMenuButton(page).click();
         await expect(openMenu(page)).toHaveCount(1);
       },
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}`);
-        await offered(page, "button", CONTROL_LABELS.issue_actions).click();
+        const actions = offered(page, "button", CONTROL_LABELS.issue_actions);
+        await expect(
+          actions,
+          `the page draws no ${CONTROL_LABELS.issue_actions} control: its view is unreadable`
+        ).toHaveCount(1);
+        await actions.click();
       },
       // The preset row below 1280 px is one chooser rather than a row of tabs, the children
       // section opens closed below `md` (`useChildrenSection.ts`), and the panel is a sheet a
@@ -1886,7 +1931,8 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     const traffic = watchApiRequests(page);
     traffic.reset();
     await gotoIssue(page, `/issues/${seeded.key}`);
-    await page.waitForLoadState("networkidle");
+    await expectIssuePageDrawn(page);
+    await expectLoadSettled(traffic);
     const byRoute = JSON.stringify(traffic.byRoute());
 
     // No reference read for each pointer: the Spec tab sent 3 of them today and the Plan tab 14.
@@ -1915,7 +1961,6 @@ test("the first load stays inside its request budget", async ({ browser }) => {
       "the first load read the stored text of a document it does not show"
     ).toEqual([]);
 
-    await expectIssuePageDrawn(page);
     expect(
       traffic.total(),
       `the first load sent ${traffic.total()} requests under /api/: ${byRoute}`
@@ -1928,8 +1973,8 @@ test("the first load stays inside its request budget", async ({ browser }) => {
     const traffic = watchApiRequests(page);
     traffic.reset();
     await gotoIssue(page, `/issues/${seeded.key}`);
-    await page.waitForLoadState("networkidle");
     await expectIssuePageDrawn(page);
+    await expectLoadSettled(traffic);
     const byRoute = JSON.stringify(traffic.byRoute());
     expect(
       traffic.total(),

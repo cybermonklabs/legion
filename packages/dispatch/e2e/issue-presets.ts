@@ -36,6 +36,31 @@ export async function openIssueAddress(page: Page, tab: string): Promise<void> {
   await navigateInApp(page, `/issues/${key}/${tab}`);
 }
 
+/** The identity block's one actions control, open. Close, reopen and the control that gives the
+ *  issue a parent are behind it now (dispatch://INFRA-1196 R11), where the eight-tab page drew
+ *  them as bare buttons. The control toggles, so this opens it only while it is shut: a spec
+ *  that asks twice leaves the actions on screen rather than hiding them again. */
+export async function openIssueActions(page: Page): Promise<void> {
+  const control = page.getByRole("button", { name: "Issue actions" });
+  if ((await control.getAttribute("aria-expanded")) !== "true") {
+    await control.click();
+  }
+}
+
+/** Presses one of the identity block's actions by the name it carries - `Close issue`,
+ *  `Reopen issue` - opening the control that holds it first. */
+export async function runIssueAction(page: Page, name: string): Promise<void> {
+  await openIssueActions(page);
+  await page.getByRole("button", { exact: true, name }).click();
+}
+
+/** Fails until the page has taken in that its issue is closed. The identity block's own line is
+ *  what says so (R11): Reopen is behind the actions control, so a closed issue no longer draws
+ *  a bare `Reopen` button for a spec to wait on. */
+export async function expectIssueClosed(page: Page): Promise<void> {
+  await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
+}
+
 /** Fails unless the page is on `name`, whichever shape the row has at this width. */
 export async function expectActivePreset(page: Page, name: string): Promise<void> {
   const row = page.getByTestId("issue-presets");

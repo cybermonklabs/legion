@@ -21,6 +21,7 @@ import {
   selectEditorQuote,
   typeAtEnd,
 } from "./editor";
+import { expectIssueClosed, runIssueAction } from "./issue-presets";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -87,7 +88,7 @@ async function seedClosedIssue(): Promise<Fixture> {
 /** The Conversation's card for message `id`, opened on the closed issue's page. */
 async function openMessage(page: Page, issueKey: string, id: string) {
   await page.goto(`/issues/${issueKey}/conversation`);
-  await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+  await expectIssueClosed(page);
   const card = page.locator(`[data-turn="message:${id}"]`).first();
   await expect(card).toBeVisible();
   return card;
@@ -112,7 +113,7 @@ test("a comment written in a closed issue's Conversation posts", async ({ browse
   try {
     const page = await alice.newPage();
     await page.goto(`/issues/${issueKey}/conversation`);
-    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    await expectIssueClosed(page);
     const form = page.getByRole("form", { name: "Comment composer" });
     const field = form.getByLabel("Comment");
     await expect(field).toBeVisible();
@@ -332,7 +333,8 @@ test("a spec opened while its issue was closed takes edits once the issue is reo
     await expect(documentEditor(page)).toContainText(spec);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
 
-    await page.getByRole("button", { name: "Reopen issue" }).click();
+    // Reopen is behind the identity block's one actions control (dispatch://INFRA-1196 R11).
+    await runIssueAction(page, "Reopen issue");
     await expect(page.getByText("This issue is closed.", { exact: true })).toHaveCount(0);
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true");
     await selectEditorQuote(page, "brown");

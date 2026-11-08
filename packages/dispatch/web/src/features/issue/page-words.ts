@@ -517,6 +517,11 @@ export const CONTROL_LABELS = freeze({
   tree: "Issue tree",
   /** What the assignee control says while nobody answers the issue's asks (R11). */
   unassigned: "Unassigned",
+  /** What the claim says while the agent registry could not be read at all, so whether the
+   *  holder is still running is unknown: a refusal the page draws rather than leaves to a
+   *  tooltip it raises none of (R11, row four, and R21). It is the wording every other view of
+   *  an unjudged running state already carries (`AgentName`'s "Running state unknown"). */
+  unchecked: "running state unknown",
   /** Opens a branch of the tree (R1). */
   unfold: "Unfold",
   /** What the claim says of a holder that has missed its heartbeats without ending: it has not

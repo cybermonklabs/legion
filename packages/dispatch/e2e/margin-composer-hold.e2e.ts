@@ -10,6 +10,7 @@ import {
   selectEditorText,
   setSheet,
 } from "./editor";
+import { expectIssueClosed } from "./issue-presets";
 import { resetDatabase } from "./seed";
 import {
   answeredPost,
@@ -377,7 +378,9 @@ test("a margin suggestion out when its issue closes keeps the draft and shows th
     await expect(form.getByLabel("Replacement")).toBeDisabled();
 
     await patchIssue(issue.key, { status: "done" }, { login: "bob" });
-    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    // The identity block's own line is what says the page has taken the close in: Reopen sits
+    // behind that block's one actions control now (dispatch://INFRA-1196 R11).
+    await expectIssueClosed(page);
     await expect(form.getByLabel("Replacement")).toHaveValue("red");
 
     const refused = refusal(page, issue.key, 409);

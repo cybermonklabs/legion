@@ -331,9 +331,14 @@ export function conversationFilter(page: Page, label: "All" | "Closed" | "Open")
 
 /** The margin's open asks waiting on the reader. Every margin ask card, open or decided, is in one
  *  keyed list - an answered ask moves to the decided ones in place - so the group is each card's
- *  own `data-margin-section`, and a card is found inside it by its `ask-<id>` test id. */
-export function needsYouCards(page: Page): Locator {
-  return page.locator('[data-margin-section="needs-you"]');
+ *  own `data-margin-section`, and a card is found inside it by its `ask-<id>` test id.
+ *
+ *  `scope` is the page, or the one panel the cards are to be read in: the issue page fills the
+ *  margin's slot in an effect (`features/margin/margin-slot.tsx`), so the margin draws once
+ *  plain and again inside that page's panel, and a row that presses a card's own control reads
+ *  it inside the panel rather than taking whichever draw it caught. */
+export function needsYouCards(scope: Locator | Page): Locator {
+  return scope.locator('[data-margin-section="needs-you"]');
 }
 
 export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {

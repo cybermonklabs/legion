@@ -181,11 +181,14 @@ async function openProjectBoard(page: Page, issueKey: string): Promise<void> {
  *  recipients, and the project list and board. */
 async function expectFreshViewsRefilling(page: Page, fixture: RefillFixture): Promise<void> {
   await openIssueConversation(page, fixture.issueKey);
-  // The issue's ask card shows its own recipients notice in the Conversation and the margin.
-  const header = page.getByTestId("issue-header");
-  await expect(refillingNotice(header)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
-  await expect(refillingNotice(header)).toHaveAttribute("role", "status");
-  await expect(page.getByRole("button", { name: "Subscribers", exact: true })).toBeVisible();
+  // The issue's ask card shows its own recipients notice in the Conversation and the margin, so
+  // the subscribers' own notice is read where the subscribers live: the page's panel, under its
+  // People section (dispatch://INFRA-1196 R12), which is where the eight tabs' header used to
+  // carry them.
+  const people = page.locator('[data-margin-section="people"]');
+  await expect(refillingNotice(people)).toHaveText(REFILLING, { timeout: REFILL_TIMEOUT });
+  await expect(refillingNotice(people)).toHaveAttribute("role", "status");
+  await expect(people.getByRole("button", { exact: true, name: "Subscribers" })).toBeVisible();
   await expect(page.getByTestId("issue-route-refilling")).toHaveText(
     `Route reach unknown: ${REFILLING}`
   );

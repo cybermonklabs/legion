@@ -67,10 +67,21 @@ test("project filters stay collapsed until needed and margin asks use the compac
     });
 
     await navigateInApp(page, `/issues/${issue.key}`);
-    const marginCard = needsYouCards(page).getByTestId(`ask-${ask.id}`);
+    // Read inside the issue page's own panel. The page fills the margin's slot in an effect, so
+    // the margin draws once plain and again inside that panel, and a press that landed on the
+    // first draw was thrown away with it: the disclosure's open state is the card's own, and
+    // the replacement card came back shut. The panel is what says the card is the one to press.
+    const marginCard = needsYouCards(page.getByTestId("issue-margin")).getByTestId(`ask-${ask.id}`);
+    const ownWords = marginCard.getByRole("button", {
+      exact: true,
+      name: "Add a note or answer in your own words",
+    });
     await expect(marginCard.getByRole("radio", { name: "Ship" })).toBeVisible();
+    await expect(ownWords).toHaveAttribute("aria-expanded", "false");
     await expect(marginCard.getByLabel("Your answer")).toBeHidden();
-    await marginCard.getByText("Add a note or answer in your own words", { exact: true }).click();
+    await ownWords.click();
+    // The control says the press landed before the box behind it is looked for.
+    await expect(ownWords).toHaveAttribute("aria-expanded", "true");
     await expect(marginCard.getByLabel("Your answer")).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath("polish-margin-1280.png"),

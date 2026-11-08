@@ -136,15 +136,22 @@ test("issue tabs are URL-driven and keyboard-navigable, and titles follow direct
 
     // A read the server answers 404 is asked again twice, QUERY_RETRY_DELAY_MS apart
     // (web/src/api/query-client.ts), before the page says the issue is missing: the clock runs
-    // those two waits once the page has taken each refusal.
+    // those two waits once the page has taken each refusal. The count is read for the bound it
+    // ends at, never for an exact value part-way: the clock is installed per document, so a
+    // load slow to install it lets a retry run on real time, and a poll that demanded the count
+    // at exactly 1 and then at exactly 2 raced the schedule it was driving and read 3 under the
+    // whole suite's load.
     const missing = failedReads(page, "/api/v1/issues/CORE-999");
     await page.goto("/issues/CORE-999");
-    for (const refusal of [1, 2]) {
-      await expect.poll(missing, { intervals: [50, 50, 100, 200, 500] }).toBe(refusal);
+    for (const taken of [1, 2]) {
+      await expect.poll(missing).toBeGreaterThanOrEqual(taken);
       await page.clock.runFor(QUERY_RETRY_DELAY_MS + 50);
     }
     await expect(page.getByRole("heading", { name: "Issue not found" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Back to inbox" })).toBeVisible();
+    // Three reads and no fourth: the first and the two retries the policy allows. A retry that
+    // never stopped, or one that never happened, fails here.
+    await expect.poll(missing).toBe(3);
 
     await page.goto(`/issues/${issue.key}/not-a-tab`);
     await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();

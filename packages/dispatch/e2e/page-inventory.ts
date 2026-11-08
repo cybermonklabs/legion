@@ -214,10 +214,15 @@ export interface CarriedOptions {
    * `button "Children"` when the tabs became presets - and a rename is pasted straight from
    * the failure that named it. Where the page offers a different entry at a different width -
    * the preset row is a row of tabs on a desktop and one menu on a phone - the value names
-   * each of them, joined by ` | `, and the entry is carried while any one of them is there. A
-   * renamed entry is looked for as the entries it maps to and nothing else, so a rename is not
-   * reported as a loss; a value that is not that form fails the check rather than quietly
-   * matching nothing.
+   * each of them, joined by ` | `, and the entry is carried while any one of them is there.
+   * The same form serves one control the page itself names two ways: the pull request's link
+   * reads `#11 acme/issue-layout` while Dispatch can read GitHub for that repository and
+   * `#11 acme/issue-layout (GitHub details are unavailable for this repository)` once it
+   * cannot, because the page says that in words rather than in a tooltip
+   * (dispatch://INFRA-1196 R21, `features/issue/GitHubLink.tsx`), and a walk this long outlives
+   * the harness's App token for that repository. A renamed entry is looked for as the entries
+   * it maps to and nothing else, so a rename is not reported as a loss; a value that is not
+   * that form fails the check rather than quietly matching nothing.
    */
   readonly renames: Readonly<Record<string, string>>;
   /** Which recorded state this is (`open-1440`), named in every failure. */

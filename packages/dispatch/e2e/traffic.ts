@@ -62,10 +62,17 @@ export interface RouteCount {
 
 /** Every request the page sends under `/api/`, whatever its method: the total and the count per
  *  route, which is what a request budget is read against. A caller measures one load by calling
- *  `reset()` at the navigation and reading the counts at network idle. */
+ *  `reset()` at the navigation and reading the counts once the page is quiet (`quietFor`). */
 export interface ApiRequests {
   /** The count per route, most sent first and then by route, so two runs print one order. */
   byRoute(): readonly RouteCount[];
+  /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
+   *  only the ones counted here. This is how the recorded baseline measures one load
+   *  (dispatch://INFRA-1196/artifact/request-baseline-md: "between navigation and network idle
+   *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
+   *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
+   *  that waits on another read's answer has been sent. */
+  quietFor(ms: number): boolean;
   /** Every request since the last `reset`, in the order the page sent them. */
   readonly requests: readonly ApiRequest[];
   reset(): void;
@@ -100,7 +107,10 @@ export function apiRoute(pathname: string): string {
 
 export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
+  const inFlight = new Set<Request>();
+  let lastSettledAt = Date.now();
   page.on("request", (request) => {
+    inFlight.add(request);
     const url = new URL(request.url());
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
@@ -109,6 +119,11 @@ export function watchApiRequests(page: Page): ApiRequests {
       route: apiRoute(url.pathname),
     });
   });
+  const settle = (request: Request) => {
+    if (inFlight.delete(request)) lastSettledAt = Date.now();
+  };
+  page.on("requestfinished", settle);
+  page.on("requestfailed", settle);
   return {
     byRoute: () => {
       const counts = new Map<string, number>();
@@ -119,6 +134,7 @@ export function watchApiRequests(page: Page): ApiRequests {
         .map(([route, count]) => ({ count, route }))
         .sort((a, b) => b.count - a.count || a.route.localeCompare(b.route));
     },
+    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
     requests,
     reset: () => {
       requests.length = 0;

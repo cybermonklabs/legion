@@ -615,7 +615,7 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestUrls.some((url) => new URL(url).pathname === "/api/v1/events")).toBe(false);
 
-  // Exactly 21 on desktop (chromium): whoami, the project sidebar's Inbox, Pinned,
+  // Exactly 28 on desktop (chromium): whoami, the project sidebar's Inbox, Pinned,
   // and Projects queries, me/state, issue detail, the shared inbox query for the
   // margin's open-ask count, the active-sessions read, the primary artifact's comments -
   // which the Conversation's own list shares rather than fetching again - the margin's own
@@ -642,14 +642,17 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // over and which therefore draws on every address (dispatch://INFRA-1196 R1, R3): the
   // issue's coverage, its decisions, its check results, its references, its asks, the blocks
   // of each of its documents - this issue carries one - and the one batched read of every
-  // `dispatch://` address the tree holds. The conversation's own comments and messages are
-  // the tree's reads too and are shared with the list, not fetched twice.
+  // `dispatch://` address the tree holds. That read is one request and not one per read that
+  // lands: the tree grows as each of its reads answers, so the batch waits until all of them
+  // have (`features/issue/useIssueTree.ts`), where before it asked for the addresses known so
+  // far and asked again for the rest, and this budget was 29. The conversation's own comments
+  // and messages are the tree's reads too and are shared with the list, not fetched twice.
   //
   // This row runs on the desktop project alone (#2866, no browser row runs twice), so the
   // budget is one number. Asserted exactly (not a ceiling) so a panel that starts eagerly
   // fetching before its own address is ever opened trips this immediately instead of only
   // breaking some looser upper bound.
-  expect(apiRequestUrls.length).toBe(29);
+  expect(apiRequestUrls.length).toBe(28);
   expect(
     apiRequestUrls.filter((url) => url.endsWith(`/api/v1/issues/${issue.key}/handoffs`))
   ).toHaveLength(1);

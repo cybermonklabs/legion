@@ -805,8 +805,11 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
         status: 400,
       });
     });
+    // The eight tabs are five presets over one tree now (dispatch://INFRA-1196 R3), and the
+    // artifacts address is reached inside the page, as the tab it replaces was: a reload here
+    // would drop the kept write this row is about.
     const openArtifacts = async () => {
-      await page.getByRole("tab", { name: "Artifacts" }).click();
+      await openIssueAddress(page, "artifacts");
     };
     await page.goto(`/issues/${issue.key}`);
     await openArtifacts();

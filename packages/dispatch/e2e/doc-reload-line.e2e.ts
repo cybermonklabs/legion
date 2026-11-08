@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 import type { Actor } from "../web/src/api/types";
 import { createIssue, createProject, patchIssue } from "./api";
 import { connectedDot, countDocumentSockets, documentEditor, reconnectedSockets } from "./editor";
+import { expectIssueClosed, openIssueActions, runIssueAction } from "./issue-presets";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
@@ -82,8 +83,8 @@ test("a reconnect admitted read-only before the issue read names the reload @web
 
     // The close drops the document's socket; the reconnect is admitted read-only again, and the
     // closed issue shows its own line instead, since no reload makes a closed issue editable.
-    await page.getByRole("button", { name: "Close issue" }).click();
-    await expect(page.getByRole("button", { name: "Reopen" })).toBeVisible();
+    await runIssueAction(page, "Close issue");
+    await expectIssueClosed(page);
     await expect(page.getByText("This issue is closed. Its document is read-only.")).toBeVisible();
     await reconnectedSockets(page, sockets, 2);
     await expect(connectedDot(page)).toBeVisible();
@@ -98,7 +99,13 @@ test("a reconnect admitted read-only before the issue read names the reload @web
     await reconnectedSockets(page, sockets, 3);
     release.resolve();
 
-    await expect(page.getByRole("button", { name: "Close issue" })).toBeVisible();
+    // The page has the reopen: its identity block drops the closed line, and the one actions
+    // control offers Close again (dispatch://INFRA-1196 R11). The group is shut behind us, so
+    // nothing it draws covers the document below.
+    await expect(page.getByText("This issue is closed.", { exact: true })).toHaveCount(0);
+    await openIssueActions(page);
+    await expect(page.getByRole("button", { exact: true, name: "Close issue" })).toBeVisible();
+    await page.keyboard.press("Escape");
     await expect(page.getByText("This issue is closed. Its document is read-only.")).toHaveCount(0);
     await expect(connectedDot(page)).toBeVisible();
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "false");
