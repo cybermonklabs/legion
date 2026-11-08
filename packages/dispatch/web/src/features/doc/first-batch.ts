@@ -48,15 +48,17 @@ const listeners = new Set<() => void>();
  * document that is not opening - and no reader should lose that to a connection that is never
  * going to answer.
  *
- * Eight seconds, because it has to sit above the slowest first batch a working page makes and
- * below any wait worth a reader's patience: on this pod, `iphone` at 4x CPU throttling, the
- * page's own draw of a 28-section document lands at 4.7 s and the editor's half of the load
- * begins around 5.9 s (dispatch://INFRA-341, R11, `open-document-early.ts`). A deadline that
- * fires on a page whose batch was only slow costs that page the reads' head start and nothing
- * else: the panels read, the chrome lands, and `keepWhatStandsUnder` holds the reader's words
- * where they are (`readers-place.ts`).
+ * Twenty seconds. The deadline exists for a page that is never going to be told anything, so
+ * what it must not do is fire on a page that is merely slow, and the two are told apart by
+ * nothing but the clock. A load this branch measures reaches its first editable block at
+ * 6.8 s on a 28-section document and 8.2 s on a 140-section one, `iphone` at 4x CPU
+ * throttling on this pod (dispatch://INFRA-341, R11), and the first batch is earlier than
+ * either; twenty seconds leaves a slower machine room above that and still ends a wait that
+ * would otherwise last as long as the reader stays on the page. Firing costs a slow page the
+ * reads' head start and nothing else: the panels read, the chrome lands, and
+ * `keepWhatStandsUnder` holds the reader's words where they are (`readers-place.ts`).
  */
-const LONGEST_HOLD_MS = 8_000;
+export const LONGEST_HOLD_MS = 20_000;
 
 /** The deadline armed with the hold above, cleared by whatever releases it first. */
 let deadline: number | undefined;

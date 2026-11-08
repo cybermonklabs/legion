@@ -30,6 +30,7 @@
 // page does, not how long it takes.
 import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
 
+import { LONGEST_HOLD_MS } from "../web/src/features/doc/first-batch";
 import { subscribeSession } from "./agents";
 import {
   createAsk,
@@ -2452,8 +2453,19 @@ function printTheOrder(
 
 /** How long a row waits, with the socket held and the page settled, before it decides a read
  *  the page was going to make has not been made. The page's own draw of the document is on the
- *  screen well inside it, and every panel of the header has rendered. */
-const settledWithTheSocketHeldMs = 10_000;
+ *  screen well inside it, and every panel of the header has rendered.
+ *
+ *  Both this window and the editor's build after it have to finish inside the hold's own
+ *  deadline, since a page held past that deadline releases the hold by design and the reads
+ *  then go out with no batch behind them (`web/src/features/doc/first-batch.ts`,
+ *  `LONGEST_HOLD_MS`, which the last of this file's chrome rows covers). The assertion below
+ *  is what keeps the two in step when either number moves. */
+const settledWithTheSocketHeldMs = 6_000;
+if (settledWithTheSocketHeldMs * 2 >= LONGEST_HOLD_MS) {
+  throw new Error(
+    `the settled window (${settledWithTheSocketHeldMs} ms) leaves no room for the build inside the hold's deadline (${LONGEST_HOLD_MS} ms)`
+  );
+}
 
 test("the reads the first editable block needs none of go out after the editor's first batch @phone", async ({
   browser,
@@ -2634,7 +2646,7 @@ test("a page with no document on it makes those reads as it always did @phone", 
     // keeps for it, and the shell's own inbox peek.
     await expect(page.getByRole("tab", { name: /^Spec$/ })).toBeVisible();
     await expect(page.getByTestId("issue-tabs-box")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: /^Open inbox/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Peek at the inbox/ })).toBeVisible();
   } finally {
     await alice.close();
   }
@@ -2744,15 +2756,17 @@ test("a panel arriving while the reader is in a long document moves what they ar
 /** The parts a document address draws after the batch, by what each leaves in the page. The
  *  tab is named by its own id rather than by its role, because the margin draws tabs of its
  *  own. The shell's part differs with the width: above the phone layout it is the sidebar's
- *  navigation column, and on a phone the compact header's inbox peek, which is the same
- *  needs-you read. */
+ *  navigation column, and on a phone the count the compact header's inbox entry carries,
+ *  which is the same needs-you read. The entry itself stands there before the batch, at a
+ *  count of nothing, so the count is what arrives (`web/src/features/shell/ShellCounts.tsx`).
+ */
 function theChromeAfterTheBatch(phone: boolean): Record<string, string> {
   return {
     "the artifact's header": '[data-testid="artifact-header"]',
     "the issue's header": "[data-issue-header]",
     "the issue's tab strip": "#issue-spec-tab",
     ...(phone
-      ? { "the shell's inbox peek": 'button[aria-label^="Open inbox, needs you"]' }
+      ? { "the shell's inbox count": "[data-inbox-count]" }
       : { "the sidebar's navigation": 'nav[aria-label="Navigation"]' }),
   };
 }
@@ -2837,6 +2851,48 @@ test("the shell's parts and the page's chrome are drawn after the editor's first
     }
     // And the box the tab strip stood in has gone, which is the strip itself standing there.
     await expect(page.getByTestId("issue-tabs-box")).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// And the other end of that hold. A socket that opens and then neither connects nor fails
+// tells the page nothing, so none of the releases above ever comes; the reader would be left
+// with the document's own text and a header and tab strip that stay a skeleton for as long as
+// they are on the page, which is the way out of a document that is not opening. The hold is
+// bounded for that reason (`web/src/features/doc/first-batch.ts`, `LONGEST_HOLD_MS`), and this
+// is the row that says so: the socket is held throughout, no batch ever comes, and the chrome
+// is drawn all the same.
+test("the chrome is drawn even where the socket never answers @phone", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(300_000);
+  const { issueKey, path } = await seedDocument("specs-deadline.md", proseOnlyDocument);
+  await patchIssue(issueKey, { assignee: "alice" });
+  await createAsk(issueKey, { question: "Which ledger settles first?" }, agent);
+  const parts = theChromeAfterTheBatch(testInfo.project.name === "iphone");
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await watchTheReads(page);
+    await watchTheChrome(page, parts);
+    const transport = await documentTransport(page, { holding: true });
+    await page.goto(path);
+
+    // Every part of the chrome, with the socket still held and no batch behind any of them.
+    await expect
+      .poll(async () => Object.keys(await readTheChrome(page)).sort(), {
+        message: "the chrome was never drawn on a page whose socket never answered",
+        timeout: 120_000,
+      })
+      .toEqual(Object.keys(parts).sort());
+    const held = await readTheReads(page);
+    printTheChrome("the chrome with the socket never answering", held.firstBatchMs, {
+      ...(await readTheChrome(page)),
+    });
+    expect(held.firstBatchMs, "a batch came, so this row proved nothing").toBeUndefined();
+    await transport.release();
   } finally {
     await alice.close();
   }

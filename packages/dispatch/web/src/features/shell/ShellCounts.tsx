@@ -34,8 +34,17 @@ function InboxPeek({
   const badge = `${countBadge} ${
     count === 0 ? railHoverBg : `${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`
   }`;
+  // The count itself, on the element that carries it, and only once there is one: the space
+  // this header keeps before the reads answer draws the same entry at a count of nothing
+  // (`ShellCounts`), so the attribute is what tells a reader of the page that the reads have
+  // landed, which is the one thing its text does not say on its own.
+  const carried = count === 0 ? undefined : count;
   if (onInboxPage) {
-    return <span className={badge}>{label}</span>;
+    return (
+      <span className={badge} data-inbox-count={carried}>
+        {label}
+      </span>
+    );
   }
   return (
     <>
@@ -47,7 +56,7 @@ function InboxPeek({
       >
         Peek
       </button>
-      <Link className={badge} to="/">
+      <Link className={badge} data-inbox-count={carried} to="/">
         {label}
       </Link>
     </>
