@@ -279,11 +279,36 @@ func Missing(err error) bool {
 	return errors.As(err, &refusal) && refusal.Status == http.StatusNotFound
 }
 
+// Claimed is whether err is Dispatch's refusal that the issue's claim is held by someone this
+// caller may not release (409 IssueClaimed).
+func Claimed(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == IssueClaimed
+}
+
+// Contended is whether err is Dispatch's answer that the claim changed twice while the request
+// ran, so nothing was applied and nobody's liveness was checked (409 ClaimContended).
+func Contended(err error) bool {
+	var refusal *Error
+	return errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == ClaimContended
+}
+
 // ParentContended is the code Dispatch answers an issue PATCH with when a concurrent reparent
 // moved the issue's parent at every attempt to lock it, applying nothing
 // (packages/envoy/internal/dispatch/api/issue_parent.go:99, parentContended). No mechanism shares
 // a value between this module and Dispatch's, so the two spellings change together.
 const ParentContended = "PARENT_CONTENDED"
+
+// IssueClaimed and ClaimContended are Dispatch's own spellings of the two 409s a claim release
+// meets, neither of them final: ISSUE_CLAIMED is the holder still holding the claim
+// (packages/envoy/internal/dispatch/api/issue_claim.go, writeClaimError), and CLAIM_CONTENDED is
+// a holder that changed twice while the request ran, so Dispatch applied nothing
+// (answerContendedClaim). No mechanism shares a value between this module and Dispatch's, so the
+// spellings change together.
+const (
+	IssueClaimed   = "ISSUE_CLAIMED"
+	ClaimContended = "CLAIM_CONTENDED"
+)
 
 // PermanentRefusal is a write Dispatch will refuse the same way however many times it is made:
 // the issue is gone, or what it carries is something Dispatch will not take. Only a refusal

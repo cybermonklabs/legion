@@ -44,7 +44,7 @@ const (
 	OutboxKindClaimRelease      OutboxKind = "claim_release"
 )
 
-// OutboxLane is which executor of an issue runs a kind. An issue's rows run on three lanes side by
+// OutboxLane is which executor of an issue runs a kind. An issue's rows run on four lanes side by
 // side. The lifecycle lane runs the rows that start, stop and tidy the issue's roles and their
 // resources, one at a time in the order they were queued: each assumes the state its predecessor
 // leaves (a start after the branch it waits for, a workspace removal after the suspend that

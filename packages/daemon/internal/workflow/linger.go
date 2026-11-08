@@ -66,12 +66,11 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 		if err := e.beginLinger(ctx, tx, issue); err != nil {
 			return err
 		}
+		if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
+			return err
+		}
 		if status != "done" {
-			// Dispatch releases an issue's claim on a close alone, so a park leaves the claim of
-			// the session the daemon stopped standing on the board; this row is what clears it.
-			// It carries nothing of the holder: the row reads the issue's claim and its record
-			// when it runs.
-			return e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{})
+			return nil
 		}
 		return e.openCheckIfMerged(ctx, tx, issue, false)
 	}
@@ -99,13 +98,8 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
 		return err
 	}
-	if status != "done" {
-		// The park of a child leaves its claim on the board for the same reason a root's does:
-		// only a close releases one in Dispatch. The guard is its own rather than a later test's,
-		// so no row is queued at a close.
-		if err := e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{}); err != nil {
-			return err
-		}
+	if err := e.releaseParkedClaim(ctx, tx, issue, status); err != nil {
+		return err
 	}
 	members, err := e.treeMembers(ctx, tx, issue)
 	if err != nil {
@@ -179,6 +173,16 @@ func (e *Engine) operatorHoldsTree(ctx context.Context, tx pgx.Tx, root record.I
 		return false, err
 	}
 	return found && lifecycle.HeldByOperator(), nil
+}
+
+// releaseParkedClaim queues the row that clears the issue's Dispatch claim when the issue is
+// parked rather than closed: Dispatch releases a claim at a close alone. The row carries
+// nothing of the holder, which it reads with the issue's record when it runs.
+func (e *Engine) releaseParkedClaim(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
+	if status == "done" {
+		return nil
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.ClaimRelease{})
 }
 
 // leaveUnderOperator takes a waiting root out of the workflow while the operator runs a tree under

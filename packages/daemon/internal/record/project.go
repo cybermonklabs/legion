@@ -62,6 +62,11 @@ func InWorkflow(issue Issue) bool {
 	return issue.Standing().InWorkflow(OutOfWorkflow)
 }
 
+// Stopped is whether the issue's own record says its work has stopped: it is out of the
+// workflow, or its tree lingers. It is the one statement of that rule, and the readers that
+// must agree — the boot's claim release pass and the row it queues — both call it.
+func Stopped(issue Issue) bool { return !InWorkflow(issue) || issue.Lingers() }
+
 // StandsIn says whether issue stands in one of phases, counting a hold from one of them as
 // standing there: a worker whose claim fails leaves its issue at phase.Held with Hold.From
 // naming the phase it was working (workflow's claimFailed), and the work has reached exactly

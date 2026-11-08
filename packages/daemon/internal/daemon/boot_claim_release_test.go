@@ -69,32 +69,28 @@ func bootRecord(key, status string, at phase.Phase) *record.Issue {
 		Status: status, Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 }
 
-// bootSessionClaim is a Dispatch claim held by an agent session, the only holder the daemon
-// releases.
-func bootSessionClaim(id string) *dispatch.Claim { return &dispatch.Claim{Kind: "session", ID: id} }
-
 // bootClaimListing is the board the boot reads: every shape a claim on it can have, each on an
 // issue of its own, and a parked issue carrying no claim at all.
 func bootClaimListing() []bootClaimFixture {
 	return []bootClaimFixture{
 		{key: "CAPTURE-1", status: "backlog", listedClaim: "session:" + bootOwnSession,
-			recorded: bootParked("CAPTURE-1"), liveClaim: bootSessionClaim(bootOwnSession), queued: true, deleted: true},
+			recorded: bootParked("CAPTURE-1"), liveClaim: sessionClaim(bootOwnSession), queued: true, deleted: true},
 		{key: "CAPTURE-2", status: "backlog", listedClaim: "user:alice",
 			recorded: bootParked("CAPTURE-2"), liveClaim: &dispatch.Claim{Kind: "user", ID: "alice"}, queued: true},
 		{key: "CAPTURE-3", status: "backlog", listedClaim: "session:" + bootOtherSession,
-			recorded: bootParked("CAPTURE-3"), liveClaim: bootSessionClaim(bootOtherSession), queued: true},
+			recorded: bootParked("CAPTURE-3"), liveClaim: sessionClaim(bootOtherSession), queued: true},
 		{key: "CAPTURE-4", status: "backlog", listedClaim: "session:" + bootUnknownSession,
-			recorded: bootParked("CAPTURE-4"), liveClaim: bootSessionClaim(bootUnknownSession), queued: true},
+			recorded: bootParked("CAPTURE-4"), liveClaim: sessionClaim(bootUnknownSession), queued: true},
 		{key: "CAPTURE-5", status: "backlog", listedClaim: "session:" + bootOwnSession,
-			liveClaim: bootSessionClaim(bootOwnSession)},
+			liveClaim: sessionClaim(bootOwnSession)},
 		{key: "CAPTURE-6", status: "done", listedClaim: "session:" + bootOwnSession,
-			recorded: bootRecord("CAPTURE-6", "done", phase.Done), liveClaim: bootSessionClaim(bootOwnSession)},
+			recorded: bootRecord("CAPTURE-6", "done", phase.Done), liveClaim: sessionClaim(bootOwnSession)},
 		{key: "CAPTURE-7", status: "in_progress", listedClaim: "session:" + bootOwnSession, slotted: true,
-			recorded: bootRecord("CAPTURE-7", "in_progress", phase.Implementing), liveClaim: bootSessionClaim(bootOwnSession)},
+			recorded: bootRecord("CAPTURE-7", "in_progress", phase.Implementing), liveClaim: sessionClaim(bootOwnSession)},
 		{key: "CAPTURE-8", status: "backlog", listedUnread: true,
-			recorded: bootParked("CAPTURE-8"), liveClaim: bootSessionClaim(bootOwnSession), queued: true, deleted: true},
+			recorded: bootParked("CAPTURE-8"), liveClaim: sessionClaim(bootOwnSession), queued: true, deleted: true},
 		{key: "CAPTURE-9", status: "backlog", listedClaim: "session:" + bootOwnSession,
-			recorded: bootParked("CAPTURE-9"), liveClaim: bootSessionClaim(bootOwnSession), operatorHolds: true},
+			recorded: bootParked("CAPTURE-9"), liveClaim: sessionClaim(bootOwnSession), operatorHolds: true},
 		{key: "CAPTURE-10", status: "backlog", recorded: bootParked("CAPTURE-10")},
 	}
 }
@@ -193,7 +189,7 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 			continue
 		}
 		putOutboxIssue(t, pool, records, *fixture.recorded)
-		seedBootSessionClaim(t, pool, fixture.key+"-architect", fixture.key, fixture.key, bootOwnSession)
+		seedSessionClaim(t, pool, fixture.key+"-architect", "CAPTURE", fixture.key, fixture.key, bootOwnSession)
 		seedCatchUp(t, pool, func(ctx context.Context, tx pgx.Tx, records *record.Postgres) error {
 			if fixture.operatorHolds {
 				token, err := claim.ProjectToken("CAPTURE")
@@ -212,7 +208,7 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 			return openTreeTx(ctx, tx, "CAPTURE", fixture.key)
 		})
 	}
-	seedBootSessionClaim(t, pool, "elsewhere-architect", bootOtherTree, bootOtherTree, bootOtherSession)
+	seedSessionClaim(t, pool, "elsewhere-architect", "CAPTURE", bootOtherTree, bootOtherTree, bootOtherSession)
 	clock := microClock()
 	return &bootClaimRig{t: t, pool: pool, w: w, client: client, clock: clock,
 		runner: &outbox{pool: pool, dispatchProject: "CAPTURE", records: records, dispatch: client,
@@ -240,18 +236,6 @@ func bootClaimConsumers(t *testing.T, pool *pgxpool.Pool) *intake.Consumers {
 		t.Fatalf("OpenConsumers: %v", err)
 	}
 	return consumers
-}
-
-// seedBootSessionClaim records session working in tree, the claim row SessionClaimsTree and
-// SessionClaimsAnywhere read.
-func seedBootSessionClaim(t *testing.T, pool *pgxpool.Pool, token, tree, issue, session string) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
-		session, session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, 'CAPTURE', $2, $3, 'architect', 1, $4, '', 'working', 0, 0, 0, 0)`,
-		token, tree, issue, session); err != nil {
-		t.Fatalf("record the claim of %s in %s: %v", session, tree, err)
-	}
 }
 
 // boot runs the daemon's boot reconcile over the fixtures' listing.
@@ -356,9 +340,9 @@ func testBootQueuesTheParkedClaims(t *testing.T) {
 // other finds it gone and ends, so the board is left exactly as one row would have left it.
 func testASecondBootQueuesASecondRelease(t *testing.T) {
 	parked := bootClaimFixture{key: "CAPTURE-1", status: "backlog", listedClaim: "session:" + bootOwnSession,
-		recorded: bootParked("CAPTURE-1"), liveClaim: bootSessionClaim(bootOwnSession)}
+		recorded: bootParked("CAPTURE-1"), liveClaim: sessionClaim(bootOwnSession)}
 	// The holder answers the first DELETE still holding the claim; it has stopped by the next one.
-	rig := newBootClaimRig(t, []bootClaimFixture{parked}, answersInTurn(claimConflict(claimHeldCode)))
+	rig := newBootClaimRig(t, []bootClaimFixture{parked}, answersInTurn(claimConflict(dispatch.IssueClaimed)))
 	rig.boot()
 	rig.clock.advance(time.Minute)
 	if err := rig.runner.RunOnce(context.Background()); err != nil {

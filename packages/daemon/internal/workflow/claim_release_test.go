@@ -45,45 +45,59 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 		kinds    map[string]int
 	}{
 		{
-			name:     "a root moved to backlog",
-			leave:    func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error { return engine.leave(ctx, tx, root, "backlog") },
+			name: "a root moved to backlog",
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
+				return engine.leave(ctx, tx, root, "backlog")
+			},
 			releases: []string{"LEGION-208"},
 			kinds:    withRelease(parkedTree),
 		},
 		{
-			name:     "a root moved to icebox",
-			leave:    func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error { return engine.leave(ctx, tx, root, "icebox") },
+			name: "a root moved to icebox",
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
+				return engine.leave(ctx, tx, root, "icebox")
+			},
 			releases: []string{"LEGION-208"},
 			kinds:    withRelease(parkedTree),
 		},
 		{
-			name:     "a root moved to triage",
-			leave:    func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error { return engine.leave(ctx, tx, root, "triage") },
+			name: "a root moved to triage",
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
+				return engine.leave(ctx, tx, root, "triage")
+			},
 			releases: []string{"LEGION-208"},
 			kinds:    withRelease(parkedTree),
 		},
 		{
-			name:     "a child moved to backlog",
-			leave:    func(ctx context.Context, tx pgx.Tx, engine *Engine, _, child record.Issue) error { return engine.leave(ctx, tx, child, "backlog") },
+			name: "a child moved to backlog",
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, _, child record.Issue) error {
+				return engine.leave(ctx, tx, child, "backlog")
+			},
 			releases: []string{"LEGION-209"},
 			kinds:    withRelease(parkedChild),
 		},
 		{
 			// The unslotted release leaves at the active status the root stands at, so the row is
 			// the leave's own rather than any status test's.
-			name:     "a root released for want of an admission slot",
-			leave:    func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error { return engine.LeaveUnslotted(ctx, tx, root) },
+			name: "a root released for want of an admission slot",
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
+				return engine.LeaveUnslotted(ctx, tx, root)
+			},
 			releases: []string{"LEGION-208"},
 			kinds:    withRelease(parkedTree),
 		},
 		{
-			name:  "a root closed as done",
-			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error { return engine.leave(ctx, tx, root, "done") },
+			name: "a root closed as done",
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
+				return engine.leave(ctx, tx, root, "done")
+			},
 			kinds: parkedTree,
 		},
 		{
-			name:  "a child closed as done",
-			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, _, child record.Issue) error { return engine.leave(ctx, tx, child, "done") },
+			name: "a child closed as done",
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, _, child record.Issue) error {
+				return engine.leave(ctx, tx, child, "done")
+			},
 			kinds: parkedChild,
 		},
 		{
@@ -91,16 +105,20 @@ func TestLeaveQueuesTheClaimRelease(t *testing.T) {
 			// no second time and queues nothing at all.
 			name:    "a root whose tree already lingers",
 			lingers: true,
-			leave:   func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error { return engine.leave(ctx, tx, root, "backlog") },
-			kinds:   map[string]int{},
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
+				return engine.leave(ctx, tx, root, "backlog")
+			},
+			kinds: map[string]int{},
 		},
 		{
 			// The claims of a tree the operator runs are the operator's to release with the rest
 			// of its cleanup, as its pod and its workspaces are.
 			name:     "a root whose tree the operator holds",
 			operator: true,
-			leave:    func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error { return engine.leave(ctx, tx, root, "backlog") },
-			kinds:    map[string]int{},
+			leave: func(ctx context.Context, tx pgx.Tx, engine *Engine, root, _ record.Issue) error {
+				return engine.leave(ctx, tx, root, "backlog")
+			},
+			kinds: map[string]int{},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

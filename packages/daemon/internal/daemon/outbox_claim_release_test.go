@@ -141,8 +141,8 @@ func newClaimReleaseRig(t *testing.T, shown dispatch.Issue, forbidden bool, answ
 	rig.runner = &outbox{pool: pool, dispatchProject: "LEGION", records: records, dispatch: client,
 		log: slog.New(slog.NewJSONHandler(logs, nil)), now: rig.clock.Now}
 	putOutboxIssue(t, pool, records, claimReleaseRoot())
-	seedSessionClaim(t, pool, "architect-claim", claimTree, claimTree, claimTreeSession)
-	seedSessionClaim(t, pool, "other-tree-claim", "LEGION-9", "LEGION-9", "ses-elsewhere")
+	seedSessionClaim(t, pool, "architect-claim", "LEGION", claimTree, claimTree, claimTreeSession)
+	seedSessionClaim(t, pool, "other-tree-claim", "LEGION", "LEGION-9", "LEGION-9", "ses-elsewhere")
 	return rig
 }
 
@@ -212,14 +212,14 @@ func parkedIssue() record.Issue {
 		Generation: 1, Status: "backlog"}
 }
 
-// seedSessionClaim records session working in tree, the claim row SessionClaimsTree and
-// SessionClaimsAnywhere read.
-func seedSessionClaim(t *testing.T, pool *pgxpool.Pool, token, tree, issue, session string) {
+// seedSessionClaim records session working in tree, under project, the claim row
+// SessionClaimsTree and SessionClaimsAnywhere read.
+func seedSessionClaim(t *testing.T, pool *pgxpool.Pool, token, project, tree, issue, session string) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation,
 		session, session_file, state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
-		values ($1, 'LEGION', $2, $3, 'architect', 1, $4, '', 'working', 0, 0, 0, 0)`,
-		token, tree, issue, session); err != nil {
+		values ($1, $2, $3, $4, 'architect', 1, $5, '', 'working', 0, 0, 0, 0)`,
+		token, project, tree, issue, session); err != nil {
 		t.Fatalf("record the claim of %s in %s: %v", session, tree, err)
 	}
 }
@@ -349,17 +349,17 @@ func testReleaseClaimAnswers(t *testing.T) {
 		holder  string
 		refusal map[string]any
 	}{
-		{name: "a 409 ISSUE_CLAIMED, then the holder is gone", answers: []error{claimConflict(claimHeldCode)},
+		{name: "a 409 ISSUE_CLAIMED, then the holder is gone", answers: []error{claimConflict(dispatch.IssueClaimed)},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row waits"},
 		// A contended release applied nothing and judged nobody, so it is no wait on the holder:
 		// the row fails and retries, which the carve-out in permanentRefusal is what allows.
-		{name: "a 409 CLAIM_CONTENDED, then Dispatch applies it", answers: []error{claimConflict(claimContendedCode)},
+		{name: "a 409 CLAIM_CONTENDED, then Dispatch applies it", answers: []error{claimConflict(dispatch.ClaimContended)},
 			attempts: 2, between: capped, deletes: 2, settled: "outbox row failed"},
-		{name: "a 409 ISSUE_CLAIMED that never clears", answers: []error{claimConflict(claimHeldCode), claimConflict(claimHeldCode)},
+		{name: "a 409 ISSUE_CLAIMED that never clears", answers: []error{claimConflict(dispatch.IssueClaimed), claimConflict(dispatch.IssueClaimed)},
 			attempts: 2, between: time.Hour, deletes: 2, settled: "outbox row waits",
 			logged: claimGaveUpLine, holder: "session:" + claimTreeSession},
 		{name: "a row already older than an hour at its first attempt", age: 2 * time.Hour,
-			answers: []error{claimConflict(claimHeldCode)}, attempts: 1, deletes: 1,
+			answers: []error{claimConflict(dispatch.IssueClaimed)}, attempts: 1, deletes: 1,
 			logged: claimGaveUpLine, holder: "session:" + claimTreeSession},
 		{name: "a 404", answers: []error{&dispatch.Error{Status: http.StatusNotFound, Code: "ISSUE_NOT_FOUND"}},
 			attempts: 1, deletes: 1, logged: claimRefusedLine,
@@ -427,14 +427,14 @@ func testReleaseClaimLane(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	noticeTree(t, pool, record.NewStore(), false)
 	putOutboxIssue(t, pool, record.NewStore(), parkedIssue())
-	seedSessionClaim(t, pool, "architect-claim", claimTree, claimTree, claimTreeSession)
+	seedSessionClaim(t, pool, "architect-claim", "LEGION", claimTree, claimTree, claimTreeSession)
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	architectClaim(t, sup, claimTree, supervise.StateWorking)
 	clock := microClock()
 	publisher := &holderPublisher{}
 	client := &claimReleaseDispatch{outboxDispatch: &outboxDispatch{}, t: t,
 		shown:  dispatch.Issue{Status: "backlog", Claim: sessionClaim(claimTreeSession)},
-		answer: func(int) error { return claimConflict(claimHeldCode) }}
+		answer: func(int) error { return claimConflict(dispatch.IssueClaimed) }}
 	runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", dispatch: client,
 		notices: publisher, supervisor: sup, project: "legion"}
 	runner.records = wakingRecords(runner)

@@ -119,16 +119,14 @@ func TestOutboxFinishesMessageAlreadyPostedBeforeCrash(t *testing.T) {
 }
 
 type outboxDispatch struct {
-	issue     dispatch.Issue
-	statuses  []string
-	handOvers []string
-	// claimReleases is each issue key a claim release was asked for, in order.
-	claimReleases []string
-	handOverHook  func() error
-	bodies        []string
-	messages      []string
-	getErr        error
-	statusErr     error
+	issue        dispatch.Issue
+	statuses     []string
+	handOvers    []string
+	handOverHook func() error
+	bodies       []string
+	messages     []string
+	getErr       error
+	statusErr    error
 	// statusApplied makes a SetStatus take the status on the issue the fake's reads answer with,
 	// whatever statusErr then answers: the write Dispatch committed and whose answer was lost.
 	statusApplied  bool
@@ -163,10 +161,7 @@ func (d *outboxDispatch) HandOver(_ context.Context, issue dispatch.Issue, statu
 	}
 	return d.statusErr
 }
-func (d *outboxDispatch) ReleaseClaim(_ context.Context, key string) error {
-	d.claimReleases = append(d.claimReleases, key)
-	return nil
-}
+func (d *outboxDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *outboxDispatch) PostMessage(_ context.Context, _ string, body string) error {
 	d.messages = append(d.messages, body)
 	return d.postErr

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -64,20 +63,13 @@ const (
 	// starts that wait for the branch first of all.
 	issueBranchTimeout = 30 * time.Second
 	// claimReleaseWait is how long a claim release row rides out Dispatch's refusal to take the
-	// claim from its holder (claimHeldCode), measured from the row's own creation: the row
+	// claim from its holder (dispatch.Claimed), measured from the row's own creation: the row
 	// carries no moment of its own, and row.CreatedAt is when the daemon decided the holder
 	// should let the issue go. An hour is longer than the claim can outlive a holder that
 	// stopped — Dispatch makes a claim takeable at the latest 20 minutes after its holder was
 	// last seen (packages/envoy/internal/dispatch/api/issue_claim.go, judgeClaim) — so a
 	// refusal that outlives it is a holder that did not stop, which no further attempt moves.
 	claimReleaseWait = time.Hour
-	// claimHeldCode and claimContendedCode are Dispatch's own spellings of the two 409s a claim
-	// release meets, neither of them final: ISSUE_CLAIMED is the holder still holding the claim,
-	// and CLAIM_CONTENDED is a holder that changed twice while the request ran, so Dispatch
-	// applied nothing (packages/envoy/internal/dispatch/api/issue_claim.go). No mechanism shares
-	// a value between this module and Dispatch's, so the spellings change together.
-	claimHeldCode      = "ISSUE_CLAIMED"
-	claimContendedCode = "CLAIM_CONTENDED"
 )
 
 // outbox runs each effect that the workflow transaction committed, one lane per issue and kind of
@@ -596,24 +588,24 @@ func retryBackoff(attempts int) time.Duration {
 // or at another head than the record awaits for longer than ghautomerge.LagBound at now
 // (ghautomerge.Lagging.Stalled), or whose arm or merge-queue entry someone else removed without a
 // merge (ghautomerge.Removed), which a retry must not undo. A claim release is the shared
-// Dispatch rule with two 409s carved out of it: ISSUE_CLAIMED is the holder still holding the
+// Dispatch rule with two 409s carved out of it: dispatch.Claimed is the holder still holding the
 // claim, which the executor answers as a wait, and settle computes this before it tests
 // wait.ErrWaiting, so leaving it permanent would finish the row instead of waiting out the
-// holder; and CLAIM_CONTENDED is a holder that changed twice while the request ran, so Dispatch
-// judged nobody and applied nothing (issue_claim.go's answerContendedClaim), exactly as the
-// PARENT_CONTENDED the shared classifier already rides out. A 404, and every other coded 4xx,
-// stay permanent and end the row.
+// holder; and dispatch.Contended is a holder that changed twice while the request ran, so
+// Dispatch judged nobody and applied nothing (issue_claim.go's answerContendedClaim), exactly as
+// the PARENT_CONTENDED the shared classifier already rides out. A 404, and every other coded
+// 4xx, stay permanent and end the row.
 func permanentRefusal(row record.OutboxRow, err error, now time.Time) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage:
 		_, permanent := dispatch.PermanentRefusal(err)
 		return permanent
 	case record.OutboxKindClaimRelease:
-		refusal, permanent := dispatch.PermanentRefusal(err)
-		if !permanent || refusal.Status != http.StatusConflict {
-			return permanent
+		if dispatch.Claimed(err) || dispatch.Contended(err) {
+			return false
 		}
-		return refusal.Code != claimHeldCode && refusal.Code != claimContendedCode
+		_, permanent := dispatch.PermanentRefusal(err)
+		return permanent
 	case record.OutboxKindReadyMerge:
 		var refused *ghautomerge.Refused
 		var removed *ghautomerge.Removed
@@ -750,7 +742,7 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 		}
 		// The issue is live again, or its tree runs again at a later generation while Dispatch
 		// still shows it parked: the claim belongs to the run, not to the park this row answered.
-		if record.InWorkflow(*recorded) && !recorded.Lingers() {
+		if !record.Stopped(*recorded) {
 			return nil
 		}
 		inTree, err := r.records.SessionClaimsTree(ctx, tx, recorded.Tree, holder.ID)
@@ -776,8 +768,7 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 		return nil
 	}
 	if err := r.dispatch.ReleaseClaim(ctx, row.Issue); err != nil {
-		var refusal *dispatch.Error
-		if errors.As(err, &refusal) && refusal.Status == http.StatusConflict && refusal.Code == claimHeldCode {
+		if dispatch.Claimed(err) {
 			if r.now().UTC().Sub(row.CreatedAt) >= claimReleaseWait {
 				r.log.Warn("outbox claim release gave up: the holder still holds the claim an hour after the row was written",
 					"issue", row.Issue, "holder", holder.Holder())
@@ -791,9 +782,9 @@ func (r *outbox) releaseClaim(ctx context.Context, row record.OutboxRow) error {
 }
 
 // claimHeldWait is the wait a claim release answers while Dispatch still holds the claim for its
-// holder (claimHeldCode): the holder has not stopped yet, and the row tries again on its backoff
-// until claimReleaseWait is up. It deliberately wraps nothing of Dispatch's refusal, only its
-// holder's name: settle computes permanentRefusal before it tests wait.ErrWaiting, so a wait
+// holder (dispatch.Claimed): the holder has not stopped yet, and the row tries again on its
+// backoff until claimReleaseWait is up. It deliberately wraps nothing of Dispatch's refusal, only
+// its holder's name: settle computes permanentRefusal before it tests wait.ErrWaiting, so a wait
 // errors.As could reach the *dispatch.Error through would be finished rather than retried.
 func claimHeldWait(holder string) error {
 	return claimHeld{err: wait.Errorf("the Dispatch claim is still held by %s", holder)}
