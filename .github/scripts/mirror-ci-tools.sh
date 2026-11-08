@@ -154,10 +154,18 @@ if [ -z "$registry" ]; then
   exit 1
 fi
 registry_url=$(ci_tools_registry_url)
-# The origin of that address, which an upload location written as a path is resolved against.
-# It is read off the address and not off the seam, so a location resolves against the host the
-# push that answered it was addressed to.
-origin=${registry_url%/v2/*}
+# The scheme and host of that address, which an upload location written as a path is resolved
+# against: a location of that shape is absolute from the root of the host the push went to, and
+# it already carries whatever path that host serves the registry API under.
+# So the address's own path comes off here rather than staying in front of the location.
+# ghcr.io serves the API at its root, where the two readings are the same string; they differ
+# wherever CI_TOOLS_GHCR_BASE puts the package behind a path, which is the case
+# `an upload location written as a path, with the package behind a path of its own` of
+# .github/scripts/mirror-ci-tools.test.sh.
+origin_scheme=${registry_url%%://*}
+origin_host=${registry_url#*://}
+origin_host=${origin_host%%/*}
+origin="$origin_scheme://$origin_host"
 
 # The push token: the helper's one token request, asked for `pull,push` with the credential
 # ci.yaml's ci-images job holds, where an install asks the same request for an anonymous

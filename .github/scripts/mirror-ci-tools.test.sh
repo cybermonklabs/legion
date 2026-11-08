@@ -5,16 +5,19 @@
 # naming the row, an asset that serves other bytes than the row pins fails naming both digests and
 # pushes nothing, a blob the package held and no longer holds fails naming the row, an asset that
 # does not answer leaves the row cold and the run green, a row with a mirror_member pushes and
-# checks the member's own digest, a row whose second source this repository reads from no
-# service stops the run where that read failed, and a run with no push credential refuses
-# before it reads anything.
+# checks the member's own digest, an upload location written as a path resolves against the host
+# the push went to and not against the path the registry base carries, a row whose second source
+# this repository reads from no service stops the run where that read failed, and a run with no
+# push credential refuses before it reads anything.
 #
 # NO CASE REACHES THE NETWORK. Each case starts an HTTP origin of its own on 127.0.0.1, at a port
-# the kernel picks. It answers the registry API at its root, as ghcr.io does, and serves the
-# release host under /github, so CI_TOOLS_GHCR_BASE is that origin and CI_TOOLS_GITHUB_BASE is
-# that one path of it. The registry base is an origin and not a path of one because an upload
-# location the registry writes as a path is resolved against it, which is what ghcr.io's own
-# answer looks like.
+# the kernel picks. It answers the registry API at its root, as ghcr.io does, and under /ghcr as
+# well, and it serves the release host under /github, so CI_TOOLS_GHCR_BASE is that origin and
+# CI_TOOLS_GITHUB_BASE is that one path of it.
+# One case points the registry base at that /ghcr path instead.
+# An upload location the registry writes as a path is absolute from the root of the host, so
+# what the run puts in front of it is the scheme and host of the address it pushed to and never
+# the path the seam carries, and the two readings differ nowhere else.
 # The origin's whole state is one directory: `blobs/sha256:<digest>` is what the package holds,
 # `manifests/<tag>` is what a tag resolves to, `assets/<path>` is what the release host serves,
 # and `flags/<name>` are the three answers a case asks the origin for — `blob-head-404` for a
@@ -128,6 +131,18 @@ BLOB = re.compile(r"^/v2/(?P<repository>.+)/blobs/(?P<digest>sha256:[0-9a-f]{64}
 MANIFEST = re.compile(r"^/v2/(?P<repository>.+)/manifests/(?P<tag>[^/]+)$")
 ASSET = re.compile(r"^/github/(?P<rest>.+)$")
 
+# The one path a case may put the registry API behind, reached through the CI_TOOLS_GHCR_BASE
+# seam. ghcr.io answers at the root of its host, and a registry behind a path writes an upload
+# location that is absolute from that root, the prefix included, which is what do_POST does.
+PREFIX = "/ghcr"
+
+
+def registry_path(path):
+    """The path the registry API reads, and the prefix this origin was asked under."""
+    if path == PREFIX or path.startswith(PREFIX + "/"):
+        return PREFIX, path[len(PREFIX):]
+    return "", path
+
 
 def flag(name):
     return os.path.exists(os.path.join(state, "flags", name))
@@ -158,6 +173,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         path, _, query = self.path.partition("?")
+        _, path = registry_path(path)
         if path == "/token":
             self.record(f"GET token {query}")
             self.answer(200, b'{"token":"fixture-token"}')
@@ -177,6 +193,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         path, _, _ = self.path.partition("?")
+        _, path = registry_path(path)
         blob = BLOB.match(path)
         if blob:
             digest = blob.group("digest")
@@ -202,11 +219,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         path, _, _ = self.path.partition("?")
+        prefix, path = registry_path(path)
         self.read_body()
         uploads = UPLOADS.match(path)
         if uploads:
             self.record("POST upload")
-            location = f"/v2/{uploads.group('repository')}/blobs/uploads/fixture-upload"
+            location = f"{prefix}/v2/{uploads.group('repository')}/blobs/uploads/fixture-upload"
             if not flag("no-query-location"):
                 location += "?_state=fixture-state"
             if flag("absolute-location"):
@@ -218,6 +236,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path, _, query = self.path.partition("?")
+        _, path = registry_path(path)
         body = self.read_body()
         upload = UPLOAD.match(path)
         if upload:
@@ -520,6 +539,22 @@ check "and its media type, which is no archive" \
   "$(contains "$(cat "$state/manifests/$INNER_TAG")" '"mediaType":"application/octet-stream"')"
 check "and the member's own name" \
   "$(contains "$(cat "$state/manifests/$INNER_TAG")" '"org.opencontainers.image.title":"inner"')"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: an upload location written as a path, with the package behind a path of its own"
+# What the run puts in front of such a location is the scheme and host of the address it pushed
+# to, which is what a path location is absolute from.
+# Read off the CI_TOOLS_GHCR_BASE seam instead, it would ask this origin for
+# /ghcr/ghcr/v2/..., which it serves nothing at, and the row would not be filled.
+fixture location-behind-a-path whole
+run_mirror CI_TOOLS_GHCR_BASE="$base/ghcr"
+check "exits 0" "$(is "$status" 0)"
+check "fills the row" "$(contains "$out" "^filled whole sha256:$WHOLE ($WHOLE_TAG)$")"
+check "started one upload per blob" "$(is "$(requests POST)" "POST upload POST upload ")"
+check "and both PUTs reached the package" \
+  "$(is "$(requests PUT)" "PUT blob sha256:$WHOLE PUT blob sha256:$WHOLE_CONFIG PUT manifest $WHOLE_TAG ")"
+check "the package holds the blob the run pushed" \
+  "$(is "$(wc -c < "$state/blobs/sha256:$WHOLE")" "$WHOLE_SIZE")"
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
 
 echo "case: an npm row"

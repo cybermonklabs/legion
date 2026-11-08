@@ -345,9 +345,11 @@ for row in readable:
             f"{BUN_PIN} pins {bun_pin}. Every job installs the version that file pins, so this "
             f"row pins the digest of a Bun no job runs. Raising Bun takes two commits, unlike "
             f"raising any other tool here: the new oven/bun row of {CI_IMAGES} first, then "
-            f"{BUN_PIN} and every call site, and the three bun-* rows of this file move in that "
-            f"second commit, with {BUN_PIN}, because a call site names a row rather than a "
-            f"version and a second row of this tool would have no name one could use."
+            f"{BUN_PIN}, the ARG BUN_VERSION default of {WORKER_DOCKERFILE} and every FROM on "
+            f"the row it leaves, and the three bun-* rows of this file move in that second "
+            f"commit, with {BUN_PIN}. No call site moves, because a call site names a row "
+            f"rather than a version; that is also why a second row of this tool would have no "
+            f"name one could use."
         )
     if name == "mise" and mise_version:
         wanted = mise_version[1:] if mise_version.startswith("v") else mise_version

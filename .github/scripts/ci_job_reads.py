@@ -123,11 +123,13 @@ def bun_job(job, workflow=CI):
     install = at(job, "bun install --frozen-lockfile", workflow)
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
-        (".bun-version", ".github/actions/setup-bun/action.yml:58 bun-version-file: .bun-version"),
-        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:72-82 reads the bun row of this runner's build "
-                                  "variant and :104-125 fetches its second source where the release asset served no Bun "
-                                  "of the pinned version, and :146 holds the bun on PATH to that row's digest"),
-        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:67,132 source it: ci_tools_fetch_fallback "
+        (".bun-version", ".github/actions/setup-bun/action.yml:106 bun-version-file: .bun-version, and :84 and :137 "
+                         "read the version it pins to tell a Bun of that version from any other"),
+        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:119-133 chooses the bun row of this runner's "
+                                  "build variant, :174 fetches that row's second source where no Bun of the pinned "
+                                  "version is installed, and :208 holds the bun on PATH to that row's digest"),
+        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:115,194 source it: ci_tools_source_name "
+                                        "reads the word for the source that served the bytes, ci_tools_fetch_fallback "
                                         "installs the npm copy and ci_tools_verify checks the installed binary"),
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
@@ -829,9 +831,9 @@ GATES = [
          "HEAD_SHA and HEAD_MESSAGE to the push payload's head"),
         (".github/ci-images.yaml", f"{at('test', 'Test the CI image mirror')}: mirror-ci-images.test.sh:322-351 builds "
                                    "its ordering fixture from the repository's own rows"),
-        (".github/ci-tools.yaml", f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh:444-447 runs "
+        (".github/ci-tools.yaml", f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh:446 runs "
                                   f"the gate over this repository's own tree, and {at('test', 'Test the tool fetch helper')}: "
-                                  "ci-tools.test.sh:521 reads every row of the repository's own manifest"),
+                                  "ci-tools.test.sh:525-532 reads every row of the repository's own manifest"),
         (".github/e2e-scripts.json", f"{at('test', 'Test the e2e proof selector')}: select-e2e-proofs.test.sh runs the "
                                      "selector over the repository's own list"),
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),

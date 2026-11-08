@@ -273,8 +273,8 @@ run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both values and both files" \
   "$(contains "$out" "^.github/ci-tools.yaml:[0-9]*: the bun-linux-aarch64 row's version is 9.9.8 and .bun-version pins 9.9.9")"
-check "and says the bun rows move in the second commit of a Bun raise, with the pin" \
-  "$(contains "$out" 'Raising Bun takes two commits, unlike raising any other tool here: the new oven/bun row of .github/ci-images.yaml first, then .bun-version and every call site, and the three bun-\* rows of this file move in that second commit, with .bun-version, because a call site names a row rather than a version and a second row of this tool would have no name one could use.')"
+check "and says the bun rows move in the second commit of a Bun raise, with the pin, and that no call site moves" \
+  "$(contains "$out" 'Raising Bun takes two commits, unlike raising any other tool here: the new oven/bun row of .github/ci-images.yaml first, then .bun-version, the ARG BUN_VERSION default of packages/daemon/docker/worker.Dockerfile and every FROM on the row it leaves, and the three bun-\* rows of this file move in that second commit, with .bun-version. No call site moves, because a call site names a row rather than a version; that is also why a second row of this tool would have no name one could use.')"
 
 echo "case: rule 2 — the mise row and ARG MISE_VERSION disagree"
 root=$(fixture pin-mise-version)
