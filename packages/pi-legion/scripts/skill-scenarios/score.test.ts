@@ -13,7 +13,17 @@ import { checkouts, specWork, statesDesign, TestHandoff } from "./score";
 // score.ts reads each label's checkout from <work>/profiles/<label>/checkout, beside <work>/runs.
 const work = mkdtempSync(path.join(tmpdir(), "skill-scenarios-score-"));
 const runs = path.join(work, "runs");
-afterAll(() => rmSync(work, { recursive: true, force: true }));
+// A hang guard, not a bound on the work: the hook removes the staged run tree this file built, and
+// what can hang is that removal on a loaded host's filesystem. Measured on this two-CPU pod:
+// 300 ms to 339 ms idle, median 303 ms over 5 runs, and 4.2 s to 25.5 s under 96 busy loops
+// (48 per CPU, the lowest rung that reddens this file), median 11.2 s over 20 runs. Six times that
+// worst is 153 s, past the ceiling a guard may take here, so this takes 60_000: 2.4 times the
+// worst measured, and well inside the pi-legion job's timeout-minutes: 10
+// (.github/workflows/ci.yaml), so a hook that never returns still reddens with this file named
+// instead of cancelling the job, which names nothing. Bun's unwritten 5 s default for a hook is
+// what failed a correct run at 5015.84 ms on 2026-11-07, under its generic wording "a
+// beforeEach/afterEach hook timed out".
+afterAll(() => rmSync(work, { recursive: true, force: true }), 60_000);
 for (const label of ["head", "base", "cross", "on", "off"]) {
   mkdirSync(path.join(work, "profiles", label), { recursive: true });
   writeFileSync(path.join(work, "profiles", label, "checkout"), `/checkouts/${label}\n`);
@@ -3516,6 +3526,14 @@ writeFileSync(
     .join("")
 );
 
+// A hang guard, not a bound on the work: what can hang is the `score.ts live-read` subprocess this
+// row spawns. Measured on this two-CPU pod: 276 ms to 337 ms idle, median 277 ms over 5 runs, and
+// 4.0 s to 19.7 s under 96 busy loops (48 per CPU, the lowest rung that reddens this file), median
+// 12.4 s over 20 runs, where Bun's unwritten 5 s default for a test failed this row in 9 of 10
+// loaded runs. Six times that worst is 118 s, past the ceiling a guard may take here, so this
+// takes 60_000: 3.1 times the worst measured, and well inside the pi-legion job's
+// timeout-minutes: 10 (.github/workflows/ci.yaml), so a subprocess that never returns still
+// reddens with this test named instead of cancelling the job, which names nothing.
 test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]` header line", () => {
   const read = Bun.spawnSync([
     "bun",
@@ -3536,7 +3554,7 @@ test("live-read compares a skill read's text after Oh My Pi's `[Skill file: …]
     `skill://demo/references/notes.md\t${[...otherHeader].length}\t${notesChars}\tfalse\tfalse`,
   ]);
   expect(text).toContain("2 of 4 reads arrived whole\n");
-});
+}, 60_000);
 
 /** A run's row and the lines printed under it. */
 function rowOf(name: string): string {
