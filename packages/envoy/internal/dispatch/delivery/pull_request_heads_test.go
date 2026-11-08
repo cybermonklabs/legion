@@ -1333,11 +1333,6 @@ func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *tes
 	}
 }
 
-// branchCommitsMigration is the migration that creates branch_commits, which
-// withoutBranchCommits and the harness's own repair both replay to put the table back
-// (droppableTables, repairDroppedTables).
-const branchCommitsMigration = 20261107234701
-
 // withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
 // the way a write fails, and puts it back afterwards.
 //
@@ -1350,10 +1345,9 @@ const branchCommitsMigration = 20261107234701
 // puts the table back while the test that dropped it is still running, so the next test in
 // the same binary finds the database as it expects it.
 //
-// Both repairs forget the version and migrate again rather than writing the `create table`
-// out here: Migrate skips every version schema_migrations already records, so forgetting it
-// makes the table exactly as the migration does, where a copy written here would be a second
-// one to keep in step with it.
+// It is the harness's own repair that it runs, rather than a second copy of it: the repair
+// forgets the migration's recorded version, and the Migrate here makes the table again from
+// that migration.
 func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
@@ -1363,9 +1357,7 @@ func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
 		// The test's own context is cancelled before its cleanups run, so the repair takes one
 		// that is not (context.WithoutCancel).
 		repair := context.WithoutCancel(ctx)
-		if _, err := pool.Exec(repair, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
-			t.Fatalf("forget the branch_commits migration: %v", err)
-		}
+		repairDroppedTables(t, repair, pool)
 		if err := (&store.Store{Pool: pool}).Migrate(repair); err != nil {
 			t.Fatalf("put branch_commits back: %v", err)
 		}

@@ -68,21 +68,24 @@ func deliveryTestPool(t *testing.T) (*store.Pool, context.Context) {
 	return pool, ctx
 }
 
-// droppableTables are the tables a test of this package drops to make a write of one fail the
-// way a write fails, each under the version of the migration that creates it.
-//
-// A test that drops one puts it back itself (withoutBranchCommits), which is the fast path and
-// the ordinary one. This map is for the run that never got to its cleanup: `go test -timeout`
-// kills the binary outright, and the table is then missing from a database that is the
-// server's own and outlives the run, while schema_migrations still records the migration that
-// creates it. Nothing would make it again — Migrate applies the versions the table does not
-// record — so every later run of this package would fail at the truncate above, until someone
-// repaired the database by hand.
-var droppableTables = map[int64]string{branchCommitsMigration: "branch_commits"}
+// branchCommitsMigration is the migration that creates branch_commits, the one table a test of
+// this package drops to make a write of it fail the way a write fails (withoutBranchCommits).
+// The repair below and that test's own cleanup both replay it to put the table back, rather
+// than keeping a second copy of its `create table` here and in step with it by hand: Migrate
+// skips every version schema_migrations already records, so forgetting the version makes the
+// table exactly as the migration does.
+const branchCommitsMigration = 20261107234701
 
-// repairDroppedTables forgets the recorded version of every droppable table the database is
-// missing, so the Migrate that follows creates it again exactly as its migration does, rather
-// than from a second copy of that `create table` kept here and in step by hand.
+// repairDroppedTables forgets the recorded version of branch_commits when the database is
+// missing the table, so the Migrate that follows creates it again.
+//
+// A test that drops the table puts it back itself (withoutBranchCommits), which is the fast
+// path and the ordinary one, and which runs this same repair. What this one is for is the run
+// that never got to its cleanup: `go test -timeout` kills the binary outright, and the table
+// is then missing from a database that is the server's own and outlives the run, while
+// schema_migrations still records the migration that creates it. Nothing would make it again
+// — Migrate applies the versions the database does not record — so every later run of this
+// package would fail at the truncate above, until someone repaired the database by hand.
 //
 // It reads the table from the catalogue (to_regclass answers null for a name that is no
 // relation) rather than trying a read of it and reading the failure, since a failed statement
@@ -98,17 +101,15 @@ func repairDroppedTables(t *testing.T, ctx context.Context, pool *store.Pool) {
 	if !migrated {
 		return
 	}
-	for version, table := range droppableTables {
-		var present bool
-		if err := pool.QueryRow(ctx, "select to_regclass($1::text) is not null", table).Scan(&present); err != nil {
-			t.Fatalf("look for %s: %v", table, err)
-		}
-		if present {
-			continue
-		}
-		if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", version); err != nil {
-			t.Fatalf("forget the migration of %s, which a run that died left dropped: %v", table, err)
-		}
+	var present bool
+	if err := pool.QueryRow(ctx, "select to_regclass('branch_commits') is not null").Scan(&present); err != nil {
+		t.Fatalf("look for branch_commits: %v", err)
+	}
+	if present {
+		return
+	}
+	if _, err := pool.Exec(ctx, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
+		t.Fatalf("forget the migration of branch_commits, which a run that died left dropped: %v", err)
 	}
 }
 
