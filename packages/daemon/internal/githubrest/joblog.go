@@ -48,10 +48,13 @@ const JobLogBound = 160 << 20
 
 // DefaultJobLogTimeout is how long one read of a job's log takes before it gives up
 // (ErrJobLogSlow) under a client that names no bound of its own: the production value, and what
-// every Client in the tree runs with. It is that read's whole budget: the merge row that reads a
-// removal's logs lends it none of its own 30 seconds any more, since a read of a 54 MB log cannot
-// finish inside them (the daemon's readyMerge detaches these reads from the row's deadline), so
-// the time bound rises with the byte bound. Measured 2026-11-08 from a cluster pod, job
+// every Client in the tree runs with. It bounds the whole of one read — the wait for one of this
+// process's jobLogReadsAtOnce places and the fetch that follows it — and nothing beyond it. The
+// caller's own context bounds the read as well, and whichever of the two runs out first ends it:
+// a removal's logs are read under the one deadline every read of that removal shares (the
+// daemon's removalLogReads, three minutes), so one slow log gives up after this minute and the
+// removal's whole reading after those three. A read the caller's budget cut short says so rather
+// than naming this bound (jobLogBound). Measured 2026-11-08 from a cluster pod, job
 // 128558893568's 54,330,939 bytes came down in 8.5 seconds, 6.4 MB/s: a minute is seven times
 // that read, and a log at JobLogBound is read inside it at 2.8 MB/s.
 const DefaultJobLogTimeout = time.Minute
@@ -131,16 +134,16 @@ var (
 //
 // This is a call shape of its own beside call: call reads a whole body and parses it as JSON,
 // where a job's log is neither JSON nor bounded. The answer is streamed through a ring of at
-// most JobLogTail bytes, so a log of any length costs that much memory and no more, and those
-// bytes are what the read answers: the caller parses the ring where it lies (ghautomerge's
-// failingTests), so a log costs its own length once rather than twice. The read gives up when
-// the body passes JobLogBound (ErrJobLogTooLong) or the read passes the client's time bound,
-// JobLogTimeBound (ErrJobLogSlow), which bounds the wait for one of this process's
-// jobLogReadsAtOnce places as well as the read that follows it. A 403 that is not GitHub's rate
-// limit is ErrJobLogForbidden, the grant a deployment may not have; every other answer other
-// than 2xx is an *Answer, as call's is, and a request that never arrived is its own error. A log
-// longer than the ring wraps it, and the tail then begins after its first line break, since the
-// line it begins in is a line only by accident.
+// most JobLogTail bytes (readJobLogTail), so a log of any length costs that much memory and no
+// more, and those bytes are what the read answers: the caller parses the ring where it lies
+// (ghautomerge's failingTests), so a log costs its own length once rather than twice. The read
+// gives up when the body passes JobLogBound (ErrJobLogTooLong) or the read passes the client's
+// time bound, JobLogTimeBound (ErrJobLogSlow), which bounds the wait for one of this process's
+// jobLogReadsAtOnce places as well as the read that follows it. A 403 GitHub's own API host
+// answered that is not its rate limit is ErrJobLogForbidden, the grant a deployment may not
+// have; one the blob store answers after the redirect is that store refusing the fetch, and an
+// *Answer as every other answer other than 2xx is, call's included. A request that never
+// arrived is its own error.
 func (c Client) JobLog(ctx context.Context, id int64) ([]byte, error) {
 	bounded, cancel := context.WithTimeout(ctx, c.JobLogTimeBound())
 	defer cancel()
@@ -168,16 +171,45 @@ func (c Client) JobLog(ctx context.Context, id int64) ([]byte, error) {
 	if response.StatusCode < 200 || response.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, jobLogRefusalBody))
 		limited := RateLimited(response, body)
-		if response.StatusCode == http.StatusForbidden && !limited {
+		// A 403 is the grant this installation never had only where GitHub's own API host
+		// answered it. The read follows GitHub's redirect to blob storage, and that store
+		// answers a 403 of its own for a signature that has expired, which says nothing about
+		// any grant: it is a fetch that failed. response.Request is the last request the client
+		// made, the redirect's where it followed one, so its host tells the two apart.
+		fromAPI := response.Request.URL.Host == request.URL.Host
+		if response.StatusCode == http.StatusForbidden && !limited && fromAPI {
 			return nil, ErrJobLogForbidden
 		}
 		return nil, c.refusal(http.MethodGet, request.URL, response, body, limited, BudgetCore)
 	}
-	// The ring is the answer's own length where GitHub names one shorter than the tail, and
-	// jobLogRingStart where GitHub names none, grown as the body arrives (growJobLogRing).
-	size := jobLogRingStart
-	if length := response.ContentLength; length > 0 {
-		size = int(min(length, int64(JobLogTail)))
+	switch tail, err := readJobLogTail(response.Body, response.ContentLength); {
+	case errors.Is(err, ErrJobLogTooLong):
+		return nil, err
+	case err != nil:
+		return nil, jobLogBound(ctx, bounded, err)
+	default:
+		return tail, nil
+	}
+}
+
+// readJobLogTail is the end of body, streamed through a ring of at most JobLogTail bytes: length
+// is the body's own length where the answer named one (Content-Length), and zero or less where
+// it named none. A named length is the ring's length, held to the tail, and an unnamed one
+// starts the ring at jobLogRingStart and grows it as the bytes arrive (growJobLogRing).
+//
+// Only a ring the answer did not size grows. One the answer sized holds the whole body already,
+// and the last of that body need not come with its EOF: over HTTP/2 the EOF arrives on a read
+// of its own after the bytes, where HTTP/1.1 ends the last read with it, so a grow there would
+// double a ring that is full and right, or take the whole 64 MiB tail once twice its length
+// passes the leap.
+//
+// A body past JobLogBound answers ErrJobLogTooLong; every other failure of a read is answered as
+// it came, for the caller to say whose budget ended it (jobLogBound). A body longer than the
+// ring wraps it.
+func readJobLogTail(body io.Reader, length int64) ([]byte, error) {
+	size, grows := jobLogRingStart, true
+	if length > 0 {
+		size, grows = int(min(length, int64(JobLogTail))), false
 	}
 	ring := make([]byte, size)
 	// The body is streamed through the ring: at is where the next byte goes, and read the whole
@@ -186,13 +218,13 @@ func (c Client) JobLog(ctx context.Context, id int64) ([]byte, error) {
 	at, read := 0, 0
 	for {
 		if at == len(ring) {
-			if len(ring) < JobLogTail {
+			if grows && len(ring) < JobLogTail {
 				ring = growJobLogRing(ring)
 			} else {
 				at = 0
 			}
 		}
-		n, err := response.Body.Read(ring[at:])
+		n, err := body.Read(ring[at:])
 		at, read = at+n, read+n
 		if read > JobLogBound {
 			return nil, ErrJobLogTooLong
@@ -201,7 +233,7 @@ func (c Client) JobLog(ctx context.Context, id int64) ([]byte, error) {
 			break
 		}
 		if err != nil {
-			return nil, jobLogBound(ctx, bounded, err)
+			return nil, err
 		}
 	}
 	if read <= len(ring) { // the ring holds the whole body, in the order it arrived

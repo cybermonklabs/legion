@@ -1045,8 +1045,9 @@ func TestAMergeTheQueueFailedHasItsJobLogsReadOnceForOneDecision(t *testing.T) {
 // changes none of it. An entry the row has not decided also leaves the record where it was and
 // sends no mutation at all: it neither submits the head again nor takes the entry out of the
 // queue, which only a withdrawal's disarm does. One state the row reads no conflict from stands
-// here on the database; which states those are is read off the entry itself
-// (TestTheMergeRowReadsAConflictFromTheEntryStateAlone), since each is this one branch of the row.
+// here on the database, and that branch of the row stands on its own below
+// (TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone); which states those are is read off the
+// entry alone, in ghautomerge, since each is this one branch of the row.
 func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t *testing.T) {
 	for _, tc := range []struct {
 		name                  string
@@ -1166,37 +1167,57 @@ func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t
 	}
 }
 
-// Which states of GitHub's merge-queue entry the merge row reads a conflict from, on the entry
-// alone (ghautomerge.Armed.UnmergeableOnBaseTip): UNMERGEABLE while the queue has built the entry
-// on the tip of the pull request's own base branch, where nothing ahead of it in the queue can be
-// what the queue cannot merge, and nothing else at all. An entry behind another carries the commit
-// the queue built for the entry ahead, which is the tip with that merge on top and so never the
-// tip itself; an entry the queue has built nothing for yet carries no commit; and every other
-// state, the ones this daemon does not know among them, is the queue still working rather than a
-// head that conflicts. The states are read here rather than as a row each of the table above,
-// since on the database each is the same one branch of the row (INFRA-1442).
-func TestTheMergeRowReadsAConflictFromTheEntryStateAlone(t *testing.T) {
+// An entry the row has not decided leaves everything where it stands: the merge-queue entry GitHub
+// holds is a wait like any other, so the row sends no mutation at all — it neither submits the
+// head again nor takes the entry out of the queue, which only a withdrawal's disarm does — writes
+// no mark of a conflict, tells nobody, and leaves the issue awaiting its merge at its recorded
+// head with no round counted against anyone. Which entry states the row reads a conflict from at
+// all is read off the entry itself, beside the wait that carries it
+// (ghautomerge's TestAnUnmergeableEntryOnItsBaseBranchesTipIsTheHeadsOwnConflict); what stands
+// here is the one branch of the row on the database (INFRA-1442).
+func TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone(t *testing.T) {
 	for _, tc := range []struct {
-		name                           string
-		queueState, queueBase, baseTip string
-		want                           bool
+		name                  string
+		queueState, queueBase string
 	}{
-		{name: "unmergeable on the base branch's tip", queueState: "UNMERGEABLE", queueBase: queueBaseTip, baseTip: queueBaseTip, want: true},
-		{name: "unmergeable on the commit the queue built for the entry ahead", queueState: "UNMERGEABLE", queueBase: "entry-ahead", baseTip: queueBaseTip},
-		{name: "unmergeable with no commit the queue has built", queueState: "UNMERGEABLE", baseTip: queueBaseTip},
-		{name: "unmergeable with the read naming no base tip", queueState: "UNMERGEABLE", queueBase: queueBaseTip},
-		{name: "queued on the base branch's tip", queueState: "QUEUED", queueBase: queueBaseTip, baseTip: queueBaseTip},
-		{name: "awaiting its checks on the base branch's tip", queueState: "AWAITING_CHECKS", queueBase: queueBaseTip, baseTip: queueBaseTip},
-		{name: "mergeable on the base branch's tip", queueState: "MERGEABLE", queueBase: queueBaseTip, baseTip: queueBaseTip},
-		{name: "locked on the base branch's tip", queueState: "LOCKED", queueBase: queueBaseTip, baseTip: queueBaseTip},
-		{name: "in a state the daemon does not know", queueState: "BLOCKED_BY_SOMETHING_NEW", queueBase: queueBaseTip, baseTip: queueBaseTip},
-		{name: "no entry at all, an auto-merge arm alone", baseTip: queueBaseTip},
+		{name: "an entry the queue is still working on", queueState: "QUEUED", queueBase: queueBaseTip},
+		{name: "an entry the queue cannot merge, built on the commit it made for the entry ahead",
+			queueState: "UNMERGEABLE", queueBase: "entry-ahead"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			armed := ghautomerge.Armed{Number: 42, Head: "ready-head", QueueState: tc.queueState, QueueBase: tc.queueBase, BaseTip: tc.baseTip}
-			if armed.UnmergeableOnBaseTip() != tc.want {
-				t.Fatalf("an entry %q built on %q with %q the base branch's tip reads a conflict %t, want %t",
-					tc.queueState, tc.queueBase, tc.baseTip, !tc.want, tc.want)
+			github := newQueueGitHub(t, "UNKNOWN")
+			github.set(func(g *armableGitHub) {
+				g.queued, g.queueState, g.queueBase = true, tc.queueState, tc.queueBase
+			})
+			pool := isolatedOutboxPool(t)
+			records := record.NewStore()
+			seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+			now := time.Now().UTC().Truncate(time.Second)
+			enqueueOutbox(t, pool, records, mustOutboxRow(t, "LEGION-208", record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now}, now))
+			runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return now })
+			runner.handlers = []intake.Handler{workflow.New(records, workflow.Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps()}, quietLogger())}
+			if err := runner.RunOnce(context.Background()); err != nil {
+				t.Fatalf("the row's read of the entry: %v", err)
+			}
+			assertMergeRows(t, pool, 1, "merge-removed", 0)
+			if kinds := noticeCount(t, pool); kinds != 0 {
+				t.Fatalf("notices of every kind %d, want none: an entry the row has not decided tells nobody", kinds)
+			}
+			if disables, arms := github.counts(); disables != 0 || arms != 0 {
+				t.Fatalf("disables %d and arms %d, want no mutation at all for an entry the row has not decided", disables, arms)
+			}
+			mark, base, standing := unmergeableMark(t, pool)
+			if !standing || !mark.IsZero() || base != "" {
+				t.Fatalf("the ready_merge row stands %t with the mark %s on %q, want it waiting with no conflict marked", standing, mark, base)
+			}
+			var at, head string
+			var rounds int
+			if err := pool.QueryRow(context.Background(), `select i.phase, p.head_sha, coalesce((select sum(rounds) from phases where issue = 'LEGION-208'), 0)
+				from issues i join pull_requests p on p.issue = i.key where i.key = 'LEGION-208'`).Scan(&at, &head, &rounds); err != nil {
+				t.Fatalf("read LEGION-208's record: %v", err)
+			}
+			if at != string(phase.AwaitingMerge) || head != "ready-head" || rounds != 0 {
+				t.Fatalf("LEGION-208 in %q at %q with %d rounds counted, want it awaiting its merge at ready-head with none", at, head, rounds)
 			}
 		})
 	}
@@ -1281,6 +1302,52 @@ func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
 				t.Fatalf("LEGION-208 in %q (%v), want awaiting_merge", at, err)
 			}
 		})
+	}
+}
+
+// A removal whose job-log reads the daemon's own stop cut short tells nobody and ends no row.
+// Every line those reads wrote then says the daemon stopped rather than what the job's log held,
+// and a *Removed ends its row with merge-removed written once and never again, so the row would
+// spend its one telling on lines about the stop. The row fails instead, with a failure that is
+// no removal and no refusal: nothing is told, nothing is marked, and the row reads the same
+// removal from GitHub when the daemon comes back (INFRA-1442).
+func TestARemovalWhoseLogReadsADaemonStopCutShortTellsNobody(t *testing.T) {
+	github := newQueueGitHub(t, "CLEAN")
+	arrived := make(chan struct{})
+	github.set(func(g *armableGitHub) {
+		g.jobLogs, g.logArrived = map[int64]string{failedMergeGroupJob: failedMergeGroupLog}, arrived
+	})
+	github.remove(dequeuedEvent("manual", "a-maintainer", failedMergeGroupWithJob))
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	seedReadyMerge(t, pool, records, "LEGION-208", awaitingREADY)
+	now := time.Now().UTC()
+	payload := record.ReadyMerge{Number: 42, Head: "ready-head", Armed: true, Queued: now}
+	row := mustOutboxRow(t, "LEGION-208", payload, now)
+	enqueueOutbox(t, pool, records, row)
+	runner := mergeRunner(pool, records, github.url, quietLogger(), func() time.Time { return now })
+	lane, stop := context.WithCancel(context.Background())
+	defer stop()
+	go func() {
+		<-arrived
+		stop()
+	}()
+	err := runner.readyMerge(lane, row, payload)
+	var removed *ghautomerge.Removed
+	switch {
+	case err == nil || !errors.Is(err, context.Canceled):
+		t.Fatalf("the row under a daemon stopping = %v, want the stop's own error", err)
+	case errors.As(err, &removed):
+		t.Fatalf("the row = %v, want no removal: a removal told from lines about the stop is told once and never again", err)
+	case permanentRefusal(row, err, now):
+		t.Fatalf("the row = %v, want a failure it retries rather than one it is finished on", err)
+	}
+	assertMergeRows(t, pool, 1, "merge-removed", 0)
+	if kinds := noticeCount(t, pool); kinds != 0 {
+		t.Fatalf("notices of every kind %d, want none: the daemon stopping tells nobody", kinds)
+	}
+	if posts := messagePosts(t, pool); len(posts) != 0 {
+		t.Fatalf("Dispatch messages %q, want none", posts)
 	}
 }
 
@@ -1552,7 +1619,11 @@ func TestAREADYMergeRowWaitingOnAnArmEndsOnceTheMergeMovesTheRecord(t *testing.T
 // enable). A removal outside the daemon is remove's. jobLogs is the log of each Actions job of
 // a merge group by its id, as GET /actions/jobs/{id}/logs answers it — a job it holds none for
 // is GitHub's 404, as a check run no Actions job backs would answer — and logReads counts the
-// reads of them the daemon made.
+// reads of them the daemon made. logArrived, where a test gives one, is closed as the first
+// such read reaches the fake, which then holds the answer open until the request's own context
+// ends: the shape a daemon stopping while a removal's logs are read is proved in. The fake
+// holds its own lock while it waits there, so a test that gives one reads nothing of the fake
+// until the read it stopped has answered.
 type armableGitHub struct {
 	url                   string
 	mu                    sync.Mutex
@@ -1566,6 +1637,7 @@ type armableGitHub struct {
 	disables, arms        int
 	jobLogs               map[int64]string
 	logReads              int
+	logArrived            chan struct{}
 }
 
 // queueBaseBranch is the branch acme/widgets#42 merges into and queueBaseTip the commit that
@@ -1604,6 +1676,12 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 		// /actions/jobs/{id}/logs under the repository's REST base (githubrest.RepositoryAPI).
 		if job, found := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/actions/jobs/"); found {
 			g.logReads++
+			if g.logArrived != nil {
+				close(g.logArrived)
+				g.logArrived = nil
+				<-r.Context().Done() // the read is held open until whatever stopped it ends the request
+				return
+			}
 			id, err := strconv.ParseInt(strings.TrimSuffix(job, "/logs"), 10, 64)
 			log, held := g.jobLogs[id]
 			switch {

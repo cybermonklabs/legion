@@ -201,6 +201,93 @@ func TestAJobLogReadGrowsItsRingWithABodyOfUnnamedLength(t *testing.T) {
 	}
 }
 
+// endingBody is a response body as Go's HTTP client hands one over, in the two shapes the end of
+// a body arrives in: lateEOF answers the last bytes with no error of their own and the EOF on a
+// read after them, which is HTTP/2's shape, and without it the last read carries the EOF, which
+// is HTTP/1.1's for a body whose length the answer named.
+type endingBody struct {
+	rest    []byte
+	lateEOF bool
+}
+
+func (b *endingBody) Read(p []byte) (int, error) {
+	if len(b.rest) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, b.rest)
+	b.rest = b.rest[n:]
+	if len(b.rest) == 0 && !b.lateEOF {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+// The ring grows only where the answer named no length for the body. A named length sizes the
+// ring to the whole log, which the read then holds entire, and the last of such a body need not
+// arrive with its EOF: over HTTP/2 the EOF comes on a read of its own after the bytes, where
+// HTTP/1.1 ends the last read with it. A ring that grew there would hold twice a log it already
+// held whole, or the whole 64 MiB tail once twice its length passed the leap. The ring is what
+// the read answers with, so what a read cost is the capacity of what it answers.
+func TestAJobLogRingGrowsOnlyWhereTheAnswerNamedNoLength(t *testing.T) {
+	// Some 108,000 bytes: past the length a growing ring starts at, under the leap to the tail.
+	log := logOf(4000)
+	for _, tc := range []struct {
+		name string
+		// length is the body's length as the answer named it, and zero where it named none;
+		// lateEOF is the EOF arriving on a read of its own; ring is the capacity the read must
+		// answer with.
+		length  int64
+		lateEOF bool
+		ring    int
+	}{
+		{name: "a named length whose last read carries the EOF", length: int64(len(log)), ring: len(log)},
+		{name: "a named length whose EOF arrives on a read of its own", length: int64(len(log)), lateEOF: true, ring: len(log)},
+		{name: "no length named, read into a ring grown with the body", lateEOF: true, ring: 2 * jobLogRingStart},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tail, err := readJobLogTail(&endingBody{rest: []byte(log), lateEOF: tc.lateEOF}, tc.length)
+			if err != nil || string(tail) != log {
+				t.Fatalf("readJobLogTail = %d bytes, %v; want all %d of the body", len(tail), err, len(log))
+			}
+			if cap(tail) != tc.ring {
+				t.Fatalf("readJobLogTail read %d bytes into a ring of %d, want one of %d", len(tail), cap(tail), tc.ring)
+			}
+		})
+	}
+}
+
+// GitHub answers this route with a redirect to blob storage, and that store refuses a read of
+// its own with a 403 when the signature it was handed has expired. That refusal says nothing
+// about any grant: only a 403 from GitHub's own API host is the optional Actions read a
+// deployment's App may never have been granted. The *Answer names the path under the client's
+// REST base, never the pre-signed URL the read was redirected to.
+func TestAJobLogRefusedByTheBlobStoreIsNoMissingActionsGrant(t *testing.T) {
+	const signature = "S3CR3T-signature-of-the-read"
+	blob := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `<Error><Code>AuthenticationFailed</Code></Error>`, http.StatusForbidden)
+	}))
+	defer blob.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, blob.URL+"/legion-logs/7?sig="+signature, http.StatusFound)
+	}))
+	defer server.Close()
+	client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+	tail, err := client.JobLog(context.Background(), 7)
+	var answer *Answer
+	switch {
+	case len(tail) > 0:
+		t.Fatalf("JobLog kept %d bytes of a read the store refused", len(tail))
+	case errors.Is(err, ErrJobLogForbidden):
+		t.Fatalf("JobLog = %v, want the store's refusal rather than this installation's missing Actions read", err)
+	case !errors.As(err, &answer) || answer.Status != http.StatusForbidden || answer.RateLimited:
+		t.Fatalf("JobLog = %v, want an *Answer with status 403 and no rate limit", err)
+	case answer.Path != "/actions/jobs/7/logs":
+		t.Fatalf("the *Answer names %q, want the path under the client's REST base", answer.Path)
+	case strings.Contains(err.Error(), signature):
+		t.Fatalf("JobLog = %v, want no pre-signed signature in what it says", err)
+	}
+}
+
 // Every job-log read this process makes takes one of jobLogReadsAtOnce places, whatever issue's
 // removal asked for it. One removal reads eight logs at once (ghautomerge's jobLogReads), which
 // bounds that removal and nothing else: with no limit over the lanes together, every removal

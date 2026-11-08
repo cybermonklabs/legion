@@ -159,14 +159,39 @@ func (f FailingRun) String() string {
 	return fmt.Sprintf("%s (%s, %s)%s", f.Name, f.Result, f.URL, f.Log)
 }
 
+// failingRunsUnits is how long the runs of one removal are named for before the rest are
+// counted ("and 12 more runs"), measured in the bytes of the text, which is never fewer than
+// its UTF-16 units.
+//
+// Every sentence this package writes is rendered into one block of a Dispatch post — the
+// implementer's task and the architect's checks-red notice a failed merge sends, the READY
+// withdrawal's post, the re-submission's, and merge-removed — and Dispatch refuses a block over
+// DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units (packages/contracts), naming it; the daemon then
+// tells the architect its message was refused, which is the failure this bound exists to spare
+// it. One job's line is bounded in itself (failingTestsNamed, failureLineUnits), at some 2,400
+// units in the worst measured shape, but a merge group a broken base fails across twenty jobs
+// names twenty such lines. Sixteen thousand holds every removal's runs to half that block,
+// which leaves the sentence they stand in, and the prose around it, the other half.
+const failingRunsUnits = 16000
+
 // FailingRuns is runs as every removal that carries them names them, and as the daemon's own
-// messages of one do: each run's line, "; " between them.
+// messages of one do: each run's line, "; " between them, up to failingRunsUnits of text, with
+// the rest counted after them ("and 12 more runs"). The first run is always named, however long
+// its own line is: a bound that named none would leave a removal saying nothing of what failed.
 func FailingRuns(runs []FailingRun) string {
-	lines := make([]string, len(runs))
+	var named strings.Builder
 	for i, run := range runs {
-		lines[i] = run.String()
+		line := run.String()
+		if i > 0 && named.Len()+len(line) > failingRunsUnits {
+			fmt.Fprintf(&named, " and %d more runs", len(runs)-i)
+			break
+		}
+		if i > 0 {
+			named.WriteString("; ")
+		}
+		named.WriteString(line)
 	}
-	return strings.Join(lines, "; ")
+	return named.String()
 }
 
 // Submit asks GitHub to merge pull request number of repo at head, the head an accepted READY
