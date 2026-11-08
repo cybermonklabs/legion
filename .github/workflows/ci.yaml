@@ -1149,13 +1149,16 @@ jobs:
               # the check that the list has not fallen behind Playwright; the key their apt
               # archive cache is read and written under, which their "Compute the apt archive
               # cache key" steps call; the memory and CPU sampler their browser steps start and
-              # read back; and the script the merge job runs to take each leg's newest attempt.
+              # read back; the script the merge job runs to take each leg's newest attempt; and
+              # the script that makes the merge job's two reads of its own run, which reads this
+              # run's own attempt's jobs and says a refused blob download was a refused read.
               - '.github/scripts/playwright-install.sh'
               - '.github/playwright-apt-packages.txt'
               - '.github/scripts/playwright-deps-current.sh'
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
+              - '.github/scripts/dispatch-browser-run-reads.sh'
               # e2e/cli-reply-answers.e2e.ts:18 runs envoy-client's dispatch CLI, spawned as its
               # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
               # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
@@ -2288,6 +2291,12 @@ jobs:
       # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
       - name: Test the browser lane's blob attempt selection
         run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # The merge job's two reads of its own run, driven under a stand-in gh: the attempt route
+      # the jobs read takes, the retry ladder's attempts and the waits between them, and the two
+      # refusal messages are checked here rather than on a runner against GitHub.
+      - name: Test the browser lane's run reads
+        run: .github/scripts/dispatch-browser-run-reads.test.sh
 
       # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
       # sample files: its two readings are pure functions of those files, so the numbers and the
