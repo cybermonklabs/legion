@@ -620,6 +620,24 @@ with no Dispatch has no write to review and gets no gate; the test runs at load,
 turns Dispatch on later has none either. In such a session `envoy.ts` reads the switch
 (`askgateSetting` in `@legion/envoy-client/envoy-config`, the top-level `askgate` section of that
 file) and calls `registerAskGate` unless that switch is off.
+AskGate's one setting of its own is NOT in that file: `askgate.sharedAccountProviders`, the
+provider ids of a machine that bill one account, is declared on Oh My Pi's own settings registry
+by `askgate.ts` (`register`, with `lookup` first so a second evaluation reuses the handle) and
+read from omp's settings with `Settings.grantAuthority()`, the host's operator view — the global
+`config.yml` of the agent directory, a file named in `PI_CONFIG_FILES`, a `--config` overlay and
+runtime overrides, with every project layer dropped. So a repository's `.omp/config.yml`
+declares nothing: the agent under review can write it. A host build whose settings offer no such
+view offers nothing safe to read, so there the entry declares nothing rather than falling back
+to the merged settings, and `askgate.test.ts` drives that branch. envoy.json would be the wrong
+home: one machine's profiles can share a single envoy.json, while omp's settings are per agent
+directory and a launcher may give each profile an overlay of its own — exactly the fact a
+profile that bills another account must be able to state for itself. Which file of a machine
+reaches those layers is that machine's launcher's business, not this package's.
+The comparison is `sameAccount` in `askgate-core.ts`, read through the `sharedAccountProviders`
+dep at each call, so a machine's edit reaches a running session: it decides the `skipped`
+outcome and which fallback models of the chain may be asked. An empty list, which a machine that
+declares nothing gives, makes both the plain provider-id comparison the gate made before the
+setting existed.
 `registerAskGate` (`askgate.ts`) registers the gate's one
 `tool_call` handler at once, in the factory, after `envoy.ts`'s own, and starts the load of Oh My
 Pi's own modules through string-literal `import()`, declared in `../pi-shared/src/omp-host.d.ts`.
@@ -666,7 +684,7 @@ cannot write after a switch is a UI notice at once. For each literal call it let
 mints one single-use marker in that store (`mintFor`): the argv the CLI gets, bound behind a review
 or a deliberate pass (a rebuttal, a breaker trip) to the dry run's arguments and to the sha256 of
 each file the argv names (`fileOperands`), as the gate read it in place; argv-only for a call no
-verdict stands behind (`UNREVIEWED_OUTCOMES`, a halt and another provider among them) and
+verdict stands behind (`UNREVIEWED_OUTCOMES`, a halt and another account among them) and
 for a `task` subagent's literal call. A marker goes when its call ends or at shutdown, and the CLI
 refuses one older than two hours (`MARKER_MAX_AGE_MS`). The CLI reads each named file once,
 consumes one matching marker by unlinking it before it posts a gated write under a live record,

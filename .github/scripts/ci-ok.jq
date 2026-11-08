@@ -10,7 +10,7 @@
 #
 # `$out.filter_verdicts` is the paths filter's own answer for every filter, which the `changes`
 # job publishes beside the outputs (ci.yaml's `changes` job says why). It is what tells a job
-# the `full-ci` label held back from one its paths never selected: the nine slow suites' outputs
+# the `full-ci` label held back from one its paths never selected: the eight slow suites' outputs
 # are written `false` on a pull request without that label whether the filter said yes or no, so
 # the output alone reads the same in both cases. Only a pull request can be gated that way - on
 # every other event the label term of those expressions is already true, so the output is the

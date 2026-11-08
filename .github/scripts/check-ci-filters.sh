@@ -42,19 +42,24 @@
 #      it. A `with:` value a condition of the called file reads must therefore be
 #      `${{ needs.changes.outputs.<filter> }}` or `${{ needs.changes.result }}` (the ci-ok
 #      payload `${{ toJSON(needs.changes) }}`, which names no output, is the one other value
-#      read here), and anything else - a literal, a value built from another context - is
+#      read here) wherever it names the changes job at all, and one naming it in any other
+#      shape - an output inside a larger expression, a value built from one - is
 #      refused naming the input, the calling job and both files, since the resolution may never
-#      be guessed. A `with:` value no condition reads gates nothing and is left alone,
+#      be guessed. A value naming the changes job nowhere carries no filter and is read as no
+#      gate: dispatch-browser.yaml's `lane`, which ci.yaml builds from the event and the pull
+#      request's labels, chooses which projects the browser suite runs, never whether it runs,
+#      and where such a value stands in for a gate the table declares, this rule's own first
+#      half refuses that gate. A `with:` value no condition reads gates nothing and is left alone,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
 #      or in a workflow it calls, where the filter is the one the resolved condition names,
-#   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls, that starts a go
-#      command (test, vet, build, run, list, install, generate) no Run of a gate on that job
-#      claims and no exact entry's step holds, or a claimed line in the simple form (below) whose
-#      packages, -tags, -race or mode (test, vet, or build) are not exactly its Run's. A job that
-#      calls a reusable workflow keeps its id, its needs: changes and the whole if: that tests
-#      its filter in ci.yaml and holds its steps in the called file, which runs them inside the
-#      caller's own run, so the steps of every one of those files are read here and each refusal
-#      names the file the step is in,
+#   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
+#      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
+#      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
+#      claimed line in the simple form (below) whose packages, -tags, -race or mode (test, vet,
+#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id,
+#      its needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps
+#      in the called file, which runs them inside the caller's own run, so the steps of every one
+#      of those files are read here and each refusal names the file the step is in,
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a RULES source file that is gone, or a why citing a step the job no
 #      longer has. A gate's step is looked for in the file that gate names - ci.yaml, or the
@@ -145,7 +150,8 @@
 #      same test written as a function call is the review's to catch, not this check's.
 #  11. a cache family .github/workflows/ci-caches.yaml saves whose `key:` or `path:` is not
 #      exactly that of the matching actions/cache/restore of ci.yaml or of a workflow ci.yaml
-#      calls (the keys compared as text,
+#      calls - dispatch-browser.yaml holds the browser and apt archive restores of the
+#      dispatch-browser job - (the keys compared as text,
 #      trailing whitespace aside, the paths as ordered lists of stripped lines), naming the file
 #      the restore is in, or that none of those files
 #      restores, and an actions/cache/restore of ci-caches.yaml that is not
@@ -238,9 +244,9 @@
 # name outside ENV_ALLOWED (test configuration go never reads; GO*, CGO_*, BASH_ENV, ENV, HOME,
 # XDG_CONFIG_HOME and PATH are outside it) in the workflow's, job's or step's env or in front of
 # the command itself, no step of the job writing $GITHUB_ENV or $GITHUB_PATH or running
-# `go env -w` (each reaches every later go command unseen), and the step's working directory (its
-# own, else the job's or workflow's defaults.run, else the root) joined with the command's own
-# `go -C` the Run's. A -race line's closure is the
+# `go env -w` on a line of its script that is not a comment (each reaches every later go command
+# unseen), and the step's working directory (its own, else the job's or workflow's defaults.run,
+# else the root) joined with the command's own `go -C` the Run's. A -race line's closure is the
 # one `go list -race` lists, so its Run says race too. A script_run is held exact instead: the
 # script's line holding its text must be that text alone and uncontinued, under such an env,
 # shell and container (the job's and every one of its steps') and such a job; the script's
@@ -259,8 +265,9 @@
 # widen what it reads. It fails wide, never narrow: a new evasion is answered by falling to
 # everything, not by more parsing.
 #
-# What it reads, and what it does not: ci.yaml's own steps (their run: text, shell, working
-# directory and env: blocks), the job's and workflow's env and defaults, and the scripts and steps
+# What it reads, and what it does not: ci.yaml's own steps and those of the jobs of a local
+# workflow one of its jobs calls (their run: text, shell, working directory and env: blocks),
+# each job's own env and defaults and those of the file that holds it, and the scripts and steps
 # the table pins. It does not read the environment a local action or a repository script writes
 # (a composite action's own $GITHUB_ENV or $GITHUB_PATH, a script's export), nor what such a
 # script runs beyond its pinned line. A pinned repository script is read the way Python splits

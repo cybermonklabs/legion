@@ -4,18 +4,21 @@
 #
 # .github/scripts/playwright-deps-current.sh holds this list against Playwright's own both ways -
 # every name Playwright asks apt for is one this list holds, and every name here is one Playwright
-# asks for - and ci.yaml's dispatch job runs it after the install, so a Playwright upgrade that
-# moves the list fails that job rather than leaving a browser short of a library.
+# asks for - and .github/scripts/playwright-install.sh runs it after the install, so a Playwright
+# upgrade that moves the list fails the browser job rather than leaving a browser short of a
+# library.
 #
-# gstreamer1.0-tools is deliberately not here: it carries the gst-inspect-1.0 that job's decoder
-# guard runs, Playwright asks for no such package, and a name here that Playwright does not ask
-# for fails that check. The install step adds it beside this list, as its own `step_tools`.
+# gstreamer1.0-tools is deliberately not here: it carries the gst-inspect-1.0 that install's
+# decoder guard runs, Playwright asks for no such package, and a name here that Playwright does
+# not ask for fails that check. The install adds it beside this list, as its own `step_tools`.
 #
-# Two readers take this file with blank lines and `#` comments dropped: ci.yaml's dispatch job,
-# which installs it, and .github/workflows/ci-caches.yaml's apt-debs job, which downloads the same
-# list on a push to main to fill the ~/apt-archives cache entry that job restores. This file holds
+# Two readers take this file with blank lines and `#` comments dropped:
+# .github/scripts/playwright-install.sh, which the "Install the lane's Playwright browsers" step
+# of .github/workflows/dispatch-browser.yaml's shard job and of its alone job both run to install
+# it, and .github/workflows/ci-caches.yaml's apt-debs job, which downloads the same list on a push
+# to main to fill the ~/apt-archives cache entry those two jobs restore. This file holds
 # Playwright's list and nothing else, and each of the two writes gstreamer1.0-tools itself beside
-# it, so what holds their two sets together is this file plus that one name in each workflow.
+# it, so what holds their two sets together is this file plus that one name in each reader.
 fonts-freefont-ttf
 fonts-ipafont-gothic
 fonts-liberation

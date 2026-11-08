@@ -212,6 +212,26 @@ jobs:
       - name: Test the main bypass check's decision
         run: .github/scripts/main-bypass-check.test.sh
 
+      # The attempt selection dispatch-browser.yaml's merge job runs over the legs' blob
+      # artifacts. A run holds every attempt's artifacts, so the newest of each leg has to be
+      # chosen or a re-run is judged on the attempt it replaced; these are the assertions that
+      # hold that, and they belong here beside ci-ok's, which choose an attempt the same way.
+      - name: Test the browser lane's blob attempt selection
+        run: .github/scripts/dispatch-browser-latest-blobs.test.sh
+
+      # The memory and CPU sampler dispatch-browser.yaml's two browser steps run, over fixture
+      # sample files: its two readings are pure functions of those files, so the numbers and the
+      # notice titles are held here, where no browser and no runner are needed.
+      - name: Test the browser lane's memory and CPU sampler
+        run: .github/scripts/dispatch-browser-samples.test.sh
+
+      # The apt archive cache key dispatch-browser.yaml's two browser jobs restore under and
+      # ci-caches.yaml's apt-debs job fills under, over fixture checkouts: a key that changes
+      # misses every entry saved under the old one, so the whole string and the refusals that
+      # keep it from naming nothing are held here.
+      - name: Test the apt archive cache key
+        run: .github/scripts/apt-archive-cache-key.test.sh
+
       - name: Test the race memory sampler
         run: .github/scripts/race_memory.test.sh
 

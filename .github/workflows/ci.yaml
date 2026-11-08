@@ -43,7 +43,7 @@ name: CI
 # nothing about it, and a gate in
 # .github/scripts/ci_job_reads.py. An output an event must force is written in `changes`' outputs
 # rather than left to its filter, as every output's workflow_dispatch case is, and so is one an
-# event must hold back, as the nine slow suites' pull-request case is (the comment on them
+# event must hold back, as the eight slow suites' pull-request case is (the comment on them
 # below). The ci-filters job's .github/scripts/check-ci-filters.sh holds the filter to that gate,
 # CI_OK_SELECTED_BY to the `if:`s, the report step to every job, the ci-ok job's `needs:` to
 # every job of the file but the exempt ones, and the re-run term to every job but `ci-ok` and
@@ -56,10 +56,10 @@ name: CI
 # actions/cache/restore: go-daemon (typecheck, test and pi-legion), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
-# listener, and dispatch, dispatch-browser-multiprocess, envoy-go-race-docs and
-# envoy-go-docs-finalizers), go-envoy-test (envoy-go alone: it builds the test binary of every
-# package of the envoy module, a set no other job builds), go-envoy-infra (envoy-infra-go) and
-# go-notices (lint's notices step). Every family but go-docs is filled by
+# listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the shard, alone and
+# multiprocess jobs of dispatch-browser.yaml), go-envoy-test (envoy-go alone: it builds the test
+# binary of every package of the envoy module, a set no other job builds), go-envoy-infra
+# (envoy-infra-go) and go-notices (lint's notices step). Every family but go-docs is filled by
 # .github/workflows/ci-caches.yaml, which builds those sets on a push to main and saves them;
 # go-docs stays with docs-pages.yaml, which saves it on that same push. Each family keeps one
 # entry, keyed on the Go version its job's setup-go installed, so it is
@@ -68,10 +68,11 @@ name: CI
 # go.sum files left a whole entry, up to a gigabyte, per change for seven days. The fallback by
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
-# older Go built, and no run here saves any more. Beside the Go families, dispatch restores the
-# Playwright browsers of the version bun.lock pins, which ci-caches.yaml's browsers job fills on
-# that same push. setup-bun reads and writes its cache only on main (.github/actions/setup-bun),
-# which of this workflow's events is the dispatched run alone.
+# older Go built, and no run here saves any more. Beside the Go families, dispatch-browser.yaml's
+# shard and alone jobs restore the Playwright browsers of the version bun.lock pins, which
+# ci-caches.yaml's browsers job fills on that same push. setup-bun reads and writes its cache
+# only on main (.github/actions/setup-bun), which of this workflow's events is the dispatched
+# run alone.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts
@@ -137,9 +138,8 @@ env:
       "pi-shared": "pi_shared",
       "pi-envoy": "pi_envoy",
       "pi-legion": "pi_legion",
-      "dispatch": "dispatch",
       "dispatch-ui": "dispatch_ui",
-      "dispatch-browser-multiprocess": "dispatch_browser_multiprocess",
+      "dispatch-browser": "dispatch_browser",
       "claude-envoy": "claude_envoy",
       "envoy-go": "envoy_go",
       "envoy-go-checks": "envoy_go_checks",
@@ -236,7 +236,17 @@ jobs:
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_envoy }}
       pi_legion: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_legion }}
-      # The nine slow suites, whose runner time dwarfs every other job's. The merge queue runs
+      # The dashboard's and the proof editor's fast checks: no `full-ci` term, only the
+      # dispatched one above, so they come back on every push.
+      dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
+      # The browser suite, ungated: a pull request that changes what it reads runs it, because
+      # the dispatch-browser job below then runs the cheap `pull-request` lane, the two projects
+      # a pull request is held to. The `full-ci` label no longer decides whether this suite runs,
+      # only which lane it runs: that job's `lane:` input reads the label, and the comment there
+      # says what each event gets.
+      dispatch_browser: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser }}
+      claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
+      # The eight slow suites, whose runner time dwarfs every other job's. The merge queue runs
       # them on the tree the change lands as, and that is where their result normally comes from;
       # a pull request runs them only when it carries the label `full-ci`. Each is false on a
       # pull-request run without that label, so the skip is one `changes` chose: ci-ok reads it as
@@ -245,13 +255,6 @@ jobs:
       # reopen or ready-for-review, not when it is added: this workflow takes no `labeled`
       # trigger, which would start a run that joins the concurrency group above and cancels the
       # pull request's run in progress.
-      dispatch: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch || 'false' }}
-      # The dashboard's and the proof editor's fast checks, split out of `dispatch` so they come
-      # back on every push: no `full-ci` term, only the dispatched one above.
-      dispatch_ui: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_ui }}
-      dispatch_browser_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.dispatch_browser_multiprocess }}
-      claude_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.claude_envoy }}
-      # A slow suite, gated as the comment above `dispatch` says.
       envoy_go: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go || 'false' }}
       # envoy-go's fast half (the format and generated-code checks, the shell-script tests and
       # the build of the envoy commands), split out so it comes back on every push: no `full-ci`
@@ -261,7 +264,7 @@ jobs:
       # The checks whose subject is text, in a job with no database: no `full-ci` term, only
       # the dispatched one above, since it is one of the cheapest jobs of the file.
       text_checks: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.text_checks }}
-      # Six slow suites, gated as the comment above `dispatch` says.
+      # Six slow suites, gated as the comment above `envoy_go` says.
       envoy_go_race: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race || 'false' }}
       envoy_go_race_api: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_api || 'false' }}
       envoy_go_race_docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_go_race_docs || 'false' }}
@@ -269,7 +272,7 @@ jobs:
       dispatch_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.dispatch_multiprocess || 'false' }}
       listener_server_change: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.listener_server_change }}
       broker_multiprocess: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_multiprocess }}
-      # A slow suite, gated as the comment above `dispatch` says.
+      # A slow suite, gated as the comment above `envoy_go` says.
       envoy_smoke: ${{ github.event_name == 'workflow_dispatch' && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && steps.filter.outputs.envoy_smoke || 'false' }}
       envoy_e2e_local: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_e2e_local }}
       envoy_session_stall: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_session_stall }}
@@ -277,8 +280,8 @@ jobs:
       ci_filters: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_filters }}
       ci_images: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.ci_images }}
       # The paths filter's own verdict for every filter, before the `full-ci` term above rewrites
-      # the eight outputs the nine slow suites run behind. On a pull request without that label
-      # each of those eight is `false` whether its paths matched or not, so a reader of the
+      # the seven outputs the eight slow suites run behind. On a pull request without that
+      # label each of those seven is `false` whether its paths matched or not, so a reader of the
       # outputs alone cannot tell "the filter said no" from "the label is absent"; with this
       # beside them ci-ok's report tells the two apart and says which
       # (.github/scripts/ci-ok.jq's `selection`). It gates no job and needs no plumbing of its
@@ -1112,31 +1115,83 @@ jobs:
               # scripts/skill-scenarios/rig.test.ts:13,129,1009 and rig.sh:215.
               - 'scripts/e2e/lib/**'
               - *omp_install
-            # What both browser lanes read, named through this anchor by the two filters below:
-            # the whole of the two-process job's list but its own workflow file, and the half of
-            # the one-process job's inputs that job shares. The Dispatch server both lanes serve
-            # (e2e/run-server.sh:135) and the dev OIDC issuer the sign-in lane signs the browser
-            # in at (e2e/run-signin-issuer.sh:34 builds it), on the socket
-            # scripts/e2e/lib/held-port.py holds (run-server.sh:37). Each lane's own
-            # ci-job-*.yaml file stays outside the anchor: it is a file that lane's job reads
-            # and the other's does not.
-            dispatch_browser_shared: &dispatch_browser_shared
+            # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
+            # holds: the shards, the three `-alone` projects, the two-process job and the merge
+            # job. Every entry is something a browser row reads: the dashboard and its contracts,
+            # the Dispatch server its harness builds, and the two workflow files that hold the
+            # steps. The retired `dispatch` job's filter also held three fixture sets whose only
+            # readers are the dashboard's and the proof editor's unit tests, and they are not here:
+            # dispatch-ui's filter names all three, and with this output ungated on a pull request
+            # they would start four shard machines and the merge job for a fixture-only change.
+            # The dispatch_browser gate in .github/scripts/ci_job_reads.py says what this suite
+            # reads, and check-ci-filters.sh holds this filter to that gate - it refuses a filter
+            # that misses a read, never one that is too wide, so a path is in this list because a
+            # browser row reads it and for no other reason.
+            dispatch_browser:
               - *ci_router
               - *bun_install
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
+              # The Dispatch server e2e/run-server.sh builds (run-server.sh:340), on the socket
+              # scripts/e2e/lib/held-port.py holds (run-server.sh:80).
               - *go_workspace
               - *dispatch_server
               - 'scripts/e2e/lib/held-port.py'
               # The SPA build writes dist/THIRD_PARTY_NOTICES.txt (web/vite.config.ts:11).
               - 'scripts/third-party-notices.ts'
-              # The dev OIDC issuer, and the packages `go list -deps ./cmd/dev-oidc-issuer` lists
-              # beyond the Dispatch server's. The rest of internal/broker belongs to the real
-              # secrets broker, which only the one-process job builds, so it is in that filter.
+              # The workflow that holds every browser step, which this job reads as its own
+              # definition - the place every other job of this file gives to its own
+              # ci-job-<id>.yaml, so a change to it selects this job alone. An unlabelled pull
+              # request runs the pull-request lane, the two projects a change is held to; a pull
+              # request carrying `full-ci`, the merge group and a dispatch run the full lane,
+              # every project and the two-process job, which is the lane the nightly
+              # (.github/workflows/dispatch-browser-nightly.yaml) calls. So a worker can put the
+              # whole suite on a pull request with the label, and the group is where a change to
+              # that file meets it before main anyway. The nightly itself is not in this list:
+              # no step of this suite reads it, which rule 9's second direction refuses, since
+              # four shard machines and the merge job would start over a change no row sees. It
+              # is a read of the ci_filters gate instead, so a change to it re-runs this check,
+              # which holds this filter and that gate together.
+              - '.github/workflows/dispatch-browser.yaml'
+              # The install both browser jobs run, which reads the pinned apt list and ends with
+              # the check that the list has not fallen behind Playwright; the key their apt
+              # archive cache is read and written under, which their "Compute the apt archive
+              # cache key" steps call; the memory and CPU sampler their browser steps start and
+              # read back; and the script the merge job runs to take each leg's newest attempt.
+              - '.github/scripts/playwright-install.sh'
+              - '.github/playwright-apt-packages.txt'
+              - '.github/scripts/playwright-deps-current.sh'
+              - '.github/scripts/apt-archive-cache-key.sh'
+              - '.github/scripts/dispatch-browser-samples.sh'
+              - '.github/scripts/dispatch-browser-latest-blobs.sh'
+              # e2e/cli-body-cap.e2e.ts:52,57,65 run envoy-client's dispatch CLI, spawned as its
+              # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
+              # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
+              # (ci_job_reads.py's envoy_client_dep).
+              - 'packages/envoy-client/src/**'
+              - 'packages/envoy-client/bin/dispatch.ts'
+              - 'packages/broker-client/**'
+              # The file store image: the pull step names its declaration to the pull-test-images
+              # action, and the S3 step reads the same declaration for its docker run.
+              - 'packages/envoy/internal/tests3/seaweedfs.go'
+              - '.github/actions/pull-test-images/**'
+              # The real secrets broker e2e/broker-approval.e2e.ts approves a request on, the dev
+              # OIDC issuer it trusts, and the seeding step that logs its service in and enrols its
+              # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
+              # ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
+              # Dispatch server's, which e2e/run-broker.sh:95 builds in one go build.
+              - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
+              - 'packages/envoy/internal/broker/api/*'
+              # The approval page's own files, its embedded templates and stylesheet included.
+              - 'packages/envoy/internal/broker/approval/**'
+              - 'packages/envoy/internal/broker/brokertest/*'
+              - 'packages/envoy/internal/broker/brokertest/requestseed/*'
+              - 'packages/envoy/internal/broker/config/*'
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
+              - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
               - 'packages/envoy/internal/broker/oauthstore/*'
@@ -1144,61 +1199,18 @@ jobs:
               - 'packages/envoy/internal/broker/policy/**'
               - 'packages/envoy/internal/broker/proof/*'
               - 'packages/envoy/internal/broker/record/*'
-              - 'packages/envoy/internal/broker/secrets/*'
-              - 'packages/envoy/internal/broker/store/**'
-              - 'packages/envoy/internal/oidc/oidctest/*'
-              - 'packages/envoy/internal/ratelimit/*'
-            # The browser suite's two-process mode (dispatch-browser-multiprocess).
-            dispatch_browser_multiprocess:
-              - *dispatch_browser_shared
-              - '.github/workflows/ci-job-dispatch-browser-multiprocess.yaml'
-            # The browser suite's one-process mode (dispatch): everything both lanes read, and
-            # what only this one does - Playwright's own install, the file store its
-            # upload specs need, the dispatch CLI one spec runs, and the real secrets broker
-            # another approves a request on. The live and decision-block fixtures and going's
-            # golden are in neither: the unit tests that read them are dispatch_ui's, and no
-            # browser lane runs one.
-            dispatch:
-              - *dispatch_browser_shared
-              - '.github/workflows/ci-job-dispatch.yaml'
-              # The install step runs it, so a change to it must re-run this job.
-              - '.github/scripts/playwright-deps-current.sh'
-              # The apt list the install step installs, so a change to it must re-run this job.
-              - '.github/playwright-apt-packages.txt'
-              # The key step runs it for the apt archive cache's key, so a change to it must
-              # re-run this job.
-              - '.github/scripts/apt-archive-cache-key.sh'
-              # e2e/cli-body-cap.e2e.ts:27 runs envoy-client's dispatch CLI.
-              - 'packages/envoy-client/src/**'
-              # And @legion/broker-client with it, which that CLI's own closure holds
-              # (ci_job_reads.py's envoy_client_dep).
-              - 'packages/broker-client/**'
-              - 'packages/envoy-client/bin/dispatch.ts'
-              # The file store image: the pull step names its declaration to the pull-test-images
-              # action, and the S3 step reads the same declaration for its docker run.
-              - 'packages/envoy/internal/tests3/seaweedfs.go'
-              - '.github/actions/pull-test-images/**'
-              # The real secrets broker e2e/broker-approval.e2e.ts approves a request on, and the
-              # seeding step that logs its service in and enrols its pods: the packages
-              # `go list -deps ./cmd/broker ./internal/broker/brokertest/requestseed` lists in
-              # packages/envoy beyond the two commands above, which e2e/run-broker.sh:95 builds in
-              # one go build with them.
-              - 'packages/envoy/cmd/broker/*'
-              - 'packages/envoy/internal/broker/api/*'
-              # The approval page's own files, its embedded templates and stylesheet included.
-              - 'packages/envoy/internal/broker/approval/**'
-              - 'packages/envoy/internal/broker/brokertest/*'
-              - 'packages/envoy/internal/broker/brokertest/requestseed/*'
-              - 'packages/envoy/internal/broker/config/*'
-              - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/requests/*'
               - 'packages/envoy/internal/broker/reread/*'
+              - 'packages/envoy/internal/broker/secrets/*'
+              - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
+              - 'packages/envoy/internal/oidc/oidctest/*'
+              - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
-            # The dashboard's and the proof editor's fast checks (dispatch-ui), split out of the
-            # dispatch filter above: what their lint, typecheck, unit tests and the dashboard's
-            # build and asset checks read. No Go and no Dispatch server: the job runs neither.
+            # The dashboard's and the proof editor's fast checks (dispatch-ui): what their lint,
+            # typecheck, unit tests and the dashboard's build and asset checks read. No Go and no
+            # Dispatch server: the job runs neither.
             dispatch_ui:
               - *ci_router
               - '.github/workflows/ci-job-dispatch-ui.yaml'
@@ -2131,10 +2143,11 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks,
-  # split out of the `dispatch` job below: that job's browser suite is one of the nine slow
-  # suites, which run in the merge queue and on a pull request labelled `full-ci`, while these
-  # checks must come back on every push. No Postgres service and no Go, but contracts is built
+  # The dashboard's and the proof editor's lint, typecheck, unit tests, build and asset checks.
+  # They were split out of the browser suite (dispatch-browser below), whose full lane - the one
+  # the merge queue, the nightly and a pull request labelled `full-ci` run - is as slow as the
+  # eight suites that label holds back, while these checks must come back on every push.
+  # No Postgres service and no Go, but contracts is built
   # before the suites: one case of the dashboard's test run spawns Playwright, whose own
   # resolution reads contracts' built dist/ (the step below says what failed without it). tsc and
   # bun read @legion/contracts through the workspace's "bun" export condition and the dashboard's
@@ -2150,33 +2163,42 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
-  # The browser suite, one of the nine slow suites: the dashboard's lint, typecheck, unit tests,
-  # build and asset checks are dispatch-ui's above.
-  dispatch:
+  # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
+  # holds: the shard legs, the three `-alone` projects a machine each, the two-process job and
+  # the merge job that joins their reports into one and posts this job's ci-ok report.
+  #
+  # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
+  # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
+  # proves those two rows and no more - it is not the run that proves the suite before main.
+  # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
+  # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
+  # group is where a change meets the whole suite before it lands, and the nightly
+  # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
+  # lane, from main) runs it again on main's tip.
+  #
+  # One input decides that: the called workflow reads `lane` for the projects each job runs and
+  # for the browsers each one installs, so nothing here chooses the engines a second time.
+  #
+  # The matrix is in the called workflow and cannot be here. Every leg of a matrix shares one
+  # job id, and .github/actions/ci-ok-report posts the failing ci-ok of a merge-group run from
+  # the job whose own result decides that run, as that job's last step: legs written here would
+  # each be `dispatch-browser`, so a decided group would take one such post per leg that failed,
+  # each posting under a job id several legs answer to. A called workflow's legs are jobs of
+  # that workflow, and one job of it - the merge job, which needs every other - posts the single
+  # report this job id gets.
+  #
+  # No timeout-minutes: GitHub's keywords for a job that calls a reusable workflow leave it out.
+  # Each job of dispatch-browser.yaml carries its own limit.
+  dispatch-browser:
     needs: changes
-    if: needs.changes.outputs.dispatch == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    permissions:
-      contents: read
-      actions: read
-      checks: write
-    uses: ./.github/workflows/ci-job-dispatch.yaml
+    if: needs.changes.outputs.dispatch_browser == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    uses: ./.github/workflows/dispatch-browser.yaml
     with:
-      ci-ok-changes: ${{ toJSON(needs.changes) }}
-
-  # The browser suite's two-process mode (packages/dispatch/e2e/harness-processes.ts): two
-  # envoy-dispatch processes against one Postgres, behind e2e/round-robin-proxy.ts, B serving a
-  # second build of the dashboard, which is what a rolling release puts in front of a browser. It
-  # runs only the *.multiprocess.e2e.ts specs, in Chromium, in a job of its own so the default
-  # suite's job does not wait on a second Vite build and two more servers.
-  dispatch-browser-multiprocess:
-    needs: changes
-    if: needs.changes.outputs.dispatch_browser_multiprocess == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
-    permissions:
-      contents: read
-      actions: read
-      checks: write
-    uses: ./.github/workflows/ci-job-dispatch-browser-multiprocess.yaml
-    with:
+      # An unlabelled pull request gets the two-project `pull-request` lane; a pull request
+      # carrying `full-ci`, and every other event, gets the full lane. That is what lets a worker
+      # recheck a slow-suite failure on a pull request: the label picks the lane, while the
+      # `dispatch_browser` output above runs the suite either way.
+      lane: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci')) && 'full' || 'pull-request' }}
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
   claude-envoy:
@@ -2193,7 +2215,7 @@ jobs:
   # envoy-go's fast half: the Go format check, the two generated-code checks, the seven
   # shell-script tests and the build and pack of the envoy commands. The slow half below (the
   # module's unit tests, the container-backed NATS matrix and the integration suite) is one of
-  # the nine slow suites, which run in the merge queue and on a pull request labelled `full-ci`,
+  # the eight slow suites, which run in the merge queue and on a pull request labelled `full-ci`,
   # while these checks must come back on every push. No Postgres service: nothing here opens a
   # database. It restores go-envoy rather than go-envoy-test, which is the slow half's family
   # alone (the test binary of every package of the envoy module).
@@ -2788,8 +2810,7 @@ jobs:
       - pi-envoy
       - pi-legion
       - dispatch-ui
-      - dispatch
-      - dispatch-browser-multiprocess
+      - dispatch-browser
       - claude-envoy
       - envoy-go-checks
       - envoy-go

@@ -121,18 +121,22 @@ jobs:
       - run: docker pull $REGISTRY@$NATS
 YAML
   # The three shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries to a
-  # command each, as the check demands. Two of them are in a called file of a job, where
-  # ci.yaml's job of that id holds the gate and the file the steps.
-  cat > "$root/.github/workflows/ci-job-dispatch.yaml" <<YAML
-name: CI job dispatch
-on: [workflow_call]
+  # command each, as the check demands. Two of them are outside ci.yaml: one in the browser
+  # suite's own workflow, whose shard job starts the file store from the digest a Go constant
+  # names - which is why the fixture below writes that job and no other, and that step was
+  # ci.yaml's dispatch job's until the suite moved out of it - and one in a called file of a
+  # job, where ci.yaml's job of that id holds the gate and the file the steps.
+  cat > "$root/.github/workflows/dispatch-browser.yaml" <<YAML
+name: Dispatch browser suite
+on:
+  workflow_call:
 jobs:
-  dispatch:
+  shard:
     runs-on: ubuntu-24.04
     steps:
       - run: |
           image=\$(sed -n 's/^const Image = "\\(.*\\)"\$/\\1/p' packages/envoy/internal/tests3/seaweedfs.go)
-          docker pull "\$image"
+          docker run -d --name dispatch-e2e-files "\$image" server -s3
 YAML
   cat > "$root/.github/workflows/ci-job-envoy-smoke.yaml" <<YAML
 name: CI job envoy-smoke

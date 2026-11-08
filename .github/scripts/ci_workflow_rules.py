@@ -182,19 +182,40 @@ def path_lines(value) -> list:
     return [line.strip() for line in str(value).splitlines() if line.strip()]
 
 
-def cache_steps(document: dict, action: str) -> list:
-    """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:)."""
-    return [(job_id, cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {})
-            for job_id, job in (document.get("jobs") or {}).items()
+def job_cache_steps(job: dict, action: str) -> list:
+    """Every actions/cache/<action> step of one job, as (its family, its with:)."""
+    return [(cache_family(str((step.get("with") or {}).get("key", ""))), step.get("with") or {})
             for step in ((job or {}).get("steps") or [])
             if str((step or {}).get("uses", "")).split("@")[0] == f"actions/cache/{action}"]
 
 
+def cache_steps(document: dict, action: str) -> list:
+    """Every actions/cache/<action> step of a workflow, as (its job, its family, its with:)."""
+    return [(job_id, family, given)
+            for job_id, job in (document.get("jobs") or {}).items()
+            for family, given in job_cache_steps(job or {}, action)]
+
+
+def restores_of(documents: dict) -> dict:
+    """Every restore of ci.yaml's run, as family -> [(where it is, its with:)]. Where a restore
+    can be is where its job's steps are, which is the document set the engine loads: ci.yaml,
+    and each local workflow one of its jobs calls - dispatch-browser.yaml's shard and alone jobs
+    restore the browser and apt archive families for ci.yaml's dispatch-browser job - so a save
+    paired against ci.yaml alone would read as a fill nobody wants. The set holds each called
+    file once however many of ci.yaml's jobs name it, so each restore is taken once."""
+    restores = defaultdict(list)
+    for path, document in documents.items():
+        for job_id, family, given in cache_steps(document, "restore"):
+            restores[family].append((f"job {job_id} of {path}", given))
+    return restores
+
+
 def check_cache_round_trip(documents: dict, problems: list) -> None:
-    """ci-caches.yaml fills on a push to main the entries ci.yaml's jobs restore, so each family's
-    save must carry exactly the key and the paths its restores name: a key or a path that drifts
-    apart makes every restore miss, and nothing fails - each job just rebuilds from nothing what
-    the fill already built. A family is the key's text up to its first expression, and it is what
+    """ci-caches.yaml fills on a push to main the entries ci.yaml's run restores - its own jobs'
+    restores, and those of the local workflows they call - so each family's save must carry
+    exactly the key and the paths its restores name: a key or a path that drifts apart makes
+    every restore miss, and nothing fails - each job just rebuilds from nothing what the fill
+    already built. A family is the key's text up to its first expression, and it is what
     pairs a save with the restores to hold it to; the keys are compared as text and the paths as
     the ordered lists of lines they name. A family ci.yaml restores that this workflow does not
     save is no fault: docs-pages.yaml saves go-docs. The other way round is one, a family nothing
@@ -210,10 +231,7 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
     if not (REPO / CACHE_WORKFLOW).is_file():
         return
     caches = yaml.safe_load((REPO / CACHE_WORKFLOW).read_text()) or {}
-    restores = defaultdict(list)
-    for path, document in documents.items():
-        for job_id, family, given in cache_steps(document, "restore"):
-            restores[family].append((path, job_id, given))
+    restores = restores_of(documents)
     for job_id, family, given in cache_steps(caches, "save"):
         key, paths = str(given.get("key", "")).rstrip(), path_lines(given.get("path", ""))
         if family not in restores:
@@ -222,17 +240,17 @@ def check_cache_round_trip(documents: dict, problems: list) -> None:
                             f"exists to fill what {WORKFLOW} restores, so a family nothing restores is a fill "
                             f"nobody reads: restore it there, or drop the save")
             continue
-        for restore_path, restore_job, restored in restores[family]:
+        for restore_where, restored in restores[family]:
             restored_key = str(restored.get("key", "")).rstrip()
             restored_paths = path_lines(restored.get("path", ""))
             if key != restored_key:
                 problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves family {family} under key "
-                                f"`{key}`, but job {restore_job} of {restore_path} restores it under "
+                                f"`{key}`, but {restore_where} restores it under "
                                 f"`{restored_key}`: a restore whose key is not the save's "
                                 f"misses every time, and nothing fails - the job rebuilds from nothing instead")
             if paths != restored_paths:
                 problems.append(f"::error file={CACHE_WORKFLOW}::job {job_id} saves family {family} from "
-                                f"{', '.join(paths) or '(no path)'}, but job {restore_job} of {restore_path} restores "
+                                f"{', '.join(paths) or '(no path)'}, but {restore_where} restores "
                                 f"it into {', '.join(restored_paths) or '(no path)'}: the "
                                 f"entry then holds other directories than the job reads, and the job rebuilds what "
                                 f"the fill already built")

@@ -12,7 +12,7 @@
 # smoke-gate, for the cases that prove the list is read rather than hard-coded. Some cases pass
 # another event than pull_request, which is what
 # PULL_REQUEST_ONLY turns on; the script takes the event as a string and knows no workflow's
-# triggers. docs also stands for one of the nine slow suites, whose output a pull request
+# triggers. docs also stands for one of the eight slow suites, whose output a pull request
 # without the label `full-ci` holds false whatever the paths filter answered: three cases hand
 # the run the filter's own verdicts beside the outputs (with_verdicts below) and hold the report
 # to telling that skip from a filter miss.
@@ -54,9 +54,9 @@ selects_docs='{"typecheck": "true", "envoy_client": "false", "worker_image": "tr
 push_selects='{"typecheck": "true", "envoy_client": "false", "worker_image": "true", "docs": "false"}'
 
 # `changes` publishes the paths filter's own verdict for every filter beside its outputs
-# (ci.yaml's changes job, filter_verdicts), as the JSON text toJSON() gives. The nine slow
+# (ci.yaml's changes job, filter_verdicts), as the JSON text toJSON() gives. The eight slow
 # suites' outputs carry a `full-ci` term in front of that verdict, so on a pull request without
-# the label the output is false whatever the filter said; docs stands for one of the nine below.
+# the label the output is false whatever the filter said; docs stands for one of the eight below.
 with_verdicts() { # with_verdicts <outputs> <the filter's own verdicts>
   jq -nc --argjson outputs "$1" --argjson verdicts "$2" '$outputs + {filter_verdicts: ($verdicts | tojson)}'
 }
