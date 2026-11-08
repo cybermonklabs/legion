@@ -379,6 +379,34 @@ func TestARootsDirectReplyIsReferencedOnce(t *testing.T) {
 	}
 }
 
+// The same read one comment deeper. Dispatch flattens a nested reply onto the head of its
+// thread, so the leaf's reply_to is the root and its answers is the middle comment: an
+// unfiltered read of what references the root lists one replies_to edge per reply and no
+// answers edge at all, each reply's answers edge folded away because its reply_to is that same
+// root (refs.foldsAnswers). TestARootsDirectReplyIsReferencedOnce is the two-deep control.
+func TestARootsUnfilteredReadListsEachReplyOnceAndNoAnswersEdge(t *testing.T) {
+	handler := newTestHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "A three-deep thread", "A spec")
+	root := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Root."}, "alice")
+	middle := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Middle.", "reply_to": root.ID}, "bob")
+	leaf := createThreadComment(t, handler, issue.Key, map[string]any{"body": "Leaf.", "reply_to": middle.ID}, "alice")
+	rootRef := "dispatch://" + issue.Key + "/comment/" + root.ID
+	edges := readGraph(t, handler, url.Values{"to": {rootRef}}).Edges
+	if len(edges) != 2 {
+		t.Fatalf("the root's references = %#v, want the middle comment's and the leaf's replies_to edges", edges)
+	}
+	unseen := map[string]bool{middle.ID: true, leaf.ID: true}
+	for _, edge := range edges {
+		if edge.Kind != "replies_to" {
+			t.Fatalf("the root's references hold a %s edge to %s, want replies_to edges alone", edge.Kind, edge.Node.ID)
+		}
+		if !unseen[edge.Node.ID] {
+			t.Fatalf("the root's references = %#v, want one edge from the middle comment and one from the leaf", edges)
+		}
+		delete(unseen, edge.Node.ID)
+	}
+}
+
 func TestANestedReplyIsReferencedByTheCommentItAnswers(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "The direct parent", "A spec")

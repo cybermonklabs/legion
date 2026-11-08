@@ -1819,6 +1819,8 @@ EXEMPTIONS = [
               "Pre-pull the NATS image the credential tests run", ("docker pull",), GHCR_WHY),
     Exemption(".github/workflows/ci.yaml", "download-retry-images",
               "Pull every base image the three builds read", ("docker pull",), GHCR_WHY),
+    Exemption(".github/workflows/dispatch-browser.yaml", "visual",
+              "Pull the pinned Playwright copy", ("docker pull",), GHCR_WHY),
     # A script site is read with no job and no step, so this entry names neither: the call at the
     # `for path in scripts:` loop below passes job=None and step=None.
     Exemption(".github/scripts/playwright-install.sh", None, None,

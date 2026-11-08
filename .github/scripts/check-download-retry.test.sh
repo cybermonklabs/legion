@@ -115,6 +115,21 @@ jobs:
           retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
 YAML
 
+  # Exception (a)'s fourth site: the browser lane's visual job pulls the pinned Playwright copy
+  # from the same package. The entry naming it is in EXEMPTIONS, and an entry matching nothing
+  # fails this check, so every fixture carries the site its entry names.
+  cat > "$root/.github/workflows/dispatch-browser.yaml" <<YAML
+name: Dispatch browser
+on:
+  workflow_call:
+jobs:
+  visual:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pull the pinned Playwright copy
+        run: docker pull ghcr.io/example/legion/ci@$DIGEST
+YAML
+
   # Exception (c): the apt phase of that step, which is a script of its own since
   # cybermonklabs/legion#2891 — its attempts() loop and the apt-get calls the loop runs. The
   # update here carries no `-o APT::Update::Error-Mode=any`, so a fixture that passes is a
@@ -298,7 +313,7 @@ root=$(fixture exceptions)
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says what it read" "$(contains "$out" 'every network fetch in CI retries at the floor')"
-check "counts the sites the exceptions name" "$(contains "$out" '6 site(s) the exceptions name')"
+check "counts the sites the exceptions name" "$(contains "$out" '7 site(s) the exceptions name')"
 check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
 
 echo "case: a workflow with a bare curl of a release asset"

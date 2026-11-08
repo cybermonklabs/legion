@@ -1092,7 +1092,7 @@ func TestCreateRequestWithInvalidSessionIDIs400SessionIDInput(t *testing.T) {
 func TestEveryCallerDecidingASecretRequestGetsDecideOnBrokerPage(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking who may decide this request", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
@@ -1172,7 +1172,7 @@ func TestEveryAnswerNamingAPendingSecretRequestLinksItsPage(t *testing.T) {
 	request := func(names ...string) wireCreateRequestResponse {
 		t.Helper()
 		status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
-			map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "", names...), "session_id": nil})
+			map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "checking which answers link the record's page", names...), "session_id": nil})
 		if status != http.StatusOK {
 			t.Fatalf("POST /v1/requests %v = %d: %s", names, status, body)
 		}
@@ -1247,7 +1247,7 @@ func TestTheRecordReadRouteIsGone(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
-		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY"), "session_id": nil})
+		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "checking the record read route is gone", "DEEL_API_KEY"), "session_id": nil})
 	recordID := *decode[wireCreateRequestResponse](t, body).RecordID
 
 	status, body := ts.ui(t, http.MethodGet, "/v1/credential-requests/"+recordID, nil)
@@ -1323,7 +1323,7 @@ func TestRecordCancelledWithNoEventLeavesThePendingList(t *testing.T) {
 func TestCancelRequestThenCancelAgainIsTerminal(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking a session cancels its own request once", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
@@ -1352,7 +1352,7 @@ func TestCancelRequestThenCancelAgainIsTerminal(t *testing.T) {
 func TestRevokeGrantBySession(t *testing.T) {
 	ts := newTestServer(t)
 	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), "sjawhar")
-	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "", "DEEL_API_KEY")
+	compact := signAgentSecretRequest(t, sessionKey, ts.URL, "checking a session revokes its own grant", "DEEL_API_KEY")
 	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
 		map[string]any{"request": compact, "session_id": nil})
 	created := decode[wireCreateRequestResponse](t, body)
