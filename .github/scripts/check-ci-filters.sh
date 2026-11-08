@@ -346,6 +346,16 @@
 # repository may import. The first-party sets matched a run over a full module cache file for
 # file when this check was written.
 #
+# One thing that empty cache cannot hold is the Go toolchain itself. Where the installed go is
+# older than the `go` directive of the module being listed, GOTOOLCHAIN=auto satisfies the
+# directive by fetching the pinned toolchain into GOMODCACHE, so every go command of this check
+# would try to fetch it into the empty one and GOPROXY=off would refuse it: `toolchain not
+# available` on each, and every closure unknown (1,243 reported problems on an agent pod whose
+# go was go1.27.1 against this repository's go1.27.3). CI never sees it, since setup-go installs
+# the pinned version. The engine therefore resolves the toolchain first, once per module
+# directory and under this machine's own GOMODCACHE and GOPROXY (`go env GOROOT`), and runs
+# every go command with that toolchain's own binary under GOTOOLCHAIN=local.
+#
 # EXCLUDED leaves worker_image to check-image-trigger-paths.sh, which proves it covers every file
 # its image build reads. envoy_smoke is a gate whose image inputs are that check's: this one holds
 # it to the job's go commands and other step reads. The RULES and the static reads are kept by

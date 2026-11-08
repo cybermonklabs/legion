@@ -197,10 +197,12 @@ class Session:
     """The go commands' environment and results. GOPROXY=off over an empty module cache: no
     download, no rewrite of a go.work.sum, and the same answer on a warm machine as on a cold
     runner. A third-party package then fails to load, which loses nothing first-party
-    (check-ci-filters.sh's header says why)."""
+    (check-ci-filters.sh's header says why). The toolchain is the exception that cache cannot
+    hold: `toolchain()` resolves it first, under the machine's own cache and proxy."""
 
     problems: list = field(default_factory=list)
     cache: dict = field(default_factory=dict)
+    toolchains: dict = field(default_factory=dict)
     tmp: str = ""
 
     def __post_init__(self):
@@ -208,12 +210,34 @@ class Session:
         atexit.register(shutil.rmtree, self.tmp, True)
         os.mkdir(f"{self.tmp}/modcache")
 
+    def toolchain(self, workdir: str) -> str:
+        """The go binary the module in `workdir` pins, resolved under the ambient environment.
+
+        GOTOOLCHAIN=auto satisfies a `go` directive above the installed go by fetching that
+        toolchain into GOMODCACHE, so the empty cache below would make every go command fetch it
+        again and GOPROXY=off refuse: `toolchain not available`, and every closure unknown. CI
+        never sees it, since setup-go installs the pinned version itself, but a developer's or an
+        agent's machine on an older go does. So the toolchain is resolved once per module
+        directory, with this machine's own GOMODCACHE and GOPROXY, and its own binary runs every
+        go command below under GOTOOLCHAIN=local: the empty cache then holds modules alone, and a
+        module pinning a toolchain this machine cannot resolve fails saying which go it wants
+        rather than which download it could not make.
+        """
+        if workdir not in self.toolchains:
+            root = subprocess.run(["go", "env", "GOROOT"], cwd=REPO / workdir,
+                                  capture_output=True, text=True).stdout.strip()
+            exe = Path(root) / "bin" / "go" if root else None
+            self.toolchains[workdir] = str(exe) if exe and exe.is_file() else "go"
+        return self.toolchains[workdir]
+
     def go(self, run_: Run, args: list) -> str:
-        env = dict(os.environ, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOFLAGS="", GOWORK="")
+        env = dict(os.environ, GOPROXY="off", GOMODCACHE=f"{self.tmp}/modcache", GOFLAGS="",
+                   GOWORK="", GOTOOLCHAIN="local")
         env.update(dict(run_.env))
         if run_.race:
             env["CGO_ENABLED"] = "1"  # -race needs cgo
-        result = subprocess.run(["go", *args], cwd=REPO / run_.workdir, env=env, capture_output=True, text=True)
+        result = subprocess.run([self.toolchain(run_.workdir), *args], cwd=REPO / run_.workdir,
+                                env=env, capture_output=True, text=True)
         if result.returncode != 0:
             self.problems.append(f"::error::in {run_.workdir}, go {' '.join(args)} failed, so the closure of "
                                  f"{run_.why} is unknown: {' '.join(result.stderr.split())[:500]}")
