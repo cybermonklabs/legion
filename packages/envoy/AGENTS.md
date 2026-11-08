@@ -288,11 +288,16 @@ Each item below names a task and where its code is, then notes on it.
   `POST /api/v1/issues/{key}/results` records one result against a `check` block of the issue's Verification document or of an ancestor's, as `check_results`, keeping the block's `changed_version` and `text_sha256` with it, and answers the pull-request body line it implies;
   `GET` lists each check of the issue's Verification document with every result recorded against it.
   A result's currency is computed at the read, never written by a push:
-  a `before_merge` result is `current` while its commit is the head of an `open` pull request, or the final head of a `merged` one, attributed to the check's own issue (`pull_request_heads`, which the GitHub intake and the reconcile keep), and the check's words are the ones it proved;
-  the issue a result was recorded on counts for nothing here, so a child's pull request never makes a result against a check above it `current`;
-  an `after_merge` result while the branch the check's issue's pull request merged into carries its commit, the repository's default branch where Dispatch holds no merge of it;
-  a `default_branch` result while the repository's default branch carries its commit, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
-  `unknown` when the check's issue resolves to no repository or the App cannot read it.
+
+  - a `before_merge` result is `current` while its commit is the head of an `open` pull request, or the final head of a `merged` one, attributed to the check's own issue (`pull_request_heads`, which the GitHub intake and the reconcile keep), and the check's words are the ones it proved;
+    the issue a result was recorded on counts for nothing here, so a child's pull request never makes a result against a check above it `current`;
+
+  - an `after_merge` result while the branch the check's issue's pull request merged into carries its commit, or the repository's default branch does — that default branch alone where Dispatch holds no merge of it;
+
+  - a `default_branch` result while the repository's default branch carries its commit, whatever branch it merged into (`branch_commits`, the App's answer cached: a yes for good, a no for five minutes);
+
+  - `unknown` when the check's issue resolves to no repository or the App cannot read it, and never for a base branch GitHub no longer holds, which answers that the commit is not on it and leaves the default branch to decide.
+
   A pull request is attributed to the first issue its five ranked sources name that resolves to the pull request's own repository, not to the first key they name (`attributionCandidates`, `attributionHeld` in `delivery/attribution.go`):
   a title naming another repository's issue first therefore does not cost the pull request its own, and a pull request no candidate of which resolves to its repository is attributed to nobody, as is one whose head branch is in another repository (`headInOwnRepository`).
   The hold is the server's own repository-resolution rule spliced into the statement that reads the candidates (`refs.IssueRepoTerms` through `attributionCandidatesQuery`), so an attribution can never disagree with the issue page;

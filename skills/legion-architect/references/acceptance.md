@@ -59,10 +59,11 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 A parent's own pull request proves each of its checks, so sign off a parent that has children
 only on an approved head that carries the merges of every child those checks need. Each
 check needs a current passing result at that head, or, for a check in another repository, at a
-commit on the branch that issue's pull request merged into — that repository's default branch
-where Dispatch knows of no merge of the issue, and, for a `default_branch` check, that default
-branch whatever branch the pull request merged into. A child records no result that proves a
-parent's check: a child's pull request never makes a parent check's result current, and a child
+commit on the branch that issue's pull request merged into or on that repository's default
+branch — that default branch alone where Dispatch knows of no merge of the issue — and, for a
+`default_branch` check, on that default branch whatever branch the pull request merged into.
+A child records no result that proves a parent's check: a child's pull request never makes a
+parent check's result current, and a child
 that carries part of a parent's requirement proves it with a check on the child's own
 Verification document whose `serves` names that requirement. Nothing in the tree builds on the parent's own merge, because that
 merge comes last: a child that waits for it waits forever, so work another child builds on is a

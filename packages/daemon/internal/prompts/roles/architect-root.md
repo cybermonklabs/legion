@@ -161,7 +161,8 @@ issue's own head: a result a child recorded against one of the root's checks pro
 the root, and a child that carries part of a root requirement proves that part with a check on
 the child's own Verification document whose `serves` names the requirement, which clears the
 root's coverage flag for it. The root's own checks are proven at the root's own head, or, for an
-`after_merge` check, on the branch the root's pull request merged into, in the root's last round.
+`after_merge` check, on the branch the root's pull request merged into or on the repository's
+default branch, in the root's last round.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
 name that gap in your acceptance comment and decide there, accepting the issue or sending it back
