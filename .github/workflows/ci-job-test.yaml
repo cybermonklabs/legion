@@ -181,6 +181,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_ts_filters_test: check-ts-filters.test.sh and what it tests."
         type: string
         required: true
+      go_test_step_expansion_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.go_test_step_expansion_test:
+          go-test-step-expansion.test.sh and what it tests.
+        type: string
+        required: true
 
 # A `|` between proxy entries makes a go command fall through to the next source after ANY error,
 # where a `,` falls through only after a 404 or a 410 (Go's module reference, "GOPROXY protocol").
@@ -448,6 +454,13 @@ jobs:
       - name: Test the TypeScript filter check
         if: inputs.check_ts_filters_test == 'true'
         run: .github/scripts/check-ts-filters.test.sh
+
+      # Beside the two checks above, and needing no Go either: every case is one line of text,
+      # read by the line reader of .github/scripts/go-test-step-expansion.py, whose own run
+      # compiles both Go modules and is run by hand rather than by any job.
+      - name: Test the go test step expansion
+        if: inputs.go_test_step_expansion_test == 'true'
+        run: .github/scripts/go-test-step-expansion.test.sh
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

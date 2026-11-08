@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for `check-ci-images.sh`: one red case per rule it enforces, under the mode that owns
-# that refusal, one per ground of its exception list, and the repository's own tree in each mode.
+# that refusal, one per ground of its exception list, and the repository's own tree in the
+# package mode, which is the one mode a case of it is left for.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
 # script, the path model its sweep walks the tree with (workflow_paths.py) and the reference

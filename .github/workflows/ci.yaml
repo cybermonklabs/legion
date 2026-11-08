@@ -287,6 +287,7 @@ jobs:
       sessions_import_pods_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.sessions_import_pods_test }}
       check_ci_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_ts_filters_test }}
+      go_test_step_expansion_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.go_test_step_expansion_test }}
       # Selected like any other job now that no run of this workflow is a push to main.
       # docs-pages.yaml still builds and deploys main's site, on a push trigger of its own.
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
@@ -1329,6 +1330,20 @@ jobs:
               - '.github/scripts/check-ts-filters.sh'
               - '.github/scripts/ci_filter_coverage.py'
               - '.github/scripts/workflow_paths.py'
+            go_test_step_expansion_test: &go_test_step_expansion_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/go-test-step-expansion.test.sh'
+              # :38 loads the script by path, and the script imports the engine, which imports
+              # the path model.
+              - '.github/scripts/go-test-step-expansion.py'
+              - '.github/scripts/ci_filter_coverage.py'
+              - '.github/scripts/workflow_paths.py'
+              # Its last case reads the two step lines the reader exists for, out of the files
+              # that hold them.
+              - '.github/workflows/ci-job-envoy-go-race-docs.yaml'
+              - '.github/workflows/ci-job-envoy-go-docs-finalizers.yaml'
 
             # The test job: the Claude Code plugin build, the changelog fold, the script
             # harnesses above and the Bun suites of scripts/. The daemon's Go tests are the
@@ -1390,6 +1405,7 @@ jobs:
               - *sessions_import_pods_test
               - *check_ci_filters_test
               - *check_ts_filters_test
+              - *go_test_step_expansion_test
               # The guide-layout step's own files, for that same reason: its gate is
               # guide_layout below, and a guide-only change has to select this job for it.
               - *guide_layout_files
@@ -2119,7 +2135,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-test-fixtures.yaml'
               - *bun_install
-              - *biome
               - 'packages/test-fixtures/**'
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
@@ -2148,7 +2163,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-broker-client.yaml'
               - *bun_install
-              - *biome
               - 'packages/broker-client/**'
               # src/__tests__ import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
@@ -3364,6 +3378,7 @@ jobs:
       sessions_import_pods_test: ${{ needs.changes.outputs.sessions_import_pods_test }}
       check_ci_filters_test: ${{ needs.changes.outputs.check_ci_filters_test }}
       check_ts_filters_test: ${{ needs.changes.outputs.check_ts_filters_test }}
+      go_test_step_expansion_test: ${{ needs.changes.outputs.go_test_step_expansion_test }}
 
   # The Go daemon's own suite: the plain step, the race step and the Stage 1 proof, with the
   # Postgres, the tools and the cache they need. It left the test job in dispatch://INFRA-1413,

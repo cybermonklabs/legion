@@ -58,6 +58,10 @@ How it reads a step:
     (`for pkg in ./core ./seed ./gcp`) is one `go test` per package, each with its own call;
   * `go list … | grep -Ev '…' | xargs go test …` is run as written, in the step's own directory,
     and the packages it prints are the command's packages;
+  * a line that sets variables before its command (`GODEBUG=checkfinalizers=1 go test …`) or runs
+    it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
+    behind them: neither changes which test functions run. A value holding `$` and a wrapper that
+    tuple does not name are refused rather than guessed at;
   * a `Benchmark…` name a listing prints is left out: no step passes `-bench`, so `go test` builds
     those functions and runs none of them.
 
@@ -122,6 +126,7 @@ EXCEPTIONS = (
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
             (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
+            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=(
@@ -131,7 +136,60 @@ EXCEPTIONS = (
         requirement=(
             "R2 (dispatch://INFRA-1408/spec): the two render-reuse storms run fewer seeds and "
             "fewer edits under the race detector (raceEnabled), so envoy-go's plain step is their "
-            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one."
+            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one. The "
+            "third step is the cleanup detector's, declared with the rest of the package below."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
+            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
+        }),
+        package="github.com/sjawhar/envoy/internal/dispatch/docs",
+        functions=None,
+        requirement=(
+            "A3 (dispatch://INFRA-1413/artifact/verification-md#b-k3): envoy-go-docs-finalizers "
+            "runs this package in a Go mode no other step runs it in, GODEBUG=checkfinalizers=1, "
+            "and with -v, because the package's own count of the services its tests left alive is "
+            "printed from TestMain after they have run and a package-list run drops it. The mode "
+            "is what the job is for, and a cleanup the detector reports can be any test's, so the "
+            "lane takes the package whole rather than a -run of part of it."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
+            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
+        }),
+        package="github.com/sjawhar/envoy/internal/dispatch/docs",
+        functions=(
+            "TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound",
+            "TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound",
+            "TestUploadsToARoomInUseKeepMemoryWithinTheBound",
+        ),
+        requirement=(
+            "R2 (dispatch://INFRA-1408/spec) and A3 (dispatch://INFRA-1413): these three bound a "
+            "room's memory, which the race build cannot measure, so the race listing does not "
+            "hold them and envoy-go's plain step is their one measured run. The finalizers lane "
+            "runs them as part of the package under its own mode, for the reason above."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
+            (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
+            (".github/workflows/ci-job-envoy-go.yaml", "Unit test envoy Go package"),
+        }),
+        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        functions=("FuzzAirlock",),
+        requirement=(
+            "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
+            "and its filter takes files envoy_go's does not - its own job file, "
+            ".github/actions/install-elan/** and packages/envoy/scripts/airlock-lean-axioms.sh - "
+            "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
+            "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
+            "that same corpus, so both name the function; envoy-go runs the corpus as part of the "
+            "package."
         ),
     ),
 )
@@ -145,6 +203,14 @@ FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
 XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
+# A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
+# A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
+ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
+# The wrappers a step runs a go command under. Each bounds how the test binary runs and changes
+# which tests it runs in no way, so the command behind it is read as though it stood alone; one
+# this tuple does not name is refused rather than guessed at. Matched by the end of the word,
+# since a step writes the path from its own working directory.
+GO_WRAPPERS = (".github/scripts/race_memory.py",)
 # go commands that run no test, so a step may hold one and this script need not read it.
 NO_TEST_GO = ("build", "vet", "list", "install", "mod", "work", "env", "generate", "tool", "run")
 # go test flags whose value is the next argument.
@@ -310,13 +376,38 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
             found.append(parse_go_test(step, expand(piped.group("test"), variables), packages))
             continue
 
-        words = line.split()
-        if words[0] == "go" and len(words) > 1 and words[1] in NO_TEST_GO:
+        words, command = go_command(line)
+        if len(words) > 1 and words[0] == "go" and words[1] in NO_TEST_GO:
             continue
-        if words[0] == "go" and len(words) > 1 and words[1] == "test":
-            found.append(parse_go_test(step, expand(line, variables), []))
+        if len(words) > 1 and words[0] == "go" and words[1] == "test":
+            found.append(parse_go_test(step, expand(command, variables), []))
             continue
         raise Refused(f"{step.label}: this script cannot read `{line}`")
+
+
+def go_command(line: str) -> tuple[list[str], str]:
+    """The command a line runs, with the variables it sets before it and the wrapper it runs it
+    under dropped: its words, and its text with those words removed.
+
+    A step writes `GODEBUG=checkfinalizers=1 go test …` and
+    `RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test …`. Neither the
+    variables nor the wrapper changes which test functions the command runs, which is all this
+    script reads, so both are dropped and what is left is the go command. A value holding `$`,
+    and a wrapper GO_WRAPPERS does not name, are left where they are, so the caller refuses the
+    line rather than guessing. The text is cut word by word off the line itself, so the quoting
+    of what is left - a `-run` pattern above all - is the line's own.
+    """
+    rest = line.strip()
+    while True:
+        head = rest.split(None, 1)
+        if len(head) == 2 and ENV_PREFIX.match(head[0]):
+            rest = head[1]
+            continue
+        break
+    head = rest.split(None, 1)
+    if len(head) == 2 and head[0].endswith(GO_WRAPPERS) and head[1].split(None, 1)[0] == "go":
+        rest = head[1]
+    return rest.split(), rest
 
 
 def loop_body(step: Step, lines: list[str], index: int) -> tuple[list[str], int]:

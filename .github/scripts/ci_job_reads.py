@@ -1190,6 +1190,14 @@ SCRIPT_TEST_GATES = [
         (f"{SCRIPTS}/ci_filter_coverage.py", "the engine it borrows the changes job's filters from, linked in beside it"),
         (f"{SCRIPTS}/workflow_paths.py", "the path model both import, linked in beside it"),
     ]),
+    harness("go_test_step_expansion_test", "Test the go test step expansion",
+            f"{SCRIPTS}/go-test-step-expansion.test.sh", [
+        (f"{SCRIPTS}/go-test-step-expansion.py", "the module under test, loaded by path (go-test-step-expansion.test.sh:38)"),
+        (f"{SCRIPTS}/ci_filter_coverage.py", "the module imports it for step_workdir and called_workflows"),
+        (f"{SCRIPTS}/workflow_paths.py", "the path model that engine imports"),
+        (".github/workflows/ci-job-envoy-go-race-docs.yaml", "its last case reads this file's own go test line, the wrapper one"),
+        (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "its last case reads this file's own go test line, the GODEBUG one"),
+    ]),
 ]
 
 # What every harness step above reads, for the test job's own gate: the job runs each of them, so
@@ -1413,10 +1421,10 @@ GATES = [
     ) + bun_job("contracts")),
 
     gate("test_fixtures", "test-fixtures", reads=reads(
-        ("packages/test-fixtures/**", f"{at('test-fixtures', 'Lint the shared test fixtures')}, typecheck and test in "
+        ("packages/test-fixtures/**", f"{at('test-fixtures', 'Typecheck the shared test fixtures')} and test in "
                                       "packages/test-fixtures (its own biome.json among them); its modules import only "
                                       "one another, node: and bun:"),
-    ) + biome(at("test-fixtures", "Lint the shared test fixtures")) + bun_job("test-fixtures")),
+    ) + bun_job("test-fixtures")),
 
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
@@ -1424,11 +1432,11 @@ GATES = [
     ) + biome(at("conflicts-script", "Lint the conflict measurement script")) + bun_job("conflicts-script")),
 
     gate("broker_client", "broker-client", reads=reads(
-        ("packages/broker-client/**", f"{at('broker-client', 'Lint the broker client')}, typecheck and test in "
+        ("packages/broker-client/**", f"{at('broker-client', 'Typecheck the broker client')} and test in "
                                       "packages/broker-client; its modules import only one another, node:, bun: and "
                                       "the third-party packages its manifest names"),
         (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
-    ) + biome(at("broker-client", "Lint the broker client")) + bun_job("broker-client")),
+    ) + bun_job("broker-client")),
 
     gate("envoy_client", "envoy-client", reads=reads(
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),

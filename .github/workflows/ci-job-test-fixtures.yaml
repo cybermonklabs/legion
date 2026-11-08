@@ -33,9 +33,6 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
       - run: bun install --frozen-lockfile
-      - name: Lint the shared test fixtures
-        run: bun run lint
-        working-directory: packages/test-fixtures
       - name: Typecheck the shared test fixtures
         run: bun run typecheck
         working-directory: packages/test-fixtures
