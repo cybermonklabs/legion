@@ -58,8 +58,8 @@
 # reader who meets one of these lines must not take it for one. What an attempt did is one of
 # four, read from that attempt's own exit status and its own stderr and from no other attempt's:
 # it stopped at the 30 s bound, where `timeout` ended it and it exited 124; it answered the HTTP
-# status gh printed; it exited some other status, printing no status at all; or it left neither
-# of the two, which is a wrapper killed during the attempt.
+# status gh printed; it exited some other status, printing no status at all; or it left no exit
+# status on record, which is an attempt whose status file was never written.
 #
 # Everything it reads comes from the process environment - GH_TOKEN, GITHUB_REPOSITORY,
 # GITHUB_RUN_ID and GITHUB_RUN_ATTEMPT, as Actions sets them and as the merge job's `run:` body
@@ -108,18 +108,35 @@ need() {
 # than the attempt being called refused: gh exits 1 where it was refused with no status of its
 # own - a resolution failure, a connection refused - but `timeout` exits 127 where it could not
 # run gh at all (`timeout: failed to run command 'gh'`) and the attempt exits 137 for a gh that
-# was killed, and nothing refused anything in either of those. Otherwise no exit status was
-# recorded either, and the words say so.
+# was killed, and nothing refused anything in either of those. Otherwise `status.<n>` holds
+# nothing, and the words name that file and nothing further: an attempt that reaches this
+# branch may well have exited. Measured 2026-11-08, with the wrapper of the third of three
+# attempts killed, that wrapper exited 137 and 137 is the status the ladder's attempt saw,
+# while nothing had written `status.3`.
 #
-# The two `2>/dev/null` reads are what keep a missing file from ending this read, and the
-# fourth branch is what an attempt whose status file is missing gets. An attempt the wrapper
-# never started is not what reaches it: the wrapper counts the attempt itself before it runs
-# gh, so an attempt that never began is never counted and never described, and what it costs
-# is a count one short - driven in review on 2026-11-08, a wrapper killed before it counted
-# printed `the ladder made 2 attempts` where gh_read had made 3. What reaches the fourth
-# branch is a wrapper killed during an attempt: the redirection has made `stderr.<n>` and
-# nothing has written `status.<n>`, so that attempt is described from its stderr where gh had
-# printed a status there and by these words where it had not.
+# What keeps a missing file from ending this read is the `|| true` on each of the two reads,
+# not the `2>/dev/null` beside it, which only keeps `cat: <dir>/status.3: No such file or
+# directory` out of the job log. Measured 2026-11-08 against the test file beside this one:
+# both `|| true` taken off reads 118 passed, 17 failed, and both `2>/dev/null` taken off reads
+# 135 passed, 0 failed, where a by-hand drive of a killed wrapper against that second copy
+# prints that one line beside the refusal line and the suite prints neither.
+#
+# Two shapes reach the fourth branch. One is a wrapper killed during an attempt: the
+# redirection has made `stderr.<n>` and nothing has written `status.<n>`, and where gh had
+# printed a status on that stderr before the wrapper died, the attempt is described from it
+# rather than by these words. The test file's case "a killed wrapper whose gh had printed a
+# status before it died" is what holds that order: a copy asking whether the status file is
+# missing before it greps the stderr reads 133 passed, 2 failed, measured 2026-11-08. The
+# other shape is a wrapper that never ran at all - driven 2026-11-08 with gh_read given a
+# command that does not exist, the line read `attempt 0, which decided the failure, left no
+# exit status on record, printing no HTTP status; the ladder made 0 attempts`, `attempts`
+# still holding the 0 it was initialised to.
+#
+# A wrapper killed before it counts its attempt is described by no branch of its own, and it
+# misnumbers the attempts that follow it as well as shortening the count: driven 2026-11-08
+# with the second of three wrappers killed before its count, the attempt that decided the
+# failure - the ladder's third - was described from its own files under the number 2, in a
+# line reading `the ladder made 2 attempts`.
 describe_attempt() {
   local dir=$1 attempt=$2 attempt_status http
   attempt_status=$(cat "$dir/status.$attempt" 2>/dev/null || true)
@@ -133,7 +150,7 @@ describe_attempt() {
   elif [ -n "$attempt_status" ]; then
     echo "exited $attempt_status, printing no HTTP status"
   else
-    echo "ended with neither an exit status nor an HTTP status"
+    echo "left no exit status on record, printing no HTTP status"
   fi
 }
 
@@ -198,21 +215,23 @@ case "$mode" in
       # earlier ones are left unsaid: the deciding attempt's words already cover them, and a
       # list of three identical clauses tells a reader nothing the count does not.
       #
-      # Within one attempt the exit status is read before the stderr, because 124 is the one
-      # exit with words of its own: `timeout` ended that attempt at the 30 s bound, where the
-      # third branch would say `exited 124, printing no HTTP status`, naming the number the
-      # bound exits with and neither the bound nor that it fired - and a host that accepts the
-      # connection and then sends nothing is what the bound was put here for. The cost of that
-      # order is that an attempt which printed a status and then hung is described as the
-      # bound and its status is not reported. With the command this script runs that is not a
-      # shape the lane has seen: `gh api --paginate` stops at the first page it is refused on,
-      # so a page that printed a status ends the call rather than being followed by a page that
-      # can hang, and the refusals measured 2026-11-08 on run 42468236584 - HTTP 502 on pages 2
-      # and 3 of the three-page `filter=all` read - were answered by GitHub rather than left
-      # hanging. Not seen is not impossible, and nothing here rules it out: a status followed by
-      # a stall within one attempt would be reported as the bound and that status would be lost.
-      # The order stays this way because a 124 left to the third branch names neither the bound
-      # nor that it fired.
+      # Within one attempt the exit status is read before the stderr, and the one shape that
+      # tells this order from the other is an attempt that printed a status and then hung:
+      # this order reports the 30 s bound, which is what ended that attempt, where reading the
+      # stderr first would report the status the attempt had printed before it stopped
+      # answering. An attempt that hung without printing anything reads as the bound in either
+      # order, its stderr holding no status to find, so the order is not what keeps a silent
+      # hang out of the third branch: the 124 check is, wherever it sits.
+      #
+      # With the command this script runs, an attempt that printed a status and then hung is
+      # not a shape the lane has seen: `gh api --paginate` stops at the first page it is
+      # refused on, so a page that printed a status ends the call rather than being followed
+      # by a page that can hang, and the refusals measured 2026-11-08 on run 42468236584 -
+      # HTTP 502 on pages 2 and 3 of the three-page `filter=all` read - were answered by
+      # GitHub rather than left hanging. Not seen is not impossible, and nothing here rules it
+      # out: such an attempt is reported as the bound and its status is not reported at all.
+      # No test fixes this order either - measured 2026-11-08, a copy reading the stderr first
+      # and the 124 second reads 135 passed, 0 failed - so what holds it is this paragraph.
       deciding=$(describe_attempt "$work" "$attempts")
       earlier=""
       for ((n = 1; n < attempts; n++)); do
