@@ -331,13 +331,17 @@ ci_tools__tempfile() {
 # `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
 # may start: an attempt already running when the minute is over still finishes under
 # `--max-time`, and curl starts no attempt after it.
-# Without it a host that hangs costs the whole ladder — eight attempts of `--max-time` 60 s plus
-# a back-off of 1, 2, 4, 8, 16, 32 and 64 s, about 127 s — which is about ten minutes for one
-# row, while many jobs of .github/workflows/ci.yaml carry `timeout-minutes: 10`.
-# A row that cannot be fetched inside a minute is the outage the second source exists for, and
-# the second source gets the rest of the job's time.
-# This issue's tester measured both ladders against a source that refuses at once: 4 attempts in
-# 15 s with the bound, 8 attempts in 127 s without it.
+# What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
+# ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s —
+# which is about ten minutes for one row, while many jobs of .github/workflows/ci.yaml carry
+# `timeout-minutes: 10`.
+# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it buys almost
+# nothing: the back-off alone reaches the minute, so the ladder is one attempt shorter.
+# This issue's tester measured both shapes at the manifest's `max_time` of 60: a source that
+# answers 504 at once costs 7 attempts in 126 s with the bound and 8 attempts in 127 s without
+# it, and a host that hangs costs 124 s with the bound where the ladder without it costs about
+# ten minutes. Either way a row's primary costs about two minutes before the second source is
+# read, inside every ci.yaml budget.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
