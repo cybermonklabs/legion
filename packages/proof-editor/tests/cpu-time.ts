@@ -220,21 +220,35 @@ function fastestCpuTimeOf(work: () => unknown): number {
 }
 
 /**
- * The cost of a parse the mode refuses, with the refusal itself. `fastestCpuTimeOf` samples a
- * refused parse as many times as it samples any other work, and raises a `CpuTimedError` whose
- * `cpuMs` is the least reading and whose `cause` is the refusal, so a row reads both from it.
- *
- * It throws when the parse it was given returned rather than being refused, so a row that means
- * to measure a refusal cannot read a plain reading as one.
+ * One side of a growth step, read: what one parse of that side cost, and what it threw where it
+ * threw. `costReadingOf` is the only way this module reads a side, so both helpers below assert
+ * the cost of a side before they report its throw.
  */
-function refusedCostOf(parse: () => unknown): CpuTimedError {
+type CostReading = {
+  /** The CPU time one run of the parse cost, in milliseconds. */
+  readonly cpuMs: number;
+  /** The throw the measurement kept, with the parse's own throw as its `cause`; `undefined`
+   *  where every run of the parse returned. */
+  readonly thrown: CpuTimedError | undefined;
+};
+
+/**
+ * Reads one side of a growth step: the cost always, and the throw where the parse threw.
+ *
+ * `fastestCpuTimeOf` raises a `CpuTimedError` carrying both the least reading and the throw, so a
+ * row that called it directly would lose the reading the moment the parse threw. A break can make
+ * a parse both dearer and throwing, and what the row is for is the cost, so the cost comes back
+ * here as a value and the throw is left for the row to report after its assertions (INFRA-1629).
+ * A throw that is not a `CpuTimedError` comes from the measurement itself, not from the parse,
+ * and is left on its way out.
+ */
+function costReadingOf(parse: () => unknown): CostReading {
   try {
-    fastestCpuTimeOf(parse);
+    return { cpuMs: fastestCpuTimeOf(parse), thrown: undefined };
   } catch (error) {
-    if (error instanceof CpuTimedError) return error;
-    throw error;
+    if (!(error instanceof CpuTimedError)) throw error;
+    return { cpuMs: error.cpuMs, thrown: error };
   }
-  throw new Error("the parse was expected to be refused and was not");
 }
 
 /**
@@ -278,6 +292,10 @@ export function expectCostGrowsLinearly(name: string, small: number, full: numbe
  * input and by nothing else; `name` is what the growth check calls the parse in its message. The
  * row asserts what it reads on the document this returns, which is the one the full size's
  * measured parse produced.
+ *
+ * A parse that threw where it was to return a document is reported only once both assertions
+ * have passed, because a break can make a parse both dearer and throwing and the cost is what
+ * the row is for. The throw reaches the runner as itself, with its own stack.
  */
 export function parsedWithinCostBounds<T>(
   name: string,
@@ -285,15 +303,19 @@ export function parsedWithinCostBounds<T>(
   smallBody: string,
   fullBody: string
 ): T {
-  const smallCost = fastestCpuTimeOf(() => parse(smallBody));
+  const small = costReadingOf(() => parse(smallBody));
   let parsed: T | undefined;
-  const fullCost = fastestCpuTimeOf(() => {
+  const full = costReadingOf(() => {
     parsed = parse(fullBody);
   });
-  expect(fullCost, `the full size cost ${Math.round(fullCost)} ms of CPU time`).toBeLessThan(
+  expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(
     parseCpuBudgetMs
   );
-  expectCostGrowsLinearly(name, smallCost, fullCost);
+  expectCostGrowsLinearly(name, small.cpuMs, full.cpuMs);
+  // The full size's throw is reported first: it is the side the row reads its document from. A
+  // small side that threw is reported after it, rather than left to pass on the full size alone.
+  if (full.thrown !== undefined) throw full.thrown.cause;
+  if (small.thrown !== undefined) throw small.thrown.cause;
   if (parsed === undefined) throw new Error("the measured parse produced no document");
   return parsed;
 }
@@ -301,10 +323,14 @@ export function parsedWithinCostBounds<T>(
 /**
  * The refusal a parse raised at the full size, once that refusal has been read at both sizes and
  * found to cost less than `parseCpuBudgetMs` and to grow no faster than its input did at
- * `growthStep`. `refusedCostOf` fails the row where a parse returned rather than being refused.
+ * `growthStep`.
  *
- * A cause that is not an `Error` is thrown on as it is, so such a throw reaches the runner with
- * its own stack rather than as a message that matched nothing.
+ * The two costs are asserted before the refusal is required, for the reason above: a break that
+ * makes a refused parse dearer is read as the cost failure the row is for, not as a missing
+ * refusal. A side that returned rather than being refused then fails the row, so a row that
+ * means to measure a refusal cannot read a plain reading as one. A cause that is not an `Error`
+ * is thrown on as it is, so such a throw reaches the runner with its own stack rather than as a
+ * message that matched nothing.
  */
 export function refusalWithinCostBounds(
   name: string,
@@ -312,13 +338,19 @@ export function refusalWithinCostBounds(
   smallBody: string,
   fullBody: string
 ): Error {
-  const small = refusedCostOf(() => parse(smallBody));
-  const full = refusedCostOf(() => parse(fullBody));
+  const small = costReadingOf(() => parse(smallBody));
+  const full = costReadingOf(() => parse(fullBody));
   expect(full.cpuMs, `the full size cost ${Math.round(full.cpuMs)} ms of CPU time`).toBeLessThan(
     parseCpuBudgetMs
   );
   expectCostGrowsLinearly(name, small.cpuMs, full.cpuMs);
-  const refusal = full.cause;
+  if (full.thrown === undefined) {
+    throw new Error("the parse at the full size was expected to be refused and was not");
+  }
+  if (small.thrown === undefined) {
+    throw new Error("the parse at the small size was expected to be refused and was not");
+  }
+  const refusal = full.thrown.cause;
   if (!(refusal instanceof Error)) throw refusal;
   return refusal;
 }
