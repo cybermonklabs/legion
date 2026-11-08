@@ -3,6 +3,7 @@ body: |-
   A review read from GitHub's REST list approves the head it names only when it was submitted
   after that head arrived. GitHub's record of a review can move: an approval of one head has been
   seen listing, as its commit_id, a merge pushed two days later, and the per-issue read took that
-  at face value, so an old approval could approve a head nobody reviewed. The webhook carries the
-  head as submitted and is unaffected. A review older than the head it names decides nothing and
-  says so in the log.
+  at face value, so an old approval could approve a head nobody reviewed. The head's arrival is
+  the record's own observation of it, or the head commit's committer date where the record holds
+  none; a date neither gives applies no review that read and is asked for again by the next one.
+  The webhook carries the head as submitted and is unaffected.

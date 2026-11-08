@@ -581,10 +581,11 @@ func TestAListedReviewOlderThanTheHeadItNamesDecidesNothing(t *testing.T) {
 
 // A record that holds no clock of its own — a pull request whose head arrived before the daemon
 // kept one — is answered by the head commit's own committer date, read from GitHub: the earliest
-// moment any review of that head could have been submitted. A commit GitHub will not answer holds
-// no review back, because a guard that refused on a time nobody knows would stop every decision of
-// such a record for as long as GitHub is unwell, which looks exactly like correct caution and is
-// not (dispatch://INFRA-1557, driven by the tester's own probe of this half).
+// moment any review of that head could have been submitted. A commit GitHub will not answer
+// applies nothing this read, whatever the review says, since a review the daemon cannot place
+// against its head is one it has not verified; the next read of the issue asks again, so the cost
+// is a read rather than a decision (dispatch://INFRA-1557, the architect's ruling on the first
+// shape of this guard, which let such a review decide).
 func TestAListedReviewOfAClocklessRecordIsHeldToTheHeadsCommitDate(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -597,8 +598,8 @@ func TestAListedReviewOfAClocklessRecordIsHeldToTheHeadsCommitDate(t *testing.T)
 			submitted: "2026-10-08T22:15:59Z", want: phase.Reviewing},
 		{name: "submitted after the head was committed", committed: captureHeadCommitted.Format(time.RFC3339),
 			submitted: "2026-10-08T22:16:01Z", want: phase.Accepting, decision: "approved"},
-		{name: "GitHub will not answer the commit, so the review is held to nothing", committed: "",
-			submitted: "2026-10-08T22:15:59Z", want: phase.Accepting, decision: "approved"},
+		{name: "GitHub will not answer the commit, so this read applies nothing", committed: "",
+			submitted: "2026-10-08T22:16:01Z", want: phase.Reviewing},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)

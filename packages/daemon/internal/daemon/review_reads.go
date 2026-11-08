@@ -166,9 +166,13 @@ func (w *workflowRuntime) reviewToApply(ctx context.Context, github githubrest.C
 		// the pull request, for the first candidate that names it.
 		if review.CommitID != "" && review.CommitID == pr.HeadSHA {
 			if !headRead {
-				headArrived, headRead = w.headArrivedAt(ctx, github, pr), true
+				arrived, err := w.headArrivedAt(ctx, github, pr)
+				if err != nil {
+					return intake.PullRequestReview{}, false, err
+				}
+				headArrived, headRead = arrived, true
 			}
-			if !headArrived.IsZero() && review.SubmittedAt.Before(headArrived) {
+			if review.SubmittedAt.Before(headArrived) {
 				w.log.Warn("workflow: a listed review names a head it cannot have seen, so it decides nothing",
 					"repo", pr.Repo, "pullRequest", pr.Number, "issue", pr.Issue, "review", review.ID, "author", review.Author,
 					"state", review.State, "head", pr.HeadSHA, "submitted_at", review.SubmittedAt, "head_arrived", headArrived)
@@ -222,14 +226,20 @@ func (w *workflowRuntime) refuseReview(id int64) {
 // request. A record that holds none — a pull request opened before the daemon recorded the time,
 // or one whose observations carried no clock — is answered by the head commit's own committer
 // date, read from GitHub, which is the earliest moment any review of that head could have been
-// submitted. The zero time is the answer when neither is to be had, and it holds no review back:
-// a guard that refused on a time nobody knows would drop the decisions this read exists to apply.
-func (w *workflowRuntime) headArrivedAt(ctx context.Context, github githubrest.Client, pr record.PullRequest) time.Time {
+// submitted.
+//
+// A date neither gives is an error, and this read then applies no review at all: a review the
+// daemon cannot place against its head is one it has not verified, and letting it decide would
+// approve a head nobody is known to have reviewed, which is the fault this guard exists for
+// (dispatch://INFRA-714/spec R12, the architect's ruling on dispatch://INFRA-1557). The cost of
+// refusing is a read, not a decision: the next read of the issue asks GitHub again, as it does for
+// every other failure of this read.
+func (w *workflowRuntime) headArrivedAt(ctx context.Context, github githubrest.Client, pr record.PullRequest) (time.Time, error) {
 	if !pr.HeadUpdatedAt.IsZero() {
-		return pr.HeadUpdatedAt
+		return pr.HeadUpdatedAt, nil
 	}
 	if pr.HeadSHA == "" {
-		return time.Time{}
+		return time.Time{}, nil
 	}
 	var commit struct {
 		Commit struct {
@@ -239,9 +249,12 @@ func (w *workflowRuntime) headArrivedAt(ctx context.Context, github githubrest.C
 		} `json:"commit"`
 	}
 	if err := github.Get(ctx, "/commits/"+pr.HeadSHA, &commit); err != nil {
-		w.log.Warn("read the date of a pull request's head; a listed review of it is held to nothing this read",
-			"repo", pr.Repo, "pullRequest", pr.Number, "head", pr.HeadSHA, "error", err)
-		return time.Time{}
+		return time.Time{}, fmt.Errorf("read the date of %s#%d's head %s, which every listed review of it is judged against: %w",
+			pr.Repo, pr.Number, pr.HeadSHA, err)
 	}
-	return commit.Commit.Committer.Date
+	if commit.Commit.Committer.Date.IsZero() {
+		return time.Time{}, fmt.Errorf("GitHub gave %s#%d's head %s no committer date, which every listed review of it is judged against",
+			pr.Repo, pr.Number, pr.HeadSHA)
+	}
+	return commit.Commit.Committer.Date, nil
 }
