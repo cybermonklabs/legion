@@ -3231,14 +3231,15 @@ jobs:
     runs-on: ubuntu-24.04
     # Each go test call's -timeout must fire before the runner cancels the job, so a hung test
     # prints the dump that names it. A timed-out step fails the job, so the bound is the steps
-    # before it at their measured times plus its own limit: about 1 minute of setup, then the
-    # plain race-impossible step's three 10-minute runs, which is 31; after that step's measured
-    # 2 minutes the unit step's own limit is 23, since that step's five calls run at the same
-    # time and the longest limit among them is the package list's 20 - the routes call's 10,
-    # natslive's default 10 and the bus matrix's 5 after it, and the integration call's 5 all
-    # end before it. 31, then, is the bound, and this job is held to it rather than to the 55 it
-    # carried when the routes, natslive and integration calls were steps of their own after the
-    # unit step.
+    # before it at their measured times plus its own limit, and this job now has one step that
+    # runs a test: about 1 minute of setup, then the unit step, whose six calls run at the same
+    # time, so its limit is the longest of them rather than their sum. That is the
+    # race-impossible call's 10 minutes, which `go test` gives each of the three test binaries
+    # it links rather than the call - 30, were they to run one after another - and not the
+    # package list's 20, natslive's default 10 and the bus matrix's 5 after it, the routes
+    # call's 10 or the integration call's 5. 31, then, is the bound, as it was when that call
+    # was a step before this one; what the five calls joining the unit step took off this job
+    # is its measured time, not the worst case a hung test can still reach.
     timeout-minutes: 31
     services:
       postgres:
@@ -3418,48 +3419,19 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
-      # The tests the race detector makes impossible, which the race job of each of these packages
-      # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
-      # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
-      # the API's two guards read the module's source, to which the detector adds nothing; and the
-      # documents package measures the heap a room keeps, which the detector's shadow memory and
-      # instrumentation move. Those are out of the race build altogether (//go:build !race), and
-      # the two render-reuse storms run fewer seeds and fewer edits under it (raceEnabled), so this
-      # is their full-size run. It comes before the unit step for the reason the API package's own
-      # run did: run beside the other package binaries, its Postgres-backed tests and the
-      # room-memory measurements queue their per-test database cleanup on the service's one
-      # checkpointer, and the API's live-feed and delivery-hub tests wait for the event log's safe
-      # horizon, which any open transaction on this job's Postgres delays. The one -run list is
-      # derived in .github/scripts/ci_job_reads.py from the race lane's own packages and those
-      # files' //go:build !race and raceEnabled, so a test added to either and missing here fails
-      # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the bus
-      # under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s, so 10
-      # minutes each is ample.
-      #
-      # One go test over the three packages rather than one per package: go builds the three test
-      # binaries together and runs each package's tests as soon as its own binary is linked, so
-      # the documents package's tests run beside the API package's build instead of after it.
-      # Three commands in a row cost 96 s for 44 s of tests - 40 s of them the API package's
-      # build, with nothing running beside it (run 42307926510, dispatch://INFRA-1075). Each
-      # package measures its own process's heap or allocations, so running them at the same time
-      # changes no number any of them asserts on.
-      - name: Test what the race build cannot run at all or at full size
-        run: |
-          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs
-        working-directory: packages/envoy
-      # The step below runs the module's packages in the foreground and, beside them, four calls
-      # that were steps of their own after it until dispatch://INFRA-1075: the routes package,
-      # the container-backed NATS matrix, the integration suite and the agentloop vet. The
-      # package list uses about half this runner's four cores - 595.7 s of CPU over 104 test
-      # binaries against 4 x 284 s of wall - and ends on one package's serial tail, and those
-      # four steps then ran one after another on cores it had left idle: on the slower of the
-      # two attempts measured, routes 13 s, natslive 12 s, integration 3 s and the vet 8 s, 36 s
-      # of the 90 s this job spends on test steps running one at a time. Each of the four
-      # is started in the background at the head of this step now, so the step costs the longest
-      # of the five rather than their sum. The race-impossible step above, 52 to 60 s and the
-      # rest of that 90 s, is NOT among them: its three documents memory bounds read this
-      # process's own heap, and whether they hold in a concurrent shape is a measurement of its
-      # own before that step moves (dispatch://INFRA-985).
+      # The step below runs the module's packages in the foreground and, beside them, five calls
+      # that were steps of their own around it until dispatch://INFRA-1075: the plain run of what
+      # the race build cannot make, the routes package, the container-backed NATS matrix, the
+      # integration suite and the agentloop vet. The package list uses about half this runner's
+      # four cores - 595.7 s of CPU over 104 test binaries against 4 x 284 s of wall - and ends
+      # on one package's serial tail, and those five steps ran one after another on cores it had
+      # left idle: on the slower of the two attempts measured, the race-impossible step 60 s,
+      # routes 13 s, natslive 12 s, integration 3 s and the vet 8 s, the 90 s this job spent on
+      # test steps running one at a time. Each of the five is started in the background at the
+      # head of this step now, so the step costs the longest of the six rather than their sum.
+      # The race-impossible call joined them last, once the measurement dispatch://INFRA-985
+      # asked for had been made; the comment on that call says what was measured and what it
+      # came back with.
       #
       # Each call writes its own `go test -json` stream to a file under $RUNNER_TEMP/go-test-json,
       # which the upload step below publishes as one artifact per run attempt.
@@ -3472,13 +3444,13 @@ jobs:
       # `(cached)`. What a background call prints outside its stream cannot be left to interleave
       # with the others', so each writes that to a log of its own under $RUNNER_TEMP/go-test-logs,
       # replayed with its stream; the package list holds the foreground and prints as it goes.
-      # The step waits for all four, replays one group per call, and exits with the first
-      # non-zero status of the five, each failing call named in an ::error:: of its own.
+      # The step waits for all five, replays one group per call, and exits with the first
+      # non-zero status of the six, each failing call named in an ::error:: of its own.
       #
       # The API package used to run first and on its own in this job, because the per-test
       # database clone and drop of every other package queued on the service's one checkpointer
-      # beside it; it runs in envoy-go-race-api now, and the plain run this job keeps of it is the
-      # race-impossible step above. The server above writes nothing durable either way, so a
+      # beside it; it runs in envoy-go-race-api now, and the plain run this job keeps of it is
+      # the race-impossible call below. The server above writes nothing durable either way, so a
       # clone's two forced checkpoints and its drop's one cost little and that queue sets no
       # step's time here any more.
       # -p 8 rather than go test's default of GOMAXPROCS, and -parallel 12 rather than its default
@@ -3522,6 +3494,40 @@ jobs:
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
+          # The tests the race detector makes impossible, which the race job of each of these
+          # packages therefore cannot make, so envoy-go keeps a plain run of exactly them:
+          # internal/bus counts HoldsSeed's allocations, which the race runtime's own
+          # allocations would be counted into; the API's two guards read the module's source, to
+          # which the detector adds nothing; and the documents package measures the heap a room
+          # keeps, which the detector's shadow memory and instrumentation move. Those are out of
+          # the race build altogether (//go:build !race), and the two render-reuse storms run
+          # fewer seeds and fewer edits under it (raceEnabled), so this is their full-size run.
+          # It was a step of its own before this one until dispatch://INFRA-985's condition for
+          # running it here was measured: the three documents memory bounds read this process's
+          # own heap after two forced collections, and the question was whether a slow mark
+          # under contention lets the heap overshoot before the reading is taken. Run
+          # 42526940781 ran all three sixty times in this shape - beside pmdoc's CPU-budget
+          # tests, under busy loops at twice the runner's cores, against a Postgres service
+          # exactly like this job's - and every run passed, the worst of them using 36.1 per
+          # cent of its bound, where the condition was no failure and no run within 15 per cent.
+          # The other half of that step's old reason went with the API package, whose live-feed
+          # and delivery-hub tests wait for the event log's safe horizon and run in
+          # envoy-go-race-api now. The one -run list is derived in
+          # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
+          # //go:build !race and raceEnabled, so a test added to either and missing here fails
+          # the ci-filters job naming this step. Measured over three runs on a two-vCPU pod: the
+          # bus under a tenth of a second, the API 8 to 10 s, the documents package 92 to 127 s,
+          # so 10 minutes each is ample.
+          #
+          # One go test over the three packages rather than one per package: go builds the three
+          # test binaries together and runs each package's tests as soon as its own binary is
+          # linked, so the documents package's tests run beside the API package's build instead
+          # of after it. Three commands in a row cost 96 s for 44 s of tests - 40 s of them the
+          # API package's build, with nothing running beside it (run 42307926510,
+          # dispatch://INFRA-1075). Each package measures its own process's heap or allocations,
+          # so running them at the same time changes no number any of them asserts on.
+          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" 2> "$RUNNER_TEMP/go-test-logs/race-impossible.log" &
+          impossible=$!
           # The routes package, on the second Postgres service: DISPATCH_TEST_DATABASE_URL names
           # 5433 on this call and nowhere else, so the only transactions its horizon waits on are
           # its own tests'. It is on the call rather than on the step because every other call
@@ -3572,6 +3578,8 @@ jobs:
           s=0
           rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
+          p=0
+          wait "$impossible" || p=$?
           r=0
           wait "$routes" || r=$?
           n=0
@@ -3580,10 +3588,11 @@ jobs:
           wait "$integration" || i=$?
           v=0
           wait "$vet" || v=$?
-          # One group per call, in the order the calls were started: its own log, then its stream
-          # - the package result lines when it passed, the whole stream when it failed - and an
-          # ::error:: naming it when it failed. The step's status is the first non-zero of the
-          # five, and the package list, which prints as it goes, writes no log of its own.
+          # One group per call: the package list first, then the background calls in the order
+          # they were started. Each is its own log, then its stream - the package result lines
+          # when it passed, the whole stream when it failed - and an ::error:: naming it when it
+          # failed. The step's status is the first non-zero of the six, and the package list,
+          # which prints as it goes, writes no log of its own.
           status=0
           replay() {
             echo "::group::$1 (exit $2)"
@@ -3598,6 +3607,7 @@ jobs:
             [ "$status" -ne 0 ] || status=$2
           }
           replay "the package list" "$s" unit
+          replay "the race-impossible run" "$p" race-impossible
           replay "the routes package" "$r" routes
           replay "the natslive matrix" "$n" natslive
           replay "the integration suite" "$i" integration
@@ -3720,9 +3730,9 @@ jobs:
   # envoy-go because -race runs these packages several times slower, and each job carries a
   # package deadline of its own, since go test's ten-minute default is a whole package's.
   # envoy-go runs none of these packages plain any more (INFRA-1408): its unit step leaves out
-  # exactly what the lane runs, and the one plain run it keeps of them is the step named "Test
-  # what the race build cannot run at all or at full size", which runs the handful of
-  # assertions the detector makes impossible or shrinks and nothing else.
+  # exactly what the lane runs, and the one plain run it keeps of them is the race-impossible
+  # call of its unit step, which runs the handful of assertions the detector makes impossible
+  # or shrinks and nothing else.
   #
   # The lane is three jobs: envoy-go-race (delivery, the Dispatch store, the bus, the listener,
   # the registry store, the session cache and kvwatch), envoy-go-race-api and envoy-go-race-docs,
