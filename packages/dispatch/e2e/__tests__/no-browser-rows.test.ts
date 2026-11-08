@@ -61,15 +61,17 @@ const realStale = staleExemptions(realRows, exemptions);
 // the same cores, and the ceiling is the point at which something is wrong rather than slow.
 const listingTimeout = 180_000;
 
-/** The three planted controls, read by name rather than by pointing `specFiles` at their
+/** The four planted controls, read by name rather than by pointing `specFiles` at their
  *  directory: they are no part of the suite, and a file that was would run in it. Each is read
  *  and parsed once, here, for the tests below that read its rows. */
 const noBrowserFixture = "__tests__/fixtures/no-browser-row.fixture.ts";
 const browserFixture = "__tests__/fixtures/browser-row.fixture.ts";
 const unreadShapesFixture = "__tests__/fixtures/unread-row-shapes.fixture.ts";
+const unresolvedShapeFixture = "__tests__/fixtures/unresolved-row-shape.fixture.ts";
 const noBrowserFixtureRows = rowsOfFile(noBrowserFixture);
 const browserFixtureRows = rowsOfFile(browserFixture);
 const unreadShapesFixtureRows = rowsOfFile(unreadShapesFixture);
+const unresolvedShapeFixtureRows = rowsOfFile(unresolvedShapeFixture);
 
 // A scan that found nothing would satisfy every rule below without reading a row, so this is
 // asserted once here rather than again in each test that reads `realRows`.
@@ -168,6 +170,23 @@ test("a planted row with a computed title, and one with a callback by name, are 
   // that holds two, and the file-set test could not see it, because a real spec keeps its other
   // rows whatever one row is written like.
   expect(unexplainedRows(unreadShapesFixtureRows, exemptions)).toEqual(unreadShapesFixtureRows);
+});
+
+// A row whose title and whose callback are BOTH passed by name. Playwright runs it like any
+// other row and it binds no browser fixture, so the check must report it and name it. It reads
+// nothing of it today, which is the gate hole this test pins: a row of this shape passes in
+// silence, and neither the file-set comparison nor the two controls above can see it, since the
+// file keeps whatever other rows it holds. `packages/dispatch/AGENTS.md` promises otherwise -
+// the check "reads every `test(` call" and "refuses … a row whose callback it cannot read …
+// since fixtures it did not read are not fixtures it saw". Reading the second argument's
+// declaration in the same file settles it with no type checker, and leaves the four
+// `test.skip(<condition>, <reason>)` calls of this suite that name neither by a literal alone,
+// since what they name is no function.
+test("a planted row whose title and whose callback are both passed by name is named too", () => {
+  expect(unresolvedShapeFixtureRows.map((row) => row.fixtures)).toEqual([[]]);
+  expect(unexplainedRows(unresolvedShapeFixtureRows, exemptions)).toEqual(
+    unresolvedShapeFixtureRows
+  );
 });
 
 test("an exemption for a row that drives a browser, and one for a row no file holds, are stale", () => {
