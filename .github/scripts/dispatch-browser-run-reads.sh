@@ -109,24 +109,30 @@ need() {
 # own - a resolution failure, a connection refused - but `timeout` exits 127 where it could not
 # run gh at all (`timeout: failed to run command 'gh'`) and the attempt exits 137 for a gh that
 # was killed, and nothing refused anything in either of those. Otherwise `status.<n>` holds
-# nothing, and the words name that file and nothing further: an attempt that reaches this
-# branch may well have exited. Measured 2026-11-08, with the wrapper of the third of three
-# attempts killed, that wrapper exited 137 and 137 is the status the ladder's attempt saw,
-# while nothing had written `status.3`.
+# nothing, and the words state only what the two files do not hold: no exit status on record,
+# which is `status.<n>` unwritten, and no HTTP status printed, which is `stderr.<n>` holding
+# none. They name neither file, and they do not say the attempt did not exit: an attempt that
+# reaches this branch may well have exited. Measured 2026-11-08, with the wrapper of the third
+# of three attempts killed, that wrapper exited 137 and 137 is the status the ladder's attempt
+# saw, while nothing had written `status.3`.
 #
-# What keeps a missing file from ending this read is the `|| true` on each of the two reads,
-# not the `2>/dev/null` beside it, which only keeps `cat: <dir>/status.3: No such file or
-# directory` out of the job log. Measured 2026-11-08 against the test file beside this one:
-# both `|| true` taken off reads 118 passed, 17 failed, and both `2>/dev/null` taken off reads
-# 135 passed, 0 failed, where a by-hand drive of a killed wrapper against that second copy
-# prints that one line beside the refusal line and the suite prints neither.
+# What keeps a missing `status.<n>` from ending this read is the `|| true` on the `cat`, not
+# the `2>/dev/null` beside it, which only keeps `cat: <dir>/status.3: No such file or
+# directory` out of the job log. The `|| true` on the `grep` covers something else: under
+# `pipefail` a `grep` that matches nothing exits 1, which is any attempt whose stderr holds no
+# `HTTP` status. Measured 2026-11-08 against the test file beside this one: the `cat`'s
+# `|| true` taken off alone reads 129 passed, 8 failed, all of it in the two cases that stage
+# a killed wrapper; the `grep`'s taken off alone reads 125 passed, 12 failed, eight of those
+# in three cases where every file exists; and both `2>/dev/null` taken off read 137 passed, 0
+# failed, where a by-hand drive of a killed wrapper against that last copy prints that one
+# line beside the refusal line and the suite prints neither.
 #
 # Two shapes reach the fourth branch. One is a wrapper killed during an attempt: the
 # redirection has made `stderr.<n>` and nothing has written `status.<n>`, and where gh had
 # printed a status on that stderr before the wrapper died, the attempt is described from it
 # rather than by these words. The test file's case "a killed wrapper whose gh had printed a
 # status before it died" is what holds that order: a copy asking whether the status file is
-# missing before it greps the stderr reads 133 passed, 2 failed, measured 2026-11-08. The
+# missing before it greps the stderr reads 135 passed, 2 failed, measured 2026-11-08. The
 # other shape is a wrapper that never ran at all - driven 2026-11-08 with gh_read given a
 # command that does not exist, the line read `attempt 0, which decided the failure, left no
 # exit status on record, printing no HTTP status; the ladder made 0 attempts`, `attempts`
@@ -231,7 +237,7 @@ case "$mode" in
       # GitHub rather than left hanging. Not seen is not impossible, and nothing here rules it
       # out: such an attempt is reported as the bound and its status is not reported at all.
       # No test fixes this order either - measured 2026-11-08, a copy reading the stderr first
-      # and the 124 second reads 135 passed, 0 failed - so what holds it is this paragraph.
+      # and the 124 second reads 137 passed, 0 failed - so what holds it is this paragraph.
       deciding=$(describe_attempt "$work" "$attempts")
       earlier=""
       for ((n = 1; n < attempts; n++)); do
