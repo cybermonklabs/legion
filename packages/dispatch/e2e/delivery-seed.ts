@@ -47,6 +47,14 @@ export async function seedDeliveryFixture(): Promise<void> {
   );
 }
 
+/** The window `/delivery` is opened on to see `seedDeliveryFixture()`'s rows, as a query string
+ *  without the leading "?": it spans the day that fixture writes its pull requests and runs in.
+ *  It is read from here by `e2e/delivery.e2e.ts` and by `e2e/review-seed.ts`, which hands it to
+ *  the review layers, rather than written out in each, because a window that no longer spans the
+ *  rows fails nothing: `/delivery` still draws its heading, so a readiness locator passes and the
+ *  baseline silently becomes an empty chart. */
+export const TIMELINE_FIXTURE_QUERY = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
+
 /** The session-groups fixture, relative to now so the window control's presets see it: two
  *  population pull requests merged in the last seven days, first written by sessions
  *  `e2e-planner-1` and `e2e-planner-2`, and one merged 20 days ago, first written by
