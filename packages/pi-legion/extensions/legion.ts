@@ -414,11 +414,12 @@ export default function legionExtension(pi: PiApi): void {
    * gives the two calls one id, which the ids being the provider's own leaves open. Each of the
    * seven is held by a case of `legion.test.ts` that is red when that guard alone is cut.
    *
-   * **The guard on `message_end` and the close behind it hold each other**, and neither is
-   * deleted on the evidence of a green suite: its case, "a subagent's run cancelled on its own
-   * closes none of the worker's calls", asserts that this guard keeps a subagent's aborted
-   * message off the worker's book, so deleting the close that line guards would leave the case
-   * passing with the guard gone. The same sentence is written at that handler. */
+   * **The guard on `message_end` and the close behind it hold each other**, which is the one
+   * thing about that line no suite says: each half has a case that reds when it alone is cut,
+   * but this guard's case, "a subagent's run cancelled on its own closes none of the worker's
+   * calls", is about what the close does **not** do for a subagent, so it means something only
+   * while the close is there. Take the close away with the case that holds it and this case
+   * goes hollow rather than red. The same is written at that handler. */
   const subagentEvent = (context: SessionContext): boolean => context.agent?.kind === "sub";
 
   /**
@@ -731,13 +732,15 @@ export default function legionExtension(pi: PiApi): void {
   // the `tool_call` handler above, which records a call's arguments and says nothing about
   // whether the turn it belongs to settled.
   //
-  // Deleting this close would take nothing red and would quietly hollow another case: "a
-  // subagent's run cancelled on its own closes none of the worker's calls" asserts that the
-  // guard in front of it keeps a subagent's aborted message off the worker's book, and with no
-  // close behind the guard that case passes with the guard gone. The line and that guard hold
-  // each other, which is why neither is deleted on the evidence of a green suite. The case that
-  // holds this line is "an assistant message that ended aborted closes the calls of the turn it
-  // ended".
+  // **The line is a guard and a close, and each half has a case of its own**, measured by
+  // cutting each alone: cutting the close reds "an assistant message that ended aborted closes
+  // the calls of the turn it ended", and cutting the guard reds "a subagent's run cancelled on
+  // its own closes none of the worker's calls". What no suite can say is that the two hold each
+  // other. The guard's case is about what this close does **not** do for a subagent, so it
+  // means something only while the close is here: take the close away with the case that holds
+  // it — which is what removing a line read as dead looks like — and the guard's case goes
+  // hollow rather than red, passing with the guard gone too. So the pair goes together or not
+  // at all, and a green run after the first deletion is no licence for the second.
   pi.on("message_end", async (event, context) => {
     if (!subagentEvent(context)) stallWatch?.assistantMessage(event.message);
     if (!phaseWorkerSession(context)) return;
