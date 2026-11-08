@@ -3,7 +3,7 @@
 // block has only queued that row's insert (INFRA-636), so the document its `#id`s resolve
 // against cannot be read back from the row and is handed to the reader instead
 // (refs.PendingScope). Each test writes `#q1` against a settled question block of the issue's
-// spec and reads the one edge it must store.
+// spec and reads the one edge it must store, or the event that must name the target it moved.
 package api
 
 import (
@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -194,4 +195,27 @@ func TestQuestionReferencesToABlockOfTheSameEditResolve(t *testing.T) {
 	if edges := questionEdges(t, database, "ask", citing, question); edges != 1 {
 		t.Fatalf("the second new ask block's `#q2` edges to %s = %d, want 1", question, edges)
 	}
+}
+
+// The edge is only half of what the write owes: the ask.opened of the citing block names the
+// ask it moved, so a reader refreshes that ask's cards and its panel by name rather than
+// falling back. The target's row is one this very transaction queued, and a read of the asks
+// table answers for none of it (refs.Pending).
+func TestANewAskBlocksEventNamesTheAskOfTheSameEdit(t *testing.T) {
+	handler, _ := blockAskHandler(t)
+	issue := createInteractionIssue(t, handler, "TEST", "An event naming a question of the same edit", "Context\n")
+	written := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+		"actor": sessionActor(),
+		"ops": []map[string]string{{"op": "insert", "after": "end", "markdown": "" +
+			":::ask{#q2}\nWhich way?\n:::\n\nSettled by #q2.\n\n:::ask{#q3}\nDoes #q2 settle this?\n:::\n"}},
+	})
+	if written.Code != http.StatusOK {
+		t.Fatalf("write the two ask blocks: status=%d body=%s", written.Code, written.Body.String())
+	}
+	awaitIndexedAskBlock(t, handler, issue.PrimaryArtifactID, "q3", "Does #q2 settle this?")
+	question := blockAskID(t, handler, issue.Key, "q2")
+	citing := blockAskID(t, handler, issue.Key, "q3")
+	requireReferencesChanged(t, handler, issue.Key, "ask.opened", citing, []model.ChangedReference{
+		{Kind: "ask", ID: question, IssueKey: &issue.Key},
+	})
 }

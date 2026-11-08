@@ -26,15 +26,20 @@ type Pending interface {
 	// PendingBlockAsks is every question block's ask of document artifactID whose row this
 	// transaction writes, as that row will stand (docs.loadAskBlocks reads the same entries).
 	PendingBlockAsks(artifactID string) []PendingBlockAsk
+	// PendingAsk is the same entries read by ask id rather than by document: the ask of id
+	// whose row this transaction writes, false when it writes none.
+	PendingAsk(id string) (PendingBlockAsk, bool)
 }
 
 // PendingBlockAsk is one question block's ask whose row a transaction has queued, named by the
-// columns the question map reads of it (QuestionMap): the block it is the ask of, its id, and
-// the issue it is on, nil for an ask on a project's or a session's document.
+// columns its readers read of it: the block it is the ask of, its id, the issue it is on, and
+// the document that owns it where no issue does (resolveAskTargets, QuestionMap). IssueKey and
+// ArtifactID are the owner columns of the row, one of them nil as the stored row has them.
 type PendingBlockAsk struct {
-	BlockID  string
-	ID       string
-	IssueKey *string
+	BlockID    string
+	ID         string
+	IssueKey   *string
+	ArtifactID *string
 }
 
 type pendingContextKey struct{}

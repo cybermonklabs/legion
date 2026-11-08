@@ -494,6 +494,11 @@ func resolveIssueTargets(ctx context.Context, q Queryer, keys []string) (map[str
 // `dispatch://CORE-1/ask/hello` parses and must never fail the write, and a target nothing can
 // address resolves to nothing either way — while `id = any(...)` keeps the asks primary key,
 // which matters because this runs inside the write transaction of every body that cites an ask.
+//
+// An ask whose row the reading transaction has queued and not written yet is named from what
+// that insert writes (Pending), as the stored ones are: settlement opens the ask of every new
+// question block of an edit in one transaction, so a `#id` naming another new block of that
+// same edit is stored as the edge of an ask no read of the table answers for.
 func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string]model.ChangedReference, error) {
 	found := map[string]model.ChangedReference{}
 	addressable := make([]uuid.UUID, 0, len(ids))
@@ -523,7 +528,20 @@ func resolveAskTargets(ctx context.Context, q Queryer, ids []string) (map[string
 		}
 		found[reference.ID] = reference
 	}
-	return found, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if pending := pendingOf(ctx); pending != nil {
+		for _, id := range ids {
+			if _, stored := found[id]; stored {
+				continue
+			}
+			if ask, queued := pending.PendingAsk(id); queued {
+				found[id] = model.ChangedReference{Kind: "ask", ID: ask.ID, IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID}
+			}
+		}
+	}
+	return found, nil
 }
 
 // resolveArtifactTargets resolves cited artifacts by the ref_key `refs` stores for them, the

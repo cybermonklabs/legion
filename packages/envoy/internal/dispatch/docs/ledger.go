@@ -597,7 +597,7 @@ func (l *Ledger) PendingMarkdown(artifactID string) (string, bool) {
 
 // PendingBlockAsks is every question block's ask of artifactID this transaction has queued a
 // write of, as the row will stand (recordAskBlock, which loadAskBlocks reads too), in the shape
-// the question map reads them by (refs.PendingBlockAsk).
+// its readers read them by (refs.PendingBlockAsk).
 func (l *Ledger) PendingBlockAsks(artifactID string) []refs.PendingBlockAsk {
 	if l == nil {
 		return nil
@@ -608,9 +608,33 @@ func (l *Ledger) PendingBlockAsks(artifactID string) []refs.PendingBlockAsk {
 	}
 	pending := make([]refs.PendingBlockAsk, 0, len(asks))
 	for blockID, ask := range asks {
-		pending = append(pending, refs.PendingBlockAsk{BlockID: blockID, ID: ask.ID, IssueKey: ask.IssueKey})
+		pending = append(pending, pendingBlockAsk(blockID, ask))
 	}
 	return pending
+}
+
+// PendingAsk is the ask of id among the same entries, which a reference to one of this
+// transaction's new question blocks names and no read of the asks table answers for
+// (refs.resolveAskTargets). Settlement opens the asks of one document's new blocks, so the
+// scan is over that document's few entries.
+func (l *Ledger) PendingAsk(id string) (refs.PendingBlockAsk, bool) {
+	if l == nil {
+		return refs.PendingBlockAsk{}, false
+	}
+	for _, asks := range l.askBlocks {
+		for blockID, ask := range asks {
+			if ask.ID == id {
+				return pendingBlockAsk(blockID, ask), true
+			}
+		}
+	}
+	return refs.PendingBlockAsk{}, false
+}
+
+// pendingBlockAsk is one askBlocks entry in the shape its readers read it by: the owner columns
+// the row carries, and the block it is the ask of.
+func pendingBlockAsk(blockID string, ask model.Ask) refs.PendingBlockAsk {
+	return refs.PendingBlockAsk{BlockID: blockID, ID: ask.ID, IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID}
 }
 
 // QueueAskParts queues the index of an ask's parts for a route that writes the ask itself,

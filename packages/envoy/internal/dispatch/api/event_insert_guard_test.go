@@ -11,10 +11,9 @@ import (
 const brokerEventInsert = "internal/dispatch/events/broker.go"
 
 // brokerEventInserts is how many event inserts that file holds: the one a write phase queues
-// (events.Broker.QueueAppendWithLogins) and the one a caller with several events and no write
-// phase runs (events.Broker.AppendAll). Both keep the invariants below, and the count is here so
+// (events.Broker.QueueAppendWithLogins). It keeps the invariants below, and the count is here so
 // that an insert moving out of this scan's reach reds rather than passing unseen.
-const brokerEventInserts = 2
+const brokerEventInserts = 1
 
 var eventInsertStatement = regexp.MustCompile(`\binsert into events\b`)
 
