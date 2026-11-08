@@ -313,6 +313,10 @@ func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
 	if likely.Key != fixture.candidate.Key {
 		t.Fatalf("likely duplicate = %s, want %s", likely.Key, fixture.candidate.Key)
 	}
+	// The nudge names the issue, so it carries the title a reader recognizes it by, not only its key.
+	if likely.Title != fixture.candidate.Title {
+		t.Fatalf("likely duplicate title = %q, want %q", likely.Title, fixture.candidate.Title)
+	}
 	if len(body.Advice.Suggestions.TitleMatches) != 0 {
 		t.Fatalf("an unforced create filled title_matches: %#v", body.Advice.Suggestions.TitleMatches)
 	}

@@ -1157,9 +1157,9 @@ jobs:
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
-              # e2e/cli-reply-answers.e2e.ts:18 runs envoy-client's dispatch CLI, spawned as its
-              # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
-              # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
+              # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its own
+              # process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with its
+              # sources, through packages/envoy-client/src/broker-credential.ts:21-22
               # (ci_job_reads.py's envoy_client_dep).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/bin/dispatch.ts'
