@@ -15,12 +15,14 @@
 # metadata server, the token mint, the OS Login key import and login profile, the Cloud SQL
 # Admin API, the Compute API, Dispatch's /healthz, the profiling port and, only while the fake
 # tunnel of that port runs, a read through the step's profiling tunnel; `psql` keeps a database
-# list and makes the database a `create database` names; `nc` refuses every address unless the
-# test says otherwise; `loadgen` records its argv, writes the files the next step reads, and as
-# the stub embedder holds a port, which a second stub on it is refused; `pprof-tunnel` is the
-# deployment file's pprof_tunnel_command, which stands for the `ssh -N -i <key> -L ...` a step
-# runs on the load machine, and which refuses the forward with ssh's own `Permission denied
-# (publickey)` when the command names no identity, as the deployment's ssh did.
+# list and makes the database a `create database` names, and does not answer at all -- as a psql
+# that never reached the instance does not -- when the test says so; `nc` refuses every address
+# unless the test says otherwise; `loadgen` records its argv, writes the files the next step
+# reads, and as the stub embedder holds a port, which a second stub on it is refused;
+# `pprof-tunnel` is the deployment file's pprof_tunnel_command, which stands for the
+# `ssh -N -i <key> -L ...` a step runs on the load machine, and which refuses the forward with
+# ssh's own `Permission denied (publickey)` when the command names no identity, as the
+# deployment's ssh did.
 # `jq`, `ssh-keygen` and `sudo`'s own commands are the real ones, and `rm` is
 # the real one but for a path a case registers as another user's directory at mode 700, which it
 # refuses to remove unless the removal came through `sudo`: this pod is not root, so no fake can
@@ -130,7 +132,10 @@
 # over pg_stat_activity and drops it all the same, the seed's rename of that database does the
 # same, a drop the instance refuses even so refuses the reset by name with the sessions it saw,
 # and the same reset against the drop the series died on -- `with (force)` and nothing before
-# it -- is refused by the server with those sessions attached.
+# it -- is refused by the server with those sessions attached; and (cc) up tells a psql that did
+# not answer from an instance that answered it holds no database: a psql that fails refuses up
+# by name, with what psql said, and no create database of that database is run, while a psql
+# that answers with no row has up make it once.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -412,6 +417,14 @@ printf '%s\n' "$*" >>"$FAKE_DIR/psql.argv"
 # The passfile of each call, its mode beside it: libpq takes the password from PGPASSFILE and
 # reads none that anyone but its owner can, so the credential case reads both back.
 printf '%s %s\n' "${PGPASSFILE:-none}" "$([ -f "${PGPASSFILE:-}" ] && stat -c %a "$PGPASSFILE" || echo none)" >>"$FAKE_DIR/psql.passfile"
+# A psql that does not answer at all, which FAKE_DIR/psql-refuses turns on: the file holds what
+# psql prints on its standard error -- a connection error, a refused login, a timeout -- and the
+# call exits 2, as psql exits when it never reached the server. The call is recorded above
+# before it is refused, so a case can still read back which statements reached this fake.
+if [ -f "$FAKE_DIR/psql-refuses" ]; then
+  cat "$FAKE_DIR/psql-refuses" >&2
+  exit 2
+fi
 db=$FAKE_DIR/db
 sessions=$FAKE_DIR/sessions
 mkdir -p "$db" "$sessions"
@@ -1363,6 +1376,41 @@ run_fn DB_FREE_SECONDS=6 DB_FREE_POLL_SECONDS=2 DB_TERMINATED_SECONDS=4 eval 'se
 [ "$(cut -f1,2 "$fake/terminate.log")" = "$(printf 'dispatch\t31')" ] ||
   fail "the seed's rename did not end the sessions attached to the database it renamed: $(cat "$fake/terminate.log")"
 pass "the seed's rename of the database to the template ends the sessions its stopped containers left behind too"
+
+# ---- (cc) what up reads out of a psql that does not answer ----------------------------------
+
+# A psql that cannot reach the instance answers nothing, and nothing is not "the instance holds
+# no such database": the up that read it that way went on to `create database` on a database
+# that was plainly there, where the server refused it on pg_database_datname_index, and the
+# same up a minute later found the database and said so (dispatch://INFRA-988). These two cases
+# hold the probe to the three outcomes it has -- a row, no row, and no answer -- and the second
+# is what keeps the first from being bought by refusing every absent database.
+
+reset_fake
+printf 'psql: error: connection to server at "198.51.100.7", port 5432 failed: Connection timed out\n' >"$fake/psql-refuses"
+run_vm up --config "$config"
+((RC != 0)) || fail "up ran on through a psql that never reached the instance"
+grep -q 'psql	select 1 from pg_database' "$fake/actions.log" ||
+  fail "this case proves nothing: up never asked the instance whether it holds its database"
+grep -q 'whether it holds the database dispatch failed' "$tmp/out" ||
+  fail "up's refusal does not name the database it was asking about: $(cat "$tmp/out")"
+grep -q 'Connection timed out' "$tmp/out" ||
+  fail "up's refusal does not carry what psql said about the instance: $(cat "$tmp/out")"
+! grep -q 'create database' "$fake/actions.log" ||
+  fail "up ran a create database on an instance whose answer it never had: $(grep 'create database' "$fake/actions.log")"
+pass "a psql that does not answer refuses up by name, with what psql said, and no create database is run on an instance that answered nothing"
+
+# The other half: a psql that answers with no row is an instance that holds no database, and up
+# makes it, once. Without this case the refusal above could be had by refusing every absent
+# database, which would stop the up of every new deployment.
+reset_fake
+run_vm up --config "$config"
+((RC == 0)) || fail "up failed on an instance that answered it holds no database: see the output above"
+creates=$(grep -c '^psql	create database "dispatch"$' "$fake/actions.log" || true)
+[ "$creates" = 1 ] ||
+  fail "up ran $creates create database statements for the database the instance answered it holds none of, not 1"
+[ -e "$fake/db/dispatch" ] || fail "up left no database dispatch on an instance that holds none"
+pass "a psql that answers with no row is an absent database still: up makes it, once"
 
 # ---- (g) and (h) step -----------------------------------------------------------------------------
 

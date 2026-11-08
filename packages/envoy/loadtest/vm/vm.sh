@@ -1170,10 +1170,24 @@ pg_passfile_field() {
   printf '%s\n' "${v//:/\\:}"
 }
 
-# db_exists NAME: the instance holds that database.
+# db_exists NAME: the instance holds that database. A psql that answered with a row says the
+# instance holds NAME and a psql that answered with no row says it holds none, but a psql that
+# did not answer at all -- a connection error, a refused login, a timeout -- says neither, so
+# that one refuses this script by name and with what psql printed rather than returning to its
+# caller. Every caller reads this function's answer as the instance's own word and acts on it,
+# and a failure returned as "the instance holds none" is what sent an up to `create database`
+# on a database that was plainly there, where the server refused it on
+# pg_database_datname_index while the same up a minute later found that database and said so
+# (dispatch://INFRA-988).
 db_exists() {
-  local got
-  got=$(psql_at postgres "select 1 from pg_database where datname = '$1'") || return 1
+  local got errors said rc=0
+  errors=$(mktemp "$RUN_DIR/.dberr.XXXXXX") || die "making a file for psql's errors in $RUN_DIR failed"
+  got=$(psql_at postgres "select 1 from pg_database where datname = '$1'" 2>"$errors") || rc=$?
+  said=$(<"$errors")
+  said=${said//$'\n'/ }
+  rm -f -- "$errors"
+  ((rc == 0)) ||
+    die "asking the instance whether it holds the database $1 failed: psql exited $rc and said '${said:-nothing}'. Whether the instance holds $1 is unknown, and this script reads an unknown as neither a yes nor a no: run the command again once the instance answers."
   [ "$got" = 1 ]
 }
 
