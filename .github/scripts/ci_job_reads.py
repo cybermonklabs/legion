@@ -785,7 +785,34 @@ def race_impossible_script(packages) -> str:
 # `//go:build !race` or behind raceEnabled changes this text and ci.yaml stops matching it.
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
-RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
+# TEMPORARY, the INFRA-1075 profiling run: the step writes its `go test -json` stream to
+# $RUNNER_TEMP/go-test-json/race-impossible.json and replays it to the log, as the unit step
+# does, so the run's artifact carries this step's per-test times too. It goes back to
+# `race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)` alone when the profiling steps come out.
+RACE_IMPOSSIBLE_SCRIPT = json_stream_script(
+    race_impossible_script(RACE_IMPOSSIBLE_PACKAGES).replace("go test ", "go test -json ", 1),
+    "race-impossible.json")
+
+# TEMPORARY, the INFRA-1075 profiling run: the two steps that run adds to envoy-go, pinned whole
+# like the job's other steps whose go commands are not in the simple form. The first compiles and
+# links every test binary of the module and runs no test (-run '^$'), so its own step time is the
+# module's whole compile and link cost and the test steps after it run warm; the second runs each
+# package over the 60 s bar on its own under -cpuprofile and prints the profile's top 20. Both
+# come out with the steps themselves.
+COMPILE_ALL_STEP = "TEMPORARY: compile every test binary of the module"
+COMPILE_ALL_SCRIPT = "go list ./... | xargs go test -count=1 -run '^$' -p 8 > /dev/null"
+PROFILE_STEP = "TEMPORARY: CPU profile of each package over the bar"
+PROFILE_PACKAGES = ["./internal/dispatch/pmdoc", "./cmd/broker", "./cmd/dispatch-seed",
+                    "./internal/dispatch/outbox", "./internal/pgmigrate", "./cmd/dispatch",
+                    "./internal/dispatch/embedqueue"]
+PROFILE_SCRIPT = f"""\
+mkdir -p "$RUNNER_TEMP/prof"
+for pkg in {" ".join(PROFILE_PACKAGES)}; do
+  name=$(basename "$pkg")
+  echo "===== CPU profile of $pkg (top 20)"
+  go test -count=1 -timeout 20m -cpuprofile "$RUNNER_TEMP/prof/$name.cpu" -o "$RUNNER_TEMP/prof/$name.test" "$pkg" || true
+  go tool pprof -top -nodecount=20 "$RUNNER_TEMP/prof/$name.test" "$RUNNER_TEMP/prof/$name.cpu" || true
+done"""
 
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"
@@ -1131,6 +1158,15 @@ GATES = [
         # -json` stream to a file and replays it to the log, so none of those is in the simple
         # form: -json is not a flag the check reduces and a redirect is not in that form either
         # (dispatch://INFRA-1075).
+        # TEMPORARY, the INFRA-1075 profiling run: the race-impossible step writes one too while
+        # these steps ride, so the paragraph above holds again when they come out.
+        #
+        # TEMPORARY, the INFRA-1075 profiling run: the compile step, which runs `go list ./...`
+        # into one `go test -run '^$'` over the whole module, so a pipe and a redirect put it out
+        # of the simple form as well. ./... is what it compiles, test binaries and all.
+        pinned_step("envoy-go", COMPILE_ALL_STEP, ENVOY, COMPILE_ALL_SCRIPT, [
+            (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
+        ]),
         #
         # One go test over every package of the plain run the race lane cannot make
         # (RACE_IMPOSSIBLE_*), selecting their tests with one -run.
@@ -1144,6 +1180,13 @@ GATES = [
         # and so keeps this gate's wide patterns justified.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, ["./..."], "go list ./... piped into go test, counted as go test ./...", {}),
+        ]),
+        # TEMPORARY, the INFRA-1075 profiling run: the profile step, one `go test -cpuprofile`
+        # per package over the 60 s bar inside a shell loop, each followed by `go tool pprof`,
+        # which is no simple form at all. One Run per package it names.
+        pinned_step("envoy-go", PROFILE_STEP, ENVOY, PROFILE_SCRIPT, [
+            (ENVOY, [package], f"go test -cpuprofile {package}", {})
+            for package in PROFILE_PACKAGES
         ]),
         pinned_step("envoy-go", ROUTES_STEP, ENVOY, ROUTES_SCRIPT, [
             (ENVOY, [f"./{ROUTES_PACKAGE}/"], f"go test ./{ROUTES_PACKAGE}/", {}),

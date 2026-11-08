@@ -3010,7 +3010,11 @@ jobs:
     # measured 1 minute, natslive's default 10 and the bus matrix's own 5 are 55, and the
     # integration step's 5 is less. 55, then, is the bound, and this job is held to it rather
     # than to the 60 it carried when the unit step ran the whole module in two 20-minute runs.
-    timeout-minutes: 55
+    # TEMPORARY, the INFRA-1075 profiling run: 180 rather than the 55 the block above computes,
+    # because the compile step below builds the whole module before the test steps and the
+    # profile step below runs seven of this job's packages a second time. The block above is
+    # left as it is: its 55 is the bound this job returns to when these steps come out.
+    timeout-minutes: 180
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -3184,6 +3188,15 @@ jobs:
             packages/envoy/internal/testnats/nats.go Image
             packages/envoy/internal/testnats/nats.go HubImage
             packages/envoy/internal/tests3/seaweedfs.go Image
+      # TEMPORARY, the INFRA-1075 profiling run: compile and link the test binary of every
+      # package of the module and run no test of it (-run '^$'), so this step's own time is the
+      # module's whole compile and link cost, and the two test steps after it run against a warm
+      # build cache, which makes their own times test-run time rather than build plus run. It
+      # comes out with the rest of this profiling run's steps (dispatch://INFRA-1075).
+      - name: "TEMPORARY: compile every test binary of the module"
+        run: |
+          go list ./... | xargs go test -count=1 -run '^$' -p 8 > /dev/null
+        working-directory: packages/envoy
       # The tests the race detector makes impossible, which the race job of each of these packages
       # therefore cannot make, so envoy-go keeps a plain run of exactly them: internal/bus counts
       # HoldsSeed's allocations, which the race runtime's own allocations would be counted into;
@@ -3209,9 +3222,22 @@ jobs:
       # build, with nothing running beside it (run 42307926510, dispatch://INFRA-1075). Each
       # package measures its own process's heap or allocations, so running them at the same time
       # changes no number any of them asserts on.
+      # TEMPORARY, the INFRA-1075 profiling run: this step writes its `go test -json` stream to
+      # $RUNNER_TEMP/go-test-json/race-impossible.json and replays the package lines to the log,
+      # exactly as the unit step below does, so the upload step's artifact carries this step's
+      # own per-test times and .github/scripts/go-test-times.py ranks them with the rest. The
+      # step goes back to its plain one-line `go test` when this run's steps come out.
       - name: Test what the race build cannot run at all or at full size
         run: |
-          go test -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs
+          mkdir -p "$RUNNER_TEMP/go-test-json"
+          s=0
+          go test -json -count=1 -timeout 10m -run '^(TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound|TestCopyLockComesBeforeEveryPendingRowAndEvent|TestCopyLockOrderGuardFollowsTheLockTakers|TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks|TestHoldsSeedAllocatesAtMostOneCopyPerDecoding|TestRenderReuseARandomisedEditStorm|TestRenderReuseAReplicaReplaysTheRoomsFormattingExactly|TestTheKeyedWriteGuardSeesWhatItGuards|TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound|TestUploadsToARoomInUseKeepMemoryWithinTheBound)$' ./internal/bus ./internal/dispatch/api ./internal/dispatch/docs > "$RUNNER_TEMP/go-test-json/race-impossible.json" || s=$?
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/race-impossible.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/race-impossible.json"
+          fi
+          exit $s
         working-directory: packages/envoy
       # The unit step below, the natslive step and the integration step each write their `go test
       # -json` stream to a file under $RUNNER_TEMP/go-test-json, which the upload step below
@@ -3271,6 +3297,25 @@ jobs:
             jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
           fi
           exit $s
+        working-directory: packages/envoy
+      # TEMPORARY, the INFRA-1075 profiling run: each package of the unit step above that the
+      # step's own `go test -json` stream put over 60 s, run alone under -cpuprofile and then
+      # read back with `go tool pprof -top -nodecount=20`, so the log says where each one's time
+      # goes. -o keeps the test binary pprof needs for symbols out of the working tree, and both
+      # land under $RUNNER_TEMP/prof. A package that fails here fails nothing: the loop is `||
+      # true`, since this step measures rather than tests, and the unit step above has already
+      # run every one of these packages for real. They read DISPATCH_TEST_DATABASE_URL, which
+      # this job sets at job level (env: above), so the step needs no env: of its own. It comes
+      # out with the rest of this profiling run's steps (dispatch://INFRA-1075).
+      - name: "TEMPORARY: CPU profile of each package over the bar"
+        run: |
+          mkdir -p "$RUNNER_TEMP/prof"
+          for pkg in ./internal/dispatch/pmdoc ./cmd/broker ./cmd/dispatch-seed ./internal/dispatch/outbox ./internal/pgmigrate ./cmd/dispatch ./internal/dispatch/embedqueue; do
+            name=$(basename "$pkg")
+            echo "===== CPU profile of $pkg (top 20)"
+            go test -count=1 -timeout 20m -cpuprofile "$RUNNER_TEMP/prof/$name.cpu" -o "$RUNNER_TEMP/prof/$name.test" "$pkg" || true
+            go tool pprof -top -nodecount=20 "$RUNNER_TEMP/prof/$name.test" "$RUNNER_TEMP/prof/$name.cpu" || true
+          done
         working-directory: packages/envoy
       # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
       # here and nowhere else, so the only transactions its horizon waits on are its own tests'.
