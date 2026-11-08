@@ -10,7 +10,7 @@ import type {
   IssueDetails,
   RequirementCoverage,
 } from "../../api/types";
-import { buildIssueTree, firstLineOf, type TreeNode } from "./issue-tree";
+import { buildIssueTree, FIRST_LINE_LIMIT, firstLineOf, type TreeNode } from "./issue-tree";
 import { blockNodeId } from "./tree-drafts";
 
 /**
@@ -329,8 +329,9 @@ test("a tree of one level and a tree of six are both drawn", () => {
 });
 
 // R1: a row's first line is the node's own text to the first sentence end or 100 characters,
-// whichever comes first, cut at a word and never inside one.
-test("a first line ends at a sentence or at a word, never inside one", () => {
+// whichever comes first, cut at a word where the limit falls near one and at the limit itself
+// where it does not.
+test("a first line ends at a sentence, at a word, or at the limit where there is no word", () => {
   expect(firstLineOf("One sentence. And another.")).toEqual({
     cut: true,
     line: "One sentence.",
@@ -345,4 +346,12 @@ test("a first line ends at a sentence or at a word, never inside one", () => {
   expect(long.charAt(first.line.length)).toBe(" ");
   expect(firstLineOf("Short enough.")).toEqual({ cut: false, line: "Short enough." });
   expect(firstLineOf("")).toEqual({ cut: false, line: "" });
+
+  // An unbroken token past the limit holds no word boundary to cut at, so the line is the
+  // limit's own 100 characters rather than the whole token.
+  const unbroken = "a".repeat(FIRST_LINE_LIMIT + 20);
+  expect(firstLineOf(unbroken)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
+  // A space at the limit's own edge is a word boundary, and the line ends before it.
+  const atTheEdge = `${"a".repeat(FIRST_LINE_LIMIT)} tail`;
+  expect(firstLineOf(atTheEdge)).toEqual({ cut: true, line: "a".repeat(FIRST_LINE_LIMIT) });
 });

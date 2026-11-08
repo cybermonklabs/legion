@@ -573,36 +573,43 @@ test("the presets are queries over one tree and fit every width @phone", async (
       }
     }
 
-    // The two shapes, and no sideways scroll at any width between them.
+    // The two shapes, and no sideways scroll at any width between them. Each shape is read
+    // through `expect.poll` for the reason `assertPageFits` is (`e2e/unclipped.ts`): a resize
+    // settles on two clocks, the engine applying the breakpoint the moment the viewport reaches
+    // it and the preset row re-rendering a task or two later on the `useMediaQuery` state it
+    // reads, so a reading taken the instant the viewport changes is of the shape the page is
+    // leaving. The poll weakens nothing - a page settled on the wrong shape never passes, and
+    // the failure at the timeout names both counts - and both counts are still asserted, so a
+    // page drawing neither shape or both fails as it did.
     await gotoIssue(page, `/issues/${seeded.key}`);
+    const presetShape = async () =>
+      `${await presetTabs(page).count()}/${await presetChooser(page).count()}`;
     for (const width of [1440, 1280]) {
       await page.setViewportSize({ height: DESKTOP.height, width });
-      expect(await presetTabs(page).count(), `the row of five is gone at ${width} px`).toBe(5);
-      expect(
-        await presetChooser(page).count(),
-        `one control replaced the row of five at ${width} px`
-      ).toBe(0);
+      await expect
+        .poll(presetShape, {
+          message: `at ${width} px the page draws no row of five, or one control beside it (tabs/controls)`,
+        })
+        .toBe("5/0");
       await assertPageFits(page);
     }
     for (const width of [1279, 1100]) {
       await page.setViewportSize({ height: DESKTOP.height, width });
-      const tabs = await presetTabs(page).count();
-      const chooser = await presetChooser(page).count();
-      expect(
-        `${tabs}/${chooser}`,
-        `at ${width} px the page draws neither the row of five nor the one control (${tabs} tabs, ${chooser} controls)`
-      ).toMatch(/^(5\/0|0\/1)$/);
+      await expect
+        .poll(presetShape, {
+          message: `at ${width} px the page draws neither the row of five nor the one control (tabs/controls)`,
+        })
+        .toMatch(/^(5\/0|0\/1)$/);
       await assertPageFits(page);
       await assertWhole(presetRow(page));
     }
     for (const width of [1024, 390, 320]) {
       await page.setViewportSize({ height: PHONE.height, width });
-      expect(await presetTabs(page).count(), `the row of five is still drawn at ${width} px`).toBe(
-        0
-      );
-      expect(await presetChooser(page).count(), `the one control is missing at ${width} px`).toBe(
-        1
-      );
+      await expect
+        .poll(presetShape, {
+          message: `at ${width} px the row of five is still drawn, or the one control is missing (tabs/controls)`,
+        })
+        .toBe("0/1");
       await assertPageFits(page);
     }
     await presetChooser(page).click();
@@ -1463,18 +1470,35 @@ async function openIssueActions(page: Page): Promise<void> {
   if ((await control.getAttribute("aria-expanded")) !== "true") await control.click();
 }
 
+/** Closes whatever the view before this one opened, so the next control is reached rather than
+ *  dismissed: a press outside an open menu, or outside the identity block's actions group,
+ *  closes it instead of reaching the control under it, and Escape closes each of them
+ *  (`IssueActionsMenu.tsx`). */
+async function closeOpenControls(page: Page): Promise<void> {
+  await page.keyboard.press("Escape");
+  await expect(openMenu(page)).toHaveCount(0);
+  const actions = offered(page, "button", CONTROL_LABELS.issue_actions);
+  if ((await actions.count()) === 1) {
+    await expect(actions).not.toHaveAttribute("aria-expanded", "true");
+  }
+}
+
 // c-nothing-lost.
 test("the new page carries every element of the old one @phone", async ({ browser }) => {
   // Four states, each read through the page's own views - its five presets, the two addresses
-  // beside them, the three views behind a control, the three a width opens, one per row of the
-  // tree, and, where the narrow tree is the way in, the presets and the zooms walked again.
-  // Each walk loads the page once and moves through its rows from there, which is how a reader
-  // moves through them: 42 loads of the issue page per 390 px state and 13 per 1440 px one,
-  // 124 and 36 views, each settled over two readings of its accessibility tree, and the write
-  // walk below after them. Measured on an issue pod's two CPUs: a view costs about 1 s, which
-  // is 5.8 minutes for the desktop project's four states and 4.4 for the phone project's two.
-  // The row carries a deadline of its own because that outlasts the 30 s default many times
-  // over, and the deadline leaves room for a loaded box.
+  // beside them, the five views behind a control or a width, one per row of the tree, and,
+  // where the narrow tree is the way in, the presets and the zooms walked again. Each walk
+  // loads the page once and moves through it from there, which is how a reader moves through
+  // it: 15 loads of the issue page per 390 px state and 9 per 1440 px one, naming 124 and 36
+  // views, each settled over two readings of its accessibility tree, and the write walk below
+  // after them. A view over a row the tree does not draw answers that it is not there and is
+  // not read, so a state pays for the views it has.
+  //
+  // Measured on an issue pod's two CPUs, the whole row in the desktop project, before the
+  // walks shared their loads: 8.2 minutes, of which the four states' walks were 424 s - 173 s
+  // of them 106 page loads and 198 s the settles. The row carries a deadline of its own
+  // because that outlasts the 30 s default many times over, and the deadline leaves room for
+  // a loaded box.
   test.setTimeout(900_000);
   const fixture = JSON.parse(
     await readFile(
@@ -1492,20 +1516,37 @@ test("the new page carries every element of the old one @phone", async ({ browse
     // behind a control rather than behind an address: the node menu, where a document no block
     // cites lives (R16); the identity block's actions menu, where Close and the parent editor
     // live (R11); and each document's own node, whose body is what a document opens (R2).
+    // How far a walk over the tree reaches. The seeded issue draws fewer rows than this at
+    // either width, and a view over a row the tree does not draw answers that it is not there
+    // rather than reading the page the view before it left (`e2e/page-inventory.ts`), so the
+    // bound costs a count and nothing else where the rows run out.
+    const walkDepth = 24;
+    // Which rows of the tree hold a zoom. The zoom walk's first view reads it off the tree it
+    // loads and every view of that walk after it reads it back; each walk fills it again,
+    // because the tree a width and a state draw is their own.
+    const zoomsInto = new Set<number>();
     const views = (width: number) => [
       ...PRESET_ORDER.map((preset) => async () => {
         await gotoIssue(page, presetAddress(seeded.key, preset));
+        return true;
       }),
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}/conversation`);
+        return true;
       },
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}/activity`);
+        return true;
       },
-      // Each of the two says the control is there before it reaches for it. A click waits for
-      // its element with no deadline of its own (Playwright's `actionTimeout` is unset here), so
-      // a page drawing neither control would spend this row's whole 15 minutes inside one click
-      // and report a timeout; asserted first, such a page says which control is missing.
+      // The five views a control opens are all of the issue's own address, so they are one
+      // load walked through rather than a load each: a reader opens them one after another on
+      // the page they are on. Each opens where the last left off, and the menus are closed
+      // first, because a press outside an open menu closes that menu instead of reaching the
+      // control under it. Each of the first two says the control is there before it reaches
+      // for it. A click waits for its element with no deadline of its own (Playwright's
+      // `actionTimeout` is unset here), so a page drawing neither control would spend this
+      // row's whole deadline inside one click and report a timeout; asserted first, such a
+      // page says which control is missing.
       async () => {
         await gotoIssue(page, `/issues/${seeded.key}`);
         await expect(
@@ -1514,45 +1555,55 @@ test("the new page carries every element of the old one @phone", async ({ browse
         ).toHaveCount(1);
         await nodeMenuButton(page).click();
         await expect(openMenu(page)).toHaveCount(1);
+        return true;
       },
       async () => {
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await closeOpenControls(page);
         const actions = offered(page, "button", CONTROL_LABELS.issue_actions);
         await expect(
           actions,
           `the page draws no ${CONTROL_LABELS.issue_actions} control: its view is unreadable`
         ).toHaveCount(1);
         await actions.click();
+        return true;
       },
       // The preset row below 1280 px is one chooser rather than a row of tabs, the children
       // section opens closed below `md` (`useChildrenSection.ts`), and the panel is a sheet a
       // reader opens below the width the margin keeps a column at (R12): each is a view of the
-      // page at that width, and at a width where it is already open it is the page as it
-      // stands and adds nothing.
+      // page at that width, and at a width where it is already open the view is the page with
+      // the menus closed, which is the page a reader is left on there.
       async () => {
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await closeOpenControls(page);
         if ((await presetChooser(page).count()) === 1) await presetChooser(page).click();
+        return true;
       },
       async () => {
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await closeOpenControls(page);
         const disclosure = childrenDisclosure(page);
         if ((await disclosure.getAttribute("aria-expanded")) === "false") await disclosure.click();
+        return true;
       },
       async () => {
-        await gotoIssue(page, `/issues/${seeded.key}`);
+        await closeOpenControls(page);
         const sheet = page.getByRole("button", { name: /review panel/i });
         if ((await sheet.count()) > 0) await sheet.first().click();
+        return true;
       },
       // One view per row of the tree, because a tree opens one body at a time and a node's own
-      // text, its facts and its controls are in that body (R2). The seeded issue draws fewer
-      // rows than this at either width, and a view whose row is not there reads the tree as it
-      // stands and adds nothing. The walk loads the page once and then moves through the rows,
-      // which is how a reader moves through them: each view is still read, and still fitted,
-      // on its own.
-      ...Array.from({ length: 24 }, (_unused, index) => async () => {
-        if (index === 0) await gotoIssue(page, `/issues/${seeded.key}`);
+      // text, its facts and its controls are in that body (R2). The walk loads the page once
+      // and then moves through the rows, which is how a reader moves through them: each view is
+      // still read, and still fitted, on its own.
+      ...Array.from({ length: walkDepth }, (_unused, index) => async () => {
+        if (index === 0) {
+          await gotoIssue(page, `/issues/${seeded.key}`);
+          const first = nodeRows(page);
+          if ((await first.count()) > 0) await first.first().focus();
+          return true;
+        }
         const rows = nodeRows(page);
-        if ((await rows.count()) > index) await rows.nth(index).focus();
+        if ((await rows.count()) <= index) return false;
+        await rows.nth(index).focus();
+        return true;
       }),
       // Below 1025 px the tree is read one node at a time (R17), so what a reader reaches by
       // zooming the walk reaches by zooming too. The presets first, because a decision, a
@@ -1565,28 +1616,63 @@ test("the new page carries every element of the old one @phone", async ({ browse
         ? []
         : PRESET_ORDER.flatMap((preset) =>
             Array.from({ length: 8 }, (_unused, index) => async () => {
-              if (index === 0) await gotoIssue(page, presetAddress(seeded.key, preset));
+              if (index === 0) {
+                await gotoIssue(page, presetAddress(seeded.key, preset));
+                const first = nodeRows(page);
+                if ((await first.count()) > 0) await first.first().focus();
+                return true;
+              }
               const rows = nodeRows(page);
-              if ((await rows.count()) > index) await rows.nth(index).focus();
+              if ((await rows.count()) <= index) return false;
+              await rows.nth(index).focus();
+              return true;
             })
           )),
       ...(width > 1024
         ? []
-        : Array.from({ length: 24 }, (_unused, into) =>
-            Array.from({ length: 2 }, (_also, index) => async () => {
+        : Array.from({ length: walkDepth }, (_unused, into) => {
+            // Whether this row's zoom was opened: the rows under one are read only where there
+            // was one to open.
+            let zoomed = false;
+            return Array.from({ length: 2 }, (_also, index) => async () => {
               if (index === 0) {
-                await gotoIssue(page, `/issues/${seeded.key}`);
-                const rows = nodeRows(page);
-                if ((await rows.count()) <= into) return;
-                const twisty = rows.nth(into).getByRole("button", { name: CONTROL_LABELS.unfold });
-                if ((await twisty.count()) === 0) return;
+                // A row with no branch of its own has no zoom to walk into, and this walk
+                // neither loads the page for it nor reads the page the walk is already on:
+                // which rows hold one is read once, off the tree the first view loads, and a
+                // row the tree does not draw is not in it either. Every zoom that is there is
+                // still opened on a page of its own, because a zoom is left by loading the
+                // issue again.
+                if (into === 0) {
+                  await gotoIssue(page, `/issues/${seeded.key}`);
+                  zoomsInto.clear();
+                  const rows = nodeRows(page);
+                  const drawn = Math.min(await rows.count(), walkDepth);
+                  for (let at = 0; at < drawn; at += 1) {
+                    const fold = rows.nth(at).getByRole("button", { name: CONTROL_LABELS.unfold });
+                    if ((await fold.count()) > 0) zoomsInto.add(at);
+                  }
+                } else if (!zoomsInto.has(into)) {
+                  return false;
+                } else {
+                  await gotoIssue(page, `/issues/${seeded.key}`);
+                }
+                if (!zoomsInto.has(into)) return into === 0;
+                const twisty = nodeRows(page)
+                  .nth(into)
+                  .getByRole("button", { name: CONTROL_LABELS.unfold });
                 await twisty.first().click();
+                zoomed = true;
+              } else if (!zoomed) {
+                return false;
               }
-              // The zoomed node is the first row; its own nodes follow it.
+              // The zoomed node is the first row; its own nodes follow it, and the first of
+              // them - a document the row's requirement cites - is read by the view that
+              // opened the zoom.
               const under = nodeRows(page);
               if ((await under.count()) > index + 1) await under.nth(index + 1).focus();
-            })
-          ).flat()),
+              return true;
+            });
+          }).flat()),
     ];
     // Which states this project reads. The fixture was recorded in a desktop browser, so its
     // 1440 px states are a desktop shell's: setting 1440 px on an iPhone profile draws a

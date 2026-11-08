@@ -228,14 +228,22 @@ export interface CarriedOptions {
   /** Which recorded state this is (`open-1440`), named in every failure. */
   readonly state: string;
   /**
-   * The page's own views, each a call that puts the page in one of them. The recording is the
-   * merge of the views the old page had - its eight tab panels, one at a time, because a page
-   * renders one and hides the rest (`record-page-inventory.e2e.ts`) - so the page it is read
-   * against is merged the same way, or a page that still offers everything would be read as
-   * having lost whatever its first view does not show. Each view is read in turn and the
-   * readings merged, and every one of them passes `assertPageFits` on its own.
+   * The page's own views, each a call that puts the page in one of them and answers whether
+   * that view is there. The recording is the merge of the views the old page had - its eight
+   * tab panels, one at a time, because a page renders one and hides the rest
+   * (`record-page-inventory.e2e.ts`) - so the page it is read against is merged the same way,
+   * or a page that still offers everything would be read as having lost whatever its first
+   * view does not show. Each view is read in turn and the readings merged, and every one of
+   * them passes `assertPageFits` on its own.
+   *
+   * A view the page does not have at this width - the eighth row of a tree that draws five, a
+   * control a wider page never folds away - answers `false` and leaves the page exactly as the
+   * view before it left it, and the walk reads nothing for it: a reading there would record the
+   * view before it a second time, under its own settle and its own fit. So a walk may name
+   * more views than a width has without paying for the ones it does not, and a walk that
+   * reaches no view at all fails the check below for want of anything to merge.
    */
-  readonly views: readonly (() => Promise<void>)[];
+  readonly views: readonly (() => Promise<boolean>)[];
 }
 
 /**
@@ -274,14 +282,20 @@ export async function assertInventoryCarried(
     });
   }
   const present = new Map<string, MeasuredEntry[]>();
+  let read = 0;
   for (const view of options.views) {
-    await view();
+    if ((await view()) === false) continue;
     await assertPageFits(page);
+    read += 1;
     for (const entry of await settled(() => measured(page.ariaSnapshotJSON({ boxes: true })))) {
       const key = entryKey(entry);
       present.set(key, [...(present.get(key) ?? []), entry]);
     }
   }
+  expect(
+    read,
+    `${options.state}: every one of the ${options.views.length} views answered that it is not there, so nothing was read`
+  ).toBeGreaterThan(0);
   for (const one of wanted) {
     one.instances = one.carried.flatMap((entry) => present.get(entryKey(entry)) ?? []);
   }

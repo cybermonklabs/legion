@@ -317,6 +317,62 @@ function cssEscapeAttrValue(value: string): string {
   return value.replace(/["\\]/g, '\\$&');
 }
 
+/** How long after a landing's last scroll counts as that landing having stopped. Two frames of
+ *  a 60 Hz screen is 33 ms, and a smooth scroll emits a scroll event every frame it runs. */
+const LANDING_SETTLED_MS = 150;
+/** How long after a landing was aimed it may still be corrected. Past this the scroll on the
+ *  page is nobody's but the reader's, and nothing here touches it. */
+const LANDING_WINDOW_MS = 2_000;
+
+/**
+ * Scrolls `element` to the middle of every scrollport above it, and corrects that aim once when
+ * the scroll it started has stopped.
+ *
+ * `scrollIntoView` takes its aim from the layout it is called in and never takes it again,
+ * while the page moves under the landing it started: Dispatch's issue page condenses its
+ * sticky identity block as the page scrolls beneath it, which left a quote 38 px below the
+ * middle of the screen, with the page 4 px short of the end it had been aimed at
+ * (dispatch://INFRA-1196). So the aim is taken a second time, once, and only while the landing
+ * is still the page's own: the correction is dropped the moment the reader wheels, touches,
+ * types or presses a pointer, and it is never made more than `LANDING_WINDOW_MS` after the
+ * first aim. A reader's own scroll is therefore never overridden - only the page's own scroll
+ * is finished.
+ */
+function landOnMiddle(element: HTMLElement): void {
+  const where: ScrollIntoViewOptions = { behavior: 'smooth', block: 'center' };
+  element.scrollIntoView(where);
+  const document_ = element.ownerDocument;
+  const window_ = document_.defaultView;
+  if (window_ === null) return;
+  // A scroll event does not bubble, so the page's own scroll and every scrollport inside it are
+  // heard in the capture phase.
+  const readerTook = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
+  let settling: number | undefined;
+  let over = false;
+  const stop = (): void => {
+    if (over) return;
+    over = true;
+    window_.clearTimeout(settling);
+    window_.clearTimeout(deadline);
+    document_.removeEventListener('scroll', moved, true);
+    for (const taken of readerTook) window_.removeEventListener(taken, stop, true);
+  };
+  const again = (): void => {
+    if (over) return;
+    stop();
+    element.scrollIntoView(where);
+  };
+  const moved = (): void => {
+    if (over) return;
+    window_.clearTimeout(settling);
+    settling = window_.setTimeout(again, LANDING_SETTLED_MS);
+  };
+  const deadline = window_.setTimeout(stop, LANDING_WINDOW_MS);
+  document_.addEventListener('scroll', moved, true);
+  for (const taken of readerTook) window_.addEventListener(taken, stop, true);
+  settling = window_.setTimeout(again, LANDING_SETTLED_MS);
+}
+
 /**
  * Replaces `parserCtx`'s value with a self-healing wrapper (LEGION-566). Milkdown's own `parser`
  * plugin builds `parserCtx`'s `ParserState` once, at boot, and never rebuilds it
@@ -563,7 +619,7 @@ export async function createProofEditor(
       const escaped = cssEscapeAttrValue(markId);
       const elements = view.dom.querySelectorAll<HTMLElement>(`[data-id="${escaped}"]`);
       if (elements.length === 0) return;
-      elements[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+      landOnMiddle(elements[0]);
       pulseHighlight(view, 'mark', markId);
     },
     focusBlock(blockId: string): void {

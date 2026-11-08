@@ -175,8 +175,11 @@ export const FIRST_LINE_LIMIT = 100;
 
 /**
  * The node's own text to the first sentence end or `FIRST_LINE_LIMIT` characters, whichever
- * comes first, cut at a word and never inside one. `cut` says whether the text carries on past
- * the line, which is what the row draws its ellipsis for.
+ * comes first, cut at a word wherever the limit falls near one. A line held to the limit that
+ * holds no space at all - one unbroken token, a URL or an identifier - is cut at the limit
+ * itself, because there is no word boundary to cut at and the limit is the row's whole budget.
+ * `cut` says whether the text carries on past the line, which is what the row draws its
+ * ellipsis for.
  */
 export function firstLineOf(text: string): { readonly cut: boolean; readonly line: string } {
   const whole = text.replace(/\s+/gu, " ").trim();
