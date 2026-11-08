@@ -1408,17 +1408,11 @@ func mapJobConclusion(raw *string) *DeliveryJobConclusion {
 	}
 }
 
-// errMalformedRepo is a repository name that is not `owner/repo`. It is a sentinel because a
-// caller that must decide whether making its work again could get past a failure has to tell
-// this one from the database's: a name this malformed is malformed in whatever delivered it,
-// and the next delivery carries the same name (markHeadNotStored).
-var errMalformedRepo = errors.New("malformed repository")
-
 // splitRepo splits "owner/repo" into its two segments.
 func splitRepo(repoFull string) (owner, repo string, err error) {
 	parts := strings.SplitN(repoFull, "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("%w %q: want owner/repo", errMalformedRepo, repoFull)
+		return "", "", fmt.Errorf("malformed repository %q: want owner/repo", repoFull)
 	}
 	return parts[0], parts[1], nil
 }

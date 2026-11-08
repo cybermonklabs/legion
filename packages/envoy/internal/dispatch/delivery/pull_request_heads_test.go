@@ -1477,10 +1477,12 @@ func TestAnEnvelopeWhoseHeadRowNeverStoresIsAcknowledgedAtTheCap(t *testing.T) {
 // of that path that making the same attempt again may get past (markHeadNotStored).
 //
 // The two failures it leaves unmarked are here too, since what the sentinel is worth is in the
-// line it draws. A repository name that is not `owner/repo` is malformed in the envelope
-// itself, so every redelivery of it carries the same name; a rate limit is the one refusal of
-// GitHub the attribution answers with an error at all, and handing every rate-limited envelope
-// back would spend the whole limit over again.
+// line it draws. A repository name that is not `owner/repo` never reaches markHeadNotStored at
+// all: recordPullRequestHead splits the canonical name for itself, before the attribution, and
+// returns that failure bare, which is the line this case covers; every redelivery of the
+// envelope carries the same name. A rate limit is the one refusal of GitHub the attribution
+// answers with an error at all, and handing every rate-limited envelope back would spend the
+// whole limit over again.
 func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliveryProject(t, ctx, pool)
@@ -1508,7 +1510,7 @@ func TestTheReadsBeforeAHeadWriteAreMarkedAndTheFailuresNoRedeliveryMendsAreNot(
 	case err == nil:
 		t.Fatal("recording a head under a repository name that is not owner/repo = nil, want that name's error")
 	case errors.Is(err, ErrHeadNotStored):
-		t.Fatalf("a malformed repository name was marked %v, want it left bare: the next delivery of the envelope carries the same name",
+		t.Fatalf("the split recordPullRequestHead makes for itself was marked %v, want it left bare: the next delivery of the envelope carries the same name",
 			ErrHeadNotStored)
 	}
 

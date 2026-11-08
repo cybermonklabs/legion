@@ -93,25 +93,19 @@ func PullRequestHeadState(action string, merged bool) string {
 // Postgres refused the first of those is as lost as one lost at the insert, so
 // recordPullRequestHead marks all three (markHeadNotStored).
 //
-// Two failures of that path are deliberately left unmarked, because no redelivery mends
-// either. A read of GitHub the App refused is answered by the reconcile's own next pass, and
-// handing every rate-limited envelope back would spend the whole limit over again — the rate
-// limit is the only refusal of GitHub that comes back as an error at all, since attributeHead
-// logs every other one at Debug and writes an incomplete row. And a repository name that is
-// not `owner/repo` (splitRepo, errMalformedRepo) is malformed in the envelope itself, so the
-// same envelope delivered again carries the same malformed name.
+// One failure of that path is deliberately left unmarked, because no redelivery mends it. A
+// read of GitHub the App refused is answered by the reconcile's own next pass, and handing
+// every rate-limited envelope back would spend the whole limit over again — the rate limit is
+// the only refusal of GitHub that comes back as an error at all, since attributeHead logs
+// every other one at Debug and writes an incomplete row.
 var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
 
-// markHeadNotStored marks err as ErrHeadNotStored unless it is one of the two failures that
-// sentinel's doc comment leaves unmarked: a rate limit (githubapp.AsRateLimit), and a
-// repository name that is not `owner/repo` (errMalformedRepo). Everything else the steps
+// markHeadNotStored marks err as ErrHeadNotStored unless it is the one failure that sentinel's
+// doc comment leaves unmarked: a rate limit (githubapp.AsRateLimit). Everything else the steps
 // before the head write answer is Postgres refusing a read, which is the fault the sentinel is
 // for.
 func markHeadNotStored(err error) error {
 	if _, limited := githubapp.AsRateLimit(err); limited {
-		return err
-	}
-	if errors.Is(err, errMalformedRepo) {
 		return err
 	}
 	return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
@@ -816,9 +810,10 @@ func ReadThroughCommitPulls(
 // redelivery of the envelope would do with it (markHeadNotStored, ErrHeadNotStored). The
 // canonical read and the attribution are reads of Postgres before any row is written, so a
 // failure of either loses the head row exactly as a refused insert does and both are marked;
-// the attribution's own two exceptions, a rate limit and a malformed repository name, are not,
-// and neither is the malformed name this function splits for itself, since the next delivery
-// of the same envelope carries the same name and would fail on it again.
+// the attribution's own exception, a rate limit, is not. The split this function makes for
+// itself is the one failure it returns bare without asking markHeadNotStored at all: a name
+// that is not `owner/repo` is malformed in the envelope, so the next delivery of the same
+// envelope carries the same name and would fail on it again.
 func (in *Intake) recordPullRequestHead(ctx context.Context, payload map[string]string, number int) ([]string, error) {
 	given := payload["repo"]
 	repoFull, err := refs.CanonicalRepo(ctx, in.pool, given)
