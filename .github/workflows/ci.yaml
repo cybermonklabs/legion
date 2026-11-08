@@ -527,6 +527,9 @@ jobs:
               - 'packages/envoy/internal/broker/requests/*'
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
+              # The response shapes the broker's own handlers marshal, which Dispatch's OpenAPI
+              # emitter names for the routes that relay them.
+              - 'packages/envoy/internal/broker/wire/*'
               # The token client whose public re-export the daemon imports, and the wire corpus
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
@@ -574,6 +577,8 @@ jobs:
               - 'packages/envoy/cmd/dispatch/*'
               - 'packages/envoy/going/*'
               - 'packages/envoy/internal/broker/oauthwire/*'
+              # The relayed shapes routes_shapes.go names (internal/dispatch/api).
+              - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/cistore/*'
@@ -2143,6 +2148,8 @@ jobs:
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
+              # The relayed shapes routes_shapes.go names.
+              - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/infra/gcp/testdata/dispatch-pod.golden'
             contracts:
               - *ci_router
@@ -2173,6 +2180,12 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
               # src/*.test.ts import @legion/test-fixtures.
               - 'packages/test-fixtures/src/**'
+              # `bun run check:api` renders schemas/dispatch-openapi.json into
+              # src/dispatch-api.generated.ts and compares, and reads no Go at all
+              # (scripts/gen-api.ts:6), so the Go that document is emitted from is not named here:
+              # a change to it is judged by envoy-go-checks' `openapi --check`, whose filter
+              # (envoy_go_checks) selects both that Go and this document, so either one alone
+              # starts the job.
             # The shared test fixtures every other Bun package's tests import: its own sources and
             # tests (it imports nothing outside itself), and the Bun install, the Bun it runs and
             # Biome, whose root config packages/test-fixtures/biome.json extends.
@@ -2336,6 +2349,10 @@ jobs:
               # when this entry was written.
               - 'packages/dispatch/e2e/**'
               - 'packages/dispatch/web/src/api/types.ts'
+              # And paths.ts beside it: e2e/api.ts is keyed on the generated document's path
+              # patterns now, and reads PathsOf, Op, Query, Body and Answer from that module,
+              # so this program compiles it too.
+              - 'packages/dispatch/web/src/api/paths.ts'
               - 'skills/**'
               - 'scripts/pi-plugin-prepack.sh'
               - 'scripts/third-party-notices.ts'
@@ -2383,7 +2400,7 @@ jobs:
               # This job's tsc program of packages/dispatch compiles the shared test fixtures its
               # web, e2e and server-side tests import.
               - 'packages/test-fixtures/src/**'
-              # packages/dispatch/web/vite.config.ts:94-103 aliases @legion/contracts, and tsc and
+              # packages/dispatch/web/vite.config.ts:117-126 aliases @legion/contracts, and tsc and
               # bun read it through the workspace's "bun" export condition.
               - 'packages/contracts/src/**'
               # web/src/features/delivery/lib/applyDelta.test.ts:2-4,
@@ -2437,6 +2454,10 @@ jobs:
               # imports @legion/contracts.
               - 'packages/proof-editor/**'
               - 'packages/contracts/src/**'
+              # internal/dispatch/api/openapi_test.go's
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
+              # so an edit of it alone must start this job.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # Fixtures its Go tests read: cmd/listener/api_test.go:191,
               # internal/contracts/dedupe_test.go:14, golden_test.go:72,
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011,
@@ -2512,6 +2533,11 @@ jobs:
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011, which the guard step
               # compiles with the rest of that package.
               - 'packages/contracts/fixtures/live/**'
+              # internal/dispatch/api/openapi_test.go:189-190, whose
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document
+              # at run time, through a path built relative to the test binary; the guard step
+              # compiles it with the rest of that package.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
             # The shared race job: the closure of `go test -race` over delivery, the Dispatch
             # store, the bus, the listener, the registry store, the session cache and kvwatch (`go
             # list -deps -test -race` in packages/envoy). internal/dispatch/store's
@@ -2648,6 +2674,12 @@ jobs:
               - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               - 'packages/envoy/roleholder/*'
+              # The relayed shapes routes_shapes.go names, which this job's own package compiles.
+              - 'packages/envoy/internal/broker/wire/*'
+              # internal/dispatch/api/openapi_test.go's
+              # TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites reads the committed document,
+              # so an edit of it alone must start this job.
+              - 'packages/contracts/schemas/dispatch-openapi.json'
               # internal/dispatch/api/delivery_live_diff_test.go:982,1011.
               - 'packages/contracts/fixtures/live/**'
               # BEGIN generated by `.github/scripts/check-ci-filters.sh write`: a change to a Go test file the job this filter gates does not read
@@ -2857,6 +2889,8 @@ jobs:
               # corpus its tests replay.
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
+              # The relayed shapes the Dispatch server its soak starts names (routes_shapes.go).
+              - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -2948,6 +2982,7 @@ jobs:
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
+              - 'packages/envoy/internal/broker/wire/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/buildversion/*'
