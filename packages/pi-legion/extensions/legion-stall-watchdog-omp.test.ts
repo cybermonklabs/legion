@@ -511,11 +511,25 @@ test.skipIf(skip)(
     // run is open at that point — and because the turn after it is a turn of its own, which a
     // ladder judging the ended run's calls would abort (`legion.ts`'s `agent_end` handler, and
     // the case in `legion.test.ts` that drives `willContinue`).
-    const ends = await pane.until("the two run ends this session reported", async () => {
+    //
+    // What this waits for is the host's own "nothing more follows", not a count of ends. The
+    // sequence a session of this case reports is three ends, and the middle one announces the
+    // third: `{willContinue: null, pendingMessages: true}`, then
+    // `{willContinue: true, pendingMessages: false}` — the host saying another turn comes —
+    // then that turn's own `{willContinue: null, pendingMessages: false}`, which is the turn
+    // lines 506-513 call "a turn of its own". A wait for two ends read that sequence while it
+    // was still being written, so whether the row passed was whether the third end had landed
+    // yet: measured at this head, two ends in 2 runs of 5 and three in the other 3, with the
+    // first two ends identical in all five. Waiting until the newest end carries no
+    // continuation makes the array the whole sequence every time.
+    const ends = await pane.until("every run end the host announced", async () => {
       const seen = await pane.agentEnds();
-      return seen.length >= 2 ? seen : undefined;
+      return seen.length >= 2 && seen[seen.length - 1]?.willContinue !== true ? seen : undefined;
     });
-    expect(ends.map((end) => end.pendingMessages)).toEqual([true, false]);
+    expect(ends[0]?.pendingMessages).toBe(true);
+    expect(ends[1]?.pendingMessages).toBe(false);
+    expect(ends[1]?.willContinue).toBe(true);
+    expect(ends.at(-1)?.pendingMessages).toBe(false);
     expect(pane.running()).toBe(true);
   },
   DEADLINE_MS + 60_000

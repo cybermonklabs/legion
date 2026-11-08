@@ -226,7 +226,7 @@ func (r *heldTaskRig) launchArchitect() {
 		}
 	}
 	machine.Wait()
-	if got := machine.Claim().State; !claimTookRole(got) {
+	if got := machine.Claim().State; !supervise.TookRole(got) {
 		r.t.Fatalf("the architect after its ready = %s, want a claim that took its role", got)
 	}
 }

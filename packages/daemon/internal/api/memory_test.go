@@ -18,8 +18,9 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // LEGION-209, a child of it, both showing the root's draw as internal/projection fills them,
 // beside the issues no draw has reached. Its claim views carry the pod's update round and the
 // record of what each claim's agent last did, its admission block names the live trees, its
-// stranded claims hold a retired one and it carries the wakes the pacing holds, so one state
-// proves all seven downgrades and that they compose.
+// stranded claims hold a retired one, it carries the wakes the pacing holds, every root of it
+// carries the deployment's gated step and the two issues of its admission line carry their
+// place in it, so one state proves all nine downgrades and that they compose.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -76,24 +77,25 @@ var issueBeforeMemoryContract = []string{
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys
-// the last strict reader before it knows, and the rest of the body as it is. The eight
+// the last strict reader before it knows, and the rest of the body as it is. The nine
 // downgrades compose, band by band: a pod from supervise.PodUpdateContract to below
 // memoryContract is served the update rounds it reads and none of the memory draws, the trees,
 // the wakes the pacing holds, the gated steps, the retired entries of the report of claims
-// nothing will wake, the claim views' step records and the setting sources; a pod from
-// memoryContract to below treeContract the memory draws as well; one from treeContract to
-// below wakesWaitingContract the trees too; one from wakesWaitingContract to below
-// gatedStepsContract the wakes too; one from gatedStepsContract to below
-// retiredStrandedContract the gated steps too; one from retiredStrandedContract to below
-// stallRecordContract the retired entries too; one from stallRecordContract to below
-// settingSourcesContract the step records too; a pod below supervise.PodUpdateContract none of
-// the eight; and a pod at this contract, a pod whose claims record none and a caller in no pod
+// nothing will wake, the claim views' step records, the places in the admission line and the
+// setting sources; a pod from memoryContract to below treeContract the memory draws as well;
+// one from treeContract to below wakesWaitingContract the trees too; one from
+// wakesWaitingContract to below gatedStepsContract the wakes too; one from gatedStepsContract
+// to below retiredStrandedContract the gated steps too; one from retiredStrandedContract to
+// below stallRecordContract the retired entries too; one from stallRecordContract to below
+// waitingLineContract the step records too; one from waitingLineContract to below
+// settingSourcesContract the places too; a pod below supervise.PodUpdateContract none of the
+// nine; and a pod at this contract, a pod whose claims record none and a caller in no pod
 // — the operator's `legion state`, whose memory line reads the draws, whose queue line reads
 // the wakes and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
-	for _, field := range []string{`"memoryGroup"`, `"updateRound"`, `"gatedSteps"`} {
+	for _, field := range []string{`"memoryGroup"`, `"updateRound"`, `"gatedSteps"`, `"waitingLine"`} {
 		if !strings.Contains(string(full), field) {
 			t.Fatalf("the fixture's state %s carries no %s; this test proves nothing", full, field)
 		}
@@ -113,37 +115,49 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		retired bool
 		sources bool
 		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// the contract below this daemon's own since the forward merge that brought the setting
-		// sources in, so a pod at it is served the record and a pod still running an older
-		// plugin is not.
+		// two contracts below this daemon's own since the forward merges that brought the
+		// admission line and the setting sources in, so a pod at it is served the record and a
+		// pod still running an older plugin is not.
 		stall bool
+		// line is whether the caller is served each waiting issue's place in the admission line
+		// (waitingLineContract), the contract below this daemon's own since the forward merge
+		// that brought the setting sources in, so a pod at it is served the places and a pod
+		// still running an older plugin is not.
+		line bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
-		{name: "a pod below PodUpdateContract, below all eight", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "a pod below PodUpdateContract, below all nine", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
 		// The band from memoryContract to below treeContract: the memory group is served, and
 		// the two tree keys, `wakesWaiting`, the gated steps, the retired entries, the step
-		// record and the setting sources are not. This row is at memoryContract, its lower edge.
+		// record, the places in the admission line and the setting sources are not. This row is
+		// at memoryContract, its lower edge.
 		{name: "a pod at memoryContract", remote: statePodAddr + ":41000", claims: podClaims(memoryContract), memory: true, rounds: true},
 		// The band from treeContract to below wakesWaitingContract: the trees are served too,
-		// and none of `wakesWaiting`, the gated steps, the retired entries, the step record and
-		// the setting sources is. This row is at treeContract, its lower edge.
+		// and none of `wakesWaiting`, the gated steps, the retired entries, the step record, the
+		// places and the setting sources is. This row is at treeContract, its lower edge.
 		{name: "a pod at treeContract", remote: statePodAddr + ":41000", claims: podClaims(treeContract), memory: true, trees: true, rounds: true},
 		// The band from wakesWaitingContract to below gatedStepsContract: everything but the
-		// gated steps, the retired entries, the step record and the setting sources is served.
+		// gated steps, the retired entries, the step record, the places and the setting sources
+		// is served.
 		{name: "a pod at wakesWaitingContract", remote: statePodAddr + ":41000", claims: podClaims(wakesWaitingContract), memory: true, trees: true, rounds: true, wakes: true},
-		// The band from gatedStepsContract to below retiredStrandedContract: everything but the
-		// retired entries, the step record and the setting sources is served.
+		// The band from gatedStepsContract to below retiredStrandedContract: the gated steps are
+		// served too, and none of the retired entries, the step record, the places and the
+		// setting sources is.
 		{name: "a pod at gatedStepsContract", remote: statePodAddr + ":41000", claims: podClaims(gatedStepsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true},
-		// The band from retiredStrandedContract to below stallRecordContract: everything but
-		// the step record and the setting sources is served.
+		// The band from retiredStrandedContract to below stallRecordContract: the retired
+		// entries are served too, and none of the step record, the places and the setting
+		// sources is.
 		{name: "a pod at retiredStrandedContract", remote: statePodAddr + ":41000", claims: podClaims(retiredStrandedContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true},
-		// The band from stallRecordContract to below settingSourcesContract: everything but the
-		// three fields that contract added is served.
+		// The band from stallRecordContract to below waitingLineContract: the step record is
+		// served too, and neither the places in the admission line nor the setting sources is.
 		{name: "a pod at stallRecordContract", remote: statePodAddr + ":41000", claims: podClaims(stallRecordContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, sources: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, sources: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, sources: true},
+		// The band from waitingLineContract to below settingSourcesContract: the places are
+		// served too, and the three fields that contract added are the ones held back.
+		{name: "a pod at waitingLineContract", remote: statePodAddr + ":41000", claims: podClaims(waitingLineContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, sources: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, sources: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, sources: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -151,9 +165,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			// Only LEGION-208's tree was drawn: its root and its child carry the draw when the
 			// caller is served it, and no other issue carries one whoever asks. Every root of the
 			// fixture carries the one step `root-issues` gates; LEGION-209, a child of
-			// LEGION-208's tree, carries none whoever asks.
+			// LEGION-208's tree, carries none whoever asks. The two issues `admission.waiting`
+			// names carry their place in that line, and no other issue carries one: LEGION-208
+			// and LEGION-210 hold the slots, and LEGION-207 closed.
 			drawn := map[string]bool{"LEGION-208": true, "LEGION-209": true}
-			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-212": true}
+			gated := map[string]bool{"LEGION-207": true, "LEGION-208": true, "LEGION-210": true, "LEGION-211": true, "LEGION-212": true}
+			lined := map[string]bool{"LEGION-211": true, "LEGION-212": true}
 			for key, view := range issueViews(t, body) {
 				carries := view["memoryGroup"] != nil || view["memoryDrawMode"] != nil || view["memoryDrawnAt"] != nil
 				if want := tc.memory && drawn[key]; carries != want {
@@ -161,6 +178,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				}
 				if carries, want := view["gatedSteps"] != nil, tc.steps && gated[key]; carries != want {
 					t.Errorf("issue %s of %s carries gated steps = %v, want %v", key, body, carries, want)
+				}
+				if carries, want := view["waitingLine"] != nil, tc.line && lined[key]; carries != want {
+					t.Errorf("issue %s of %s carries a place in the waiting line = %v, want %v", key, body, carries, want)
 				}
 				if tc.memory {
 					continue
@@ -217,6 +237,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			if !tc.stall {
 				want = withoutStallRecord(want)
+			}
+			if !tc.line {
+				want = withoutWaitingLine(want)
 			}
 			wantJSON, err := json.Marshal(want)
 			if err != nil {

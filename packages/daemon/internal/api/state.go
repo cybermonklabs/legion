@@ -446,6 +446,10 @@ type Issue struct {
 	// asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
+	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
+	// only for an issue that list names, and absent for a slot holder and for every other issue
+	// the list does not name.
+	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
@@ -470,7 +474,8 @@ type Issue struct {
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the wait;
-// the root then waits at the front of admission's waiting line for its slot.
+// the root then waits in admission's waiting line for its slot, among the issues whose work came
+// back, oldest first.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`
@@ -734,6 +739,18 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 type SlotView struct {
 	Index      int       `json:"index"`
 	AdmittedAt time.Time `json:"admittedAt"`
+}
+
+// WaitingLineField is the name `waitingLine` carries on the wire, read from here by a test that
+// looks for the field rather than repeating the string.
+const WaitingLineField = "waitingLine"
+
+// WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
+// and the length of that list at this read. It says where the issue stands, not what holds it:
+// `admission.blocked` names what holds it.
+type WaitingLineView struct {
+	Place  int `json:"place"`
+	Length int `json:"length"`
 }
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull

@@ -96,9 +96,18 @@ func newAdmissionWithGate(t *testing.T, cap int, gate config.DesignGate, log *sl
 // deployment's `gates.design` list resolves to.
 func newAdmissionWithSteps(t *testing.T, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
 	t.Helper()
-	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: steps,
+	return newAdmissionForProject(t, testProject, cap, steps, log)
+}
+
+// newAdmissionForProject is newAdmissionWithSteps for a Dispatch project key of its own. Every
+// other helper here records issues under testProject, so a test that takes another key seeds its
+// own records: the key is what admission reads the line, the claims and the tree lifecycles
+// under, and a test of two keys proves a behaviour reads none of it.
+func newAdmissionForProject(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
+	t.Helper()
+	engine := workflow.New(record.NewStore(), workflow.Config{Project: project, Repositories: testRepositories, Steps: steps,
 		Clock: func() time.Time { return fixedNow }}, log)
-	admission := New(record.NewStore(), engine, cap, testProject, log)
+	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission
 }
@@ -199,13 +208,13 @@ func assertSlots(t *testing.T, pool *pgxpool.Pool, want []record.Slot) {
 	}
 }
 
-// assertWaiting compares the waiting line, in its order, with want. It reads the line exactly as
-// admission does, through the one judgement it promotes from (blockers.JudgeLine): the mirror
-// rows of every issue a blocker can hold first, so the line leaves out an issue one of them
-// holds where it stands (record.LineFacts.Held), the children-first judgement next, so it leaves
-// out a parent whose own Dispatch children are still open (record.LineFacts.ChildWaits), and
-// then the line.
-func assertWaiting(t *testing.T, pool *pgxpool.Pool, want []string) {
+// waitingLine is the waiting line of project, in its order, under the design gate of steps (nil
+// for the deployment's single step spec). It reads the line exactly as admission does, through
+// the one judgement it promotes from (blockers.JudgeLine): the mirror rows of every issue a
+// blocker can hold first, so the line leaves out an issue one of them holds where it stands
+// (record.LineFacts.Held), the children-first judgement next, so it leaves out a parent whose
+// own Dispatch children are still open (record.LineFacts.ChildWaits), and then the line.
+func waitingLine(t *testing.T, pool *pgxpool.Pool, project string, steps []record.DesignStep) []string {
 	t.Helper()
 	var got []string
 	inTx(t, pool, func(tx pgx.Tx) {
@@ -218,11 +227,11 @@ func assertWaiting(t *testing.T, pool *pgxpool.Pool, want []string) {
 		if err != nil {
 			t.Fatalf("list slots: %v", err)
 		}
-		facts, err := record.ReadLineFacts(ctx, tx, records, testProject, issues, nil)
+		facts, err := record.ReadLineFacts(ctx, tx, records, project, issues, steps)
 		if err != nil {
 			t.Fatalf("read the line facts: %v", err)
 		}
-		_, _, line, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, slots, facts, nil)
+		_, _, line, err := blockers.JudgeLine(ctx, tx, records, project, issues, slots, facts, nil)
 		if err != nil {
 			t.Fatalf("judge the waiting line: %v", err)
 		}
@@ -230,7 +239,13 @@ func assertWaiting(t *testing.T, pool *pgxpool.Pool, want []string) {
 			got = append(got, waiting.Issue.Key)
 		}
 	})
-	if !reflect.DeepEqual(got, want) {
+	return got
+}
+
+// assertWaiting compares the test project's waiting line, in its order, with want.
+func assertWaiting(t *testing.T, pool *pgxpool.Pool, want []string) {
+	t.Helper()
+	if got := waitingLine(t, pool, testProject, nil); !reflect.DeepEqual(got, want) {
 		t.Fatalf("waiting = %#v, want %#v", got, want)
 	}
 }
@@ -284,9 +299,16 @@ func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
 // (record.TreeLive) now that a slot counts one issue at work rather than one tree.
 func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 	t.Helper()
+	seedSlottedForProject(t, pool, testProject, key, rank)
+}
+
+// seedSlottedForProject is seedSlotted under a Dispatch project key of its own, for the tests
+// that seed their own records (newAdmissionForProject).
+func seedSlottedForProject(t *testing.T, pool *pgxpool.Pool, project, key, rank string) {
+	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
-		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: rank, HandedOver: true}); err != nil {
+		if err := records.PutIssue(context.Background(), tx, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: project, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", Rank: rank, HandedOver: true}); err != nil {
 			t.Fatalf("put active issue: %v", err)
 		}
 		slots, err := records.Slots(context.Background(), tx)
@@ -296,7 +318,7 @@ func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: key, Index: len(slots), AdmittedAt: fixedNow}); err != nil {
 			t.Fatalf("put slot: %v", err)
 		}
-		seedLifecycleTx(t, tx, key)
+		seedLifecycleTxForProject(t, tx, project, key)
 	})
 }
 
@@ -304,11 +326,17 @@ func seedSlotted(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 // when it admits a root.
 func seedLifecycleTx(t *testing.T, tx pgx.Tx, key string) {
 	t.Helper()
-	project, err := claim.ProjectToken(testProject)
+	seedLifecycleTxForProject(t, tx, testProject, key)
+}
+
+// seedLifecycleTxForProject is seedLifecycleTx under a Dispatch project key of its own.
+func seedLifecycleTxForProject(t *testing.T, tx pgx.Tx, project, key string) {
+	t.Helper()
+	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatalf("project token: %v", err)
 	}
-	if _, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, project, key, treelifecycle.AuthorityWorkflow); err != nil {
+	if _, err := record.NewStore().OpenTreeLifecycle(context.Background(), tx, token, key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the tree lifecycle of %s: %v", key, err)
 	}
 }
@@ -316,12 +344,24 @@ func seedLifecycleTx(t *testing.T, tx pgx.Tx, key string) {
 // seedLifecycle opens key's tree lifecycle in a transaction of its own.
 func seedLifecycle(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
-	inTx(t, pool, func(tx pgx.Tx) { seedLifecycleTx(t, tx, key) })
+	seedLifecycleForProject(t, pool, testProject, key)
+}
+
+// seedLifecycleForProject is seedLifecycle under a Dispatch project key of its own.
+func seedLifecycleForProject(t *testing.T, pool *pgxpool.Pool, project, key string) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) { seedLifecycleTxForProject(t, tx, project, key) })
 }
 
 func seedWaiting(t *testing.T, pool *pgxpool.Pool, key, rank string) {
 	t.Helper()
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: rank, HandedOver: true})
+	seedWaitingForProject(t, pool, testProject, key, rank)
+}
+
+// seedWaitingForProject is seedWaiting under a Dispatch project key of its own.
+func seedWaitingForProject(t *testing.T, pool *pgxpool.Pool, project, key, rank string) {
+	t.Helper()
+	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: project, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: rank, HandedOver: true})
 }
 
 func inTx(t *testing.T, pool *pgxpool.Pool, fn func(pgx.Tx)) {

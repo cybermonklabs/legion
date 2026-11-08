@@ -14,11 +14,13 @@
       "LEGION-210"
     ],
     "waiting": [
-      "LEGION-211"
+      "LEGION-211",
+      "LEGION-212"
     ],
     "trees": [
       "LEGION-208",
       "LEGION-210",
+      "LEGION-211",
       "LEGION-212"
     ],
     "blocked": [
@@ -267,6 +269,38 @@
         }
       ]
     },
+    "LEGION-211": {
+      "key": "LEGION-211",
+      "generation": 2,
+      "phase": "implementing",
+      "status": "in_progress",
+      "tree": "LEGION-211",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_211",
+            "state": "suspended",
+            "pluginContract": 0
+          },
+          "rounds": 1
+        }
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "e5a2c1d7-3b46-4f82-9e07-2d4a6c8b1f53",
+          "currentVersion": 3,
+          "approvedVersion": 3,
+          "status": "approved"
+        }
+      ],
+      "waitingLine": {
+        "place": 1,
+        "length": 2
+      }
+    },
     "LEGION-212": {
       "key": "LEGION-212",
       "generation": 1,
@@ -286,6 +320,10 @@
           "changesReason": "name the rollback path for the schema change"
         }
       ],
+      "waitingLine": {
+        "place": 2,
+        "length": 2
+      },
       "waitingOn": {
         "kind": "ask",
         "ask": "9a8fd348-55d5-4d72-a793-3cd037f75f13",

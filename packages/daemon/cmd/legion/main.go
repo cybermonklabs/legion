@@ -694,19 +694,29 @@ func memorySummary(issues map[string]api.Issue) string {
 // awaitingSummary is the one line an operator reads for the roots that gave their admission slot
 // up to wait on a person (api.WaitingOnView): an unanswered one holds no slot and is in neither
 // `active` nor `waiting`, only among the live trees, so without this line the capacity it freed
-// looks idle. It says how many, how many a person answered (each at the front of the waiting line
-// for the next free slot), and each by key with what it waits on and whether, when and by what act
-// it was answered.
+// looks idle. It says how many, how many of them a person answered and the daemon's own published
+// line names (api.WaitingLineView), and each by key with what it waits on and whether, when and by
+// what act it was answered.
+//
+// The second count reads the published line rather than judging the wait a second time. An
+// answered root stands in that line, among the issues whose work came back, oldest first
+// (record.Waiting appends every answered root that holds no slot, whatever its design gate
+// says), until the pass that resumes it. Two answered roots are in no line this summary reads:
+// one of another Dispatch project, whose line this daemon does not build, and every one of them
+// when the daemon answering is older than contract 58 and has no `waitingLine` to send. The
+// caller is the operator's `legion state`, which a daemon of this release serves in full
+// (api's stateFor), so nothing strips the field from this reader. So the count is 0 against a
+// daemon older than contract 58, which is the true answer for a reader that cannot see the line.
 func awaitingSummary(issues map[string]api.Issue) string {
 	var keys []string
-	answered := 0
+	standing := 0
 	for key, issue := range issues {
 		if issue.WaitingOn == nil {
 			continue
 		}
 		keys = append(keys, key)
-		if issue.WaitingOn.AnsweredAt != nil {
-			answered++
+		if issue.WaitingOn.AnsweredAt != nil && issue.WaitingLine != nil {
+			standing++
 		}
 	}
 	if len(keys) == 0 {
@@ -726,8 +736,8 @@ func awaitingSummary(issues map[string]api.Issue) string {
 		}
 		waits[i] = key + " waits on " + on + ", " + state
 	}
-	return fmt.Sprintf("roots waiting on a person: %d, %d answered and waiting for a slot — %s",
-		len(keys), answered, strings.Join(waits, "; "))
+	return fmt.Sprintf("roots waiting on a person: %d, %d answered and standing in the admission line — %s",
+		len(keys), standing, strings.Join(waits, "; "))
 }
 
 // pendingSummary is the one line an operator reads for the Dispatch status writes the daemon has
