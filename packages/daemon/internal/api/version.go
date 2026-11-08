@@ -740,7 +740,35 @@ package api
 // says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 58: INFRA-956 -- fix-attempt counting gone. `legion.yaml` no longer takes `max_fix_attempts`,
+// 58: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
+// issue stands in `admission.waiting`: its `place`, 1 being first in the line, and the `length`
+// of that list at this read (`api.WaitingLineView`). It is present only for an issue the list
+// names, so a slot holder and an issue the line does not carry have no such key, and the wire
+// carries no place for an issue that stands in no line. It says where the issue stands, not what
+// holds it: `admission.blocked` names what holds it, and a member a Dispatch link blocks stands
+// in the line and has its place like every other member.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 58 is served the issues without the field (api's stateFor, withoutWaitingLine),
+// as a caller below 57 is served the claim views with no `step`, one below 56 the stranded
+// report without its retired entries, one below 55 the issues without the gated steps, one below
+// 53 a body with no wakes waiting, one below 51 the issues without the admission's trees and
+// each issue's tree, one below 49 without the memory draw and one below 46 without the claim
+// views' update rounds; the eight compose, and every reader from 58 on takes the field as
+// optional. A plugin at 57 does not refuse the field, as a plugin before one of the earlier
+// contracts above refuses its own: every answer-side schema of `packages/contracts` has stripped
+// a key it does not name since sjawhar/legion#2788, which that package's own test holds it to,
+// and 57 is later than that change, so such a plugin reads this state and sees no `waitingLine`
+// at all. The strip below is still what serves it: a caller that did not ask for the field is
+// not given it, and a plugin built before #2788 is strict and would refuse the body.
+// (This branch declared 56 while main held 55. main then landed INFRA-1480 at 56, and
+// @sjawhar/pi-legion 18.32.1 was released declaring that 56 with none of these shapes, so this
+// branch took 57; main has since landed INFRA-1274's claim step record at 57, which carries none
+// of these shapes either, so this branch takes the number above it, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main held 57 at the forward merge that renumbered this entry, 0297a21a3b07; read main's
+// own number again at the next merge rather than from this line.)
+//
+// 59: INFRA-956 -- fix-attempt counting gone. `legion.yaml` no longer takes `max_fix_attempts`,
 // and a file carrying it loads with a warning naming the removal, which boot logs and
 // `legion start --check-config` prints, rather than a refusal, so the settings block of
 // `GET /legion/v1/state` no longer carries `max_fix_attempts` and `api.Settings` no longer
@@ -749,7 +777,7 @@ package api
 // now sends the work back to the implementer every time it stands, however many came before,
 // and the architect decides when to stop; no pull request is marked blocked and no `pr-blocked`
 // notice is published for a count. `packages/contracts/src/legion-api.ts` mirrors both
-// removals, and its reader of the settings block is loose, so a plugin before 58 reads a state
+// removals, and its reader of the settings block is loose, so a plugin before 59 reads a state
 // without `max_fix_attempts` — but its strict pull-request reader refuses one without
 // `fixAttempts`, and every worker's `read_record` parses the state through it, which is what
 // this number is for: the boot gate and `legion probe-image` hold plugin and daemon equal, so
@@ -805,16 +833,16 @@ package api
 // process a claim records (`claims.death_charged`, supervise.Claim.DeathCharged). The
 // removal ships none; `fix_attempts`, `blocked_attempts` and `head_counted` stay as stopped
 // columns that nothing reads, each given its zero on an insert (`record`'s PutPullRequest).
-// (This branch took 47, then 48, then 50, then 52, then 54, then 55, then 56, then 57, as main's
-// own changes took each number before it: main merged the idle-pod release at 48 while this
-// branch was open, landed the memory group at 49, the admission cap over the issues at work at
-// 51, the pane issue key at 52, INFRA-976's wake pacing at 53 and INFRA-809's production-check
+// (This branch took 47, then 48, then 50, then 52, then 54, then 55, then 56, then 57, then 58,
+// as main's own changes took each number before it: main merged the idle-pod release at 48 while
+// this branch was open, landed the memory group at 49, the admission cap over the issues at work
+// at 51, the pane issue key at 52, INFRA-976's wake pacing at 53 and INFRA-809's production-check
 // decision at 54 (sjawhar/legion#2855), each release declaring its number without these shapes,
 // INFRA-1272's design-gate steps landed as 55 (cybermonklabs/legion#2848), INFRA-1480's retired
-// stranded state landed as 56 (cybermonklabs/legion#2919), and INFRA-1274's claim step record
-// has since landed as 57 (cybermonklabs/legion#2922), so this change takes the number above them
-// all, as
+// stranded state landed as 56 (cybermonklabs/legion#2919), INFRA-1274's claim step record landed
+// as 57 (cybermonklabs/legion#2922), and INFRA-1100's waiting line has since landed as 58
+// (cybermonklabs/legion#2989), so this change takes the number above them all, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. main held 57 at the forward merge that renumbered this entry, 49a8ae28a072; read main's
+// says. main held 58 at the forward merge that renumbered this entry, 1ffc8dec7e78; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 58
+const DaemonAPIVersion = 59

@@ -100,11 +100,12 @@ func TestTheStateServedToAPodBeforeTheStallRecordContractLeavesTheNextCallersSta
 	}
 }
 
-// stallRecordContract is the contract whose entry in version.go added the record, and this
-// daemon's own contract is never below it: a pod at the release that added it, and a pod at
-// this daemon's own contract, are both served the record, and a pod still running a plugin
-// below it is not. A constant above DaemonAPIVersion would be a key no pod is ever served; one
-// above the contract that added the record would keep it from pods whose plugin parses it.
+// stallRecordContract is the number DaemonAPIVersion took at the bump this record forced, which
+// was a task of its own, and this daemon's own contract is never below it: a pod at the release
+// that added the record, and a pod at this daemon's own contract, are both served it, and only a
+// pod still running a plugin below 57 is not. A constant above DaemonAPIVersion would be a key no
+// pod is ever served; one above the contract that added the record would keep it from pods whose
+// plugin parses it.
 func TestTheStallRecordContractIsTheNumberTheBumpTakes(t *testing.T) {
 	const addedStallRecord = 57
 	if stallRecordContract != addedStallRecord {
