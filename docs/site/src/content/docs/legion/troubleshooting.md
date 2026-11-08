@@ -769,8 +769,11 @@ is queued for it, since the next phase start or re-admission resumes it as befor
 
 These arrive as messages on the Dispatch issue, and the architect is told:
 
-- **`Issue reached review_round_cap=3.`** The implementer's round count reached three
-  ([what counts a round](/legion/legion/concepts/#review-signalling)). The work goes on, and the
+- **`Issue reached review_round_cap=3: 3 rounds counted, 0 conflict rounds not counted.`** The
+  implementer's counted rounds reached three
+  ([what counts a round](/legion/legion/concepts/#review-signalling)): every move back to an earlier
+  phase raises the count, and a move made while the head conflicts with its base is a conflict
+  round, which the cap leaves out and the message's second number names. The work goes on, and the
   architect decides in the same turn whether to narrow the next rounds, split work off (a sibling child, or, on a root, an ask whether the rest needs an issue), or
   let rounds that are converging run, and posts that decision on the issue; it asks you only for a
   decision that needs your authority.
@@ -868,9 +871,11 @@ assignment retro handed it while the phase holds the implementing one, so it is 
 and completes that work with a handoff of its own, never retro's commit; the merger's row
 still names the assignment merging gave it, so a completion it sends for the phase it lost is
 refused (`HANDOFF_NOT_CURRENT_PHASE`). One back in `in_progress` after its `READY`,
-while it awaited its merge, had a required check or workflow turn red on the head itself, or its
+while it awaited its merge, had a required check or workflow turn red on the head itself, its
 head conflicts with its base (GitHub computes no merge ref for a conflicting head and runs no
-checks on it at all): the daemon sent it back to the implementer, told the architect which checks
+checks on it at all), or GitHub's merge queue reported its entry for the head unmergeable while
+the queue had built that entry on the base branch's own tip, where nothing queued ahead of it can
+be the cause: the daemon sent it back to the implementer, told the architect which checks
 or that the head conflicts, and posted on the issue, and told the project's `merge_queue_role` when
 one is set, that the `READY` is withdrawn: the merge the daemon had submitted names a commit about
 to be replaced, so it takes its own submission back. The work comes back through testing, review
