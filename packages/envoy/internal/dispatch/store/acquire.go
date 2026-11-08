@@ -89,11 +89,14 @@ const (
 	// redials on its own backoff (pglisten.Listener) instead of waiting out the two-minute
 	// connect timeout pgxpool floors a dial at.
 	listenAcquireBound = 10 * time.Second
-	// coldDialBound is the bound of the one acquire that must dial where every other acquire of
-	// the request pool waits on a connection already dialled: the boot's reachability ping
-	// (Open, forColdDial). A client waits on none of it, since the process serves nothing yet,
-	// and requestAcquireBound would end the boot at a database whose first dial takes longer
-	// than three seconds - before the probe that is bounded for exactly that ever runs
+	// coldDialBound is the bound of the acquires that must dial where every other acquire of
+	// the request pool waits on a connection already dialled: the boot's, its reachability ping
+	// (Open) and the migration runner's after it (Store.migrate), both under forColdDial. The
+	// runner's are not one dial but several, because a concurrent index's migration hijacks the
+	// connection it runs on and closes it (Store.applyNonTransactionalMigration), so the
+	// migration after it dials again. A client waits on none of them, since the process serves
+	// nothing yet, and requestAcquireBound would end the boot at a database whose dial takes
+	// longer than three seconds - before the probe that is bounded for exactly that ever runs
 	// (Pool.HealthyWithin, cmd/dispatch's bootProbeTimeout). Thirty seconds is that probe's
 	// bound, for the same reason it is: it leaves a boot that cannot reach its database time to
 	// say so before the deploy clock rolls the image back.
@@ -224,15 +227,16 @@ type acquireKey struct{}
 // coldDialKey marks the context of the acquire that dials where the pool holds nothing yet.
 type coldDialKey struct{}
 
-// forColdDial is ctx for the boot's reachability ping (Open): the one acquire of the request
-// pool made before the process serves anything, which always pays a fresh dial. It waits under
-// coldDialBound rather than the pool's own, and nothing else uses it - every later acquire of
-// that pool is a request's, and a request waits under requestAcquireBound.
+// forColdDial is ctx for the boot's acquires: the reachability ping (Open) and the migration
+// runner's (Store.migrate), made before the process serves anything, each of which may pay a
+// fresh dial. They wait under coldDialBound rather than the pool's own, and nothing else uses
+// it - every later acquire of that pool is a request's, and a request waits under
+// requestAcquireBound.
 func forColdDial(ctx context.Context) context.Context {
 	return context.WithValue(ctx, coldDialKey{}, struct{}{})
 }
 
-// boundFor is the bound this acquire waits under: coldDialBound for the boot's one dial, and the
+// boundFor is the bound this acquire waits under: coldDialBound for the boot's dials, and the
 // pool's own for every other caller.
 func (t *acquireTracer) boundFor(ctx context.Context) time.Duration {
 	if ctx.Value(coldDialKey{}) != nil {

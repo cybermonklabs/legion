@@ -26,9 +26,6 @@ RUN set -eu; \
       exit 1; \
     fi
 
-RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
-    && rm -rf /var/lib/apt/lists/*
-
 COPY package.json bun.lock ./
 COPY patches patches
 COPY packages/contracts/package.json packages/contracts/package.json
@@ -40,17 +37,45 @@ COPY packages/pi-shared/package.json packages/pi-shared/package.json
 COPY packages/claude-envoy/package.json packages/claude-envoy/package.json
 COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
+# proof-sdk-upstream is file:./proof-sdk-<commit>.tgz, a dependency of that manifest rather than a
+# registry fetch: the upstream editor sources, which the install below reads from the context.
+COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
+COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
-RUN bun install --frozen-lockfile
+# What this stage installs, because the SPA build and the contract codegen that follow read no
+# more: packages/dispatch, packages/contracts, packages/proof-editor, and the root workspace,
+# which supplies what scripts/third-party-notices.ts imports (that script is imported by
+# packages/dispatch/web/vite.config.ts). Every manifest is still copied above: the lockfile
+# resolves against all of them. Each pattern begins with ./ because Bun reads a pattern
+# without one as a package name, and the three packages are named @sjawhar/dispatch,
+# @legion/contracts and @legion/proof-editor. Remove `--filter './'` and `bun run build:web`
+# below fails with `Cannot find package 'spdx-expression-parse'`.
+# --frozen-lockfile stays immediately after install:
+# .github/scripts/check-bun-workspace-manifests.sh matches `bun install --frozen-lockfile`, and a
+# flag written between the two takes this install out of that check's sight, silently.
+# --ignore-scripts skips the lifecycle script of every package installed here. better-sqlite3 is
+# the reason for it: under Bun that package's install script ends in node-gyp compiling it from
+# source (oven-sh/bun#4290), and the stage would then need python3, make and g++ for a module
+# the image never ships, which packages/proof-editor reaches through proof-sdk and nothing
+# copies out of this stage.
+RUN bun install --frozen-lockfile --ignore-scripts \
+    --filter './' \
+    --filter './packages/dispatch' \
+    --filter './packages/contracts' \
+    --filter './packages/proof-editor'
 
 COPY packages/contracts packages/contracts
 COPY packages/dispatch packages/dispatch
 COPY packages/proof-editor packages/proof-editor
 # The SPA build writes dist/THIRD_PARTY_NOTICES.txt with this (packages/dispatch/web/vite.config.ts).
 COPY scripts/third-party-notices.ts scripts/third-party-notices.ts
-RUN cd packages/contracts && bun run gen:go
-RUN cd packages/dispatch && bun run build:web
+# The stage ends with its working directory at /repo/packages/dispatch, which reaches nothing:
+# every later stage copies out of it by absolute path (`COPY --from=web /repo/…`).
+WORKDIR /repo/packages/contracts
+RUN bun run gen:go
+WORKDIR /repo/packages/dispatch
+RUN bun run build:web
 
 # Go version must match go.mod.
 # ghcr.io/cybermonklabs/legion/ci, the copy of golang:1.27.3-alpine (.github/ci-images.yaml)

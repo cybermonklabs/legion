@@ -174,7 +174,15 @@ tree is at work, the root returns its admission slot and waits on its design gat
 approval or changes request delivers your next task, and so does a newer spec version once
 Dispatch shows the request back on your turn. While the root waits on a question instead, the
 human's approval or changes request of the spec answers that wait too, and the task says how the
-spec stands. Release no child until every gated step is open: a delivered wake shows
+spec stands. An approval that opens the last gated step leaves your resume waiting for no slot at
+all: it comes back however full the cap is. Where your root's gate has never opened, the resume
+needs a slot, and while it waits for one you get one `waiting-for-slot` notice saying what
+answered the wait, where your root stands in the admission line then and that the daemon starts
+you again by itself, and your record's `waitingLine` gives the live place and the line's length;
+act on neither.
+You get the notice only while this session holds its Envoy role: a session whose pod the daemon
+released while the root waited is told nothing, and its resume task says what answered the wait.
+Release no child until every gated step is open: a delivered wake shows
 `design-approved` on the root, or a task says its design gate is open, and under more than one
 step `gatedSteps` in your record shows each one `approved`. The daemon sends a root waiting on a
 person no `design-approved` notice, and "this resume is your design-approved wake" is that wake.
@@ -189,12 +197,11 @@ reason, and answer it in the spec if the latest version does not already.
 ## After approval
 
 Each step's approval is pinned to the version of the document that step records: a new version of
-that document closes that step again, and no `design-approved`-type wake says so; you know from
-your own edit, or from the `artifact.version` event on your issue. One step closing holds the
-tree's work whatever the other steps stand at. The exceptions are the version a human's own
-answer to a decision block
+that document closes that step again, with no wake to say so; you know from your own edit, or
+from the `artifact.version` event on your issue. One step closing holds the tree's work whatever
+the other steps stand at. The exceptions are the version a human's own answer to a decision block
 writes when that answer is the whole change since the version they approved, and a version whose
-text is exactly the text of the version they approved, with no decision block in it decided
+text is exactly that of the version they approved, with no decision block in it decided
 since, such as an accidental edit undone exactly: for either, Dispatch records an `approved`
 review in their name at the new version and emits `artifact.approved`, and the daemon reopens the
 gate and sends `design-approved`. Undo an accidental edit of an approved root spec exactly. When
@@ -202,45 +209,43 @@ the spec then reads Approved at the new version, request nothing; when it does n
 it was decided since), request approval again with steps 3 to 5.
 
 So edit an approved root spec only when its Summary, a requirement it marks, a check of its
-Verification document, the tree's scope, or a
-decision a human settled in one of its decision blocks changes. Such a change is a point the human
-has not agreed to: put the problem behind it to them as its own decision block, with its evidence,
-at the end of the section it changes, and add nothing else to the spec. If you edit the block before
+Verification document, the tree's scope or a settled decision changes. Such a change is a point
+the human has not agreed to: put the problem behind it to them as its own decision block, with
+its evidence, at the end of the section it changes, and add nothing else. If you edit the block before
 the human answers, the gate closes like any new version, but their answer still carries the approval
 to the version it writes. Once they have answered:
 
 - When the answer is the whole change, request nothing: the document's chip reads Approved at the
-  new version, its reviews dialog shows the review in their name, and the `design-approved` the
-  daemon sent opens nothing new. Carry on, and release no child because of it.
-- When the answer changes the Summary, a requirement, a check or the tree's scope, rewrite that text and
-  repeat steps 3 to 5 on the new version, with a one-sentence `--summary` naming what changed since
-  the earlier approval, then the reviews' sentence (the card shows that approval, `Approved at
+  new version and the `design-approved` the daemon sent opens nothing new. Carry on; release no
+  child because of it.
+- When the answer changes the Summary, a requirement, a check or the tree's scope, rewrite that
+  text and repeat steps 3 to 5 on the new version, with a one-sentence `--summary` naming what
+  changed since the earlier approval, then the reviews' sentence (the card shows `Approved at
   version N on <date> by <who>.`, and its `Show diff` control carries the detail). The rewrite
-  closes the gate until they approve;
-  work the daemon started at the answer keeps running. Release no further child until the `design-approved`
-  after the rewrite; work already in flight continues. Every merger's `READY` in the tree is
-  refused until a human approves the latest version.
+  closes the gate until they approve. Release no further child until the `design-approved` after
+  it; work already in flight, including what the daemon started at the answer, continues. Every
+  merger's `READY` in the tree is refused until a human approves the latest version.
 
 A settled decision is the human's. A plan that would overturn one goes back to the planner with the
 decision kept, unless the planner brings evidence the human did not weigh that would change it
 (such as a measurement showing the settled choice cannot pass a check); then a decision
 block names the decision and that evidence. A plan never overturns a settled decision on its own.
+A person's request after the approval becomes a requirement only when you write it into the spec
+and they approve that version; it is never another issue's, and no comment or answer of theirs
+takes a requirement out.
 
 A design change that leaves the Summary, the requirements, the checks, the scope and the settled
-decisions intact (a
-planner's measurement that finds a better way to build the same outcome) goes in the plan (the
-issue's `plan.md` document and the planner's `plan` handoff on the issue), never into the approved spec, even
+decisions intact (a planner's measurement finding a better way to the same outcome) goes in the
+plan (the issue's `plan.md` and the planner's `plan` handoff), never into the approved spec, even
 where the spec's text describes the older design; the reviewer reads the plan beside the spec.
 
-When a planner's `phase-finished` names a departure from the spec's design, compare it with the
-approved spec. If the Summary, the requirements, the checks, the scope and every settled decision
-are unchanged,
-the plan is the record and the tree carries on; otherwise change the root spec and request
-approval again.
+When a planner's `phase-finished` names a departure, compare it with the approved spec: with the
+Summary, the requirements, the checks, the scope and every settled decision unchanged, the plan
+is the record and the tree carries on; otherwise change the root spec and request approval again.
 
-Later children and re-scoping open children toward the same requirements need no spec edit and no new
-approval. A child issue's spec is never gated, and the child's own Verification document is
-written by its architect.
+Later children and re-scoping open children toward the same requirements need no spec edit and no
+new approval. A child issue's spec is never gated, and its architect writes the child's own
+Verification document.
 
 ## A decision block for a read no pod can make
 

@@ -160,9 +160,25 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   What ci.yaml's `typecheck` job runs: vet of the Go daemon, its e2e-tagged live proofs included
 
-- `bun test`
+- `(cd <package> && bun run test)`
 
-  Test
+  Run one package's Bun tests against its own recipe.
+  The root has no `test` script, so a bare `bun test` there is no command this repository keeps green: it would run every package's files in one process.
+  CI runs this in each of these, in the job of ci.yaml that owns the package:
+  packages/broker-client, claude-envoy, contracts, dispatch, envoy-client, pi-envoy, pi-legion, pi-shared, proof-editor and test-fixtures.
+  packages/dispatch's recipe builds `@legion/contracts` before it runs a test, as its `e2e` recipe does:
+  rows of `e2e/__tests__` list a Playwright configuration, and Playwright evaluates it under Node, which reads that package's build output rather than its sources.
+
+- `bun test scripts/third-party-notices.test.ts && bun test scripts/semantic-line-breaks.test.ts && bun test scripts/dispatch && bun test scripts/e2e/lib && bun test scripts/conflicts`
+
+  The Bun tests under `scripts/`, which is no workspace.
+  ci.yaml's `test` job runs the first four, one step each and in that order, and runs no other Bun test under `scripts/`: `scripts/semantic-line-breaks.guides.test.ts` checks the guides' own layout on demand and gates nothing.
+  `bun test scripts/conflicts` runs in the `conflicts-script` job instead, after that job's biome and tsc steps over the same directory.
+  Beyond `bun install`, a suite needs only what it names in the line it prints when it skips, and that line, not this entry, is the whole of it:
+  the two Claude backend rigs (`scripts/e2e/lib/claude-backend-app-secrets.test.ts` and `scripts/e2e/lib/claude-backend-bun-pin.test.ts`) name 44 POSIX programs each, from `bash` and `jq` to `flock` and `sha256sum`.
+  Examples of the rest: `gofmt` (contracts' Go generator), `go` (the daemon-pane scenario and the held-port proof), `docker` (the rigs that start a container), `openssl` (the h2 settings proof), `tmux` (claude-envoy's session-title rows and the parked-decision teardown proof), `bash` and `sleep` (the Claude backend guard rows, where pi-shared's shell-command row needs `bash` alone), `node` (claude-envoy's channel rows, and packages/dispatch's lane row, which also needs the Playwright `bun install` wrote into this checkout), `jj` (pi-shared's handoff record and pi-legion's pane fixtures), and `psql` with `LEGION_TEST_PG_DSN` naming a PostgreSQL server the run may create a database on (packages/dispatch's psql and lane suites, whose one skip line names whichever of the two the host does not have).
+  The `-omp` and Claude Code suites are the exception that prints nothing: they skip silently unless `LEGION_TEST_OMP` or `LEGION_TEST_CLAUDE` names a real binary, and on GitHub Actions they fail rather than skip.
+  The browser suite is no `bun run test` at all — `bun run e2e` in packages/dispatch builds @legion/contracts and the SPA and runs Playwright, and refuses before it starts a harness or a Postgres when `bun run e2e:install` has not downloaded the browsers (docs/testing.md, "Bun tests")
 
 - `legion start [--config <legion.yaml>] [--check-config]`
 
@@ -574,7 +590,7 @@ Each item below names a task and where its code is, then notes on it.
 - Dispatch's document editor — `packages/proof-editor/`
 
   The editor entry, typed blocks and block ids, source-only.
-  Copied from the `sjawhar/proof-sdk` fork at the commit a git dependency pins; the upstream editor modules stay there.
+  Copied from the `sjawhar/proof-sdk` fork at the commit a committed tarball pins; the upstream editor modules stay there.
   See `packages/proof-editor/AGENTS.md`
 
 - Legion daemon — `packages/daemon/`
@@ -641,6 +657,12 @@ Each item below names a task and where its code is, then notes on it.
   It prints one key (`repo-paths.sh docs_base`) or every `key=value`, answers today's `cybermonklabs/legion` off a runner, and `.github/scripts/repo-paths.test.sh` tests it in `ci.yaml`'s test job.
   A job holding a credential runs no script of this repository, so it reads the value from the output of an upstream job that does (`release-envoy-listener.yaml`'s `targets`, `worker-image.yaml`'s `build`), or from a `workflow_call` input when that job was skipped (`worker-image.yaml`'s `image`, which `release.yaml` passes).
   `docs/site/repo-paths.ts` is the docs build's adapter over the same script
+
+- **A change that touches the daemon API contract declares a number above its base's**
+  — `const DaemonAPIVersion` in `packages/daemon/internal/api/version.go` is the number a daemon and the Legion plugin in its pods must agree on, so two changes cannot both declare one, and the one that lands second is renumbered after its review has already run.
+  `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches that file and declares a number no higher than its base carries — the tip of the base branch on a pull request, the commit the queue built the group on in the merge queue — and the refusal names a free number, the lowest above the base's that no open pull request declares, and the four files that hold the number (that file, `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`).
+  A change that leaves that file alone passes whatever its base carries, and two entries of one merge group that both picked the same next number pass together, since the group's tree carries both changes at that number.
+  `ci.yaml`'s `lint` job runs the check on a pull request and on a merge group, and its `test` job runs `.github/scripts/check-daemon-api-contract.test.sh`
 
 - **Changelog entries are fragment files**
   — a change that earns a changelog line adds a fragment to each package it changes that has a `.changie.yaml`:
@@ -762,7 +784,7 @@ A parent with children puts the work into them, and its own pull request joins a
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`), where no worker runs:
 the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with its latest result (`dispatch results`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
-refused too while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round.
+refused too while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there returns the issue to `implementing`.
 The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
 
@@ -782,6 +804,7 @@ the check's record carries the role, written when the check opened, so changing 
 That role
 gets a task whose first line is `Production check of <KEY>: <title>.`, reaches the deploy as the deployment instructions say (the merge commit published to the deploy role, no reply awaited), reads whether production carries the merge, and reports with `handoff_complete` and a `verdict`, no commit:
 `pass` once it drove the changed path in production and recorded the result of the issue's `after_merge` check with `dispatch result` (at the merge commit, naming what woke the look), whose printed line goes in the pull request body;
+a `pass` covers each requirement of the issue that only the deploy can show too, each driven as the requirement names it, and one observed as not met, or still unobserved at the last look, is a `fail`;
 `pending` when production does not carry the merge yet, which on any look but the check's last carries `wake_at`, an RFC 3339 time: when the agent wants its next look.
 The daemon then stops the role's process, keeps its session, releases the issue's pod with the disk it owns, and starts the next look at that time;
 a time less than 60 seconds ahead becomes 60 seconds ahead, and a time at or after the check's own bound starts no look of its own, because the look at the bound already stands.
@@ -928,9 +951,9 @@ A close of an item of the wait — a tree question, or an approval request of th
 — moves the wait to what is still with the person, and ends it only when nothing is;
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
-An answered root goes to the front of the waiting line, among the issues whose work came back and ahead of every issue whose first phase has yet to start, oldest answer first, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
+An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
 the resume starts no phase worker, so a root whose design gate has already opened holds no slot and resumes at once however full the cap is, while one whose gate has never opened — its architect still writing the spec, which is work the cap counts — resumes at the next free slot;
-a phase that resume then starts waits for a slot of its own, at the front of the line;
+a phase that resume then starts waits for a slot of its own, the root's own first phase among the issues whose work came back, oldest first, by the moment its design gate opened, and a released child of it behind them, by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.
@@ -947,6 +970,11 @@ Between boots nothing re-reads a waiting root's asks:
 if the event of a person's answer never reaches the daemon, the root waits until any newer act of a person on any ask of the root, or a review of its spec, reaches it, or until the daemon's next boot, whose catch-up applies the root's event log after its cursor (the site's troubleshooting page, "A tree waits on a person").
 
 A root parked out of the workflow (`backlog`, `icebox`) runs nothing, and its architect is suspended or gone.
+Its park releases its Dispatch claim as well: the daemon queues that release whenever it takes an issue out of the workflow without closing it, since Dispatch releases a claim at a close alone.
+The release takes only a claim held by a session the daemon records in that issue's own tree, leaving a person's claim, a session of another tree, and a holder no claims row accounts for each where it stands.
+A tree the operator holds is left alone as well, whoever holds the claim, since its claims are the operator's to release with the rest of its cleanup, as its pod and its workspaces are.
+A boot releases the ones parked before, one release for each issue of its listing that still carries a claim while the daemon's own record says it stopped.
+The boot's pass makes no operator test of its own, so it queues a row for such a tree too, and the executor ends that row when it runs, on the reading current then.
 A person's spec decision on it (an approval, a changes request, or an approval carried to a child's new tree) that the daemon could not deliver to its architect, and a person's answer, resolution or reply on an ask of its issues (one that gives the turn to the agent, or one under a closed ask), goes to the controller as `parked-decision`, once per decision.
 One approval is not relayed: a person's approval of the primary document of a parked root that carries the `legion` label and whose tree is not live is that person's handover, which the daemon queues itself (`todo`, logged `admission: queued a person's handover` with `source=approval`), whoever parked the root, and no `parked-decision` is sent for it.
 The daemon keeps the newest decision per Dispatch reference, under the issue it was decided on, never under a root: the tree that owes the person an answer is the tree that issue stands in now, so a child a linger hands to Legion, a parked child a person's todo orphans, a grandchild handed over beside its parent and a queued root admission adopts into a live tree each take what was decided on them with them, in any order, with nothing to move.
@@ -1023,10 +1051,19 @@ Otherwise, on acceptance the daemon queues a `ready_merge` outbox row for READY'
 a merge queue enqueues it once GitHub reports it mergeable, a pull request GitHub reports mergeable merges at once, a repository that allows auto-merge arms it, and in one that allows neither the row waits until GitHub reports the pull request mergeable and then merges it.
 On a merge-queue base the row never arms auto-merge:
 GitHub's enable arms a pull request it does not report mergeable rather than enqueueing it, and a required check may judge the arm, so the row waits, logged at debug, while a required check still runs.
-An arm or queue entry is not the end: the row keeps reading GitHub until it reports the pull request merged at READY's head, and once it has seen the arm or entry it never submits again after a removal it did not make.
-The merge queue taking the pull request out because the merge failed (GitHub's reason `failed_checks`, or an unexplained reason with a check that failed, timed out, failed to start, needed action or went stale on the commit the queue built for its `merge_group` CI, every page of its checks read) sends the issue from `awaiting_merge` back to `implementing`, its implementer told the failing run, as a red head does;
+An arm or queue entry is not the end: the row keeps reading GitHub until it reports the pull request merged at READY's head, and once it has seen the arm or entry it never submits again after a removal it did not make, except the merge queue's own for a conflict with an entry ahead of the head in the queue.
+The merge queue taking the pull request out because the merge failed (GitHub's reason `failed_checks`, or an unexplained reason with a check that failed, timed out, failed to start, needed action or went stale on the commit the queue built for its `merge_group` CI, every page of its checks read) sends the issue from `awaiting_merge` back to `implementing`, its implementer told each failing run, as a red head does;
+the queue's own removal for a conflict (`merge_conflict`) is decided by the pull request's merge state, which GitHub computes once the entry is no longer queued:
+a head GitHub still merges (every state but `DIRTY` and `UNKNOWN`) conflicted with an entry ahead of it in the queue rather than with the base, so the row submits that head once more, marks that submission spent on the row and posts what it did on the Dispatch issue, leaving the issue in `awaiting_merge` with nothing told to the architect;
+`DIRTY` is the head conflicting with the base itself, which ends the row and tells the architect;
+`UNKNOWN` is asked again on the row's own backoff for up to five minutes and then ends it the same way;
+and a second `merge_conflict` removal of the same head, its one further submission already spent, ends it too;
 any other removal (a person dequeuing it, whose cancelled runs are no failure, or a person or GitHub turning auto-merge off) ends the row and tells the architect once (`merge-removed`).
-Two removals are submitted again: the implement App's own disarm sent before READY that GitHub applied late (auto-merge `manually_disabled`, or a `manual` dequeue, by that App), and auto-merge a close turned off (`closed`), which the reopen at READY's head undid.
+Three removals are submitted again: the implement App's own disarm sent before READY that GitHub applied late (auto-merge `manually_disabled`, or a `manual` dequeue, by that App), auto-merge a close turned off (`closed`), which the reopen at READY's head undid, and the merge queue's `merge_conflict` removal of a head GitHub still merges, which is submitted once more and no further.
+Every removal the daemon tells names, for each failing job, the tests that job's Actions log states failed, read from the last 64 MiB of it, and the first line stating one (Go's `--- FAIL:` lines, a browser runner's end-of-log summary block), or says why it could not read them:
+the log states no test name, its body passed 160 MiB, the read passed a minute, the one 3-minute deadline every read of that removal shares ran out, the fetch failed, or GitHub refused the read because the deployment's App was never granted GitHub's optional Actions read.
+Every string of GitHub's in such a line is cut to 200 runes, the reason a read it could not make gives among them, since the line is rendered into one block of a Dispatch post.
+A read the daemon's own stop ended is none of those: the row is retried when the daemon comes back and reads the same removal from GitHub again, and nobody is told anything of that run.
 The repository's required reviews and checks decide when it merges; Legion bypasses none, and a review only a person can give is waited for.
 READY reads no check of the head at all: whether the merge happens is GitHub's to decide, under the base branch's own rules.
 The row reads GitHub, then the record, and submits nothing once the record shows the issue has left that READY or applied a close;
@@ -1041,7 +1078,8 @@ A refusal GitHub would repeat on a retry ends the row and is told to the archite
 GitHub checks the expected head only when auto-merge is enabled, and arming is right only for an awaiting issue's READY head, so the daemon queues an `auto_merge_disable` outbox row on every other push or reopen, when a child is set back to `todo`, and when an issue leaves the workflow.
 The row reads GitHub, then the record: it keeps the arm only while the issue awaits its merge, its READY is not by hand, and the pull request's head is the merger's READY commit, and otherwise disables auto-merge and removes the merge-queue entry, as the implement App;
 READY is refused (`READY_HEAD_MOVED`) when the head moved past its commit.
-When a push or reopen moves the head past the one READY named, the head's own CI turns red before the merge, the head starts conflicting with its base (GitHub computes no merge ref for a conflicting head and runs no checks on it at all), or the merge queue fails its merge, the daemon sends the issue back to `implementing`, disarms the pull request, posts the READY's withdrawal on the Dispatch issue, and publishes it to that role.
+An issue leaving the workflow for any status but `done` queues a `claim_release` outbox row beside the disable, which releases the issue's Dispatch claim.
+When a push or reopen moves the head past the one READY named, the head's own CI turns red before the merge, the head starts conflicting with its base (GitHub computes no merge ref for a conflicting head and runs no checks on it at all), GitHub's merge queue reports its entry for READY's head unmergeable while it has built that entry on the tip of the pull request's own base branch, read twice at least ten minutes apart at the same base commit (nothing ahead of such an entry in the queue can be the cause, and no entry is ever taken out of the queue to ask GitHub about it), or the merge queue fails its merge, the daemon sends the issue back to `implementing`, disarms the pull request, posts the READY's withdrawal on the Dispatch issue, and publishes it to that role.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 
