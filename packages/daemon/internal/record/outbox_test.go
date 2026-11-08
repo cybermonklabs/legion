@@ -554,6 +554,9 @@ func TestNoRowsPostMeasuresAboveLongestPost(t *testing.T) {
 // that the validation refuses is named too. Each row is judged by the validation itself rather
 // than against a list of field names, so a field a kind comes to require is covered the day it
 // is required: Published dropping it fails this test without anybody remembering to name it here.
+// Each row then holds the publish to being the notice the daemon wrote, field for field and kind
+// by kind, rather than to validating: the validation refuses a field that is missing, and a field
+// the publish changes instead of dropping is one it takes.
 func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	answered := time.Date(2026, 11, 8, 9, 0, 0, 0, time.UTC)
 	paced := answered.Add(time.Minute)
@@ -628,6 +631,40 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 			copied.PacedAt, copied.PacedFrom = notice.PacedAt, notice.PacedFrom
 			if _, err := NewOutboxRow("LEGION-208", copied, paced); err != nil {
 				t.Fatalf("the re-held copy of a published %s notice is refused, so its architect is never told: %v", notice.Kind, err)
+			}
+
+			// Valid is not the same as unchanged. The validation refuses a field a kind requires
+			// and does not hold — a wait with no moment at all — while the daemon compares what
+			// the published row carries against the record exactly (the daemon's
+			// stillWaitsForSlot), so a publish that moved the moment rather than dropping it
+			// would pass every check above and leave the copy unpublishable all the same. The
+			// comparison runs over the wire form the re-hold reads the copy back from, decoded
+			// the way the daemon's exceptionNotice decodes the listener's report, with unknown
+			// fields refused, so a field the publish renames or invents is caught here too.
+			wire, err := json.Marshal(published)
+			if err != nil {
+				t.Fatalf("the published %s notice does not marshal, so no listener could carry it: %v", notice.Kind, err)
+			}
+			var back Notice
+			decoder := json.NewDecoder(strings.NewReader(string(wire)))
+			decoder.DisallowUnknownFields()
+			if err := decoder.Decode(&back); err != nil {
+				t.Fatalf("the published %s notice does not read back as a notice, so no re-hold of it can be built: %v", notice.Kind, err)
+			}
+			// Set aside on both sides are the three the publish is meant to change, the daemon's
+			// own bookkeeping of the row, and nothing else: everything a kind carries is the
+			// architect's and must cross the publish untouched.
+			want := notice
+			want.PacedAt, want.PacedFrom, want.ResendOf = time.Time{}, time.Time{}, 0
+			back.PacedAt, back.PacedFrom, back.ResendOf = time.Time{}, time.Time{}, 0
+			if !reflect.DeepEqual(back, want) {
+				// Both are printed as the wire carries them: %#v prints a pointer field's
+				// address rather than the wait or the account behind it, which is where the
+				// kinds that carry one differ. Neither Marshal can fail, the one above having
+				// just marshalled these very fields.
+				gotWire, _ := json.Marshal(back)
+				wantWire, _ := json.Marshal(want)
+				t.Fatalf("the published %s notice is %s, want %s: a published notice that is not the notice the daemon wrote means the re-held copy is not the one its architect was owed", notice.Kind, gotWire, wantWire)
 			}
 		})
 	}
