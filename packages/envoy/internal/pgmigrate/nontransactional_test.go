@@ -57,6 +57,17 @@ func TestLoadRefusesUnsafeNonTransactionalMigrations(t *testing.T) {
 	}
 }
 
+func TestLoadRefusesUniqueConcurrentIndex(t *testing.T) {
+	set := fstest.MapFS{
+		"migrations/0001_first.up.sql":  {Data: []byte("select 1")},
+		"migrations/0002_unique.up.sql": {Data: []byte("-- pgmigrate:non-transactional\ncreate unique index concurrently if not exists things_kind on things (kind)")},
+	}
+	migrations, err := Load(set, "migrations")
+	if err == nil || len(migrations) != 0 || !strings.Contains(err.Error(), "0002_unique.up.sql") {
+		t.Fatalf("Load = %v, %v; want whole-set refusal of the unique concurrent index", migrations, err)
+	}
+}
+
 func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, testpg.URL(t))
@@ -106,10 +117,12 @@ func TestExecNonTransactionalRefusesAnInvalidIndex(t *testing.T) {
 	if _, err := conn.Exec(ctx, "create table things (kind text); insert into things values ('same'), ('same')"); err != nil {
 		t.Fatal(err)
 	}
-	migration := Migration{Name: "0001_index.up.sql", SQL: "create unique index concurrently if not exists things_kind on things (kind)", NonTransactional: true}
-	if err := ExecNonTransactional(ctx, conn, migration, nil); err == nil {
+	// A failed UNIQUE build supplies a real INVALID index fixture, but UNIQUE builds themselves
+	// are deliberately outside the marked migration mode.
+	if _, err := conn.Exec(ctx, "create unique index concurrently things_kind on things (kind)"); err == nil {
 		t.Fatal("unique index accepted duplicate rows")
 	}
+	migration := Migration{Name: "0001_index.up.sql", SQL: "create index concurrently if not exists things_kind on things (kind)", NonTransactional: true}
 	var valid bool
 	if err := conn.QueryRow(ctx, "select indisvalid from pg_index where indexrelid = 'things_kind'::regclass").Scan(&valid); err != nil || valid {
 		t.Fatalf("failed concurrent build did not leave an invalid index: %v, %v", valid, err)

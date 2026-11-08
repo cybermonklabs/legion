@@ -14,15 +14,17 @@ type indexStatement struct {
 	Idxname     string `json:"idxname"`
 	Concurrent  bool   `json:"concurrent"`
 	IfNotExists bool   `json:"if_not_exists"`
+	Unique      bool   `json:"unique"`
 	Relation    struct {
 		Relname    string `json:"relname"`
 		Schemaname string `json:"schemaname"`
 	} `json:"relation"`
 }
 
-// concurrentIndex accepts exactly one idempotent concurrent index build. Keeping this mode
-// narrow makes a successful statement safe to repeat if recording its version fails: unlike a
-// transactional migration, the statement and its version cannot commit atomically.
+// concurrentIndex accepts exactly one idempotent, non-unique concurrent index build. A UNIQUE
+// build validates existing rows and must not receive this mode's census size exception. Keeping
+// this mode idempotent makes a successful statement safe to repeat if recording its version
+// fails: unlike a transactional migration, the statement and version cannot commit atomically.
 func concurrentIndex(sql string) (index indexStatement, err error) {
 	defer func() {
 		if recover() != nil {
@@ -50,6 +52,9 @@ func concurrentIndex(sql string) (index indexStatement, err error) {
 	}
 	if err := json.Unmarshal(body, &index); err != nil {
 		return index, err
+	}
+	if index.Unique {
+		return index, errors.New("non-transactional migration must create a non-unique index; UNIQUE builds cannot bypass the census size limit")
 	}
 	if !index.Concurrent || !index.IfNotExists || index.Idxname == "" || index.Relation.Relname == "" {
 		return index, errors.New("non-transactional migration must be CREATE INDEX CONCURRENTLY IF NOT EXISTS")

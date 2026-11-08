@@ -28,8 +28,8 @@ type Migration struct {
 	Version int
 	Name    string
 	SQL     string
-	// NonTransactional selects a single idempotent CREATE INDEX CONCURRENTLY outside a
-	// transaction, declared by -- pgmigrate:non-transactional on the file's first line.
+	// NonTransactional selects a single idempotent, non-unique CREATE INDEX CONCURRENTLY outside
+	// a transaction, declared by -- pgmigrate:non-transactional on the file's first line.
 	// Runners without that execution mode must refuse it before applying anything.
 	NonTransactional bool
 	// Census is the text of <version>_<name>.census.sql when the migration declares one: one
@@ -56,7 +56,7 @@ type Migration struct {
 //   - an entry is named any other way: a runner reading only *.up.sql would never see it, while
 //     whoever wrote it believes it runs;
 //   - a -- pgmigrate:non-transactional first-line marker does not hold exactly one
-//     CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
+//     non-unique CREATE INDEX CONCURRENTLY IF NOT EXISTS statement (concurrentIndex);
 //   - a rollback script or a census has no forward migration of its name;
 //   - a census is not one select, holds a Unicode escape, or names pg_terminate_backend,
 //     pg_cancel_backend, pg_sleep, an advisory-lock function or a function that runs a query
