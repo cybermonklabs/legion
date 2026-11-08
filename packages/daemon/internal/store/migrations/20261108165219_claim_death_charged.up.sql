@@ -20,7 +20,7 @@
 -- made for (supervise's letGo), and so does a claim whose process a later report found running
 -- again: that process is alive, so the death a report of it finds next is a death of its own.
 --
--- Rolling the image back needs no restore of the database: supervise's claims.go is the only
+-- Rolling the image back needs no restore of the database: store's claims.go is the only
 -- reader and writer of this column, and the release before it names it in no statement, so an
 -- upsert of that release leaves whatever the column last held. A stored true survives the
 -- relaunch that release makes and stands over the process it starts, and a daemon of this

@@ -793,10 +793,12 @@ package api
 // serve them. The rest of that half adds no route and changes no shape a plugin parses: a turn
 // that ends in a provider error keeps its task, and the daemon reads that prompt's own result
 // to decide whether the task goes to the same session again or the claim fails
-// (`internal/supervise/providererror.go`). It ships this number's one store migration.
+// (`internal/supervise/providererror.go`). It ships two store migrations.
 // `20261105004846_provider_error_retry.up.sql` adds the two columns a task a provider error
 // took back is kept by (`pending_task_deliveries.provider_error_retries` and
-// `provider_error_note`) and the claim's run of such turns (`claims.provider_error_run`). The
+// `provider_error_note`) and the claim's run of such turns (`claims.provider_error_run`), and
+// `20261108165219_claim_death_charged.up.sql` adds what was charged for the death of the
+// process a claim records (`claims.death_charged`, supervise.Claim.DeathCharged). The
 // removal ships none; `fix_attempts`, `blocked_attempts` and `head_counted` stay as stopped
 // columns that nothing reads, each given its zero on an insert (`record`'s PutPullRequest).
 // (This branch took 47, then 48, then 50, then 52, then 54, then 55, then 56, then 57, as main's
