@@ -40,6 +40,9 @@ COPY packages/pi-shared/package.json packages/pi-shared/package.json
 COPY packages/claude-envoy/package.json packages/claude-envoy/package.json
 COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
+# proof-sdk-upstream is file:./proof-sdk-<commit>.tgz, a dependency of that manifest rather than a
+# registry fetch: the upstream editor sources, which the install below reads from the context.
+COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
 COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
