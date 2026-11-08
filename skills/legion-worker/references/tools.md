@@ -489,7 +489,7 @@ something to count.
   with `O_DIRECTORY|O_NOFOLLOW` is defeated there while every leaf check still passes, and its
   tests stay green on a developer's kernel. Dropping `O_DIRECTORY` changes it, because
   `openat(dirfd, <a link to a directory>, O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC)` refuses
-  `ELOOP` under gVisor too, measured on 2026-11-08 and relied on by `readSessionFile`'s walk in
+  `ELOOP` under gVisor too, measured on 2026-11-08 and relied on by `openSessionFileBeneath` in
   `packages/daemon/cmd/legion/sessions.go`, so what the sandbox follows is the `O_DIRECTORY`
   combination and not `O_NOFOLLOW` itself. A whole block of such tests failing in a pod is that
   one property of the environment, not one defect per test. The fix shape holds on both kernels:
