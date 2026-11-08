@@ -9,8 +9,10 @@ export interface ChannelBrokerMessage {
   readonly subject: string
   readonly data: Uint8Array
   /**
-   * The frame's reply subject, which only a relay frame carries anything useful in: the relay's
-   * own answer token (`RelayMessage`, consumer delivery).
+   * The message's reply subject. Two kinds of message carry one: a relay frame, whose reply is
+   * the relay's own answer token (`RelayMessage`, consumer delivery), and a request on the live
+   * view's control subject, answered there (`./agent-stream-runner`). No Envoy envelope is
+   * answered on a reply: a session publishes no receipt.
    */
   readonly reply?: string
   /** The message's NATS headers; only a relay frame (consumer delivery) carries any read here. */

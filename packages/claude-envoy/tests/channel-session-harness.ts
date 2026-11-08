@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto"
 import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { DeliveryCapability } from "@legion/contracts"
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
@@ -20,11 +21,10 @@ import type {
   ChannelConnectionStatus,
   ChannelTopicSubscription,
 } from "../src/channel-topics"
-import {
-  CHANNEL_CAPABILITIES,
-  type ChannelNotification,
-  type ChannelNotifier,
-  type ChannelSessionOptions,
+import type {
+  ChannelNotification,
+  ChannelNotifier,
+  ChannelSessionOptions,
 } from "../src/envoy-channel-server"
 import type { SessionIdentity } from "../src/session-identity"
 
@@ -122,17 +122,20 @@ export class FakeNats implements ChannelConnection {
     }
   }
 
-  emit(subject: string, raw: string): void {
-    this.emitOn(subject, subject, raw)
+  /** `reply` is the live view's own: a control request on the agent stream's control subject is
+   *  answered there (`src/agent-stream-runner.ts`). No Envoy frame is answered on a reply. */
+  emit(subject: string, raw: string, reply?: string): void {
+    this.emitOn(subject, subject, raw, reply)
   }
 
   /** A message published on `subject` reaches the subscription `pattern`, which matches it. */
-  emitOn(pattern: string, subject: string, raw: string): void {
+  emitOn(pattern: string, subject: string, raw: string, reply?: string): void {
     const queue = this.subscriptions.get(pattern)
     if (queue === undefined) throw new Error(`no subscription for ${pattern}`)
     const message = {
       subject,
       data: new TextEncoder().encode(raw),
+      ...(reply === undefined ? {} : { reply }),
     }
     if (queue.waiter === undefined) {
       queue.messages.push(message)
@@ -363,6 +366,16 @@ export function recordingClient(calls: string[], overrides: Partial<FakeClient> 
   }
 }
 
+/**
+ * What a test session advertises. Which modes a real session advertises is
+ * `runEnvoyChannelServer`'s own rule (nothing until the mod connects, the bridge's two in a
+ * pane), and the tests that drive `startChannelSession` directly only need it to advertise
+ * something.
+ */
+export function testCapabilities(): readonly DeliveryCapability[] {
+  return ["aside", "steer"]
+}
+
 /** Options binding the fakes, with the envoy.json the test's environment picks as they are built:
  * `isolatePaneEnvironment`'s scratch file in a file that calls it. Each call mints its own client
  * instance id, as each channel-server process does; a test that asserts it reads it back from the
@@ -376,7 +389,7 @@ export function sessionOptions(
     identity,
     connection: new FakeNats(),
     notifier: new FakeNotifier(),
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client: recordingClient([]),
     heartbeatMs: 60_000,
     configFile: sessionConfigFile("claude", process.env),

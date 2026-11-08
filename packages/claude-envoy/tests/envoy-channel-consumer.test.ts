@@ -88,7 +88,7 @@ function heldNotifier() {
 
 const delivery = (input: SubscribeInput | undefined): DeliveryRequest | undefined => input?.delivery
 
-test("channel mode answers a relay frame received at once and done only once the notification write resolves", async () => {
+test("a terminal session answers a relay frame received at once and done only once the write into the conversation resolves", async () => {
   const directory = await scratchState()
   const nats = new FakeNats()
   const held = heldNotifier()
@@ -107,7 +107,7 @@ test("channel mode answers a relay frame received at once and done only once the
     await waitFor(async () => held.written.length === 1, "the notification write")
     // `received` went out before the write began, and nothing more while it is unresolved.
     expect(nats.repliesOn("_INBOX.one")).toEqual(["received"])
-    expect(held.written[0]?.params.meta["event_id"]).toBe(message.id)
+    expect(held.written[0]?.eventId).toBe(message.id)
     await settled()
     expect(nats.repliesOn("_INBOX.one")).toEqual(["received"])
 
@@ -165,7 +165,7 @@ test("bridge mode answers done once the inbox says Claude Code took the message,
     sessionOptions(new SessionIdentity(SESSION, "/tmp"), directory, {
       connection: nats,
       notifier: inbox.notifier,
-      capabilities: INBOX_CAPABILITIES,
+      capabilities: () => INBOX_CAPABILITIES,
       client,
     }),
   )
@@ -292,15 +292,15 @@ for (const refusal of [
         heartbeatMs: 10,
       }),
     )
-    const notices = () =>
-      notifier.written.filter((written) => written.params.meta["producer"] === "envoy")
+    // A notice this server writes for itself is the one write that names no Envoy event.
+    const notices = () => notifier.written.filter((written) => written.eventId === undefined)
     try {
       // The session runs on, and its relay subject stays open, so the consumer a later
       // registration is given has somewhere to land.
       expect([...nats.subscriptions.keys()]).toEqual([CONSUMER.subject])
       await waitFor(async () => notices().length === 1, "the notice")
-      expect(notices()[0]?.params.content).toContain(refusal.reason)
-      expect(notices()[0]?.params.content).toContain("Envoy inbound unavailable")
+      expect(notices()[0]?.content).toContain(refusal.reason)
+      expect(notices()[0]?.content).toContain("Envoy inbound unavailable")
 
       // Every heartbeat asks again, and the session is told once, not once per tick.
       const asked = registrations.length
@@ -321,7 +321,7 @@ for (const refusal of [
       // Every write is let through as it comes: the notice, then the frame behind it.
       await waitFor(async () => {
         for (const write of notifier.pending) write.resolve()
-        return notifier.written.some((written) => written.params.meta["event_id"] === message.id)
+        return notifier.written.some((written) => written.eventId === message.id)
       }, "the frame after the refusal")
     } finally {
       for (const write of notifier.pending) write.resolve()
@@ -390,7 +390,7 @@ test("a late BTW is passed over and answered done, and the frame after it is sho
     const after = peerMessage("after-btw")
     nats.emitRelay(SESSION, { subject: DIRECT, seq: 4, raw: after.raw, reply: "_INBOX.after" })
     await waitFor(async () => notifier.written.length === 1, "the frame after the BTW")
-    expect(notifier.written[0]?.params.meta["event_id"]).toBe(after.id)
+    expect(notifier.written[0]?.eventId).toBe(after.id)
     expect(nats.repliesOn("_INBOX.btw")).toEqual(["received", "done"])
   } finally {
     for (const write of notifier.pending) write.resolve()
@@ -497,15 +497,11 @@ test("a gap the registration reports is told once, through the notice path", asy
       for (const write of notifier.pending) write.resolve()
       return nats.repliesOn("_INBOX.gap").includes("done")
     }, "done")
-    expect(notifier.written.map((written) => written.params.meta["event_id"])).toEqual([
-      undefined,
-      message.id,
-    ])
-    const notices = notifier.written.filter(
-      (written) => written.params.meta["producer"] === "envoy",
-    )
+    expect(notifier.written.map((written) => written.eventId)).toEqual([undefined, message.id])
+    // A notice of Envoy's own names no envelope; every other line written is a frame's.
+    const notices = notifier.written.filter((written) => written.eventId === undefined)
     expect(notices).toHaveLength(1)
-    expect(notices[0]?.params.content).toContain("72 hours")
+    expect(notices[0]?.content).toContain("72 hours")
   } finally {
     for (const write of notifier.pending) write.resolve()
     await session.shutdown()

@@ -10,7 +10,7 @@ import { expect, spyOn, test } from "bun:test"
 import { mkdir, open, readdir, readFile, rm, stat } from "node:fs/promises"
 import { agentSubject } from "@legion/contracts"
 import type { Interest, SubscribeResult } from "@legion/envoy-client/transport"
-import { startChannelSession } from "../src/envoy-channel-server"
+import { type ChannelNotification, startChannelSession } from "../src/envoy-channel-server"
 import { type ReplayStateFile, replayStateFile, writeReplayState } from "../src/replay-state"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
@@ -38,20 +38,16 @@ interface Shown {
   readonly content: string
 }
 
-/** Claude Code's channel; `refuse` makes a write fail, as a closed MCP transport does. */
+/** The session's conversation, as the notifier writes a card into it; `refuse` makes a write
+ *  fail, as a session that cannot take the card does. */
 function channelSink(refuse: (shown: Shown) => boolean = () => false) {
   const shown: Shown[] = []
   return {
     shown,
     notifier: {
-      notification: async (notification: {
-        params: { content: string; meta: Record<string, string> }
-      }) => {
-        const entry = {
-          eventId: notification.params.meta["event_id"],
-          content: notification.params.content,
-        }
-        if (refuse(entry)) throw new Error("the MCP transport refused the write")
+      notification: async (notification: ChannelNotification) => {
+        const entry = { eventId: notification.eventId, content: notification.content }
+        if (refuse(entry)) throw new Error("the session refused the write")
         shown.push(entry)
       },
     },
