@@ -15,8 +15,10 @@
 import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
+import { setLiveSessions } from "./agents";
 import { phoneShotNames, type ReviewSeed, shotRoutes } from "./review-routes";
 import { asUser } from "./users";
+import { workspaceSessions } from "./workspace";
 
 const SCHEMES = ["light", "dark"] as const;
 
@@ -28,6 +30,15 @@ const SKIP_REASON =
   "This layer compares baselines, which are only the same rendering inside the pinned " +
   "Playwright image: run `bun e2e/run.ts -- e2e/visual-run.sh` from packages/dispatch, which " +
   "seeds on the host and takes every shot in that container. DISPATCH_E2E_VISUAL_SEED is unset.";
+
+// The live registry, put back after Playwright's `globalSetup` cleared it, for the reason
+// `e2e/visual.e2e.ts` gives at length: the host seeds before Playwright starts and
+// `e2e/preflight.ts:73` resets the fake Envoy. This file shoots no Agents page, and it does it
+// all the same, so a phone baseline is of the same corpus its desktop baseline is of.
+test.beforeAll(async () => {
+  if (seedPath === undefined) return;
+  await setLiveSessions(workspaceSessions);
+});
 
 /** The desktop rows this file shoots again on a phone, by name: `e2e/review-routes.ts` holds
  *  which pages those are and why, so the subset is taken from it rather than written twice. */

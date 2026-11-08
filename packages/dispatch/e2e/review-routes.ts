@@ -72,7 +72,9 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     name: "agents",
     path: () => "/agents",
     pattern: "/agents",
-    ready: (page) => page.getByRole("region", { name: "Agents" }),
+    // Exact: the page draws `<section aria-label="Agents empty state">` inside the region when
+    // the registry holds nobody, and a substring match would then find two.
+    ready: (page) => page.getByRole("region", { exact: true, name: "Agents" }),
   },
   {
     kind: "reviewed",
