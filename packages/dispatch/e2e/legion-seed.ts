@@ -195,23 +195,6 @@ export async function seedLegionMetricsCorpus(): Promise<void> {
   );
 }
 
-/** What a read of the daemon a minute later leaves behind: the value it found for one field, and
- *  the announcement on `legion.StateChannel` that wakes every open board of the project
- *  (`packages/envoy/internal/dispatch/legion/store.go`). `value` is the field's JSON. */
-export async function pushLegionObservation(
-  issue: string,
-  field: string,
-  value: string
-): Promise<void> {
-  await sql(
-    `INSERT INTO legion_reads (project, read_at, ok, error, bytes)
-       VALUES ('${LEGION_PROJECT}', now(), true, null, 4096)`,
-    `INSERT INTO legion_observations (project, issue_key, field, value, observed_at)
-       VALUES ('${LEGION_PROJECT}', '${issue}', '${field}', '${value.replaceAll("'", "''")}'::jsonb, now())`,
-    `SELECT pg_notify('dispatch_legion_state', '${LEGION_PROJECT}')`
-  );
-}
-
 /** A Legion daemon as far as Dispatch's relay is concerned: it answers
  *  `PUT /legion/v1/operator/settings` with the verdicts given, keyed by path under `settings` as
  *  the daemon keys them (`LegionSettingsChangeResponse`, which the daemon's own
