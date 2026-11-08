@@ -15,6 +15,9 @@ Legion's unit of work is a prompt into a session that already holds state, and T
 But retry is not Temporal's only shape: experiments 19 and 20 measured Asynchronous Activity Completion, where an activity's body returns `activity.ErrResultPending` and the work is handed out rather than run.
 The server then kept that activity `Started` on attempt 1 with the process holding it killed, dispatched it to no replacement worker, took its outcome from a process that ran no worker and held only the task token, refused a token whose attempt had moved, and across five minutes with nobody holding it nothing but its own start-to-close timeout touched it.
 So the state this investigation first said no measured product had is Temporal's, and the recommendation does not rest on its absence.
+Experiment 21 then answered what this investigation called its own open question: the handout reaches a process holding what a pod holds and nothing of the engine, a working copy of its own and a placeholder credential, both with the token carried to it out of band and on a queue it named for itself, and the commit it made in its own repository arrived at the workflow.
+For the out-of-band route the engine was told nothing whatever about that process, which is why the price of moving parts of the daemon into a product is re-derived lower here, 45 to 95 engineer-days rather than 60 to 120.
+So the recommendation rests on a comparison of two figures derived at this head rather than on a mechanism nobody has: 37 to 53 engineer-days with nothing new to run, against 45 to 95 unverified plus a server to operate or a vendor to pay and a cut-over draining 81 trees in flight.
 Its one mechanism for work pinned to a process is still the worker session, and experiment 3, re-measured with the workflow kept running and a replacement worker polling, shows a session does not recover: the body ran once and never again, the server held the killed attempt `Started` and then ended it `ActivityTaskTimedOut`, and the work sat on a `<resourceID>@<hostname>` queue no poller touched after the kill.
 Temporal's own published coding-agent experiment reaches the same place and builds the recovery in the application: a claim on disk before each tool call, a lease on the transcript, a write guard against a stale worker's append.
 Legion has those three already, written for the same reason.
@@ -29,12 +32,12 @@ The ideas worth taking are the effect sandwich, a terminal "stopped, a person mu
 The directory keeps the name it was created with, because the issue's spec pins that path.
 It holds the measurement of five products, not one.
 
-## The twenty experiments
+## The twenty-one experiments
 
 Five products were measured in one Legion worker pod, each against a real server or a real PostgreSQL.
 Each experiment shows that a mechanism exists, not that it holds at Legion's scale, and each states that limit in its own output.
 
-**Temporal**, eight experiments, each in a namespace of its own against one dev server the runner starts.
+**Temporal**, nine experiments, each in a namespace of its own against one dev server the runner starts.
 
 - `experiment-1-phase-table.txt` — Legion's lifecycle from `admitted` to `done` as one workflow driven by signals, with a backward move from reviewing to implementing and a second entry into testing.
 
@@ -52,6 +55,8 @@ Each experiment shows that a mechanism exists, not that it holds at Legion's sca
 - `experiment-19-temporal-handout.txt` — an activity handed out with `activity.ErrResultPending`, its worker killed, a replacement worker polling the same queue, a completion from a process that holds only the task token, the refusal of a superseded attempt's token, and what the start-to-close timeout does when nobody completes it.
 
 - `experiment-20-temporal-handout-held.txt` — the same handout with a ten-minute start-to-close and no heartbeat, held open for five minutes of real time with no worker alive, polled every thirty seconds, then completed by token: the reading that says nothing but that bound reaps a handout.
+
+- `experiment-21-temporal-handout-to-a-holder.txt` — the same handout reaching a process that holds what a Legion pod holds and nothing of the engine, a working copy of its own and a placeholder credential, twice: once with the token carried to it out of band and no Temporal worker in it at all, and once on a task queue it named for itself, each ending with the commit it made in its own repository arriving at the workflow.
 
 **DBOS**, a library in the process with its state in PostgreSQL.
 
@@ -91,10 +96,10 @@ Each experiment shows that a mechanism exists, not that it holds at Legion's sca
 bash docs/research/temporal-evaluation-2026-11/run.sh
 ```
 
-It installs the pinned Temporal command and the pinned Restate server under `$TMPDIR`, verifying each one's checksum and version, runs `gofmt -l` and `go vet` over the prototype, builds its six commands, runs the twenty experiments in order, runs the negative control of each kill experiment and requires it to fail, and ends with `temporal-evaluation: all 20 experiments passed`.
+It installs the pinned Temporal command and the pinned Restate server under `$TMPDIR`, verifying each one's checksum and version, runs `gofmt -l` and `go vet` over the prototype, builds its six commands, runs the twenty-one experiments in order, runs the negative control of each kill experiment and requires it to fail, and ends with `temporal-evaluation: all 21 experiments passed`.
 It writes nothing into the working tree.
 Set `TMPDIR` to a directory on a volume with about 300 MB free; the script refuses an unset one and one under `/tmp`.
-Set `LEGION_TEST_PG_DSN` to a PostgreSQL the run may create a database in; nine of the twenty need it (7 to 9, and 13 to 18), and the script refuses an empty one by name.
+Set `LEGION_TEST_PG_DSN` to a PostgreSQL the run may create a database in; nine of the twenty-one need it (7 to 9, and 13 to 18), and the script refuses an empty one by name.
 Run one at a time: two runs share one directory under `$TMPDIR` and collide.
 
 To build or test the Go program by hand, from this directory:

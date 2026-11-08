@@ -21,17 +21,28 @@
 # the kinds of citation; this header is where their grammar is written):
 #
 #   Code         (`packages/daemon/internal/record/store.go`, `record.Postgres.Enqueue`)
-#                A repository-rooted path in a code span, a comma and a space, then a
-#                dotted identifier in a code span. It resolves when that file holds the
-#                identifier's last dotted element as a Go declaration: a function, a
-#                method, a type, a var, a const, a member of a grouped var, const or
-#                type, or a struct field. No relative path and no "same file".
+#                `record.Postgres.Enqueue` (`packages/daemon/internal/record/store.go`)
+#                Two forms, one rule. Either a repository-rooted path in a code span, a
+#                comma and a space, then a dotted identifier in a code span, all in
+#                parentheses; or the identifier in a code span first and its path in a
+#                code span in parentheses after it. Both resolve when that file holds
+#                the identifier's last dotted element as a Go declaration: a function,
+#                a method, a type, a var, a const, a member of a grouped var, const or
+#                type, or a struct field. No relative path and no "same file", either
+#                way round: an absolute path and a path holding ".." are refused in
+#                both forms. Both print the same resolved and failed lines, so the
+#                output does not say which way round a citation was written.
+#                An identifier in a code span with no path beside it in either form is
+#                read by neither rule and reported by neither line. The documents write
+#                Temporal's `workflow.Sleep` and their own file names the same way, so
+#                nothing in such a span says whether a file was meant.
 #   Literal      (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ASSIGNMENT"`)
-#                The same shape with the second span double-quoted. It resolves on the
-#                exact quoted text being in that file. This is the form for a refusal
-#                code or any other token that is no declaration. Its path is read under
-#                the code form's rule, so no absolute path and no path holding "..": a
-#                citation reads a file of this repository or it is refused.
+#                The first of those two shapes with the second span double-quoted. It
+#                resolves on the exact quoted text being in that file. This is the form
+#                for a refusal code or any other token that is no declaration. Its path
+#                is read under the code form's rule, so no absolute path and no path
+#                holding "..": a citation reads a file of this repository or it is
+#                refused.
 #   Stored state the `lease_token` column of `outbox`, or the `outbox` table.
 #                A table resolves on a create table of that name in a *.up.sql file
 #                under packages/daemon/internal/store/migrations; a column resolves
@@ -131,6 +142,7 @@ die() {
 # shellcheck disable=SC2016
 readonly \
 	code_pattern='\(`[^`]+`, `[A-Za-z0-9_.]+`\)' \
+	code_reversed_pattern='`[A-Za-z0-9_.]+` \(`[^`]+`\)' \
 	literal_pattern='\(`[^`]+`, `"[^"]*"`\)' \
 	column_pattern='the `[A-Za-z0-9_]+` column of `[A-Za-z0-9_]+`' \
 	table_pattern='the `[A-Za-z0-9_]+` table' \
@@ -517,6 +529,18 @@ resolve_document() {
 		resolve_code "$match" "$path" "$ident"
 	done
 
+	# The same citation the other way round: the identifier first, its path in
+	# parentheses after it. It is read by the same resolver, so it prints the same
+	# lines and is refused for the same reasons.
+	mapfile -t matches < <(grep -oE "$code_reversed_pattern" <<<"$document" | sort -u)
+	for match in "${matches[@]}"; do
+		ident=${match#\`}
+		ident=${ident%%\`*}
+		path=${match#*\` \(\`}
+		path=${path%\`)}
+		resolve_code "$match" "$path" "$ident"
+	done
+
 	mapfile -t matches < <(grep -oE "$column_pattern" <<<"$document" | sort -u)
 	for match in "${matches[@]}"; do
 		rest=${match#the \`}
@@ -595,15 +619,20 @@ An address that answers 404: https://docs.temporal.io/no-such-page-of-infra-1546
 An address whose host no name server can resolve: https://no-such-host.invalid/ (read 2026-11-07)
 A literal citation reading outside the repository:
 (`../../../../etc/passwd`, `"root"`).
+A code citation written the other way round, whose file does not hold the identifier:
+`record.Postgres.NoSuchMethodOfThisStore` (`packages/daemon/internal/record/store.go`).
+A code citation written the other way round, reading outside the repository:
+`record.Postgres.Enqueue` (`../../../../etc/passwd`).
 EOF
 }
 
-readonly broken_fixture_citations=10
+readonly broken_fixture_citations=12
 
 # Citations of this repository that resolve today, in each form the grammar allows.
 well_formed_fixture() {
 	cat <<'EOF'
 Code: (`packages/daemon/internal/record/store.go`, `record.Postgres.Enqueue`).
+Code, the other way round: `supervise.Delivery` (`packages/daemon/internal/supervise/delivery.go`).
 Literal: (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ASSIGNMENT"`).
 Stored state: the `lease_token` column of `outbox`, and the `pending_task_deliveries` table.
 Dispatch: dispatch://INFRA-1546.
@@ -642,7 +671,7 @@ readonly experiment_figure_fixture_failed=3
 self_test() {
 	local failures=0
 
-	printf 'self-test, the broken half: every line below must be a refusal, the address whose host resolves nowhere and the literal citation reading outside the repository among them\n\n'
+	printf 'self-test, the broken half: every line below must be a refusal, the address whose host resolves nowhere, the literal citation reading outside the repository, and the two code citations written the other way round, one naming a file that does not hold its identifier and one reading outside the repository, among them\n\n'
 	reset_counts
 	resolve_document broken "$(broken_fixture)"
 	summary
@@ -651,7 +680,7 @@ self_test() {
 			"$broken_fixture_citations" "$count_failed" "$count_resolved" "$count_unreachable" >&2
 		failures=$((failures + 1))
 	else
-		printf 'self-test: all %d broken citations refused, among them the address whose host resolves nowhere, which is a refusal and not an unreachable address, and the literal citation whose path leaves the repository\n' "$broken_fixture_citations"
+		printf 'self-test: all %d broken citations refused, among them the address whose host resolves nowhere, which is a refusal and not an unreachable address, the literal citation whose path leaves the repository, and the two citations written identifier first, which are refused on the same two rules as the ones written path first\n' "$broken_fixture_citations"
 	fi
 
 	printf '\nself-test, a document with no citation at all: it must be refused\n\n'
@@ -665,7 +694,7 @@ self_test() {
 		printf 'self-test: a document with no citation refused\n'
 	fi
 
-	printf '\nself-test, the well-formed half: every line below must resolve\n\n'
+	printf '\nself-test, the well-formed half: every line below must resolve, the code citation written identifier first among them\n\n'
 	reset_counts
 	resolve_document well-formed "$(well_formed_fixture)"
 	summary
