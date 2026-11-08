@@ -2,23 +2,26 @@ package pmdoc
 
 import "slices"
 
-// carryBlockIDs gives each untyped block of next, a whole document's markdown parsed over live,
-// the id of the live block it leaves unchanged. The markdown names no untyped block's id (GET /text
-// renders none), so without this every such block took a fresh id, and Update wrote a blockId
-// tombstone for each block of the document on every upload. An untouched block keeping its id is
-// what keeps an upload from writing those, and keeps an anchor or a reference keyed on the block on
-// it.
+// carryBlockIDs gives each block of next, a whole document's markdown parsed over live, the id of
+// the live block it leaves unchanged, where next names no id of its own for it. The markdown names
+// no untyped block's id (GET /text renders none), so without this every such block took a fresh
+// id, and Update wrote a blockId tombstone for each block of the document on every upload. A typed
+// block's markdown names its id when it was rendered from the document, and that id is then part
+// of what the block is; a body an agent composed names none, and an ask that took a fresh id there
+// orphaned the ask row holding a person's answer and opened a second row on the same question. An
+// untouched block keeping its id is what keeps an upload from writing those, and keeps an anchor
+// or a reference keyed on the block on it.
 //
 // next's children are paired with live's as Update's updateChildren aligns them (carryChildren), so
 // the ids land where Update keeps elements. live is compared with its anchor marks stripped, which
-// the markdown never holds, and with every untyped block's id masked; a typed block's id is part of
-// what it is, and its server attributes, which an upload resets, are not compared
-// (unchangedAttrs). An id goes only to unchanged content at its paired position, never onto other
-// content: a moved, swapped, retyped or edited block, every block holding a change, and every
-// block a moved block passes, which the alignment pairs with a changed neighbour, still take a
-// fresh id from EnsureBlockIDs. An id next names anywhere is not carried, nor is one no ask
-// row or anchor could store (storedBlockID). A repeat live carries may be carried to both holders,
-// and EnsureBlockIDs keeps it for the first, as it would have.
+// the markdown never holds, with every untyped block's id masked, and with a typed block's id
+// masked too where next names none for it, along with the whole of that block's server state,
+// which an upload resets (unchangedAttrs). An id goes only to unchanged content at its paired
+// position, never onto other content: a moved, swapped, retyped or edited block, every block
+// holding a change, and every block a moved block passes, which the alignment pairs with a changed
+// neighbour, still take a fresh id from EnsureBlockIDs. An id next names anywhere is not carried,
+// nor is one no ask row or anchor could store (storedBlockID). A repeat live carries may be
+// carried to both holders, and EnsureBlockIDs keeps it for the first, as it would have.
 func carryBlockIDs(next, live *Node) {
 	if next == nil || live == nil {
 		return
@@ -39,9 +42,8 @@ type blockIDCarrier struct {
 // text run, a same-kind element at the left or right end is kept (by the larger child equality
 // factor when both are), and a run of children neither end keeps is replaced. A kept pair that is
 // unchanged carries its ids; one that changed carries none for itself, and its children are paired
-// in turn. What is left unpaired takes fresh ids. The ends are found before any id is carried,
-// which changes nothing they compare: a carried id is an untyped block's, which unchangedAttrs
-// ignores.
+// in turn. What is left unpaired takes fresh ids. The ends are found before any id is carried, and
+// an id lands only on a child a pass has already taken, so nothing carried is compared again.
 func (c blockIDCarrier) carryChildren(next, live []*Node) {
 	nextChildren := normalizePNodeContent(next)
 	liveChildren := normalizePNodeContent(live)
@@ -116,15 +118,15 @@ func (c blockIDCarrier) carryKept(next, live *Node) {
 }
 
 // carryUnchangedChild carries the ids of a pair of unchanged children: none for a text run, and
-// every untyped block's for an element.
+// every block's that takes one for an element.
 func (c blockIDCarrier) carryUnchangedChild(next, live normalizedChild) {
 	if !next.isText() {
 		c.carryUnchanged(next.element, live.element)
 	}
 }
 
-// carryUnchanged gives each untyped block of next, which is unchanged from live (unchangedNode)
-// and so has its shape, the id of the block at its place in live (carryID).
+// carryUnchanged gives each block of next, which is unchanged from live (unchangedNode) and so has
+// its shape, the id of the block at its place in live (carryID).
 func (c blockIDCarrier) carryUnchanged(next, live *Node) {
 	if next.Type == "text" {
 		return
@@ -135,11 +137,12 @@ func (c blockIDCarrier) carryUnchanged(next, live *Node) {
 	}
 }
 
-// carryID gives next, a node of an unchanged pair, live's id when next is an untyped block, unless
-// next names that id or no ask row or anchor could store it. A block that already has an id keeps
-// it.
+// carryID gives next, a node of an unchanged pair, live's id when next names no id of its own,
+// unless next names live's id elsewhere or no ask row or anchor could store it. A block whose
+// markdown names an id, which a typed block's does when it was rendered from the document, keeps
+// the one it names. A doc node and an inline node hold no block id at all.
 func (c blockIDCarrier) carryID(next, live *Node) {
-	if next.Type == "doc" || isInlineNodeType(next.Type) || IsTypedBlock(next.Type) {
+	if next.Type == "doc" || isInlineNodeType(next.Type) {
 		return
 	}
 	if _, has := storedBlockID(next); has {
@@ -197,22 +200,31 @@ func unchangedChild(next, live normalizedChild) bool {
 	return slices.EqualFunc(next.text, live.text, unchangedNode)
 }
 
-// unchangedNode reports whether next leaves live as it is, but for untyped blocks' ids and typed
-// blocks' server attributes (unchangedAttrs). A text run equal node for node is equal as a
-// normalized run, so the children need no normalizing to be compared.
+// unchangedNode reports whether next leaves live as it is, but for the ids a block may be given
+// and a typed block's server attributes (unchangedAttrs). A text run equal node for node is equal
+// as a normalized run, so the children need no normalizing to be compared.
 func unchangedNode(next, live *Node) bool {
 	return equalNode(next, live, unchangedAttrs)
 }
 
-// unchangedAttrs compares a block's attributes in next and live: an untyped block's but for its id,
-// which is what is carried, and a typed block's but for its server attributes, which an upload
-// resets, with the id next names, the one its markdown wrote, part of what the block is.
+// unchangedAttrs compares a block's attributes in next and live: an untyped block's but for its
+// id, which is what is carried; a typed block's whose markdown names an id, the one that markdown
+// wrote and so part of what the block is, but for the server attributes an upload resets, the
+// answer itself apart (attrsEqualOutsideServerState); and a typed block's that names no id but for
+// its id, which is then carried like an untyped block's, and the whole of its server state, the
+// answer included. The answer is held apart there because an upload resets a typed block's server
+// state and the settlement writes it back from the ask row (docs.setAskServerAttributes), and an
+// agent composing a document body cannot know the answer a person gave: an answered ask whose
+// question text is unchanged must still read as unchanged, or it takes a fresh id, orphans the row
+// holding that answer and opens a second row on the same question.
 func unchangedAttrs(nodeType string, next, live Attrs) bool {
 	if !IsTypedBlock(nodeType) {
 		return attrsEqualButBlockID(next, live)
 	}
 	if id, _ := next[BlockIDAttr].(string); id == "" {
-		return false
+		return attrsEqualOutsideServerStateBut(nodeType, next, live, func(name string) bool {
+			return name == BlockIDAttr || IsAnswerAttribute(name)
+		})
 	}
 	return attrsEqualOutsideServerState(nodeType, next, live)
 }

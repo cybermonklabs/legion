@@ -558,11 +558,21 @@ func IsAnswerAttribute(name string) bool {
 }
 
 func attrsEqualOutsideServerState(nodeType string, a, b Attrs) bool {
+	return attrsEqualOutsideServerStateBut(nodeType, a, b, func(string) bool { return false })
+}
+
+// attrsEqualOutsideServerStateBut is attrsEqualOutsideServerState over the attributes ignored does
+// not name, for a caller holding apart more of a block than the server state it writes itself: an
+// upload, which compares a typed block it leaves where it is with its id and the whole of its
+// server state masked (unchangedAttrs).
+func attrsEqualOutsideServerStateBut(nodeType string, a, b Attrs, ignored func(name string) bool) bool {
 	typ, typed := typedBlock(nodeType)
 	if !typed {
-		return attrsEqual(a, b)
+		return attrsEqualBut(a, b, ignored)
 	}
-	return attrsEqualBut(a, b, func(name string) bool { return !IsAnswerAttribute(name) && typ.Attributes.Get(name).Server })
+	return attrsEqualBut(a, b, func(name string) bool {
+		return ignored(name) || (!IsAnswerAttribute(name) && typ.Attributes.Get(name).Server)
+	})
 }
 
 // equalNode compares n and o, their content and structure, holding each node's attributes to
