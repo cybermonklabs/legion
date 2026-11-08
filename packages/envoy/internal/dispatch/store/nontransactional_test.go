@@ -181,11 +181,14 @@ func TestMigrateTransactionalFailureStillRollsBackTheWholeMigration(t *testing.T
 	}
 }
 
-// The pod stopped mid-migration INFRA-1973 is about, at the layer that holds the key: the
-// migration's statement fails on the cancelled context, BeginFunc's rollback fails on it too and
-// pgx closes the connection over that failure, so the deferred unlock reaches a closed socket.
-// The session took the key with it, so this leaves no advisory lock behind and logs no ERROR
-// saying the key was not released - the unlock meets the closed connection and says so instead.
+// The pod stopped mid-migration INFRA-1973 is about, at the layer that holds the key. The sleep
+// is still in flight when the context is cancelled, so pgx's deadline watcher closes the
+// connection over the migration statement's own failure, and BeginFunc's rollback then fails on
+// a connection already closed; a cancel landing between two statements reaches the same place by
+// the rollback's own failure instead (pgx's tx.go, die). Either way the deferred unlock finds a
+// closed connection, and the session took the key with it, so this leaves no advisory lock
+// behind and logs no ERROR saying the key was not released - the unlock is told the connection
+// was closed before it and says so instead.
 func TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError(t *testing.T) {
 	store := openEmptyTestStore(t)
 	records := &logtest.Recorder{}

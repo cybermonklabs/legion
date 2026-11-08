@@ -4,6 +4,7 @@ package store
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
@@ -240,54 +242,57 @@ func (s *Store) inMigrationLockTx(ctx context.Context, fn func(context.Context, 
 		// ends the session and the key with it, and costs one connection on a path whose boot has
 		// failed anyway. (A cancelled Go context needs none of this - pgx closes the socket - but
 		// it cannot be told apart from the rest here either.)
-		closeOutOfPool(ctx, conn)
+		closeBounded(ctx, conn.Hijack())
 		return err
 	}
-	defer unlockMigrations(ctx, conn)
+	defer unlockMigrations(conn)
 	return pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error { return fn(ctx, tx) })
 }
 
-// unlockMigrations releases migrationLockKey on conn and gives conn back to the pool. When the
-// release errors or answers false the connection is taken out of the pool and closed instead:
-// a connection that may still hold a session-level key must never serve another caller, who would
-// hand the key on to a request and hold every later boot's migrations behind it (closeOutOfPool).
+// unlockMigrations releases migrationLockKey on conn and gives conn back to the pool, through
+// duty.FreeSessionLock, as every session-level advisory lock Dispatch takes on a pooled
+// connection is given back: it releases conn once Postgres answers true, and on anything else
+// hijacks conn out of the pool and closes it under a bound of its own. A connection that may
+// still hold a session-level key must never serve another caller, who would hand the key on to a
+// request and hold every later boot's migrations behind it.
 //
-// The unlock runs on a context a cancelled ctx does not cancel, so a boot cancelled between two
-// statements still releases what it took. A boot cancelled inside the transaction releases it
-// another way: BeginFunc's rollback fails on the cancelled context and pgx then closes the
-// connection, which ends the session and the key with it, and this unlock reaches a closed
-// socket. That is nothing to report - the key went with the session - so a connection already
-// closed leaves the pool without the ERROR, which stays for the case it was written for: a
-// connection still open whose key may still be held.
-func unlockMigrations(ctx context.Context, conn *pgxpool.Conn) {
-	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
-	defer cancel()
-	var released bool
-	err := conn.QueryRow(cleanup, "select pg_advisory_unlock($1)", migrationLockKey).Scan(&released)
+// The unlock runs on a context of FreeSessionLock's own, which a cancelled ctx does not cancel,
+// so a boot cancelled between two statements still releases what it took. A boot cancelled
+// inside the transaction releases it another way, by either of two paths. Cancelled while the
+// migration's own statement is in flight - what the test of this exercises
+// (nontransactional_test.go, TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError) -
+// pgx's deadline watcher closes the connection over that statement's failure, and BeginFunc's
+// rollback then fails on a connection already closed. Cancelled between two statements, the
+// rollback itself fails on the cancelled context and pgx closes the connection over that failure
+// (pgx's tx.go, die; internal/dispatch/outbox/lease.go describes the same path for a lease).
+// Either way the session ended and the key went with it, and this unlock meets a closed
+// connection.
+//
+// Which of the two lines below that connection gets is FreeSessionLock's to decide, and it
+// decides it before it sends anything: a connection already closed is answered
+// duty.ErrSessionClosed without an unlock, which is nothing to report. Every other error keeps
+// the ERROR this was written for - the key may still be held by a session the unlock could not
+// reach, a half-open connection whose backend can hold the key until TCP gives up included.
+// Reading IsClosed after a failed unlock, as this once did, cannot tell those apart: pgx closes
+// a connection whose unlock failed too (pgconn's asyncClose, the unlock's own bound included).
+func unlockMigrations(conn *pgxpool.Conn) {
+	err := duty.FreeSessionLock(conn, "select pg_advisory_unlock($1)", migrationLockKey)
 	switch {
-	case err == nil && released:
-		conn.Release()
-		return
-	case conn.Conn().IsClosed():
+	case err == nil:
+	case errors.Is(err, duty.ErrSessionClosed):
 		slog.Info("dispatch: the migration advisory lock's connection was closed before the unlock; its session ended the key",
 			"key", migrationLockKey, "error", err)
 	default:
 		slog.Error("dispatch: the migration advisory lock was not released; its connection leaves the pool",
-			"key", migrationLockKey, "released", released, "error", err)
+			"key", migrationLockKey, "error", err)
 	}
-	closeOutOfPool(ctx, conn)
-}
-
-// closeOutOfPool takes conn out of the pool and closes it, which ends its session and releases
-// whatever advisory key that session still holds.
-func closeOutOfPool(ctx context.Context, conn *pgxpool.Conn) {
-	closeBounded(ctx, conn.Hijack())
 }
 
 // closeBounded closes conn on a context a cancelled ctx does not cancel, bounded like the rest of
-// this runner's waits (pgmigrate.LockTimeout). Every site that ends a session to end its advisory
-// key closes it through here, so that bound is one number: the pooled sites hand over the
-// connection they hijack out of the pool, the concurrent build's its own.
+// this runner's waits (pgmigrate.LockTimeout). Its two callers are this runner's own: the failed
+// lock, which hands over the connection it hijacks out of the pool, and the concurrent build,
+// which owns its connection. The unlock's close is bounded too, by duty.FreeSessionLock, under
+// the bound every session lock's unlock gets (duty.LeaseCall).
 func closeBounded(ctx context.Context, conn *pgx.Conn) {
 	cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), pgmigrate.LockTimeout)
 	defer cancel()
