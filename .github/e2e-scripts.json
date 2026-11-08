@@ -95,6 +95,10 @@
   ],
   "elsewhere": [
     {
+      "script": "answer-loop.sh",
+      "needs": "a Legion issue pod or a devbox: the role Apps' tokens from the secrets broker (LEGION_IMPLEMENT_APP, and LEGION_REVIEW_APP granted, LEGION_E2E_REVIEW_APP_GRANTED=1, for the answering criteria), an Anthropic key file or gateway (LEGION_E2E_MODEL_ROUTE), real Oh My Pi and Claude Code, and the smoke repository"
+    },
+    {
       "script": "burstable-kind.sh",
       "needs": "a throwaway kind cluster with gVisor on an amd64 Linux host, with docker, go, kubectl, curl, zstd, a tar that supports --zstd and kind, and a worker image by digest (LEGION_E2E_IMAGE)"
     },
