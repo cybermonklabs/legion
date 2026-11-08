@@ -1173,7 +1173,7 @@ check "does not judge the budget against a figure it is missing" \
 
 # Two uncounted loops, one inside the other's script: the step's loop cannot be counted, and
 # neither can the loop inside the script it runs, so the figure for one run of that script is
-# one this check cannot make either. It printed `0 s` here until the read's None was taken for
+# one this check cannot make either. It printed `0 s` here while the read's None was taken for
 # a zero, which is the gate stating a cost it never computed - rule 8's own defect, one layer
 # in (dispatch://INFRA-1545, round 4).
 echo "case: a script whose own loop is uncounted is refused with no figure at all"
@@ -1207,12 +1207,157 @@ check "names the step and the call it cannot count" \
   "$(contains "$out" "step .Read every run the decision named. carries .timeout-minutes: 30. and this check can put no figure on it")"
 check "names the script call and the loop around it" \
   "$(contains "$out" '..github/scripts/c.sh. at .github/workflows/case.yaml:10, inside the loop at line 9')"
-check "says the script's own loop is uncounted too" \
-  "$(contains "$out" 'holds a loop of its own whose passes this check cannot read either')"
+check "says one run of that script reaches an uncounted loop" \
+  "$(contains "$out" 'One run of ..github/scripts/c.sh. reaches a loop, its own or one in a script it calls, whose passes this check cannot read either')"
 check "prints no figure for a cost it cannot compute" \
   "$(is "$(contains "$out" 'takes 0 s')" false)"
 check "still says what to do instead" \
   "$(contains "$out" 'take the call out of the loop')"
+
+# The loop can be two scripts in: the step loops over a script that calls another outside any
+# loop, and that second one holds the `while read`. The figure for one run of the first is
+# still one this check cannot make, because the run reaches the uncounted loop either way, but
+# the loop is not the first script's own — the sentence said it was while the site list named
+# the second script, so the two halves of one refusal pointed a reader at different files
+# (dispatch://INFRA-1545, round 5).
+echo "case: a loop in a script the called script calls is refused without naming the wrong file"
+root=$(fixture script-loop-two-deep)
+cat > "$root/.github/scripts/c2.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/d.sh "$1"
+SH
+cat > "$root/.github/scripts/d.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id; do
+  retry_fetch "the run $id" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/c2.sh" "$root/.github/scripts/d.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            .github/scripts/c2.sh "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the script the step runs and the loop around that call" \
+  "$(contains "$out" '..github/scripts/c2.sh. at .github/workflows/case.yaml:10, inside the loop at line 9')"
+check "names the site in the second script that stopped the reading" \
+  "$(contains "$out" '.gh api. at .github/scripts/d.sh:5, inside the loop at line 4')"
+check "says the loop one run reaches may sit in a script that script calls" \
+  "$(contains "$out" 'One run of ..github/scripts/c2.sh. reaches a loop, its own or one in a script it calls')"
+check "does not call the uncounted loop the first script's own" \
+  "$(is "$(contains "$out" 'holds a loop of its own')" false)"
+
+# A loop this check cannot count around a script that retries nothing is no loop rule 8 has
+# anything to say about: nobody waits for an attempt under it, so there is no sum for a budget
+# to exceed and no pass count to ask the step's author for. The gate refused this shape and
+# priced the run it was refusing at `0 s`, because blocked_calls lists every script call in an
+# uncounted loop and the script's own arithmetic of 0 is not the None the no-figure sentence
+# reads (dispatch://INFRA-1545, round 5).
+echo "case: a loop around a script that fetches nothing passes"
+root=$(fixture script-no-fetch-in-loop)
+cat > "$root/.github/scripts/zz-e.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+chmod +x "$root/.github/scripts/zz-e.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo every id the decision named
+        timeout-minutes: 30
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-e.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "prices no run of that script at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
+# One layer deeper, which the filter above does not reach: the loop sits in a script the step
+# runs, around a call of the costless one, so the item is that inner call rather than the
+# step's own. carried() answered None there for want of a pass count whose figure would have
+# multiplied zero (dispatch://INFRA-1545, R5).
+echo "case: a loop around a script that calls a script that fetches nothing passes"
+root=$(fixture script-no-fetch-two-deep)
+cat > "$root/.github/scripts/zz-g.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+cat > "$root/.github/scripts/zz-h.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while read -r id; do
+  .github/scripts/zz-g.sh "$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/zz-g.sh" "$root/.github/scripts/zz-h.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo every id the decision named
+        timeout-minutes: 30
+        run: .github/scripts/zz-h.sh
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+
+# The same loop around a script that does fetch is the shape rule 8 is for: the step waits for
+# that script's whole ladder once per pass, and the passes are unread.
+echo "case: the same loop around a script that does fetch is refused"
+root=$(fixture script-fetch-in-loop)
+cat > "$root/.github/scripts/zz-f.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "the run" 60 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1"
+SH
+chmod +x "$root/.github/scripts/zz-f.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-f.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the script call and the loop around it" \
+  "$(contains "$out" '..github/scripts/zz-f.sh. at .github/workflows/case.yaml:9, inside the loop at line 9')"
+check "says what one run of that script takes" \
+  "$(contains "$out" 'One run of that script takes 450 s to exhaust its attempts')"
 
 # A step with no budget of its own is no longer a step nothing judges: rule 8 asks a budget of
 # every step holding a retried call, so the loop this check cannot read is refused here too,

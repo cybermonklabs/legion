@@ -1568,7 +1568,15 @@ def arithmetic_of(site: Site) -> int | None:
 def carried(call: Call, cost: int | None) -> int | None:
     """What a script costs the body that calls it: its own arithmetic once for each time that
     body runs it, with the waits of the loops around the call where there is anything to wait
-    for."""
+    for.
+
+    A script that costs nothing costs nothing however often it is run, so a call of it answers
+    0 even where the loops around that call are ones this check cannot count. Without that, a
+    loop around a script that calls a script that fetches nothing was refused for want of a
+    pass count nobody needs, since the figure those passes would multiply is zero either way
+    (dispatch://INFRA-1545, R5)."""
+    if cost == 0:
+        return 0
     if cost is None or call.factor is None:
         return None
     return call.factor * cost + (call.wait if cost else 0)
@@ -1642,7 +1650,13 @@ def merge_calls(into: dict[str, Call], more: dict[str, Call]) -> None:
 
 def blocked_calls(path: str, calls: dict[str, Call]) -> list[Uncounted]:
     """The scripts one body runs inside a loop whose passes this check cannot read: whoever runs
-    that body waits for the whole of each script once per pass, and the passes are unread."""
+    that body waits for the whole of each script once per pass, and the passes are unread.
+
+    Every such call is listed here, the ones that cost nothing included, because what a script
+    costs cannot be asked at this point: the scripts are read after the steps that run them, so
+    script_cost and script_calls are still being filled while this runs. waits_for_nothing below
+    asks that question where the answer exists and drops the calls that turn out to wait for no
+    attempt at all."""
     return [Uncounted(path, call.line, target, call.loop, None)
             for target, call in sorted(calls.items()) if call.factor is None]
 
@@ -2454,6 +2468,26 @@ def script_arithmetic(path: str, seen: set[str]) -> int | None:
     return total
 
 
+def waits_for_nothing(item: Uncounted) -> bool:
+    """Whether one of blocked_calls's items is a wait of no length: a script a body runs inside
+    a loop this check cannot count, which makes no attempt the step waits for and holds no site
+    anybody is owed a figure for.
+
+    Two questions, because the arithmetic answers neither alone. A script whose arithmetic is 0
+    retries nothing itself and calls nothing that does, so every pass of the loop above it waits
+    for nothing; and a script with no uncounted site of its own is a script this check is not
+    withholding a figure for. A script that holds one answers None rather than 0 here, so the
+    first question carries the second today, but a reading that put a figure on such a script
+    would make the pair disagree, and the item to keep is the one with a site still unanswered.
+
+    Rule 8 exists to compare a step's budget with the attempts it waits for. A loop around a
+    script that makes none is a loop with no attempt under it, so there is nothing to compare
+    and no pass count to ask the author for: refusing it told a step holding no retry to write
+    one, and the refusal priced the run it was refusing at `0 s` (dispatch://INFRA-1545, R5)."""
+    return (item.one is None and script_arithmetic(item.what, set()) == 0
+            and not script_uncounted.get(item.what))
+
+
 def action_arithmetic(path: str, seen: set[str]) -> int | None:
     """The arithmetic a `uses:` of this composite action carries: its own calls, the scripts its
     steps run, and every local action it calls in turn, which carries its own the same way.
@@ -2483,6 +2517,11 @@ for budget in budgets:
     blocking = list(budget.uncounted)
     for target in sorted(seen):
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
+    # The scripts are read by now, so each blocked script call can be asked what it waits for,
+    # which is a question blocked_calls could not ask when it listed them. The ones that wait
+    # for nothing are dropped here rather than refused: a loop around a script that retries
+    # nothing holds no attempt this budget has to exceed.
+    blocking = [item for item in blocking if not waits_for_nothing(item)]
     carries = (f"carries `timeout-minutes: {budget.minutes}`" if budget.minutes is not None
                else "carries no `timeout-minutes`")
     if blocking:
@@ -2498,19 +2537,21 @@ for budget in budgets:
         # different advice, because a declaration names a site by the verb it retries and a
         # script call writes a path where that verb would be.
         #
-        # That read of a script answers None in its turn when the script holds an uncounted
-        # loop of its own, and then there is no figure to print: a number written there would
-        # be this check stating a cost it did not compute, which is the defect rule 8 exists to
-        # refuse, one layer in and in its own voice. So the sentence says what is true instead,
-        # that the script's own loop is uncounted too, and names the site that stopped it.
+        # That read of a script answers None in its turn when one run of the script reaches an
+        # uncounted loop — its own, or one in a script it calls in turn, which costs the run
+        # that reaches it the same way — and then there is no figure to print: a number written
+        # there would be this check stating a cost it did not compute, which is the defect rule
+        # 8 exists to refuse, one layer in and in its own voice. So the sentence says what is
+        # true instead, that the run reaches an uncounted loop wherever it sits, and the list
+        # above names the site that stopped the reading.
         script_call = blocking[0].one is None
         one = (script_arithmetic(blocking[0].what, set()) if script_call
                else blocking[0].one)
         if one is None:
-            cost_read = (f"`{blocking[0].what}` holds a loop of its own whose passes this "
-                         "check cannot read either, so what one run of it takes is a figure "
-                         "this check cannot make, and the step waits for that once per pass of "
-                         "the loop above it")
+            cost_read = (f"One run of `{blocking[0].what}` reaches a loop, its own or one in a "
+                         "script it calls, whose passes this check cannot read either, so what "
+                         "one run of it takes is a figure this check cannot make, and the step "
+                         "waits for that once per pass of the loop above it")
         else:
             waiting = ("One run of that script takes" if script_call
                        else "One call there takes")
