@@ -153,86 +153,18 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 
 	// Asked here for the reason resolveCheck is asked here, before the transaction opens: it is
 	// a GitHub round trip, and the comment over that resolve records what a slow read under the
-	// two issue row locks costs. Nothing is written before it, so a refusal leaves no row and no
-	// event behind.
+	// two issues' owner locks costs. Nothing is written before it, so a refusal leaves no row and
+	// no event behind.
 	if err := s.refuseUnknownCommit(r.Context(), checkRepo, input.Commit); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 
-	tx, err := s.begin(r.Context())
+	// The words resolveCheck read are the block's only while the digest the index holds for it
+	// has not moved since, which the locked half re-reads and judges; the one re-read of the
+	// words a moved digest needs runs there too, with every lock given back.
+	result, event, err := s.recordResultWithFreshWords(r.Context(), issueKey, &check, input, actor)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	// Both issues' owner locks are taken in one key order, whether or not either is open: a
-	// result for an after-merge check is taken on a closed issue, and the lock still stops it
-	// closing or reopening under the write. The check's issue is usually the recording issue's
-	// ancestor, so locking them in call order would let one transaction hold the child while
-	// waiting for the parent and another hold the parent while waiting for the child;
-	// lockIssueOwners is the one key order every writer of two issues takes. It is the owner
-	// lock and not the issue rows, so this read phase holds no transaction id.
-	if _, err := lockIssueOwners(r.Context(), tx, issueKey, check.IssueKey); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	recordingOpen, checkOpen, err := issuesOpenForResult(r.Context(), tx, issueKey, check.IssueKey)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The version, digest and `when` the row is judged by are the block's as this transaction
-	// sees them, read again under the locks: a document version that landed between the resolve
-	// and the lock would otherwise have the result recorded against the words it replaced, and
-	// a check reworded from before_merge to after_merge would be judged by the `when` it carried
-	// before the lock. The digest is read under the locks either way, and the `when` only when
-	// that digest moved, which is the only way the block's words can have changed.
-	if err := s.refreshResolvedCheck(r.Context(), tx, &check, input.Check); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// A closed issue takes a result only for a check that runs after the merge or on the default
-	// branch: such a check can only be proved once the issue has closed, so refusing it would make
-	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
-	// document version does; a comment and a message are the other writes a closed issue takes.
-	if (!recordingOpen || !checkOpen) && check.When != checkWhenAfterMerge && check.When != checkWhenDefaultBranch {
-		writeError(w, "ISSUE_CLOSED", http.StatusConflict,
-			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.When))
-		return
-	}
-	if err := s.refuseResultScreenshots(r.Context(), tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-
-	result := model.CheckResult{
-		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
-		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
-		CheckVersion: check.Version, CheckSHA256: check.SHA256,
-		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
-		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
-		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
-		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
-		Session: sessionOf(actor), Actor: actor,
-	}
-	event, err := s.appendEvent(r.Context(), tx, issueOwner(check.IssueKey).event("result.recorded", actor, model.CheckResultEventPayload{
-		ResultID: result.ID, Issue: issueKey, CheckIssue: check.IssueKey,
-		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID, CheckVersion: check.Version,
-		When: check.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
-	}))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	seq := int64(event.Seq)
-	result.EventSeq = &seq
-	if err := insertCheckResult(r.Context(), tx, &result); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -245,6 +177,136 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		"result": result,
 		"line":   checkResultLine(check, result),
 	})
+}
+
+// checkWordsAttempts bounds how often the route reads the check's words with nothing locked and
+// then takes the two issues' owner locks over them: the first attempt, and one redo for a
+// document version that landed in between. A check reworded at every attempt is refused, as an
+// issue reparented at every attempt is (lockPatchOwnersAndParent, parentContended).
+const checkWordsAttempts = 2
+
+// checkContended is the code of a results write whose check a document version moved at every
+// attempt. Nothing is recorded, and the caller's retry resolves the check again.
+const checkContended = "CHECK_CONTENDED"
+
+// errCheckWordsMoved is how the locked half reports that the digest the index holds for the check
+// is no longer the one the words in hand were read against. It never reaches a client:
+// recordResultWithFreshWords either reads the words again or answers checkContended.
+var errCheckWordsMoved = errors.New("the check's words moved before its issues were locked")
+
+// recordResultWithFreshWords records one result against the check as the transaction that writes
+// it sees the check, and never reads the live document under the two issues' owner locks.
+//
+// A check's words and its `when` live in the document, which for a document no room holds is a
+// cold read bounded by a minute (docs/read_cache.go); its version and digest live in
+// document_blocks, which the same transaction as the version writes. The digest is read first and
+// the words after it (resolveCheck), so a digest that still stands under the locks is the digest
+// of the words in hand: no version committed between those two reads, since one that had would
+// have left a digest of its own. A digest that moved makes the words in hand a version this
+// transaction does not see, and the locked half gives the locks back rather than reading the
+// document again under them - that read is the slow one, because a version landing in between is
+// exactly what leaves the read cache cold, so the one case it answers differently is the one it
+// answers slowest in, and meanwhile every writer of either issue waits behind it (lockIssueOwners,
+// store.LockOwner). The words are read again here, with nothing locked, against the digest the
+// locks found, and the locks are taken once more over them.
+func (s *server) recordResultWithFreshWords(
+	ctx context.Context, issueKey string, check *resolvedCheck, input checkResultInput, actor model.Actor,
+) (model.CheckResult, model.Event, error) {
+	for attempt := range checkWordsAttempts {
+		result, event, err := s.recordResultUnderOwnerLocks(ctx, issueKey, check, input, actor)
+		if !errors.Is(err, errCheckWordsMoved) {
+			return result, event, err
+		}
+		if attempt+1 == checkWordsAttempts {
+			break
+		}
+		// refreshResolvedCheck left on check the version and digest the locks found; these are
+		// that digest's words, read with no lock of this route's held.
+		if check.When, check.Text, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID); err != nil {
+			return model.CheckResult{}, model.Event{}, err
+		}
+	}
+	return model.CheckResult{}, model.Event{}, errorf(http.StatusConflict, checkContended,
+		"check %s was reworded at each of %d attempts while this request waited to lock its issues, so nothing was recorded: read the check and retry",
+		check.BlockID, checkWordsAttempts)
+}
+
+// recordResultUnderOwnerLocks is the locked half: it takes both issues' owner locks, judges the
+// result by the check as this transaction sees it, writes the row and its event and commits.
+// It returns errCheckWordsMoved, with the locks given back by the rollback and nothing written,
+// when the digest the index holds for the check is no longer the one check's words were read
+// against; check then carries the version and digest the locks found, for its caller to read the
+// words of.
+func (s *server) recordResultUnderOwnerLocks(
+	ctx context.Context, issueKey string, check *resolvedCheck, input checkResultInput, actor model.Actor,
+) (model.CheckResult, model.Event, error) {
+	tx, err := s.begin(ctx)
+	if err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Both issues' owner locks are taken in one key order, whether or not either is open: a
+	// result for an after-merge check is taken on a closed issue, and the lock still stops it
+	// closing or reopening under the write. The check's issue is usually the recording issue's
+	// ancestor, so locking them in call order would let one transaction hold the child while
+	// waiting for the parent and another hold the parent while waiting for the child;
+	// lockIssueOwners is the one key order every writer of two issues takes. It is the owner
+	// lock and not the issue rows, so this read phase holds no transaction id.
+	if _, err := lockIssueOwners(ctx, tx, issueKey, check.IssueKey); err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, issueKey, check.IssueKey)
+	if err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+	// The version and digest the row is judged by are the block's as this transaction sees them,
+	// read under the locks: a document version that landed between the resolve and the lock would
+	// otherwise have the result recorded against the words it replaced, and a check reworded from
+	// before_merge to after_merge would be judged by the `when` it carried before the lock. The
+	// words and the `when` are never read here, only judged (refreshResolvedCheck).
+	if err := refreshResolvedCheck(ctx, tx, check, input.Check); err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+	// A closed issue takes a result only for a check that runs after the merge or on the default
+	// branch: such a check can only be proved once the issue has closed, so refusing it would make
+	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
+	// document version does; a comment and a message are the other writes a closed issue takes.
+	if (!recordingOpen || !checkOpen) && check.When != checkWhenAfterMerge && check.When != checkWhenDefaultBranch {
+		return model.CheckResult{}, model.Event{}, errorf(http.StatusConflict, "ISSUE_CLOSED",
+			"issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.When)
+	}
+	if err := s.refuseResultScreenshots(ctx, tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+
+	result := model.CheckResult{
+		ID: uuid.NewString(), IssueKey: issueKey, CheckIssueKey: check.IssueKey,
+		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
+		CheckVersion: check.Version, CheckSHA256: check.SHA256,
+		Role: input.Role, Surface: input.Surface, Run: input.Run, Observed: input.Observed,
+		CommitSHA: input.Commit, NegativeControl: input.NegativeControl,
+		Failed: input.Failed, Skipped: input.Skipped, Excluded: input.Excluded,
+		Verdict: input.Verdict, Screenshots: nonNilStrings(input.Screenshots),
+		Session: sessionOf(actor), Actor: actor,
+	}
+	event, err := s.appendEvent(ctx, tx, issueOwner(check.IssueKey).event("result.recorded", actor, model.CheckResultEventPayload{
+		ResultID: result.ID, Issue: issueKey, CheckIssue: check.IssueKey,
+		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID, CheckVersion: check.Version,
+		When: check.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
+	}))
+	if err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+	seq := int64(event.Seq)
+	result.EventSeq = &seq
+	if err := insertCheckResult(ctx, tx, &result); err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return model.CheckResult{}, model.Event{}, err
+	}
+	return result, event, nil
 }
 
 // GET /api/v1/issues/{key}/results  (any authenticated caller)
@@ -486,20 +548,21 @@ func unknownCheck(value string) error {
 
 // refreshResolvedCheck re-reads, under the locks the transaction holds, the indexed version and
 // digest of a check resolved before it opened (recordCheckResult), so the row records the block
-// as it stands at the commit, and its `when` with them when that block moved: the refusal a
-// closed issue earns turns on `when`, which was read before the lock, and a version landing in
-// between can have reworded it. A block the index no longer holds is no check any more.
+// as it stands at the commit. A block the index no longer holds is no check any more.
 //
 // The digest is document_blocks.text_sha256, the sha256 of the block's whole markdown as the
 // index writes it (refs.BlockTextSum over markdown[From:To]), its opening line and that line's
 // attributes included, so a check reworded from before_merge to after_merge carries a digest of
-// its own. A digest the resolve already read is therefore the same words under the same `when`,
-// and the live document is not read a second time for them. That read is the slow one to hold
-// the two issues' owner locks across (lockIssueOwners): a document version landing between the
-// resolve and the lock is exactly what leaves the read cache cold (docs/read_cache.go), so the
-// one case the second read would answer differently is the one it would answer slowest in. Only
-// a digest that moved pays for it.
-func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, named string) error {
+// its own. A digest the words in hand were read against is therefore the same words under the
+// same `when`, and the live document is not read a second time for them.
+//
+// A digest that moved is errCheckWordsMoved, never a read of the live document here: that read
+// is the slow one to hold the two issues' owner locks across (lockIssueOwners), since a document
+// version landing between the resolve and the lock is exactly what leaves the read cache cold
+// (docs/read_cache.go), so the one case it would answer differently is the one it would answer
+// slowest in. The version and digest it found stay on check, because they are what its caller
+// reads the words of once the locks are given back (recordResultWithFreshWords).
+func refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, named string) error {
 	resolved := check.SHA256
 	err := q.QueryRow(ctx, `
 		select changed_version, text_sha256 from document_blocks
@@ -511,11 +574,10 @@ func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *res
 	if err != nil {
 		return fmt.Errorf("read the check %s of document %s: %w", check.BlockID, check.ArtifactID, err)
 	}
-	if check.SHA256 == resolved {
-		return nil
+	if check.SHA256 != resolved {
+		return errCheckWordsMoved
 	}
-	check.When, check.Text, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID)
-	return err
+	return nil
 }
 
 // checkBlockWords reads one check block's `when` and its words out of the live document. The

@@ -612,3 +612,27 @@ func TestXidWindowIssueCloseWithOpenAsks(t *testing.T) {
 		return dispatchRequest(t, h, http.MethodPatch, "/api/v1/issues/"+f.issueKey, map[string]any{"status": "done"}, "alice")
 	})
 }
+
+// A result is recorded against a `check` block of the issue's Verification document, a document of
+// the harness's size. The route joins no ledger and writes its two rows inline, so its window
+// holds three statements: the batch that appends `result.recorded` (the event owner's lock, its
+// row, and the insert), the result row's own insert, and the COMMIT ending them. Everything the
+// record is decided on comes before the first of them - the check's words, read before the
+// transaction opens; the two issues' owner locks, which assign no transaction id
+// (store.LockOwner, lockIssueOwners); whether each issue is open; the screenshots the result
+// names; and the version and digest the index holds for the check, read under those locks - and
+// the one read of the live document a moved digest needs runs with those locks given back
+// (recordResultWithFreshWords), so no read of a document is inside this window or behind these
+// locks.
+func TestXidWindowResultRecorded(t *testing.T) {
+	f := newXidFixture(t, testServerOptions{}, "")
+	verification, _ := xidSpec(4)
+	uploaded := uploadDocument(t, f.handler, "/api/v1/issues/"+f.issueKey, "verification.md", verification+"\n"+twoChecks)
+	waitForArtifactVersion(t, f.handler, uploaded.Artifact.ID, 1)
+	f.measure(t, http.StatusCreated, storetest.XidWindowOf(3,
+		"the batch appending result.recorded, the result row's insert and the COMMIT ending them"), func(h http.Handler) *httptest.ResponseRecorder {
+		return recordResult(t, h, f.issueKey, resultBody("k1", "pass", headCommit, map[string]any{
+			"observed": "41 passed", "negative_control": "Cut the route and the row fails.",
+		}))
+	})
+}
