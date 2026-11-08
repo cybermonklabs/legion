@@ -379,3 +379,4 @@ func TestSetBlockAttributesRefusesABlockPointerInTheLiveRoom(t *testing.T) {
 		t.Fatalf("the room after the accepted write = %q, want %q", after, want)
 	}
 }
+// probe: a one-line change for INFRA-1413's selection evidence.
