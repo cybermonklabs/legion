@@ -174,10 +174,11 @@ function testTypeSymbol(program: ts.Program, directory: string): ts.Symbol {
  * see: `const only = test.only` and `const { skip } = test` declare rows under names that say
  * nothing, and Playwright binds those functions, so the calls run. The symbol of a member's
  * type is the declaration it was written as, so `test.fail.only`, `describe.only` and
- * `step.skip` are three keys rather than the two names they share — only the first is here.
+ * `step.skip` are three symbols rather than the two names they share, and only the first is a
+ * key here.
  *
- * A scan that could key none of the five would read no row declared by a member and so pass
- * every rule, which is an error rather than an empty map. */
+ * A scan that keyed fewer than five would let a row declared by a missing member pass unread,
+ * which is an error rather than a smaller map. */
 function rowCalleeMembers(checker: ts.TypeChecker, testType: ts.Symbol): Map<ts.Symbol, RowCallee> {
   const members = new Map<ts.Symbol, RowCallee>();
   // The key is built the way `rowCallee` looks one up — the symbol of the type the member has —
@@ -234,16 +235,16 @@ function isTestType(expression: ts.Expression, scan: Scan): boolean {
  *  `test` that carry a title-first form. Nothing for every other callee, whatever it computes.
  *
  * The member is decided by the symbol of the callee's type, so a member reached under another
- * name — `const only = test.only`, `const { skip } = test`, `test["skip"]` — is the member it
- * was bound to, and a member of another object that shares its name is not. No chain of
- * `describe` or `step` is a row callee, however it is spelled: `describe` and its `only`,
- * `skip`, `fixme`, `serial` and `parallel` take a `() => void` block, which declares rows
- * rather than being one, and `step` and its `skip` take a step body inside a row already
- * running. Neither is a titled hook — `beforeEach`, `afterEach`, `beforeAll` and `afterAll`
- * take `(title, inner)` as well, and each runs around a row rather than declaring one — nor
- * `use`, which takes a fixture object, nor `slow`, whose three forms all mark a row already
- * declared, nor `extend`, which returns the `test` whose calls are the rows. Each of those
- * carries a type of its own and so is no key of the map. */
+ * name — `const only = test.only`, `const { skip } = test` — or written another way —
+ * `test["skip"]` — is the member it was bound to, and a member of another object that shares
+ * its name is not. No chain of `describe` or `step` is a row callee, however it is spelled:
+ * `describe` and its `only`, `skip`, `fixme`, `serial` and `parallel` take a `() => void` block,
+ * which declares rows rather than being one, and `step` and its `skip` take a step body inside a
+ * row already running. Neither is a titled hook — `beforeEach`, `afterEach`, `beforeAll` and
+ * `afterAll` take `(title, inner)` as well, and each runs around a row rather than declaring
+ * one — nor `use`, which takes a fixture object, nor `slow`, whose three forms all mark a row
+ * already declared, nor `extend`, which returns the `test` whose calls are the rows. Each of
+ * those carries a type of its own and so is no key of the map. */
 function rowCallee(expression: ts.Expression, scan: Scan): RowCallee | undefined {
   if (isTestType(expression, scan)) return "row";
   const member = scan.checker.getTypeAtLocation(expression).getSymbol();
@@ -396,9 +397,10 @@ function rowOfCall(
  * They are taken whole rather than picked, because an option left out is read here as a type
  * this module could not work out. Without `jsx` a `.tsx` import does not resolve (TS6142), and
  * `inbox-dismiss.e2e.ts` and `inbox-mark-all.e2e.ts` import one today, so a body declared in
- * such a module would be refused on valid source; without `bun` among `types`, `process` is
- * `any`, so `test.skip(!process.env.CI, process.env.SKIP_REASON)` reads as a title and a body
- * and is reported as a row. Each of those costs a real row its fixtures or makes a marking call
+ * such a module would be refused on valid source; where `bun` does not reach the program, as
+ * under a `types` list that leaves it out, `process` is `any`, so
+ * `test.skip(!process.env.CI, process.env.SKIP_REASON)` reads as a title and a body and is
+ * reported as a row. Each of those costs a real row its fixtures or makes a marking call
  * a row, which is noise on correct code. The program is built to bind names rather than to
  * type-check the suite — no diagnostic of it is read, and `bunx tsc --noEmit` does the checking
  * from this same configuration. */

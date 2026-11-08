@@ -253,9 +253,9 @@ test("the fixtures of a callback passed by name are read, whatever the row's tit
 // The correctness the checker is here for. Each of the first five rows passes a name that a
 // reading matching names against the functions a file declares resolved to a function of the
 // fixture that binds `page`: run over this fixture, that reading reports `fixtures: ["page"]`
-// for all five and the gate passes all five. Four of them drive nothing. The fifth is the
-// `let`, which holds a callback that opens a page by the time Playwright would run its row;
-// the scan names that row because no `let` can be read, not because nothing opens a page.
+// for all five and the gate passes all five. Four of them drive nothing. The other, the `let`,
+// holds a callback that opens a page by the time Playwright would run its row; the scan names
+// that row because no `let` can be read, not because nothing opens a page.
 // Each name is bound somewhere else - a for-of `const`, a `let` in a describe, a destructured
 // `const`, a parameter, an import beside a nested function of its name - and the scan reads
 // each binding where it stands. Two more pass no name at all, and the last two are the other
@@ -495,13 +495,14 @@ test("a row is read whatever the test that declares it is called", () => {
 });
 
 // What taking the package's `tsconfig.json` whole is worth, which no other control measures:
-// each of these two is read wrong under a picked set of options. The first row's callback is
-// imported from a `.tsx` module, which resolves only with `jsx` among the options — without it
-// the import is refused (TS6142) and the row is read with no fixtures, so a row that opens a
-// page is refused on correct source. The `test.skip(<condition>, <reason>)` below it declares
-// no row only while `bun` is among `types` and `process.env.SKIP_REASON` is therefore a
-// `string | undefined`; without it `process` is `any`, the reason reads as a body, and the
-// marking call is reported as a row that drives no browser.
+// each of these two is read wrong under a picked set that leaves out the option it needs. The
+// first row's callback is imported from a `.tsx` module, which resolves only with `jsx` among
+// the options — without it the import is refused (TS6142) and the row is read with no
+// fixtures, so a row that opens a page is refused on correct source. The
+// `test.skip(<condition>, <reason>)` below it declares no row only while `bun` reaches the
+// program and `process.env.SKIP_REASON` is therefore a `string | undefined`; under a `types`
+// list that leaves `bun` out, `process` is `any`, the reason reads as a body, and the marking
+// call is reported as a row that drives no browser.
 test("the scan's options are the package's own, so a .tsx callback and process are read", () => {
   expect(compilerOptionsFixtureRows).toEqual([
     {

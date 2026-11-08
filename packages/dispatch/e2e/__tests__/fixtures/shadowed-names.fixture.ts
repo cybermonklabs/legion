@@ -9,7 +9,7 @@
  * `describe`, a `const` destructured out of an object, and a helper's parameter; and
  * `readsNothing` under the import beside a nested function of that same name. None of the five
  * is bound to the declaration a file-wide match of names found, so all five are reported with
- * no fixtures. Four of them drive no browser; the fifth, the `let`, holds a callback that opens
+ * no fixtures. Four of them drive no browser; the other, the `let`, holds a callback that opens
  * a page by the time Playwright would run its row, which is why no `let` is read from its
  * initializer, and the check names that row on a binding it could not read.
  *

@@ -1,7 +1,7 @@
 /** The planted rows of e2e/__tests__/no-browser-rows.test.ts that turn on WHICH COMPILER
  *  OPTIONS the scan's program is built with. `scanOptions` (e2e/no-browser-rows.ts) takes the
- *  package's `tsconfig.json` whole, and the two calls below are what that is worth: with a
- *  picked set of options each is read wrong, and nothing else in the suite says so.
+ *  package's `tsconfig.json` whole, and the two calls below are what that is worth: without `jsx`,
+ *  or under a `types` list without `bun`, one of them is read wrong, and nothing else says so.
  *
  * Two rows' worth, one per option:
  *
@@ -11,10 +11,10 @@
  *    nothing, and the row is read with no fixtures at all — a real row stripped of what it
  *    takes, which the rule then refuses on correct source.
  *  - the second is a `test.skip(<condition>, <reason>)` that marks a row and declares none.
- *    With `bun` among `types`, `process.env.SKIP_REASON` is a `string | undefined`, which is no
- *    body, so the call is read as the marker it is; without it `process` is `any`, the reason
- *    reads as a body, and the marking call is reported as a row that drives no browser — noise
- *    on correct source.
+ *    Where `bun` reaches the program, `process.env.SKIP_REASON` is a `string | undefined`,
+ *    which is no body, so the call is read as the marker it is; under a `types` list that leaves
+ *    `bun` out, `process` is `any`, the reason reads as a body, and the marking call is reported
+ *    as a row that drives no browser — noise on correct source.
  *
  * Its name ends `.fixture.ts` and not `.e2e.ts` because e2e/playwright.config.ts says
  * `testDir: "."` and `testMatch: /.*\.e2e\.ts/`: Playwright walks the `e2e` directory
