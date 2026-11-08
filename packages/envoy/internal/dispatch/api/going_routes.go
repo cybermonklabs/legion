@@ -218,10 +218,11 @@ func (s *server) startGoingRun(ctx context.Context, request goingRequest) {
 
 // goingSearch is the one search the answerer makes, within the project the question was asked
 // of: the route supplies the project, the limit and the offset, so the model cannot widen the
-// search past what the caller asked of.
+// search past what the caller asked of. It reads every kind the index holds, as the question is
+// of all of them.
 func (s *server) goingSearch(project string) func(context.Context, string) ([]going.Hit, error) {
 	return func(ctx context.Context, q string) ([]going.Hit, error) {
-		found, err := s.runSearch(ctx, q, project, searchDefaultLimit, 0)
+		found, err := s.runSearch(ctx, q, project, searchEveryKind, searchDefaultLimit, 0)
 		if err != nil {
 			return nil, err
 		}

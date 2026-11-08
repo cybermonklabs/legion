@@ -5,6 +5,7 @@ import {
   MAX_ISSUE_BLOCKERS,
   MAX_ISSUE_PAGE_LIMIT,
   PROJECT_NAME_MAX,
+  type SearchResultKind,
 } from "./dispatch-api";
 import type { SchemaApi, SchemaNode, ToolArgumentsShape } from "./tool-schema";
 
@@ -439,8 +440,8 @@ const handoffValidation: NonNullable<DispatchToolSpec["validation"]> = {
 
 /**
  * Longest `dispatch_search` query (`GET /api/v1/search`'s `q`, trimmed), in UTF-16 units. The
- * query rides in the URL beside `project`, `limit` and `offset`, so this refusal and `project`'s
- * key rule are what keep the tool's URL under the load balancer's limit;
+ * query rides in the URL beside `kind`, `project`, `limit` and `offset`, so this refusal and
+ * `project`'s key rule are what keep the tool's URL under the load balancer's limit;
  * `packages/contracts/AGENTS.md` "Search limits" owns that budget. Generated into Go as
  * `contracts.SearchQueryMax`, which the server enforces.
  */
@@ -457,6 +458,20 @@ export const SEARCH_QUERY_HINT = "search with a short phrase of a few words, not
  * `contracts.SearchKindDepth`, where the server cuts each kind's list.
  */
 export const SEARCH_KIND_DEPTH = 100;
+
+/**
+ * The kinds `GET /api/v1/search` ranks, which its repeated `kind` parameter names: the five the
+ * search index holds, in the order the answer's fusion lists them. A party, a component or any
+ * other node is read from its own route, so the search refuses a kind outside these rather than
+ * answering an empty page.
+ */
+export const SEARCH_KINDS = [
+  "issue",
+  "document",
+  "comment",
+  "ask",
+  "message",
+] as const satisfies readonly SearchResultKind[];
 
 /** A whole project key, as the Dispatch server creates them, generated into Go as
  *  `contracts.ProjectKeyPattern` (and held by the `projects.key` check constraint). */
@@ -1547,7 +1562,9 @@ export const dispatchToolSpecs = [
       `The answer names how many results match; offset pages through them, and each kind lists at most its best ${SEARCH_KIND_DEPTH}, ` +
       "so narrow the query or name a project to reach the rest. Paging is exact only while the " +
       "corpus holds still: content added, changed, or removed between two offsets can shift rows " +
-      "across a page boundary, so one hit can come back twice and another never.",
+      "across a page boundary, so one hit can come back twice and another never. " +
+      `kind narrows the search to the kinds it names (${SEARCH_KINDS.join(", ")}), which are then ` +
+      "the only kinds ranked, counted and paged; with no kind named every kind is searched.",
     arguments: (z) => ({
       query: z
         .string({
@@ -1557,6 +1574,10 @@ export const dispatchToolSpecs = [
         })
         .describe(`Keyword, phrase, or websearch expression; 2 to ${SEARCH_QUERY_MAX} characters.`),
       project: z.string().describe("Optional project key to search within.").optional(),
+      kind: z
+        .array(z.enum(SEARCH_KINDS), { min: 1, max: SEARCH_KINDS.length })
+        .describe(`Kinds to search, any of ${SEARCH_KINDS.join(", ")}; every kind when absent.`)
+        .optional(),
       limit: z
         .number({ int: true, min: 1, max: 50 })
         .describe("Maximum results, 1-50; default 20.")

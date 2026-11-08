@@ -2305,6 +2305,11 @@ Hits that score alike are ordered issue, document, ask, comment, message, then b
 An issue whose key is the whole query heads the issue list.
 Each list keeps its best `contracts.SearchKindDepth` (100) hits:
 the answer's `total` counts every match of every kind, and `reachable` the hits the pages can return, so an `offset` at or past `reachable` answers no hits with both counts.
+`?kind=`, repeated once per kind wanted (`issue`, `document`, `comment`, `ask`, `message`), ranks, counts and pages those kinds alone, so `results`, `total`, `reachable`, `limit` and `offset` are the named kinds' rows, in the keyword path and in the meaning one alike;
+a request naming no kind searches every kind, as the route always has.
+The filter runs in the one CTE both statements open with, before anything is ranked, counted or paged, so a kind left out takes no place in a page and is in no count.
+The named kinds are written into the statement as literal SQL from the server's own list of five, never bound, so the statement's parameters are the ones the related-item check's own statements number on from.
+A kind the index does not hold is `400 INVALID_QUERY`: a party and a component are read from their own routes, not from this index.
 
 Search snippets are escaped text with only server-inserted `<mark>` elements around matches.
 Native issue creation rejects a near copy of an open issue of the same project with `409 POSSIBLE_DUPLICATE` and up to five candidates;
@@ -2965,18 +2970,19 @@ Each item below names a path with its method and identity, then its purpose.
   `refilling` (the listener refused its list as refilling, so the holder may well be running) or `unreachable` (the listener is not configured, did not answer in time, or failed otherwise); it is null with every other status.
   A refilling list never makes a route `no_holder`.
 
-- `/api/v1/search?q=&project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
+- `/api/v1/search?q=&kind=&project=&limit=&offset=` (GET; cookie, trusted header, or bearer)
 
   Full-text search over issue titles, latest document text, comments, asks, and messages;
   each kind ranked on its own and merged by reciprocal rank fusion (above), with `<mark>` snippets and SPA `href`s.
   One page `{results, total, reachable, limit, offset, took_ms}`:
   `limit` 1–50 (default 20), `offset` 0 or more (default 0), `total` every match, `reachable` the hits the pages can return (each kind's best 100).
+  `kind` is repeated once per kind wanted (`issue`, `document`, `comment`, `ask`, `message`) and ranks, counts and pages those kinds alone; with none named every kind is searched ([Search](#search)).
   Every `ask` hit carries `ask`, where the ask stands when the search ran:
   `{state: "open"}`, `{state: "answered", answer}` with its latest answer, or `{state: "resolved", resolution, answer?}` with the last answer it had, absent when nobody answered;
   its excerpt is cut from the ask's indexed text ([Search](#search)).
   A hit the meaning list found carries `block_id`, the block of it whose own text ranks highest for the query: a block of the document, of the comment's or the message's body, or the part of an ask's question, options or answer.
   It is absent on an issue hit, which has no blocks, and on a hit only the keyword list found.
-  An under-two-character query returns `400 INVALID_QUERY`;
+  An under-two-character query returns `400 INVALID_QUERY`, whatever `kind` names, as does a `kind` outside the five;
   a stop-word-only query returns `200` with no results;
   `400 CAP_EXCEEDED` over 1,000 characters (`contracts.SearchQueryMax`, UTF-16 units after trimming), since the query rides in the URL;
   `400 INVALID_PROJECT` for a project that is not a project key (none searches every project); `400 INVALID_LIMIT`; `400 INVALID_OFFSET`.

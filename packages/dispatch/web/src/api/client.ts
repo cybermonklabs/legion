@@ -103,6 +103,7 @@ import type {
   ReferenceQuestions,
   RepoProject,
   SearchResponse,
+  SearchResultKind,
   SignInsResponse,
   Subscriber,
   Suggestions,
@@ -1044,9 +1045,12 @@ export class DispatchApiClient {
     const { labels, ...query } = options;
     return this.json<IssueSummary[]>(pathWithQuery("/api/v1/issues", { ...query, label: labels }));
   }
+  /** `GET /api/v1/search`. `kind` names the kinds to rank, count and page - `pathWithQuery`
+   *  renders the array as one `kind=` per entry, which is how the route reads it - and with none
+   *  named every kind the index holds is searched. */
   search(
     query: string,
-    options: { project?: string; limit?: number } = {}
+    options: { project?: string; limit?: number; kind?: SearchResultKind[] } = {}
   ): Promise<SearchResponse> {
     return this.json<SearchResponse>(pathWithQuery("/api/v1/search", { q: query, ...options }));
   }

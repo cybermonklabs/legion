@@ -8,8 +8,10 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -291,9 +293,11 @@ with q as (select websearch_to_tsquery('english', $1) as tsq, $4::text as term, 
 // with every row exclude names dropped before anything ranks, counts or pages them. exclude is
 // an SQL predicate over the arms' own columns, true of a row the caller leaves out, and empty
 // for a query that leaves nothing out, whose text is then the arms as they stand. Search leaves
-// nothing out; the related-item check passes relatedExcludedOwners, because the page it takes is
-// ten rows deep (suggestionSearchDepth) and rows dropped after that page took places in it and
-// hid the matches the check exists to find (INFRA-1160).
+// out the kinds the request did not name (searchKinds.exclusion), so ranked, legs, total and
+// reachable are the asked-for kinds' rows and not only their page; the related-item check passes
+// relatedExcludedOwners, because the page it takes is ten rows deep (suggestionSearchDepth) and
+// rows dropped after that page took places in it and hid the matches the check exists to find
+// (INFRA-1160).
 //
 // The arms are a union whose first select names every column, so the derived table the filter
 // reads carries those names on to ranked below unchanged.
@@ -307,6 +311,98 @@ func searchKindsCTE(arms, exclude string) string {
 ) arms where not (` + exclude + `)
 ),
 `
+}
+
+// searchIndexedKinds are the five kinds the search index holds, spelled as every keyword arm and
+// every meaning_* CTE spells its own kind column: the whole vocabulary of the route's kind
+// parameter. A party, a component or any other node of the reference graph is read from its own
+// route and is in no index here, so naming one is a refusal and not an empty page.
+var searchIndexedKinds = [...]string{"issue", "document", "comment", "ask", "message"}
+
+// searchKinds is the set of kinds one search ranks, counts and pages: a bit per kind of
+// searchIndexedKinds. searchEveryKind, what a request naming no kind searches, holds all five
+// and leaves nothing out, which is the query this route ran before it took the parameter; the
+// empty set names no kind the index holds, so no row of it can match and runSearch answers it
+// without reading the pool.
+type searchKinds uint8
+
+const searchEveryKind = searchKinds(1<<len(searchIndexedKinds) - 1)
+
+// parseSearchKinds reads the route's repeated kind parameter as the handler hands it over,
+// r.URL.Query()["kind"]: no value at all is every kind, a value outside searchIndexedKinds is
+// refused (the handler's 400 INVALID_QUERY), and a kind named twice is the set a kind named once
+// is. The values are read here rather than through parseQueryInt, whose rule for a repeated
+// parameter is a refusal.
+func parseSearchKinds(values []string) (searchKinds, bool) {
+	if len(values) == 0 {
+		return searchEveryKind, true
+	}
+	var kinds searchKinds
+	for _, value := range values {
+		index := slices.Index(searchIndexedKinds[:], value)
+		if index < 0 {
+			return 0, false
+		}
+		kinds |= 1 << index
+	}
+	return kinds, true
+}
+
+// exclusion is the exclude predicate searchKindsCTE takes for this set: the kinds it leaves out,
+// named positively, so the CTE's `where not (…)` keeps the asked-for kinds' rows alone, before
+// ranked numbers them and before total and reachable count them. Every kind leaves nothing out
+// and is the empty predicate, the arms as they stand.
+//
+// The names are searchIndexedKinds' own literals and never a caller's text, and they are written
+// into the statement rather than bound, as searchWindowLimit is: both bodies are reused by the
+// related-item check, whose derived statements number their own parameters on from search's ($9
+// to $14, suggestions.go), and four tests pin those numbers.
+//
+// The predicate runs where the two bodies meet, over the union's rows, and not inside each arm:
+// a row of a kind left out is dropped before anything ranks, pages or counts it, while the
+// meaning arms' candidate CTEs, statements of their own above that union, still gather their
+// nearest vectors.
+func (k searchKinds) exclusion() string {
+	if k == searchEveryKind {
+		return ""
+	}
+	left := make([]string, 0, len(searchIndexedKinds))
+	for index, kind := range searchIndexedKinds {
+		if k&(1<<index) == 0 {
+			left = append(left, "'"+kind+"'")
+		}
+	}
+	return "kind in (" + strings.Join(left, ", ") + ")"
+}
+
+// searchStatements is one set's pair of statements: searchQuery's text and searchQueryMeaning's,
+// each over that set's kinds alone. A set is one of 32, a closed vocabulary, so each pair is
+// built once - on the first search that asks for it - and kept for the life of the process,
+// rather than built again for every request a reader's typing makes.
+type searchStatements struct {
+	once    sync.Once
+	keyword string
+	meaning string
+}
+
+var searchStatementsByKinds [int(searchEveryKind) + 1]searchStatements
+
+// statements answers the pair this set runs, building it on the first ask.
+func (k searchKinds) statements() *searchStatements {
+	pair := &searchStatementsByKinds[k]
+	pair.once.Do(func() {
+		if k == searchEveryKind {
+			// The two statements as they stand, which every search ran before the route took a
+			// kind: one text each, so what the tests read by name and what the pool prepares are
+			// the same bytes.
+			pair.keyword, pair.meaning = searchQuery, searchQueryMeaning
+			return
+		}
+		exclude := k.exclusion()
+		pair.keyword = searchQOpener + searchQueryBody(searchKeywordLegsSQL, exclude)
+		pair.meaning = searchQOpener + searchQueryMeaningBody(searchKeywordLegsSQL, exclude)
+	})
+	return pair
 }
 
 // searchQueryBody is searchQuery after its q, over keywordLegs (searchKeywordLegs) and without
@@ -597,8 +693,13 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 		}
 		offset = parsed
 	}
+	kinds, known := parseSearchKinds(query["kind"])
+	if !known {
+		writeError(w, "INVALID_QUERY", http.StatusBadRequest, "kind must be one of "+strings.Join(searchIndexedKinds[:], ", "))
+		return
+	}
 
-	response, err := s.runSearch(r.Context(), searchText, project, limit, offset)
+	response, err := s.runSearch(r.Context(), searchText, project, kinds, limit, offset)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -614,14 +715,19 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, response)
 }
 
-// runSearch is the search handler's own entry point. The numnode check runs here, before anything
-// else - including before the one model-service call this function ever makes - so a
-// stopword-only or operator-only query never pays for an embedding it would throw away. It tries
-// meaning search first when an embedder is configured, falling back to keyword-only
-// (runFusedSearchQuery) only when the query's own embedding could not be had - never when the
-// meaning query itself then fails, which is a real error the caller should see as a 500, not
-// something to paper over as a degraded answer.
-func (s *server) runSearch(ctx context.Context, q, project string, limit, offset int) (model.SearchResponse, error) {
+// runSearch is the search handler's own entry point. kinds are the kinds to rank, count and
+// page (searchEveryKind for a request naming none); a set naming none of the indexed kinds can
+// match no row of this index at all, so it is answered here, before the pool is read for
+// anything. The numnode check runs next, before everything else - including before the one
+// model-service call this function ever makes - so a stopword-only or operator-only query never
+// pays for an embedding it would throw away. It tries meaning search first when an embedder is
+// configured, falling back to keyword-only (runFusedSearchQuery) only when the query's own
+// embedding could not be had - never when the meaning query itself then fails, which is a real
+// error the caller should see as a 500, not something to paper over as a degraded answer.
+func (s *server) runSearch(ctx context.Context, q, project string, kinds searchKinds, limit, offset int) (model.SearchResponse, error) {
+	if kinds == 0 {
+		return model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}, nil
+	}
 	var nodes int
 	if err := s.deps.Store.Pool.QueryRow(ctx, "select numnode(websearch_to_tsquery('english', $1))", q).Scan(&nodes); err != nil {
 		return model.SearchResponse{}, err
@@ -630,34 +736,35 @@ func (s *server) runSearch(ctx context.Context, q, project string, limit, offset
 		return model.SearchResponse{Results: []model.SearchResult{}, Limit: limit, Offset: offset}, nil
 	}
 	if s.deps.Embedder == nil {
-		return s.runKeywordOnlyDegraded(ctx, q, project, limit, offset)
+		return s.runKeywordOnlyDegraded(ctx, q, project, kinds, limit, offset)
 	}
 	vector, err := s.embedQuery(ctx, q)
 	if err != nil {
 		slog.Warn("dispatch search: query embedding unavailable, answering keyword-only", "error", err)
-		return s.runKeywordOnlyDegraded(ctx, q, project, limit, offset)
+		return s.runKeywordOnlyDegraded(ctx, q, project, kinds, limit, offset)
 	}
-	return s.runMeaningSearch(ctx, q, project, limit, offset, vector)
+	return s.runMeaningSearch(ctx, q, project, kinds, limit, offset, vector)
 }
 
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on
 // success: the one thing both of runSearch's fallback branches (no embedder configured, or the
 // query's own embedding failing) do identically. runSearch has already run the numnode check
 // before ever reaching here.
-func (s *server) runKeywordOnlyDegraded(ctx context.Context, q, project string, limit, offset int) (model.SearchResponse, error) {
-	response, err := s.runFusedSearchQuery(ctx, q, project, limit, offset)
+func (s *server) runKeywordOnlyDegraded(ctx context.Context, q, project string, kinds searchKinds, limit, offset int) (model.SearchResponse, error) {
+	response, err := s.runFusedSearchQuery(ctx, q, project, kinds, limit, offset)
 	if err == nil {
 		response.Degraded = contracts.SearchDegradedEmbedderUnavailable
 	}
 	return response, err
 }
 
-// runFusedSearchQuery runs searchQuery, assuming nodes > 0 already, which its caller
-// (runKeywordOnlyDegraded, after runSearch's check) must have established first. q is assumed
-// already validated (length, non-empty after trimming); project empty searches every project.
-func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, limit, offset int) (model.SearchResponse, error) {
+// runFusedSearchQuery runs the keyword statement of the kinds asked for (searchKinds.statements),
+// assuming nodes > 0 already, which its caller (runKeywordOnlyDegraded, after runSearch's check)
+// must have established first. q is assumed already validated (length, non-empty after
+// trimming); project empty searches every project, and kinds holds at least one kind.
+func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, kinds searchKinds, limit, offset int) (model.SearchResponse, error) {
 	started := time.Now()
-	rows, err := s.deps.Store.Pool.Query(ctx, searchQuery, q, project, limit, firstTerm(q), headlineOptions,
+	rows, err := s.deps.Store.Pool.Query(ctx, kinds.statements().keyword, q, project, limit, firstTerm(q), headlineOptions,
 		offset, contracts.SearchKindDepth, searchFusionK)
 	if err != nil {
 		return model.SearchResponse{}, err
@@ -673,20 +780,20 @@ func (s *server) runFusedSearchQuery(ctx context.Context, q, project string, lim
 }
 
 // runMeaningSearch is runFusedSearchQuery's counterpart once a query embedding exists: same row
-// shape, searchQueryMeaning in place of searchQuery. Its only caller, runSearch, has already run
-// the numnode check before ever reaching here (so it never pays for an embedding it would throw
-// away); this function assumes nodes > 0.
+// shape, the same kinds, searchQueryMeaning's text in place of searchQuery's. Its only caller,
+// runSearch, has already run the numnode check before ever reaching here (so it never pays for
+// an embedding it would throw away); this function assumes nodes > 0.
 //
 // It runs in a read transaction of its own, the one place searchMeaningScan's settings apply
 // (beginMeaningScan).
-func (s *server) runMeaningSearch(ctx context.Context, q, project string, limit, offset int, vector []float32) (model.SearchResponse, error) {
+func (s *server) runMeaningSearch(ctx context.Context, q, project string, kinds searchKinds, limit, offset int, vector []float32) (model.SearchResponse, error) {
 	started := time.Now()
 	tx, err := s.beginMeaningScan(ctx)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
-	rows, err := tx.Query(ctx, searchQueryMeaning, q, project, limit, firstTerm(q), headlineOptions,
+	rows, err := tx.Query(ctx, kinds.statements().meaning, q, project, limit, firstTerm(q), headlineOptions,
 		offset, contracts.SearchKindDepth, searchFusionK, embed.Literal(vector), searchMeaningFloor, s.deps.Embedder.Identity())
 	if err != nil {
 		return model.SearchResponse{}, err

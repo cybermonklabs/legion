@@ -47,6 +47,7 @@ import type {
   OpenAsk,
   OpenAsksResponse,
   Project,
+  SearchResultKind,
   SessionAnswersResponse,
   WhoamiResponse,
   WriteAdvice,
@@ -4405,10 +4406,14 @@ export async function executeDispatchTool(
       const project = optionalString(args, "project");
       const limit = optionalNumber(args, "limit");
       const offset = optionalNumber(args, "offset");
+      // The schema holds the vocabulary (`SEARCH_KINDS`), and Dispatch refuses a kind outside
+      // it, so the values are passed on as they were written rather than checked twice.
+      const kind = optionalStringArray(args, "kind") as SearchResultKind[] | undefined;
       const search = await client.search(query, {
         ...(project === undefined ? {} : { project }),
         ...(limit === undefined ? {} : { limit }),
         ...(offset === undefined ? {} : { offset }),
+        ...(kind === undefined ? {} : { kind }),
       });
       return searchAnswer(search, query, offset, linkBase);
     }
