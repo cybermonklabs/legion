@@ -95,13 +95,18 @@ launcher and its `gh`, a script that runs `legion gh`. Nothing else of Legion's 
 jj of 0.38 or later — the jj bound it refuses to boot below (`resolveTools`, naming
 `LEGION_JJ_PATH`, its own override for the jj it runs) — and the real `gh` (`LEGION_GH_PATH`, or the
 first `gh` on its `PATH`, refused when that is a script), which every pane is told as `LEGION_GH_PATH`. A pane's GitHub identity is
-a set of files that binary reads, one directory per GitHub owner of the project and, under the
-issue's own owner, one more per other repository the project serves there: the daemon writes gh's
-own `hosts.yml` (an App installation token, user `x-access-token`) and `config.yml` under
-`<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the pane — in the issue
-owner's own directory the role's App token for the issue's repository and no other, and in every
+a set of files that binary reads, one directory per GitHub owner of the project, one more per owner
+a configured rename moved a repository away from while the project serves the name it moved to,
+and an `<owner>/<repo>` directory for each other repository the issue's recorded owner and the
+owner serving the issue's repository serve: the
+daemon writes gh's own `hosts.yml` (an App installation token, user `x-access-token`) and
+`config.yml` under `<state_dir>/secrets/<claim>-gh/<dir>` (0700, files 0600) when it opens the
+pane — in two directories, the issue's recorded owner's and the one named for the owner whose
+installation serves that repository now, which are one directory unless a rename moved the issue's
+repository, the role's App token for the issue's repository and no other, and in every
 other directory that App's token narrowed to reading contents, pull requests, Actions and metadata
-over the repositories that directory names (each token asks for what the App's installation on
+over the repositories that directory names, an `<owner>/<repo>` directory's over the one repository
+its own name resolves to (each token asks for what the App's installation on
 that owner is granted of the set, and a permission it is granted none of is left out, named on
 the daemon's stderr) — names the issue owner's directory as `GH_CONFIG_DIR`
 and the bundle's root as `LEGION_GH_OWNERS_DIR`, with `GH_TOKEN`, `GITHUB_TOKEN` and `GH_HOST` set

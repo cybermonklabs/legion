@@ -130,7 +130,7 @@ test("VersionView renders the version read-only with the highlighted quote focus
     expect(
       within(view.container).getByRole("region", { name: "Document version 1" })
     ).toBeDefined();
-    expect(editors[0]).toMatchObject({ focused: ["comment-1"], readOnly: true });
+    expect(editors[0]).toMatchObject({ access: "read", focused: ["comment-1"] });
     // The editor was handed the server's tree with the quote marked in it, not markdown.
     expect(editors[0]?.markdown).toBeUndefined();
     expect(editors[0]?.root.textContent).toBe("Read the current specification");
