@@ -252,9 +252,18 @@ IMAGE_FROM = {
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
     ),
-    (".github/workflows/ci.yaml", "image"): (
-        "the dispatch job's step reads it from `const Image` of "
-        "packages/envoy/internal/tests3/seaweedfs.go, which is in the reach above"
+    (".github/workflows/dispatch-browser.yaml", "image"): (
+        "the shard job's \"Start an S3-compatible server for uploaded files\" step reads it from "
+        "`const Image` of packages/envoy/internal/tests3/seaweedfs.go, which is in the reach "
+        "above. That job alone: no file store runs on the alone job's machine, which its own "
+        "head gives as one of the five ways it differs from the shard job. The step was "
+        "ci.yaml's dispatch job's before the browser suite moved"
+    ),
+    # PROBE ONLY (dispatch://INFRA-1526, k9): never on the pull request's branch.
+    (".github/workflows/ci-caches.yaml", "image"): (
+        "the local tag the arm64 probe job's own build loaded "
+        "(legion-envoy-arm-probe:<sha> and legion-envoy-arm-baseline:<sha>); no registry holds "
+        "either, so the run fetches nothing"
     ),
     (".github/workflows/ci.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (ci.yaml sets it to "
