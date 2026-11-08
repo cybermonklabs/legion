@@ -757,8 +757,9 @@ func requireRecordOpen(t *testing.T, service *Service, artifactID string) {
 // this process hears afterwards must close that room all the same. Here no room of the document
 // is resident - the seed's room is evicted, leaving the process as one that never opened the
 // document - the issue closes in the database with nothing notified, as a listener's redial
-// leaves it (this test runs no room sync), and alice's browser then loads the room: the load
-// reads the issue itself and writes state.closed on the record (onLoadDocument, websocket.go),
+// leaves it (this test runs no room sync), and alice's browser then loads the room: her socket's
+// admission reads the issue and records state.closed on the record, and the load takes that read
+// (holdForAdmission, admittedIssueRead, onLoadDocument),
 // with no close behind it, so the room keeps every browser in it on the admission it connected
 // with. The close notified next (issueOpenChanged, the issue-open lane's own handler, called here
 // on the test's goroutine as setIssueClosedHere calls it) found the record's flag already
@@ -766,7 +767,7 @@ func requireRecordOpen(t *testing.T, service *Service, artifactID string) {
 // admission until ygo retired the room as idle, 60 to 90 seconds later. A notified close now
 // reaches closeRoomForIssue whatever the record holds (setRoomIssueOpen). The record is read back
 // before that close (requireRecordClosed): a test that reads only the room resident would pass
-// without the load having marked anything, and the flag the load writes is the whole case.
+// without that read having marked anything, and the flag it writes is the whole case.
 func TestAnIssuesCloseClosesARoomWhoseRecordAlreadyReadsItsIssueClosed(t *testing.T) {
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -866,7 +867,7 @@ func TestTheAppendGateClosesARoomWhoseRecordAlreadyReadsItsIssueClosed(t *testin
 }
 
 // A socket admitted while the gate's close ran must not roll that close back. The close records
-// its own read of the issue on the room's record, stamped with the moment it refused the append,
+// its own read of the issue on the room's record, stamped with the moment it records it,
 // and a read that began before that stamp never replaces it (closeRefusedAppendRoom,
 // recordIssueLocked). The order below is the one that needs the stamp, and it was a live defect
 // until the stamp went in.
@@ -1501,11 +1502,11 @@ func TestACloseForARefusedAppendLeavesThePendingSettlementRowTheRoomThatLoadedIn
 	}
 	// The parked close holds a snapshot of the record to write, and that snapshot names alice:
 	// the record reads closed, which here only this close can have made it read - the issue
-	// closed unheard, the room loaded while it was open, and a close writes that flag under the
-	// gate before it closes the room (closeRecordLocked) - and the source it read is the alice
-	// the record still holds, nothing having moved it since. A close holding no snapshot, or one
-	// holding none of its own, writes no row whatever the guard does, and the readings below
-	// would hold on their own.
+	// closed unheard, the room loaded while it was open, and the gate's close records its own
+	// read under the gate before it closes the room (closeRefusedAppendRoom, recordIssueLocked) -
+	// and the source it read is the alice the record still holds, nothing having moved it since.
+	// A close holding no snapshot, or one holding none of its own, writes no row whatever the
+	// guard does, and the readings below would hold on their own.
 	requireRecordClosed(t, service, artifactID)
 	requireRecordLastActor(t, service, artifactID, alicesEdit)
 	// The credit sequence that snapshot was read at, which bob's keystroke below must move: the
@@ -2132,12 +2133,14 @@ func parkCloseAfterRoomClosed(service *Service, artifactID string) (parked chan 
 // parkCloseBetweenItsSnapshotReads makes service park the first close of artifactID that reaches
 // the gap between the two readings its snapshot is made of: the document's pending-settlement
 // row, read first, and the room's record, read after it (betweenCloseSnapshotReads,
-// setRoomIssueOpen, closeSnapshot). It answers the channel the hook closes once that close is
-// parked (awaitCloseParked) and the one the test closes to let it go. The close holds no lock
-// and no transaction there, so a settlement of the document commits inside that gap as it would
-// have had nothing parked it. A close after the first runs unparked, as does every close of
-// another room: the staging holds one close, and a second waiting on a channel the test never
-// closes would be a close that never returns.
+// setRoomIssueOpen, closeRefusedAppendRoom, closeSnapshot). It answers the channel the hook
+// closes once that close is parked (awaitCloseParked) and the one the test closes to let it go.
+// The close holds no record lock and no transaction there - the gate's close holds the room's
+// close gate, on which a settlement waits for nothing, its repair only trying it (holdOpen) - so
+// a settlement of the document commits inside that gap as it would have had nothing parked it. A
+// close after the first runs unparked, as does every close of another room: the staging holds
+// one close, and a second waiting on a channel the test never closes would be a close that never
+// returns.
 func parkCloseBetweenItsSnapshotReads(service *Service, artifactID string) (parked chan struct{}, release chan struct{}) {
 	parked, release = make(chan struct{}), make(chan struct{})
 	var first atomic.Bool

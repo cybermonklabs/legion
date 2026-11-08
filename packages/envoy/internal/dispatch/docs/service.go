@@ -3060,10 +3060,11 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 // the record is written on the first check that passes and on no later one (closeWhenFree), so a
 // try after that one can find the name holding another instance and close nothing while that
 // write stands. What it left on the record - the closed flag, the bumped generation, the stopped
-// settle timer - stands only until a read of the issue stamped later than this close's writes
-// that flag again: a socket's admission records its own read, and so does the load it starts
-// (holdForAdmission, authorize, onLoadDocument); and the
-// write of the record's latest edit source to the document's pending-settlement row is refused
+// settle timer - stands only until a read of the issue stamped no earlier than this close's
+// writes that flag again: a socket's admission records its own read, a load it holds records
+// that same read again, and a load no admission holds reads the issue itself (holdForAdmission,
+// authorize, admittedIssueRead, onLoadDocument); and the write of the record's latest edit
+// source to the document's pending-settlement row is refused
 // outright unless the record still reads closed at the credit sequence that source was read at
 // (persistLastActor). The room stores one update per keystroke, so a burst of refused keystrokes
 // reaches this once each: the first refusal of instance takes the instance's mark
@@ -3133,12 +3134,12 @@ func (s *Service) refuseClosedIssueAppend(room string, instance *roomInstance) {
 // one. So a try that finds the name holding another instance closes nothing although this close
 // wrote the record, and what it wrote - the closed flag, the bumped generation, the stopped
 // settle timer - is left on the record of the room now standing. That flag holds until a read of
-// the issue stamped later than this close's writes it again, which a socket's admission and the
-// load it starts each do (holdForAdmission, authorize, onLoadDocument), and the room itself is
+// the issue stamped no earlier than this close's writes it again - a socket's admission, the
+// load it holds recording that same read, or a load no admission holds reading the issue itself
+// (holdForAdmission, authorize, admittedIssueRead, onLoadDocument) - and the room itself is
 // closed by the notification of its issue's state or by its own refused append
-// (setRoomIssueOpen, refuseClosedIssueAppend). The wait
-// between tries has no ctx of its own, which costs this caller nothing: its ctx carries no
-// deadline (refuseClosedIssueAppend).
+// (setRoomIssueOpen, refuseClosedIssueAppend). The wait between tries has no ctx of its own,
+// which costs this caller nothing: its ctx carries no deadline (refuseClosedIssueAppend).
 //
 // The latest edit source the record held reaches the document's pending-settlement row after the
 // close and outside the gate, and only where a check passed: that write takes the document's
@@ -3185,7 +3186,10 @@ func (s *Service) closeRefusedAppendRoom(ctx context.Context, room string, insta
 					// The refusal is this close's own read of the issue: the gate judged the
 					// keystroke against the issue it read and refused it as closed, so the
 					// close records that read on the record, stamped, as the issue-open lane
-					// records its own (setRoomIssueOpen, recordIssueLocked). Left unstamped,
+					// records its own (setRoomIssueOpen, recordIssueLocked). The stamp is the
+					// moment the close records it, here, later than the gate's own read: a
+					// reopen the lane recorded in between is written over with closed, in the
+					// read-only direction, until the next read of the issue. Left unstamped,
 					// the flag alone would be rolled back by a socket admitted while this ran,
 					// whose own earlier read is already the record's stamp and goes on again
 					// when it registers its connection, letting that browser into a closed
@@ -3281,13 +3285,14 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 // after the reopen committed made holds the default open flag while a browser on the room was
 // admitted read-only before the reopen, and only a reconnect gives that browser the writable
 // scope. A notified close likewise closes a room whose record already reads closed: that flag is
-// no proof that a close is under way, since a load that read the issue after it closed writes it
-// itself, with no close behind it (onLoadDocument, websocket.go), so the room admits writers
-// until a close runs. Such a call still moves the latest edit source the record holds to the
-// document's pending-settlement row (persistLastActor, lastActorPersisted), the one part of a
-// close's bookkeeping the record's flag is no proof of: the load that wrote that flag wrote the
-// flag alone, and a record kept across a room's retirement can hold a source no settlement has
-// taken (unusedLocked). This lane reads the row before it takes the record's lock, snapshots
+// no proof that a close is under way, since a socket's admission or a load that read the issue
+// after it closed writes it itself, with no close behind it (holdForAdmission, authorize,
+// onLoadDocument), so the room admits writers until a close runs. Such a call still moves the
+// latest edit source the record holds to the document's pending-settlement row
+// (persistLastActor, lastActorPersisted), the one part of a close's bookkeeping the record's flag
+// is no proof of: the read that wrote that flag wrote the flag alone, and a record kept across a
+// room's retirement can hold a source no settlement has taken (unusedLocked). This lane reads the
+// row before it takes the record's lock, snapshots
 // that source under that lock, and writes before its close, while the room is still live,
 // through the same guard as the gate's close: it writes only where it read a row there, and
 // only while the record still reads closed at the credit sequence the source was read at and

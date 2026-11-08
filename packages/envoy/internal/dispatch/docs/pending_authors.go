@@ -842,13 +842,13 @@ func readSettlementRowFacts(ctx context.Context, q Queryer, room string) (settle
 // record after it (closeRefusedAppendRoom, setRoomIssueOpen). Every writer of the row then falls
 // on one side of that first reading. One before it is in what the snapshot holds - a settlement
 // that took the row leaves the snapshot no row, and this write makes none - and one after it
-// shows in this transaction's own reading under the
-// advisory lock: the row is gone, or carries an age or a source the snapshot does not hold, and
-// the write is refused. Reading the record first left a settlement in between caught by neither
-// fact: the row read after it found no row, which is what this transaction found too, while the
-// record went on reading closed at the same credit sequence, since a settlement moves neither
-// the flag nor that sequence and the close's own generation bump had already told that
-// settlement's commit to leave the record's source standing (INFRA-1470).
+// shows in this transaction's own reading under the advisory lock: the row is gone, or carries
+// an age or a source the snapshot does not hold, and the write is refused. Reading the record
+// first let through a settlement in between followed by a newer write of the row: the record
+// went on reading closed at the same credit sequence, since a settlement moves neither the flag
+// nor that sequence and the close's own generation bump had already told that settlement's
+// commit to leave the record's source standing, and the row read after both found the newer
+// row, which is what this transaction found too, so the older source went over it (INFRA-1470).
 //
 // The two closes write at different points. The append gate's close reads the row and snapshots
 // the source under the room's close gate and writes after the close and outside that gate
