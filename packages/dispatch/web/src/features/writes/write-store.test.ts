@@ -3,7 +3,14 @@ import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
-import { type KeptTab, keptTab, keyMinted, memoryFiles } from "../../__tests__/kept-sends-harness";
+import {
+  type KeptTab,
+  keptTab,
+  keyMinted,
+  type MemoryFiles,
+  memoryFiles,
+  UnloadTarget,
+} from "../../__tests__/kept-sends-harness";
 import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
 import {
   ApiError,
@@ -97,6 +104,57 @@ function statusWrite(
     ? writes.run({ ...press, write: attemptOf(patch, answer) })
     : writes.run({ ...press, request: sends.answer({ ...patch }, answer), target: fields.target });
 }
+
+/** An upload of `file` to CORE-1, as the Artifacts tab presses one. */
+function uploadOf(file: File): WriteRequest {
+  const body = new FormData();
+  body.set("name", file.name);
+  body.set("file", file);
+  return { body, method: "POST", path: "/api/v1/issues/CORE-1/artifacts" };
+}
+
+/** Presses an upload of `file` in `writes`, its attempts answered by `answer`. */
+function uploadWrite(writes: Writes, file: File, answer: () => Promise<unknown>): Promise<unknown> {
+  return writes.run({
+    detail: null,
+    file,
+    kind: plainWrite,
+    label: `Upload of ${file.name}`,
+    presentation: "indicator",
+    write: attemptOf(uploadOf(file), answer),
+  });
+}
+
+/** A browser's kept files whose `put` answers only when the test releases it, with the answer
+ *  the test chooses: the window in which the page holds a file it has not kept yet. */
+function heldFiles(): MemoryFiles & {
+  /** The keys whose put is still unanswered. */
+  pending: () => string[];
+  /** Answers the put under `key`: `kept` false is a browser that kept nothing of it. */
+  release: (key: string, kept?: boolean) => Promise<void>;
+} {
+  const files = memoryFiles();
+  const held = new Map<string, { file: File; login: string; answer: (kept: boolean) => void }>();
+  return {
+    ...files,
+    pending: () => [...held.keys()],
+    put: (key, login, file) => {
+      const { promise, resolve } = Promise.withResolvers<boolean>();
+      held.set(key, { answer: resolve, file, login });
+      return promise;
+    },
+    release: async (key, kept = true) => {
+      const pending = held.get(key);
+      if (pending === undefined) return;
+      held.delete(key);
+      if (kept) await files.put(key, pending.login, pending.file);
+      pending.answer(kept);
+    },
+  };
+}
+
+const spec = new File(["spec body"], "spec.md", { type: "text/markdown" });
+const once = new File(["spec body"], "once.bin", { type: "application/octet-stream" });
 
 const unavailable = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
@@ -340,31 +398,13 @@ test("an upload's file survives a reload and the upload resumes with it", async 
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = memoryFiles();
-    const file = new File(["spec body"], "spec.md", { type: "text/markdown" });
-    const form = new FormData();
-    form.set("name", "spec.md");
-    form.set("file", file);
-    const upload: WriteRequest = {
-      body: form,
-      method: "POST",
-      path: "/api/v1/issues/CORE-1/artifacts",
-    };
     const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
     const before = new Writes(signedIn(), tab.page(), files);
     try {
-      void before
-        .run({
-          detail: null,
-          file,
-          kind: plainWrite,
-          label: "Upload of spec.md",
-          presentation: "indicator",
-          write: attemptOf(upload, () => Promise.withResolvers<never>().promise),
-        })
-        .catch(() => {});
+      void uploadWrite(before, spec, () => Promise.withResolvers<never>().promise).catch(() => {});
       await settle();
       const key = row(before)?.key ?? "";
-      expect(files.rows.get(key)).toBe(file);
+      expect(files.rows.get(key)).toBe(spec);
       expect(tab.kept(key)).toMatchObject({
         request: {
           form: [
@@ -400,29 +440,11 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
   await onFakeClock(async () => {
     const tab = keptTab();
     const files = memoryFiles();
-    const file = new File(["spec body"], "spec.md", { type: "text/markdown" });
-    const form = new FormData();
-    form.set("name", "spec.md");
-    form.set("file", file);
-    const upload: WriteRequest = {
-      body: form,
-      method: "POST",
-      path: "/api/v1/issues/CORE-1/artifacts",
-    };
     const send = spyOn(api, "send").mockResolvedValue({ artifact: {}, version: {} } as never);
     const before = new Writes(signedIn(), tab.page(), files);
     try {
       let answer: () => Promise<unknown> = () => Promise.reject(verdict);
-      void before
-        .run({
-          detail: null,
-          file,
-          kind: plainWrite,
-          label: "Upload of spec.md",
-          presentation: "indicator",
-          write: attemptOf(upload, () => answer()),
-        })
-        .catch(() => {});
+      void uploadWrite(before, spec, () => answer()).catch(() => {});
       await settle();
       const refused = row(before);
       expect(refused?.status).toBe("refused");
@@ -444,6 +466,198 @@ test("a retried upload's file moves to its new key, and a reload resumes it ther
       expect(after.rows()).toEqual([]);
     } finally {
       send.mockRestore();
+      tab.close();
+    }
+  });
+});
+
+// W25. The page never keeps, and never sends, anything that points at an upload's file before
+// that file is kept: a record naming a key IndexedDB holds no file under is a write a reload
+// drops with nothing shown and nothing sent. The press still joins at once - the indicator
+// reads `Saving 1 change…` from it, and a sign-out still reaches it - and its deadline starts
+// with its attempt, so a slow keep never makes it late before it has been sent.
+test("an upload is neither kept nor sent until its file is kept", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const writes = new Writes(signedIn(), tab.page(), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.withResolvers<never>().promise;
+      }).catch(() => {});
+      await settle();
+      const key = row(writes)?.key ?? "";
+      expect(row(writes)?.status).toBe("sending");
+      await tick(SEND_DEADLINE_MS + 1_000);
+      expect(attempts).toBe(0);
+      expect(row(writes)?.status).toBe("sending");
+      expect(tab.kept(key)).toBeUndefined();
+
+      await files.release(key);
+      await settle();
+      expect(attempts).toBe(1);
+      expect(files.rows.get(key)).toBe(once);
+      expect(tab.kept(key)).toMatchObject({ key, sent: true, state: { status: "sending" } });
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. A Retry Dispatch's verdict sends under a new key waits the same way: the file is put
+// under the new key first, and until it is there the write stands refused under its old key
+// with its old file, so a reload inside that window brings it back for the reader to retry
+// again. Nothing names the new key before the file is under it, and the old row goes only
+// once it does.
+test("a retried upload keeps its old key and file until the new key's file is kept", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const writes = new Writes(signedIn(), tab.page(), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.reject(verdict);
+      }).catch(() => {});
+      await settle();
+      const old = row(writes)?.key ?? "";
+      await files.release(old);
+      await settle();
+      const refused = row(writes);
+      expect(refused?.status).toBe("refused");
+      expect(attempts).toBe(1);
+
+      writes.retry(refused?.id ?? 0);
+      await settle();
+      expect(row(writes)?.status).toBe("refused");
+      expect(row(writes)?.key).toBe(old);
+      expect(tab.kept(old)).toMatchObject({ state: { status: "refused" } });
+      expect([...files.rows.keys()]).toEqual([old]);
+      expect(attempts).toBe(1);
+
+      // Nothing but the put itself knows the new key while the write stands under its old one.
+      const next = files.pending()[0] ?? "";
+      expect(next).not.toBe(old);
+      expect(tab.kept(next)).toBeUndefined();
+
+      // The key moves, the old record and the old file go, and the attempt follows, all in the
+      // tick the put answers in.
+      await files.release(next);
+      await settle();
+      expect(row(writes)?.key).toBe(next);
+      expect(attempts).toBe(2);
+      expect(tab.kept(old)).toBeUndefined();
+      expect(tab.kept(next)).toMatchObject({ key: next });
+      expect([...files.rows.keys()]).toEqual([next]);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. A reload inside that window loses nothing: the page the reader comes back to reads the
+// refused write under its old key, with its file, and offers Retry again. Before this ordering
+// the record named the new key while no file was under it yet, so the page after the reload had
+// nothing to make the upload from and dropped it with nothing shown and nothing sent.
+test("a reload inside a Retry's keep brings the refused upload back with its file", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const before = new Writes(signedIn(), tab.page(), files);
+    try {
+      void uploadWrite(before, once, () => Promise.reject(verdict)).catch(() => {});
+      await settle();
+      const old = row(before)?.key ?? "";
+      await files.release(old);
+      await settle();
+      before.retry(row(before)?.id ?? 0);
+      await settle();
+
+      const after = new Writes(signedIn(), tab.page(), files);
+      after.resume("alice");
+      await settle();
+      const back = row(after);
+      expect(back?.status).toBe("refused");
+      expect(back?.key).toBe(old);
+      expect(files.rows.get(old)).toBe(once);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. A browser that keeps nothing - one with no IndexedDB, or one that refuses to open it for
+// a quota or a storage policy - says so, and the page then keeps no record of the upload at all
+// rather than one naming a file that is not there: the upload goes out and lands as it always
+// did, leaving is still confirmed while it is out, and a reload finds nothing to resume. That
+// last is the one loss this leaves, and it is the loss a browser with no IndexedDB always had.
+test("an upload whose file is not kept is sent, kept nowhere, and still confirmed on leaving", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const unload = new UnloadTarget();
+    const writes = new Writes(signedIn(), tab.page(unload), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.withResolvers<never>().promise;
+      }).catch(() => {});
+      await settle();
+      const key = row(writes)?.key ?? "";
+
+      await files.release(key, false);
+      await settle();
+      expect(attempts).toBe(1);
+      expect(row(writes)?.status).toBe("sending");
+      expect(tab.kept(key)).toBeUndefined();
+      expect(files.rows.has(key)).toBe(false);
+      expect(unload.asks()).toBe(true);
+
+      const after = new Writes(signedIn(), tab.page(), files);
+      after.resume("alice");
+      await settle();
+      expect(after.rows()).toEqual([]);
+    } finally {
+      tab.close();
+    }
+  });
+});
+
+// W25. The same answer at a Retry: the key moves and the old record and old file go, as they do
+// when the file is kept, and no record is written under the new key, so nothing of the page ever
+// names a file this browser did not keep.
+test("a retried upload whose file is not kept moves its key and is kept nowhere", async () => {
+  await onFakeClock(async () => {
+    const tab = keptTab();
+    const files = heldFiles();
+    const writes = new Writes(signedIn(), tab.page(), files);
+    try {
+      let attempts = 0;
+      void uploadWrite(writes, once, () => {
+        attempts += 1;
+        return Promise.reject(verdict);
+      }).catch(() => {});
+      await settle();
+      const old = row(writes)?.key ?? "";
+      await files.release(old);
+      await settle();
+      writes.retry(row(writes)?.id ?? 0);
+      await settle();
+
+      const next = files.pending()[0] ?? "";
+      await files.release(next, false);
+      await settle();
+      expect(row(writes)?.key).toBe(next);
+      expect(attempts).toBe(2);
+      expect(tab.kept(old)).toBeUndefined();
+      expect(tab.kept(next)).toBeUndefined();
+      expect(files.rows.has(old)).toBe(false);
+      expect(files.rows.has(next)).toBe(false);
+    } finally {
       tab.close();
     }
   });
