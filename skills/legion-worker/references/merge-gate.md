@@ -75,18 +75,21 @@ other change to the head voids it.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no passing result that is current at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result is current at that head while the head is the head of an open pull request, or the final head of a merged one, attributed to the check's own issue. A child's pull request never makes a root check's result current, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, and that result is current at the child's head. A root's own checks are proven at the root's own head, or on the default branch for an `after_merge` check, in the root's last round.
-  A passing result stays current across one push above the head you approved when that push changes no code that runs: read that push's own diff (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`), approve the new head, and say in that approval that you read the diff, that it changes no code that runs, the head each result ran at and the head you approve. The carry rests on the diff and on your statement of it, never on the push being called a text fix: where that push's diff changes code that runs every result is stale, as it is after any other push, so the head gets a request for changes and the issue goes back through the tester.
+  A passing result stays current across one push above the head you approved when that push changes no code that runs: read that push's own diff (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`), approve the new head, and say in that approval that you read the diff, that it changes no code that runs, the head each result ran at and the head you approve. The carry rests on the diff and on your statement of it, never on the push being called a text fix: where that push's diff changes code that runs every result is stale, as it is after any other push, so you tell the architect and the architect moves the issue to `testing` with `request_backward_move`, since a review submitted outside `reviewing` moves nothing.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
   Submit **one review per round**. A reviewer submits `REQUEST_CHANGES` only when a behavioural
   finding stands — one whose closing changes code that runs — and otherwise approves the head it
-  read, named by SHA, leaving every text finding as the inline review thread it already writes. A
-  push above the head you approved leaves that approval standing for nothing, since any push may
+  read, named by SHA, leaving every text finding as the inline review thread it already writes.
+  While the round is open — a push between your approval and your completion, with the issue
+  still in `reviewing` — that push leaves the approval standing for nothing, since any push may
   change code: the round goes stuck and your architect is told (`ApprovalStands` in
   `packages/daemon/internal/classify/decisions.go`, `stuckApprovedOtherCode` in
   `packages/daemon/internal/workflow/review.go`, and the cases "the approval, then a push" and "a
   push, then the approval of the head before it" in
-  `packages/daemon/internal/workflow/review_test.go`). Carry every inline comment in that single
+  `packages/daemon/internal/workflow/review_test.go`). That is why the message starting the
+  text-fix loop goes after your completion and not with the review: the implementer's push then
+  lands in `accepting`, where it voids nothing. Carry every inline comment in that single
   call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
   with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
   Legion footer), and a `comments[]` array of `{path, line, side, body}`, one entry per
@@ -118,15 +121,21 @@ other change to the head voids it.
   that the open threads are the work the merge waits for. Each of them stays the inline review
   thread you already wrote. The implementer fixes the text and pushes it, and you resolve the
   thread and approve the head that fix landed on, so you write no commit of your own for one.
-- **After an approval with text threads open.** The implementer reads your approval in its own
-  live session, fixes the text and makes one push of one commit, while the architect reads the
-  issue for acceptance; it runs in no phase and resolves no thread. You then resolve each thread
-  you opened, one call per thread, and approve the head that push made, by SHA, reading that
-  head's checks as you read any head's
+- **After an approval with text threads open.** The loop runs in `accepting`, where the daemon
+  starts no phase and records no review, so each step is carried by a message its own role
+  sends. Once your `handoff_complete` is accepted, `envoy_publish` to the implementer's role
+  topic naming the approved head by SHA and each open thread by its node id: nothing else tells
+  it its turn began. It fixes the text in its own live session, makes one push of one commit,
+  replies on each thread, resolves none, and publishes the new head and its compare to your
+  topic. You then resolve each thread you opened, one call per thread, approve the head that
+  push made, by SHA, reading that head's checks as you read any head's, and `envoy_publish` to
+  the architect's role topic naming that head: READY reads the round's first approval, so that
+  message is the architect's gate and its acceptance is the one gate on the fix head
   (`skill://legion-worker/references/review-threads.md` gives the loop and the calls). A thread
-  the fix cannot close is a behavioural finding: tell the architect, and your `REQUEST_CHANGES`
-  naming that finding is the review that moves the issue back to `implementing`. Neither you nor
-  the implementer moves the issue itself.
+  the fix cannot close, and a fix whose diff changes code that runs, take one route: tell the
+  architect, which moves the issue with `request_backward_move`, to `implementing` for the
+  thread and to `testing` for the stale results. Neither you nor the implementer moves the
+  issue, and a `REQUEST_CHANGES` there records the finding on GitHub and moves nothing.
 - **A text finding stays text where a test pins the sentence it fixes.** A check that is green at
   the approved head is not a `before_merge` check of the issue with no current passing result, so
   it asks for no changes; a text fix that breaks such a pin is caught at the head the fix made,

@@ -18,8 +18,9 @@ librarian to read. `docs/solutions/` stays as history, and no role writes there.
 The head the merger names is the head the reviewer approved.
 
 Work on the existing issue branch: never rebase it onto another base, never make another branch or
-bookmark, and push nothing, because READY reads this branch's head and a push of yours would void
-the reviewer's approval.
+bookmark, and push nothing. Retro commits nothing, so there is nothing of yours to push, and a
+head the reviewer has not read is a head nobody reviewed: the architect accepted this one and the
+merger's READY names it.
 
 ## When retro stops
 

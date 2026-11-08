@@ -80,24 +80,41 @@ already judged; a gate that does read one is the base branch's own GitHub rules,
 ## After an approval that leaves text threads open
 
 The approval stands, and the issue moves to `accepting`, where the architect reads it. The
-threads the approval names are the work the merge waits for, and this loop closes them.
+threads the approval names are the work the merge waits for, and this loop closes them. The
+daemon starts no phase for any step of it, and a review submitted outside `reviewing` records
+nothing (`packages/daemon/internal/workflow/review.go`), so each step is carried by a message
+its own role sends and a step that sends none leaves the next role never learning its turn
+began.
 
-1. **The implementer fixes the text and pushes it, once.** Its session is live from its own phase
-   until the issue closes, so the approval reaches it there and it makes the fixes while the
+1. **The reviewer tells the implementer, after its own completion.** Once `handoff_complete` is
+   accepted, `envoy_publish` to the implementer's role topic, naming the approved head by SHA
+   and each open thread by its node id. After the completion and not with the review: a push
+   that lands while the round is still open in `reviewing` moves the head out from under the
+   approval, which then stands for nothing and the round goes stuck
+   (`ApprovalStands`, `packages/daemon/internal/classify/decisions.go`).
+2. **The implementer fixes the text and pushes it, once.** Its session is live from its own phase
+   until the issue closes, so that message reaches it there and it makes the fixes while the
    architect reads the issue for acceptance: it runs in no phase, writes no handoff, and makes
    one push of one commit of the text fixes. It replies on each thread, naming that commit, and
-   resolves none.
-2. **The reviewer resolves each thread it opened** once it has read the fix, one call per thread,
-   and then approves the head the fix landed on, by SHA. That second approval is the one the
-   merge gate reads, and its CI read is the read of that head's checks
-   (`skill://legion-worker/references/merge-gate.md`). The `before_merge` results that passed at
-   the head it approved first are still current for it when the fix's own diff changes no code
-   that runs: it reads that diff, and its approval says it read it, that the diff changes no code
-   that runs, the head each result ran at and the head it approves. A push whose diff changes
-   code that runs leaves every result stale, so that head gets a request for changes and the
-   issue goes back through the tester.
-3. **A thread the fix cannot close is a behavioural finding**: the sentence is false because the
-   code is wrong, or closing it would change code that runs. Whichever role found it tells the
-   architect with `envoy_publish` to its role topic, and the reviewer's `REQUEST_CHANGES` naming
-   that finding is the review that moves the issue back to `implementing`. Neither the
-   implementer nor the reviewer moves the issue itself.
+   resolves none. Then `envoy_publish` to the reviewer's role topic, and to that topic alone,
+   naming the new head by SHA, the threads it answered, and that the push's own diff changes no
+   code that runs (`gh api repos/<o>/<r>/compare/<approved sha>...<new head>`).
+3. **The reviewer resolves each thread it opened** once it has read the fix, one call per thread,
+   and then approves the head the fix landed on, by SHA, its CI read being the read of that
+   head's checks (`skill://legion-worker/references/merge-gate.md`). The `before_merge` results
+   that passed at the head it approved first are still current for it when the fix's own diff
+   changes no code that runs: it reads that diff, and its approval says it read it, that the
+   diff changes no code that runs, the head each result ran at and the head it approves. Then
+   `envoy_publish` to the architect's role topic naming that head. No daemon check reads this
+   approval — READY reads the round's first approval, since only a review in `reviewing` is
+   recorded — so that message is the architect's gate, and its acceptance is the one gate on
+   the fix head.
+4. **Two findings take one route, and it is the architect's.** A thread the fix cannot close is
+   a behavioural finding: the sentence is false because the code is wrong, or closing it would
+   change code that runs. A fix whose own diff changes code that runs is the other: it leaves
+   every `before_merge` result stale. In each case the role that found it tells the architect
+   with `envoy_publish` to its role topic, and the architect moves the issue with
+   `request_backward_move` — to `implementing` for the thread, to `testing` for the stale
+   results. Neither the implementer nor the reviewer moves the issue, and a `REQUEST_CHANGES`
+   here is the record of the finding on GitHub and moves nothing, since the issue has left
+   `reviewing`.

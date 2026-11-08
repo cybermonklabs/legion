@@ -30,13 +30,17 @@ legion({ op: "sign_off", issue: "LEGION-40" })
 ```
 
 - The issue's Dispatch status stays `needs_review` in `accepting`; `sign_off` moves it to `retro`.
-- An approval may stand with text threads open: the reviewer leaves each text finding as the
-  inline review thread it already wrote, the implementer fixes that text and pushes it once in
-  its own live session while you read the issue, and the reviewer then resolves each thread and
-  approves the head the fix landed on. Accept on that approval. Where you doubt the reviewer's
-  call between a text and a behavioural finding, read the threads yourself and send the issue
-  back with `request_backward_move` rather than accepting; a thread the fix cannot close reaches
-  you the same way (*A review thread that cannot be closed*, below).
+- An approval may stand with text threads open, and then your acceptance is the only gate on the
+  head that closes them, since READY reads the round's first approval and the daemon's compare
+  above it is gone. The reviewer leaves each text finding as the inline review thread it already
+  wrote, publishes that head and those threads to the implementer's role topic once its own
+  completion is accepted, the implementer fixes the text and pushes it once in its own live
+  session while you read the issue, and the reviewer then resolves each thread, approves the
+  head the fix landed on and publishes that head to your role topic. **Hold `sign_off` until
+  that message arrives**, and accept on that second approval, reading it on GitHub yourself.
+  Where you doubt the reviewer's call between a text and a behavioural finding, read the threads
+  yourself and send the issue back with `request_backward_move` rather than accepting; a thread
+  the fix cannot close reaches you the same way (*A review thread that cannot be closed*, below).
 - Accept on a result current at the approved head, or on one current at an earlier head whose
   approval says the reviewer read the push above it and that the push changes no code that runs;
   without that statement, or where the push changed code that runs, the result is stale and the
@@ -171,9 +175,12 @@ The reviewer resolves each thread it opened, with plain `gh`, once it has read t
 closed it: its own threads and the bot threads it accepted. The implementer replies and resolves
 none. A thread whose text fix the implementer cannot make — the sentence is false because the
 code is wrong, or closing it would change code that runs — is a behavioural finding, and it
-reaches you from whichever of the two found it. The reviewer's `REQUEST_CHANGES` naming that
-finding is the review that moves the issue back to `implementing`; where no review carries it,
-you move the issue back yourself with `request_backward_move`, the reason naming the thread.
+reaches you from whichever of the two found it, with `envoy_publish` to your role topic. You
+move the issue back with `request_backward_move`, the reason naming the thread, and you are the
+only one who can: a review submitted while the issue stands outside `reviewing` records nothing
+and moves nothing (`packages/daemon/internal/workflow/review.go`), so a `REQUEST_CHANGES` there
+is the record of the finding on GitHub and no more. A fix whose own diff changes code that runs
+reaches you the same way and goes back to `testing`, since every result above it is stale.
 If the reviewer reports that GitHub refused its `resolveReviewThread`, open a
 `dispatch ask` naming the thread's id or URL and GitHub's message, for a human to resolve it by
 hand, with options for resolved / could not. The merger does not complete while that ask is open;

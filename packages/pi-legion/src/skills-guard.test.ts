@@ -524,10 +524,10 @@ test("the worker skill tells a role to read the pull request's head after its ow
 });
 // dispatch://INFRA-764's two rules, each written once per file that carries it (R4). A reviewer
 // that sends a correct change back for a text finding costs a whole round — implement, test and
-// review again — so the verdict rule and retro's thread pass are the change, and a copy that
-// disagrees with another is read twice and followed once. The pin fails when an edit drops the
-// sentence from a file or writes it twice; it does not show that an agent follows it, which the
-// issue's two rig scenarios measure.
+// review again — so the verdict rule and the loop that closes the threads it leaves open are
+// the change, and a copy that disagrees with another is read twice and followed once. The pin
+// fails when an edit drops the sentence from a file or writes it twice; it does not show that an
+// agent follows it, which the issue's two rig scenarios measure.
 test("one verdict rule for the reviewer, in every copy", () => {
   const carriers = [
     "skills/legion-worker/SKILL.md",
@@ -551,22 +551,26 @@ test("one verdict rule for the reviewer, in every copy", () => {
 
 // The other half of the same rule: the finding the reviewer leaves open is fixed by the
 // implementer in its own live session and resolved by the reviewer that judged it, which is why
-// the reviewer may approve over it at all. Each half is pinned in the three parts of the role
-// that does it; retro carries neither, since it commits nothing.
+// the reviewer may approve over it at all. The daemon starts no phase for that loop and records
+// no review outside `reviewing`, so each half ends in the message its own role sends, and each
+// is pinned in the three parts of the role that does it; retro carries neither, since it
+// commits nothing.
 test("one post-approval thread loop for each role, in every copy", () => {
   countedOncePerFile(
-    "When an approval leaves text findings open, you fix that text in your own live session, in no phase and with no handoff, and make one push of one commit; you reply on each thread naming that commit, resolve none, and wait for no resolution.",
+    "you fix that text in your own live session, in no phase and with no handoff, and make one push of one commit; you reply on each thread naming that commit, resolve none, wait for no resolution, and publish the new head and its compare to the reviewer's role topic.",
     [
       "packages/daemon/internal/prompts/roles/implementer.md",
       "packages/daemon/internal/prompts/roles/core/implementer.md",
       "packages/daemon/internal/prompts/go/implementer.md",
     ]
   );
+  // `core/reviewer.md` is mode-neutral and may name no headless mechanic
+  // (`packages/daemon/internal/prompts/roles_test.go`), so it states the same two steps without
+  // `envoy_publish` and is not pinned on this sentence; it is pinned on the verdict rule above.
   countedOncePerFile(
-    "You resolve each thread you opened once you have read the fix that closed it, one call per thread, and then approve the head the fix landed on, by SHA, reading that head's checks as you read any head's; a thread the fix cannot close is a behavioural finding: tell the architect, and your `REQUEST_CHANGES` naming that finding is the review that moves the issue back to `implementing`.",
+    "You resolve each thread you opened once you have read the fix that closed it, one call per thread, and then approve the head the fix landed on, by SHA, reading that head's checks as you read any head's, and `envoy_publish` to the architect's role topic naming that head.",
     [
       "packages/daemon/internal/prompts/roles/reviewer.md",
-      "packages/daemon/internal/prompts/roles/core/reviewer.md",
       "packages/daemon/internal/prompts/go/reviewer.md",
     ]
   );
