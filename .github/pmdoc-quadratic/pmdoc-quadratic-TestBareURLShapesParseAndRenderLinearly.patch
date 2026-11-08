@@ -1,0 +1,27 @@
+diff --git a/linkify.go b/linkify.go
+index 0be1961560..996eaae4c9 100644
+--- a/linkify.go
++++ b/linkify.go
+@@ -237,6 +237,13 @@ func bareAutolink(kind ast.AutoLinkType, www bool, start, end int) *ast.AutoLink
+ // from offset at to its line's end, after previous, its kind, and whether it is a www URL; or 0
+ // where it reads none: an email first (literalEmail), then a protocol or www URL (literalURL).
+ func literalAddress(text []byte, previous rune, pc parser.Context, at int) (int, ast.AutoLinkType, bool) {
++	// DEFECT, for dispatch://INFRA-1075's CI control only, never committed: every place the
++	// tokenizer may start an address reads the rest of its line again, one byte in every 64.
++	// That is the shape of the read-the-domain-again-from-every-trigger literalDomains replaced,
++	// at a constant cheap enough that the test fails on its ratio rather than on its deadline.
++	for i := 0; i < len(text); i += 64 {
++		quadraticDefectSink += int(text[i])
++	}
+ 	c := text[0]
+ 	if gfmAtext(c) && previousEmail(previous) {
+ 		if length := literalEmail(text); length != 0 {
+@@ -557,3 +564,8 @@ func literalPunctuation(char rune) bool {
+ func isASCIILetter(c byte) bool {
+ 	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+ }
++
++// quadraticDefectSink is where the deliberate defect in literalAddress puts what it reads, so the
++// compiler cannot drop the read. DEFECT, for dispatch://INFRA-1075's CI control only, never
++// committed.
++var quadraticDefectSink int

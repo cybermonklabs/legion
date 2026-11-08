@@ -1,0 +1,27 @@
+diff --git a/raw_html.go b/raw_html.go
+index a7c853f322..3c9f7c3980 100644
+--- a/raw_html.go
++++ b/raw_html.go
+@@ -96,6 +96,13 @@ func (p inlineRawHTMLParser) Parse(parent ast.Node, block text.Reader, pc parser
+ 		// the block and neither is worth a record.
+ 		return p.InlineParser.Parse(parent, block, pc)
+ 	}
++	// DEFECT, for dispatch://INFRA-1075's CI control only, never committed: every opener of a
++	// kind that ends at a closer of its own reads the whole block's source again, one byte in
++	// every 64. That is the shape of the walk-from-every-opener unclosedRawHTML replaced, at a
++	// constant cheap enough that the test fails on its ratio rather than on its deadline.
++	for source, i := block.Source(), 0; i < len(source); i += 64 {
++		quadraticDefectSink += int(source[i])
++	}
+ 	_, segment := block.Position()
+ 	record := unclosedRawHTMLOf(pc, parent)
+ 	if record.holdsNoCloser(kind, segment.Start) {
+@@ -245,3 +252,8 @@ func (p declarationBlockParser) Open(parent ast.Node, reader text.Reader, pc par
+ 	node.Lines().Append(segment)
+ 	return node, parser.NoChildren
+ }
++
++// quadraticDefectSink is where the deliberate defect in inlineRawHTMLParser.Parse puts what it
++// reads, so the compiler cannot drop the read. DEFECT, for dispatch://INFRA-1075's CI control
++// only, never committed.
++var quadraticDefectSink int

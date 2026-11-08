@@ -618,9 +618,13 @@ UNIT_TEST_LEAD = ["internal/dispatch/pmdoc", "cmd/dispatch-seed", "internal/disp
                   "internal/pgmigrate", "cmd/dispatch", "cmd/broker"]
 UNIT_TEST_PRELUDE = ("lead=\"" + "\n".join(f"github.com/sjawhar/envoy/{p}" for p in UNIT_TEST_LEAD)
                      + "\"\n")
+# TEMPORARY, the INFRA-1075 CPU measurement: both calls run each test binary under the wrapper
+# ci.yaml writes, which records its user and system time; they go back to their plain form with
+# the measurement's own steps.
+CPU_EXEC = '-exec "$RUNNER_TEMP/cpu-wrap.sh" '
 UNIT_TEST_SCRIPT = json_stream_script(
     f"rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF \"$lead\")\n"
-    "printf '%s\\n%s\\n' \"$lead\" \"$rest\" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m",
+    "printf '%s\\n%s\\n' \"$lead\" \"$rest\" | xargs go test -json -count=1 " + CPU_EXEC + "-p 8 -parallel 12 -timeout 20m",
     "unit.json", prelude=UNIT_TEST_PRELUDE)
 # The routes package's own step, which the unit step's pattern leaves out: the event log's safe
 # horizon is instance-wide, so this one runs against a Postgres service of its own and nothing
@@ -813,7 +817,8 @@ def race_impossible_script(packages) -> str:
 # `//go:build !race` or behind raceEnabled changes this text and ci.yaml stops matching it.
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_PACKAGES = race_impossible_tests(ENVOY)
-RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES)
+RACE_IMPOSSIBLE_SCRIPT = race_impossible_script(RACE_IMPOSSIBLE_PACKAGES).replace(
+    "go test -count=1 ", "go test -count=1 " + CPU_EXEC, 1)
 
 
 RUN_SERVER = "packages/dispatch/e2e/run-server.sh"

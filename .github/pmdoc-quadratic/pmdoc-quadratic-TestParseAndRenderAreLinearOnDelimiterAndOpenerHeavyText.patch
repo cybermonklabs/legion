@@ -1,0 +1,27 @@
+diff --git a/parse.go b/parse.go
+index f60d10b4ef..5cdce352aa 100644
+--- a/parse.go
++++ b/parse.go
+@@ -1080,6 +1080,13 @@ func parseInlineMarks(parent ast.Node, source []byte, initial []Mark, footnotes
+ 	for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
+ 		switch current := child.(type) {
+ 		case *ast.Text:
++			// DEFECT, for dispatch://INFRA-1075's CI control only, never committed: every piece
++			// of inline text reads the whole source again, one byte in every 64, the shape a
++			// scan of the run from each of its characters has, at a constant cheap enough that
++			// the test fails on its ratio rather than on its deadline.
++			for i := 0; i < len(source); i += 64 {
++				quadraticDefectSink += int(source[i])
++			}
+ 			// Goldmark's text stops before its line's ending, so only what the break trims is taken
+ 			// off, and off the text as written: a reference to a line feed or a space before the
+ 			// break is text to both parsers.
+@@ -1346,3 +1353,8 @@ func closeAnchorMark(marks []Mark) ([]Mark, bool) {
+ 	}
+ 	return marks, false
+ }
++
++// quadraticDefectSink is where the deliberate defect in parseInlineMarks puts what it reads, so
++// the compiler cannot drop the read. DEFECT, for dispatch://INFRA-1075's CI control only, never
++// committed.
++var quadraticDefectSink int
