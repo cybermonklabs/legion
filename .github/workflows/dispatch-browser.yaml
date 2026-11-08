@@ -197,9 +197,9 @@ jobs:
     # the browser step's `env:`; the multiprocess job's pinned build step below is read under
     # this file's own `env:` and defaults, so neither may grow a name outside that set.
     #
-    # The budgets below, this one and the one on the browser step, are measured, on the two runs
-    # of the head that sharded this suite: 42334424798, the pull-request lane, and 42316487530,
-    # the full lane. Four legs each, in shard order, in seconds:
+    # The browser step's budget below is measured, on the two runs of the head that sharded this
+    # suite: 42334424798, the pull-request lane, and 42316487530, the full lane. Four legs each,
+    # in shard order, in seconds:
     #
     #   step                                     pull-request lane        full lane
     #   Browser-test dispatch dashboard         413, 293, 307, 292  419, 297, 334, 295
@@ -210,20 +210,52 @@ jobs:
     # shard's browser step, and which the container does not move: it is the same rows in the
     # same browsers.
     #
-    # The job budget is NOT the rule's arithmetic and is to be re-derived. What it was is the
-    # sum of a 22-minute Playwright install step, the browser step's 9 and 92 s of every other
-    # step summed; that install step is gone, and the steps the container brought - the
-    # container's own `Initialize containers`, the artifact download, the PostgreSQL reading and
-    # the file store's start and wait - have no reading on this job yet. The figure below is
-    # therefore left at what it was, which is a backstop above anything the steps can sum to
-    # rather than a measurement, and the implementer re-derives it from a run of this shape.
+    # The job budget below is the rule's arithmetic, read over the shape this job has now that
+    # it runs in the image: the 22-minute Playwright install step the old figure was the sum of
+    # is gone, and the steps the container brought - its own `Initialize containers`, the
+    # artifact download, the PostgreSQL reading and the file store's start and wait - have a
+    # reading of their own at last. It is the jobs API over every leg of this containerised job
+    # that has run at this head, eight legs of two runs: the full lane's four shards in
+    # workflow_dispatch run 42427063524 of dispatch-browser-nightly.yaml and the pull-request
+    # lane's four shards in CI run 42427059195. The maximum each step reached over those eight
+    # legs, in seconds:
+    #
+    #   step                                                 max
+    #   Set up job                                             1
+    #   Initialize containers                                 43
+    #   Read what this container gives the suite               1
+    #   actions/checkout                                       8
+    #   actions/download-artifact                              5
+    #   Make the downloaded binaries executable                1
+    #   ./.github/actions/setup-bun                            3
+    #   bun install --frozen-lockfile                         10
+    #   Build contracts for dispatch e2e                       1
+    #   Build dispatch dashboard                              33
+    #   Read the lanes' PostgreSQL and time its provider       3
+    #   Start an S3-compatible server for uploaded files       1
+    #   Wait for the S3-compatible server                     24
+    #   Browser-test dispatch dashboard                      315   (carries its own budget)
+    #   upload-artifact, this leg's blob report                2
+    #   What the run left behind                               1
+    #   upload-artifact, the record directory                  2
+    #   upload-artifact, the failed rows' traces               3
+    #   Post Run ./.github/actions/setup-bun                   1
+    #   Post Run actions/checkout                              1
+    #   Stop containers                                        1
+    #   Complete job                                           0
+    #
+    # The browser step is the one step of this job that carries a budget, so the job's budget is
+    # that budget plus the maxima above of every step without one, which sum to 145 s:
+    # 540 + 145 = 685 s, 11 min 25 s, rounded up to the 12 minutes below. That is a backstop
+    # above the sum of the step budgets, as this file's head says a job budget is, and it is now
+    # a measurement rather than what was left over from a step that no longer runs.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed at
     # this head, after the forward merges of main, the suite holds 1,200 rows: 1,145 in the
     # eight projects the full lane's four shards run, of which 1,058 are in the two the
     # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
     # job runs.
-    timeout-minutes: 33
+    timeout-minutes: 12
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -424,6 +456,11 @@ jobs:
         # $RUNNER_TEMP beside the lanes' own run directory: a file this step wrote into the
         # checkout would leave it dirty afterwards. The blob report goes beside the list
         # reporter's output, so a green run reports what it ran too.
+        #
+        # The budget below is the 9 minutes the job's head derives from the sharded head's own
+        # runs, and this head does not move it: the most this step took over the eight
+        # containerised legs the job's head lists is 315 s, under those runs' 419 s and well
+        # under the budget, so the pooled maximum the rule reads is still 419 s.
         timeout-minutes: 9
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
@@ -613,9 +650,9 @@ jobs:
     # (dispatch://INFRA-1443). The shard job's head says what each option is for and why the
     # digest is a literal.
     #
-    # The budgets below, this one and the one on the browser step, are measured, on the
-    # full-lane run of the head that sharded this suite, 42316487530. The pull-request lane runs
-    # no leg of this job, so there is one run and three legs behind each figure, in seconds:
+    # The browser step's budget below is measured, on the full-lane run of the head that sharded
+    # this suite, 42316487530. The pull-request lane runs no leg of this job, so there is one
+    # run and three legs behind each figure, in seconds:
     #
     #   step                                    chromium-alone  firefox-alone  webkit-alone
     #   Browser-test dispatch dashboard                    116            111           141
@@ -627,12 +664,42 @@ jobs:
     # than it moves a parallel row. The 15 per cent the rule adds is what carries that, and a
     # leg that outran it fails the browser step by name, which is a reading of its own.
     #
-    # The job budget is NOT the rule's arithmetic and is to be re-derived, for the reason the
-    # shard job's head gives: what it was is the sum of a 22-minute Playwright install step, the
-    # browser step's 3 and 89 s of every other step summed, and that install step is gone while
-    # the steps the container brought have no reading on this job yet. The figure below is left
-    # at what it was, a backstop above anything the steps can sum to rather than a measurement.
-    timeout-minutes: 27
+    # The job budget below is the rule's arithmetic, read over the shape this job has now that
+    # it runs in the image, for the reason the shard job's head gives: the 22-minute Playwright
+    # install step the old figure was the sum of is gone, and the steps the container brought
+    # have a reading of their own at last. It is the jobs API over every leg of this job that
+    # has run at this head, the three legs of the full lane in workflow_dispatch run
+    # 42427063524 of dispatch-browser-nightly.yaml; the pull-request lane still runs none. The
+    # maximum each step reached over those three legs, in seconds:
+    #
+    #   step                                                 max
+    #   Set up job                                             2
+    #   Initialize containers                                 36
+    #   Read what this container gives the suite               1
+    #   actions/checkout                                       7
+    #   actions/download-artifact                              2
+    #   Make the downloaded binaries executable                0
+    #   ./.github/actions/setup-bun                            3
+    #   bun install --frozen-lockfile                          9
+    #   Build contracts for dispatch e2e                       0
+    #   Build dispatch dashboard                              32
+    #   Read the lanes' PostgreSQL and time its provider       1
+    #   Browser-test dispatch dashboard                       68   (carries its own budget)
+    #   upload-artifact, this leg's blob report                1
+    #   What the run left behind                               0
+    #   upload-artifact, the record directory                  1
+    #   upload-artifact, the failed rows' traces               1
+    #   Post Run ./.github/actions/setup-bun                   1
+    #   Post Run actions/checkout                              1
+    #   Stop containers                                        0
+    #   Complete job                                           0
+    #
+    # The browser step is the one step of this job that carries a budget, so the job's budget is
+    # that budget plus the maxima above of every step without one, which sum to 98 s:
+    # 180 + 98 = 278 s, 4 min 38 s, rounded up to the 5 minutes below. It is a backstop above
+    # the sum of the step budgets, as this file's head says a job budget is, and a measurement
+    # now rather than what was left over from a step that no longer runs.
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
@@ -772,6 +839,11 @@ jobs:
         # collects and uploads, under $RUNNER_TEMP beside the lane's own run directory: a file
         # this step wrote into the checkout would leave it dirty afterwards. The blob report
         # goes beside the list reporter's output, so a green run reports what it ran too.
+        #
+        # The budget below is the 3 minutes the job's head derives from the sharded head's own
+        # run, and this head does not move it: the most this step took over the three
+        # containerised legs the job's head lists is 68 s, well under webkit-alone's 141 s
+        # there, so the pooled maximum the rule reads is still 141 s.
         timeout-minutes: 3
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
