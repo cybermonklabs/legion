@@ -704,8 +704,8 @@ test("on a phone, a thread reply the server never answers lets Back go at the de
 
 // On a phone the docked composer sits at the foot of the screen, and a refusal's row grows it
 // upward. `Jump to latest` shows while the reader is scrolled down, which is when they reach for
-// the refusal's Retry, or a closed issue's Discard draft, so it never sits over the composer.
-test("on a phone, Jump to latest covers none of the docked composer's Retry or Discard draft @phone", async ({
+// the refusal's Retry, so it never sits over the composer.
+test("on a phone, Jump to latest covers none of the docked composer's Retry @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -736,8 +736,8 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry or D
     await scrollToOldest(page);
     await expect(jump).toBeVisible();
     await expectUncovered(jump, form);
-    // Retry, pressed while the pill shows, goes out; the issue closes under it, and the server's
-    // refusal leaves Discard draft in its place.
+    // Retry, pressed while the pill shows, goes out; the issue closes under it, which takes the
+    // comment, and the composer that took it back from its refusal row is still uncovered.
     await page.unroute(comments);
     const send = await holdPosts(page, comments);
     await form.getByRole("button", { name: "Retry" }).click();
@@ -748,14 +748,15 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry or D
     // Reopen sits behind the identity block's actions control now (dispatch://INFRA-1196 R11);
     // what says the page has taken the close in is the line the block draws for it.
     await expect(page.getByText("This issue is closed.", { exact: true })).toBeVisible();
+    const posted = answeredPost(page, `/api/v1/issues/${issue.key}/comments`, 201);
     send.release();
-    await expect(form.getByText("Couldn't send — issue is closed")).toBeVisible();
+    await posted;
+    await expect(form.getByText("Couldn't send — the server is down")).toHaveCount(0);
+    await expect(field).toHaveValue("");
 
     await scrollToOldest(page);
     await expect(jump).toBeVisible();
     await expectUncovered(jump, form);
-    await form.getByRole("button", { name: "Discard draft" }).click();
-    await expect(form).toHaveCount(0);
   } finally {
     await alice.close();
   }

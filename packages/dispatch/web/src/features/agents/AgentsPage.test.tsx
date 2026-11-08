@@ -39,7 +39,7 @@ import type { AgentPart } from "../refs/AgentName";
 import { KEYED_SEND_ATTEMPT_MS, SendStoppedError } from "../writes/keyed-write";
 import { resetWriteStorage } from "../writes/write-storage";
 import { orderAgents, partitionAgents } from "./AgentsPage";
-import { matchesFilters, searchWords } from "./agent-search";
+import { filterOptions, matchesFilters, searchWords } from "./agent-search";
 import {
   type BroadcastRoster,
   broadcastPlan,
@@ -353,7 +353,7 @@ test("Agents lists an unresponsive session with its state, neither dropped nor d
   }
 });
 
-// A Claude Code session takes Aside but not Send: the card's plain message goes as an Aside and
+// A session that takes Aside but not Send: the card's plain message goes as an Aside and
 // says so, rather than warning that the Send it would have been records a failed attempt. A
 // session that advertises no mode at all says on its card that it takes no messages.
 test("an agent card sends a plain message in the mode the session takes", async () => {
@@ -676,6 +676,29 @@ test("matchesFilters narrows by machine and role exactly, free text besides", ()
   expect(
     matchesFilters(planner, { machine: "build-host", role: "reviewer" }, searchWords(""), [])
   ).toBe(false);
+});
+
+test("filterOptions offers the machines the live sessions occupy, and the one the filter names besides", () => {
+  const live = [
+    session({ host: "build-host", roles: ["planner"], session_id: "one", title: "One" }),
+    session({ host: "archive-host", roles: [], session_id: "two", title: "Two" }),
+  ];
+
+  expect(filterOptions(live, "")).toEqual({
+    machines: ["archive-host", "build-host"],
+    roles: ["planner"],
+  });
+
+  // A `?machine=` naming a host no live session reports - an old link, or a machine whose
+  // sessions have ended - is an option of its own, in machine order with the rest, so the
+  // control shows the filter that is hiding every row and `All machines` can clear it.
+  expect(filterOptions(live, "ended-host").machines).toEqual([
+    "archive-host",
+    "build-host",
+    "ended-host",
+  ]);
+  // A machine the live sessions do report is offered once, not twice.
+  expect(filterOptions(live, "build-host").machines).toEqual(["archive-host", "build-host"]);
 });
 
 test("Agents orders who needs you before Dispatch recency before liveness, folds silent sessions, and keeps a re-poll stable", async () => {
@@ -1200,11 +1223,11 @@ function sentAttempt(
 
 const accepted = { accepted_as: "user_turn", accepted_at: recentAttemptAt } as const;
 
-// A person's direct Send or Aside that an Oh My Pi session took as its own user turn is answered
-// in the session's conversation, never with a Dispatch reply, so its card waits on no reply and
+// A person's direct Send or Aside that a session took as its own user turn is answered in the
+// session's conversation, never with a Dispatch reply, so its card waits on no reply and
 // offers no other way to send it. The session records that with Dispatch; nothing else says it,
-// so every attempt the session did not accept - a Claude Code session's, an older plugin's, an
-// accept Dispatch refused - keeps today's card and its mode-change row.
+// so every attempt the session did not accept - an older plugin's, an accept Dispatch refused -
+// keeps today's card and its mode-change row.
 for (const [name, session, read, headline, retries] of [
   [
     "a person's direct Aside the session took as its own turn",
@@ -1676,7 +1699,7 @@ test("an exchange answered within the Clear's millisecond but after it stays vis
   }
 });
 
-// A Claude Code session takes Aside alone: a reply into an exchange whose last attempt was a
+// A session that takes Aside alone: a reply into an exchange whose last attempt was a
 // Send it refused goes as an Aside, not as a BTW it refuses too.
 test("a reply to an Aside-only agent after a refused Send goes as an Aside", async () => {
   const root = message("Can this ship?", {

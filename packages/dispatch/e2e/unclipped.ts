@@ -66,19 +66,30 @@ async function assertUnclipped(locator: Locator, down: boolean): Promise<void> {
  * it, so `scrollWidth` alone, compared against the zoomed-out `clientWidth`, passes (a 1,000-
  * character search chip). So both are checked: `innerWidth` is still the viewport's width, and
  * nothing is wider than `clientWidth`. Both are whole pixels, so the comparisons are exact.
+ *
+ * The read and both checks are retried because a resize settles on two clocks: the engine applies
+ * the shell's `xl:` breakpoint the moment the viewport reaches 1280px, while the margin's wrapper
+ * only stops being `contents` when React re-renders it, a task or two later, on the
+ * `useMediaQuery` state it reads. In between, the compact bottom sheet is an in-flow, full-width
+ * flex child of the shell, which takes most of the row and squeezes `<main>` down to its padding,
+ * so content inside it sticks out past the viewport. The retry hides no real overflow: a settled
+ * page that does not fit never passes, and the failure at the timeout is the check below, naming
+ * both widths.
  */
 export async function assertPageFits(page: Page): Promise<void> {
-  const layout = await page.evaluate(() => ({
-    clientWidth: document.documentElement.clientWidth,
-    innerWidth: window.innerWidth,
-    scrollWidth: document.documentElement.scrollWidth,
-  }));
-  expect(
-    layout.innerWidth,
-    `the page zoomed out to ${layout.innerWidth}px to fit content wider than the viewport`
-  ).toBe(page.viewportSize()?.width);
-  expect(
-    layout.scrollWidth,
-    `page ${layout.scrollWidth}px wide in a ${layout.clientWidth}px viewport`
-  ).toBeLessThanOrEqual(layout.clientWidth);
+  await expect(async () => {
+    const layout = await page.evaluate(() => ({
+      clientWidth: document.documentElement.clientWidth,
+      innerWidth: window.innerWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+    }));
+    expect(
+      layout.innerWidth,
+      `the page zoomed out to ${layout.innerWidth}px to fit content wider than the viewport`
+    ).toBe(page.viewportSize()?.width);
+    expect(
+      layout.scrollWidth,
+      `page ${layout.scrollWidth}px wide in a ${layout.clientWidth}px viewport`
+    ).toBeLessThanOrEqual(layout.clientWidth);
+  }).toPass({ timeout: 5_000 });
 }

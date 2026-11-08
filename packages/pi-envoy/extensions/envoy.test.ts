@@ -36,6 +36,7 @@ import {
 } from "@legion/envoy-client/askgate-marker";
 import { RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { runDispatchCli } from "@legion/envoy-client/dispatch-cli";
+import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import { forgetKeyedLayerMemory } from "@legion/envoy-client/dispatch-http";
 import { shownPictures } from "@legion/envoy-client/dispatch-picture-tools";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
@@ -50,6 +51,7 @@ import {
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { removeTemporaryDirectories } from "@legion/envoy-client/test/temp-dir";
+import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { envoyToolSpecs } from "@legion/envoy-client/tool-contract";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
 import { matchInjectedUserTurn } from "@legion/pi-shared/injected-user-turns";
@@ -353,6 +355,29 @@ const hostBuiltins: UserInputBuiltinCommand[] = [];
 mock.module("@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler", () => ({
   listUserInputBuiltinCommands: () => hostBuiltins,
 }));
+// What the extension reads when it asks where this session sits in tmux, and what it asked with.
+// `@legion/envoy-client/tmux-place` is mocked for the whole process the way `nats` is: the real
+// reader shells out to tmux, so a suite run inside a pane would report the pane that started it.
+// The default is the reading a session outside tmux gets; `afterEach` puts it back.
+const refusedPlace = (): TmuxPlaceReading => ({ kind: "refused" });
+const tmuxPlaceState = {
+  /** Every reading the extension asked for, with the environment it passed. */
+  calls: [] as { readonly env: Record<string, string | undefined> }[],
+  /** What the next reading comes to. A row that throws here drives a reader that fails. */
+  reading: refusedPlace as (
+    env: Record<string, string | undefined>,
+    exec: ExecFn
+  ) => TmuxPlaceReading | Promise<TmuxPlaceReading>,
+};
+// Copied out before the mock replaces the module: the row that drives the real reader over an
+// exec that records every call (`@legion/envoy-client/tmux-place` runs none outside tmux).
+const { readTmuxPlace: realReadTmuxPlace } = await import("@legion/envoy-client/tmux-place");
+mock.module("@legion/envoy-client/tmux-place", () => ({
+  readTmuxPlace: async (env: Record<string, string | undefined>, exec: ExecFn) => {
+    tmuxPlaceState.calls.push({ env });
+    return tmuxPlaceState.reading(env, exec);
+  },
+}));
 // Reads the host package, so it loads only after the mock above is in place.
 const { recordBootstrappedSession } = await import("@legion/pi-shared/subagent-session");
 
@@ -367,6 +392,13 @@ const originalDispatchToken = process.env.DISPATCH_TOKEN;
 // The Legion daemon exports DISPATCH_TOKEN_FILE into every pane it spawns; a suite run from one
 // must not see it, or the extension resolves a real Dispatch config and registers the tools.
 const originalDispatchTokenFile = process.env.DISPATCH_TOKEN_FILE;
+// The logical machine name a Legion pod exports, which `machineID` reports over the kernel
+// hostname: a suite run from one must not see it, or every row that reads a machine id reads the
+// pod's instead of this process's own.
+const originalMachineID = process.env.ENVOY_MACHINE_ID;
+// Both of the variables a place reading consults: a suite run inside a pane would otherwise have
+// every registration carry the pane that started it (`@legion/envoy-client/tmux-place`).
+const originalTmux = process.env.TMUX;
 const originalTmuxPane = process.env.TMUX_PANE;
 // The dispatch command's contract with the extension: the session id and host it exports, and the
 // state directory both read, which each test points at a scratch directory of its own.
@@ -407,8 +439,17 @@ beforeEach(() => {
   delete process.env.DISPATCH_URL;
   delete process.env.DISPATCH_TOKEN;
   delete process.env.DISPATCH_TOKEN_FILE;
+  delete process.env.ENVOY_MACHINE_ID;
   process.env.HOME = "/nonexistent-home-for-envoy-tests";
+  delete process.env.TMUX;
   delete process.env.TMUX_PANE;
+  // The place cache refreshes itself on a timer at its lifetime, and a case here boots sessions
+  // it never shuts down: at the 30 s default each of them would read tmux again half a minute
+  // later, inside whatever case is running by then. The ceiling keeps that from happening for a
+  // case that names no lifetime. The tmux-place cases below name a 30 s one
+  // (`withEnvoyTimings`), so each of them still leaves a 30 s timer running; no later case counts
+  // the readings such a timer makes.
+  process.env.ENVOY_TMUX_PLACE_CACHE_MS = "2147483647";
   process.env.DISPATCH_STATE_DIR = mkdtempSync(join(tmpdir(), "envoy-dispatch-state-"));
   delete process.env.DISPATCH_SESSION_ID;
   // The extension picks its envoy.json when its module loads, and each test loads it fresh: a file
@@ -439,10 +480,14 @@ afterEach(async () => {
   else process.env.DISPATCH_TOKEN = originalDispatchToken;
   if (originalDispatchTokenFile === undefined) delete process.env.DISPATCH_TOKEN_FILE;
   else process.env.DISPATCH_TOKEN_FILE = originalDispatchTokenFile;
+  if (originalMachineID === undefined) delete process.env.ENVOY_MACHINE_ID;
+  else process.env.ENVOY_MACHINE_ID = originalMachineID;
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;
   if (originalPath === undefined) delete process.env.PATH;
   else process.env.PATH = originalPath;
+  if (originalTmux === undefined) delete process.env.TMUX;
+  else process.env.TMUX = originalTmux;
   if (originalTmuxPane === undefined) delete process.env.TMUX_PANE;
   else process.env.TMUX_PANE = originalTmuxPane;
   if (process.env.DISPATCH_STATE_DIR !== undefined) {
@@ -464,10 +509,14 @@ afterEach(async () => {
   procmgr.__resetShellConfigCacheForTests();
   clipboardState.copiedSessionIDs.length = 0;
   clipboardState.error = undefined;
-  // Both are read when an extension instance is created, and a row aborted at Bun's own timeout
-  // never runs its `finally`, so a row that sets either must not decide a later row's timings.
+  tmuxPlaceState.calls.length = 0;
+  tmuxPlaceState.reading = refusedPlace;
+  // All three are read when an extension instance is created, and a row aborted at Bun's own
+  // timeout never runs its `finally`, so a row that sets one must not decide a later row's
+  // timings; the place cache's lifetime is set again by the hook above.
   delete process.env.ENVOY_RESUBSCRIBE_DELAY_MS;
   delete process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS;
+  delete process.env.ENVOY_TMUX_PLACE_CACHE_MS;
   natsState.connectedNames.length = 0;
   natsState.connects.length = 0;
   natsState.closedNames.length = 0;
@@ -971,6 +1020,26 @@ function response(body: unknown): Response {
   });
 }
 
+/** The client instance id one extension instance mints, read by its shape alone: a test that
+ *  needs the id itself reads it off a request the extension made. */
+const ANY_CLIENT_INSTANCE = expect.stringMatching(/^[0-9a-f]{32}$/);
+
+/** The transcript record a landed claim of `role` for `session` writes: the role, the session
+ *  claimed for and the process that claimed it (INFRA-783). */
+function roleClaimRecord(role: string, session: string): unknown {
+  return {
+    type: "custom",
+    customType: "envoy-role-claim",
+    data: { role, session_id: session, client_instance_id: ANY_CLIENT_INSTANCE },
+  };
+}
+
+/** The body a claim of `role` for `session` sends, `rest` carrying what that claim adds (`soft`,
+ *  `previous_session_id`): every claim names the process making it (INFRA-783). */
+function roleClaimBody(session: string, role: string, rest: Record<string, unknown> = {}): unknown {
+  return { session_id: session, role, ...rest, client_instance_id: ANY_CLIENT_INSTANCE };
+}
+
 /** A listener that serves replay over a stream holding nothing: every subject's cursor starts. */
 function emptyReplay(init: RequestInit | undefined): Response {
   const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -1014,18 +1083,26 @@ function responseWithRegistration(
  * own `envoyExtension(...)` call; every test in this file shares one process, so none may leak.
  */
 async function withEnvoyTimings<T>(
-  timings: { readonly heartbeatMs?: number; readonly passDeadlineMs?: number },
+  timings: {
+    readonly heartbeatMs?: number;
+    readonly passDeadlineMs?: number;
+    readonly tmuxPlaceCacheMs?: number;
+  },
   body: () => Promise<T>
 ): Promise<T> {
   const before = [
     ["ENVOY_HEARTBEAT_MS", process.env.ENVOY_HEARTBEAT_MS],
     ["ENVOY_PASS_DEADLINE_MS", process.env.ENVOY_PASS_DEADLINE_MS],
+    ["ENVOY_TMUX_PLACE_CACHE_MS", process.env.ENVOY_TMUX_PLACE_CACHE_MS],
   ] as const;
   if (timings.heartbeatMs !== undefined) {
     process.env.ENVOY_HEARTBEAT_MS = String(timings.heartbeatMs);
   }
   if (timings.passDeadlineMs !== undefined) {
     process.env.ENVOY_PASS_DEADLINE_MS = String(timings.passDeadlineMs);
+  }
+  if (timings.tmuxPlaceCacheMs !== undefined) {
+    process.env.ENVOY_TMUX_PLACE_CACHE_MS = String(timings.tmuxPlaceCacheMs);
   }
   try {
     return await body();
@@ -3009,7 +3086,15 @@ describe("envoy OMP extension", () => {
         path: "/v1/replay",
         body: { session_id: "ses_omp", subjects: [{ subject: "notifications.agent.ses_omp" }] },
       },
-      { path: "/v1/roles/set", body: { session_id: "ses_omp", role: "controller" } },
+      {
+        path: "/v1/roles/set",
+        body: {
+          session_id: "ses_omp",
+          role: "controller",
+          // The process making the claim, the same id the registration carries (INFRA-783).
+          client_instance_id: expect.stringMatching(/^[0-9a-f]{32}$/),
+        },
+      },
       { path: "/v1/interests/ses_omp", body: undefined },
       {
         path: "/v1/messages/send",
@@ -3124,6 +3209,7 @@ describe("envoy OMP extension", () => {
         return track(z.array(item));
       },
       enum: (values: readonly [string, ...string[]]) => track(z.enum(values)),
+      literal: (values: readonly (string | number | boolean | null)[]) => track(z.literal(values)),
       unknown: () => track(z.unknown()),
     } as unknown as typeof z;
     const fixture = createPi({ zod: injected });
@@ -3194,7 +3280,7 @@ describe("envoy OMP extension", () => {
     expect(result.content[0]?.text).toBe(
       [
         "envoy_send was not called: 2 problems",
-        '- expects_reply must be one of none|optional|required; got "no"',
+        '- expects_reply must be one of false|optional|required; got "no"',
         '- unknown field "urgent"; allowed: session_id, message, in_reply_to, supersedes, urgency, expects_reply, expires_at, idempotency_key',
       ].join("\n")
     );
@@ -4058,6 +4144,17 @@ describe("envoy OMP extension", () => {
       }));
       mock.module("@oh-my-pi/pi-coding-agent/session/settings", () => ({
         cfgRetry: { get: () => ({ enabled: false, modelFallback: false }) },
+      }));
+      // The gate declares `askgate.sharedAccountProviders` on this registry at load; the stand-in
+      // host declares no provider pair, so every comparison is the plain provider-id one.
+      const settingHandles = new Map<string, { get: () => unknown }>();
+      mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
+        register: (definition: { id: string; default: unknown }) => {
+          const handle = { get: () => definition.default };
+          settingHandles.set(definition.id, handle);
+          return handle;
+        },
+        lookup: (id: string) => settingHandles.get(id),
       }));
     };
     /** A stand-in `dispatch` whose --dry-run prints its flags as JSON, first on PATH for the call. */
@@ -6391,14 +6488,27 @@ console.log(JSON.stringify(args));
       | { topic: string; session: string; reached: () => void; release: Promise<void> }
       | undefined;
     // The listener's holder per role, and its rule for a soft claim: it takes the role only when
-    // the role is unheld, already held by the claimant, or held by the session it names as its
-    // predecessor (every holder here is live).
+    // the role is unheld, held by the session it names as its predecessor, or held by the
+    // claimant's own session id under a process `holderInstances` does not name as another one
+    // (every holder here is live).
     const holders = new Map<string, string>();
+    // The process each role's holder claimed under, which a role read answers and a claim under
+    // the holder's own session id is weighed against: a test names one where the holder is
+    // another process on the same session id, and a claim this fixture grants records its own.
+    const holderInstances = new Map<string, string>();
+    // The roles whose standing claim nobody has renewed inside the live window, which a test
+    // names when the process that made the claim has stopped: the listener grants a claim under
+    // the holder's own session id then, whatever process that standing claim names.
+    const unrenewedClaims = new Set<string>();
     // The listener's `last_seen` per session, which every registration of that session moves, by
     // this process or (set by a test) another one.
     const lastSeen = new Map<string, number>();
     // While positive, each read of a role's holder fails with a 500 (the client retries once).
     let failingRoleReads = 0;
+    // The client instance this extension instance registers, claims and releases under, read off
+    // its first registration: one test writes transcript records as that process, another reads
+    // the one a claim recorded.
+    let ownInstance: string | undefined;
     globalThis.fetch = async (input, init) => {
       const url = new URL(input.toString());
       const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
@@ -6418,12 +6528,14 @@ console.log(JSON.stringify(args));
           await release;
         }
         const holder = holders.get(claimed);
-        if (
-          body?.soft === true &&
-          holder !== undefined &&
-          holder !== claimant &&
-          holder !== body?.previous_session_id
-        ) {
+        const holdingProcess = holderInstances.get(claimed);
+        const refused =
+          holder === claimant
+            ? holdingProcess !== undefined &&
+              holdingProcess !== body?.client_instance_id &&
+              !unrenewedClaims.has(claimed)
+            : holder !== undefined && holder !== body?.previous_session_id;
+        if (body?.soft === true && refused) {
           return new Response(JSON.stringify({ error: "role held", role: claimed, holder }), {
             status: 409,
           });
@@ -6437,6 +6549,11 @@ console.log(JSON.stringify(args));
           );
         }
         holders.set(claimed, claimant);
+        // The claim this grant writes is renewed as it lands, whatever became of the one before.
+        unrenewedClaims.delete(claimed);
+        if (typeof body?.client_instance_id === "string") {
+          holderInstances.set(claimed, body.client_instance_id);
+        } else holderInstances.delete(claimed);
         return response({
           session_id: claimant,
           machine_id: "test",
@@ -6456,10 +6573,18 @@ console.log(JSON.stringify(args));
           answer = new Response(JSON.stringify({ error: "listener failed" }), { status: 500 });
         } else {
           const holder = holders.get(role);
+          const holdingProcess = holderInstances.get(role);
           answer =
             holder === undefined
               ? new Response(JSON.stringify({ error: "no live holder" }), { status: 404 })
-              : response({ role, holder, last_seen: lastSeen.get(holder) ?? 1 });
+              : response({
+                  role,
+                  holder,
+                  last_seen: lastSeen.get(holder) ?? 1,
+                  // The process the standing claim names, where this fixture knows it: a reader
+                  // tells a role held under its own session id by another process by this field.
+                  ...(holdingProcess === undefined ? {} : { client_instance_id: holdingProcess }),
+                });
         }
         if (roleReadGate?.role === role) {
           const { reached, release } = roleReadGate;
@@ -6487,7 +6612,16 @@ console.log(JSON.stringify(args));
         for (const topic of body?.topics ?? []) {
           handedBack.push(`${topic}@${body?.session_id}`);
           const role = String(topic).replace("notifications.role.", "");
-          if (holders.get(role) === body?.session_id) holders.delete(role);
+          // The listener frees a role claim only for the process that made it; a claim whose
+          // process this fixture never recorded is freed as it always was.
+          const ours = holderInstances.get(role);
+          if (
+            (ours === undefined || ours === body?.client_instance_id) &&
+            holders.get(role) === body?.session_id
+          ) {
+            holders.delete(role);
+            holderInstances.delete(role);
+          }
           const listed = rows.get(body?.session_id ?? "");
           if (listed !== undefined) {
             rows.set(
@@ -6514,6 +6648,7 @@ console.log(JSON.stringify(args));
       }
       if (url.pathname === "/v1/interests/subscribe") {
         registrations.push(body?.session_id);
+        if (typeof body?.client_instance_id === "string") ownInstance = body.client_instance_id;
         if (outage !== undefined && outage.refusing > 0) {
           outage.refusing -= 1;
           if (outage.refusing === 0) outage.over();
@@ -6659,6 +6794,13 @@ console.log(JSON.stringify(args));
       claimSessions,
       handedBack,
       holders,
+      holderInstances,
+      unrenewedClaims,
+      /** The client instance this extension instance makes every listener call under. */
+      instanceID: (): string => {
+        if (ownInstance === undefined) throw new Error("this extension has not registered yet");
+        return ownInstance;
+      },
       lastSeen,
       manager,
       notifications,
@@ -7837,7 +7979,7 @@ console.log(JSON.stringify(args));
     expect(natsState.controls.get("notifications.agent.ses_ur_y")?.active()).toBe(true);
   });
 
-  test("a release the session's records hold is final: a pass hands the role back and claims nothing", async () => {
+  test("a release the session's records hold is final where no other process wrote it: a pass hands the role back and claims nothing", async () => {
     const { fixture, live, claimSessions, holders, handedBack } = await gatedRoleFixture(
       "release-is-final",
       "ses_rl"
@@ -7848,6 +7990,140 @@ console.log(JSON.stringify(args));
     expect(claimSessions.slice(before)).toEqual([]);
     expect(holders.has("legion-controller")).toBe(false);
     expect(handedBack).toContain("notifications.role.legion-controller@ses_rl");
+  });
+
+  test("a claim records the session it was made for and the process that made it, and a record an older build wrote names neither", async () => {
+    const role = "release-captain";
+    const { fixture, live, roleTool, holders, instanceID } = await gatedRoleFixture(
+      "claim-record-names-its-process",
+      "ses_cr"
+    );
+    expect((await roleTool.execute("", { role })).isError).toBeFalsy();
+    expect(
+      fixture.entries.filter((entry) => entry.customType === "envoy-role-claim").at(-1)
+    ).toEqual({
+      type: "custom",
+      customType: "envoy-role-claim",
+      data: { role, session_id: "ses_cr", client_instance_id: instanceID() },
+    });
+    // A record from a build before those fields names neither, and is read exactly as it was
+    // then: the session takes the role it records.
+    fixture.pi.appendEntry("envoy-role-claim", { role: "sre" });
+    await fixture.handlers.get("session_tree")?.({ newLeafId: "leaf" }, live("ses_cr"));
+    expect(holders.get("sre")).toBe("ses_cr");
+    expect(holders.has(role)).toBe(false);
+  });
+
+  test("a release another process wrote on this transcript ends no role this one holds, and one this process wrote does", async () => {
+    const role = "legion-controller";
+    const { fixture, live, holders, handedBack, instanceID } = await gatedRoleFixture(
+      "release-names-its-process",
+      "ses_rp"
+    );
+    const before = handedBack.length;
+    // A continuation resumed this session's id in another process and recorded a release on the
+    // transcript both read. The role is this process's, and that record is not its to act on.
+    fixture.pi.appendEntry("envoy-role-claim", {
+      role: null,
+      session_id: "ses_rp",
+      client_instance_id: "another-process",
+    });
+    await fixture.handlers.get("session_tree")?.({ newLeafId: "leaf" }, live("ses_rp"));
+    expect(holders.get(role)).toBe("ses_rp");
+    expect(handedBack.slice(before)).toEqual([]);
+    // This process's own release ends it, and the hold goes back to the listener.
+    fixture.pi.appendEntry("envoy-role-claim", {
+      role: null,
+      session_id: "ses_rp",
+      client_instance_id: instanceID(),
+    });
+    await fixture.handlers.get("session_tree")?.({ newLeafId: "leaf" }, live("ses_rp"));
+    expect(holders.has(role)).toBe(false);
+    expect(handedBack.slice(before)).toEqual([`notifications.role.${role}@ses_rp`]);
+  });
+
+  test("a claim another process recorded is pressed only while this process holds no role", async () => {
+    const role = "legion-controller";
+    const other = "release-captain";
+    const { fixture, live, holders, handedBack, tick } = await gatedRoleFixture(
+      "foreign-claim-pressed-when-free",
+      "ses_fp"
+    );
+    const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const before = handedBack.length;
+    // A second process on this transcript records a claim of another role. This process holds
+    // one, so it neither gives that up nor presses a record it did not write.
+    fixture.pi.appendEntry("envoy-role-claim", {
+      role: other,
+      session_id: "ses_fp",
+      client_instance_id: "another-process",
+    });
+    await fixture.handlers.get("session_tree")?.({ newLeafId: "leaf" }, live("ses_fp"));
+    expect(holders.get(role)).toBe("ses_fp");
+    expect(holders.has(other)).toBe(false);
+    expect(handedBack.slice(before)).toEqual([]);
+    // Another session takes the role, so the next heartbeat's re-assertion ends it here.
+    holders.set(role, "ses_rival");
+    tick();
+    for (let step = 0; step < 10; step += 1) await drain();
+    expect(holders.get(role)).toBe("ses_rival");
+    // Holding nothing now, this process presses that record, and the listener decides the claim.
+    tick();
+    for (let step = 0; step < 10; step += 1) await drain();
+    expect(holders.get(other)).toBe("ses_fp");
+  });
+
+  test("a refused claim is asked again on each heartbeat while the lookup names this session under another process, and a refusal naming another session stays", async () => {
+    const role = "legion-controller";
+    const {
+      fixture,
+      live,
+      holders,
+      holderInstances,
+      unrenewedClaims,
+      claimSessions,
+      tick,
+      instanceID,
+    } = await gatedRoleFixture("refusal-under-another-process", "ses_rf", { claimAtStart: false });
+    const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const ticks = async (count: number) => {
+      for (let each = 0; each < count; each += 1) {
+        tick();
+        for (let step = 0; step < 10; step += 1) await drain();
+      }
+    };
+    // Another process resumed this session's id, holds the role under it and still renews it:
+    // its record is on the transcript this process reads, and its claim refuses this one's.
+    fixture.pi.appendEntry("envoy-role-claim", {
+      role,
+      session_id: "ses_rf",
+      client_instance_id: "another-process",
+    });
+    holders.set(role, "ses_rf");
+    holderInstances.set(role, "another-process");
+    await fixture.handlers.get("session_tree")?.({ newLeafId: "leaf" }, live("ses_rf"));
+    expect(holderInstances.get(role)).toBe("another-process");
+    // The refusal names this very session, so each heartbeat asks again rather than waiting for
+    // a session event.
+    const refused = claimSessions.length;
+    await ticks(1);
+    expect(claimSessions.length).toBeGreaterThan(refused);
+    expect(holderInstances.get(role)).toBe("another-process");
+    // That process ends: nobody renews its claim, and the listener grants the next ask. The
+    // session id it holds under is this one's own, which its registrations keep live.
+    unrenewedClaims.add(role);
+    await ticks(1);
+    expect(holders.get(role)).toBe("ses_rf");
+    expect(holderInstances.get(role)).toBe(instanceID());
+    // A genuinely different session takes it next: that refusal is the newer holder's, and it
+    // stands until a session event lands here, as it always did.
+    holders.set(role, "ses_rival");
+    holderInstances.set(role, "a-rival-process");
+    await ticks(1);
+    expect(holders.get(role)).toBe("ses_rival");
+    const latched = claimSessions.length;
+    await ticks(2);
+    expect(claimSessions.length).toBe(latched);
   });
 
   test("a fork does not take its recorded role from a live session outside its lineage, nor once that session leaves, until a session event lands on it", async () => {
@@ -8397,7 +8673,7 @@ console.log(JSON.stringify(args));
       expect(natsState.controls.get(notice)?.active()).toBe(true);
       expect(
         fixture.entries.filter((entry) => entry.customType === "envoy-role-claim").at(-1)
-      ).toEqual({ type: "custom", customType: "envoy-role-claim", data: { role } });
+      ).toEqual(roleClaimRecord(role, "ses_nr_c"));
     });
   });
 
@@ -8578,6 +8854,48 @@ console.log(JSON.stringify(args));
     for (let step = 0; step < 10; step += 1) await drain();
     expect(holders.has("reviewer")).toBe(false);
     expect(holders.get("legion-controller")).toBe("ses_oi");
+  });
+
+  // A release the listener refuses leaves the claim standing: its conditional delete is beaten
+  // by the holder's own renewal, re-sent at the new revision, and a claim renewed under each of
+  // the three deletes fails the route rather than reporting a release it did not make. Swallowed
+  // here, the role would stay held while this process's own registrations went on renewing its
+  // claim — the defect a release naming its process fixed, reached by another path — so the pass
+  // that follows sends the hand-back again and the role ends up free.
+  test("a hand-back the listener's release could not make is sent again by the next heartbeat, and the role ends up free", async () => {
+    const role = "legion-controller";
+    const { fixture, holders, handedBack, failHandBacks, tick } = await gatedRoleFixture(
+      "failed-release-sent-again",
+      "ses_fr"
+    );
+    const drain = () => new Promise<void>((resolve) => setImmediate(resolve));
+    const pass = async () => {
+      tick();
+      for (let step = 0; step < 10; step += 1) await drain();
+    };
+    // The client sends a failed listener call once more 250 ms later, on the real clock, so the
+    // pass that fails outlives the tick that started it and a tick fired meanwhile is swallowed
+    // by the heartbeat's `healing` latch. The heartbeat is therefore driven until the hand-back
+    // is seen at the listener rather than for a guessed wait, and `attempts` bounds it.
+    const tickUntilHandedBack = async (attempts = 50) => {
+      for (let each = 0; each < attempts && handedBack.length === 0; each += 1) {
+        await pass();
+        await new Promise<void>((resolve) => setTimeout(resolve, 50));
+      }
+    };
+    expect(holders.get(role)).toBe("ses_fr");
+    // The transcript records a release with no session event, so the heartbeat's pass hands the
+    // role back; the listener fails that release, both of the client's attempts at it.
+    failHandBacks(2);
+    fixture.pi.appendEntry("envoy-role-claim", { role: null });
+    await pass();
+    expect(handedBack).toEqual([]);
+    expect(holders.get(role)).toBe("ses_fr");
+    // A heartbeat registers this very session, which takes the hold back, and the pass behind
+    // that registration sends the release again.
+    await tickUntilHandedBack();
+    expect(handedBack).toEqual([`notifications.role.${role}@ses_fr`]);
+    expect(holders.has(role)).toBe(false);
   });
 
   // An abandoned hand-back loop walks a live `Map`: a hold a session event inserts behind its
@@ -10152,15 +10470,15 @@ console.log(JSON.stringify(args));
 
     expect(unsubscriptions).toEqual([["notifications.dispatch.issue.LEGION-1", subscription]]);
     expect(fixture.entries.filter((entry) => entry.customType === "envoy-role-claim")).toEqual([
-      { type: "custom", customType: "envoy-role-claim", data: { role } },
+      roleClaimRecord(role, "ses_unsubscribe"),
     ]);
 
     listenerHoldsClaim = false;
     intervals[0]?.();
     await reasserted.promise;
     expect(roleClaims).toEqual([
-      { session_id: "ses_unsubscribe", role },
-      { session_id: "ses_unsubscribe", role, soft: true },
+      roleClaimBody("ses_unsubscribe", role),
+      roleClaimBody("ses_unsubscribe", role, { soft: true }),
     ]);
   });
 
@@ -10230,7 +10548,7 @@ console.log(JSON.stringify(args));
       { topic: roleTopic, source: "registry" },
     ]);
     expect(fixture.entries.filter((entry) => entry.customType === "envoy-role-claim")).toEqual([
-      { type: "custom", customType: "envoy-role-claim", data: { role } },
+      roleClaimRecord(role, "ses_role_subscription"),
     ]);
 
     await subscribeTool.execute("", { topics: [roleTopic] });
@@ -10245,7 +10563,7 @@ console.log(JSON.stringify(args));
       { topic: roleTopic, source: "registry" },
     ]);
     expect(fixture.entries.filter((entry) => entry.customType === "envoy-role-claim")).toEqual([
-      { type: "custom", customType: "envoy-role-claim", data: { role } },
+      roleClaimRecord(role, "ses_role_subscription"),
     ]);
   });
 
@@ -10294,7 +10612,7 @@ console.log(JSON.stringify(args));
     const roleTool = fixture.tools.find((tool) => tool.name === "envoy_role_set");
     if (roleTool === undefined) throw new Error("role tool was not registered");
     await roleTool.execute("", { role });
-    expect(roleClaims).toEqual([{ session_id: "ses_reassert", role }]);
+    expect(roleClaims).toEqual([roleClaimBody("ses_reassert", role)]);
 
     // The listener drops the claim out from under the session (a reaped claim, NATS data
     // loss, an older listener build). Nothing in this process notices until the heartbeat.
@@ -10305,12 +10623,12 @@ console.log(JSON.stringify(args));
 
     expect(roleReads).toEqual([`/v1/roles/${role}`]);
     expect(roleClaims).toEqual([
-      { session_id: "ses_reassert", role },
-      { session_id: "ses_reassert", role, soft: true },
+      roleClaimBody("ses_reassert", role),
+      roleClaimBody("ses_reassert", role, { soft: true }),
     ]);
     // The held role did not change, so the durable record is not rewritten.
     expect(fixture.entries.filter((entry) => entry.customType === "envoy-role-claim")).toEqual([
-      { type: "custom", customType: "envoy-role-claim", data: { role } },
+      roleClaimRecord(role, "ses_reassert"),
     ]);
     expect(regained).toEqual([{ role, reason: "reclaimed" }]);
   });
@@ -10374,8 +10692,8 @@ console.log(JSON.stringify(args));
     await regainFired.promise;
 
     expect(roleClaims).toEqual([
-      { session_id: "ses_lapsed_read", role },
-      { session_id: "ses_lapsed_read", role, soft: true },
+      roleClaimBody("ses_lapsed_read", role),
+      roleClaimBody("ses_lapsed_read", role, { soft: true }),
     ]);
     expect(regained).toEqual([{ role, reason: "reclaimed" }]);
   });
@@ -10429,7 +10747,7 @@ console.log(JSON.stringify(args));
 
     expect(registrations).toBe(4);
     expect(roleReads).toBe(3);
-    expect(roleClaims).toEqual([{ session_id: "ses_quiet", role }]);
+    expect(roleClaims).toEqual([roleClaimBody("ses_quiet", role)]);
     expect(claimEntries()).toHaveLength(1);
     expect(regained).toEqual([]);
   });
@@ -10511,15 +10829,15 @@ console.log(JSON.stringify(args));
     }
 
     expect(roleClaims).toEqual([
-      { session_id: "ses_refused", role },
-      { session_id: "ses_refused", role, soft: true },
+      roleClaimBody("ses_refused", role),
+      roleClaimBody("ses_refused", role, { soft: true }),
     ]);
     expect(notifications.filter((message) => message.includes("is now held by"))).toHaveLength(1);
     expect(regained).toEqual([]);
     // A 409 clears only this process's transient claim. The durable record
     // remains for a future session to arbitrate with the listener.
     expect(fixture.entries.filter((entry) => entry.customType === "envoy-role-claim")).toEqual([
-      { type: "custom", customType: "envoy-role-claim", data: { role } },
+      roleClaimRecord(role, "ses_refused"),
     ]);
   });
 
@@ -10585,7 +10903,7 @@ console.log(JSON.stringify(args));
     await hooked.promise;
     expect(regained).toEqual([{ role, reason: "reregistered" }]);
     // The claim survived: only the explicit hard claim ever went out.
-    expect(roleClaims).toEqual([{ session_id: "ses_outage", role }]);
+    expect(roleClaims).toEqual([roleClaimBody("ses_outage", role)]);
 
     // The following healthy tick is quiet again.
     intervals[0]?.();
@@ -11006,7 +11324,7 @@ console.log(JSON.stringify(args));
       intervals[0]?.();
       await new Promise((resolve) => setTimeout(resolve, 20));
       expect(regained).toHaveLength(1);
-      expect(roleClaims).toEqual([{ session_id: "ses_stall_regain", role }]);
+      expect(roleClaims).toEqual([roleClaimBody("ses_stall_regain", role)]);
 
       answered.resolve();
       for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
@@ -11094,11 +11412,11 @@ console.log(JSON.stringify(args));
         // The listener did hear the abandoned claim, and granted it: this process recorded
         // nothing of it in the transcript, and the live role is the one the newer move took.
         expect(roleClaims).toEqual([
-          { session_id: "ses_fenced_b", role: "release-captain" },
-          { session_id: "ses_fenced_b", role: "reviewer" },
+          roleClaimBody("ses_fenced_b", "release-captain"),
+          roleClaimBody("ses_fenced_b", "reviewer"),
         ]);
         expect(fixture.entries.filter((entry) => entry.customType === "envoy-role-claim")).toEqual([
-          { type: "custom", customType: "envoy-role-claim", data: { role: "reviewer" } },
+          roleClaimRecord("reviewer", "ses_fenced_b"),
         ]);
         await expect(
           subscribeLegionNotice(
@@ -11261,7 +11579,7 @@ console.log(JSON.stringify(args));
     intervals[0]?.();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(regained).toEqual([]);
-    expect(roleClaims).toEqual([{ session_id: "ses_role_read", role }]);
+    expect(roleClaims).toEqual([roleClaimBody("ses_role_read", role)]);
     expect(
       notifications.filter((message) => message.includes("registry heartbeat failed"))
     ).toHaveLength(1);
@@ -11342,7 +11660,7 @@ console.log(JSON.stringify(args));
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(regained).toEqual([{ role, reason: "reregistered" }]);
     // The claim survived throughout: only the explicit hard claim ever went out.
-    expect(roleClaims).toEqual([{ session_id: "ses_late_regain", role }]);
+    expect(roleClaims).toEqual([roleClaimBody("ses_late_regain", role)]);
 
     // A further healthy tick adds nothing.
     intervals[0]?.();
@@ -12695,7 +13013,7 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: expect.stringMatching(
-            /^\/compact was not run: this session's Oh My Pi \S+ cannot run commands sent from Dispatch; nothing was sent\.$/
+            /^\/compact was not run: this session's agent, version \S+, cannot run commands sent from Dispatch; nothing was sent\.$/
           ),
         },
       ]);
@@ -14913,6 +15231,207 @@ console.log(JSON.stringify(args));
     for (const tick of heartbeats) tick();
     await heartbeatSubscribe.promise;
     expect(subscribeTitles).toEqual(["", "fix envoy ps titles"]);
+  });
+
+  describe("the tmux place a registration carries", () => {
+    const PLACE: TmuxPlace = {
+      socket: "/tmp/tmux-1000/default",
+      server_pid: "4242",
+      session_name: "legion",
+      window_id: "@3",
+      window_index: 2,
+      window_name: "infra-883",
+      pane_id: "%7",
+      pane_index: 1,
+      layout: "a1b2,80x24,0,0,7",
+      zoomed: false,
+    };
+    /** The same session after someone moved its pane to a window of its own. */
+    const MOVED: TmuxPlace = { ...PLACE, window_id: "@9", window_index: 5, window_name: "moved" };
+
+    /**
+     * Boots one session against a listener that records the `tmux_place` of every registration it
+     * answers, and hands back those places — `undefined` for a registration that carried none —
+     * beside the heartbeat tick that sends the next one.
+     */
+    async function bootPlacedSession(query: string, sessionID: string) {
+      const places: (TmuxPlace | undefined)[] = [];
+      let registered: (() => void) | undefined;
+      globalThis.fetch = async (input, init) => {
+        const url = new URL(input.toString());
+        if (url.pathname === "/v1/interests/subscribe" && init?.body !== undefined) {
+          places.push(JSON.parse(init.body.toString()).tmux_place);
+          registered?.();
+        }
+        return responseWithRegistration(input, init, {});
+      };
+      const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+      const fixture = createPi();
+      const heartbeats: (() => void)[] = [];
+      const context: SessionContext = {
+        ...sessionContext(sessionID),
+        setInterval: (callback) => {
+          heartbeats.push(callback);
+        },
+      };
+      envoyExtension(fixture.pi);
+      await fixture.handlers.get("session_start")?.({}, context);
+      return {
+        places,
+        /** Ticks every interval the session registered, and waits for the registration it sends. */
+        heartbeat: async () => {
+          const sent = Promise.withResolvers<void>();
+          const before = places.length;
+          registered = () => {
+            if (places.length > before) sent.resolve();
+          };
+          for (const tick of heartbeats) tick();
+          await sent.promise;
+        },
+      };
+    }
+
+    /** The lifetime these cases run the place cache at: the one a session runs at where nothing
+     *  names another. A short one would have the cache's own refresh timer, which ticks at the
+     *  lifetime, read tmux in the milliseconds a case takes, and what each case counts is the
+     *  readings its registrations start. */
+    const PLACE_LIFETIME_MS = 30_000;
+
+    /** The next registration a session sends once its cached reading has aged out, crossed on
+     *  the clock the cache reads (`Date.now`): a real wait would cost every run the lifetime.
+     *  The pass the previous tick started is let settle first, since a tick that finds one still
+     *  holding the queue refreshes nothing while the registration it would refresh is fresh. */
+    async function heartbeatPastTheLifetime(session: { heartbeat: () => Promise<void> }) {
+      await settle();
+      setSystemTime(new Date(Date.now() + PLACE_LIFETIME_MS + 1_000));
+      try {
+        await session.heartbeat();
+      } finally {
+        setSystemTime();
+      }
+    }
+
+    test("two registrations while one reading is away read tmux once", async () => {
+      await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        tmuxPlaceState.reading = () => ({ kind: "place", place: PLACE });
+        const session = await bootPlacedSession("tmux-place-one-flight", "ses_tmux_one_flight");
+        // A reading that has not answered yet: the registration past the lifetime starts it, and
+        // the one after that finds it still away. Two readings at once would have the slower of
+        // them overwrite the newer answer with its older one.
+        const reading = Promise.withResolvers<TmuxPlaceReading>();
+        tmuxPlaceState.reading = () => reading.promise;
+        await heartbeatPastTheLifetime(session);
+        await heartbeatPastTheLifetime(session);
+
+        // Two registrations, and the one reading they share, which neither waited for: both
+        // carry the place the cache held while it was away.
+        expect(tmuxPlaceState.calls).toHaveLength(2);
+        expect(session.places).toEqual([undefined, PLACE, PLACE]);
+        reading.resolve({ kind: "place", place: MOVED });
+      });
+    });
+
+    test("the first registration waits on no reading, and the next carries its place", async () => {
+      tmuxPlaceState.reading = () => ({ kind: "place", place: PLACE });
+      const session = await bootPlacedSession("tmux-place-first", "ses_tmux_first");
+
+      // The first registration starts the reading and goes out without it: a cold reading is a
+      // tmux call of up to a second, and a registration that waited one out could reach the
+      // listener behind its own session's shutdown (dispatch://INFRA-392). The reading answers
+      // between registrations, and the next one carries it.
+      expect(session.places).toEqual([undefined]);
+      expect(tmuxPlaceState.calls).toHaveLength(1);
+      await session.heartbeat();
+
+      expect(session.places).toEqual([undefined, PLACE]);
+      expect(tmuxPlaceState.calls).toHaveLength(1);
+    });
+
+    test("reads tmux once for every registration inside the cache lifetime", async () => {
+      let next: TmuxPlaceReading = { kind: "place", place: PLACE };
+      tmuxPlaceState.reading = () => next;
+      const session = await bootPlacedSession("tmux-place-cached", "ses_tmux_cached");
+      // A pane that moved while the reading is still fresh is not read again, and not reported.
+      next = { kind: "place", place: MOVED };
+      await session.heartbeat();
+
+      expect(tmuxPlaceState.calls).toHaveLength(1);
+      expect(session.places).toEqual([undefined, PLACE]);
+    });
+
+    test("reads tmux again for a registration past the cache lifetime", async () => {
+      await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        let next: TmuxPlaceReading = { kind: "place", place: PLACE };
+        tmuxPlaceState.reading = () => next;
+        const session = await bootPlacedSession("tmux-place-expired", "ses_tmux_expired");
+        next = { kind: "place", place: MOVED };
+        // The registration past the lifetime starts the reading of the moved pane; the one after
+        // it is the first to carry it, and reads nothing itself — both heartbeats cross the same
+        // instant, so the reading in between is still fresh.
+        await heartbeatPastTheLifetime(session);
+        await heartbeatPastTheLifetime(session);
+
+        expect(tmuxPlaceState.calls).toHaveLength(2);
+        expect(session.places).toEqual([undefined, PLACE, MOVED]);
+      });
+    });
+
+    test("a refused reading registers no place and clears the one it held", async () => {
+      await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        let next: TmuxPlaceReading = { kind: "place", place: PLACE };
+        tmuxPlaceState.reading = () => next;
+        const session = await bootPlacedSession("tmux-place-refused", "ses_tmux_refused");
+        // The session left its pane: the listener's entry must lose the place, not keep a stale one.
+        next = { kind: "refused" };
+        await heartbeatPastTheLifetime(session);
+        await heartbeatPastTheLifetime(session);
+
+        expect(session.places).toEqual([undefined, PLACE, undefined]);
+      });
+    });
+
+    test("a timed-out reading registers the last place read", async () => {
+      await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        let next: TmuxPlaceReading = { kind: "place", place: PLACE };
+        tmuxPlaceState.reading = () => next;
+        const session = await bootPlacedSession("tmux-place-timeout", "ses_tmux_timeout");
+        // A server too loaded to answer in time must not take a live session off the layout.
+        next = { kind: "timedOut" };
+        await heartbeatPastTheLifetime(session);
+        await heartbeatPastTheLifetime(session);
+
+        expect(tmuxPlaceState.calls).toHaveLength(2);
+        expect(session.places).toEqual([undefined, PLACE, PLACE]);
+      });
+    });
+
+    test("a reading that throws still registers the session, without a place", async () => {
+      tmuxPlaceState.reading = () => {
+        throw new Error("the tmux reader broke");
+      };
+      const session = await bootPlacedSession("tmux-place-throws", "ses_tmux_throws");
+      await session.heartbeat();
+
+      expect(session.places).toEqual([undefined, undefined]);
+    });
+
+    test("a session with neither TMUX nor TMUX_PANE runs no tmux call at all", async () => {
+      const calls: string[] = [];
+      const exec: ExecFn = async (file, args) => {
+        calls.push([file, ...args].join(" "));
+        return { stdout: "" };
+      };
+      // The real reader, over an exec that records: what decides there is nothing to ask is the
+      // reader itself, and every session in a Kubernetes pod is this one.
+      tmuxPlaceState.reading = (env) => realReadTmuxPlace(env, exec);
+      const session = await bootPlacedSession("tmux-place-outside", "ses_tmux_outside");
+
+      expect(tmuxPlaceState.calls).toHaveLength(1);
+      expect(tmuxPlaceState.calls[0]?.env.TMUX).toBeUndefined();
+      expect(tmuxPlaceState.calls[0]?.env.TMUX_PANE).toBeUndefined();
+      expect(calls).toEqual([]);
+      expect(session.places).toEqual([undefined]);
+    });
   });
 
   test("keeps registry registration aligned with live subscriptions", async () => {
