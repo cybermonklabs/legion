@@ -2818,7 +2818,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.pi_legion == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # 15 minutes, not 10: this package's suites now hold both the plugin's own rows and the
+    # controller-start and phase-reminder rows, whose waits are real seconds (one row alone takes
+    # 32 s), and together they ran 10 m 12 s with every row passing. The budget is what they
+    # outgrew, not the runner.
+    timeout-minutes: 15
     # The NATS server the Envoy role claim of extensions/controller-start-omp.test.ts's controller
     # needs (LEGION_TEST_NATS_URL on the test step), on the image the envoy-client job pulls.
     services:
