@@ -1164,3 +1164,70 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 		t.Fatalf("#522 after the refresh = %+v, want %s at %s: the newer event's facts stand", row, issue, head)
 	}
 }
+
+// A commit the App has already answered for goes on answering while the App cannot read the
+// repository. The stored answer is keyed by a branch, so the branch has to be named before
+// branch_commits can be asked at all, and a check measured against the default branch names
+// none: without the last name this process resolved, the first unreadable moment past the
+// Branches cache's five minutes would turn every such result from current to unknown, although
+// the permanent yes is stored. A commit with no stored answer is unknown there, as it must be:
+// nothing can be asked.
+func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	readable := true
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
+		if !readable {
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		if r.PathValue("basehead") == "main..."+landedCommit {
+			mustEncode(t, w, map[string]any{"status": "behind"})
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "diverged"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, asked); !on || !known {
+		t.Fatalf("a commit on the default branch of a readable repository = %v, %v; want true, true", on, known)
+	}
+
+	// GitHub stops answering, and the Branches cache of the default branch goes stale, so the
+	// name can no longer be read. The stored yes still answers under the name already resolved.
+	readable = false
+	later := asked.Add(BranchCommitStaleAfter + time.Minute)
+	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, later); !on || !known {
+		t.Fatalf("a stored yes while the repository is unreadable = %v, %v; want true, true", on, known)
+	}
+	if branches.RepositoryReadable(ctx, client, "acme/widgets", later) {
+		t.Fatal("RepositoryReadable while the App cannot read the repository = true, want false")
+	}
+	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", unaskedCommit, later); on || known {
+		t.Fatalf("a commit with no stored answer while the repository is unreadable = %v, %v; want false, false", on, known)
+	}
+
+	// A repository this process never resolved a default branch for has no name to ask the
+	// stored answer about, so it is unknown rather than answered from another repository's.
+	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/hidden", "", landedCommit, later); on || known {
+		t.Fatalf("a commit of a repository no read ever named a branch for = %v, %v; want false, false", on, known)
+	}
+}
+
+const (
+	// landedCommit is on acme/widgets' default branch; unaskedCommit is on no branch and is
+	// never asked about while the App can read the repository.
+	landedCommit  = "9999999999999999999999999999999999999999"
+	unaskedCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+)

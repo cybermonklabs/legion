@@ -628,9 +628,12 @@ func TestResultOfAnIssueUnderARepositorysOldNameIsRefusedAtTheCanonicalName(t *t
 	}
 }
 
-// An after-merge result is current at a commit on the repository's default branch, older at a
-// commit of an unmerged branch, and unknown where Dispatch's App cannot read the repository.
-func TestAfterMergeResultCurrencyFollowsTheDefaultBranch(t *testing.T) {
+// An after-merge result of an issue Dispatch holds no pull request of at all is current at a
+// commit on the repository's default branch and older at a commit of an unmerged branch, and
+// both answers are stored, so a second read of the same results asks GitHub nothing. The
+// fallback itself, with the rows that choose a branch present and naming none for this issue,
+// is TestAfterMergeResultCurrencyFallsBackToTheTrunkWithoutAMergeOfTheIssue below.
+func TestAfterMergeResultCurrencyWithNoPullRequestFollowsTheDefaultBranch(t *testing.T) {
 	calls := 0
 	handler, _ := resultsGitHub(t, map[string]bool{"acme/widgets": true}, func(base, head string) string {
 		calls++
@@ -797,14 +800,10 @@ func TestAfterMergeResultCurrencyFallsBackWhenTheMergedRowNamesNoBaseBranch(t *t
 		})
 	issue := issueInRepository(t, handler, "RESV", "acme/widgets", "Merged before the base branch was carried")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
-	// Written here rather than through writeMergedHeadOnBase: what this row is for is the base
-	// branch it does not carry, and a fixture that names one cannot leave it empty by accident.
-	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at)
-		values ('acme/widgets', 45, $1, 'legion/work', '', 'merged', $2, now(), now())
-	`, headCommit, issue.Key); err != nil {
-		t.Fatalf("store a merged head carrying no base branch: %v", err)
-	}
+	// The empty base branch is named here, which is what the row is for: the column is
+	// `not null default ''`, so an envelope published before Dispatch carried the field
+	// leaves exactly this.
+	writeMergedHeadOnBase(t, database, "acme/widgets", 45, headCommit, issue.Key, "")
 
 	onTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", mergeCommit, nil)))
 	offTrunk := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))

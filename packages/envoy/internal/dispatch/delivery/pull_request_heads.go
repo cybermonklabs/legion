@@ -223,12 +223,13 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 	return found, nil
 }
 
-// BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged into,
-// and whether there is one: the branch an `after_merge` result of that issue is measured
-// against (api/results_currency.go). An issue whose pull request merged into an integration
-// branch has reached that branch and no other, so a result of it is current at a commit that
-// branch's history carries, where the repository's default branch answers nothing about the
-// work until the integration branch itself lands. The newest merge answers: the rows are
+// BaseBranchMergedFor is the branch the merged pull request attributed to issueKey merged
+// into, and "" where Dispatch holds no merge of it: the branch an `after_merge` result of that
+// issue is measured against (api/results_currency.go). An issue whose pull request merged
+// into an integration branch has reached that branch and no other, so a result of it is
+// current at a commit that branch's history carries, where the repository's default branch
+// answers nothing about the work until the integration branch itself lands. The newest merge
+// answers: the rows are
 // ordered by event_at descending with the rows carrying none last, since a row with no event
 // time is one whose envelope reported none and says less than any row that did, and by the
 // pull request's own number descending where two merges share a time, so one issue merged
@@ -243,17 +244,18 @@ func HeadStoredAt(ctx context.Context, pool *store.Pool, repoFull, sha string) (
 // branch of the repository that issue resolves to (headAttribution), so the branch this
 // answers is one the issue's own work merged into.
 //
-// An empty base_ref answers "none found" rather than the empty string. The column is declared
-// not null with the empty string as its default, and a `pull_request` envelope published
-// before Dispatch carried the field writes exactly that, so such a row names no base branch at
-// all; handing it on would have the caller build a GitHub compare read against an empty branch
-// name, where "none found" leaves it on its own fallback, the repository's default branch.
+// An empty answer is "no branch to measure against", which a merged row carrying no base_ref
+// gives as much as no merged row at all. The column is declared not null with the empty string
+// as its default, and a `pull_request` envelope published before Dispatch carried the field
+// writes exactly that, so such a row names no base branch; the empty answer leaves the caller
+// on its own fallback, the repository's default branch, where handing that value on as a
+// branch would have it build a GitHub compare read against a branch with no name.
 //
 // No index is added for this lookup: pull_request_heads_issue_head is partial on
 // `issue_key is not null` and keyed `(issue_key, head_sha)`, so a read by the issue alone uses
 // its leading column, and the rows one issue's key holds are the handful of pull requests
 // attributed to that issue.
-func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, bool, error) {
+func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string) (string, error) {
 	var branch string
 	err := pool.QueryRow(ctx, `
 		select base_ref from pull_request_heads
@@ -262,15 +264,12 @@ func BaseBranchMergedFor(ctx context.Context, pool *store.Pool, issueKey string)
 		limit 1
 	`, issueKey).Scan(&branch)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", false, nil
+		return "", nil
 	}
 	if err != nil {
-		return "", false, fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
+		return "", fmt.Errorf("read the merged pull request base branch of %s: %w", issueKey, err)
 	}
-	if branch == "" {
-		return "", false, nil
-	}
-	return branch, true, nil
+	return branch, nil
 }
 
 // PullRequestHeadStaleAfter is how long an open pull request's row may go unread before the

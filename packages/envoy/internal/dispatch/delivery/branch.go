@@ -53,12 +53,18 @@ type Branches struct {
 	known map[string]cachedBranch
 }
 
-// cachedBranch is one repository's default branch and when it was read. An empty branch is
-// "Dispatch cannot say", held as long as any other answer so an unreadable repository is not
-// asked about on every read.
+// cachedBranch is what this process last learned about one repository's default branch: the
+// newest name GitHub gave for it, whether the newest read could say at all, and when that read
+// was made. A read that cannot say holds the name it already had rather than replacing it with
+// nothing: the name is what a stored answer in branch_commits is keyed under, so keeping it
+// lets a commit Dispatch has already answered for go on answering while the App cannot be read
+// (CommitOnBranch), which is what it did before an answer was keyed by a branch at all. The
+// pair is held as long as any other answer, so an unreadable repository is not asked about on
+// every read.
 type cachedBranch struct {
-	branch string
-	readAt time.Time
+	branch   string
+	readable bool
+	readAt   time.Time
 }
 
 // RepositoryReadable reports whether the App can read repoFull right now: it answered that
@@ -76,8 +82,7 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // at all. An empty branch means the repository's own default branch, resolved through branchOf:
 // a `default_branch` check passes none and so is measured against that branch whatever the work
 // merged into, while an `after_merge` check passes the branch its issue's pull request merged
-// into (api/results_currency.go). Where Dispatch cannot see the repository, branchOf answers no
-// branch and this answers unknown.
+// into (api/results_currency.go).
 //
 // What branch_commits holds for that repository, branch and commit answers first while it still
 // stands — a yes for good, a no for BranchCommitStaleAfter — and GitHub is read against the
@@ -86,6 +91,17 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // that names none, and the stored row is read before any call to GitHub, so a named branch
 // Dispatch has already answered for costs nothing at all. A read that failed is the unknown
 // answer, as is a repository the App cannot read.
+//
+// A caller that names no branch, of a repository the App cannot read just now, is answered from
+// the stored row alone, under the last default branch this process resolved for that repository
+// (named). A row is keyed by a branch, so the name has to come from somewhere before the cache
+// can be asked at all, and without this the first unreadable moment would turn every
+// `default_branch` result, and every `after_merge` result of an issue Dispatch holds no merge
+// of, from current to unknown for BranchCommitStaleAfter — even where the permanent yes is
+// stored. A default branch renamed while the App cannot be read leaves that answer under the
+// old name, which is the same staleness the retention rule already accepts of a yes. Where this
+// process has resolved no name for the repository at all, there is nothing to ask the cache
+// about and the answer is unknown.
 func (c *Branches) CommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
@@ -93,10 +109,14 @@ func (c *Branches) CommitOnBranch(
 	repoFull, branch, sha string,
 	now time.Time,
 ) (onBranch, known bool) {
+	storedOnly := false
 	if branch == "" {
 		branch = c.branchOf(ctx, client, repoFull, now)
 		if branch == "" {
-			return false, false
+			if branch = c.named(repoFull); branch == "" {
+				return false, false
+			}
+			storedOnly = true
 		}
 	}
 	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
@@ -105,6 +125,11 @@ func (c *Branches) CommitOnBranch(
 	}
 	if found && (stored.OnBranch || now.Sub(stored.CheckedAt) < BranchCommitStaleAfter) {
 		return stored.OnBranch, true
+	}
+	if storedOnly {
+		// The App could not read this repository a moment ago, so a compare read of it would
+		// be refused too: the stored row was the whole of what could answer.
+		return false, false
 	}
 	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
 	if err != nil {
@@ -140,7 +165,10 @@ func (c *Branches) branchOf(ctx context.Context, client *githubapp.Client, repoF
 	return branch
 }
 
-// get is the branch held for repo and whether that answer still stands at now.
+// get is the branch held for repo and whether that answer still stands at now. A read that
+// could not say is the empty branch, as it was when it was made: the name kept beside it is
+// for named alone, and answering it here would tell RepositoryReadable that a repository the
+// App cannot read is readable.
 func (c *Branches) get(repo string, now time.Time) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -148,17 +176,37 @@ func (c *Branches) get(repo string, now time.Time) (string, bool) {
 	if !found || now.Sub(held.readAt) >= BranchCommitStaleAfter {
 		return "", false
 	}
+	if !held.readable {
+		return "", true
+	}
 	return held.branch, true
 }
 
-// put records what GitHub said about repo's default branch at now.
+// named is the last default branch this process resolved for repo, whatever its age and
+// whatever the newest read said, and "" where it has resolved none. It is what CommitOnBranch
+// keys the stored answer by while the App cannot read the repository.
+func (c *Branches) named(repo string) string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.known[repo].branch
+}
+
+// put records what GitHub said about repo's default branch at now. A read that could not say
+// leaves the name standing and marks the repository unreadable, so get answers nothing for it
+// while named still answers the name.
 func (c *Branches) put(repo, branch string, now time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.known == nil {
 		c.known = map[string]cachedBranch{}
 	}
-	c.known[repo] = cachedBranch{branch: branch, readAt: now}
+	held := c.known[repo]
+	held.readAt = now
+	held.readable = branch != ""
+	if branch != "" {
+		held.branch = branch
+	}
+	c.known[repo] = held
 }
 
 // cannotSeeRepository is repositoryUnreadable — the App is installed on no repository covering

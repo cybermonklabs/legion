@@ -291,9 +291,14 @@ func (c *currencyReader) headStoredAt(ctx context.Context, repo, sha string) boo
 // It answers a repository whether or not the deployment holds an App key, because the currency
 // reader needs it for an answer that asks GitHub nothing: onBranch answers from the
 // branch_commits row Dispatch already holds while that row stands, with no call at all
-// (delivery.Branches.CommitOnBranch), and a nil here would turn every such answer unknown. The
-// record route makes the no-App-key check at its own call site, where every use of the answer
-// is a GitHub round trip.
+// (delivery.Branches.CommitOnBranch), and a nil here would turn every such answer unknown.
+// That holds for a check measured against a branch Dispatch can name with no read of GitHub:
+// an `after_merge` check whose issue merged, where the branch is the merge's own, and any
+// check measured against a default branch this process has already resolved once, which
+// delivery keeps for the purpose. Only a repository no read of this process ever named a
+// default branch for has no branch to ask the stored answer about, since a row is keyed by
+// one. The record route makes the no-App-key check at its own call site, where every use of
+// the answer is a GitHub round trip.
 func (s *server) checkIssueRepository(ctx context.Context, q refs.Queryer, issueKey string) *string {
 	repo, err := refs.IssueRepository(ctx, q, issueKey)
 	if err != nil {
@@ -351,12 +356,9 @@ func (c *currencyReader) baseBranchMergedFor(ctx context.Context, issueKey strin
 	if answer, memoized := c.baseBranches[issueKey]; memoized {
 		return answer.branch, answer.read
 	}
-	branch, found, err := delivery.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey)
+	branch, err := delivery.BaseBranchMergedFor(ctx, c.server.deps.Store.Pool, issueKey)
 	if err != nil {
 		slog.Warn("dispatch: read the branch a result's issue merged into", "issue", issueKey, "error", err)
-	}
-	if !found {
-		branch = ""
 	}
 	answer := baseBranchAnswer{branch: branch, read: err == nil}
 	c.baseBranches[issueKey] = answer
