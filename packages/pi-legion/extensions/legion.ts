@@ -464,31 +464,35 @@ export default function legionExtension(pi: PiApi): void {
     if (subagentEvent(context)) return;
     stallWatch?.resultDelivered(event);
   });
-  // The turn is over, so every call it held open is closed and no step runs for one of them. The
-  // assistant message goes first: a turn the ladder's own abort ended carries
-  // `stopReason: "aborted"` here, which is where an aborted turn is readable at all, since
-  // `agent_end` carries no `stopReason` (`pi-shared/src/pi-types.ts`). A subagent's turn is not
-  // this session's and closes none of its calls, the `task` call that is running it least of all.
-  pi.on("turn_end", async (event, context) => {
+  // The turn is over, so every call it held open is closed and no step runs for one of them, and
+  // the turn's one abort goes with them so the next turn aborts for itself (`turnEnded` in
+  // `pi-shared/src/stall-watchdog.ts`). How that turn ended is read nowhere here: an aborted
+  // turn is readable from its last assistant message, which the `message_end` handler below
+  // already hands the watch, and `turnEnded` closes what an aborted message would close and
+  // clears what it would clear — so a call to `assistantMessage` here would be a second name
+  // for the same close in the log and nothing else. A subagent's turn is not this session's and
+  // closes none of its calls, the `task` call that is running it least of all; the case
+  // "the turn's end closes every call it held open" holds this line.
+  pi.on("turn_end", async (_event, context) => {
     if (subagentEvent(context)) return;
-    stallWatch?.assistantMessage(event.message);
     stallWatch?.turnEnded();
   });
   // The run settled, or ended with the host going on: `turn_end` fires 3 ms before this for an
   // aborted run (measured), so this closes nothing that run left open; it is what closes a run
-  // that ends with no turn end of its own, whose last assistant message is the only thing that
-  // says how it ended. A run the host has something to continue with — a steering delivery it
-  // took while the turn ran, a background job's follow-up — ends here too, and the calls of that
-  // run are closed with every other. That is right because the host ends every call of a run
-  // before its `turn_end` and `agent_end`: a tool round waits for every call's `execute` and
-  // writes each call's `tool_execution_end` first, the error path included, so no call of the
-  // run is still open here. It is not forced: an extension could tell such an end apart — a
-  // background job's follow-up arrives with `willContinue` and `awaitingAsyncWork` set, and
-  // `ctx.hasPendingMessages()` is true at a steered run's non-terminal end — and the watch reads
-  // neither on purpose, since the turn after it is a turn of its own with calls of its own.
-  pi.on("agent_end", async (event, context) => {
+  // that ends with no turn end of its own. A run the host has something to continue with — a
+  // steering delivery it took while the turn ran, a background job's follow-up — ends here too,
+  // and the calls of that run are closed with every other. That is right because the host ends
+  // every call of a run before its `turn_end` and `agent_end`: a tool round waits for every
+  // call's `execute` and writes each call's `tool_execution_end` first, the error path
+  // included, so no call of the run is still open here. It is not forced: an extension could
+  // tell such an end apart — a background job's follow-up arrives with `willContinue` and
+  // `awaitingAsyncWork` set, and `ctx.hasPendingMessages()` is true at a steered run's
+  // non-terminal end — and the watch reads neither on purpose, since the turn after it is a
+  // turn of its own with calls of its own. The cases "a run that settled with no turn end of
+  // its own closes them at `agent_end`" and "a run that ends with the host going on" hold this
+  // line.
+  pi.on("agent_end", async (_event, context) => {
     if (subagentEvent(context)) return;
-    stallWatch?.assistantMessage(event.messages?.at(-1));
     stallWatch?.turnEnded();
   });
 

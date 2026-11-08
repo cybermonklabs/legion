@@ -7079,4 +7079,85 @@ describe("the stall watch the plugin's entry arms", () => {
     ]);
     expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
   });
+
+  test("an assistant message that ended aborted closes the calls of the turn it ended", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_aborted_message",
+    });
+    await callStarts(pane);
+
+    // Where an aborted turn is readable at all: `agent_end` carries no `stopReason`, so the
+    // last assistant message is the one thing that says a turn was interrupted — the ladder's
+    // own abort among the things that interrupt it. On this host a `turn_end` follows about 3 ms
+    // later and would close the same calls, so this is the one road that is held here rather
+    // than on the real binary, and it is the road the subagent guard on `message_end` is about.
+    await hook(pane.handlers, "message_end")(
+      { message: { role: "assistant", stopReason: "aborted" } },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("the session's shutdown closes the calls it had open, so nothing of it is judged after it", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_shutdown",
+    });
+    await callStarts(pane);
+
+    // Whatever the session had open is not this watch's business once the session is going
+    // down: requirement R2 names a session's end among the things that close a call, and this
+    // is where the entry wires it.
+    await hook(pane.handlers, "session_shutdown")({}, pane.context);
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
+
+  test("a session switch closes the calls the session it left had open", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_switch",
+    });
+    await callStarts(pane);
+
+    // The pane is left on another session — a switch, a branch or a tree navigation, which this
+    // entry answers alike — and the calls of the session it left are gone with it, so a call
+    // stuck there is judged by nobody and a later stuck call starts the ladder at its first
+    // step.
+    await hook(pane.handlers, "session_switch")({}, pane.context);
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
 });
