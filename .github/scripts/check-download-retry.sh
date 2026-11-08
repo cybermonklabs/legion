@@ -35,7 +35,9 @@
 #      which is the longest one the options allow; a curl whose longest ladder is under 120 s is
 #      refused with the figure. `--retry 7 --retry-delay 1` is 7 s and `--retry 7
 #      --retry-max-time 5` is 7 s, and both pass every other test of this floor. No site in the
-#      tree writes either option today.
+#      tree writes either option today. Rule 8 reads this same ladder when it prices the curl's
+#      attempts against the step's budget, so a curl's floor and its arithmetic are one
+#      computation rather than two that can drift apart.
 #   3. inside a Dockerfile, one canonical inline `retry()` definition, the same text in every
 #      network `RUN` of the three files. A Dockerfile carries the loop inline because it can hold
 #      no new file above a layer whose order its own comments set on purpose, and a COPY of a
@@ -51,7 +53,9 @@
 # Rule 8 reads one step across more than one of those files: a step that runs a script under
 # .github/scripts/ carries that script's own retried calls, and those of every script it calls
 # in turn. SCRIPT_CALL finds a call by the path it writes, scripts_called reads one body's calls
-# and script_arithmetic walks them under a `seen` set, which counts a file two of a step's paths
+# with the line each is written on, calls_of folds the loops and the functions around that line
+# into how many times the body runs it, and script_arithmetic walks them under a `seen` set,
+# which counts a file two of a step's paths
 # reach once and stops a cycle. Three budgets of this tree were a one-line `run:` of a script
 # call and nothing else — ci.yaml's `pr-title` and `ci-ok` steps and pr-title.yaml's, 1200 s,
 # 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget — and a rule 8 that
@@ -174,8 +178,13 @@
 #
 #   8. A step that holds a retried fetch and carries its own `timeout-minutes` gives that budget
 #      strictly more time than the attempts it allows: 60 x <minutes> is strictly greater than
-#      that step's arithmetic, which is 5 x <bound> + 150 s for each `retry_fetch` call and
-#      8 x <bound> + 127 s for each curl making its own attempts, summed over the step's own
+#      that step's arithmetic, which is 5 x <bound> + 150 s for each `retry_fetch` call and,
+#      for each curl making its own attempts, one attempt per `--retry` and one more at
+#      `--max-time` with curl's own waits between them — the same ladder rule 1 holds that curl
+#      to, computed once in curl_ladder and read by both rules, so `--retry 7` is
+#      8 x <bound> + 127 s and `--retry 10` is 11 x <bound> + 1023 s. A curl outside rule 1's
+#      floor is read at the floor, which is the ladder it makes once that refusal is answered.
+#      Those figures are summed over the step's own
 #      calls, over those of every script under .github/scripts/ the step runs and every script
 #      that one runs in turn, and, for a `uses:` step of a local composite action, over that
 #      action's calls and the scripts and actions it reaches the same way. Equal is
@@ -189,11 +198,27 @@
 #      the retry exists to give. GitHub's granularity is the minute, so a whole minute is the
 #      smallest margin that can be written.
 #
-#      A call inside a loop is counted once for each pass of that loop, because the step waits
-#      for every pass: dequeued.yaml's timeline read is one `retry_fetch` call of 300 s written
-#      inside a seven-pass poll, so the step waits 2100 s for it and not 300 s. The pass count
-#      is read where the loop writes it, and only in the two shapes this check is sure of: a
-#      `for x in 1 2 3 4 5 6 7`, whose list is literal words, and a `for x in $(seq 1 7)`. The
+#      How many times a step runs one call: every multiplier counts, not the innermost one.
+#
+#        * each loop around the call, and each loop around that loop. A call in a three-pass
+#          loop inside a two-pass loop runs six times, and reading the inner loop alone would
+#          count two of those six.
+#        * each call of the function the call sits in, and the loops around those calls. The
+#          required `pr-title` check is the instance: check-pr-text.sh's page read sits in
+#          read_list's `while :`, and the `for ((i = 0; i < ${#lists[@]}; i += 2))` under it
+#          runs read_list once for each of three lists, so that one written call is three
+#          ladders and the script makes five rather than three.
+#        * the loop a step wraps around the script it runs. The script's whole arithmetic is
+#          the step's once per pass, as a call written in the `run:` would be.
+#
+#      Two written calls of one function are two, branches or not, as two fetches written in
+#      one `run:` are two: this check reads no branch, and the figure it sums is the one a step
+#      could wait for. The pass count is read where the loop writes it, and only in the three
+#      shapes this check is sure of: a `for x in 1 2 3 4 5 6 7`, whose list is literal words, a
+#      `for x in $(seq 1 7)`, and a `for ((i = 0; i < <bound>; i += <step>))` whose bound is a
+#      number or `${#name[@]}` for an array the same body writes out as words. dequeued.yaml's
+#      timeline read is one `retry_fetch` call of 300 s written inside a seven-pass poll, so
+#      the step waits 2100 s for it and not 300 s. The
 #      loop's own waits between the passes are added where they are written as a `sleep <n>` of
 #      that loop's body — the poll's six 10 s waits above — and a loop whose wait is computed
 #      rather than written adds none, so the figure there is the attempts alone and the passes
@@ -203,7 +228,9 @@
 #      `while :` over the pages of a route — is read from DECLARED_LOOPS below, where each entry
 #      says how many passes the budgets that reach that loop are written for and why that is the
 #      number to write. An entry matching no such loop fails this check, as a stale exception
-#      does, so a declaration cannot outlive its loop. A step whose budget reaches a loop with
+#      does, so a declaration cannot outlive its loop; and an entry whose file, step and verb
+#      match sites in two loops fails as well, because it writes one number and the second loop
+#      would take it without anybody writing it one. A step whose budget reaches a loop with
 #      neither a count nor an entry is refused in place of being judged, and the refusal names
 #      that loop: this check undercounts no budget, because a budget written for one pass of a
 #      loop that makes four is a step the runner cuts in the middle of the retry the budget
@@ -475,6 +502,18 @@ FUNCTION_WORD = re.compile(r"^[A-Za-z_][\w:.-]*\(\)$")
 # A word of a `for` list that is itself and nothing else: no expansion, no glob, no quoting. A
 # list of these is a pass count rule 8 can read off the loop (passes_of below).
 LITERAL_WORD = re.compile(r"[A-Za-z0-9_@%+:,./=-]+")
+# A `for ((i = 0; i < <bound>; i += <step>))`, the third shape rule 8 reads a pass count off: the
+# counter is set to a number, tested against a bound, and raised by a number or by one. The bound
+# is a number or `${#name[@]}`, the length of an array the body writes out (array_words below).
+ARITHMETIC_FOR = re.compile(
+    r"for\s*\(\(\s*([A-Za-z_]\w*)\s*=\s*(\d+)\s*;"
+    r"\s*\1\s*(<=?)\s*([^;]+?)\s*;"
+    r"\s*(?:\1\s*\+=\s*(\d+)|\1\s*\+\+|\+\+\s*\1)\s*\)\)"
+)
+ARRAY_LENGTH = re.compile(r"\$\{#([A-Za-z_]\w*)\[[@*]\]\}")
+# What an array this check counts the words of may not hold, because each of these makes one
+# written word into a number of words only the run knows.
+UNCOUNTABLE_WORD = re.compile(r"\$\(|`|\[[@*]\]|[*?]")
 # Transparent in command position, taking no argument of their own.
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run"}
@@ -588,13 +627,15 @@ def probe_spans(text: str) -> list[tuple[int, int]]:
 
 class Command:
     """One simple command of a shell body: its words, the line it starts on, the character offset
-    it starts at, the innermost loop it sits in, and whether a `|` is what ended it — which says
-    its status is not the pipeline's, and so is rule 9's question."""
+    it starts at, the loops it sits in — all of them, outermost first, with the innermost one
+    beside them — and whether a `|` is what ended it, which says its status is not the
+    pipeline's and so is rule 9's question."""
 
     def __init__(self, words: list[str], line: int, offset: int) -> None:
         self.words = words
         self.line = line
         self.offset = offset
+        self.loops: list[int] = []
         self.loop: int | None = None
         self.piped = False
 
@@ -748,22 +789,93 @@ class Scanner:
 
 
 class Loops:
-    """What rule 8 reads of the loops of one shell body: the line of the loop in each function
-    that holds one — the loops a call of that function reaches — and, for each loop by its own
-    line, the passes it makes and the seconds it waits between two of them. A pass count is
-    None where the loop does not write one."""
+    """What rule 8 reads of one shell body: each loop by its own line, with the line its `done`
+    sits on, the passes it makes and the seconds it waits between two of them; the line of the
+    loop in each function that holds one — the loop a call of that function reaches; and where
+    each function this body defines is written and where it is called, which is how many times
+    a call inside it runs. A pass count is None where the loop does not write one."""
 
     def __init__(self) -> None:
         self.function_loop: dict[str, int] = {}
         self.passes: dict[int, int | None] = {}
         self.sleep: dict[int, int] = {}
+        self.extent: dict[int, int] = {}
+        self.function_span: dict[str, tuple[int, int]] = {}
+        self.function_calls: dict[str, list[int]] = {}
+
+    def enclosing(self, line: int) -> list[int]:
+        """The loops around one line of this body, outermost first. A command carries its own
+        stack; this answers for a line read off the text, which is how a script call is found."""
+        return sorted(start for start, end in self.extent.items() if start <= line <= end)
+
+    def function_of(self, line: int) -> str | None:
+        """The function whose body holds this line, the innermost where more than one does."""
+        found: str | None = None
+        for name, (start, end) in self.function_span.items():
+            if start <= line <= end and (found is None or start > self.function_span[found][0]):
+                found = name
+        return found
+
+
+def array_words(text: str, name: str) -> int | None:
+    """The words an array this body writes out holds — `lists=(a b c)` is three. None where the
+    body writes that name anywhere else than one `name=(…)`, where the parentheses do not close,
+    or where one written word can become more than one at run time: a `$(…)`, a backtick, another
+    array's `[@]`, a glob. The count is read rather than the words, so a `"$x/y"` is the one word
+    it is."""
+    opens = list(re.finditer(rf"(?m)^\s*{re.escape(name)}\+?=\(", text))
+    if len(opens) != 1:
+        return None
+    index = opens[0].end()
+    depth = 0
+    quote: str | None = None
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        index += 1
+    else:
+        return None
+    inner = text[opens[0].end():index]
+    if UNCOUNTABLE_WORD.search(inner):
+        return None
+    return sum(len(command.words) for command in Scanner(1).scan(inner))
 
 
 def passes_of(text: str, command: Command) -> int | None:
     """The passes a loop makes, where the loop writes a count this check is sure of: a `for x in
-    1 2 3 4 5 6 7`, whose list is literal words, and a `for x in $(seq 1 7)`, whose list is a
-    count of them. Everything else — a `while`, an `until`, a `for` over a variable or over the
-    lines a command printed — writes no count, and reads as None rather than as one pass."""
+    1 2 3 4 5 6 7`, whose list is literal words; a `for x in $(seq 1 7)`, whose list is a count
+    of them; and a `for ((i = 0; i < <bound>; i += <step>))`, whose bound is a number or the
+    length of an array this body writes out. Everything else — a `while`, an `until`, a `for`
+    over a variable or over the lines a command printed — writes no count, and reads as None
+    rather than as one pass."""
+    if arithmetic := ARITHMETIC_FOR.match(text[command.offset:]):
+        first = int(arithmetic.group(2))
+        written = arithmetic.group(4).strip()
+        step = int(arithmetic.group(5)) if arithmetic.group(5) else 1
+        if step <= 0:
+            return None
+        if re.fullmatch(r"\d+", written):
+            bound = int(written)
+        elif length := ARRAY_LENGTH.fullmatch(written):
+            counted = array_words(text, length.group(1))
+            if counted is None:
+                return None
+            bound = counted
+        else:
+            return None
+        if arithmetic.group(3) == "<=":
+            bound += 1
+        return max(0, -(-(bound - first) // step))
     match = re.match(r"for\s+[A-Za-z_]\w*\s+in\s+([^\n;]*)", text[command.offset:])
     if not match:
         return None
@@ -784,18 +896,22 @@ def passes_of(text: str, command: Command) -> int | None:
 
 
 def structure(commands: list[Command], text: str) -> Loops:
-    """Marks each command with the loop it sits in, and returns what rule 8 reads of those
-    loops: the loop each function holds, each loop's passes, and each loop's own wait between
-    two passes."""
+    """Marks each command with the loops it sits in, and returns what rule 8 reads of them: each
+    loop's extent, passes and own wait between two passes, the loop each function holds, and
+    where each function this body defines is written and called."""
     loops: list[int] = []
     function: str | None = None
     function_depth = 0
+    function_line = 0
+    last = 0
     read = Loops()
     for command in commands:
         first = command.words[0]
         if first == "done" and loops:
-            loops.pop()
+            read.extent[loops.pop()] = command.line
+        command.loops = list(loops)
         command.loop = loops[-1] if loops else None
+        last = max(last, command.line)
         if (command.loop is not None and first == "sleep" and len(command.words) == 2
                 and re.fullmatch(r"\d+", command.words[1])):
             # The loop's own wait between two passes, where it is written as a number. A
@@ -808,13 +924,24 @@ def structure(commands: list[Command], text: str) -> Loops:
                 read.function_loop[function] = command.loop
             function_depth += command.words.count("{") - command.words.count("}")
             if function_depth <= 0:
+                read.function_span[function] = (function_line, command.line)
                 function = None
         elif FUNCTION_WORD.fullmatch(first):
             function = first[:-2]
+            function_line = command.line
             function_depth = command.words.count("{") - command.words.count("}")
         if first in LOOP_WORDS:
             loops.append(command.line)
             read.passes[command.line] = passes_of(text, command)
+    # A loop or a function whose closing word this body never writes runs to the end of it.
+    for line in loops:
+        read.extent[line] = last
+    if function is not None:
+        read.function_span[function] = (function_line, last)
+    for command in commands:
+        span = read.function_span.get(command.words[0])
+        if span and not span[0] <= command.line <= span[1]:
+            read.function_calls.setdefault(command.words[0], []).append(command.line)
     return read
 
 
@@ -1098,13 +1225,15 @@ class Site:
     shell that leaves pipefail off, so the pipeline's status is its last command's and this
     fetch's failure is not read. `silent` marks rule 7's shape instead: a `mise x`, `mise
     exec`, `mise up` or `mise upgrade` with a retry around it, which is no fetch to hold to the
-    floor but a retry to refuse. `passes` is rule 8's: how many times the loop around this call
-    runs it — one where no loop does, the loop's own count where the loop writes one, and None
-    where it writes none, which is the one case this check refuses rather than counts.
-    `loop_wait` is what that loop sleeps between two passes, 0 where it writes no `sleep`."""
+    floor but a retry to refuse. `loops` is rule 8's: every loop this call sits in, outermost
+    first, and `loop` is the innermost of them, which is rule 2's. `factor` is how many times
+    the body runs this call once those loops, the function holding it and the loops around that
+    function's own calls are all read; `wait` is what those loops sleep between their passes;
+    and `blocked` names the one loop whose passes this check could neither read nor find
+    declared, which is the case it refuses rather than counts."""
 
     def __init__(self, path: str, line: int, verb: str, step: str, words: list[str],
-                 retry: str | None, bounded: bool, loop: int | None, bound: int | None = None,
+                 retry: str | None, bounded: bool, loops: list[int], bound: int | None = None,
                  silent: bool = False, piped: bool = False) -> None:
         self.path = path
         self.line = line
@@ -1113,40 +1242,157 @@ class Site:
         self.words = words
         self.retry = retry
         self.bounded = bounded
-        self.loop = loop
+        self.loops = loops
+        self.loop = loops[-1] if loops else None
         self.bound = bound
         self.silent = silent
         self.piped = piped
-        self.passes: int | None = 1
-        self.loop_wait = 0
+        self.factor: int | None = 1
+        self.wait = 0
+        self.blocked: int | None = None
+
+
+class Call:
+    """One script a shell body runs: the line the call is written on, how many times that body
+    runs it, what the loops around it sleep between their passes, and the loop whose passes this
+    check could not read where `factor` is None because of one."""
+
+    def __init__(self, line: int, factor: int | None, wait: int, loop: int | None) -> None:
+        self.line = line
+        self.factor = factor
+        self.wait = wait
+        self.loop = loop
+
+    def beside(self, other: "Call") -> "Call":
+        """This call and another of the same script in one body: the body runs it both times, so
+        the counts add, and one call this check cannot count leaves the pair uncounted."""
+        if self.factor is None:
+            return self
+        if other.factor is None:
+            return other
+        return Call(self.line, self.factor + other.factor, self.wait + other.wait, None)
+
+
+class Uncounted:
+    """One thing a step waits for that this check can put no figure on: a retried call, or a
+    script the body runs, inside a loop whose passes it can neither read nor find declared.
+    `what` is the verb, or the script's path; `one` is what one of them costs, left None for a
+    script, whose arithmetic is read when the refusal is written."""
+
+    def __init__(self, path: str, line: int, what: str, loop: int | None,
+                 one: int | None) -> None:
+        self.path = path
+        self.line = line
+        self.what = what
+        self.loop = loop
+        self.one = one
 
 
 def one_call(site: Site) -> int:
     """The wall time one call of this site takes to exhaust its attempts. Five at the helper's
-    own bound with its sleeps of 10, 20, 40 and 80 s between them, or eight at curl's
-    `--max-time` with curl's waits doubling from one second, where curl makes the attempts
-    itself. A call whose bound is not written as a number adds nothing: there is no arithmetic
-    to do, and rule 4 is what refuses an unbounded attempt."""
+    own bound with its sleeps of 10, 20, 40 and 80 s between them, or, where curl makes the
+    attempts itself, one per `--retry` and one more at curl's `--max-time` with the ladder
+    curl_ladder computes between them — the same ladder rule 1 holds that curl to, so the two
+    rules read one figure. A curl outside that floor is read at the floor, which is the ladder
+    it will make once rule 1's refusal is answered. A call whose bound is not written as a
+    number adds nothing: there is no arithmetic to do, and rule 4 is what refuses an unbounded
+    attempt."""
     if site.bound is None or site.silent:
         return 0
     if site.retry == "retry_fetch":
         return ATTEMPT_FLOOR * site.bound + HELPER_WAIT
     if site.verb == "curl" and site.retry is None:
-        return (RETRY_FLOOR + 1) * site.bound + CURL_WAIT
+        retries, _, _, _ = curl_options(site.words)
+        delay, max_time, readable = curl_waits(site.words)
+        if retries is None or retries < RETRY_FLOOR or not readable:
+            retries, delay, max_time = RETRY_FLOOR, None, None
+        return (retries + 1) * site.bound + curl_ladder(retries, delay, max_time)
     return 0
 
 
+def passes_at(loops: Loops, line: int, site: Site | None) -> int | None:
+    """The passes the loop at `line` makes: the count it writes, else the count a DECLARED_LOOPS
+    entry writes for the site whose budget reaches it. An entry is bound to the loop it first
+    covers, and a second loop under the same entry is refused below rather than counted."""
+    passes = loops.passes.get(line)
+    if passes is not None:
+        return passes
+    if site is None:
+        return None
+    declared = next((entry for entry in DECLARED_LOOPS if entry.covers(site)), None)
+    if declared is None:
+        return None
+    declared.used += 1
+    declared.loops.add(line)
+    return declared.passes
+
+
+def around(loops: Loops, lines: list[int], site: Site | None) -> tuple[int | None, int,
+                                                                      int | None]:
+    """Folding a cost at one position outwards through the loops around it: how many times they
+    run it, what they sleep between their passes, and the loop whose passes could not be read
+    where there is one. Each loop multiplies what is inside it and adds its own waits —
+    `passes * inside + (passes - 1) * sleep` — so a call in a loop inside a loop is multiplied
+    by both."""
+    factor = 1
+    wait = 0
+    for line in reversed(lines):
+        passes = passes_at(loops, line, site)
+        if passes is None:
+            return None, 0, line
+        wait = passes * wait + max(passes - 1, 0) * loops.sleep.get(line, 0)
+        factor *= passes
+    return factor, wait, None
+
+
+def times_run(loops: Loops, line: int, site: Site | None, stack: list[int] | None = None,
+              seen: frozenset[str] = frozenset()) -> tuple[int | None, int, int | None]:
+    """How many times a body runs what is written at `line`, what the loops around it sleep, and
+    the loop that stopped the reading where one did. The loops around the line are the first
+    half; the second is the function holding it, which runs once for each of its own calls, each
+    of those multiplied the same way again. `seen` stops a function that reaches itself, which
+    the shell would run until something failed and which must not hang this check."""
+    factor, wait, blocked = around(loops, loops.enclosing(line) if stack is None else stack,
+                                   site)
+    if factor is None:
+        return None, 0, blocked
+    holder = loops.function_of(line)
+    calls = loops.function_calls.get(holder, ()) if holder is not None else ()
+    # A function this body defines and never calls is counted once, as a command of the body
+    # itself is: its call is written in whatever sources this file.
+    if holder is None or holder in seen or not calls:
+        return factor, wait, None
+    outer = 0
+    outer_wait = 0
+    for call in calls:
+        times, waited, blocked = times_run(loops, call, site, None, seen | {holder})
+        if times is None:
+            return None, 0, blocked
+        outer += times
+        outer_wait += waited
+    return outer * factor, outer * wait + outer_wait, None
+
+
 def arithmetic_of(site: Site) -> int | None:
-    """Rule 8's arithmetic for one site: one call of it for each pass of the loop around it,
-    with that loop's own wait between two passes. None where the loop makes a count this check
+    """Rule 8's arithmetic for one site: one call of it for each time the step runs it, with the
+    waits of the loops that run it. None where one of those loops makes a count this check
     cannot read and no DECLARED_LOOPS entry writes one, which is a site refused below rather
     than a budget undercounted here."""
     one = one_call(site)
     if not one:
         return 0
-    if site.passes is None:
+    if site.factor is None:
         return None
-    return site.passes * one + (site.passes - 1) * site.loop_wait
+    return site.factor * one + site.wait
+
+
+def carried(call: Call, cost: int | None) -> int | None:
+    """What a script costs the body that calls it: its own arithmetic once for each time that
+    body runs it, with the waits of the loops around the call where there is anything to wait
+    for."""
+    if cost is None or call.factor is None:
+        return None
+    return call.factor * cost + (call.wait if cost else 0)
 
 
 def added(total: int | None, more: int | None) -> int | None:
@@ -1156,24 +1402,60 @@ def added(total: int | None, more: int | None) -> int | None:
     return None if total is None or more is None else total + more
 
 
-def scripts_called(text: str) -> set[str]:
-    """The scripts under .github/scripts/ a shell body runs, whose own retried calls rule 8
-    counts as this body's: a step that runs a script waits for every attempt that script makes.
+def scripts_called(text: str, first_line: int = 1) -> dict[str, list[int]]:
+    """The scripts under .github/scripts/ a shell body runs, and the lines their calls are
+    written on, whose own retried calls rule 8 counts as this body's: a step that runs a script
+    waits for every attempt that script makes, once for each pass of the loop the step wraps
+    around the call.
 
     Read off the text by the path each call writes, with backslash continuations joined and
     comment lines left out, rather than off the commands this file scans elsewhere: a call
     reaches a script in command position, inside a `$(…)`, as the value of an assignment, behind
     a `source` or `.`, or out of a heredoc a `python3` runs, and the path is the one thing all
     of those write. A name SCRIPTS does not hold is nothing this check reads."""
-    found = set()
-    for line in text.replace("\\\n", " ").split("\n"):
+    found: dict[str, list[int]] = {}
+    lines = text.split("\n")
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        start = first_line + index
+        while line.endswith("\\") and index + 1 < len(lines):
+            index += 1
+            line = line[:-1] + " " + lines[index]
+        index += 1
         if line.lstrip().startswith("#"):
             continue
         for name in SCRIPT_CALL.findall(line):
             path = str(SCRIPTS / name)
-            if path in script_files:
-                found.add(path)
+            if path in script_files and start not in found.setdefault(path, []):
+                found[path].append(start)
     return found
+
+
+def calls_of(text: str, first_line: int, loops: Loops) -> dict[str, Call]:
+    """The scripts a shell body runs, each with how many times that body runs it: the loops
+    around the call, and the calls of the function the call sits in."""
+    found: dict[str, Call] = {}
+    for path, lines in scripts_called(text, first_line).items():
+        for line in lines:
+            factor, wait, blocked = times_run(loops, line, None)
+            call = Call(line, factor, wait, blocked)
+            found[path] = call if path not in found else found[path].beside(call)
+    return found
+
+
+def merge_calls(into: dict[str, Call], more: dict[str, Call]) -> None:
+    """The calls of a second body folded into the first's: a composite action whose two steps
+    each run one script runs it twice, and a `uses:` of that action waits for both."""
+    for path, call in more.items():
+        into[path] = call if path not in into else into[path].beside(call)
+
+
+def blocked_calls(path: str, calls: dict[str, Call]) -> list[Uncounted]:
+    """The scripts one body runs inside a loop whose passes this check cannot read: whoever runs
+    that body waits for the whole of each script once per pass, and the passes are unread."""
+    return [Uncounted(path, call.line, target, call.loop, None)
+            for target, call in sorted(calls.items()) if call.factor is None]
 
 
 def commands_of(body: str, first_line: int) -> tuple[list[Command], Loops,
@@ -1186,11 +1468,12 @@ def commands_of(body: str, first_line: int) -> tuple[list[Command], Loops,
 
 
 def sites_of(path: str, body: str, first_line: int, step: str,
-             pipefail: bool = True) -> list[Site]:
-    """Every fetch of one shell body. `pipefail` is whether the shell that runs it sets `-o
-    pipefail`: where it does, a pipeline carries the failure of every command in it and rule 9
-    has nothing to refuse. That is the default, because a *.sh and a Dockerfile RUN are read
-    with no step's `shell:` to ask about and each sets its own flags."""
+             pipefail: bool = True) -> tuple[list[Site], Loops]:
+    """Every fetch of one shell body, and what rule 8 read of that body's loops. `pipefail` is
+    whether the shell that runs it sets `-o pipefail`: where it does, a pipeline carries the
+    failure of every command in it and rule 9 has nothing to refuse. That is the default,
+    because a *.sh and a Dockerfile RUN are read with no step's `shell:` to ask about and each
+    sets its own flags."""
     commands, loops, probes = commands_of(body, first_line)
     found: list[Site] = []
     for command in commands:
@@ -1202,30 +1485,26 @@ def sites_of(path: str, body: str, first_line: int, step: str,
             site.piped = False
     found = unpacks_dropped(found)
     for site in found:
-        if site.loop is None:
-            continue
-        site.passes = loops.passes.get(site.loop)
-        site.loop_wait = loops.sleep.get(site.loop, 0)
-        if site.passes is None and site.path not in DOCKERFILES and one_call(site):
-            # The loop writes no count, and this call has a figure a budget would carry. A
-            # DECLARED_LOOPS entry is the other place that count can be written; a site with
-            # neither leaves whatever step runs it without a figure, which uncounted_of below
-            # hands to that step's budget. A Dockerfile is outside this reading, as it is
-            # outside rule 8: no step's budget holds its RUN lines.
-            declared = next((entry for entry in DECLARED_LOOPS if entry.covers(site)), None)
-            if declared:
-                declared.used += 1
-                site.passes = declared.passes
-    return found
+        # A DECLARED_LOOPS entry is the other place a pass count can be written, and it is read
+        # only for a call that has a figure a budget would carry. A site with neither leaves
+        # whatever step runs it without a figure, which uncounted_of below hands to that step's
+        # budget. A Dockerfile is outside this reading, as it is outside rule 8: no step's
+        # budget holds its RUN lines.
+        declaring = site if one_call(site) and site.path not in DOCKERFILES else None
+        site.factor, site.wait, site.blocked = times_run(loops, site.line, declaring,
+                                                         site.loops)
+    return found, loops
 
 
-def uncounted_of(found: list[Site]) -> list[Site]:
-    """The sites of one body this check can put no figure on: a retried call in a loop that
-    writes no pass count and that no DECLARED_LOOPS entry declares. A step whose budget reaches
-    one of these is refused in the loop's place, and a loop no budget reaches costs nobody
-    anything and is left alone — rule 2 is what reads a loop wherever it sits."""
-    return [site for site in found
-            if site.passes is None and one_call(site) and site.path not in DOCKERFILES]
+def uncounted_of(found: list[Site]) -> list[Uncounted]:
+    """The sites of one body this check can put no figure on: a retried call that one of the
+    loops running it counts in passes this check can neither read nor find declared. A step
+    whose budget reaches one of these is refused in the loop's place, and a loop no budget
+    reaches costs nobody anything and is left alone — rule 2 is what reads a loop wherever it
+    sits."""
+    return [Uncounted(site.path, site.line, site.verb, site.blocked, one_call(site))
+            for site in found
+            if site.factor is None and one_call(site) and site.path not in DOCKERFILES]
 
 
 def unpacks_dropped(found: list[Site]) -> list[Site]:
@@ -1289,15 +1568,15 @@ def sites_of_command(path: str, command: Command, loops: Loops,
         verb, rest = held
         _, _, inner_bound, inner_seconds = reduce_words(rest)
         return [Site(path, command.line, verb, step, rest, retry, bounded or inner_bound,
-                     loops.function_loop[name], bound if bound is not None else inner_seconds,
-                     piped=command.piped)]
+                     command.loops + [loops.function_loop[name]],
+                     bound if bound is not None else inner_seconds, piped=command.piped)]
     silent = silent_verb_of(words)
     if silent:
         # Rule 7. A bare one is no fetch this check holds to anything; a retried one is the
         # shape the rule refuses, and it is recorded so the verdict can name it.
         if not retry:
             return []
-        return [Site(path, command.line, silent, step, words, retry, bounded, command.loop,
+        return [Site(path, command.line, silent, step, words, retry, bounded, command.loops,
                      bound, silent=True, piped=command.piped)]
     verb = verb_of(words)
     if not verb:
@@ -1307,7 +1586,7 @@ def sites_of_command(path: str, command: Command, loops: Loops,
     if verb == "curl" and retry is None:
         # curl makes the attempts itself, and `--max-time` is what bounds each one of them.
         bound = curl_bound(words) or bound
-    return [Site(path, command.line, verb, step, words, retry, bounded, command.loop, bound,
+    return [Site(path, command.line, verb, step, words, retry, bounded, command.loops, bound,
                  piped=command.piped)]
 
 
@@ -1373,7 +1652,12 @@ class DeclaredLoop:
     `passes` times; a site in such a loop with no entry is refused, because a budget written
     for one pass of a loop that makes four is a step the runner cuts in the middle of the retry
     the budget exists to allow. An entry matching no such loop fails this check, as a stale
-    exception does: a declaration cannot outlive its loop."""
+    exception does: a declaration cannot outlive its loop.
+
+    An entry says one number, so it answers for one loop. `loops` is the loops it was read for,
+    by their own lines, and a second line there fails this check too: a file, a step and a verb
+    name a loop only while that file holds one of them, and a second loop of the same verb
+    would otherwise take this entry's count without anybody writing it one."""
 
     def __init__(self, path: str, step: str | None, verb: str, passes: int, why: str) -> None:
         self.path = path
@@ -1382,6 +1666,7 @@ class DeclaredLoop:
         self.passes = passes
         self.why = why
         self.used = 0
+        self.loops: set[int] = set()
 
     def covers(self, site: Site) -> bool:
         return (
@@ -1432,6 +1717,12 @@ DECLARED_LOOPS = [
                  "75 s a row that file's own comment derives"),
     DeclaredLoop(".github/scripts/mirror-ci-images.sh", None, "crane digest", 1,
                  "the digest read that confirms the copy above it, once per row copied"),
+    DeclaredLoop(".github/scripts/mirror-ci-images.sh", None, "crane config", 1,
+                 "the Go check of one row, once per row that file holds. The read sits in "
+                 "image_go(), which check_go() calls, and that loop runs check_go once for the "
+                 "row the package already holds and once for the row it is about to copy — two "
+                 "written calls of which a pass runs one, so the figure this check sums is "
+                 "twice what a row costs"),
 ]
 
 
@@ -1491,13 +1782,14 @@ class Budget:
     """One step that carries its own `timeout-minutes`, which rule 8 holds above the attempts it
     allows: where the budget is written, what the step is called, the minutes it gives, the
     arithmetic of the calls the step's own `run:` holds, the local composite action a `uses:`
-    step runs, whose calls are the step's too, and the scripts the step's `run:` invokes, whose
-    calls are the step's too for the same reason. A cost of None is a step holding a site this
-    check cannot count, and `uncounted` is the sites that made it so, which the refusal names
-    in place of a comparison."""
+    step runs, whose calls are the step's too, and the scripts the step's `run:` invokes, each
+    with how many times the step runs it, whose calls are the step's too for the same reason. A
+    cost of None is a step holding a site this check cannot count, and `uncounted` is what made
+    it so, which the refusal names in place of a comparison."""
 
     def __init__(self, path: str, line: int, step: str, minutes: int, cost: int | None,
-                 uses: str | None, scripts: set[str], uncounted: list[Site]) -> None:
+                 uses: str | None, scripts: dict[str, Call],
+                 uncounted: list[Uncounted]) -> None:
         self.path = path
         self.line = line
         self.step = step
@@ -1513,18 +1805,18 @@ budgets: list[Budget] = []
 # scripts each one calls in turn: a `uses:` step of one carries the whole of it.
 action_cost: dict[str, int | None] = {}
 action_uses: dict[str, list[str]] = {}
-action_scripts: dict[str, set[str]] = {}
-# The sites of each composite action, and of each script, that rule 8 can put no figure on: a
-# step reaching one of them is told about that loop instead of being judged against a sum that
-# is missing it.
-action_uncounted: dict[str, list[Site]] = {}
+action_scripts: dict[str, dict[str, Call]] = {}
+# What rule 8 can put no figure on in each composite action and in each script: a site, or a
+# script the body runs, inside a loop whose passes it cannot read. A step reaching one of them
+# is told about that loop instead of being judged against a sum that is missing it.
+action_uncounted: dict[str, list[Uncounted]] = {}
 action_by_directory = {str(Path(path).parent): path for path in actions}
 action_files = set(actions)
 # The arithmetic of each script's own calls, and the scripts it calls in turn: whoever runs one
-# of them waits for the whole of it.
+# of them waits for the whole of it, once for each time it runs it.
 script_cost: dict[str, int | None] = {}
-script_calls: dict[str, set[str]] = {}
-script_uncounted: dict[str, list[Site]] = {}
+script_calls: dict[str, dict[str, Call]] = {}
+script_uncounted: dict[str, list[Uncounted]] = {}
 script_files = set(scripts)
 
 
@@ -1591,13 +1883,14 @@ for path in workflows + actions:
     credentialed = credentialed_jobs(path, document)
     for job, name, step, shell in steps_of(path, document):
         cost: int | None = 0
-        called: set[str] = set()
-        blocked: list[Site] = []
+        called: dict[str, Call] = {}
+        blocked: list[Uncounted] = []
         if isinstance(step.get("run"), str):
-            called = scripts_called(step["run"])
-            found = sites_of(path, step["run"], step.lines.get("run", 0), name,
-                             sets_pipefail(shell))
-            blocked = uncounted_of(found)
+            first_line = step.lines.get("run", 0)
+            found, loops_read = sites_of(path, step["run"], first_line, name,
+                                         sets_pipefail(shell))
+            called = calls_of(step["run"], first_line, loops_read)
+            blocked = uncounted_of(found) + blocked_calls(path, called)
             for site in found:
                 cost = added(cost, arithmetic_of(site))
                 if job in credentialed:
@@ -1614,7 +1907,7 @@ for path in workflows + actions:
         uses = local_action(step.get("uses"))
         if path in action_files:
             action_cost[path] = added(action_cost.get(path, 0), cost)
-            action_scripts.setdefault(path, set()).update(called)
+            merge_calls(action_scripts.setdefault(path, {}), called)
             action_uncounted.setdefault(path, []).extend(blocked)
             if uses:
                 action_uses.setdefault(path, []).append(uses)
@@ -1641,9 +1934,9 @@ while credentialed_roots:
 
 for path in scripts:
     text = Path(path).read_text()
-    script_calls[path] = scripts_called(text)
-    found = sites_of(path, text, 1, "-")
-    script_uncounted[path] = uncounted_of(found)
+    found, loops_read = sites_of(path, text, 1, "-")
+    script_calls[path] = calls_of(text, 1, loops_read)
+    script_uncounted[path] = uncounted_of(found) + blocked_calls(path, script_calls[path])
     for site in found:
         script_cost[path] = added(script_cost.get(path, 0), arithmetic_of(site))
         if path in credentialed_scripts:
@@ -1718,7 +2011,7 @@ for path in DOCKERFILES:
             continue
         while match := re.match(r"\s*--(mount|network|security)=\S+", rest):
             rest = rest[match.end():]
-        found = sites_of(path, rest, line, "-")
+        found, _ = sites_of(path, rest, line, "-")
         if not found:
             continue
         sites += found
@@ -1886,24 +2179,25 @@ for site in sites:
             "loop and call `retry_fetch \"<what>\" <bound in seconds> -- <command...>`.")
 
 # Rule 8: a retried step's own budget strictly exceeds the attempts it allows, so the last
-# attempt's own error reaches the log before the runner's kill does. A call inside a loop is
-# counted once for each pass, and a step reaching a loop whose passes this check can neither
-# read nor find declared is told about that loop in place of a comparison: a sum short by one
-# of its loops would send the step's author to the wrong line.
+# attempt's own error reaches the log before the runner's kill does. A call is counted once for
+# each time the step runs it — every pass of every loop around it, every call of the function
+# holding it, and the loops around those calls — and a step reaching a loop whose passes this
+# check can neither read nor find declared is told about that loop in place of a comparison: a
+# sum short by one of its loops would send the step's author to the wrong line.
 
 
 def script_arithmetic(path: str, seen: set[str]) -> int | None:
     """The arithmetic a call of this script carries: its own calls and those of every script it
-    calls in turn. `seen` is what the step has counted already, so a script two of its calls
-    reach is counted once, and a cycle — which the shell would run until something failed, but
-    which must not hang this check — stops. None where one of those calls is a site this check
-    cannot count."""
+    calls in turn, each once for every time it runs it. `seen` is what the step has counted
+    already, so a script two of its calls reach is counted once, and a cycle — which the shell
+    would run until something failed, but which must not hang this check — stops. None where
+    one of those calls is a site this check cannot count."""
     if path in seen:
         return 0
     seen.add(path)
     total = script_cost.get(path, 0)
-    for target in sorted(script_calls.get(path, ())):
-        total = added(total, script_arithmetic(target, seen))
+    for target, call in sorted(script_calls.get(path, {}).items()):
+        total = added(total, carried(call, script_arithmetic(target, seen)))
     return total
 
 
@@ -1915,8 +2209,8 @@ def action_arithmetic(path: str, seen: set[str]) -> int | None:
         return 0
     seen.add(path)
     total = action_cost.get(path, 0)
-    for target in sorted(action_scripts.get(path, ())):
-        total = added(total, script_arithmetic(target, seen))
+    for target, call in sorted(action_scripts.get(path, {}).items()):
+        total = added(total, carried(call, script_arithmetic(target, seen)))
     for target in action_uses.get(path, ()):
         total = added(total, action_arithmetic(target, seen))
     return total
@@ -1928,8 +2222,8 @@ for budget in budgets:
     # the step runs once.
     seen: set[str] = set()
     cost = budget.cost
-    for target in sorted(budget.scripts):
-        cost = added(cost, script_arithmetic(target, seen))
+    for target, call in sorted(budget.scripts.items()):
+        cost = added(cost, carried(call, script_arithmetic(target, seen)))
     if budget.uses:
         cost = added(cost, action_arithmetic(budget.uses, seen))
     blocking = list(budget.uncounted)
@@ -1937,18 +2231,24 @@ for budget in budgets:
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
     if blocking:
         named = "; ".join(
-            f"`{site.verb}` at {site.path}:{site.line}, inside the loop at line {site.loop}"
-            for site in blocking
+            f"`{item.what}` at {item.path}:{item.line}, inside the loop at line {item.loop}"
+            for item in blocking
         )
+        # A script's own arithmetic is what one run of it costs, read here rather than when the
+        # call was found: the scripts are read after the steps that run them.
+        one = blocking[0].one
+        if one is None:
+            one = script_arithmetic(blocking[0].what, set()) or 0
         problem(budget.path, budget.line,
                 f"step '{budget.step}' carries `timeout-minutes: {budget.minutes}` and this "
                 "check can put no figure on it: it runs a retried call inside a loop whose "
                 f"passes it cannot read — {named}. One call there takes "
-                f"{one_call(blocking[0])} s to exhaust its attempts and the step waits for "
+                f"{one} s to exhaust its attempts and the step waits for "
                 "that once per pass, so a budget written for one pass is a step the runner "
                 "cuts in the middle of the retry it exists to allow. Write the count where "
-                "this check reads it — a `for x in 1 2 3 4 5 6 7`, or a `for x in "
-                "$(seq 1 7)` — or, where the passes are as many as the run finds work, "
+                "this check reads it — a `for x in 1 2 3 4 5 6 7`, a `for x in "
+                "$(seq 1 7)`, or a `for ((i = 0; i < 7; i++))` — or, where the passes are as "
+                "many as the run finds work, "
                 "declare them in DECLARED_LOOPS in .github/scripts/check-download-retry.sh: "
                 "an entry there says how many passes the budgets reaching that loop are "
                 "written for and why that is the number.")
@@ -1985,6 +2285,19 @@ for entry in EXEMPTIONS:
             f"for {entry.why}.")
 
 for entry in DECLARED_LOOPS:
+    if len(entry.loops) > 1:
+        problem(SELF, 1,
+                f"the declared loop for {entry.path}"
+                + (f" step '{entry.step}'" if entry.step else "")
+                + f" `{entry.verb}` covers the loops at lines "
+                + ", ".join(str(line) for line in sorted(entry.loops))
+                + ", and it writes one pass count. A loop's passes are that loop's own, so an "
+                "entry that two of them match hands the second a figure nobody wrote for it: "
+                "one of those loops is counting something else. Write the count where this "
+                "check reads it off the loop, or give the two loops steps or verbs that tell "
+                f"them apart. This entry said {entry.passes} "
+                f"pass{'' if entry.passes == 1 else 'es'}, because {entry.why}.")
+        continue
     if entry.used:
         continue
     problem(SELF, 1,

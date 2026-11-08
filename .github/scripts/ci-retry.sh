@@ -46,8 +46,10 @@
 #
 # Every line this function writes goes to standard error. The command's own standard output is
 # buffered: each attempt writes into a temporary file of its own, and only a successful attempt's
-# file is copied to standard output, byte for byte. A failed attempt's bytes reach neither
-# stream, and one line on standard error says how many were withheld. So a caller may capture the
+# file is copied to standard output, byte for byte. A copy that cannot be written — no space on
+# the device, an I/O error, a reader that closed the pipe — is this call's status, so a cut
+# answer never reads as a success. A failed attempt's bytes reach neither stream, and one line on
+# standard error says how many were withheld. So a caller may capture the
 # value:
 #
 #     names=$(retry_fetch "the run's artifact list" 30 -- gh api "$route" --jq '.[].name')
@@ -117,8 +119,9 @@ retry_fetch() {
     # caller had already set, which is how a second `trap … EXIT` once discarded the removal of
     # ci-ok-report.sh's work directory. Each file is removed by name instead, on every path out
     # of this loop. An interrupt between the `mktemp` and the `rm` leaves one buffer in
-    # ${TMPDIR:-/tmp}, which on a runner is the job's own temporary directory and goes with the
-    # job.
+    # ${TMPDIR:-/tmp}, which on a hosted runner is /tmp: nothing there sets TMPDIR, and the job's
+    # own temporary directory is $RUNNER_TEMP, which this does not use. The runner's machine is
+    # discarded after the job, so the buffer goes with it either way.
     buffer=$(mktemp "${TMPDIR:-/tmp}/ci-retry.XXXXXX") || buffer=
     if [ -z "$buffer" ]; then
       echo "::error::retry_fetch: no temporary file for $what's output could be made in ${TMPDIR:-/tmp}" >&2
@@ -129,9 +132,13 @@ retry_fetch() {
     status=0
     timeout "$bound" "$@" > "$buffer" || status=$?
     if [ "$status" -eq 0 ]; then
-      cat "$buffer"
+      # The copy is the caller's answer, so its status is this call's: a full disk, an I/O error
+      # or a reader that closed the pipe cuts the answer short, and `cat` says so. Without this
+      # `retry_fetch … -- printf payload > /dev/full` printed `cat: write error` and returned 0.
+      # `|| status=$?` rather than a bare `cat`, for the reason the line above gives.
+      cat "$buffer" || status=$?
       rm -f "$buffer"
-      return 0
+      return "$status"
     fi
     # Counted, never guessed, and counted before the file goes. BusyBox's `wc` pads the number
     # with spaces where GNU's does not, so the padding comes off; `|| withheld=0` keeps a `wc`

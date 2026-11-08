@@ -57,6 +57,25 @@ function packUnderUmask(dir: string, umask: number, outputPath: string): string 
   return outputPath;
 }
 
+/**
+ * The same tree with `src/lib.ts` executable, written under `umask`. `writeFileSync`'s mode is
+ * masked by the umask, as an extract of the upstream tarball is, so the file lands at 755 under
+ * umask 022 and at 700 under umask 077; it is removed first, because a mode is applied when a
+ * file is created and not when an existing one is overwritten.
+ */
+function writeExecutableSource(dir: string, umask: number): string {
+  const previous = process.umask(umask);
+  try {
+    writeSource(dir);
+    const executable = join(dir, "src", "lib.ts");
+    rmSync(executable);
+    writeFileSync(executable, "export const lib = 1;\n", { mode: 0o777 });
+  } finally {
+    process.umask(previous);
+  }
+  return dir;
+}
+
 beforeAll(() => {
   workDir = mkdtempSync(join(tmpdir(), "proof-sdk-pack-test-"));
   sourceDir = writeSource(join(workDir, "source"));
@@ -101,7 +120,7 @@ test("every member carries the given mtime and is owned by 0:0", () => {
   }
 });
 
-test("every member is at mode 644, whatever the source tree's own modes are", () => {
+test("every member of a tree with no executable is at mode 644, whatever the umask left", () => {
   for (const line of listing(first)) {
     expect(line.split(/\s+/)[0]).toBe("-rw-r--r--");
   }
@@ -110,7 +129,7 @@ test("every member is at mode 644, whatever the source tree's own modes are", ()
 /**
  * tar records each file's mode as it finds it, and the extract that wrote the upstream tree
  * applied the caller's umask — so without `--mode` one commit packed under umask 022 and under
- * umask 002 gave two sha256 values, which is what `--mode=a+r,go-w` answers.
+ * umask 002 gave two sha256 values, which is what `--mode=u=rwX,go=rX` answers.
  */
 test("one tree packed under two umasks gives the same bytes", () => {
   const lax = join(workDir, "lax");
@@ -121,6 +140,36 @@ test("one tree packed under two umasks gives the same bytes", () => {
   expect(statSync(join(lax, "src", "lib.ts")).mode & 0o777).toBe(0o664);
   expect(statSync(join(strict, "src", "lib.ts")).mode & 0o777).toBe(0o644);
   expect(readFileSync(laxArchive)).toEqual(readFileSync(strictArchive));
+});
+
+/**
+ * The executable bit is the one thing about a member's mode the archive keeps, and the umask may
+ * not change what it keeps. `a+r,go-w`, which stood here before, left the execute bits as the
+ * extract wrote them: an executable member packed at 755 under umask 022 and at 744 under umask
+ * 077, two sha256 values from one commit again. `u=rwX,go=rX` asks only whether anyone may
+ * execute the file and writes 755 or 644.
+ */
+test("an executable member is 755 under either umask, and the bytes are the same", () => {
+  const lax = writeExecutableSource(join(workDir, "exec-lax"), 0o022);
+  const strict = writeExecutableSource(join(workDir, "exec-strict"), 0o077);
+  // 755 and 700 on disk: the same file, written under two umasks.
+  expect(statSync(join(lax, "src", "lib.ts")).mode & 0o777).toBe(0o755);
+  expect(statSync(join(strict, "src", "lib.ts")).mode & 0o777).toBe(0o700);
+  const laxArchive = join(workDir, "exec-lax.tgz");
+  const strictArchive = join(workDir, "exec-strict.tgz");
+  packUpstream({ sourceDir: lax, mtime: MTIME, outputPath: laxArchive });
+  packUpstream({ sourceDir: strict, mtime: MTIME, outputPath: strictArchive });
+  for (const archive of [laxArchive, strictArchive]) {
+    const modes = new Map(
+      listing(archive).map((line) => {
+        const fields = line.split(/\s+/);
+        return [fields[fields.length - 1], fields[0]];
+      })
+    );
+    expect(modes.get("package/src/lib.ts")).toBe("-rwxr-xr-x");
+    expect(modes.get("package/LICENSE")).toBe("-rw-r--r--");
+  }
+  expect(readFileSync(strictArchive)).toEqual(readFileSync(laxArchive));
 });
 
 test("the gzip header carries no timestamp", () => {

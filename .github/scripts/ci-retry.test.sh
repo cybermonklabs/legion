@@ -217,6 +217,25 @@ check "the capture is byte for byte what the command wrote, with no newline adde
   "$(cmp -s "$work/exact.want" "$work/exact.got" && echo true || echo false)"
 check "and the helper printed nothing beside it" "$(is "$(cat "$work/exact.err")" '')"
 
+echo "case: a copy the caller's standard output refuses is the call's status, not a silent 0"
+# The successful attempt's buffer is copied with `cat`, and that copy can fail where the fetch
+# did not: a full device, an I/O error, a reader that closed the pipe. The caller then holds a
+# cut answer, so the call has to say so. /dev/full answers every write with ENOSPC, which is the
+# cheapest of the three to drive; the command itself writes into the buffer and succeeds.
+set +e
+retry_fetch "the tool whose output a full device refuses" 5 -- printf payload > /dev/full 2> "$work/full.err"
+full_status=$?
+set -e
+full_err=$(cat "$work/full.err")
+indent "$full_err"
+echo "  measured: exit $full_status"
+check "the call fails rather than returning 0" "$([ "$full_status" -ne 0 ] && echo true || echo false)"
+check "and returns the status cat gave" "$(is "$full_status" 1)"
+check "cat's own message is on standard error" "$(contains "$full_err" 'No space left on device')"
+check "no attempt is reported as failed, since the fetch itself worked" \
+  "$(is "$(contains "$full_err" 'attempt 1 of 5')" false)"
+check "and no exhaustion annotation is printed" "$(is "$(contains "$full_err" '::error::')" false)"
+
 echo "case: a command that hangs for ever makes five bounded attempts, the fifth past the 120 s floor"
 cat > "$work/hangs" <<HANGS
 #!/usr/bin/env bash

@@ -89,10 +89,10 @@ jobs:
   pr-title:
     runs-on: ubuntu-24.04
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — check-pr-text.sh's three `gh api`
-    # reads, 3 x (5 x 30 + 150) = 900 s, a whole number of minutes, so that step's own budget
-    # takes one more and this job takes it too. 600 + 960 = 1560 s -> 26 min.
-    timeout-minutes: 26
+    # this job carried, plus its slowest retried step alone — check-pr-text.sh's five `gh api`
+    # ladders, 5 x (5 x 30 + 150) = 1500 s, a whole number of minutes, so that step's own budget
+    # takes one more and this job takes it too. 600 + 1560 = 2160 s -> 36 min.
+    timeout-minutes: 36
     permissions:
       contents: read
       issues: read
@@ -119,10 +119,12 @@ jobs:
       # merge group. It reads that file rather than the step's environment, which the runner
       # prints in the job log.
       - name: Check the title, body, branch name, commits, comments and reviews
-        # Its own retry arithmetic: check-pr-text.sh's three `gh api` reads, 3 x (5 x 30 + 150)
-        # = 900 s, a whole number of minutes, so the budget is the next one strictly above it
-        # -> 16 min.
-        timeout-minutes: 16
+        # Its own retry arithmetic: check-pr-text.sh makes five `gh api` ladders, not three. The
+        # pull request and the compare are one each; the third sits in read_list's page loop,
+        # which the `for ((i = 0; i < ${#lists[@]}; i += 2))` below it runs once for each of the
+        # three lists, so that one ladder is three. 5 x (5 x 30 + 150) = 1500 s, a whole number
+        # of minutes, so the budget is the next one strictly above it -> 26 min.
+        timeout-minutes: 26
         env:
           GH_TOKEN: ${{ github.token }}
         run: .github/scripts/check-pr-text.sh

@@ -116,11 +116,16 @@ name: CI
 # filters name the retry loop, the fault, the rig and the composite actions or Dockerfiles whose
 # own downloads run under that fault, and nothing those downloads read: a manifest, a lockfile, a
 # pin or a module file moves what comes down the wire, not whether it survives a faulting host,
-# so an ordinary change selects neither job. Neither runs in a merge group either — the `changes`
-# job's two outputs for them are 'false' there, and the comment above them says why a skip has to
-# come from the output rather than from the job's `if:`. download-retry costs about two hours, so
-# a queue that waited for it would hold every group behind it that long; the pull request's own
-# run proves the machinery, on the same files the group merges.
+# so a change that touches none of those files selects neither job. Both filters also name this
+# file, because the two jobs' own steps, bounds and budgets are written here: a change that
+# touches ci.yaml at all selects both of them, and that pull request's run waits for the lane,
+# about two hours of it, however small the edit. That cost is taken on purpose, so that a change
+# to a bound or a budget is proved against the fault by the run that makes it. Neither job runs
+# in a merge group, whatever the change touches — the `changes` job's two outputs for them are
+# 'false' there, and the comment above them says why a skip has to come from the output rather
+# than from the job's `if:`. A queue that waited for download-retry's two hours would hold every
+# group behind it that long; the pull request's own run proves the machinery, on the same files
+# the group merges.
 #
 # Budgets: a retried download's worst case is five attempts at its own bound with the helper's
 # sleeps of 10, 20, 40 and 80 s between them, 5 x <bound> + 150 s; or, where curl makes the
@@ -1980,11 +1985,11 @@ jobs:
             # rig that puts the two together, and the composite actions whose own downloads this
             # job runs. It names nothing those downloads read — no manifest, no lockfile, no pin,
             # no module file — because what the job proves is that a download survives a faulting
-            # host, and the bytes coming down the wire do not change whether it does. That is why
-            # the bun_install and the go_workspace anchors are gone from it, with the pins and the
-            # worker Dockerfile: each of them is what an ordinary change touches, and together
-            # they selected a job of about two hours on every dependency bump. The job that proves
-            # a version is the one that builds with it.
+            # host, and the bytes coming down the wire do not change whether it does. So this
+            # filter holds no bun_install and no go_workspace anchor, no pin and no worker
+            # Dockerfile: each of those is what an ordinary change touches, and a filter holding
+            # them would select a job of about two hours on every dependency bump. The job that
+            # proves a version is the one that builds with it.
             download_retry:
               # The job's own steps are written here: its sites, its bounds, the hosts each fault
               # answers for and the budget each report holds its site to.
@@ -2240,10 +2245,12 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget (the header's Budgets note): 900 s, the 15 minutes this job carried, above its 25 s
     # measured maximum, plus its slowest retried step alone — the copy step, whose
-    # mirror-ci-images.sh makes a `crane config` at 5 x 60 + 150 = 450 s, a `crane copy` at
-    # 5 x 300 + 150 = 1650 s and a `crane digest` at 450 s, 2550 s together, above
-    # install-crane's 607 s and the ci-ok report's 600 s. 900 + 2550 = 3450 s -> 58 min.
-    timeout-minutes: 58
+    # mirror-ci-images.sh makes two `crane config` ladders at 5 x 60 + 150 = 450 s each, a
+    # `crane copy` at 5 x 300 + 150 = 1650 s and a `crane digest` at 450 s, 3000 s together,
+    # above install-crane's 607 s and the ci-ok report's 600 s. 3000 s is a whole number of
+    # minutes, so that step's own budget takes one more and this job takes it too.
+    # 900 + 3060 = 3960 s -> 66 min.
+    timeout-minutes: 66
     # packages: write is the ghcr.io push `crane copy` makes; actions: read and checks: write are
     # the ci-ok-report step's.
     permissions:
@@ -2268,9 +2275,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Copy every image the package does not hold
-        # Its own retry arithmetic: mirror-ci-images.sh's `crane config` at 5 x 60 + 150 = 450 s,
-        # its `crane copy` at 5 x 300 + 150 = 1650 s and its `crane digest` at 450 s, 2550 s.
-        timeout-minutes: 43
+        # Its own retry arithmetic: mirror-ci-images.sh's `crane config` at 5 x 60 + 150 =
+        # 450 s, written once in image_go() and reached by the two check_go() calls the row
+        # loop holds, 900 s; its `crane copy` at 5 x 300 + 150 = 1650 s; and its `crane digest`
+        # at 450 s. 3000 s, a whole number of minutes, so the budget is the next one strictly
+        # above it -> 51 min.
+        timeout-minutes: 51
         run: .github/scripts/mirror-ci-images.sh
 
       - name: Check the package holds every row of .github/ci-images.yaml
@@ -4594,7 +4604,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.airlock_lean == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    # Budget (the header's Budgets note): 1200 s, the 20 minutes this job carried, above the
+    # 185 s maximum of the four runs made of it on this branch — it was selected by no main push
+    # in the window the header names — plus its slowest retried step alone: install-elan's curl
+    # of the elan tarball, 8 x 60 + 127 = 607 s, above the ci-ok report's 600 s.
+    # 1200 + 607 = 1807 s -> 31 min.
+    timeout-minutes: 31
     env:
       # The built model the two runs below compare the Go code against. Naming no file makes
       # FuzzAirlock skip (internal/broker/airlock/airlock_fuzz_test.go:32-46), and a skip is a
@@ -4622,7 +4637,10 @@ jobs:
         with:
           path: ${{ runner.temp }}/elan
           key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
+      # install-elan's own retry arithmetic: its curl of the release tarball,
+      # 8 x 60 + 127 = 607 s -> 11 min.
       - uses: ./.github/actions/install-elan
+        timeout-minutes: 11
       - name: Build the Lean model
         run: |
           lake build
@@ -4644,6 +4662,11 @@ jobs:
 
       - name: Report ci-ok when this is the run's last job
         if: always()
+        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # this step posts the required ci-ok check, and a budget that cuts it between those two
+        # ladders loses the check run rather than reporting a failure (the header's Budgets note).
+        timeout-minutes: 12
         uses: ./.github/actions/ci-ok-report
         with:
           changes: ${{ toJSON(needs.changes) }}
@@ -5886,10 +5909,10 @@ jobs:
     if: ${{ !github.event.pull_request.draft && (github.event_name == 'pull_request' || github.event_name == 'merge_group') }}
     runs-on: ubuntu-24.04
     # Budget (the header's Budgets note): 600 s, the 10 minutes this job carried, plus its
-    # slowest retried step alone — the text check's four `gh api` reads, 4 x (5 x 30 + 150) =
-    # 1200 s, a whole number of minutes, so that step's own budget takes one more and this job
-    # takes it too. 600 + 1260 = 1860 s -> 31 min.
-    timeout-minutes: 31
+    # slowest retried step alone — the text check's six `gh api` ladders, 6 x (5 x 30 + 150) =
+    # 1800 s, a whole number of minutes, so that step's own budget takes one more and this job
+    # takes it too. 600 + 1860 = 2460 s -> 41 min.
+    timeout-minutes: 41
     # What the two scripts below read through gh, and nothing else: the pull request's commits
     # from the compare route (`contents: read`), the pull request itself, its reviews and its
     # review comments (`pull-requests: read`, which find-pr-payload.sh's read of the pull request
@@ -5929,9 +5952,11 @@ jobs:
       - name: Check the pull request's title, body, branch name, commits, comments and reviews
         # Its own retry arithmetic, so an exhausted read fails this step by name rather than
         # being cut part way by the job: find-pr-payload.sh's one `gh api` read, 5 x 30 + 150 =
-        # 300 s, and check-pr-text.sh's three, 3 x (5 x 30 + 150) = 900 s. 1200 s is a whole
-        # number of minutes, so the budget is the next one strictly above it -> 21 min.
-        timeout-minutes: 21
+        # 300 s, and check-pr-text.sh's five, 5 x (5 x 30 + 150) = 1500 s — the pull request,
+        # the compare, and the page read of read_list, which the `for ((i = 0; i <
+        # ${#lists[@]}; i += 2))` under it runs once for each of the three lists. 1800 s is a
+        # whole number of minutes, so the budget is the next one strictly above it -> 31 min.
+        timeout-minutes: 31
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

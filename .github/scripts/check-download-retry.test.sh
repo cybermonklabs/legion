@@ -224,11 +224,23 @@ while read -r id status was marker; do
     gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"
 done <<<"$runs"
 SH
+  # The last of them is read through two functions: the call sits in image_go(), which
+  # check_go() calls, and the loop runs check_go. A declaration covers it for the loop that
+  # runs those calls, which is the loop the entry names.
   cat > "$root/.github/scripts/mirror-ci-images.sh" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
 . .github/scripts/ci-retry.sh
-while IFS=$'\t' read -r registry tag digest source; do
+image_go() {
+  retry_fetch "the config of $1" 60 -- crane config --platform linux/amd64 "$1"
+}
+check_go() {
+  local carried_go
+  carried_go=$(image_go "$1")
+  [ "$carried_go" = "$2" ] || exit 1
+}
+while IFS=$'\t' read -r registry tag digest source claimed_go; do
+  check_go "$registry@$digest" "$claimed_go"
   retry_fetch "the copy of $source" 300 -- crane copy "$source" "$registry:$tag"
   have=$(retry_fetch "the digest of $registry:$tag" 60 -- crane digest "$registry:$tag")
 done <<<"$rows"
@@ -1114,6 +1126,224 @@ check "exits 1" "$(is "$status" 1)"
 check "names the declaration and what it no longer covers" \
   "$(contains "$out" 'the declared loop for .github/scripts/mirror-ci-images.sh .crane copy. matches no retried call')"
 check "says what the declaration was for" "$(contains "$out" 'written for 1 pass')"
+
+# A step waits for every pass of every loop around a call, for every call of the function that
+# holds it, and for every pass of the loops around those calls — and it waits for all of that
+# again in each script it runs inside a loop of its own. Each shape below was a budget this
+# check read at a fraction of what the step allows: a loop inside a loop counted once, a
+# function called three times counted once, and a script in a three-pass loop counted once.
+# The live instance was the required `pr-title` check: check-pr-text.sh makes five `gh api`
+# ladders and this check counted three, because the third sits in read_list's page loop and
+# the `for ((i = 0; i < ${#lists[@]}; i += 2))` under it calls read_list once for each of the
+# three lists.
+echo "case: a loop inside a loop multiplies the call by both"
+root=$(fixture loop-nested)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read each page of each list
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          for list in comments reviews; do
+            for page in 1 2 3; do
+              retry_fetch "page $page of $list" 30 -- \
+                gh api "repos/$GITHUB_REPOSITORY/issues/1/$list?page=$page"
+            done
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts both loops and not the innermost alone" \
+  "$(contains "$out" 'retries take 1800 s to exhaust')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 31')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: the same nest under a budget above the figure both loops make passes"
+root=$(fixture loop-nested-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read each page of each list
+        timeout-minutes: 31
+        run: |
+          . .github/scripts/ci-retry.sh
+          for list in comments reviews; do
+            for page in 1 2 3; do
+              retry_fetch "page $page of $list" 30 -- \
+                gh api "repos/$GITHUB_REPOSITORY/issues/1/$list?page=$page"
+            done
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a function holding a retried call is counted once for each call of it"
+root=$(fixture function-called-thrice)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the three lists
+        timeout-minutes: 15
+        run: |
+          . .github/scripts/ci-retry.sh
+          read_list() {
+            retry_fetch "the $1 list" 30 -- gh api "repos/$GITHUB_REPOSITORY/issues/1/$1"
+          }
+          read_list comments
+          read_list reactions
+          read_list events
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the call once for each of the three" \
+  "$(contains "$out" 'retries take 900 s to exhaust')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 16')"
+
+echo "case: the same function under a budget above its three calls passes"
+root=$(fixture function-called-thrice-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the three lists
+        timeout-minutes: 16
+        run: |
+          . .github/scripts/ci-retry.sh
+          read_list() {
+            retry_fetch "the $1 list" 30 -- gh api "repos/$GITHUB_REPOSITORY/issues/1/$1"
+          }
+          read_list comments
+          read_list reactions
+          read_list events
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The baseline's ci-ok-reconcile.sh is 3 x (5 x 30 + 150) = 900 s of its own, so a step that
+# runs it three times round a loop waits 2700 s for it.
+echo "case: a script the step runs inside its own loop is counted once for each pass"
+root=$(fixture script-in-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks of each head the queue left
+        timeout-minutes: 45
+        run: |
+          for head in 1 2 3; do
+            .github/scripts/ci-ok-reconcile.sh "$head"
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the script once for each pass of the step's loop" \
+  "$(contains "$out" 'retries take 2700 s to exhaust')"
+check "names the script the step runs" "$(contains "$out" 'ci-ok-reconcile.sh')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 46')"
+
+echo "case: the same script in the same loop under a budget above the three runs passes"
+root=$(fixture script-in-loop-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks of each head the queue left
+        timeout-minutes: 46
+        run: |
+          for head in 1 2 3; do
+            .github/scripts/ci-ok-reconcile.sh "$head"
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# A declaration writes one number, so it answers for one loop. A second loop of the same file,
+# step and verb would take that number without anybody writing it one, which is the undercount
+# the declaration exists to stop.
+echo "case: a declaration that would cover two loops fails"
+root=$(fixture declaration-two-loops)
+cat > "$root/.github/scripts/ci-ok-reconcile.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id status was marker; do
+  retry_fetch "the PATCH of ci-ok check run $id" 30 -- \
+    gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"
+done <<<"$runs"
+while read -r id; do
+  retry_fetch "the ci-ok of run $id" 30 -- \
+    gh api "repos/$GITHUB_REPOSITORY/check-runs/$id"
+done <<<"$others"
+SH
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the entry and the two loops it covers" \
+  "$(contains "$out" 'the declared loop for .github/scripts/ci-ok-reconcile.sh .gh api. covers the loops at lines 4, 8')"
+check "says what the entry was written for" "$(contains "$out" 'This entry said 3 passes')"
+
+# Rule 8 reads a curl's own attempts off the ladder rule 1 holds it to, not off a fixed eight:
+# `--retry 10` is eleven attempts at `--max-time` with 1, 2, 4, …, 512 s between them, so
+# 11 x 30 + 1023 = 1353 s.
+echo "case: a curl's own attempts are counted at the ladder its options write"
+root=$(fixture curl-ladder-budget)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install crane
+        timeout-minutes: 22
+        run: |
+          curl -fsSL --retry 10 --retry-all-errors --max-time 30 -o crane.tar.gz \
+            https://example.com/crane.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the eleven attempts and curl's own waits" \
+  "$(contains "$out" 'retries take 1353 s to exhaust')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 23')"
+
+echo "case: the same curl under a budget above its ladder passes"
+root=$(fixture curl-ladder-budget-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install crane
+        timeout-minutes: 23
+        run: |
+          curl -fsSL --retry 10 --retry-all-errors --max-time 30 -o crane.tar.gz \
+            https://example.com/crane.tar.gz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
 
 echo "case: an argument this check does not take"
 root=$(fixture bad-argument)

@@ -81,10 +81,11 @@ jobs:
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 5400 s, the 90 minutes
     # this job carried — the notices build is the long one, writing the notices of, and
     # cross-compiling, every release target of three modules on a cold module cache — plus its
-    # slowest retried step alone: the notices download's three calls,
-    # 3 x (5 x 180 + 150) = 3150 s, above the daemon download's 1050 s.
-    # 5400 + 3150 = 8550 s -> 143 min.
-    timeout-minutes: 143
+    # slowest retried step alone: the notices download's two calls,
+    # 2 x (5 x 180 + 150) = 2100 s, above the daemon download's 1050 s. That arithmetic is a
+    # whole number of minutes, so the step's own budget takes one more and this job takes it too:
+    # 5400 + 2160 = 7560 s -> 126 min.
+    timeout-minutes: 126
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -168,11 +169,15 @@ jobs:
       # The modules the notices script loads and cross-builds for every release target,
       # downloaded once and retried before it (the Retries note in .github/workflows/ci.yaml's
       # header; the retried unit is the download, never the build). On the notices step's own
-      # condition, so a run that finds that key downloads nothing. Three calls, because the
-      # script builds in three module directories and packages/envoy/infra is a workspace of its
-      # own, which the root go.work does not bind. packages/daemon is among them though the step
-      # above may have fetched it already: the two steps answer different keys, so either runs
-      # alone, and a repeat over a module cache that already holds those modules takes a second.
+      # condition, so a run that finds that key downloads nothing. Two calls for the three module
+      # directories the script builds in: in workspace mode `go mod download` with no arguments
+      # downloads the pattern `all` of the whole workspace, so the first call, made in the root
+      # go.work that binds packages/daemon and packages/envoy, brings down both modules'
+      # requirements. packages/envoy/infra the root go.work does not bind — its own go.work binds
+      # it and packages/envoy — so it takes the second call. packages/daemon is downloaded here
+      # though the step above may have fetched it already: the two steps answer different keys,
+      # so either runs alone, and a repeat over a module cache that already holds those modules
+      # takes a second.
       #
       # 180 s per attempt, as above: 1.6 times the 113 s of the slowest cold run measured
       # (packages/envoy/infra; packages/daemon 81 s, packages/envoy 77 s, each on an empty module
@@ -181,12 +186,12 @@ jobs:
       - name: Download the Go modules the notices script builds
         if: steps.go-notices.outputs.cache-hit != 'true'
         # Its own retry arithmetic, so an exhausted download fails this step by name rather than
-        # being cut part way by the job: three calls, 3 x (5 x 180 + 150) = 3150 s -> 53 min.
-        timeout-minutes: 53
+        # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s. That is a whole
+        # number of minutes, so the budget is the next one strictly above it -> 36 min.
+        timeout-minutes: 36
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
-          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
           retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
 
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the

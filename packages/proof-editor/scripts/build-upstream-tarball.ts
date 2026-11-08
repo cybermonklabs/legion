@@ -98,20 +98,23 @@ function members(sourceDir: string): string[] {
 
 /**
  * Writes the gzipped tar: `package/src/**`, `package/package.json` and `package/LICENSE`, in that
- * sorted order and nothing else, each entry stamped with `mtime`, owned by `0:0` and at mode 644.
+ * sorted order and nothing else, each entry stamped with `mtime`, owned by `0:0` and at mode 644,
+ * or 755 where the file on disk is executable by anyone.
  *
  * tar is handed the member list rather than the directory, so the order is this process's sorted
  * one rather than the filesystem's, and no directory entry, no stray file beside the three and no
  * `.` entry can reach the archive. `--format=ustar` carries no atime or ctime, and `gzip -n` no
  * name or timestamp, so the only dates in the output are the ones passed in.
  *
- * `--mode=a+r,go-w` is there because tar records each file's mode as it finds it on disk, and the
- * extract that put it there applied the caller's umask: one upstream tree unpacked under umask
+ * `--mode=u=rwX,go=rX` is there because tar records each file's mode as it finds it on disk, and
+ * the extract that put it there applied the caller's umask: one upstream tree unpacked under umask
  * 022 and under umask 002 is 644 and 664 on disk, and packs to two sha256 values from one commit.
- * The symbolic form leaves the executable bit alone — `a+r` adds read for everyone, `go-w` takes
- * write from group and other, and neither touches x — so a 644 file stays 644, a 664 one becomes
- * 644 and a 755 one stays 755. Every one of the 250 members of the committed proof-sdk tarball
- * is 644, so a rebuild of the commit it was packed from writes the bytes already committed.
+ * This form answers one question about the file and ignores every other bit: is it executable by
+ * anyone? `X` adds execute only where it is, so a member is 644 or 755 and the umask changes
+ * neither. The symbolic `a+r,go-w` that stood here did not: it kept whatever execute bits the
+ * extract left, so one executable member packed at 755 under umask 022 and 744 under umask 077.
+ * Every one of the 250 members of the committed proof-sdk tarball is 644 and none is executable,
+ * so a rebuild of the commit it was packed from writes the bytes already committed.
  */
 export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): void {
   const names = members(sourceDir);
@@ -129,7 +132,7 @@ export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): voi
         "--files-from=-",
         "--transform=s|^|package/|",
         `--mtime=${mtime}`,
-        "--mode=a+r,go-w",
+        "--mode=u=rwX,go=rX",
         "--owner=0",
         "--group=0",
         "--numeric-owner",
