@@ -758,7 +758,10 @@ func disabled(reasonCode, actor string) string {
 // no other meaning, reads its commit's checks past the first page: the merge, a person's dequeue and
 // a conflict mean what they say, so they read none, and a page GitHub fails to answer never turns
 // the merge's wait into a failure.
-func TestSubmitReadsARemovalItDidNotMakeInsteadOfSubmittingAgain(t *testing.T) {
+// The name is the one the issue's check k3 runs (`go test ./internal/ghautomerge/ -run
+// TestARemoval`), since this is the table every removal reason is read by: the test the review
+// asked be rewritten rather than joined by a second one, folded back under that prefix.
+func TestARemovalTheSubmissionDidNotMakeIsReadInsteadOfSubmittingAgain(t *testing.T) {
 	red := `{"oid":"group-sha","statusCheckRollup":{"contexts":{"nodes":[` +
 		`{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS","detailsUrl":"` + failedRun + `/job/1","checkSuite":{"workflowRun":{"url":"` + failedRun + `"}}},` +
 		`{"__typename":"CheckRun","name":"e2e","status":"IN_PROGRESS","conclusion":null,"detailsUrl":"` + failedRun + `/job/3","checkSuite":{"workflowRun":{"url":"` + failedRun + `"}}},` +
