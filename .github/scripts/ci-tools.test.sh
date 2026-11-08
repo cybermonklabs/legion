@@ -1,0 +1,396 @@
+#!/usr/bin/env bash
+# Tests for `ci-tools.sh`: the primary serves the bytes and the line names it, a primary that does
+# not serve sends the fetch to the second source, a primary that serves other bytes than the row
+# pins stops the fetch there and the second source is never read, a second source that serves
+# other bytes is refused the same way, a refusal of both names both sources, and no refusal of any
+# kind leaves a file at the destination. It also runs the repository's own .github/ci-tools.yaml
+# through the helper, so a row this file cannot parse fails here rather than in a job.
+#
+# NO CASE REACHES THE NETWORK. Each case starts an HTTP origin of its own on 127.0.0.1, at a port
+# the kernel picks, serving a directory this file builds: `github/…` for the release asset,
+# `ghcr/token` and `ghcr/v2/…/blobs/sha256:…` for the package copy, and `npm/@scope/…tgz` for the
+# npm package. The case points the helper's four seams (CI_TOOLS_MANIFEST, CI_TOOLS_GITHUB_BASE,
+# CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE) at that origin and at a fixture manifest of three rows,
+# one per source kind: a ghcr row with a primary, a ghcr row without one (jj's shape, where mise
+# fetches the primary bytes), and an npm row (Bun's shape). The origin writes every path it is
+# asked for to a log, which is how a case says where a run went and, for the mismatch case, where
+# it did not go.
+#
+# Every run of the helper is `bash -euo pipefail -c 'source …'`, the shell a GitHub `run:` step
+# has, because the file under test is sourced into such a shell and carries no `set` of its own.
+#
+# CURL_HOME: the helper gives curl `--retry 7 --retry-all-errors`, whose backoff is 1, 2, 4 … 64
+# seconds, so each case where a source refuses would sleep about 127 seconds before curl gave up.
+# The cases give curl a home whose .curlrc sets `retry-max-time = 1`, which bounds that sleep and
+# changes nothing else: a CI runner sets no CURL_HOME, so the pinned retry budget is what runs
+# there.
+#
+# Run from anywhere: .github/scripts/ci-tools.test.sh
+# CI runs it in ci.yaml's test job.
+set -euo pipefail
+# Each digest and each payload below is read inside a command substitution, and bash does not
+# carry errexit into one on its own: without this, a value that failed to build would be written
+# into the fixture manifest anyway and every case would report on whatever is there.
+shopt -s inherit_errexit
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+repository=$(cd "$script_dir/../.." && pwd)
+helper="$script_dir/ci-tools.sh"
+work=$(mktemp -d)
+servers=()
+trap 'for server in ${servers[@]+"${servers[@]}"}; do kill "$server" 2>/dev/null || true; done; rm -rf "$work"' EXIT
+
+# shellcheck source=.github/scripts/test-lib.sh
+source "$script_dir/test-lib.sh"
+
+REGISTRY=ghcr.io/example/fixture/ci
+REGISTRY_PATH=example/fixture/ci
+
+manifest="$work/ci-tools.yaml"
+runner_temp="$work/runner-temp"
+mkdir -p "$runner_temp" "$work/payloads" "$work/dest" "$work/curl"
+printf 'retry-max-time = 1\n' > "$work/curl/.curlrc"
+
+# The three payloads, one per fixture row, and a copy of each with one byte changed. Nothing is
+# pulled: each digest below is read off the bytes this file just wrote.
+printf 'the bytes a release asset would hold\n' > "$work/payloads/tarred"
+printf 'jj, the binary inside a release tarball\n' > "$work/payloads/jjlike"
+printf 'the bun binary an install puts on PATH\n' > "$work/payloads/packaged"
+
+# corrupt <file> <destination>: those bytes with the first one changed, which is the smallest
+# difference a digest must catch.
+corrupt() {
+  local from=$1 to=$2
+  cp -- "$from" "$to"
+  printf 'X' | dd of="$to" bs=1 seek=0 conv=notrunc status=none
+}
+corrupt "$work/payloads/tarred" "$work/payloads/tarred.changed"
+corrupt "$work/payloads/jjlike" "$work/payloads/jjlike.changed"
+corrupt "$work/payloads/packaged" "$work/payloads/packaged.changed"
+
+# digest_of <file>: the sha256 the manifest writes bare.
+digest_of() { sha256sum -- "$1" | awk '{ print $1 }'; }
+
+TARRED=$(digest_of "$work/payloads/tarred")
+JJLIKE=$(digest_of "$work/payloads/jjlike")
+PACKAGED=$(digest_of "$work/payloads/packaged")
+TARRED_CHANGED=$(digest_of "$work/payloads/tarred.changed")
+JJLIKE_CHANGED=$(digest_of "$work/payloads/jjlike.changed")
+PACKAGED_CHANGED=$(digest_of "$work/payloads/packaged.changed")
+
+# The npm package's tarball, which holds the binary at the member the row names, and one whose
+# member is the changed copy.
+mkdir -p "$work/npm-build/package/bin"
+cp "$work/payloads/packaged" "$work/npm-build/package/bin/packaged"
+tar -czf "$work/payloads/packaged.tgz" -C "$work/npm-build" package/bin/packaged
+cp "$work/payloads/packaged.changed" "$work/npm-build/package/bin/packaged"
+tar -czf "$work/payloads/packaged.changed.tgz" -C "$work/npm-build" package/bin/packaged
+
+ASSET_PATH=github/example/tarred/releases/download/v1.0.0/tarred.tar.gz
+cat > "$manifest" <<YAML
+registry: $REGISTRY
+
+tools:
+  - name: tarred
+    version: 1.0.0
+    digest: $TARRED
+    digest_of: the fixture's release tarball, whole
+    primary: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
+    second_source: ghcr
+    max_time: 7
+    mirror_tag: tool-tarred-1.0.0-${TARRED:0:8}
+    mirror_from: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
+    mirror_member: ""
+  - name: jjlike
+    version: 2.0.0
+    digest: $JJLIKE
+    digest_of: the binary inside the fixture's release tarball
+    primary: ""
+    second_source: ghcr
+    max_time: 7
+    mirror_tag: tool-jjlike-2.0.0-${JJLIKE:0:8}
+    mirror_from: https://github.com/example/jjlike/releases/download/v2.0.0/jjlike.tar.gz
+    mirror_member: ./jjlike
+  - name: packaged
+    version: 3.0.0
+    digest: $PACKAGED
+    digest_of: the binary the package holds
+    primary: ""
+    second_source: npm
+    max_time: 7
+    npm_package: "@fixture/packaged"
+    npm_member: package/bin/packaged
+YAML
+
+# The origin: a directory server that writes every path it is asked for, served or not, to a log.
+# A case reads that log to say which sources a run went to.
+cat > "$work/origin.py" <<'PY'
+import http.server
+import socketserver
+import sys
+
+root, portfile, logfile = sys.argv[1:4]
+
+
+class Handler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory=root, **kwargs)
+
+    def do_GET(self):
+        with open(logfile, "a") as log:
+            log.write(self.path + "\n")
+        super().do_GET()
+
+    def log_message(self, *args):
+        pass
+
+
+socketserver.TCPServer.allow_reuse_address = True
+with socketserver.TCPServer(("127.0.0.1", 0), Handler) as server:
+    with open(portfile, "w") as handle:
+        handle.write(str(server.server_address[1]))
+    server.serve_forever()
+PY
+
+# origin <name>: this case's origin, holding the bytes every row pins, with its server running and
+# its port read. Sets `root`, `log` and `base`, which the three base seams are built from. Each
+# case names its own origin: two cases sharing a name would share a directory, so a repeated name
+# is refused here rather than surfacing as one case seeing another's edits.
+origin() {
+  local name=$1 waited=0
+  root="$work/origins/$name/root"
+  log="$work/origins/$name/requests.log"
+  if [ -e "$work/origins/$name" ]; then
+    echo "  FAIL: the origin name '$name' is already taken by an earlier case" >&2
+    return 1
+  fi
+  mkdir -p "$root/$(dirname "$ASSET_PATH")" "$root/ghcr/v2/$REGISTRY_PATH/blobs" \
+    "$root/npm/@fixture/packaged/-"
+  : > "$log"
+  cp "$work/payloads/tarred" "$root/$ASSET_PATH"
+  printf '{"token":"fixture-token"}\n' > "$root/ghcr/token"
+  cp "$work/payloads/tarred" "$root/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED"
+  cp "$work/payloads/jjlike" "$root/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$JJLIKE"
+  cp "$work/payloads/packaged.tgz" "$root/npm/@fixture/packaged/-/packaged-3.0.0.tgz"
+  python3 "$work/origin.py" "$root" "$work/origins/$name/port" "$log" &
+  servers+=("$!")
+  while [ ! -s "$work/origins/$name/port" ]; do
+    if [ "$waited" -gt 100 ]; then
+      echo "  FAIL: the origin '$name' did not write its port" >&2
+      return 1
+    fi
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  base="http://127.0.0.1:$(cat "$work/origins/$name/port")"
+}
+
+# The three cases that read no source at all still need `base` set, since `run` names it.
+base="http://127.0.0.1:1"
+
+# run <function> <argument…>: the helper, sourced into a shell with errexit, nounset and pipefail
+# on, as a GitHub `run:` step has. Sets `out` to the combined output and `status` to the exit
+# code. Not a subshell, so both survive the call.
+run() {
+  set +e
+  out=$(CI_TOOLS_MANIFEST="$manifest" \
+    CI_TOOLS_GITHUB_BASE="$base/github" \
+    CI_TOOLS_GHCR_BASE="$base/ghcr" \
+    CI_TOOLS_NPM_BASE="$base/npm" \
+    CURL_HOME="$work/curl" \
+    RUNNER_TEMP="$runner_temp" \
+    bash -euo pipefail -c 'source "$1"; "$2" "${@:3}"' bash "$helper" "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+# run_real <function> <argument…>: the same, against the repository's own manifest with
+# CI_TOOLS_MANIFEST unset, so the default resolved from ${BASH_SOURCE[0]} is what answers.
+run_real() {
+  set +e
+  out=$(env -u CI_TOOLS_MANIFEST RUNNER_TEMP="$runner_temp" \
+    bash -euo pipefail -c 'source "$1"; "$2" "${@:3}"' bash "$helper" "$@" 2>&1)
+  status=$?
+  set -e
+}
+
+# asked_for <log> <prefix>: true when the origin was asked for a path under that prefix.
+asked_for() { grep -q "^$2" "$1" && echo true || echo false; }
+
+# temporary_files: what the helper left under RUNNER_TEMP, which is nothing on every path.
+temporary_files() { find "$runner_temp" -mindepth 1 | sort; }
+
+echo "case: github-release — the primary serves the bytes"
+origin primary-serves
+dest="$work/dest/primary-serves"
+run ci_tools_fetch tarred "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+check "names the source that served them" \
+  "$(contains "$out" "^ci-tools: tarred: github-release served the bytes, sha256 $TARRED$")"
+check "read the release asset" "$(is "$(asked_for "$log" "/github/")" true)"
+check "and read no second source" "$(is "$(asked_for "$log" "/ghcr/")" false)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: ghcr-mirror — the primary refuses and the copy serves the bytes"
+origin primary-refuses
+rm -- "$root/$ASSET_PATH"
+dest="$work/dest/primary-refuses"
+run ci_tools_fetch tarred "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+check "says the primary did not serve them" \
+  "$(contains "$out" '^ci-tools: tarred: github-release did not serve the bytes (curl exit 22); trying the second source$')"
+check "names the source that did" \
+  "$(contains "$out" "^ci-tools: tarred: ghcr-mirror served the bytes, sha256 $TARRED$")"
+check "asked the package for an anonymous pull token" \
+  "$(is "$(asked_for "$log" "/ghcr/token?service=ghcr.io&scope=repository:$REGISTRY_PATH:pull")" true)"
+check "and for the blob the digest names" \
+  "$(is "$(asked_for "$log" "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED")" true)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: github-release — the primary serves one byte changed"
+# A digest mismatch is a supply-chain signal, not an outage: the second source is never read
+# after one, because the question it would answer is already answered.
+origin primary-changed
+cp "$work/payloads/tarred.changed" "$root/$ASSET_PATH"
+dest="$work/dest/primary-changed"
+run ci_tools_fetch tarred "$dest"
+check "fails" "$(is "$status" 1)"
+check "names the source and both digests" \
+  "$(contains "$out" "^::error::ci-tools: tarred: the bytes from github-release are not the pinned ones (pinned sha256 $TARRED, read sha256 $TARRED_CHANGED) — refusing$")"
+check "the second source was not read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
+check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: ghcr-mirror — the copy serves one byte changed"
+origin mirror-changed
+rm -- "$root/$ASSET_PATH"
+cp "$work/payloads/tarred.changed" "$root/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED"
+dest="$work/dest/mirror-changed"
+run ci_tools_fetch tarred "$dest"
+check "fails" "$(is "$status" 1)"
+check "names the source and both digests" \
+  "$(contains "$out" "^::error::ci-tools: tarred: the bytes from ghcr-mirror are not the pinned ones (pinned sha256 $TARRED, read sha256 $TARRED_CHANGED) — refusing$")"
+check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: both sources refuse"
+origin both-refuse
+rm -- "$root/$ASSET_PATH" "$root/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED"
+dest="$work/dest/both-refuse"
+run ci_tools_fetch tarred "$dest"
+check "fails" "$(is "$status" 1)"
+check "names both sources and what each did" \
+  "$(contains "$out" '^::error::ci-tools: tarred: no source served the bytes; github-release: curl exit 22; ghcr-mirror: the blob request failed (curl exit 22)$')"
+check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: ghcr-mirror — a row whose primary bytes a third party fetches"
+# jj's shape: mise fetches the primary bytes, so there is no primary here to try. Either entry
+# goes straight to the copy, and neither reads a release asset.
+origin third-party-primary
+dest="$work/dest/third-party-primary"
+run ci_tools_fetch_fallback jjlike "$dest"
+check "the fallback exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$JJLIKE")"
+check "names the source that served them" \
+  "$(contains "$out" "^ci-tools: jjlike: ghcr-mirror served the bytes, sha256 $JJLIKE$")"
+dest="$work/dest/third-party-primary-fetch"
+run ci_tools_fetch jjlike "$dest"
+check "ci_tools_fetch of the same row exits 0" "$(is "$status" 0)"
+check "naming the same source" \
+  "$(contains "$out" "^ci-tools: jjlike: ghcr-mirror served the bytes, sha256 $JJLIKE$")"
+check "and neither read a release asset" "$(is "$(asked_for "$log" "/github/")" false)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: ghcr-mirror — that row's copy serves one byte changed"
+origin third-party-changed
+cp "$work/payloads/jjlike.changed" "$root/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$JJLIKE"
+dest="$work/dest/third-party-changed"
+run ci_tools_fetch_fallback jjlike "$dest"
+check "fails" "$(is "$status" 1)"
+check "names the source and both digests" \
+  "$(contains "$out" "^::error::ci-tools: jjlike: the bytes from ghcr-mirror are not the pinned ones (pinned sha256 $JJLIKE, read sha256 $JJLIKE_CHANGED) — refusing$")"
+check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: npm — the package serves the bytes"
+origin npm-serves
+dest="$work/dest/npm-serves"
+run ci_tools_fetch packaged "$dest"
+check "exits 0" "$(is "$status" 0)"
+check "the destination holds the member's bytes" "$(is "$(digest_of "$dest")" "$PACKAGED")"
+check "names the source that served them" \
+  "$(contains "$out" "^ci-tools: packaged: npm served the bytes, sha256 $PACKAGED$")"
+check "read the package tarball" \
+  "$(is "$(asked_for "$log" "/npm/@fixture/packaged/-/packaged-3.0.0.tgz")" true)"
+check "and left no temporary file" "$(is "$(temporary_files)" "")"
+
+echo "case: npm — the package serves one byte changed"
+origin npm-changed
+cp "$work/payloads/packaged.changed.tgz" "$root/npm/@fixture/packaged/-/packaged-3.0.0.tgz"
+dest="$work/dest/npm-changed"
+run ci_tools_fetch_fallback packaged "$dest"
+check "fails" "$(is "$status" 1)"
+check "names the source and both digests" \
+  "$(contains "$out" "^::error::ci-tools: packaged: the bytes from npm are not the pinned ones (pinned sha256 $PACKAGED, read sha256 $PACKAGED_CHANGED) — refusing$")"
+check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: npm — the registry refuses"
+# The row has no primary, so the refusal names the one source this row has.
+origin npm-refuses
+rm -- "$root/npm/@fixture/packaged/-/packaged-3.0.0.tgz"
+dest="$work/dest/npm-refuses"
+run ci_tools_fetch packaged "$dest"
+check "fails" "$(is "$status" 1)"
+check "names the source and what it did" \
+  "$(contains "$out" '^::error::ci-tools: packaged: no source served the bytes; npm: the package tarball request failed (curl exit 22)$')"
+check "and names no release asset it never had" "$(is "$(contains "$out" 'github-release')" false)"
+check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: ci_tools_digest and ci_tools_field"
+# These cases read the manifest and no source.
+run ci_tools_digest tarred
+check "ci_tools_digest prints the row's digest" "$(is "$out" "$TARRED")"
+check "and exits 0" "$(is "$status" 0)"
+run ci_tools_field packaged npm_package
+check "ci_tools_field prints the field asked for" "$(is "$out" "@fixture/packaged")"
+run ci_tools_field tarred primary
+check "an empty field is an empty line, not a failure" "$(is "$status" 0)"
+run ci_tools_digest crane
+check "an unknown row fails" "$(is "$status" 1)"
+check "naming the row and what the manifest holds" \
+  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name (it holds: jjlike, packaged, tarred)$")"
+run ci_tools_field tarred npm_package
+check "a field this row does not carry fails" "$(is "$status" 1)"
+check "naming the row and the field" \
+  "$(contains "$out" "^::error::ci-tools: tarred: this row of the manifest carries no field 'npm_package'")"
+
+echo "case: ci_tools_verify holds a file this run did not fetch to its row"
+run ci_tools_verify tarred "$work/payloads/tarred" ghcr-mirror
+check "a file whose digest matches passes" "$(is "$status" 0)"
+check "and the line names the source" \
+  "$(contains "$out" "^ci-tools: tarred: ghcr-mirror served the bytes, sha256 $TARRED$")"
+check "and the file is left where it is" \
+  "$(is "$(digest_of "$work/payloads/tarred")" "$TARRED")"
+run ci_tools_verify tarred "$work/payloads/tarred.changed" github-release
+check "a file whose digest does not match fails" "$(is "$status" 1)"
+check "naming the source and both digests" \
+  "$(contains "$out" "^::error::ci-tools: tarred: the bytes from github-release are not the pinned ones (pinned sha256 $TARRED, read sha256 $TARRED_CHANGED) — refusing$")"
+
+echo "case: the repository's own .github/ci-tools.yaml"
+# The default manifest seam, and every row of the real file: a row this helper cannot read fails
+# here rather than in the job that installs the tool.
+for row in crane changie mise jj bun-linux-x64 bun-linux-x64-baseline bun-linux-aarch64; do
+  run_real ci_tools_digest "$row"
+  check "$row prints a 64-character lower-case hex digest" \
+    "$(contains "$out" '^[0-9a-f]\{64\}$')"
+done
+mise_pin=$(sed -n 's/^ARG MISE_SHA256=//p' "$repository/packages/daemon/docker/worker.Dockerfile")
+run_real ci_tools_digest mise
+check "the mise row's digest is ARG MISE_SHA256 of worker.Dockerfile" "$(is "$out" "$mise_pin")"
+
+summary "ci-tools.sh"
