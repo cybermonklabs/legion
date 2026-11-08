@@ -35,11 +35,12 @@ import (
 // sweep, and no drain. Both brokers are reached at one address a TCP forwarder the test owns
 // holds across the restart, as a Service's is: BROKER_PUBLIC_URL and AGENT_SECRETS_URL both name
 // it, so a proof's htu is as good after the restart as before, and while no broker runs the
-// forwarder refuses every connection at once. The outage runs from the first broker's exit until
-// the longest a renewer holding this lease waits before its next renewal, the three sweeps the
-// broker tolerates between two records that it serves, and that renewer's longest retry wait
-// have all passed; the lease itself is taken away on the database's clock rather than waited out
-// (the stop below says how, and why the shortest lease config.Load accepts is 91 s).
+// forwarder refuses every connection at once. The outage runs from the first broker's exit
+// until the survivor's renewer has met it: the renewal it makes a third of a lease after its
+// last one, which no broker is there to serve, and which it prints. Everything else an outage
+// longer than a lease carries - the lease itself, and the gap no broker served - is taken away
+// on the database's clock rather than waited out (the stop below says how, and why the shortest
+// lease config.Load accepts is 91 s).
 //
 // Four pods of one service, enrolled by its launcher and granted its agent-tier secret with no
 // approver, prove one thing each. The survivor is the outage itself: keyed by `agent-secrets
@@ -76,12 +77,12 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// once a third of the lease has passed, so a pod that renews holds at least two thirds of it.
 	sweep := time.Second
 	lease := leasetime.Production().Shortest(sweep)
-	// notServing is the longest gap between two records that a broker serves which still
-	// counts as one serving: leasetime.NotServingSweeps sweeps.
-	notServing := leasetime.NotServingSweeps * sweep
-	// renewerLongestWait is agent-secrets renew's longest wait between two failed attempts
-	// (nextBackoff's cap), so a renewer whose broker is back renews within it.
-	renewerLongestWait := leasetime.RenewBackoffMax
+	// renewAfter is the longest a renewer holding this lease waits before its next renewal: a
+	// third of the lease (leasetime.RenewAfter, which cmd/agent-secrets' renewLoop keeps). It
+	// is the floor under the outage below, and the deadline the wait for the renewal the
+	// outage refuses is given, with leasetime.RenewClientTimeout, the longest one renewal can
+	// hold its renewer, on top of it.
+	renewAfter := leasetime.RenewAfter(lease)
 	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
 	fakeSecrets := `{"secrets": [
 		{"name": "` + testSecretsPrefix + `outage-token", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
@@ -164,6 +165,12 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		default:
 		}
 	}
+	// renewFailures is how many renewals the survivor's renewer has printed as failed. Its
+	// renewLoop writes "<error>; retrying in <backoff>" for every renewal it could not make
+	// and nothing at all for one it made (cmd/agent-secrets/main.go), so this counter rising
+	// is the renewer meeting the outage, the one thing the outage below waits for.
+	const renewRetrying = "; retrying in "
+	renewFailures := func() int { return strings.Count(renewer.Output.String(), renewRetrying) }
 	fetch := func(when string) {
 		t.Helper()
 		started := time.Now()
@@ -212,7 +219,11 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// most one sweep before the stop, so the restored survivor holds at least two thirds of a
 	// lease less one beat, far more than its renewer's longest retry wait, and it renews well
 	// inside that. And the lease given back runs at least four seconds short of a whole one from
-	// the restart, which is what tells the renewer's own renewal after the restart from it.
+	// the restart, which is what tells the renewer's own renewal after the restart from it: the
+	// check below takes a lease less one second past the restart as renewed, and the lease given
+	// back lands three to four seconds under that line. The five seconds cost the test nothing:
+	// the renewer's next renewal falls renewAfter after its last one whatever happens here, so a
+	// second waited before the stop is a second the outage below does not wait.
 	t.Log("--- the outage: the broker is stopped between two of the survivor's renewals")
 	for waited := time.Now(); ; {
 		expires, now := leaseOf(survivorID)
@@ -230,6 +241,7 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 			time.Sleep(250 * time.Millisecond)
 		}
 	}
+	failedBefore := renewFailures()
 	front.route("")
 	first.Terminate(t)
 	if err := first.AwaitExit(t, 30*time.Second); err != nil {
@@ -248,9 +260,10 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// back is a lease longer than the time nobody was serving, which restores each of them to
 	// exactly where a real lease-long outage would have.
 	//
-	// What is left to wait in real time is what the renewer needs and nothing else: the longest
-	// it waits before its next renewal, so the outage is one it really meets and fails; the
-	// three sweeps that still count as a broker serving; and its own longest retry wait.
+	// Nor is the gap no broker served waited out: the shift moves the last record that a broker
+	// served one whole lease into the past, so the second broker reads a gap of a lease and
+	// more, far beyond the leasetime.NotServingSweeps sweeps that still count as a broker
+	// serving. What is left to wait in real time is the renewer and nothing else.
 	for _, shift := range []string{
 		`update broker_serving set last_serving_at = last_serving_at - $1::interval`,
 		`update enrollments set lease_expires_at = lease_expires_at - $1::interval`,
@@ -259,10 +272,25 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 			t.Fatalf("move every lease and every record of a broker serving a lease into the past: %v", err)
 		}
 	}
-	outage := leasetime.RenewAfter(lease) + notServing + renewerLongestWait
-	t.Logf("the first broker exited; every lease and every record of a broker serving is %s further into the past, and no broker serves for %s", lease, outage)
-	time.Sleep(time.Until(stopped.Add(outage)))
+	t.Logf("the first broker exited; every lease and every record of a broker serving is %s further into the past", lease)
+	// The outage ends when the renewer has met it. Its next renewal falls renewAfter after the
+	// renewal the stop was taken against, which is at most renewAfter from here and at least
+	// five seconds less (the margin above), and the forwarder refuses it the moment it is sent,
+	// so the line the renewer then prints comes as early as the renewer can reach it. The
+	// deadline is that floor with leasetime.RenewClientTimeout on top, the longest one renewal
+	// can hold its renewer before it gives up, so a renewal swallowed whole fails here rather
+	// than leaving the test to its own timeout.
+	metBy := renewAfter + leasetime.RenewClientTimeout
+	for renewFailures() == failedBefore {
+		renewerRunning("during the outage")
+		if time.Since(stopped) > metBy {
+			t.Fatalf("the survivor's renewer failed no renewal in the %s no broker served:\n%s",
+				metBy, renewer.Output.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	renewerRunning("during the outage")
+	t.Logf("the survivor's renewer met the outage %s after the first broker exited", time.Since(stopped).Round(time.Millisecond))
 
 	t.Log("--- a second broker serves the same database at the same address")
 	restarted := serve()

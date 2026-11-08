@@ -161,8 +161,14 @@ func BlockIDRepairCount(tree *Node) (repairs int) {
 }
 
 // EnsureBlockIDsCount gives every block in tree a unique blockId and reports how many missing
-// (storedBlockID) or duplicate IDs it replaced.
+// (storedBlockID) or duplicate IDs it replaced. The ids come from the package-level generator
+// (SetBlockIDGenerator); ParseWithBlockIDs stamps a parse from a generator its caller holds.
 func EnsureBlockIDsCount(tree *Node) (stamped int) {
+	return ensureBlockIDs(tree, mintBlockID)
+}
+
+// ensureBlockIDs is EnsureBlockIDsCount with mint minting every id it stamps.
+func ensureBlockIDs(tree *Node, mint func() string) (stamped int) {
 	seen := make(map[string]struct{})
 	Walk(tree, func(node *Node) bool {
 		if node.Type == "doc" || isInlineNodeType(node.Type) {
@@ -179,7 +185,7 @@ func EnsureBlockIDsCount(tree *Node) (stamped int) {
 		}
 		var id string
 		for {
-			id = mintBlockID()
+			id = mint()
 			if _, duplicate := seen[id]; !duplicate && id != "" {
 				break
 			}

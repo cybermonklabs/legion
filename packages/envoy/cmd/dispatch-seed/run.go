@@ -9,7 +9,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -69,10 +68,13 @@ const (
 func (r *seedRun) do(ctx context.Context) error {
 	r.bands = map[string]int{}
 	r.random = rand.New(rand.NewPCG(randomSeed+1, randomSeed^0x5851f42d4c957f2d))
-	// Every block id of every document comes from this counter, reset for each document, so a
-	// run writes the same block ids as the run before it. pmdoc mints a UUID v4 otherwise.
-	pmdoc.SetBlockIDGenerator(r.blockIDs())
-	defer pmdoc.SetBlockIDGenerator(nil)
+	// Every block id of every document comes from this run's own counter, reset for each
+	// document (blockIDs, startDocument), so a run writes the same block ids as the run before
+	// it. The counter is passed to the one parse whose ids are stored (renderVersion) rather
+	// than installed in pmdoc for the whole process, so two runs at once - the package's tests
+	// seed in parallel - never draw from each other's counter (dispatch://INFRA-1075). Every
+	// other parse of a run, the task counter's and itemblocks.Split's, throws its ids away and
+	// takes pmdoc's own UUIDs.
 
 	planned := time.Now()
 	r.plan = newPlan(r.sizes)
@@ -111,9 +113,9 @@ func (r *seedRun) do(ctx context.Context) error {
 }
 
 // blockIDs is the block id generator every document render uses: b1, b2, … in document order,
-// restarted for each document (startDocument). pmdoc stamps every block that carries no id, so
-// the ids of one document are the same in every run, and a mention naming `#b-b2` names the same
-// block each time.
+// restarted for each document (startDocument). pmdoc stamps every block that carries no id
+// (ParseWithBlockIDs), so the ids of one document are the same in every run, and a mention
+// naming `#b-b2` names the same block each time.
 func (r *seedRun) blockIDs() func() string {
 	return func() string {
 		r.blockCounter++
@@ -122,9 +124,9 @@ func (r *seedRun) blockIDs() func() string {
 }
 
 // startDocument restarts the block id counter, so the next document's blocks are numbered from
-// one. Every parse between two calls of it - the task counter's, itemblocks.Split's - draws from
-// the same counter and throws its ids away, which is why the counter is restarted for the
-// document rather than counted on.
+// one. Only the render of the document's latest version draws from the counter
+// (renderVersion), and it draws once per block in document order, so the counter is restarted
+// for the document rather than counted on.
 func (r *seedRun) startDocument() {
 	r.blockCounter = 0
 }

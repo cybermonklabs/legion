@@ -97,6 +97,20 @@ func Parse(markdown string) (*Node, error) {
 	return parseStamped(markdown, NewWriteBudget())
 }
 
+// ParseWithBlockIDs is Parse with mint, rather than the package-level generator
+// (SetBlockIDGenerator), minting the id of every block the markdown leaves without one. A caller
+// whose block ids come from a counter of its own - cmd/dispatch-seed, whose data set is the same
+// on every run - passes that counter here instead of installing it for the whole process, so two
+// such callers parse at once without rendering each other's documents under the other's counter.
+func ParseWithBlockIDs(markdown string, mint func() string) (*Node, error) {
+	doc, err := parseUnstamped(markdown, fromStart, true, NewWriteBudget())
+	if err != nil {
+		return nil, err
+	}
+	ensureBlockIDs(doc, mint)
+	return doc, nil
+}
+
 // ParseRendering is Parse of markdown the renderer wrote, a read-back, whose short rows are the
 // tree's: its padding spends a budget of its own (readBackBudget), not a caller write's.
 func ParseRendering(markdown string) (*Node, error) {

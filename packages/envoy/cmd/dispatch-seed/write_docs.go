@@ -59,7 +59,7 @@ func (r *seedRun) writeDocument(ctx context.Context, tx pgx.Tx, index int) error
 		r.startDocument()
 		markdown := r.plan.documentMarkdown(index, number, r.random, bytes)
 		if number == document.Versions {
-			rendered, offsets, tableRow, err := renderVersion(markdown)
+			rendered, offsets, tableRow, err := renderVersion(markdown, r.blockIDs())
 			if err != nil {
 				return err
 			}
@@ -116,6 +116,10 @@ const versionStep = 36 * time.Hour
 // pair a version write stores and indexes together (docs' indexDocument). It also answers the
 // block id of the first table's first body row, which is what an anchor on a table row names.
 //
+// mint is the run's own block id counter (seedRun.blockIDs): this parse is the one parse of a
+// run whose ids are stored, and it takes them from the caller rather than from a generator
+// installed in pmdoc for the whole process, so two runs render at once (dispatch://INFRA-1075).
+//
 // Only a block the renderer writes through its block path carries an offset, so a table is one
 // block and its rows and its cells are none, although pmdoc stamps an id on each of them
 // (EnsureBlockIDsCount). That is why a table-row anchor names a block id that `document_blocks`
@@ -123,8 +127,8 @@ const versionStep = 36 * time.Hour
 //
 // It refuses a render whose shape is not the one the seed lays out, so a change in pmdoc that
 // moved a block shows up here rather than as a wrong anchor in the data set.
-func renderVersion(markdown string) (string, []model.ArtifactBlock, string, error) {
-	tree, err := pmdoc.Parse(markdown)
+func renderVersion(markdown string, mint func() string) (string, []model.ArtifactBlock, string, error) {
+	tree, err := pmdoc.ParseWithBlockIDs(markdown, mint)
 	if err != nil {
 		return "", nil, "", fmt.Errorf("parse the generated markdown: %w", err)
 	}
