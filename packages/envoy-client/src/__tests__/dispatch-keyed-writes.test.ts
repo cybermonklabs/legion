@@ -1226,7 +1226,7 @@ describe("DispatchClient's uploads on a real connection", () => {
   // and the client is right to send a third, which is how this row failed. So it asserts what it
   // means - the first attempt reached the server incomplete, the last one landed whole, every
   // attempt carried the one key - and not the count, which is the machine's answer rather than the
-  // client's. The body is 16 MiB rather than the 2 MiB just over `STREAMED_BODY_MIN`, because the
+  // client's. The body is 16 MiB rather than 2 MiB, twice `STREAMED_BODY_MIN`, because the
   // socket buffers in this pod took 2 MiB and 512 bytes whole 1 round of 5: at that size the first
   // attempt can leave the client entirely, and what cuts it off is then the silence after the body
   // went rather than a connection that stopped taking it. At 16 MiB the connection stops taking it

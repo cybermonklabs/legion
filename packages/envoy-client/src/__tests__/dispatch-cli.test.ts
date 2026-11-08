@@ -1519,11 +1519,12 @@ describe("the dispatch entry as its own process", () => {
   // Exit 2, not 1: an argument this CLI refuses before it calls Dispatch is a usage error, and 1
   // is a write Dispatch refused (`skill://dispatch`, "Exit 1 is a refusal, 2 a usage error"). The
   // browser row this replaced asserted 1 until cybermonklabs/legion#2781 made the codes distinct.
+  //
   // The 30 s limit is a hang guard, not a budget: the row runs the entry as a child process, and
   // bun's unwritten 5,000 ms per-test default is a limit on that work rather than on a hang.
   // Measured in a 2-CPU pod: 0.37 s idle; under 16 busy loops (8 x nproc), 3.98 s at most over 23
-  // whole-suite runs and 2.98 s with this file alone, which passes that default. It fires only if
-  // the child never exits.
+  // whole-suite runs and 2.98 s with this file alone, past half that default. It fires only if the
+  // child never exits.
   test("exits 2 on a .jsonl name under --content-file, naming --path, and sends nothing", async () => {
     writeFileSync(join(stateDir, "rows.jsonl"), rows);
 
