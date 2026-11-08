@@ -22,12 +22,23 @@
 // phone read by nothing.
 //
 // The rest of acceptance A7 is here too, and each of those rows reads a build rather than a
-// clock: a link to the decision block at the end of the larger document lands on that block, a
-// reader answers that decision, and a comment body of twenty diagrams draws only the diagrams
-// the reader has reached. Two rows of the draw that makes those targets reachable at all are
-// here as well: the document on the screen before its editor exists, and the editor opening
-// where its reader had got to. None of them carries throttling: what they prove is what the
-// page does, not how long it takes.
+// clock: a link to the decision block at the end of a document lands on that block, a reader
+// answers that decision, and a comment body of twenty diagrams draws only the diagrams the
+// reader has reached. Two rows of the draw that makes those targets reachable at all are here
+// as well: the document on the screen before its editor exists, and the editor opening where
+// its reader had got to. None of them carries throttling: what they prove is what the page
+// does, not how long it takes.
+//
+// Which document a row seeds is in its title, and the larger one is seeded only where the row
+// needs it: the measurement of it, the row that holds that measurement's window open over its
+// build, the two rows that read what a build serves the rest of the page (a build of a few
+// seconds hands over too few timers and carries too few of another person's words to say
+// anything), the row that answers a decision inside a build, which needs a build still running
+// when the page presses the card, the desktop guard above, the row whose claim is what a build
+// costs over a page of that size, and the row that reads the reader's place half-way down it.
+// Every other row seeds the AHXV6-1-shaped document, whose build costs about a fifth as much:
+// what those rows read is an order, a place or a count, and 406,000 characters buy none of
+// them anything.
 import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
 
 import { LONGEST_HOLD_MS } from "../web/src/features/doc/first-batch";
@@ -137,6 +148,18 @@ interface TheirWordLanded {
   readonly open: boolean;
 }
 
+/** What the page recorded of the answer it pressed while the editor was being built: the press
+ *  the page received, how much of the document the editor held then, and whether the build was
+ *  still running. */
+interface TheAnswerPressed {
+  /** The click event's own `timeStamp`, which the browser sets when it makes the event. */
+  readonly at: number;
+  /** How many top-level blocks the editor held when the press arrived. */
+  readonly built: number;
+  /** Whether the build was still running then: the finished editor had not been named. */
+  readonly building: boolean;
+}
+
 declare global {
   interface Window {
     /** How many of the document's blocks the editor's root held at each animation frame, which
@@ -145,6 +168,11 @@ declare global {
     /** What each animation frame of the build held, which `framesOfTheBlocks` records and the
      *  count row reads. */
     __blockFrames?: BlockFrame[];
+    /** What the row that answers a decision inside a build recorded: the press the page made
+     *  in a frame of the build, and `performance.now()` when the request carrying the answer
+     *  left the page. */
+    __answerPressed?: TheAnswerPressed;
+    __answerSentMs?: number;
     /** What each task of the build drew, which `drawsOfEachTask` records and the decision-card
      *  row reads. */
     __drawnInTasks?: DrawnInATask[];
@@ -407,12 +435,15 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
   }
 });
 
-test(`a link to the decision block at the end of ${documentNames.large} lands on that block @phone`, async ({
+test(`a link to the decision block at the end of ${documentNames.small} lands on that block @phone`, async ({
   browser,
 }) => {
   test.setTimeout(600_000);
   const block = decisionBlockId(decisionBlocks);
-  const { path } = await seedDocument("specs-large.md", largeDocument);
+  // The AHXV6-1-shaped document: the last of the five decision blocks sits in the last section
+  // of either document, and where the page ends up is the same question over 81,000 characters
+  // as over 406,000.
+  const { path } = await seedDocument("specs-small.md", smallDocument);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -463,14 +494,17 @@ test(`${documentNames.small} is on the screen before its editor is @phone`, asyn
   }
 });
 
-test(`the editor opens ${documentNames.large} where its reader had got to @phone`, async ({
+test(`the editor opens ${documentNames.small} where its reader had got to @phone`, async ({
   browser,
 }) => {
   test.setTimeout(600_000);
-  const { path } = await seedDocument("specs-large.md", largeDocument);
+  // The AHXV6-1-shaped document, whose draw the build here runs over whole: what the row reads
+  // is where the reader is left, which is the same question at either size. Measured on this
+  // pod, the row costs 16 to 23 s over it against 105 s over the larger document.
+  const { path } = await seedDocument("specs-small.md", smallDocument);
   // A section half-way down the document: far enough that a swap which kept the page's scroll
   // offset rather than the reader's place would leave them sections away from these words.
-  const landmarkText = sectionHeading(Math.floor(documentDiagrams.large / 2));
+  const landmarkText = sectionHeading(Math.floor(documentDiagrams.small / 2));
 
   const alice = await asUser(browser, "alice");
   try {
@@ -483,9 +517,9 @@ test(`the editor opens ${documentNames.large} where its reader had got to @phone
     // The reader stops with this section's heading at the top of their screen - the block the
     // swap reads their place from is the one the screen starts with, so this is the block the
     // row is about. The blocks the scroll passed paint as it goes and the page settles under
-    // them, which moves the heading, so it is put back at the top once that is over. A page
-    // scrolled this far is 120,000 px from the top, so a swap that kept the page's offset
-    // rather than the reader's place would land sections away.
+    // them, which moves the heading, so it is put back at the top once that is over. How far
+    // down the reader is, the row proves before it swaps: over 10,000 px, tens of screenfuls,
+    // so a swap that kept the page's offset rather than their place would land sections away.
     await landmark.scrollIntoViewIfNeeded();
     await settledScrollTop(page);
     await landmark.evaluate((heading) => heading.scrollIntoView({ block: "start" }));
@@ -557,11 +591,11 @@ async function framesOfTheBuild(page: Page): Promise<void> {
   });
 }
 
-test(`the editor opens ${documentNames.large} with every block of it in the DOM @phone`, async ({
+test(`the editor opens ${documentNames.small} with every block of it in the DOM @phone`, async ({
   browser,
 }) => {
   test.setTimeout(900_000);
-  const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
+  const { artifactId, path } = await seedDocument("specs-small.md", smallDocument);
   const blocks = await getArtifactBlocks(artifactId);
   expect(blocks.length).toBeGreaterThan(100);
 
@@ -580,17 +614,16 @@ test(`the editor opens ${documentNames.large} with every block of it in the DOM 
     expect(await blocksBuilt(page)).toBe(0);
 
     await transport.release();
-    // The same 900 s the other rows that read a build of this document carry, in place of the
-    // 240 s that stood here, because most of what this row waits for is its own reading of
-    // the build. Measured on this pod at 4x CPU throttling, with the socket released at the
-    // draw's first block as above: the build itself - the editor's root going live until the
-    // finished editor is named - is 34 s on `iphone` and 73 s on `chromium`; the per-frame
-    // count of `framesOfTheBuild`, which scans the editor's 7,036 block elements in every
-    // frame the build lets the browser draw, and this wait, whose role selector Playwright
-    // runs over that same document again on every mutation the batches make, take the whole
-    // to 100 s and 173 s. The 240 s had room for neither, and before the build's frontier was
-    // fixed (`packages/proof-editor/src/progressive-build.ts`) it had room for nothing at
-    // all: the same two numbers were 173 s and 281 s then.
+    // The wait is this row's own reading as much as it is the build: the per-frame count of
+    // `framesOfTheBuild` scans every block element the editor holds in each frame the build
+    // lets the browser draw, and this wait's role selector runs over the same document again
+    // on every mutation the batches make. Measured on this pod at 4x CPU throttling, with the
+    // socket released at the draw's first block as above, the whole row costs 30 to 44 s over
+    // the AHXV6-1-shaped document, against 402 s over the larger one, which it seeded until the
+    // browser shards ran out of their nine minutes. The 900 s stands because a `chromium`
+    // lane pays about twice a phone's for the same reading, and because before the build's
+    // frontier was fixed (`packages/proof-editor/src/progressive-build.ts`) the same two
+    // readings over the larger document were 173 s and 281 s.
     await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
 
     // Every block the server indexed the document under is in the editor's DOM, under the id a
@@ -624,12 +657,15 @@ test(`the editor opens ${documentNames.large} with every block of it in the DOM 
   }
 });
 
-test(`an edit made while ${documentNames.large}'s editor is being built is in it when the build ends @phone`, async ({
+test(`an edit made while ${documentNames.small}'s editor is being built is in it when the build ends @phone`, async ({
   browser,
 }) => {
   test.setTimeout(900_000);
-  const { path } = await seedDocument("specs-large.md", largeDocument);
-  const title = documentTitle(documentDiagrams.large);
+  // The AHXV6-1-shaped document: what this row needs of a build is that it outlast several of
+  // the other person's words, which the row proves itself before it reads anything else. It
+  // costs 94 s over this document against 428 s over the larger one on this pod.
+  const { path } = await seedDocument("specs-small.md", smallDocument);
+  const title = documentTitle(documentDiagrams.small);
 
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -1080,16 +1116,16 @@ async function editsMade(page: Page, planned: readonly ReaderEdit[]): Promise<Ed
   return made;
 }
 
-test(`typing in ${documentNames.large}'s first block while it is built reaches the document @phone`, async ({
+test(`typing in ${documentNames.small}'s first block while it is built reaches the document @phone`, async ({
   browser,
 }) => {
   test.setTimeout(900_000);
-  const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
+  const { artifactId, path } = await seedDocument("specs-small.md", smallDocument);
   const before = await getArtifactText(artifactId);
   // What the editor ends up holding is read after the build, not from the server's index: the
   // page counts every block of the editor at whatever depth, which is the same number the
   // reader's edits were recorded against.
-  const title = documentTitle(documentDiagrams.large);
+  const title = documentTitle(documentDiagrams.small);
   const typing: readonly ReaderEdit[] = [
     { edge: "after", kind: "type", quote: title, text: " Pangolin." },
   ];
@@ -1125,13 +1161,13 @@ test(`typing in ${documentNames.large}'s first block while it is built reaches t
   }
 });
 
-test(`two people write in ${documentNames.large} while its editor is built @phone`, async ({
+test(`two people write in ${documentNames.small} while its editor is built @phone`, async ({
   browser,
 }) => {
   test.setTimeout(900_000);
-  const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
+  const { artifactId, path } = await seedDocument("specs-small.md", smallDocument);
   // The editor's own finished count is read after the build (the typing row says why).
-  const title = documentTitle(documentDiagrams.large);
+  const title = documentTitle(documentDiagrams.small);
   // A word inside a block, Enter to split one, Backspace to join two, and a paste that runs
   // from one block into the next and lands three.
   const reading: readonly ReaderEdit[] = [
@@ -1617,7 +1653,125 @@ test(`no task of ${documentNames.large}'s build holds a desktop page for half a 
   }
 });
 
-test(`a decision answered while ${documentNames.large}'s editor is built is stored before it opens @phone`, async ({
+/** How long after the press the answer's request may take to leave the page. What stands
+ *  between the two is the page's own work and none of the build's length: React's state for the
+ *  pick, the card's render, and the write the press makes, each a posted task the build has to
+ *  let through. Half a second is the span R11 calls a freeze, and it is what a build may not
+ *  cost a reader who answers a decision while it runs. */
+const theAnswerLeavesWithinMs = 500;
+
+/**
+ * Has the page itself answer the decision block `block` holds - picking `option` and pressing
+ * the card's Answer button as soon as the build has drawn them - and records what it did: the
+ * press the page received, how much of the document the editor held then, whether the build
+ * was still running, and when the request carrying the answer left the page.
+ *
+ * The press is the page's own rather than this side's, for the reason `readerEditsTheBuild`
+ * gives: an action driven from here is a round trip, and on a document this size Playwright's
+ * own check of the radio and press of the button cost 10.9 s on this pod and 11 to 17 s on
+ * GitHub's runners, where the whole build is 8.2 s. A row that presses from here therefore
+ * reads whether two round trips beat the build, which says nothing about the reader. From a
+ * frame the press lands inside the build, and the row says so rather than assuming it.
+ *
+ * Install before the navigation; read what it recorded off the page afterwards.
+ */
+async function readerAnswersTheBuild(
+  page: Page,
+  { answer, block, option }: { answer: string; block: string; option: string }
+): Promise<void> {
+  await page.addInitScript(
+    ({
+      answered,
+      blockId,
+      live,
+      named,
+      wanted,
+    }: {
+      answered: string;
+      blockId: string;
+      live: string;
+      named: string;
+      wanted: string;
+    }) => {
+      // When the answer left the page, read where the page makes the request rather than off
+      // the browser's resource timing: the number is then the moment the reader's answer went
+      // out, not the moment a task the build served recorded that it had.
+      window.fetch = new Proxy(window.fetch, {
+        apply(made, that, args: [RequestInfo | URL, RequestInit?]) {
+          const asked = args[0];
+          const where =
+            typeof asked === "string" ? asked : asked instanceof URL ? asked.href : asked.url;
+          if (new URL(where, window.location.origin).pathname === answered) {
+            window.__answerSentMs ??= performance.now();
+          }
+          return Reflect.apply(made, that, args);
+        },
+      });
+      const look = () => {
+        const root = document.querySelector(live);
+        const card =
+          root?.querySelector(
+            `[data-dispatch-ask-block="${blockId}"] article[data-testid^="ask-"]`
+          ) ?? null;
+        if (root === null || card === null) {
+          requestAnimationFrame(look);
+          return;
+        }
+        const radio = [...card.querySelectorAll<HTMLInputElement>('input[type="radio"]')].find(
+          (input) => (input.closest("label")?.textContent ?? "").includes(wanted)
+        );
+        if (radio === undefined) {
+          requestAnimationFrame(look);
+          return;
+        }
+        if (!radio.checked) {
+          // The pick in a frame of its own, because what it leaves behind is React's: the lone
+          // Answer button a compact card shows once an option is picked, and the refusal that
+          // button answers a press with while none is.
+          radio.click();
+          requestAnimationFrame(look);
+          return;
+        }
+        const press = [...card.querySelectorAll("button")].find(
+          (button) => (button.textContent ?? "").trim() === "Answer"
+        );
+        if (press === undefined || press.disabled || press.ariaDisabled === "true") {
+          requestAnimationFrame(look);
+          return;
+        }
+        press.addEventListener(
+          "click",
+          (event) => {
+            window.__answerPressed = {
+              at: event.timeStamp,
+              building: document.querySelector(named) === null,
+              built: root.querySelector('[contenteditable="true"]')?.childElementCount ?? 0,
+            };
+          },
+          { capture: true, once: true }
+        );
+        press.click();
+      };
+      requestAnimationFrame(look);
+    },
+    { answered: answer, blockId: block, live: liveEditorRoot, named: namedEditor, wanted: option }
+  );
+}
+
+// What a reader's answer costs while their editor is being built. The card is React's - the
+// radio is its state, the button's refusal is its state, and the answer is a write the press
+// makes - so every step between the press and the request is a posted task the build has to
+// let through. The row holds that span to half a second, with the build still running when the
+// page received the press: the build may not starve the answer a reader gives it.
+//
+// Both numbers are the page's own. Until INFRA-341 the row compared the moment the server had
+// stored the answer with the moment the editor opened, and that comparison turned on neither:
+// the answer is stored 30 to 180 ms after the press in every run, so what decided it was
+// whether Playwright's own check and click - 10.9 s on this pod, 11 to 17 s on GitHub's
+// runners - beat the build, which is 41 to 108 s here and 8.2 s there. It passed here and
+// failed there, and neither answer was about the reader. The press is the page's own now
+// (`readerAnswersTheBuild`), so it lands inside the build whatever the machine costs.
+test(`a decision answered while ${documentNames.large}'s editor is built goes out within half a second of the press @phone`, async ({
   browser,
 }) => {
   test.setTimeout(900_000);
@@ -1633,54 +1787,62 @@ test(`a decision answered while ${documentNames.large}'s editor is built is stor
   try {
     const page = await alice.newPage();
     await throttleTheCpu(page);
-    const reached = await watchTheDocument(page);
+    await readerAnswersTheBuild(page, {
+      answer: `/api/v1/asks/${indexed?.id}/answer`,
+      block,
+      option: "The next window",
+    });
     await page.goto(path, { waitUntil: "commit" });
-    // The page's clock against this run's, read before the first batch, so the reading is not
-    // itself one of the things the build has to serve. `timeOrigin` never moves afterwards.
-    const timeOrigin = await page.evaluate(() => performance.timeOrigin);
-    await reached.firstBlock;
 
-    // The card the editor hosts in the block the build has reached, answered while the rest of
-    // the document is still being built: the radio is React's own state, the button's enabled
-    // state is React's, and the answer is a fetch, so every step of this is a posted task the
-    // build has to let through.
-    const card = page
-      .locator(`${liveEditorRoot} [data-dispatch-ask-block="${block}"]`)
-      .locator("article[data-testid^=ask-]");
-    await card.getByRole("radio", { name: "The next window" }).check();
-    await card.getByRole("button", { exact: true, name: "Answer" }).click();
-
-    let storedAt = 0;
+    // The page has pressed the card and its answer has left. The wait is for the request, not
+    // for the build: what the editor does with the rest of the document after this is the
+    // business of the rows above.
+    await expect
+      .poll(async () => (await page.evaluate(() => window.__answerSentMs)) !== undefined, {
+        intervals: [250],
+        message: "the page never answered the decision block its build had drawn",
+        timeout: 300_000,
+      })
+      .toBe(true);
+    // And the server holds it, which is what the press was for.
     await expect
       .poll(
-        async () => {
-          const state = (await listIssueAsks(issueKey)).find(
-            (ask) => ask.block_id === block
-          )?.state;
-          if (state === "answered" && storedAt === 0) {
-            storedAt = Date.now();
-          }
-          return state;
-        },
+        async () => (await listIssueAsks(issueKey)).find((ask) => ask.block_id === block)?.state,
         {
           intervals: [250],
           message: "the answer never reached the server",
-          timeout: 600_000,
+          timeout: 120_000,
         }
       )
       .toBe("answered");
 
-    const openedMs = await reached.editorOpened;
-    const storedMs = storedAt - timeOrigin;
+    const pressed = await page.evaluate(() => window.__answerPressed);
+    const sentMs = (await page.evaluate(() => window.__answerSentMs)) ?? Number.NaN;
+    const leftAfterMs = sentMs - (pressed?.at ?? Number.NaN);
+    // Printed before either number is read against anything, as every other number in this
+    // file is.
     console.log(
-      `R11 decision during the build · answered and stored at ${Math.round(storedMs)} ms, ` +
-        `editor open at ${Math.round(openedMs)} ms, on the page's own clock.`
+      `R11 decision during the build · the page received the press at ` +
+        `${Math.round(pressed?.at ?? Number.NaN)} ms with ${pressed?.built ?? 0} block(s) built ` +
+        `and the build ${pressed?.building === true ? "running" : "over"}, and the answer's ` +
+        `request left at ${Math.round(sentMs)} ms, ${Math.round(leftAfterMs)} ms later ` +
+        `(target ${theAnswerLeavesWithinMs} ms), on the page's own clock.`
     );
+
+    expect(pressed, "the page never pressed the card's Answer button").toBeDefined();
+    // The press was made in a build: the editor held part of the document and had not been
+    // named, so the number below is not a target met by a page with nothing left to do.
+    expect(pressed?.built ?? 0).toBeGreaterThan(0);
     expect(
-      Math.round(storedMs),
-      "the answer reached the server only once the build was over: a reader who answers a " +
-        "decision while their editor is being built is answering nothing until it ends"
-    ).toBeLessThan(Math.round(openedMs));
+      pressed?.building,
+      "the build was over by the time the page pressed the card, so this run says nothing " +
+        "about an answer given during one"
+    ).toBe(true);
+    expect(
+      Math.round(leftAfterMs),
+      `the reader's answer took ${Math.round(leftAfterMs)} ms to leave the page after the ` +
+        "press: the build is holding the one thing the reader did with it"
+    ).toBeLessThanOrEqual(theAnswerLeavesWithinMs);
   } finally {
     await alice.close();
   }
@@ -1717,6 +1879,10 @@ async function whenTheirWordLands(page: Page, word: string): Promise<void> {
   );
 }
 
+// The larger document, as the row above it: what this one needs of a build is that it outlast
+// a keystroke driven from here and the socket message that carries it. Over the AHXV6-1-shaped
+// document the word reached the editor with 1,343 of its 1,436 blocks built on this pod, which
+// leaves the row nothing to fail on, against 2,111 of 7,036 over the larger one.
 test(`another person's edit reaches ${documentNames.large} while its editor is built @phone`, async ({
   browser,
 }) => {
@@ -2231,10 +2397,10 @@ test(`each decision card of ${documentNames.small} is drawn in a task of its own
   }
 });
 
-test(`a reader answers a decision block in ${documentNames.large} @phone`, async ({ browser }) => {
+test(`a reader answers a decision block in ${documentNames.small} @phone`, async ({ browser }) => {
   test.setTimeout(600_000);
   const block = decisionBlockId(decisionBlocks);
-  const { path } = await seedDocument("specs-large.md", largeDocument);
+  const { path } = await seedDocument("specs-small.md", smallDocument);
 
   const alice = await asUser(browser, "alice");
   try {
