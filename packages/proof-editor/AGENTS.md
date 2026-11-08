@@ -17,38 +17,40 @@ from micromark-extension-directive 4.0.0 instead, and `src/html-flow.ts` from
 micromark-core-commonmark 2.0.3.
 
 The upstream modules this package imports at runtime are pinned at
-**dc6a852b2ab45463dc9d3d17762235450c8ff0d6** on the fork's cleaned `library` line, and come from
-the tarball `proof-sdk-<commit>.tgz` committed beside this file and installed by
-`package.json`'s `"proof-sdk-upstream": "file:./proof-sdk-<commit>.tgz"`. It used to
-be a `github:` dependency, which made every `bun install` — every CI job's and every image
-build's — fetch 31 MB from api.github.com, so a bad minute there failed jobs that read nothing
-else of GitHub (INFRA-1545). Moving that pin changes nothing in the table; it changes what
-`node_modules/proof-sdk-upstream` holds, and `tests/upstream-pin.test.ts` is what checks it.
+**dc6a852b2ab45463dc9d3d17762235450c8ff0d6** on the fork's cleaned `library` line, and they come
+from `proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz`, the tarball committed beside this
+file, which `package.json` installs as `"proof-sdk-upstream": "file:./proof-sdk-<commit>.tgz"`.
+It used to be a `github:` dependency, so every `bun install` — every CI job's and both image
+builds' — fetched those sources from api.github.com, and a bad minute there failed jobs that
+read nothing else of GitHub. Moving the pin changes nothing in the table below; it changes what
+`node_modules/proof-sdk-upstream` holds, and `tests/upstream-pin.test.ts` is what checks that.
 
-`scripts/build-upstream-tarball.ts` is what writes the tarball, and § Commands below says how
-to run it. It downloads a commit's tree from `sjawhar/proof-sdk` and packs the `src/`,
-`package.json` and `LICENSE` of it that the git dependency used to install, and nothing else, to
-the same bytes on every run: the member list is sorted rather than left to readdir order, every
-entry carries the commit's author date and `0:0` ownership, and gzip writes no timestamp.
+To move the pin to a new commit, in this order:
 
-To raise the pin, in this directory:
+1. Run `bun run build-upstream-tarball <commit>`, with the commit's full 40-character sha, which
+   writes `proof-sdk-<commit>.tgz` beside `package.json`. It needs GNU tar, whose options it
+   passes; on macOS put the `gnubin` directory of Homebrew's `gnu-tar` first on `PATH`.
+2. Delete the old tarball. The `.gitignore` entry that tracks it is a glob, so a forgotten one
+   stays tracked, and `tests/one-upstream-tarball.test.ts` fails until the directory holds
+   exactly one.
+3. Change `package.json`'s `proof-sdk-upstream` value to `file:./proof-sdk-<new commit>.tgz`.
+   That value is the one place the file's name is written in full.
+4. Run `bun install`, which rewrites `bun.lock` and the `sha512` it records for the dependency.
+5. Run `bun run upstream-declarations`, which rewrites `upstream/`.
+6. Update this file's own references to the old commit.
 
-```bash
-bun run build-upstream-tarball <new commit>  # writes proof-sdk-<new commit>.tgz beside this file
-rm proof-sdk-<old commit>.tgz                # the tarball the pin leaves behind
-# then edit package.json: "proof-sdk-upstream": "file:./proof-sdk-<new commit>.tgz"
-bun install                                  # rewrites bun.lock, whose sha512 is the new file's
-```
+`bun.lock`'s `sha512` ties the tarball to the lockfile and to nothing upstream, and a reviewer
+reads the tarball's diff as a binary. So whoever reviews a raise rebuilds it,
+`bun run build-upstream-tarball <commit> "$TMPDIR/rebuild.tgz"`, and compares the rebuild with the
+committed file using `cmp`: the bytes are that commit's only when the rebuild reproduces them.
 
-Nothing else names that file, and the reason is the glob. The `.gitignore` negation, every path
-filter under `.github/workflows/`, the `COPY` line of each image Dockerfile and
-`.github/scripts/ci_job_reads.py`'s read of the tarball all name `proof-sdk-*.tgz`, so each
-covers the new file as it covered the old one. The exact name is written in three places only,
-and in each of them it is the dependency's identity rather than a path to match: the tarball
-itself, `package.json`'s `file:` and `bun.lock`. Two steps are left after the install, and both
-belong to the sources rather than to the file's name: `bun run upstream-declarations` rewrites
-`upstream/` where the moved pin changed the surface (`tests/upstream-pin.test.ts` fails until it
-does), and the audit references above name the new commit.
+Nothing else names the file. The `.gitignore` negation `!packages/proof-editor/proof-sdk-*.tgz`
+and the eight path patterns that select on the tarball — the three filter lists of
+`.github/workflows/ci.yaml` (`bun_install`, `envoy_smoke`, `worker_image`),
+`.github/workflows/docs-pages.yaml`, `.github/workflows/release.yaml`, the `bun_job` reads of
+`.github/scripts/ci_job_reads.py`, and the `COPY` line of
+`packages/daemon/docker/worker.Dockerfile` and of `packages/envoy/docker/Dockerfile` — are each
+the glob `packages/proof-editor/proof-sdk-*.tgz`, so a new name needs no edit in any of them.
 
 | File | What it is |
 | --- | --- |
@@ -313,8 +315,10 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 
 Everything `src/` imports as `proof-sdk-upstream/src/…` — the mark plugins, the mark popover,
 `editor/schema/{proof-marks,code-block-ext,frontmatter}`, `formats/*` — still belongs to the fork
-and comes from the committed tarball of that same commit. Three resolvers reach it, and each
-needs telling, because proof-sdk's `package.json` `exports` publishes only its built `dist`:
+and comes from the committed tarball, which packs that same commit's `src/`. Three resolvers
+reach it, and each needs telling, because the upstream manifest at this pin declares no `main`,
+no `module`, no `types`, no `exports` and no `files`: the package publishes no entry point at
+all, so each consumer reaches `src/` by path:
 
 | Consumer | Mechanism |
 | --- | --- |
@@ -364,9 +368,8 @@ fails: it reads the Dark Reader fix where it lives, renders each proof mark, red
 replacement in a happy-dom view, rejects an insert split by another, comments twice over one word,
 round-trips that through markdown and deletes one of the two, and renders one diagram of every
 Mermaid type while still refusing a flowchart that ends in an arrow. Moving the pin changes the
-tarball, the package dependency, `bun.lock`, `upstream/` and this file's source audit
-references, and nothing else: the `.gitignore` negation and every path filter name the tarball
-by its glob (the procedure above). No Bun patch applies to this source.
+tarball, the package dependency, `bun.lock`, `upstream/` and this file's source audit references;
+no Bun patch applies to this source.
 
 ## No build step
 
@@ -377,11 +380,11 @@ TypeScript, Vite compiles it. There is no `dist` and nothing to build before usi
 ## Commands
 
 ```bash
-bun run test                   # the moved suites through src/tests/harness.ts, plus tests/
-bun run typecheck              # tsc against tsconfig.check.json (src/, tests/ and scripts/)
-bun run lint                   # Biome over the package; the root biome.json turns it off for the copy
-bun run upstream-declarations  # rewrite upstream/ from the pinned sources (only a moved pin needs it)
-bun run build-upstream-tarball <commit>  # write proof-sdk-<commit>.tgz, the sources the pin installs
+bun run test                    # the moved suites through src/tests/harness.ts, plus tests/
+bun run typecheck               # tsc against tsconfig.check.json (src/, tests/ and scripts/)
+bun run lint                    # Biome over the package; the root biome.json turns it off for the copy
+bun run upstream-declarations   # rewrite upstream/ from the pinned sources (only a moved pin needs it)
+bun run build-upstream-tarball  # write proof-sdk-<commit>.tgz beside package.json for the commit given
 ```
 
 ## Conventions

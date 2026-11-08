@@ -932,11 +932,6 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # The e2e helpers the specs import read some of contracts' values from its built dist/,
-        # through Playwright's own Node resolution (the shard job's step of the same name).
-        run: bun run build
-        working-directory: packages/contracts
       - name: Build the Dispatch server
         # run-server.sh builds it too, inside the harness's boot wait for each server
         # (e2e/harness-start.ts, bounded by the listener's bootMs); built here, both servers find it

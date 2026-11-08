@@ -24,7 +24,7 @@ type IssueClose struct {
 // IssueSuspension decides whether a workflow close may suspend its issue's Sandbox now, in one
 // short transaction under the shared serializer: false, finishing the close without acting, once
 // the run it closed is over (the root no longer lingers at its generation, and the issue is no
-// child that left the workflow done), a later start of the issue was written, or the tree's
+// child that left the workflow done), a start that will start the issue was written, or the tree's
 // cleanup is reserved, which deletes the Sandbox this close would; a wait while one of the close's
 // role stops (a suspend, an issue close, or a role stop of an idle release) is unfinished or a
 // stored claim of the issue may still hold a process. The close deletes the issue's Sandbox once
@@ -34,6 +34,16 @@ type IssueClose struct {
 // this check and its Sandbox patch, never this transaction. outOfWorkflow is the workflow's rule
 // for a status that takes an issue out of it (record.OutOfWorkflow), which the store does not
 // restate.
+//
+// A start that will start the issue is one a claim has already run (claims.last_start_row) or a
+// queued look of a production check. Every other queued start row is one the outbox's own start
+// fence or its lingering-tree guard will decline, so finishing the suspension on such a row would
+// release nothing and leave the Sandbox, the pod and the disk under it standing with no row left
+// to try. The look is the one queued start kept, because it is the one an issue out of the
+// workflow still runs: a merged root's close queues the suspensions and then the first look's
+// start in the same transaction, so that start stands above them, and a suspension that acted
+// there would delete the Sandbox and the pod immediately before the look resumed its role in
+// them.
 func (s *Store) IssueSuspension(ctx context.Context, project string, close IssueClose, outOfWorkflow func(status string) bool) (bool, error) {
 	if close.Issue == "" || close.Tree == "" || close.IssueGeneration == 0 || close.TreeGeneration == 0 || close.Row <= 0 {
 		return false, errors.New("issue suspension requires issue, tree, both generations and its outbox row")
@@ -62,7 +72,8 @@ func (s *Store) IssueSuspension(ctx context.Context, project string, close Issue
 		var restarted bool
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from claims where project = $1 and issue = $2 and last_start_row > $3)
-			or exists (select 1 from outbox where issue = $2 and id > $3 and kind = 'supervise' and payload->>'op' = 'start')`,
+			or exists (select 1 from outbox where issue = $2 and id > $3 and kind = 'supervise'
+			and payload->>'op' = 'start' and coalesce((payload->>'checkLook')::bigint, 0) > 0)`,
 			project, close.Issue, close.Row).Scan(&restarted); err != nil {
 			return err
 		}

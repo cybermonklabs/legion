@@ -261,7 +261,9 @@ env:
       "test": "test",
       "docs": "docs",
       "contracts": "contracts",
+      "test-fixtures": "test_fixtures",
       "conflicts-script": "conflicts_script",
+      "broker-client": "broker_client",
       "envoy-client": "envoy_client",
       "pi-shared": "pi_shared",
       "pi-envoy": "pi_envoy",
@@ -288,6 +290,7 @@ env:
       "ci-images": "ci_images",
       "download-retry": "download_retry",
       "download-retry-images": "download_retry_images",
+      "proof-sdk-offline": "proof_sdk_offline",
       "worker-image": "worker_image"
     }
   CI_OK_PULL_REQUEST_ONLY: '["worker-image"]'
@@ -358,7 +361,9 @@ jobs:
       docs: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.docs }}
       worker_image: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.worker_image }}
       contracts: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.contracts }}
+      test_fixtures: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.test_fixtures }}
       conflicts_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.conflicts_script }}
+      broker_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.broker_client }}
       envoy_client: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.envoy_client }}
       pi_shared: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_shared }}
       pi_envoy: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.pi_envoy }}
@@ -420,6 +425,7 @@ jobs:
       # `changes` did not select, which is what 'false' here makes these two.
       download_retry: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry }}
       download_retry_images: ${{ github.event_name == 'merge_group' && 'false' || github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.download_retry_images }}
+      proof_sdk_offline: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.proof_sdk_offline }}
     steps:
       # On pull_request dorny/paths-filter reads the file list from the API and never reads the
       # tree; merge_group diffs with git and needs the clone (a merge group diffs its
@@ -458,13 +464,10 @@ jobs:
           # flattens into the list that names it.
           filters: |
             # A frozen Bun install and the Bun it runs: `bun install --frozen-lockfile` reads the
-            # root manifest, the lockfile, the patches package.json:50-59 applies, the tarball
-            # packages/proof-editor/package.json installs proof-sdk-upstream from, and the
-            # manifest of every workspace package.json:19-31 lists; .github/actions/setup-bun
-            # installs the Bun .bun-version pins. The tarball is named by its glob rather than by
-            # the commit in its file name, so raising that pin changes the tarball, the `file:`
-            # name in packages/proof-editor/package.json and bun.lock, and no path filter
-            # (packages/proof-editor/AGENTS.md writes the procedure).
+            # root manifest, the lockfile, the patches package.json:50-59 applies, the manifest of
+            # every workspace package.json:19-31 lists, and the tarball
+            # packages/proof-editor/package.json installs proof-sdk-upstream from;
+            # .github/actions/setup-bun installs the Bun .bun-version pins.
             bun_install: &bun_install
               - 'package.json'
               - 'bun.lock'
@@ -479,6 +482,7 @@ jobs:
               - 'packages/proof-editor/package.json'
               - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/dispatch/package.json'
+              - 'packages/test-fixtures/package.json'
               - 'packages/envoy/internal/dispatch/pmdoc/gen/package.json'
               - 'docs/site/package.json'
               - '.bun-version'
@@ -902,10 +906,12 @@ jobs:
               # place that declares the pair, which check-ci-filters.sh then holds to the filter.
               - 'packages/broker-client/**'
               - 'packages/envoy-client/bin/dispatch.ts'
-              # tests/envoy-channel-stall.test.ts:9-11 imports three modules of envoy-client's
+              # tests/envoy-channel-stall.test.ts:5-12 imports three modules of envoy-client's
               # test directory, and tsc puts four of its files in this job's program.
               - 'packages/envoy-client/test/**'
               - 'packages/pi-shared/src/**'
+              # tests/ import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
               # scripts/build.ts:115-128 generates legion/ from pi-legion's agents and the skills
               # the prepack script stages for it, and :16 writes dist/THIRD_PARTY_NOTICES.
               - 'packages/pi-legion/agents/**'
@@ -968,6 +974,8 @@ jobs:
               - '.github/changelog-packages'
               - 'packages/*/.changie.yaml'
               - 'packages/*/.changes/unreleased/**'
+              # The bun tests of this job's scripts import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
             # docs/site's lint, typecheck, screenshots and build, with the sources its reference
             # generators and its screenshot harness read. docs-site.yaml holds those steps, and
             # both the docs job here and docs-pages.yaml's build job call it. docs-pages.yaml
@@ -1069,6 +1077,17 @@ jobs:
               - 'packages/envoy/internal/dispatch/pmdoc/schema/**'
               - 'packages/envoy/internal/contracts/generated.go'
               - 'packages/envoy/internal/dispatch/pmdoc/schema_generated.go'
+              # src/*.test.ts import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
+            # The shared test fixtures every other Bun package's tests import: its own sources and
+            # tests (it imports nothing outside itself), and the Bun install, the Bun it runs and
+            # Biome, whose root config packages/test-fixtures/biome.json extends.
+            test_fixtures:
+              - '.github/workflows/ci.yaml'
+              - *ci_retry
+              - *bun_install
+              - *biome
+              - 'packages/test-fixtures/**'
             # The conflict measurement script's lint, typecheck and tests: its own directory (tests
             # and fixtures included; it imports nothing outside it), the Bun install and Bun it runs
             # (the root manifest and lockfile pin its TypeScript and Bun types), and Biome.
@@ -1078,6 +1097,17 @@ jobs:
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
+            # The secrets broker's TypeScript client: its own sources and tests (it imports nothing
+            # first-party outside itself but the fixtures its tests use), the Bun install and the
+            # Bun it runs, and Biome.
+            broker_client:
+              - '.github/workflows/ci.yaml'
+              - *ci_retry
+              - *bun_install
+              - *biome
+              - 'packages/broker-client/**'
+              # src/__tests__ import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
             envoy_client:
               - '.github/workflows/ci.yaml'
               - *ci_retry
@@ -1089,6 +1119,10 @@ jobs:
               # and tests.
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
+              # src/broker-credential.ts:21-22 imports @legion/broker-client/*.
+              - 'packages/broker-client/src/**'
+              # src/__tests__ import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
               # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
@@ -1116,6 +1150,8 @@ jobs:
               # src/handoff-record.test.ts:7 imports @legion/envoy-client/test/fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/contracts/src/**'
+              # src/*.test.ts and test/*.ts import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
               # src/daemon-client.test.ts:15 and its neighbours read the daemon API fixtures.
               - 'packages/contracts/fixtures/daemon-api/**'
               # test/skills-partition.test.ts stages each plugin's skills with the prepack script
@@ -1143,12 +1179,14 @@ jobs:
               - 'packages/envoy-client/src/**'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
-              # extensions/envoy.test.ts:45-51 imports test/envoy-stack, stall-proxy and
+              # extensions/envoy.test.ts:45-52 imports test/envoy-stack, stall-proxy and
               # stall-scenario; extensions/askgate/decision-record.test.ts:9 its fake-dispatch.
               - 'packages/envoy-client/test/**'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/envoy-client/scripts/build-dispatch-cli.sh'
               - 'packages/contracts/src/**'
+              # Its tests import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
               # extensions/envoy.test.ts:172-173.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'skills/**'
@@ -1186,6 +1224,8 @@ jobs:
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
+              # Its tests import @legion/test-fixtures.
+              - 'packages/test-fixtures/src/**'
               # extensions/legion.test.ts:1009 and src/capability-report.test.ts:768-776.
               - 'packages/contracts/fixtures/daemon-api/**'
               - 'packages/contracts/fixtures/capability-redaction.json'
@@ -1346,6 +1386,9 @@ jobs:
               - *biome
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
+              # This job's tsc program of packages/dispatch compiles the shared test fixtures its
+              # web, e2e and server-side tests import.
+              - 'packages/test-fixtures/src/**'
               # packages/dispatch/web/vite.config.ts:94-103 aliases @legion/contracts, and tsc and
               # bun read it through the workspace's "bun" export condition.
               - 'packages/contracts/src/**'
@@ -1713,10 +1756,9 @@ jobs:
               # anchor: check-image-trigger-paths.sh reads this filter as a flat list of globs.
               - '.github/scripts/ci-retry.sh'
               # The image: the Dockerfile, its context's .dockerignore, the web stage's frozen
-              # install (every workspace manifest, and the tarball
-              # packages/proof-editor/package.json installs proof-sdk-upstream from) and the Bun
-              # pin that stage holds its own Bun to, the packages it builds the SPA and the Go
-              # binaries from, and the notices scripts.
+              # install (every workspace manifest and the tarball packages/proof-editor/package.json
+              # installs proof-sdk-upstream from) and the Bun pin that stage holds its own Bun to,
+              # the packages it builds the SPA and the Go binaries from, and the notices scripts.
               - 'packages/envoy/docker/Dockerfile'
               - '.dockerignore'
               - '.bun-version'
@@ -1730,6 +1772,7 @@ jobs:
               - 'packages/pi-legion/package.json'
               - 'packages/pi-shared/package.json'
               - 'packages/claude-envoy/package.json'
+              - 'packages/test-fixtures/package.json'
               - 'docs/site/package.json'
               - 'packages/contracts/**'
               - 'packages/dispatch/**'
@@ -1812,6 +1855,8 @@ jobs:
               - 'packages/claude-envoy/**'
               - 'packages/pi-shared/**'
               - 'packages/contracts/**'
+              # The `Stall test of pi-envoy` step's envoy.test.ts imports @legion/test-fixtures/environment.
+              - 'packages/test-fixtures/src/**'
               # The stall test of claude-envoy runs its bin/envoy-channel.ts, whose bun build
               # loads six of @legion/broker-client's seven modules through envoy-client's
               # src/broker-credential.ts:21-22.
@@ -1844,6 +1889,7 @@ jobs:
               - 'packages/proof-editor/package.json'
               - 'packages/proof-editor/proof-sdk-*.tgz'
               - 'packages/dispatch/package.json'
+              - 'packages/test-fixtures/package.json'
               - 'docs/site/package.json'
               - 'packages/daemon/**'
               - 'packages/pi-envoy/**'
@@ -2034,6 +2080,22 @@ jobs:
               - '.github/scripts/ci-retry.sh'
               - '.github/scripts/ci-fault-proxy.py'
               - '.github/scripts/download-retry-proof.sh'
+              - '.github/workflows/ci.yaml'
+            # ci.yaml's proof-sdk-offline job: a frozen install behind a proxy that answers 504
+            # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
+            # What can send that install to one of those hosts again is every file the install
+            # reads, which is the shared group above, so the filter names it whole rather than
+            # the four sites of it this job is really about: bun.lock, which a reintroduced
+            # remote dependency necessarily moves, package.json, the root manifest the frozen
+            # install reads, packages/proof-editor/package.json, the manifest that names the
+            # tarball, and packages/proof-editor/proof-sdk-*.tgz, the file itself. Beside it:
+            # .github/scripts/ci-retry.sh, which both of its installs source for their retry,
+            # .github/scripts/ci-fault-proxy.py, the program that drives the install, and this
+            # file, which holds the job.
+            proof_sdk_offline:
+              - *bun_install
+              - *ci_retry
+              - '.github/scripts/ci-fault-proxy.py'
               - '.github/workflows/ci.yaml'
 
   # Reads the whole tree, so it runs on every non-draft run, also when `changes` failed.
@@ -2875,6 +2937,53 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
+  # The shared test fixtures package has no build: nothing imports it at run time, and its
+  # consumers read its sources through the workspace.
+  test-fixtures:
+    needs: changes
+    if: needs.changes.outputs.test_fixtures == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    # Budget (the header's Budgets note): 600 s, the 10 minutes this job came in with — it is
+    # new here, so no run on main has measured it — plus its slowest retried step alone — the
+    # workspace install, 5 x 180 + 150 = 1050 s, above the ci-ok report's 600 s.
+    # 600 + 1050 = 1650 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      # Retried like every install in this workflow (the header's Retries note); 180 s per
+      # attempt, the bound every Bun install of this repository's CI carries: 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in CI.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+      - name: Lint the shared test fixtures
+        run: bun run lint
+        working-directory: packages/test-fixtures
+      - name: Typecheck the shared test fixtures
+        run: bun run typecheck
+        working-directory: packages/test-fixtures
+      - name: Test the shared test fixtures
+        run: bun run test
+        working-directory: packages/test-fixtures
+
+      - name: Report ci-ok when this is the run's last job
+        if: always()
+        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # this step posts the required ci-ok check, and a budget that cuts it between those two
+        # ladders loses the check run rather than reporting a failure (the header's Budgets note).
+        timeout-minutes: 12
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+
   conflicts-script:
     needs: changes
     if: needs.changes.outputs.conflicts_script == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
@@ -2906,6 +3015,53 @@ jobs:
         run: bun test scripts/conflicts
 
       - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # this step posts the required ci-ok check, and a budget that cuts it between those two
+        # ladders loses the check run rather than reporting a failure (the header's Budgets note).
+        timeout-minutes: 12
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+
+  # The secrets broker's TypeScript client, which packages/envoy-client's broker credential
+  # imports. It has no build: its consumers read its sources through the workspace.
+  broker-client:
+    needs: changes
+    if: needs.changes.outputs.broker_client == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    # Budget (the header's Budgets note): 600 s, the 10 minutes this job came in with — it is
+    # new here, so no run on main has measured it — plus its slowest retried step alone — the
+    # workspace install, 5 x 180 + 150 = 1050 s, above the ci-ok report's 600 s.
+    # 600 + 1050 = 1650 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      # Retried like every install in this workflow (the header's Retries note); 180 s per
+      # attempt, the bound every Bun install of this repository's CI carries: 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in CI.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+      - name: Lint the broker client
+        run: bun run lint
+        working-directory: packages/broker-client
+      - name: Typecheck the broker client
+        run: bun run typecheck
+        working-directory: packages/broker-client
+      - name: Test the broker client
+        run: bun run test
+        working-directory: packages/broker-client
+
+      - name: Report ci-ok when this is the run's last job
         if: always()
         # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
         # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
@@ -2973,9 +3129,11 @@ jobs:
         # it.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
       # TMPDIR is a directory of this step's own, read by the step below: a test file that leaves
-      # its temporary directory behind is how 7,063 of them gathered on a shared machine
-      # (`packages/envoy-client/test/temp-dir.ts`). It is exported on the command line rather than
-      # set in `env:` so the reading step can name the same path.
+      # its temporary directory behind is how 7,063 of them gathered on a shared development
+      # machine, measured on 2026-11-07, which is the count this step keeps at zero. The suites
+      # take their directories from @legion/test-fixtures, whose rules are docs/testing.md's "Bun
+      # tests". It is exported on the command line rather than set in `env:` so the reading step
+      # can name the same path.
       - name: Test Envoy client
         run: |
           mkdir -p "$RUNNER_TEMP/envoy-client-tmp"
@@ -3339,8 +3497,9 @@ jobs:
       # run 42303677853 at 5636a301, where both of its cases failed with "The requested module
       # '@legion/contracts/dispatch-tools' does not provide an export named
       # 'DISPATCH_BLOCK_UNITS'" and passed again once contracts was built
-      # (dispatch-browser.yaml's shard, alone and multiprocess jobs carry the same step for the
-      # same reason).
+      # (dispatch-browser.yaml's shard, alone and multiprocess jobs need contracts built for the
+      # same reason and carry no step for it: packages/dispatch/e2e/run.ts's buildContracts
+      # builds them at the start of every run of the suite).
       - name: Build contracts for the suites that spawn Playwright
         run: bun run build
         working-directory: packages/contracts
@@ -3359,16 +3518,16 @@ jobs:
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch
-      # The lane cases of e2e/__tests__/psql-session.test.ts and harness-lanes.test.ts skip
-      # themselves where no database is named, so in this job they do not run: it has no
-      # `postgres:` service, as this job's head says. A container of the pinned image for this
-      # step alone was tried and taken out again, in the job these tests ran in before this
-      # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on
-      # one runner in three. What those cases prove - that a lane's psql reads its own lane's
-      # database and not the plain name - is proven on any machine with DATABASE_URL set, which
-      # is how a developer and an issue pod run them (`bun run test` in packages/dispatch), and
-      # the lane contract they guard is also covered end to end by every multi-lane run of the
-      # browser suite itself.
+      # The database cases of e2e/__tests__/psql-session.test.ts and harness-lanes.test.ts skip
+      # themselves where LEGION_TEST_PG_DSN names no server, so in this job they do not run: it
+      # has no `postgres:` service, as this job's head says. A container of the pinned image for
+      # this step alone was tried and taken out again, in the job these tests ran in before this
+      # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on one
+      # runner in three. What those cases prove - that a lane's psql reads its own lane's database
+      # and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set, which is how
+      # a developer and an issue pod run them (`bun run test` in packages/dispatch; psql-session
+      # makes a database of its own there), and the lane contract they guard is also covered end to
+      # end by every multi-lane run of the browser suite itself.
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch
@@ -5868,6 +6027,242 @@ jobs:
           changes: ${{ toJSON(needs.changes) }}
           job-status: ${{ job.status }}
 
+  # The proof that no install of this repository fetches the proof editor's upstream sources over
+  # the network: packages/proof-editor/package.json installs proof-sdk-upstream from the tarball
+  # committed beside it, so a frozen install reads those bytes out of the checkout and asks no
+  # host for them. This job runs that install behind a proxy that answers HTTP 504 for the hosts
+  # of the old `github:sjawhar/proof-sdk#<sha>` route - api.github.com, where Bun asks for a
+  # `github:` dependency's tarball, and codeload.github.com and objects.githubusercontent.com,
+  # which that request redirects to, and every subdomain of the three - and fails when the
+  # proxy's log holds a single refusal, on a cold install and on a warm one. It refuses the
+  # behaviour rather than the text: a gate on the string `github:sjawhar/proof-sdk` would pass
+  # the same dependency spelled another way, and this one asks what the install actually
+  # reaches. It is permanent because a reintroduced remote dependency necessarily moves
+  # bun.lock, which the proof_sdk_offline filter selects on, and the install then asks the proxy
+  # for one of those hosts: the refusal count goes above zero and the verdict step fails,
+  # printing every refused line.
+  #
+  # github.com itself is not faulted, and that is measured rather than assumed. A cold runner
+  # install makes one request to github.com and one to release-assets.githubusercontent.com, and
+  # none to any of the three hosts above (job 128647167946's own tally). That pair is a release
+  # asset, which is how a dependency's install script fetches a prebuilt binary; it is not this
+  # route, and faulting github.com turned the job red on it (job 128643900648). The host this
+  # route has to use is api.github.com, which the merge-base drive showed, failing on
+  # https://api.github.com/repos/sjawhar/proof-sdk/tarball/dc6a852 with six refusals on that host
+  # and none on the others. These three are the hosts this issue's check names. The last step's
+  # tally of what the proxy passed through is where every other host the installs reach shows.
+  proof-sdk-offline:
+    needs: changes
+    if: needs.changes.outputs.proof_sdk_offline == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    # Budget (the header's Budgets note): 900 s, the 15 minutes this job came in with — it is
+    # new here, so no run on main has measured it — plus its slowest retried step alone — either
+    # frozen install, 5 x 180 + 150 = 1050 s each, above the ci-ok report's 600 s.
+    # 900 + 1050 = 1950 s -> 33 min.
+    timeout-minutes: 33
+    # The hosts of the old route, named once: the proxy is started with them, and the verdict
+    # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
+    # nothing else, so the verdict counts its refusals rather than matching this list again.
+    env:
+      FAULT_HOSTS: api.github.com,codeload.github.com,objects.githubusercontent.com
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+
+      # .github/scripts/ci-fault-proxy.py is Python 3 from the runner image and installs nothing.
+      # `--port 0` takes a free port from the kernel and `--port-file` is written, whole and by
+      # rename, once it is listening, so this step waits for that file rather than for a fixed
+      # time and fails when it never appears. The port reaches the later steps through
+      # $GITHUB_OUTPUT; http_proxy and https_proxy stay in the `env:` of the steps that
+      # must be behind the proxy, so neither the report step below nor the Actions service is
+      # proxied. The proxy's stderr is the log every count in this job is read from, opened for
+      # appending so that the probe step can empty it after printing its own two lines and the
+      # proxy's next write still lands at the start of the emptied file.
+      - name: Start the fault proxy over the old proof-sdk route
+        id: proxy
+        run: |
+          log="$RUNNER_TEMP/ci-fault-proxy.log"
+          port_file="$RUNNER_TEMP/proxy.port"
+          rm -f "$log" "$port_file"
+          .github/scripts/ci-fault-proxy.py --mode fail \
+            --hosts "$FAULT_HOSTS" \
+            --bind 127.0.0.1 --port 0 --port-file "$port_file" </dev/null >/dev/null 2>>"$log" &
+          pid=$!
+          for _ in $(seq 1 100); do
+            if [ -s "$port_file" ]; then
+              break
+            fi
+            sleep 0.1
+          done
+          if [ ! -s "$port_file" ]; then
+            echo "::error::the fault proxy wrote no port file in 10 s, so it never listened; its log follows"
+            cat "$log"
+            exit 1
+          fi
+          {
+            echo "pid=$pid"
+            echo "port=$(cat "$port_file")"
+          } >> "$GITHUB_OUTPUT"
+          cat "$log"
+
+      # The pair that proves the proxy is in the path and that what it passes is what the install
+      # needs: api.github.com, a host of the old route, must be refused, and registry.npmjs.org,
+      # the host a frozen install of this repository still fetches every package from, must be
+      # answered. A proxy that refused everything would make the installs' silence about GitHub
+      # mean nothing. Both probes run through the same proxy variables the installs use, and each
+      # prints the proxy's own log line for it. The log is emptied at the end, so the counts the
+      # report step reads are the installs' alone.
+      #
+      # Neither request is a download: each reads whether the proxy is in the path, and brings
+      # no tool, no toolchain and no dependency into the job. So neither retries, and each is
+      # written the way .github/scripts/download-retry-proof.sh's through_proxy writes a probe —
+      # its error silenced and its status consumed into the reading — which is the shape
+      # check-download-retry.sh reads as a probe rather than as a fetch. A retry here would
+      # prove less, not more: the first request must be refused, so five attempts would spend
+      # 150 s of sleeps re-reading the refusal the first one already gave, and the second is a
+      # control the two installs below put to the registry again a moment later, where the
+      # answer is a download and is retried as one.
+      - name: Probe the proxy before the installs
+        id: probe
+        # GitHub Actions folds an env key's case, so `http_proxy` and `HTTP_PROXY` in one block
+        # are the same key written twice and it refuses the whole workflow file, with no job run
+        # and no annotation on the pull request. The lowercase pair is the one both readers here
+        # honour: curl reads `http_proxy` only in lowercase, and Bun reads either spelling.
+        env:
+          http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+        run: |
+          log="$RUNNER_TEMP/ci-fault-proxy.log"
+          # `%{http_code}` is 000 when nothing answered at all, which is what a refused tunnel
+          # reads as. Measured on curl 8.14.1 against this proxy in --mode fail: the faulted
+          # host read 000 (exit 56, `%{http_connect}` 504) and the passed host 200.
+          faulted=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://api.github.com/meta 2>/dev/null || true)
+          if [ "${faulted:-000}" != 000 ]; then
+            echo "::error::the proxy answered https://api.github.com/meta with HTTP $faulted, so the installs below are not behind it and this job would prove nothing"
+            exit 1
+          fi
+          grep -F 'ci-fault-proxy: 504 CONNECT api.github.com:443' "$log"
+          passed=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 https://registry.npmjs.org/ 2>/dev/null || true)
+          if [ "${passed:-000}" = 000 ]; then
+            echo "::error::the proxy refused https://registry.npmjs.org/, the registry the frozen install reads, so it faults more than the hosts of the old route"
+            exit 1
+          fi
+          grep -F 'ci-fault-proxy: pass CONNECT registry.npmjs.org:443' "$log"
+          : > "$log"
+
+      # A runner is cold by nature: it has no Bun install cache and no node_modules, and
+      # setup-bun restores the Bun binary alone (and off main not even that), so this install is
+      # the cold one without any cache being deleted to make it so. It carries the bare command
+      # as its name, the handle .github/scripts/ci_job_reads.py's bun_job cites a frozen install
+      # by (the header's Retries note). It retries like every other install of this workflow:
+      # the hosts this job faults are the old route's, and registry.npmjs.org, which every
+      # package still comes from, is passed through and can fault on its own. 180 s per attempt,
+      # the bound every Bun install of this repository's CI carries: 20.70 s cold on a pod,
+      # against at most 11 s over 180 observations in CI. Its attempts cannot hide a request for
+      # a faulted host: each one asks the proxy again, and the verdict below counts the proxy's
+      # refusals rather than the installs.
+      - name: bun install --frozen-lockfile
+        id: cold_install
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+
+      # The same install again, over the cache and the node_modules the step above left: the
+      # requirement is that no install reaches those hosts, warm or cold. Retried at the same
+      # bound, for the same reason.
+      - name: bun install --frozen-lockfile, warm
+        id: warm_install
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        env:
+          http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+          https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
+
+      # The verdict, read off the proxy's log: every refusal it wrote while the two installs
+      # ran. In `--mode fail` the proxy refuses a faulted host and every subdomain of one and
+      # passes everything else, so each `504` line is a request for the old route whatever host
+      # it names, and the count is of the lines rather than of a match against FAULT_HOSTS,
+      # which would pass over a subdomain the proxy refused. Zero of them is the proof. It
+      # prints the refused lines themselves when there are any, and a tally of every host it
+      # passed through whatever the verdict, so the log says what the installs talked to rather
+      # than only what they did not. It runs when an install above failed, which is what a
+      # reintroduced remote dependency does, because that is the run whose tally a reader needs.
+      # It is gated on the probe rather than on the proxy, because the probe's own refusal of
+      # api.github.com is still in the log when the probe fails on its second request: a bad
+      # minute of registry.npmjs.org would otherwise have this step blame a dependency for the
+      # probe's request, with no install run at all. `!cancelled()` rather than `always()`, so a
+      # cancelled or timed-out job prints no success line either. The step is behind no proxy
+      # itself - it reaches nothing - and it stops the proxy, whose liveness the kill also
+      # confirms: a proxy that had died would have failed the installs first.
+      - name: Count what the installs asked the proxy for
+        if: ${{ !cancelled() && steps.probe.outcome == 'success' }}
+        # The two installs' outcomes, because the step runs after a failed one: a tally over a
+        # log an install stopped writing part way through says nothing about the rest of the
+        # install, so the line below that says every byte came out of the checkout is printed
+        # only when both ran whole. The warm install is skipped when the cold one failed, so its
+        # outcome alone would say which, and both are passed to name which stopped.
+        env:
+          PROXY_PID: ${{ steps.proxy.outputs.pid }}
+          COLD_INSTALL: ${{ steps.cold_install.outcome }}
+          WARM_INSTALL: ${{ steps.warm_install.outcome }}
+        run: |
+          log="$RUNNER_TEMP/ci-fault-proxy.log"
+          # One `<verdict> <host>` line per request the proxy logged, from both line shapes it
+          # writes: `504|pass CONNECT host:port` for a tunnel, and `504|pass METHOD url` for a
+          # plain-HTTP request.
+          seen=$(awk '$2 == "504" || $2 == "pass" {
+            target = $4
+            if ($3 != "CONNECT") { sub(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, "", target); sub(/\/.*$/, "", target) }
+            sub(/:[0-9]*$/, "", target)
+            print $2, target
+          }' "$log")
+          refused=$(printf '%s\n' "$seen" | grep -c '^504 ' || true)
+          passed=$(printf '%s\n' "$seen" | grep -c '^pass ' || true)
+          echo "requests the proxy refused: $refused, by host:"
+          printf '%s\n' "$seen" | sed -n 's/^504 //p' | sort | uniq -c | sed 's/^/  /'
+          echo "requests the proxy passed through: $passed, by host:"
+          printf '%s\n' "$seen" | sed -n 's/^pass //p' | sort | uniq -c | sed 's/^/  /'
+          # The `|| echo` is what keeps a failed kill from ending the step under GitHub's
+          # `bash -e`: a proxy that is already gone must not abort it before its verdict is out,
+          # and a proxy that died early would have failed the installs.
+          kill "$PROXY_PID" || echo "the proxy was no longer running when this step stopped it"
+          if [ "$refused" != 0 ]; then
+            echo "::error::the frozen install reached the old proof-sdk route through the proxy $refused time(s); a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"
+            grep -E '^ci-fault-proxy: 504 ' "$log" | sed 's/^/  /'
+            exit 1
+          fi
+          if [ "$COLD_INSTALL" != success ] || [ "$WARM_INSTALL" != success ]; then
+            echo "the cold install $COLD_INSTALL and the warm install $WARM_INSTALL, so this tally is partial: it reached none of $FAULT_HOSTS up to the point the install stopped, and says nothing about what the rest of it would have asked for. The job is red on the install itself."
+            exit 0
+          fi
+          if [ "$passed" = 0 ]; then
+            echo "::error::the proxy passed no request through while the two installs ran; the cold install fetches every package from registry.npmjs.org, so a zero here means the installs did not reach the proxy at all and their silence about the three hosts proves nothing"
+            exit 1
+          fi
+          echo "no request for $FAULT_HOSTS or any subdomain of one: every byte of the proof editor's upstream sources came out of the checkout"
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # this step posts the required ci-ok check, and a budget that cuts it between those two
+        # ladders loses the check run rather than reporting a failure (the header's Budgets note).
+        timeout-minutes: 12
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+
   # The worker image's pull-request build: worker-image.yaml builds the head and publishes its
   # sha- tag only. Main's image builds are release.yaml's call of the same workflow.
   worker-image:
@@ -6125,7 +6520,9 @@ jobs:
       - test
       - docs
       - contracts
+      - test-fixtures
       - conflicts-script
+      - broker-client
       - envoy-client
       - pi-shared
       - pi-envoy
@@ -6151,6 +6548,7 @@ jobs:
       - ci-filters
       - download-retry
       - download-retry-images
+      - proof-sdk-offline
       - worker-image
     if: ${{ always() }}
     runs-on: ubuntu-24.04

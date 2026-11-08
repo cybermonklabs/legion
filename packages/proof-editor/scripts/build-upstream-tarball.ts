@@ -17,10 +17,9 @@
  * fixture tree of its own.
  *
  * The bytes are reproducible: the member list is sorted here rather than left to readdir order,
- * every entry carries the commit's author date as its mtime, `0:0` as its numeric ownership and
- * a mode this script fixes rather than the one the extract happened to leave, and `gzip -n`
- * writes no timestamp. So two runs over one source tree give one file, and a rebuild of a pin
- * already committed changes nothing.
+ * every entry carries the commit's author date as its mtime and `0:0` as its numeric ownership,
+ * and `gzip -n` writes no timestamp. So two runs over one source tree give one file, and a
+ * rebuild of a pin already committed changes nothing.
  *
  * Its scratch trees go under `node:os`'s `tmpdir()`, which reads `$TMPDIR`: the issue volume's,
  * where the environment sets one, since an upstream tarball is 31 MB and a container's own disk
@@ -47,6 +46,13 @@ const HEADERS = {
   "user-agent": `${REPOSITORY} tarball builder`,
   accept: "application/vnd.github+json",
 };
+
+/**
+ * A commit argument names one tree and one file name, so it is a full sha and nothing else: a
+ * short sha or a branch name names a ref that can move, and `proof-sdk-<ref>.tgz` would then
+ * hold whatever that ref pointed at on the day it was built.
+ */
+const FULL_SHA = /^[0-9a-f]{40}$/;
 
 /** What `packUpstream` writes and where it reads it from. */
 export interface PackOptions {
@@ -98,23 +104,20 @@ function members(sourceDir: string): string[] {
 
 /**
  * Writes the gzipped tar: `package/src/**`, `package/package.json` and `package/LICENSE`, in that
- * sorted order and nothing else, each entry stamped with `mtime`, owned by `0:0` and at mode 644,
- * or 755 where the file on disk is executable by anyone.
+ * sorted order and nothing else, each entry stamped with `mtime`, owned by `0:0`, readable by
+ * all, writable by none but its owner, and executable by all where it is executable by anybody.
  *
  * tar is handed the member list rather than the directory, so the order is this process's sorted
  * one rather than the filesystem's, and no directory entry, no stray file beside the three and no
- * `.` entry can reach the archive. `--format=ustar` carries no atime or ctime, and `gzip -n` no
- * name or timestamp, so the only dates in the output are the ones passed in.
- *
- * `--mode=u=rwX,go=rX` is there because tar records each file's mode as it finds it on disk, and
- * the extract that put it there applied the caller's umask: one upstream tree unpacked under umask
- * 022 and under umask 002 is 644 and 664 on disk, and packs to two sha256 values from one commit.
- * This form answers one question about the file and ignores every other bit: is it executable by
- * anyone? `X` adds execute only where it is, so a member is 644 or 755 and the umask changes
- * neither. The symbolic `a+r,go-w` that stood here did not: it kept whatever execute bits the
- * extract left, so one executable member packed at 755 under umask 022 and 744 under umask 077.
- * Every one of the 250 members of the committed proof-sdk tarball is 644 and none is executable,
- * so a rebuild of the commit it was packed from writes the bytes already committed.
+ * `.` entry can reach the archive. `--mode=a+rX,go-w` fixes the permission bits, which tar
+ * otherwise records as it finds them on disk — and it finds what the builder's umask left when
+ * the upstream tarball was extracted, so without it the archive is a function of that umask as
+ * well as of the source tree. `X` is tar's conditional execute bit, set only where the member is
+ * already executable for somebody: a 0644 member stays 0644 and a 0755 member stays 0755,
+ * whatever the umask left — a plain `a+r,go-w` would pack the same 0755 member as 0744 under a
+ * umask that cleared its group and other execute bits. `--format=ustar` carries no atime or
+ * ctime, and `gzip -n` no name or timestamp, so the only dates in the output are the ones passed
+ * in.
  */
 export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): void {
   const names = members(sourceDir);
@@ -132,7 +135,7 @@ export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): voi
         "--files-from=-",
         "--transform=s|^|package/|",
         `--mtime=${mtime}`,
-        "--mode=u=rwX,go=rX",
+        "--mode=a+rX,go-w",
         "--owner=0",
         "--group=0",
         "--numeric-owner",
@@ -174,8 +177,9 @@ async function fetchUpstream(commit: string, workDir: string): Promise<Upstream>
 
 if (import.meta.main) {
   const [commit, output] = process.argv.slice(2);
-  if (!commit) {
+  if (!commit || !FULL_SHA.test(commit)) {
     console.error("usage: bun scripts/build-upstream-tarball.ts <commit> [output]");
+    console.error("  <commit> is the full 40-character lowercase hex sha, and nothing else.");
     process.exit(1);
   }
   const outputPath = resolve(output ?? join(import.meta.dir, "..", `proof-sdk-${commit}.tgz`));

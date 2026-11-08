@@ -51,17 +51,19 @@ COPY packages/pi-shared/package.json packages/pi-shared/package.json
 COPY packages/claude-envoy/package.json packages/claude-envoy/package.json
 COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
-# A dependency of that manifest, not a registry fetch: `file:./proof-sdk-<commit>.tgz` is the
-# upstream editor sources, so the install below reads them from the context rather than the network.
+# proof-sdk-upstream is file:./proof-sdk-<commit>.tgz, a dependency of that manifest rather than a
+# registry fetch: the upstream editor sources, which the install below reads from the context.
 # The glob, not the file name the pinned commit is in, so raising that pin edits nothing here.
 COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
+COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 # What the glob costs, and the line that pays it, as in packages/daemon/docker/worker.Dockerfile.
 # BuildKit builds every COPY source with AllowWildcard and AllowEmptyWildcard (buildkit v0.26.1
 # frontend/dockerfile/dockerfile2llb/convert.go:1669-1670), and a wildcard matching nothing
 # copies nothing and returns no error (solver/llbsolver/file/backend.go:248-252), where a COPY of
-# an exact name the context does not hold fails at the cache key with `not found`. An unmatched
-# pattern is left in `$1` by the shell, so it is dropped before the count is taken and a context
-# with no tarball is reported as the none it is.
+# an exact name the context does not hold fails at the cache key with `not found`. The tree's own
+# count is tests/one-upstream-tarball.test.ts; this is the context's. An unmatched pattern is left
+# in `$1` by the shell, so it is dropped before the count is taken and a context with no tarball
+# is reported as the none it is.
 RUN set -- packages/proof-editor/proof-sdk-*.tgz; [ -e "$1" ] || set --; \
     { [ "$#" -eq 1 ] && [ -f "$1" ]; } \
     || { echo "the build context holds $# entries matching packages/proof-editor/proof-sdk-*.tgz, want one regular file" >&2; exit 1; }

@@ -768,6 +768,61 @@ run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the read" "$(contains "$out" 'file=.github/scripts/mirror.sh,line=3::.crane digest. fetches with no retry')"
 
+# The same scoping in a workflow step, which is where ci.yaml's proof-sdk-offline job reads its
+# fault proxy: two requests through the proxy before the installs, one to a faulted host that
+# must be refused and one to a control that must be answered. Each reads whether the proxy is in
+# the path and brings nothing into the job, so each is written the way
+# .github/scripts/download-retry-proof.sh's through_proxy writes one — error silenced, status
+# consumed into the reading — and this check reads it as the probe it is. Written as a plain
+# fetch the same two requests are two downloads, and the pair below proves both halves: a step
+# that takes the scoping out of the shape is refused by rule 1 for each curl, and by rule 8 for
+# the budget the ladders it would then make need.
+echo "case: a workflow step's curl whose status is the reading is no download"
+root=$(fixture probe-step)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe the proxy before the install
+        run: |
+          faulted=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://api.example.com/meta 2>/dev/null || true)
+          [ "${faulted:-000}" = 000 ]
+          passed=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 https://registry.example.org/ 2>/dev/null || true)
+          [ "${passed:-000}" != 000 ]
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "neither request is on the list" "$(is "$(contains "$out" 'case.yaml')" false)"
+
+echo "case: the same two requests written as plain fetches are two downloads"
+root=$(fixture probe-step-not)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe the proxy before the install
+        run: |
+          if curl -sS -o /dev/null --max-time 30 https://api.example.com/meta; then
+            exit 1
+          fi
+          curl -sS -o /dev/null --max-time 60 https://registry.example.org/
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the first request" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=8::.curl. in step .Probe the proxy before the install. fetches without the floor')"
+check "names the second request" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=11::.curl. in step .Probe the proxy before the install. fetches without the floor')"
+check "asks the step for the budget those ladders would need" \
+  "$(contains "$out" "holds 974 s of retries and carries no \`timeout-minutes\`")"
+
 echo "case: a Python read that goes straight to urllib"
 root=$(fixture python-read)
 cat > "$root/.github/scripts/read.sh" <<'SH'

@@ -6,15 +6,15 @@
  * The bytes matter rather than the contents: `bun.lock` records the tarball's `sha512`, so a
  * rebuild of a pin already committed must produce the file already committed, or a lockfile check
  * fails for a change nobody made. Each case below pins one of the reasons the bytes are a
- * function of the source tree's contents alone: the member list, the order, the mtimes, the
- * ownership, the modes and the gzip header's timestamp.
+ * function of the source tree alone: the member list, the order, the mtimes, the ownership, the
+ * permission bits and the gzip header's timestamp.
  */
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { packUpstream } from "../scripts/build-upstream-tarball";
 
 const MTIME = "2026-10-17T22:41:59Z";
@@ -25,68 +25,33 @@ const MEMBERS = [
   "package/src/lib.ts",
 ];
 
-let workDir: string;
-let sourceDir: string;
-let first: string;
-let second: string;
-
-/**
- * The fixture tree: the three members the archive holds and one file beside them that it must
- * not. The modes are the caller's umask's, which is what the umask case below varies.
- */
-function writeSource(dir: string): string {
-  mkdirSync(join(dir, "src", "editor", "plugins"), { recursive: true });
-  writeFileSync(join(dir, "src", "lib.ts"), "export const lib = 1;\n");
-  writeFileSync(join(dir, "src", "editor", "plugins", "marks.ts"), "export const marks = 2;\n");
-  writeFileSync(join(dir, "package.json"), '{ "name": "proof-sdk" }\n');
-  writeFileSync(join(dir, "LICENSE"), "MIT\n");
-  // Neither under src/ nor one of the two named files, so the archive must not hold it.
-  writeFileSync(join(dir, "tsconfig.json"), '{ "compilerOptions": {} }\n');
-  return dir;
-}
-
-/** `dir`, written under `umask` and packed, with the umask put back whatever happens. */
-function packUnderUmask(dir: string, umask: number, outputPath: string): string {
-  const previous = process.umask(umask);
-  try {
-    writeSource(dir);
-  } finally {
-    process.umask(previous);
-  }
-  packUpstream({ sourceDir: dir, mtime: MTIME, outputPath });
-  return outputPath;
-}
-
-/**
- * The same tree with `src/lib.ts` executable, written under `umask`. `writeFileSync`'s mode is
- * masked by the umask, as an extract of the upstream tarball is, so the file lands at 755 under
- * umask 022 and at 700 under umask 077; it is removed first, because a mode is applied when a
- * file is created and not when an existing one is overwritten.
- */
-function writeExecutableSource(dir: string, umask: number): string {
-  const previous = process.umask(umask);
-  try {
-    writeSource(dir);
-    const executable = join(dir, "src", "lib.ts");
-    rmSync(executable);
-    writeFileSync(executable, "export const lib = 1;\n", { mode: 0o777 });
-  } finally {
-    process.umask(previous);
-  }
-  return dir;
-}
+// Reserved at this call, which registers the `beforeAll` that makes the directory above the one
+// below, so the tree that hook writes lands in a directory that already exists, and the `afterAll`
+// that removes it takes the subdirectories the mode cases make with it.
+const workDir = temporaryDirectory("proof-sdk-pack-test");
+const sourceDir = join(workDir, "source");
+const first = join(workDir, "first.tgz");
+const second = join(workDir, "second.tgz");
 
 beforeAll(() => {
-  workDir = mkdtempSync(join(tmpdir(), "proof-sdk-pack-test-"));
-  sourceDir = writeSource(join(workDir, "source"));
-  first = join(workDir, "first.tgz");
-  second = join(workDir, "second.tgz");
+  mkdirSync(join(sourceDir, "src", "editor", "plugins"), { recursive: true });
+  writeFileSync(join(sourceDir, "src", "lib.ts"), "export const lib = 1;\n");
+  writeFileSync(
+    join(sourceDir, "src", "editor", "plugins", "marks.ts"),
+    "export const marks = 2;\n"
+  );
+  writeFileSync(join(sourceDir, "package.json"), '{ "name": "proof-sdk" }\n');
+  writeFileSync(join(sourceDir, "LICENSE"), "MIT\n");
+  // Neither under src/ nor one of the two named files, so the archive must not hold it.
+  writeFileSync(join(sourceDir, "tsconfig.json"), '{ "compilerOptions": {} }\n');
+  // 0600, because `writeFileSync` would otherwise leave whatever this process's umask leaves, and
+  // the archive must read the same under either: the mode case below has nothing to prove against
+  // a tree that is already 0644.
+  for (const name of ["src/lib.ts", "src/editor/plugins/marks.ts", "package.json", "LICENSE"]) {
+    chmodSync(join(sourceDir, name), 0o600);
+  }
   packUpstream({ sourceDir, mtime: MTIME, outputPath: first });
   packUpstream({ sourceDir, mtime: MTIME, outputPath: second });
-});
-
-afterAll(() => {
-  rmSync(workDir, { recursive: true, force: true });
 });
 
 /** `tar --list --verbose`'s lines for an archive, one per member, with dates in UTC. */
@@ -98,6 +63,13 @@ function listing(archive: string): string[] {
   );
   expect(result.status).toBe(0);
   return result.stdout.trimEnd().split("\n");
+}
+
+/** The mode `tar --list --verbose` records for one member of an archive. */
+function modeOf(archive: string, member: string): string {
+  const line = listing(archive).find((entry) => entry.endsWith(` ${member}`));
+  if (line === undefined) throw new Error(`${archive} holds no ${member}`);
+  return line.split(/\s+/)[0];
 }
 
 test("two runs over one source tree write the same bytes", () => {
@@ -120,58 +92,66 @@ test("every member carries the given mtime and is owned by 0:0", () => {
   }
 });
 
-test("every member of a tree with no executable is at mode 644, whatever the umask left", () => {
+test("the gzip header carries no timestamp", () => {
+  expect(Array.from(readFileSync(first).subarray(4, 8))).toEqual([0, 0, 0, 0]);
+});
+
+test("one source tree at 0644 and the same tree at 0600 write the same bytes", () => {
+  // Its own tree, because the cases above read the shared one's bytes and these chmods change them.
+  const modeDir = join(workDir, "modes");
+  mkdirSync(join(modeDir, "src"), { recursive: true });
+  writeFileSync(join(modeDir, "src", "lib.ts"), "export const lib = 1;\n");
+  writeFileSync(join(modeDir, "package.json"), '{ "name": "proof-sdk" }\n');
+  writeFileSync(join(modeDir, "LICENSE"), "MIT\n");
+  const files = [
+    join(modeDir, "src", "lib.ts"),
+    join(modeDir, "package.json"),
+    join(modeDir, "LICENSE"),
+  ];
+
+  const readableByAll = join(workDir, "readable-by-all.tgz");
+  for (const file of files) {
+    chmodSync(file, 0o644);
+  }
+  packUpstream({ sourceDir: modeDir, mtime: MTIME, outputPath: readableByAll });
+
+  const readableByOwner = join(workDir, "readable-by-owner.tgz");
+  for (const file of files) {
+    chmodSync(file, 0o600);
+  }
+  packUpstream({ sourceDir: modeDir, mtime: MTIME, outputPath: readableByOwner });
+
+  expect(readFileSync(readableByOwner)).toEqual(readFileSync(readableByAll));
+});
+
+test("every member is recorded as -rw-r--r--, whatever its mode on disk", () => {
   for (const line of listing(first)) {
     expect(line.split(/\s+/)[0]).toBe("-rw-r--r--");
   }
 });
 
-/**
- * tar records each file's mode as it finds it, and the extract that wrote the upstream tree
- * applied the caller's umask — so without `--mode` one commit packed under umask 022 and under
- * umask 002 gave two sha256 values, which is what `--mode=u=rwX,go=rX` answers.
- */
-test("one tree packed under two umasks gives the same bytes", () => {
-  const lax = join(workDir, "lax");
-  const strict = join(workDir, "strict");
-  const laxArchive = packUnderUmask(lax, 0o002, join(workDir, "lax.tgz"));
-  const strictArchive = packUnderUmask(strict, 0o022, join(workDir, "strict.tgz"));
-  // The two trees differ on disk, which is the difference the archives must not carry.
-  expect(statSync(join(lax, "src", "lib.ts")).mode & 0o777).toBe(0o664);
-  expect(statSync(join(strict, "src", "lib.ts")).mode & 0o777).toBe(0o644);
-  expect(readFileSync(laxArchive)).toEqual(readFileSync(strictArchive));
-});
-
-/**
- * The executable bit is the one thing about a member's mode the archive keeps, and the umask may
- * not change what it keeps. `a+r,go-w`, which stood here before, left the execute bits as the
- * extract wrote them: an executable member packed at 755 under umask 022 and at 744 under umask
- * 077, two sha256 values from one commit again. `u=rwX,go=rX` asks only whether anyone may
- * execute the file and writes 755 or 644.
- */
-test("an executable member is 755 under either umask, and the bytes are the same", () => {
-  const lax = writeExecutableSource(join(workDir, "exec-lax"), 0o022);
-  const strict = writeExecutableSource(join(workDir, "exec-strict"), 0o077);
-  // 755 and 700 on disk: the same file, written under two umasks.
-  expect(statSync(join(lax, "src", "lib.ts")).mode & 0o777).toBe(0o755);
-  expect(statSync(join(strict, "src", "lib.ts")).mode & 0o777).toBe(0o700);
-  const laxArchive = join(workDir, "exec-lax.tgz");
-  const strictArchive = join(workDir, "exec-strict.tgz");
-  packUpstream({ sourceDir: lax, mtime: MTIME, outputPath: laxArchive });
-  packUpstream({ sourceDir: strict, mtime: MTIME, outputPath: strictArchive });
-  for (const archive of [laxArchive, strictArchive]) {
-    const modes = new Map(
-      listing(archive).map((line) => {
-        const fields = line.split(/\s+/);
-        return [fields[fields.length - 1], fields[0]];
-      })
-    );
-    expect(modes.get("package/src/lib.ts")).toBe("-rwxr-xr-x");
-    expect(modes.get("package/LICENSE")).toBe("-rw-r--r--");
+test("an executable at 0755 and at 0700 write the same bytes, recorded -rwxr-xr-x", () => {
+  // Its own tree again, and the only one holding an executable: the shared fixture is all 0600
+  // files, so the case above has nothing to say about the bit this one is about.
+  const executableDir = join(workDir, "executable");
+  mkdirSync(join(executableDir, "src"), { recursive: true });
+  const script = join(executableDir, "src", "cli.ts");
+  writeFileSync(script, "#!/usr/bin/env bun\nexport const cli = 3;\n");
+  writeFileSync(join(executableDir, "src", "lib.ts"), "export const lib = 1;\n");
+  writeFileSync(join(executableDir, "package.json"), '{ "name": "proof-sdk" }\n');
+  writeFileSync(join(executableDir, "LICENSE"), "MIT\n");
+  for (const name of ["src/lib.ts", "package.json", "LICENSE"]) {
+    chmodSync(join(executableDir, name), 0o644);
   }
-  expect(readFileSync(strictArchive)).toEqual(readFileSync(laxArchive));
-});
 
-test("the gzip header carries no timestamp", () => {
-  expect(Array.from(readFileSync(first).subarray(4, 8))).toEqual([0, 0, 0, 0]);
+  const executableByAll = join(workDir, "executable-by-all.tgz");
+  chmodSync(script, 0o755);
+  packUpstream({ sourceDir: executableDir, mtime: MTIME, outputPath: executableByAll });
+
+  const executableByOwner = join(workDir, "executable-by-owner.tgz");
+  chmodSync(script, 0o700);
+  packUpstream({ sourceDir: executableDir, mtime: MTIME, outputPath: executableByOwner });
+
+  expect(readFileSync(executableByOwner)).toEqual(readFileSync(executableByAll));
+  expect(modeOf(executableByOwner, "package/src/cli.ts")).toBe("-rwxr-xr-x");
 });

@@ -206,8 +206,8 @@ COPY packages/pi-legion/package.json packages/pi-legion/package.json
 COPY packages/pi-shared/package.json packages/pi-shared/package.json
 COPY packages/claude-envoy/package.json packages/claude-envoy/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
-# A dependency of that manifest, not a registry fetch: `file:./proof-sdk-<commit>.tgz` is the
-# upstream editor sources, so the install below reads them from the context rather than the network.
+# proof-sdk-upstream is file:./proof-sdk-<commit>.tgz, a dependency of that manifest rather than a
+# registry fetch: the upstream editor sources, which the install below reads from the context.
 # The glob, not the file name the pinned commit is in, so raising that pin edits nothing here.
 COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
 # What the glob costs, and the line that pays it. BuildKit builds every COPY source with
@@ -216,13 +216,15 @@ COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
 # copies nothing and returns no error (solver/llbsolver/file/backend.go:248-252), where a COPY of
 # an exact name the context does not hold fails at the cache key with `not found`. So the context
 # is held to exactly one tarball here: without this the build would reach `bun install` and spend
-# five attempts and 150 s of sleeps on a `file:` dependency no attempt can resolve. An unmatched
-# pattern is left in `$1` by the shell, so it is dropped before the count is taken and a context
-# with no tarball is reported as the none it is.
+# five attempts and 150 s of sleeps on a `file:` dependency no attempt can resolve. The tree's own
+# count is tests/one-upstream-tarball.test.ts; this is the context's, which a .dockerignore can
+# break where the tree is right. An unmatched pattern is left in `$1` by the shell, so it is
+# dropped before the count is taken and a context with no tarball is reported as the none it is.
 RUN set -- packages/proof-editor/proof-sdk-*.tgz; [ -e "$1" ] || set --; \
     { [ "$#" -eq 1 ] && [ -f "$1" ]; } \
     || { echo "the build context holds $# entries matching packages/proof-editor/proof-sdk-*.tgz, want one regular file" >&2; exit 1; }
 COPY packages/dispatch/package.json packages/dispatch/package.json
+COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
 # The workspace install is the largest fetch in this file: every dependency the root lockfile pins,
