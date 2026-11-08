@@ -33,6 +33,65 @@ import (
 // fall back to the default branch with no error and no failing type.
 const DefaultBranch = ""
 
+// BranchAnswer is what Dispatch could say about one commit of one branch: the whole of what
+// CommitOnBranch returns, and the whole of what a caller measuring a result's currency has to
+// go on. The four cases are kept apart because each is a different thing to do: two say
+// something about the commit, one says something about the branch and nothing about the
+// commit, and one says nothing at all. A reader that folded the last two into "not on it"
+// would turn a GitHub hiccup into a verdict about the work, which is the one thing the
+// currency rule may not do (api/results_currency.go, of).
+type BranchAnswer int
+
+const (
+	// BranchUnknown is Dispatch not being able to say anything: a compare read refused by a
+	// rate limit, a 5xx, a timeout or a cancelled request; a repository whose own read failed,
+	// for any of those reasons or because the App cannot see it, where the caller named no
+	// branch and the stored rows answered nothing; and a repository whose default branch no
+	// read of this process ever named, which a deployment holding no App key makes of every
+	// repository. Wherever this is the last word the currency is unknown, and wherever it is
+	// any word at all no later branch's "not on it" may make a result older: a fault of
+	// Dispatch's or a hiccup of GitHub's must not make a reviewer refuse an approval.
+	BranchUnknown BranchAnswer = iota
+	// BranchCarries is the branch's history holding the commit: the commit is that branch's
+	// head, or an ancestor of it. It is the whole answer wherever it is given, and no branch
+	// after it is asked about.
+	BranchCarries
+	// BranchDoesNotCarry is the branch not holding the commit, read from GitHub or from the
+	// branch_commits row a read of GitHub left.
+	BranchDoesNotCarry
+	// BranchUnseen is the App not being able to see that branch of that repository at all:
+	// exactly cannotSeeRepository — GitHub's 403 or 404 to the compare read
+	// (githubapp.CheckRepositoryResponse, which makes a rate limit behind either status the
+	// *githubapp.RateLimitError instead, so a rate limit is the transient kind above) and a
+	// deployment holding no App key — and the hold such a read leaves on the pair.
+	//
+	// GitHub answers 403 or 404 for a branch it no longer holds, for a repository the
+	// installation has lost, and for a commit the repository does not hold. All three are
+	// honest grounds for saying that this branch does not carry this commit: a branch that is
+	// gone carries nothing, a repository Dispatch may not read carries nothing Dispatch can
+	// show, and a commit GitHub cannot find one side of the comparison at is on no branch it
+	// could name. That is why an earlier branch answering this way lets the walk go on to the
+	// next branch, as a plain "not on it" does. None of the three is a reason to believe
+	// anything about a later branch, though — the branch asked about next may be one GitHub
+	// answers perfectly well for — which is why it is unknown wherever it is the last word.
+	BranchUnseen
+)
+
+// String names the answer for a log line and a test's failure message, where the bare integer
+// of the underlying type would say nothing.
+func (a BranchAnswer) String() string {
+	switch a {
+	case BranchCarries:
+		return "carries"
+	case BranchDoesNotCarry:
+		return "does not carry"
+	case BranchUnseen:
+		return "unseen"
+	default:
+		return "unknown"
+	}
+}
+
 // BranchCommit is what Dispatch last learned about one commit of one branch of one repository:
 // whether that branch's history carries it, and when that was read.
 type BranchCommit struct {
@@ -51,20 +110,20 @@ type BranchCommit struct {
 // and the empty answer that says the App cannot read it, are believed for the same span.
 const BranchCommitStaleAfter = 5 * time.Minute
 
-// Branches holds, across reads, each repository's default branch and each repository-and-branch
-// pair GitHub could not answer a compare read about. The Verification tab refetches the results
-// on every result.recorded, and a read holding an `after_merge` or `default_branch` check, or a
+// Branches holds, across reads, each repository's default branch and what the compare reads of
+// each repository-and-branch pair last did. The Verification tab refetches the results on every
+// result.recorded, and a read holding an `after_merge` or `default_branch` check, or a
 // `before_merge` result at a commit heading no pull request Dispatch knows, would otherwise
 // spend a GET /repos/{owner}/{repo} each time, and one compare read per result commit of a
-// branch GitHub cannot answer for. Its zero value is an empty cache, and the server holds one
-// for the process: the answers are a repository's, not a request's, and every goroutine reading
-// results shares them. What a branch holds of a commit is cached in the database instead
-// (branch_commits), since that answer outlives any one process; a pair GitHub could not answer
-// about is not, since it is a failure to learn anything rather than something learned.
+// branch the App cannot see. Its zero value is an empty cache, and the server holds one for the
+// process: the answers are a repository's, not a request's, and every goroutine reading results
+// shares them. What a branch holds of a commit is cached in the database instead
+// (branch_commits), since that answer outlives any one process; what the compare reads of a
+// pair did is not, since a refusal is a failure to learn anything rather than something learned.
 type Branches struct {
-	mu           sync.Mutex
-	known        map[string]cachedBranch
-	unanswerable map[repoBranch]time.Time
+	mu       sync.Mutex
+	known    map[string]cachedBranch
+	compares map[repoBranch]compareHold
 }
 
 // repoBranch is one repository and one branch of it: the pair a compare read is made about, and
@@ -72,6 +131,26 @@ type Branches struct {
 type repoBranch struct {
 	repo   string
 	branch string
+}
+
+// compareHold is what the compare reads of one repository-and-branch pair last did: when one
+// was last refused as unseen, which holds the pair for BranchCommitStaleAfter, and when one was
+// last answered, which a hold arriving late loses to.
+//
+// Both moments are kept because a read that is slow to fail would otherwise hold a pair a
+// faster read has since been answered about. The failing read passes the moment it began, and a
+// hold is recorded only where no answer has been recorded since (markUnseen); an answer is
+// recorded for every pair and not only for a pair under a hold, since a read that recorded
+// nothing could beat nothing.
+//
+// So the map holds one entry per repository-and-branch pair this process has made a compare
+// read about: the repositories whose results are read, times the branches their issues merged
+// into and their own default branches. An entry read once nothing about it still stands is
+// deleted there and then (unseenHeld); an entry whose pair nothing asks about again lingers for
+// the life of the process, as known's entry for a repository does.
+type compareHold struct {
+	unseenAt   time.Time
+	answeredAt time.Time
 }
 
 // cachedBranch is what this process last learned about one repository's default branch: the
@@ -100,11 +179,12 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 	return readable
 }
 
-// CommitOnBranch answers whether branch of repoFull carries sha, and whether Dispatch could say
-// at all. DefaultBranch — the empty branch — means the repository's own default branch, resolved
+// CommitOnBranch answers what Dispatch can say about branch of repoFull carrying sha: one of
+// the four BranchAnswer cases, which is the whole of what the currency read has to go on.
+// DefaultBranch — the empty branch — means the repository's own default branch, resolved
 // through branchOf: a `default_branch` check names no branch of its own and so is measured
-// against that branch whatever the work merged into, while an `after_merge` check asks about the
-// branch its issue's pull request merged into and then about the default branch
+// against that branch whatever the work merged into, while an `after_merge` check asks about
+// the branch its issue's pull request merged into and then about the default branch
 // (api/results_currency.go).
 //
 // What branch_commits holds for that repository, branch and commit answers first while it still
@@ -112,19 +192,33 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // resolved branch, and its answer written back under it, otherwise. A caller that names a
 // branch spends no GET /repos/{owner}/{repo}: the default branch is resolved only for a caller
 // that names none, and the stored row is read before any call to GitHub, so a named branch
-// Dispatch has already answered for costs nothing at all. A read that failed is the unknown
-// answer, as is a repository the App cannot read.
+// Dispatch has already answered for costs nothing at all.
 //
-// A compare read GitHub could not answer holds that repository and branch for
-// BranchCommitStaleAfter, and every caller naming the pair meanwhile is answered unknown
-// without a second call (compareUnanswerable). Two pairs would otherwise cost one GitHub call
-// per result commit on every read of the Verification tab, for as long as the issue exists: a
-// base branch deleted when its pull request merged, which a repository that deletes merged
-// branches does on every merge and which a compare read answers 404 for, and a repository the
-// App can no longer read, whose refusal nothing else caches (githubapp.Client.RepositoryToken
-// caches the tokens it minted, not the mints it was refused). Neither failure says anything
-// about the commit, so nothing is written to branch_commits for it; the hold is this process's
-// alone, and it is released as soon as a compare read of the pair is answered.
+// A compare read the App is refused is BranchUnseen, and where the caller named the branch it
+// holds that repository and branch for BranchCommitStaleAfter: every caller naming the pair
+// meanwhile is answered BranchUnseen without a second call (unseenHeld). Two pairs would
+// otherwise cost one refused GitHub call per result commit on every read of the Verification
+// tab, for as long as the issue exists: a base branch deleted when its pull request merged,
+// which a repository that deletes merged branches does on every merge and which a compare read
+// answers 404 for, and a repository the App can no longer read, whose refusal nothing else
+// caches (githubapp.Client.RepositoryToken caches the tokens it minted, not the mints it was
+// refused). Neither failure says anything about the commit, so nothing is written to
+// branch_commits for it; the hold is this process's alone, and it is released as soon as a
+// compare read of the pair is answered (markSeen).
+//
+// Nothing is held for a caller that named no branch. A compare read of the repository's own
+// default branch is made only just after branchOf read that repository and GitHub named the
+// branch, so a 403 or 404 to it is not a branch that is gone; and it is a repository the App
+// has lost for no longer than that read's own BranchCommitStaleAfter, after which branchOf
+// reads again, learns nothing, and this answers before any compare read is spent. What is left
+// is GitHub's third reason for those two statuses: a commit the repository does not hold. One
+// such commit must not hold the branch that every `default_branch` result of the repository,
+// and every `after_merge` result of it no stored row answers, is measured against.
+//
+// Every other failure of the compare read — a rate limit, a 5xx, a timeout, a request whose
+// caller went away — is BranchUnknown and holds nothing at all, so the next read asks GitHub
+// again. A hold there would make one bad second of GitHub's five minutes in which every result
+// of the repository reads unknown, which is a reviewer refusing approvals over a hiccup.
 //
 // A caller that names no branch, of a repository the App cannot read just now, is answered from
 // the stored row alone, under the last default branch this process resolved for that repository
@@ -135,21 +229,23 @@ func (c *Branches) RepositoryReadable(ctx context.Context, client *githubapp.Cli
 // stored. A default branch renamed while the App cannot be read leaves that answer under the
 // old name, which is the same staleness the retention rule already accepts of a yes. Where this
 // process has resolved no name for the repository at all, there is nothing to ask the cache
-// about and the answer is unknown.
+// about and the answer is BranchUnknown.
 func (c *Branches) CommitOnBranch(
 	ctx context.Context,
 	pool *store.Pool,
 	client *githubapp.Client,
 	repoFull, branch, sha string,
 	now time.Time,
-) (onBranch, known bool) {
-	// readable is what the newest read of the repository could say, which only a caller naming
-	// no branch asks for; a caller that names a branch has asked nothing of the repository yet,
-	// so the compare read below is what finds out.
+) BranchAnswer {
+	// named is whether the caller holds a branch of its own, which is what decides whether a
+	// refused compare read holds the pair. readable is what the newest read of the repository
+	// could say, which only a caller naming no branch asks for; a caller that names a branch
+	// has asked nothing of the repository yet, so the compare read below is what finds out.
+	named := branch != DefaultBranch
 	readable := true
-	if branch == DefaultBranch {
+	if !named {
 		if branch, readable = c.branchOf(ctx, client, repoFull, now); branch == "" {
-			return false, false
+			return BranchUnknown
 		}
 	}
 	stored, found, err := readBranchCommit(ctx, pool, repoFull, branch, sha)
@@ -157,30 +253,42 @@ func (c *Branches) CommitOnBranch(
 		slog.Warn("dispatch: read a commit's branch answer", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
 	}
 	if found && (stored.OnBranch || now.Sub(stored.CheckedAt) < BranchCommitStaleAfter) {
-		return stored.OnBranch, true
+		if stored.OnBranch {
+			return BranchCarries
+		}
+		return BranchDoesNotCarry
 	}
 	if !readable {
-		// The App could not read this repository a moment ago, so a compare read of it would
-		// be refused too: the stored row was the whole of what could answer.
-		return false, false
+		// The newest read of this repository could say nothing, so a compare read of it would
+		// be refused too: the stored row was the whole of what could answer. It is
+		// BranchUnknown and not BranchUnseen because that read fails for every reason a read
+		// fails for — a 5xx and a rate limit as much as the App having lost the repository —
+		// and branchOf keeps no account of which (cachedBranch).
+		return BranchUnknown
 	}
 	pair := repoBranch{repo: repoFull, branch: branch}
-	if c.compareUnanswerable(pair, now) {
-		return false, false
+	if c.unseenHeld(pair, now) {
+		return BranchUnseen
 	}
 	answer, err := askGitHubCommitOnBranch(ctx, client, repoFull, branch, sha)
 	if err != nil {
-		c.markUnanswerable(pair, now)
 		if !cannotSeeRepository(err) {
 			slog.Warn("dispatch: ask whether a commit is on a branch", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
+			return BranchUnknown
 		}
-		return false, false
+		if named {
+			c.markUnseen(pair, now)
+		}
+		return BranchUnseen
 	}
-	c.markAnswerable(pair)
+	c.markSeen(pair, now)
 	if err := writeBranchCommit(ctx, pool, repoFull, branch, sha, answer, now); err != nil {
 		slog.Warn("dispatch: record a commit's branch answer", "repo", repoFull, "branch", branch, "commit", sha, "error", err)
 	}
-	return answer, true
+	if answer {
+		return BranchCarries
+	}
+	return BranchDoesNotCarry
 }
 
 // branchOf is the default branch this process holds for repoFull and whether the newest read of
@@ -241,35 +349,78 @@ func (c *Branches) put(repo, branch string, now time.Time) string {
 	return held.branch
 }
 
-// compareUnanswerable reports whether a compare read of pair failed within
-// BranchCommitStaleAfter of now, the span every other answer here is believed for. The failure
+// unseenHeld reports whether a compare read of pair was refused as unseen within
+// BranchCommitStaleAfter of now, the span every other answer here is believed for. The refusal
 // is held against the pair and not against the commit that happened to be asked about, because
 // that is what it is about: a branch GitHub cannot compare against answers for no commit, and
 // the next result commit of the same branch would spend the same refused call.
-func (c *Branches) compareUnanswerable(pair repoBranch, now time.Time) bool {
+//
+// An entry nothing about which still stands is deleted as it is read: the hold has run out, and
+// the pair was last answered longer ago than that same span, so no compare read still in flight
+// can have begun before that answer — one request of this client lives at most
+// githubapp.RequestTimeout, which is far inside BranchCommitStaleAfter. That is what keeps a
+// branch deleted once from costing an entry for the life of the process, which only a pair
+// nothing reads again now does.
+func (c *Branches) unseenHeld(pair repoBranch, now time.Time) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	failed, found := c.unanswerable[pair]
-	return found && now.Sub(failed) < BranchCommitStaleAfter
-}
-
-// markUnanswerable records that a compare read of pair could not be answered at now.
-func (c *Branches) markUnanswerable(pair repoBranch, now time.Time) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.unanswerable == nil {
-		c.unanswerable = map[repoBranch]time.Time{}
+	held, found := c.compares[pair]
+	if !found {
+		return false
 	}
-	c.unanswerable[pair] = now
+	if now.Sub(held.unseenAt) < BranchCommitStaleAfter {
+		return true
+	}
+	if now.Sub(held.answeredAt) >= BranchCommitStaleAfter {
+		delete(c.compares, pair)
+	}
+	return false
 }
 
-// markAnswerable drops whatever hold pair is under, GitHub having just answered a compare read
-// of it, so the map holds the pairs that cannot be answered now rather than every pair that
-// could not be answered once.
-func (c *Branches) markAnswerable(pair repoBranch) {
+// markUnseen holds pair as one the App cannot see, a compare read begun at readAt having been
+// refused. Only the refusal cannotSeeRepository names reaches here, and only from a caller that
+// named the branch: a rate limit, a 5xx, a timeout and a cancelled request hold nothing, so the
+// next read asks GitHub again rather than taking one bad second for five minutes.
+//
+// The hold is recorded only where no compare read of the pair has been answered since readAt.
+// A read that is slow to fail and one that is quick to succeed race, and the slow one must not
+// hold a pair GitHub has just answered about: what the slow read learned, it learned before
+// that answer, and the answer is the newer fact however the two returned. readAt is the
+// reader's own now, taken before the call went out, so it is at or before the moment GitHub was
+// asked; the few milliseconds in it only ever lose a hold that was nearly beaten anyway, which
+// is the side to be wrong on. It dates the hold too, so a hold runs out a hair early rather
+// than a hair late.
+func (c *Branches) markUnseen(pair repoBranch, readAt time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.unanswerable, pair)
+	if c.compares == nil {
+		c.compares = map[repoBranch]compareHold{}
+	}
+	held := c.compares[pair]
+	if held.answeredAt.After(readAt) {
+		return
+	}
+	held.unseenAt = readAt
+	c.compares[pair] = held
+}
+
+// markSeen records that a compare read of pair begun at readAt was answered, which drops
+// whatever hold the pair was under: the map says which pairs cannot be seen now rather than
+// which could not be seen once. The moment outlives the hold it drops, since it is what a read
+// still in flight that fails loses to (markUnseen); an older moment never replaces a newer one,
+// so two reads answered out of order leave the newer standing.
+func (c *Branches) markSeen(pair repoBranch, readAt time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.compares == nil {
+		c.compares = map[repoBranch]compareHold{}
+	}
+	held := c.compares[pair]
+	held.unseenAt = time.Time{}
+	if readAt.After(held.answeredAt) {
+		held.answeredAt = readAt
+	}
+	c.compares[pair] = held
 }
 
 // cannotSeeRepository is repositoryUnreadable — the App is installed on no repository covering

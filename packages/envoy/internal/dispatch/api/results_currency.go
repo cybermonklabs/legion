@@ -77,14 +77,7 @@ type currencyReader struct {
 	baseBranches map[string]baseBranchAnswer
 	heads        map[[2]string]bool
 	storedHeads  map[[2]string]bool
-	commits      map[[3]string]commitAnswer
-}
-
-// commitAnswer is what delivery said about one commit: whether the branch asked about carries
-// it, and whether Dispatch could say at all.
-type commitAnswer struct {
-	onBranch bool
-	known    bool
+	commits      map[[3]string]delivery.BranchAnswer
 }
 
 // baseBranchAnswer is what Dispatch holds about the merge of one issue: the branch its newest
@@ -103,7 +96,7 @@ func newCurrencyReader(s *server) *currencyReader {
 		server: s, repos: map[string]*string{}, readable: map[string]bool{},
 		baseBranches: map[string]baseBranchAnswer{},
 		heads:        map[[2]string]bool{}, storedHeads: map[[2]string]bool{},
-		commits: map[[3]string]commitAnswer{},
+		commits: map[[3]string]delivery.BranchAnswer{},
 	}
 }
 
@@ -126,14 +119,28 @@ const noMergedBranch = ""
 // the check's, never the one the result was recorded on, which is the rule headOf keeps for a
 // pull request head and measuredBranches keeps for a merge.
 //
-// The walk stops at the first branch that carries the commit: a yes is the whole answer, and
-// no branch after it is asked about, which is what holds an ordinary issue's result to the one
-// compare read it cost before a second branch was asked about at all. Where no branch carries
-// it, the last read's own answer stands — a no is `older`, and only an unknown from that last
-// read is the unknown currency. An earlier branch Dispatch could not get an answer about says
-// "not on that branch" and nothing more: that is what keeps a base branch GitHub no longer
-// holds, whose compare read answers 404 and whose repository the client therefore reads as
-// unreadable, from turning a result the default branch answers for into an unknown.
+// The walk stops at the first branch that carries the commit (delivery.BranchCarries): a yes
+// is the whole answer, and no branch after it is asked about, which is what holds an ordinary
+// issue's result to the one compare read it cost before a second branch was asked about at
+// all. That answer is `current` where the check's words have not changed since the result and
+// `older` where they have, as it is for a head.
+//
+// Where no branch carries the commit, the four cases are these, and they turn on telling a
+// branch the App cannot see apart from a read Dispatch could not make at all
+// (delivery.BranchAnswer):
+//
+//   - Every branch answering delivery.BranchDoesNotCarry is `older`: GitHub said so of each.
+//   - An earlier branch answering delivery.BranchUnseen says "this branch does not carry it"
+//     and nothing more, and the walk goes on. That is what keeps a base branch GitHub no
+//     longer holds, whose compare read answers 404, from turning a result the default branch
+//     answers for into an unknown.
+//   - An earlier branch answering delivery.BranchUnknown decides nothing either way. The walk
+//     goes on, since a later branch may yet carry the commit and that is the whole answer; but
+//     where none does, the currency is `unknown` and never `older`. A database fault or a
+//     GitHub hiccup must not make a reviewer refuse an approval.
+//   - Either of those two as the last word is `unknown`: a branch that cannot be seen is no
+//     evidence about a branch that was never asked about, and a read that failed is no
+//     evidence about anything.
 func (c *currencyReader) of(ctx context.Context, check model.CheckBlock, result model.CheckResult) string {
 	if check.When == checkWhenBeforeMerge {
 		atHead, known := c.headOf(ctx, result)
@@ -158,18 +165,26 @@ func (c *currencyReader) of(ctx context.Context, check model.CheckBlock, result 
 	if !chosen {
 		return model.CurrencyUnknown
 	}
-	var onBranch, known bool
+	// unknown is whether any branch of the walk answered that Dispatch could not say. It is
+	// kept apart from the last branch's own answer because an unknown anywhere outranks every
+	// "not on it" after it, while a branch that carries the commit outranks it in turn.
+	unknown := false
+	answer := delivery.BranchUnknown
 	for _, branch := range branches {
-		onBranch, known = c.onBranch(ctx, *repo, branch, result.CommitSHA)
-		if onBranch {
+		answer = c.onBranch(ctx, *repo, branch, result.CommitSHA)
+		if answer == delivery.BranchCarries {
 			break
 		}
+		unknown = unknown || answer == delivery.BranchUnknown
 	}
-	if !known {
+	if answer == delivery.BranchCarries {
+		if check.SHA256 == result.CheckSHA256 {
+			return model.CurrencyCurrent
+		}
+		return model.CurrencyOlder
+	}
+	if unknown || answer == delivery.BranchUnseen {
 		return model.CurrencyUnknown
-	}
-	if onBranch && check.SHA256 == result.CheckSHA256 {
-		return model.CurrencyCurrent
 	}
 	return model.CurrencyOlder
 }
@@ -443,13 +458,17 @@ func (c *currencyReader) baseBranchMergedFor(ctx context.Context, issueKey strin
 // branches asked about it — the two an `after_merge` and a `default_branch` check of one issue
 // ask, and the two an `after_merge` check itself asks of a commit its base branch does not
 // carry.
-func (c *currencyReader) onBranch(ctx context.Context, repo, branch, sha string) (bool, bool) {
+//
+// The memo holds the answer's own kind, so a branch the App cannot see and a read that failed
+// reach the walk as the different things they are: one is "not on that branch", the other is
+// no answer at all (of).
+func (c *currencyReader) onBranch(ctx context.Context, repo, branch, sha string) delivery.BranchAnswer {
 	memo := [3]string{repo, branch, sha}
 	if answer, memoized := c.commits[memo]; memoized {
-		return answer.onBranch, answer.known
+		return answer
 	}
-	onBranch, known := c.server.branches.CommitOnBranch(
+	answer := c.server.branches.CommitOnBranch(
 		ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, repo, branch, sha, time.Now())
-	c.commits[memo] = commitAnswer{onBranch: onBranch, known: known}
-	return onBranch, known
+	c.commits[memo] = answer
+	return answer
 }

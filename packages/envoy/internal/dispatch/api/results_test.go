@@ -467,6 +467,27 @@ func resultsGitHubWithDeletedBranch(
 	compare func(base, head string) string,
 ) (http.Handler, *store.Store) {
 	t.Helper()
+	return resultsGitHubAnswering(t, repos, held, defaultBranch, func(base, head string) (int, string) {
+		if deletedBranch != noDeletedBranch && base == deletedBranch {
+			return http.StatusNotFound, ""
+		}
+		return http.StatusOK, compare(base, head)
+	})
+}
+
+// resultsGitHubAnswering is the fixture every one above is made of, and the one a test reaches
+// for when a compare read must fail with something other than the 404 a deleted branch
+// answers: `answer` is given each read's base and head and returns the HTTP status GitHub
+// sends and, where that status is 200, GitHub's own compare `status` field. It counts nothing
+// of its own, so a test that must count the compare reads counts them inside `answer`, which
+// sees the refused reads the compare callback above never does.
+func resultsGitHubAnswering(
+	t *testing.T,
+	repos, held map[string]bool,
+	defaultBranch string,
+	answer func(base, head string) (int, string),
+) (http.Handler, *store.Store) {
+	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
@@ -499,12 +520,13 @@ func resultsGitHubWithDeletedBranch(
 	})
 	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, r *http.Request) {
 		base, head, _ := strings.Cut(r.PathValue("basehead"), "...")
-		if deletedBranch != noDeletedBranch && base == deletedBranch {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"message":"Not Found"}`)
+		status, comparison := answer(base, head)
+		if status != http.StatusOK {
+			w.WriteHeader(status)
+			fmt.Fprintf(w, `{"message":%q}`, http.StatusText(status))
 			return
 		}
-		fmt.Fprintf(w, `{"status":%q}`, compare(base, head))
+		fmt.Fprintf(w, `{"status":%q}`, comparison)
 	})
 	upstream := httptest.NewServer(mux)
 	t.Cleanup(upstream.Close)
@@ -1013,6 +1035,53 @@ func TestAfterMergeResultCurrencyWithTheBaseBranchDeleted(t *testing.T) {
 	}
 	if got := currencyOf(t, read, "k2", onNeither.Result.ID); got != model.CurrencyOlder {
 		t.Fatalf("an after-merge result at a commit neither branch carries, the base branch deleted = %q, want older and never unknown", got)
+	}
+}
+
+// A compare read GitHub failed to answer about the branch an issue merged into leaves the
+// result unknown, never older. The branch is still there and GitHub is the one at fault, so
+// "the default branch does not carry it" is the whole of what the read learned, and a reviewer
+// shown `older` over a 500 can only refuse an approval that nothing is wrong with. A base
+// branch GitHub no longer holds is the other case, and reads `older` where the default branch
+// says no: that is TestAfterMergeResultCurrencyWithTheBaseBranchDeleted above, and telling the
+// two apart is the whole of this rule (delivery.BranchAnswer).
+//
+// The next read asks GitHub again rather than being answered from a hold: a failure of a
+// second's standing must not hold the branch every result of the issue is measured against
+// for five minutes. The default branch's own "no" is stored for that span, as every no is, so
+// the second read spends the base branch's call and no other.
+func TestAfterMergeResultCurrencyIsUnknownWhenTheBaseBranchReadFails(t *testing.T) {
+	compares := 0
+	handler, database := resultsGitHubAnswering(t, map[string]bool{"acme/widgets": true}, nil, "main",
+		func(base, _ string) (int, string) {
+			compares++
+			if base == "integration/x" {
+				return http.StatusInternalServerError, ""
+			}
+			return http.StatusOK, "diverged"
+		})
+	issue := issueInRepository(t, handler, "RESG", "acme/widgets", "A base branch GitHub failed on")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	writeHeadOnBase(t, database, "acme/widgets", 49, headCommit, "merged", issue.Key, "integration/x")
+
+	stray := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k2", "pass", strayCommit, nil)))
+
+	before := compares
+	read := readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", stray.Result.ID); got != model.CurrencyUnknown {
+		t.Fatalf("an after-merge result whose base branch GitHub failed on = %q, want unknown and never older", got)
+	}
+	if spent := compares - before; spent != 2 {
+		t.Fatalf("the first read made %d compare calls, want one for the base branch and one for the trunk", spent)
+	}
+
+	before = compares
+	read = readResults(t, handler, issue.Key)
+	if got := currencyOf(t, read, "k2", stray.Result.ID); got != model.CurrencyUnknown {
+		t.Fatalf("the same result read again = %q, want unknown", got)
+	}
+	if spent := compares - before; spent != 1 {
+		t.Fatalf("the second read made %d compare calls, want the base branch's own: a failure holds nothing, and the trunk's no is stored", spent)
 	}
 }
 

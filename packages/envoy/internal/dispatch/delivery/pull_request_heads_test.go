@@ -1200,28 +1200,28 @@ func TestABranchAnswerAlreadyStoredSurvivesAnUnreadableRepository(t *testing.T) 
 	branches := &Branches{}
 	asked := time.Now()
 
-	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, asked); !on || !known {
-		t.Fatalf("a commit on the default branch of a readable repository = %v, %v; want true, true", on, known)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, asked); answer != BranchCarries {
+		t.Fatalf("a commit on the default branch of a readable repository = %v, want %v", answer, BranchCarries)
 	}
 
 	// GitHub stops answering, and the Branches cache of the default branch goes stale, so the
 	// name can no longer be read. The stored yes still answers under the name already resolved.
 	readable = false
 	later := asked.Add(BranchCommitStaleAfter + time.Minute)
-	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, later); !on || !known {
-		t.Fatalf("a stored yes while the repository is unreadable = %v, %v; want true, true", on, known)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", landedCommit, later); answer != BranchCarries {
+		t.Fatalf("a stored yes while the repository is unreadable = %v, want %v", answer, BranchCarries)
 	}
 	if branches.RepositoryReadable(ctx, client, "acme/widgets", later) {
 		t.Fatal("RepositoryReadable while the App cannot read the repository = true, want false")
 	}
-	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", unaskedCommit, later); on || known {
-		t.Fatalf("a commit with no stored answer while the repository is unreadable = %v, %v; want false, false", on, known)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "", unaskedCommit, later); answer != BranchUnknown {
+		t.Fatalf("a commit with no stored answer while the repository is unreadable = %v, want %v", answer, BranchUnknown)
 	}
 
 	// A repository this process never resolved a default branch for has no name to ask the
 	// stored answer about, so it is unknown rather than answered from another repository's.
-	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/hidden", "", landedCommit, later); on || known {
-		t.Fatalf("a commit of a repository no read ever named a branch for = %v, %v; want false, false", on, known)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/hidden", "", landedCommit, later); answer != BranchUnknown {
+		t.Fatalf("a commit of a repository no read ever named a branch for = %v, want %v", answer, BranchUnknown)
 	}
 }
 
@@ -1311,8 +1311,8 @@ func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
 	asked := time.Now()
 
 	for _, at := range []time.Time{asked, asked.Add(BranchCommitStaleAfter / 2)} {
-		if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, at); on || known {
-			t.Fatalf("a commit of a branch GitHub cannot answer for = %v, %v; want false, false", on, known)
+		if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, at); answer != BranchUnseen {
+			t.Fatalf("a commit of a branch GitHub cannot answer for = %v, want %v", answer, BranchUnseen)
 		}
 	}
 	if got := compares.Load(); got != 1 {
@@ -1320,10 +1320,201 @@ func TestABranchGitHubCannotAnswerForIsNotAskedAgainAtOnce(t *testing.T) {
 	}
 
 	later := asked.Add(BranchCommitStaleAfter + time.Minute)
-	if on, known := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, later); on || known {
-		t.Fatalf("a commit of that branch once the hold is stale = %v, %v; want false, false", on, known)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", gone, mergeCommit, later); answer != BranchUnseen {
+		t.Fatalf("a commit of that branch once the hold is stale = %v, want %v", answer, BranchUnseen)
 	}
 	if got := compares.Load(); got != 2 {
 		t.Fatalf("compare reads once the hold is stale = %d, want 2", got)
+	}
+}
+
+// A compare read GitHub failed to answer holds nothing: the next read asks it again. A 5xx, a
+// rate limit and a timeout are all of a minute's standing, where the hold is of five minutes'
+// and is about a branch rather than about one unlucky call; holding one would make every
+// result measured against that branch read unknown for five minutes over one bad second.
+// Nor is the failure an answer about the commit: it is BranchUnknown, which no later "not on
+// it" may turn into `older` (api/results_currency.go, of).
+func TestACompareReadGitHubFailedToAnswerHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const branch = "integration/138"
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		if compares.Add(1) == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprint(w, `{"message":"Server Error"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "diverged"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, asked); answer != BranchUnknown {
+		t.Fatalf("a commit of a branch GitHub answered 500 about = %v, want %v", answer, BranchUnknown)
+	}
+	soon := asked.Add(time.Second)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, soon); answer != BranchDoesNotCarry {
+		t.Fatalf("the same commit a second later, GitHub answering = %v, want %v", answer, BranchDoesNotCarry)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads = %d, want 2: a failure of GitHub's holds the pair for no time at all", got)
+	}
+}
+
+// A compare read whose caller went away holds nothing either. The results route passes the
+// request's own context (api/results.go, listCheckResults), so a client that disconnects or
+// times out cancels every read still in flight; a hold taken from that would let one abandoned
+// tab turn the branch unknown for five minutes for every other reader.
+func TestACancelledCompareReadHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const branch = "integration/138"
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		mustEncode(t, w, map[string]any{"status": "behind"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	// One read of another branch first, so the installation and its token are already minted
+	// and cached: what the cancelled read below then fails at is the compare itself, which is
+	// the read this test is about.
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "main", landedCommit, asked); answer != BranchCarries {
+		t.Fatalf("warming the installation token: a commit the branch carries = %v, want %v", answer, BranchCarries)
+	}
+
+	abandoned, leave := context.WithCancel(ctx)
+	leave()
+	if answer := branches.CommitOnBranch(abandoned, pool, client, "acme/widgets", branch, mergeCommit, asked); answer != BranchUnknown {
+		t.Fatalf("a compare read whose caller went away = %v, want %v", answer, BranchUnknown)
+	}
+	soon := asked.Add(time.Second)
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, soon); answer != BranchCarries {
+		t.Fatalf("the same pair for a caller that stayed = %v, want %v", answer, BranchCarries)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads GitHub answered = %d, want 2: the cancelled read never reached it and held nothing", got)
+	}
+}
+
+// A compare read of the repository's own default branch holds nothing, whatever it is refused
+// with. GitHub answers 403 and 404 for a branch it no longer holds, for a repository the
+// installation has lost, and for a commit the repository does not hold — and only the last of
+// the three can be what is happening here, since branchOf read this repository and GitHub
+// named this branch within the same five minutes, and a repository lost since costs compare
+// reads only until that read is made again and answers nothing. One commit nobody pushed must
+// not hold the branch every `default_branch` result of the repository is measured against.
+func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	for _, sha := range []string{mergeCommit, unaskedCommit} {
+		if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", DefaultBranch, sha, asked); answer != BranchUnseen {
+			t.Fatalf("a commit GitHub answers 404 about on the default branch = %v, want %v", answer, BranchUnseen)
+		}
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads of the default branch = %d, want one for each commit: the pair is never held", got)
+	}
+}
+
+// A compare read that is slow to be refused must not hold a pair a quicker read has been
+// answered about meanwhile. The refusal is the older fact however the two returned, and the
+// answer is the newer one: GitHub can see the branch again, and a hold taken after it would
+// turn every result measured against that branch unknown for five minutes although nothing
+// was wrong with it any more.
+func TestALateRefusalDoesNotHoldAPairAnAnswerOvertook(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const branch = "integration/138"
+	var compares atomic.Int64
+	arrived, release := make(chan struct{}), make(chan struct{})
+	fake := newFakeGitHub(t)
+	// The first compare read is the slow refusal and every read after it is answered, which
+	// orders the race without the handler having to read the commit out of the path.
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		if compares.Add(1) == 1 {
+			close(arrived)
+			<-release
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"message":"Not Found"}`)
+			return
+		}
+		mustEncode(t, w, map[string]any{"status": "behind"})
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	refused := make(chan BranchAnswer, 1)
+	go func() {
+		refused <- branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, unaskedCommit, asked)
+	}()
+	<-arrived
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, landedCommit, asked.Add(time.Second)); answer != BranchCarries {
+		t.Fatalf("a commit the branch carries, read while the refusal is in flight = %v, want %v", answer, BranchCarries)
+	}
+	close(release)
+	if answer := <-refused; answer != BranchUnseen {
+		t.Fatalf("the read GitHub refused = %v, want %v", answer, BranchUnseen)
+	}
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", branch, mergeCommit, asked.Add(2*time.Second)); answer != BranchCarries {
+		t.Fatalf("a third commit of a pair GitHub answered = %v, want %v: the late refusal held nothing", answer, BranchCarries)
+	}
+	if got := compares.Load(); got != 3 {
+		t.Fatalf("compare reads = %d, want 3: the pair was asked about again rather than held", got)
+	}
+}
+
+// What the map of compare holds keeps and what it drops. A pair nothing about which still
+// stands — the hold has run out, and the pair was answered longer ago than the same span, so
+// no read still in flight can have begun before that answer — is dropped as it is read, which
+// is what stops a branch deleted once from costing an entry for the life of the process. An
+// answer of a minute ago is kept, since a read in flight may yet have to lose to it
+// (markUnseen), and the entry goes on the first read past its own span.
+func TestAHoldNothingStandsForIsDroppedAsItIsRead(t *testing.T) {
+	branches := &Branches{}
+	pair := repoBranch{repo: "acme/widgets", branch: "integration/138"}
+	asked := time.Now()
+
+	branches.markUnseen(pair, asked)
+	if !branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter/2)) {
+		t.Fatal("a pair held half the span ago reads unheld, want held")
+	}
+	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+		t.Fatal("a pair held past the span reads held, want unheld")
+	}
+	if got := len(branches.compares); got != 0 {
+		t.Fatalf("entries after reading a hold nothing stands for = %d, want none", got)
+	}
+
+	branches.markSeen(pair, asked)
+	if branches.unseenHeld(pair, asked.Add(time.Minute)) {
+		t.Fatal("a pair GitHub answered reads held, want unheld")
+	}
+	if got := len(branches.compares); got != 1 {
+		t.Fatalf("entries after reading a pair answered a minute ago = %d, want the answer kept", got)
+	}
+	if branches.unseenHeld(pair, asked.Add(BranchCommitStaleAfter+time.Minute)) {
+		t.Fatal("a pair answered past the span reads held, want unheld")
+	}
+	if got := len(branches.compares); got != 0 {
+		t.Fatalf("entries after reading a pair whose answer is older than the span = %d, want none", got)
 	}
 }
