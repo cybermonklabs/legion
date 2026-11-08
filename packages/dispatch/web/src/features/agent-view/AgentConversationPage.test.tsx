@@ -1554,8 +1554,8 @@ test("a switch whose key has run out says so, and frees the pickers", async () =
     await tick(0);
     expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
-    // One jump of the key's whole life, as this file's own `tick` was before the shared helpers
-    // arrived: stepped in 500 ms rounds the send's backoff retries all the way through it.
+    // One jump crosses the key's whole life in a single round, which the shared stepping `tick`
+    // would walk 500 ms at a time.
     await jump(IDEMPOTENCY_KEY_TTL_MS);
     expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendExpiredError().message);
     expect(held(picker("Model"))).toBe(false);
@@ -1684,40 +1684,41 @@ test("Enter sends while the session is mid-turn", async () => {
 // accessible description, and on a line in the composer a reader without a pointer can see. It
 // stays focusable (aria-disabled, not disabled), and neither a click nor Enter sends. With text,
 // the line goes back to saying how to send.
-test("with an empty box Send is refused, says why on screen, and sends nothing", () =>
-  onFakeClock(async () => {
-    const createAgentMessage = acceptSends();
-    renderLiveView({
-      agentState: {},
-      messages: [],
-      putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
-    });
-    const input = await modeSettled("steer");
+test("with an empty box Send is refused, says why on screen, and sends nothing", async () => {
+  const createAgentMessage = acceptSends();
+  renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+  });
+  const input = await modeSettled("steer");
 
-    const send = sendButton();
-    expect(send.getAttribute("aria-disabled")).toBe("true");
-    expect(send.hasAttribute("disabled")).toBe(false);
-    expect(send.title).toBe("Type a message first.");
-    const description = (send.getAttribute("aria-describedby") ?? "")
-      .split(" ")
-      .map((id) => document.getElementById(id)?.textContent ?? "")
-      .join(" ");
-    expect(description).toBe("Type a message first.");
-    const shown = within(composer())
-      .getAllByText("Type a message first.")
-      .filter((line) => !line.classList.contains("sr-only"));
-    expect(shown).toHaveLength(1);
+  const send = sendButton();
+  expect(send.getAttribute("aria-disabled")).toBe("true");
+  expect(send.hasAttribute("disabled")).toBe(false);
+  expect(send.title).toBe("Type a message first.");
+  const description = (send.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .join(" ");
+  expect(description).toBe("Type a message first.");
+  const shown = within(composer())
+    .getAllByText("Type a message first.")
+    .filter((line) => !line.classList.contains("sr-only"));
+  expect(shown).toHaveLength(1);
+  await onFakeClock(async () => {
     fireEvent.click(send);
     fireEvent.keyDown(input, { key: "Enter" });
     await jump(50);
-    expect(createAgentMessage).not.toHaveBeenCalled();
+  });
+  expect(createAgentMessage).not.toHaveBeenCalled();
 
-    type(input, "now with words");
-    await waitFor(() => expect(sendButton().hasAttribute("aria-disabled")).toBe(false));
-    expect(sendButton().hasAttribute("aria-describedby")).toBe(false);
-    expect(within(composer()).getByText("Enter to send · Shift+Enter for a new line")).toBeTruthy();
-    expect(within(composer()).queryByText("Type a message first.")).toBeNull();
-  }));
+  type(input, "now with words");
+  await waitFor(() => expect(sendButton().hasAttribute("aria-disabled")).toBe(false));
+  expect(sendButton().hasAttribute("aria-describedby")).toBe(false);
+  expect(within(composer()).getByText("Enter to send · Shift+Enter for a new line")).toBeTruthy();
+  expect(within(composer()).queryByText("Type a message first.")).toBeNull();
+});
 
 // A send Dispatch refuses is not lost: the message is held on screen with the reason, for Retry or
 // Discard, and the box is free for the next one.
@@ -1771,8 +1772,9 @@ test("a refusal that lands after switching sessions stays with the session that 
   const other = await switchTo("Reviewer");
   type(other, "Reviewer's own words");
   expect(sendButton().hasAttribute("disabled")).toBe(false);
-  // The refusal and the window it is given to reach the screen run on the fake clock together:
-  // a retry the refusal scheduled would come due inside the jump.
+  // The rejection and the 50 ms it is given to reach the screen run on the fake clock, so the
+  // wait costs no real time. The checks below then hold that nothing of the refusal reached the
+  // session on screen; the refusal itself is read after switching back.
   await onFakeClock(async () => {
     await act(async () => {
       held[0]?.reject(new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" }));
@@ -1916,8 +1918,9 @@ test("a pending switch holds its own session's Send, and a send out on another h
   expect(sendButton().disabled).toBe(true);
   expect(within(composer()).getByText(wait)).toBeTruthy();
   expect(within(composer()).queryByText("Enter to send · Shift+Enter for a new line")).toBeNull();
-  // The press and the window a send of it would have run in share the fake clock, so a send the
-  // Enter put behind a timer would have gone out before the count below.
+  // The press and the 50 ms it is given run on the fake clock, so the wait costs no real time and
+  // a send the Enter put out at once is counted below. That the Enter sent nothing at all is held
+  // after the switch back, where the box still holds the draft.
   await onFakeClock(async () => {
     fireEvent.keyDown(composerInput(), { key: "Enter" });
     await jump(50);

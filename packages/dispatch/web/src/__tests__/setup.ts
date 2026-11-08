@@ -39,6 +39,11 @@ GlobalRegistrator.register();
 // is kept as small as that rule allows, because every hung test costs the whole budget on CI as
 // well as in a pod. dispatch://INFRA-1405 sets this same budget for its own loaded rows; the
 // overlap is intended.
+// Measured at this head: this deadline reached every file of a run in each shape tried - a
+// trivial file and one holding a 6 s test run serially, that second file alone, the two under
+// `--parallel` (what this package's `bun run test` and CI run), each of two longer files
+// followed serially by it, and the whole `web/src/__tests__` directory serially with it late in
+// 289 tests - where the 6 s test passed every time.
 jest.setTimeout(30_000);
 
 // Testing Library reads the document as it loads, so it must load after
@@ -55,6 +60,9 @@ jest.setTimeout(30_000);
 // measured there that the 1000 ms default failed 13 of 30 loaded runs, a different row each
 // time, which is why the budget is the suite's and not a deadline per row; the overlap is
 // intended.
+// The same runs show this budget reaching every file too: in each of those shapes, the
+// `--parallel` one among them, a `waitFor` that never passes ran about 10 s rather than the 1 s
+// default.
 const { configure } = await import("@testing-library/react");
 configure({ asyncUtilTimeout: 10_000 });
 

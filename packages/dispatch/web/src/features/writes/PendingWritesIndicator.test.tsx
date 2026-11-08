@@ -293,7 +293,6 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
     expect(screen.queryByTestId("pending-writes")).toBeNull();
   } finally {
     unmount();
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
+    realClock();
   }
 });

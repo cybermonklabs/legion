@@ -2288,7 +2288,8 @@ test("a stopped send the reader comes back to a day later says its key has run o
     await tick(0);
     const tried = createAgentMessage.mock.calls.length;
 
-    await tick(IDEMPOTENCY_KEY_TTL_MS);
+    // One jump of the key's whole life: the stopped send leaves no timer in it to step to.
+    await jump(IDEMPOTENCY_KEY_TTL_MS);
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     });

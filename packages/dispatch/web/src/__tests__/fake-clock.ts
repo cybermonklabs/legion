@@ -3,13 +3,13 @@ import { act } from "@testing-library/react";
 
 /**
  * Moves the fake clock `ms` on in steps of at most `step`, letting each timer's continuation and
- * React's updates run as it fires. A test that waits a product timer out installs
- * `jest.useFakeTimers()` and moves the clock here rather than waiting for real time; one jump
- * would run every timer of the window at the same instant, so a wait that must really cross a
- * window - and a `Date.now()` the test reads after it - would measure the test rather than the
- * product. Every test that installs the fake clock restores the real one in its `finally` or its
- * file's `afterEach` (`realClock` below): a fake clock left behind stops the timers of every test
- * after it.
+ * React's updates run as it fires. A test that waits a product timer out installs the fake clock
+ * - through `onFakeClock` below, or `jest.useFakeTimers()` of its own - and moves it here rather
+ * than waiting for real time; one jump would run every timer of the window at the same instant,
+ * so a wait that must really cross a window - and a `Date.now()` the test reads after it - would
+ * measure the test rather than the product. Every test that installs the fake clock restores the
+ * real one in its `finally` or its file's `afterEach` (`realClock` below): a fake clock left
+ * behind stops the timers of every test after it.
  */
 export async function tick(ms: number, step = 500): Promise<void> {
   if (step <= 0) throw new RangeError("tick's step must be above zero; use jump for a single jump");
@@ -46,8 +46,11 @@ export async function settle(): Promise<void> {
   for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
 }
 
-/** Runs `body` on the fake clock, so a write that waits out a backoff waits no real time, and
- *  brings the real clock back through `realClock` however `body` ends. */
+/** Runs `body` on the fake clock, so a wait inside it - a backoff, a send's deadline, a key's
+ *  whole life - waits no real time, and brings the real clock back through `realClock` however
+ *  `body` ends. This is how a row of this package installs the clock: a row whose whole body
+ *  needs it wraps the body, and a row where one wait crosses a timer wraps that wait alone,
+ *  leaving its render and its assertions on the real clock. */
 export async function onFakeClock(body: () => Promise<void>): Promise<void> {
   jest.useFakeTimers();
   try {
