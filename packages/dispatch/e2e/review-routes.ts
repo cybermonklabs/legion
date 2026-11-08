@@ -28,19 +28,16 @@ export interface ReviewSeed {
   readonly deliveryQuery: string;
   /** The `?at=` value the Pipeline page pins its seven days to. */
   readonly pipelineAt: string;
-  /** When `e2e/visual-seed.ts` finished writing this corpus, ISO 8601. The visual rows pin
-   *  their page clock a little after it, so every relative label the pages draw reads the same
-   *  on every run, and they read `VisualSeed` below to get it required; the accessibility rows,
-   *  which seed per row and compare no pixels, ignore it and `e2e/review-seed.ts` does not set
-   *  it. */
-  readonly seededAt?: string;
 }
 
-/** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output and
- *  always carries `seededAt`. Required here because a shot row that silently skipped its clock
- *  pin would bring back the minute-boundary drift the pin exists to remove, and that shows up
- *  only as baselines differing late in a run. */
+/** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output. A
+ *  type of its own because a shot row that silently skipped its clock pin would bring back the
+ *  minute-boundary drift the pin exists to remove, and that shows up only as baselines
+ *  differing late in a run. */
 export interface VisualSeed extends ReviewSeed {
+  /** When `e2e/visual-seed.ts` finished writing this corpus, ISO 8601. The visual rows pin
+   *  their page clock a little after it, so every relative label the pages draw reads the same
+   *  on every run. */
   readonly seededAt: string;
 }
 

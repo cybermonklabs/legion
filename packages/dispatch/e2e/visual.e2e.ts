@@ -108,7 +108,9 @@ test.beforeAll(async () => {
  *  show up only as the late rows of a run differing from their baselines. `e2e/visual-seed.ts`
  *  always writes the field, so a file that lacks it did not come from it. */
 function readVisualSeed(path: string): VisualSeed {
-  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed;
+  const seed = JSON.parse(readFileSync(path, "utf8")) as ReviewSeed & {
+    readonly seededAt?: string;
+  };
   const { seededAt } = seed;
   if (seededAt === undefined) {
     throw new Error(
@@ -122,9 +124,13 @@ function readVisualSeed(path: string): VisualSeed {
 
 /** One row's work, which the desktop and the phone rows share: the project they run in is the
  *  only difference between them, and it decides the viewport and the directory the baseline is
- *  read from. */
-async function shoot(browser: Browser, route: ReviewedRoute, path: string): Promise<void> {
-  const seed = readVisualSeed(path);
+ *  read from. The skip lives here so the two loops below stay one line each. */
+async function shoot(browser: Browser, route: ReviewedRoute): Promise<void> {
+  if (seedPath === undefined) {
+    test.skip(true, SKIP_REASON);
+    return;
+  }
+  const seed = readVisualSeed(seedPath);
   await withAlice(browser, async (page) => {
     // The page's clock, pinned a minute after the corpus was written. Every relative label
     // these pages draw - "just now", "2 minutes ago", "0m", "Updated just now" - is that
@@ -256,11 +262,7 @@ async function shoot(browser: Browser, route: ReviewedRoute, path: string): Prom
 for (const route of shotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its baseline in light and dark`, async ({ browser }) => {
-    if (seedPath === undefined) {
-      test.skip(true, SKIP_REASON);
-      return;
-    }
-    await shoot(browser, route, seedPath);
+    await shoot(browser, route);
   });
 }
 
@@ -272,10 +274,6 @@ for (const route of shotRoutes) {
 for (const route of phoneShotRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
   test(`${route.name} matches its phone baseline in light and dark @phone`, async ({ browser }) => {
-    if (seedPath === undefined) {
-      test.skip(true, SKIP_REASON);
-      return;
-    }
-    await shoot(browser, route, seedPath);
+    await shoot(browser, route);
   });
 }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { accessibilityExclusions } from "../accessibility-exclusions";
-import { reviewRoutes, scannedRoutes, shotRoutes } from "../review-routes";
+import { phoneShotRoutes, reviewRoutes, scannedRoutes, shotRoutes } from "../review-routes";
 import { walkRoutes } from "../two-builds-routes";
 
 // The review layers (an accessibility pass and a containerised visual review) open exactly the
@@ -44,6 +44,15 @@ describe("the review layers' route list", () => {
 
     const names = reviewRoutes.map((route) => route.name);
     expect(names.filter((name, index) => names.indexOf(name) !== index)).toEqual([]);
+  });
+
+  // A phone shot is the second shot of a page the desktop rows already took, which is what
+  // makes the two baselines of one file name comparable. `layers: ["scan", "shoot-phone"]`
+  // compiles, so only this holds the table to it.
+  test("shoots on desktop every page it shoots on a phone", () => {
+    const shot = new Set(shotRoutes.map((route) => route.name));
+    const phoneOnly = phoneShotRoutes.filter((route) => !shot.has(route.name));
+    expect(phoneOnly.map((route) => route.name)).toEqual([]);
   });
 
   // An entry of e2e/accessibility-exclusions.ts whose `route` names no scanned entry is inert:
