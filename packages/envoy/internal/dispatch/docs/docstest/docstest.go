@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,9 +49,15 @@ const (
 type Peer struct {
 	// Doc is the peer's copy of the document. The peer's reader applies the room's updates to it.
 	Doc *crdt.Doc
-	// Answers carries the content of each sync step 2 the room sends, once Doc holds it. One that
-	// arrives while sixteen are waiting to be read is dropped.
-	Answers <-chan []byte
+	// Answers carries the content of the frames of each answer the room sends to a sync step 1
+	// this peer sent, in order and once Doc holds them all: the updates the room cut its state
+	// into, each integrating on its own, and last the sync step 2 that ends the run
+	// (sjawhar/ygo sync.EncodeSyncStep2Split). No one frame holds the whole state, so a reader
+	// that wants the state the room answered with builds it from the run (AnswerDoc). An update
+	// the room relays while an answer is outstanding - another peer's keystroke - is carried with
+	// that answer, which the room holds too. An answer that arrives while sixteen are waiting to
+	// be read is dropped.
+	Answers <-chan [][]byte
 	// Awareness carries the entries of each awareness update the room sends, in order, once
 	// AwarenessStates holds them. One that arrives while sixty-four are waiting to be read is
 	// dropped; AwarenessStates and WaitForAwareness miss none.
@@ -62,6 +69,14 @@ type Peer struct {
 
 	artifactID string
 	connection *gws.Conn
+	// awaiting counts the sync step 1s this peer has sent that the room has not yet ended an
+	// answer to. The reader keeps an answer's frames only while one is outstanding, so an update
+	// relayed between answers is applied to Doc and nothing piles up for an answer never asked
+	// for.
+	awaiting atomic.Int64
+	// answer is the frames of the answer the reader is reading, which only the reader touches:
+	// the content of each update of the run, waiting for the sync step 2 that ends it.
+	answer [][]byte
 	// writes holds one write at a time: gorilla/websocket panics on two writes at once, and the
 	// reader answers the room's sync step 1 while a test sends.
 	writes sync.Mutex
@@ -127,7 +142,7 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 		}
 		return nil, fmt.Errorf("connect a peer to document %s: %w", artifactID, err)
 	}
-	answers, awareness, ended := make(chan []byte, 16), make(chan []AwarenessEntry, 64), make(chan struct{})
+	answers, awareness, ended := make(chan [][]byte, 16), make(chan []AwarenessEntry, 64), make(chan struct{})
 	peer := &Peer{
 		Doc: doc, Answers: answers, Awareness: awareness, Ended: ended, UpgradeHeader: response.Header,
 		artifactID: artifactID, connection: connection, auth: make(chan authReply, 4),
@@ -146,8 +161,12 @@ func DialContext(ctx context.Context, url string, header http.Header, artifactID
 }
 
 // Write sends syncMessage to the room as Hocuspocus carries it: the document's name, then the sync
-// kind.
+// kind. A sync step 1 counts an answer asked for, which is what tells the reader the frames that
+// follow are an answer's (Answers).
 func (p *Peer) Write(syncMessage []byte) error {
+	if kind, _, err := ygsync.ReadSyncMessage(syncMessage); err == nil && kind == ygsync.MsgSyncStep1 {
+		p.awaiting.Add(1)
+	}
 	return p.writeFrame(messageSync, func(encoder *encoding.Encoder) { encoder.WriteRaw(syncMessage) })
 }
 
@@ -174,9 +193,25 @@ func (p *Peer) Send(change func(*crdt.Transaction)) ([]byte, error) {
 }
 
 // AskForDocument asks the room for its whole document, a sync step 1 naming no state. The room
-// answers in order on this connection, and the answer arrives on Answers once Doc holds it.
+// answers in order on this connection, and the frames of the answer arrive on Answers once Doc
+// holds them all.
 func (p *Peer) AskForDocument() error {
 	return p.Write(ygsync.EncodeSyncStep1(crdt.New()))
+}
+
+// AnswerDoc is the document one answer (Answers) leaves a client holding: the answer's frames
+// applied to a new document in the order the room sent them, which is how a browser's provider
+// applies them. The room cuts its state into frames that each integrate on their own and ends the
+// run with a sync step 2 carrying what no such frame could, so no one frame holds the whole state
+// and a reader of one holds a part of it.
+func AnswerDoc(answer [][]byte) (*crdt.Doc, error) {
+	doc := crdt.New()
+	for i, update := range answer {
+		if err := crdt.ApplyUpdateV1(doc, update, nil); err != nil {
+			return nil, fmt.Errorf("apply frame %d of the room's answer of %d: %w", i+1, len(answer), err)
+		}
+	}
+	return doc, nil
 }
 
 // SetAwareness announces client's awareness state to the room, as y-protocols encodes an update of
@@ -328,9 +363,9 @@ func (p *Peer) CloseCode() int {
 }
 
 // read applies every sync frame the room sends and answers its sync step 1, keeps every awareness
-// update and hands on every auth answer, until the connection closes, handing answers the content
-// of each sync step 2 once it is applied and awareness each awareness update once it is kept.
-func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
+// update and hands on every auth answer, until the connection closes, handing answers the frames
+// of each answer once Doc holds them all and awareness each awareness update once it is kept.
+func (p *Peer) read(answers chan<- [][]byte, awareness chan<- []AwarenessEntry) {
 	for {
 		_, message, err := p.connection.ReadMessage()
 		if err != nil {
@@ -372,9 +407,10 @@ func (p *Peer) read(answers chan<- []byte, awareness chan<- []AwarenessEntry) {
 	}
 }
 
-// applySync applies one sync message the room sent and answers its sync step 1, handing answers
-// the content of a sync step 2 once Doc holds it.
-func (p *Peer) applySync(payload []byte, answers chan<- []byte) error {
+// applySync applies one sync message the room sent and answers its sync step 1. It keeps the
+// content of each update of an answer this peer asked for, and hands answers the whole run once
+// Doc holds the sync step 2 that ends it.
+func (p *Peer) applySync(payload []byte, answers chan<- [][]byte) error {
 	kind, content, err := ygsync.ReadSyncMessage(payload)
 	if err != nil {
 		return err
@@ -383,14 +419,25 @@ func (p *Peer) applySync(payload []byte, answers chan<- []byte) error {
 	if err != nil {
 		return err
 	}
-	if kind == ygsync.MsgSyncStep1 && reply != nil {
-		if err := p.Write(reply); err != nil {
-			return err
+	switch {
+	case kind == ygsync.MsgSyncStep1:
+		if reply != nil {
+			return p.Write(reply)
 		}
-	}
-	if kind == ygsync.MsgSyncStep2 {
+	case kind == ygsync.MsgUpdate:
+		if p.awaiting.Load() > 0 {
+			p.answer = append(p.answer, content)
+		}
+	case kind == ygsync.MsgSyncStep2:
+		// The reader is the only goroutine that takes an ask back, so a load and an add under
+		// no lock cannot drop the count below zero.
+		if p.awaiting.Load() > 0 {
+			p.awaiting.Add(-1)
+		}
+		answer := append(p.answer, content)
+		p.answer = nil
 		select {
-		case answers <- content:
+		case answers <- answer:
 		default:
 		}
 	}

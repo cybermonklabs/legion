@@ -4448,8 +4448,11 @@ func placeMark(t *testing.T, editor *docstest.Peer, login, quote, id string) {
 }
 
 // roomRendering asks the room for its whole document over the editor's socket and renders the
-// answer on its own: what the room holds, not what the editor's copy holds. The room answers a
-// sync step 1 after every message the editor sent before it, so this is also a barrier.
+// answer on its own: what the room holds, not what the editor's copy holds. The answer is a run
+// of frames - the room cuts its state into updates that each integrate on their own and ends the
+// run with a sync step 2 - and the whole run is applied, as a browser applies it, since no one
+// frame of it holds the document. The room answers a sync step 1 after every message the editor
+// sent before it, so this is also a barrier.
 func roomRendering(editor *docstest.Peer, within time.Duration) (string, error) {
 	for drained := false; !drained; {
 		select {
@@ -4462,9 +4465,9 @@ func roomRendering(editor *docstest.Peer, within time.Duration) (string, error) 
 		return "", fmt.Errorf("ask the room for its document: %w", err)
 	}
 	select {
-	case state := <-editor.Answers:
-		doc := crdt.New()
-		if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
+	case answer := <-editor.Answers:
+		doc, err := docstest.AnswerDoc(answer)
+		if err != nil {
 			return "", fmt.Errorf("apply the room's document: %w", err)
 		}
 		return renderDocument(doc), nil
