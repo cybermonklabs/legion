@@ -513,22 +513,33 @@ daemon_said() {
 }
 daemon_said_at_least() { [ "$(daemon_said "$1")" -ge "$2" ]; }
 
-# clean_stop_recorded SESSION reports whether the daemon acted on SESSION's death, by either of the
-# two lines its clean stop can end in, and leaves the one it found in stop_record.
+# clean_stop_recorded SESSION reports whether the daemon's clean stop of SESSION ended in one of
+# the two lines that mean the registration is gone because the daemon acted, and leaves the one it
+# found in stop_record.
 #
-# The first is the stop it made. The second is the stop the listener refused because the
-# registration was written after it: a heartbeat that landed under a second before the probe judged
-# the process gone, inside cleanSessionStopSkewAllowance, after which the session's own plugin
-# deregisters it instead. Both are triggered by the one kill, so which of them wins is a race this
-# change admits rather than a fact it promises, and a check that pins either is a coin flip. What
-# the clause claims is that the session is gone well inside the horizon, and gone_within above is
-# what measures that; this asks only that the daemon saw the death and acted on it, which is what
-# keeps the measurement from passing on the reaper (dispatch://INFRA-392).
+# The first is the stop it made. The second is the registry answering that it holds no
+# registration of the session at all, which the daemon reports rather than sending a delete: on
+# the Claude arm claude-envoy's own deregistration can land first, and a record already gone is
+# the outcome the stop asked for.
+#
+# The line this does NOT accept is the stop the listener kept. Until dispatch://INFRA-2064 it did:
+# the stop dated itself a second before the moment its probe judged, so the dead pane's own last
+# heartbeat refused it, and the comment here said the session's own plugin would deregister it
+# instead — which is false for a SIGKILL of the process that plugin runs in
+# (packages/pi-envoy/src/registration-state.ts, unregisterSession is an explicit call). The stop
+# now names the dead process's own client instance id as well as the moment, so a kept answer for
+# a SIGKILLed role means the registry held a registration some other client instance wrote, which
+# cannot have happened inside the relaunch's first backoff and a process boot. Accepting it would
+# hide this defect's return.
+#
+# What the clause claims is that the session is gone well inside the horizon, and gone_within
+# above is what measures that; this asks that the daemon's own stop is why, which is what keeps
+# the measurement from passing on the reaper (dispatch://INFRA-392).
 stop_record=
 clean_stop_recorded() {
   local session=$1 line
   for line in "the Envoy session of a role whose process is gone was stopped" \
-    "it was written after the stop"; do
+    "the Envoy listener holds no registration of a dead role's session, so none was stopped"; do
     if grep -F -- "$line" "$evidence/logs/daemon.log" 2>/dev/null | grep -qF -- "$session"; then
       stop_record=$line
       return 0
