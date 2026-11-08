@@ -18,14 +18,13 @@
  */
 import { type Browser, expect, type Page, type Request, test } from "@playwright/test";
 
-import { createProjectDocument } from "./api";
 import { documentEditor } from "./editor";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 import {
-  seedViewIssue,
-  seedViewProject,
-  type ViewFixture,
+  documentPath,
+  seedReadyView,
+  VIEW_CAPTION,
   viewBlock,
   viewDirective,
 } from "./view-fixtures";
@@ -49,30 +48,9 @@ import {
  */
 const BUDGET_BYTES = 16_000;
 
-const CAPTION = "Attempts of the kernel boot loop.";
-
 /** The row's document with the block written as the plain paragraph it would be without one.
  *  What this one costs the reader is what the block's own cost is measured against. */
-const BASE_DOCUMENT = `# Loop\n\n${CAPTION}\n`;
-
-/** A page file that answers `ready` and says nothing else, and a data file granted to it. */
-async function seedView(): Promise<ViewFixture> {
-  await seedViewProject();
-  return seedViewIssue({
-    html:
-      '<!doctype html>\n<html lang="en"><body><p id="words">drawn</p>' +
-      '<script>parent.postMessage({ type: "dispatch-view:ready" }, "*");</script></body></html>\n',
-    title: "Kernel boot loop",
-  });
-}
-
-/** `content` stored as a project document named `name`, and the address a reader opens it at.
- *  The row needs the address rather than the visit: it opens one document in two readers of its
- *  own, and two copies of a document would not tell those two readers apart. */
-async function documentPath(content: string, name: string): Promise<string> {
-  const document = await createProjectDocument("CORE", { content, name });
-  return `/projects/CORE/documents/${document.artifact.slug}`;
-}
+const BASE_DOCUMENT = `# Loop\n\n${VIEW_CAPTION}\n`;
 
 /**
  * What a page fetched of its own JavaScript, as the row reads it. An address is counted once
@@ -229,19 +207,19 @@ test.beforeEach(async () => {
 test("a view block costs the reader at most 16,000 more bytes of JavaScript", async ({
   browser,
 }) => {
-  const fixture = await seedView();
+  const fixture = await seedReadyView();
   const withBlock = await documentPath(
-    viewDirective({ caption: CAPTION, data: fixture.dataRef, page: fixture.pageRef }),
+    viewDirective({ caption: VIEW_CAPTION, data: fixture.dataRef, page: fixture.pageRef }),
     "Budget"
   );
   const asParagraph = await documentPath(BASE_DOCUMENT, "Budget as a paragraph");
   const blockDrawn = async (page: Page): Promise<void> => {
-    await expect(viewBlock(page, CAPTION).frameLocator("iframe").locator("#words")).toHaveText(
+    await expect(viewBlock(page, VIEW_CAPTION).frameLocator("iframe").locator("#words")).toHaveText(
       "drawn"
     );
   };
   const paragraphDrawn = async (page: Page): Promise<void> => {
-    await expect(documentEditor(page)).toContainText(CAPTION);
+    await expect(documentEditor(page)).toContainText(VIEW_CAPTION);
   };
 
   const paragraph = await readerFetched(browser, asParagraph, paragraphDrawn);

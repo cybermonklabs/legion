@@ -23,21 +23,19 @@ import {
   createComment,
   createIssue,
   createMessage,
-  createProjectDocument,
   uploadIssueFile,
 } from "./api";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 import {
+  documentPath,
   openCommentThreadReplies,
-  seedViewIssue,
+  seedReadyView,
   seedViewProject,
-  type ViewFixture,
+  VIEW_CAPTION,
   viewBlock,
   viewDirective,
 } from "./view-fixtures";
-
-const CAPTION = "Attempts of the kernel boot loop.";
 
 /** A paragraph per line, enough of them to put a block several screen heights down. */
 function filler(lines: number): string {
@@ -47,21 +45,9 @@ function filler(lines: number): string {
   ).join("\n\n");
 }
 
-/** A page file that answers `ready` and says nothing else, and a data file granted to it. */
-async function seedView(): Promise<ViewFixture> {
-  await seedViewProject();
-  return seedViewIssue({
-    html:
-      '<!doctype html>\n<html lang="en"><body><p id="words">drawn</p>' +
-      '<script>parent.postMessage({ type: "dispatch-view:ready" }, "*");</script></body></html>\n',
-    title: "Kernel boot loop",
-  });
-}
-
 /** `content` as a project document named `name`, opened in `page`. */
 async function openDocument(page: Page, content: string, name: string): Promise<void> {
-  const document = await createProjectDocument("CORE", { content, name });
-  await page.goto(`/projects/CORE/documents/${document.artifact.slug}`);
+  await page.goto(await documentPath(content, name));
 }
 
 test.beforeEach(async () => {
@@ -71,7 +57,7 @@ test.beforeEach(async () => {
 test("a view block far down the page reads nothing until the reader scrolls to it", async ({
   browser,
 }) => {
-  const fixture = await seedView();
+  const fixture = await seedReadyView();
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -85,13 +71,13 @@ test("a view block far down the page reads nothing until the reader scrolls to i
     await openDocument(
       page,
       `${filler(220)}\n\n${viewDirective({
-        caption: CAPTION,
+        caption: VIEW_CAPTION,
         data: fixture.dataRef,
         page: fixture.pageRef,
       })}`,
       "Far below"
     );
-    const block = viewBlock(page, CAPTION);
+    const block = viewBlock(page, VIEW_CAPTION);
     await expect(page.getByText("Line 1:", { exact: false }).first()).toBeVisible();
     const away = async () =>
       block.evaluate((element) => element.getBoundingClientRect().top / window.innerHeight);
@@ -118,20 +104,20 @@ test("a view block far down the page reads nothing until the reader scrolls to i
 test("a view block more than three screen heights away loses its frame, and takes it back", async ({
   browser,
 }) => {
-  const fixture = await seedView();
+  const fixture = await seedReadyView();
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await openDocument(
       page,
       `${filler(400)}\n\n${viewDirective({
-        caption: CAPTION,
+        caption: VIEW_CAPTION,
         data: fixture.dataRef,
         page: fixture.pageRef,
       })}`,
       "Scrolled away"
     );
-    const block = viewBlock(page, CAPTION);
+    const block = viewBlock(page, VIEW_CAPTION);
     await block.scrollIntoViewIfNeeded();
     await expect(block.frameLocator("iframe").locator("#words")).toHaveText("drawn");
 
@@ -157,7 +143,7 @@ test("a view block more than three screen heights away loses its frame, and take
 test("a view block asks for its page only after its caption is on the page", async ({
   browser,
 }) => {
-  const fixture = await seedView();
+  const fixture = await seedReadyView();
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -190,10 +176,10 @@ test("a view block asks for its page only after its caption is on the page", asy
     });
     await openDocument(
       page,
-      viewDirective({ caption: CAPTION, data: fixture.dataRef, page: fixture.pageRef }),
+      viewDirective({ caption: VIEW_CAPTION, data: fixture.dataRef, page: fixture.pageRef }),
       "Caption first"
     );
-    await expect(viewBlock(page, CAPTION).frameLocator("iframe").locator("#words")).toHaveText(
+    await expect(viewBlock(page, VIEW_CAPTION).frameLocator("iframe").locator("#words")).toHaveText(
       "drawn"
     );
     const captions = await page.evaluate<(string | null)[]>(() =>
@@ -203,14 +189,14 @@ test("a view block asks for its page only after its caption is on the page", asy
     expect(
       captions[0],
       "A5: the block's caption was already on the page when its frame was asked for"
-    ).toContain(CAPTION);
+    ).toContain(VIEW_CAPTION);
   } finally {
     await alice.close();
   }
 });
 
 test("a view block waits its turn where six of them sit on one screen", async ({ browser }) => {
-  const fixture = await seedView();
+  const fixture = await seedReadyView();
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
@@ -434,7 +420,7 @@ test("a view block waiting behind frames whose pages never answer still gets its
   // blocks has drawn: that deadline is what the row observes, and the default thirty seconds
   // leaves it no room (e2e/playwright.config.ts, above `expectTimeout`).
   test.setTimeout(90_000);
-  const fixture = await seedView();
+  const fixture = await seedReadyView();
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();

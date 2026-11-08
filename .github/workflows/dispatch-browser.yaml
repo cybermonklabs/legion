@@ -146,11 +146,12 @@ jobs:
     # the step already holds.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Counted at
-    # this head, by the project tag of each row of `playwright test --list` rather than by hand,
-    # the suite holds 1,474 rows: 1,418 in the eight projects the full lane's four shards run,
-    # of which 1,203 are in the two the pull-request lane runs. The remaining 56 are the three
-    # `-alone` projects' (22, 17 and 17), which the alone job runs. A count here is a snapshot
-    # and goes stale: count it again rather than trusting this line.
+    # 303b6ced with `bunx playwright test --config e2e/playwright.config.ts --list`, by the
+    # project tag of each row rather than by hand, the suite holds 1,484 rows: 1,428 in the eight
+    # projects the full lane's four shards run, of which 1,213 are in the two the pull-request
+    # lane runs, `chromium` 1,089 and `iphone` 124. The remaining 56 are the three `-alone`
+    # projects' (22, 17 and 17), which the alone job runs. The next merge changes every one of
+    # these: count them again rather than trusting this line.
     timeout-minutes: 33
     strategy:
       fail-fast: false
@@ -504,8 +505,8 @@ jobs:
     # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going to
     # fail its install holds a runner for up to 27 min before it says so.
     #
-    # Three legs of one run is a thin reading, and these are the projects whose rows are read
-    # from the wall clock, so a slower machine moves them further than it moves a parallel row.
+    # Three legs of one run is a thin reading, and these projects' rows are measured, most of
+    # them on the wall clock, so a slower machine moves them further than it moves a parallel row.
     # The 15 per cent the rule adds is what carries that, and a leg that outran it fails the
     # browser step by name, which is a reading of its own.
     timeout-minutes: 27
@@ -542,9 +543,9 @@ jobs:
         # heavy-bodies.e2e.ts, which every leg runs; and e2e/agents.ts:1, which imports
         # DELIVERY_CAPABILITIES from @legion/contracts, reached through e2e/seed.ts, which every
         # clock spec imports. chromium-alone has one of its own, heavy-document-writes.e2e.ts:14,
-        # since it is the only leg that runs that spec: its testMatch is `clockSpecs`
-        # (e2e/playwright.config.ts:382), where firefox-alone and webkit-alone take
-        # /heavy-bodies\.e2e\.ts/ alone (:390, :402).
+        # since it is the only leg that runs that spec: its testMatch is `measuredSpecs`
+        # (e2e/playwright.config.ts), where firefox-alone and webkit-alone take
+        # /heavy-bodies\.e2e\.ts/ alone.
         #
         # Playwright's own Node resolution reads each from contracts' built dist/: under Node the
         # package's "default" condition is dist/index.js, or dist/dispatch-tools.js for that
@@ -622,8 +623,8 @@ jobs:
         # each a harness and a Postgres of its own, that last one a `docker run` of
         # DISPATCH_E2E_PG_IMAGE (e2e/harness-postgres.ts). They are set on the command line, not
         # in this step's `env:`, for the reason the job's head gives. One lane here, not four:
-        # these projects' rows are read from the wall clock, and three other lanes on the machine
-        # would be in the reading.
+        # these projects' rows are measured - a wall-clock time, or the bytes a page fetched -
+        # and three other lanes on the machine would be in the reading.
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no spec these
         # legs run needs one. A row that uploads is answered from the stored row's own bytes,
@@ -717,7 +718,7 @@ jobs:
       # glob matches it however many lanes ran.
       #
       # Always, not `if: failure()`: a green leg's logs are worth as much as a red one's here,
-      # since they say what the lane's servers did while the clock was read. These three
+      # since they say what the lane's servers did while the measurement was taken. These three
       # projects set `retries: 0` of their own (e2e/playwright.config.ts), so no row of this job
       # is retried and none is reported flaky; a row that fails fails the leg, and the trace it
       # carries is of its one attempt, which the config's `trace: 'retain-on-first-failure'`

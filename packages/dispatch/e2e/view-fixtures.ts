@@ -11,10 +11,19 @@
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { createArtifactGrant, createIssue, createProject, uploadIssueFile } from "./api";
+import {
+  createArtifactGrant,
+  createIssue,
+  createProject,
+  createProjectDocument,
+  uploadIssueFile,
+} from "./api";
 
 /** The project every `view` row's issue and document live in. */
 export const VIEW_PROJECT = "CORE";
+
+/** The caption the measured rows give their block, and so the text that finds it on the page. */
+export const VIEW_CAPTION = "Attempts of the kernel boot loop.";
 
 /** The one data file of the seed below, as text a page can draw: one bar, whose `.value` is
  *  what a row reads back out of the frame. */
@@ -99,6 +108,26 @@ export async function seedViewIssue(options: {
     pageId: pageFile.artifact.id,
     pageRef: `dispatch://${issue.key}/artifact/${pageName}-html`,
   };
+}
+
+/** A page file that answers `ready` and says nothing else, and a data file granted to it: what
+ *  the two measured rows seed, which care about what a block costs rather than what it draws. */
+export async function seedReadyView(): Promise<ViewFixture> {
+  await seedViewProject();
+  return seedViewIssue({
+    html:
+      '<!doctype html>\n<html lang="en"><body><p id="words">drawn</p>' +
+      '<script>parent.postMessage({ type: "dispatch-view:ready" }, "*");</script></body></html>\n',
+    title: "Kernel boot loop",
+  });
+}
+
+/** `content` stored as a project document named `name`, and the address a reader opens it at.
+ *  A row that opens the document in two readers of its own needs the address rather than the
+ *  visit, since two copies of a document would not tell those two readers apart. */
+export async function documentPath(content: string, name: string): Promise<string> {
+  const document = await createProjectDocument(VIEW_PROJECT, { content, name });
+  return `/projects/${VIEW_PROJECT}/documents/${document.artifact.slug}`;
 }
 
 /**
