@@ -200,3 +200,55 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 	}
 	return &entry, nil
 }
+
+// offerAgentDeliveryToLegion offers one agent-subject delivery this listener found no session
+// record for (session.ErrNoSessionRecord) to the stopped Legion agent's daemon, and reports
+// whether that offer was the message's whole outcome. Both paths that end with no record to
+// deliver through reach it: the interest path, whose stored row names this listener and outlives
+// the session entry it was written beside, which is the shape every Legion agent that ran here
+// leaves behind (agentSubjectDelivery), and the unplaceable path's give-up, once its deferrals
+// are spent (unplaceableAgentDelivery). It records the outcome and finalizes the message itself
+// for the two answers it owns, so one line, one counter and one disposal serve both callers:
+//
+//   - a hand-off that was published is the whole answer: handed_off, the dedupe key recorded and
+//     the message ACKed, with neither caller's exception - the daemon answers it from the agent's
+//     own conversation;
+//   - a hand-off whose publish failed is NAKed and tried again rather than answered, since each
+//     caller's own answer would report as refused a message the next attempt may well hand off,
+//     and the unplaceable path's would publish the very notice the hand-off replaces. Its
+//     attempt-cache entry is cleared with it, or the redelivery this NAK asks for is swallowed as
+//     an attempt-dedupe skip before the handler runs again.
+//
+// It answers false when nothing was handed off - no registry entry for the session, a project
+// that does not answer, a session that is not gone, a message that opted out, a registry that
+// could not be read (handOffToLegion) - having recorded nothing and finalized nothing, and the
+// caller answers exactly as it did before the hand-off existed.
+func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) bool {
+	handed, err := cfg.handoff.handOffToLegion(context.Background(), legionHandoffTarget{envelope: item, session: sessionID})
+	switch {
+	case err != nil:
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			sessionID:    sessionID,
+			metricStatus: "failed",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelError, "listener legion hand-off failed", sessionID, item.Topic, item.EventID, "failed", slog.String("error", err.Error()))
+			},
+			clearAttempt: true,
+		})
+		cfg.messagesNAKed.Inc()
+		message.finalize(true)
+	case handed != nil:
+		applyDeliveryOutcome(cfg, item, deliveryOutcome{
+			sessionID:    sessionID,
+			metricStatus: "handed_off",
+			log: func(logger *logging.Logger) {
+				logger.DeliveryLog(slog.LevelInfo, "listener agent handed off to its legion daemon", sessionID, item.Topic, item.EventID, "handed_off", slog.String("project", handed.Project))
+			},
+			recordDedupe: true,
+		})
+		message.finalize(false)
+	default:
+		return false
+	}
+	return true
+}

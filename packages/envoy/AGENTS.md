@@ -173,9 +173,9 @@ Each item below names a task and where its code is, then notes on it.
   and each project's answering record (`project.go`, written through `PUT /v1/legion/projects/<legion_project>`);
   key layout under "Legion agent registry" below
 
-- **Legion hand-off**: `cmd/listener/legion_handoff.go` (`handOffToLegion`)
+- **Legion hand-off**: `cmd/listener/legion_handoff.go` (`handOffToLegion`, and `offerAgentDeliveryToLegion`, the one block both agent-delivery paths offer it through)
 
-  a send, role publish or agent-subject message no live session takes, for a stopped Legion agent whose project answers, is published to the agent's daemon on `notifications.legion.<legion_project>.agents.<session>` in place of the 404 or `no_holder`;
+  a send, role publish or agent-subject message no live session takes, for a stopped Legion agent whose project answers, is published to the agent's daemon on `notifications.legion.<legion_project>.agents.<session>` in place of the 404, the `no_holder` or the interest path's `delivery_failed`;
   the rules under "Legion hand-off" below
 
 - **KV cache watchers**: `internal/kvwatch/kvwatch.go`, `internal/kvwatch/options.go`, `internal/kvwatch/serving.go`, `internal/kvwatch/stream.go`, `internal/kvwatch/repair.go`, `internal/kvwatch/shutdown.go`, `internal/kvwatch/copy.go`, `internal/kvwatch/marks.go`, `internal/kvwatch/scan.go`, `internal/kvwatch/entry.go`
@@ -3776,6 +3776,7 @@ that is the rule and not a transitional measure, and it is what lets Dispatch de
   it leaves no entry, and the branch where no stored subscription names an owner (`session.HandleAgentMessage`, `internal/session/handler.go`) answers an attempt with no entry as undelivered and carrying no error at all: it drops `session.ErrNoSessionRecord` there, and that shape - undelivered, with no error - is what holds the window open (`cmd/listener/delivery.go`, the result `unplaceableAgentDelivery` takes).
   What is given up at once is a core delivery or a message whose JetStream metadata cannot be read, which nothing would redeliver or bound.
   The interest path's own failures never reach that branch: they NAK with an error and are counted `failed`.
+  The one of them that is `session.ErrNoSessionRecord` - an interest row naming this listener with no session entry behind it, which is what every Legion agent that ran here leaves - is offered the Legion hand-off first ("Legion hand-off"), and keeps that NAK and that `delivery_failed` exception whenever nothing takes it.
   A fanout delivery that fails to a session that is live is NAK'd for retry (up to MaxDeliver attempts over the stream's MaxAge window);
   one whose session is not live is counted a dead delivery and acknowledged.
 
@@ -4396,8 +4397,11 @@ Dispatch reads it through `internal/dispatch/envoy` (`Agent`, `RoleAgents`, `Iss
 ### Legion hand-off
 
 A message for a stopped Legion agent goes to the agent's daemon, which answers it, rather than being refused.
-`handOffToLegion` (`cmd/listener/legion_handoff.go`) runs on the three paths that find no session to deliver to:
-`/v1/messages/send` before its `404 no live session`, `/v1/messages/publish` to a role topic before the keep and the `unclaimed` or `holder_lapsed` 404 (`roleSend.noHolder`), and an agent subject's bus delivery in place of its `no_holder` exception, after the deferral window is spent (`unplaceable_delivery.go`).
+`handOffToLegion` (`cmd/listener/legion_handoff.go`) runs on the paths that find no session to deliver to:
+`/v1/messages/send` before its `404 no live session`, `/v1/messages/publish` to a role topic before the keep and the `unclaimed` or `holder_lapsed` 404 (`roleSend.noHolder`), and an agent subject's bus delivery wherever it ends with no session record (`session.ErrNoSessionRecord`), which is both of that handler's ways of ending there, each offering it through the one block `offerAgentDeliveryToLegion` (`legion_handoff.go`):
+the interest path's failure, in place of its `delivery_failed` exception and before anything at all is recorded or the message disposed of, and the path where no stored row names an owner, in place of its `no_holder` exception and after the deferral window is spent (`unplaceable_delivery.go`).
+Every Legion agent that ran on a listener leaves behind an interest row naming it, and that row outlives the agent's session entry, so a reply on a stopped phase worker's Dispatch ask arrives on the interest path rather than the other one.
+That path is offered no deferral window of its own: its refusal NAKs the message, so the stream redelivers it and the hand-off is offered again on each delivery.
 A role publish is the one of the three that is held back by the keep: it is handed off only for a role whose issue has finished, and a role whose issue still runs is kept for its next holder instead (the bullet below).
 It hands off only when all hold:
 
@@ -4419,8 +4423,8 @@ It publishes `{original_topic, target_session, role_token, project, envelope}` (
 The HTTP caller gets the 200 a delivered message gets, the envelope with `recipient` set to the target session (a publish's answer carries `recipient` in place of `holder`), so no client of either route changes;
 a hand-off whose publish fails is answered as a failed publish is.
 A role publish that was handed off is refused by nothing, so no role-lane refusal exception is raised for it (`publishRefusalException` runs only on the 404 path), and no copy is kept on the role's kept lane.
-A bus message is acknowledged once its hand-off is stored, logged `listener agent handed off to its legion daemon` with `delivery_status` `handed_off`, and NAKed when the hand-off publish failed, since the give-up below it would publish the notice the hand-off replaces.
-When any condition does not hold, or the registry cannot be read (logged at WARN), every path answers exactly as before.
+A bus message is acknowledged once its hand-off is stored, logged `listener agent handed off to its legion daemon` with `delivery_status` `handed_off`, and NAKed when the hand-off publish failed (logged ERROR `listener legion hand-off failed`, counted `failed`, its attempt-cache entry cleared), since the answer it was offered in place of would either publish the notice the hand-off replaces or report as refused a message the next delivery may hand off.
+When any condition does not hold, or the registry cannot be read (logged at WARN), every path answers exactly as before: a send its 404, a role publish its keep and 404, the interest path its `delivery_failed` exception, its `failed` count and its NAK, and the path with no owner its deferral and give-up.
 A listener's durable reads the retained hand-offs too and acknowledges them unread (`isLegionHandoffSubject`), since it holds no envelope to deliver there.
 The listener's grant already publishes `notifications.>` (`listenerGrant`, `packages/envoy/infra/core/permissions.go`), which covers the subject, so no grant changes for it.
 The daemon reads the hand-offs through a durable consumer of the stream filtered to `notifications.legion.<legion_project>.agents.>` (`intake.OpenHandoffs`), which its own grant's consumer calls already allow (`daemonpermissions.Grant`).

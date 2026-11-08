@@ -776,6 +776,18 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 		return
 	}
 	if result.Err != nil {
+		// An interest row naming this listener outlives the session entry written beside it, so
+		// every Legion agent that ran here leaves one behind, and a reply on its Dispatch ask
+		// reaches that row with no entry under it: the interest path's own
+		// session.ErrNoSessionRecord (session.HandleAgentMessage). That message is exactly what
+		// the stopped agent's daemon answers from the agent's own conversation, so the hand-off
+		// is offered it before anything is recorded and before the message is disposed of: an
+		// exception and a NAK written first would refuse, and report as failed, a message that
+		// was in fact answered. Every other interest-path failure, and a message no daemon took,
+		// keeps the refusal below exactly as it was.
+		if errors.Is(result.Err, session.ErrNoSessionRecord) && offerAgentDeliveryToLegion(cfg, message, item, sessionID) {
+			return
+		}
 		applyDeliveryOutcome(cfg, item, deliveryOutcome{
 			sessionID:    sessionID,
 			metricStatus: "failed",

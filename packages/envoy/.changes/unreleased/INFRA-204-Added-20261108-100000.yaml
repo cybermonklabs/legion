@@ -3,7 +3,9 @@ body: |-
   The listener hands a message for a stopped Legion agent to the agent's daemon instead of
   refusing it (INFRA-204). A send to a session with no live registration, a role publish with no
   live holder whose role is finished, and an agent-subject message on the bus that no session
-  takes are published to
+  takes — whether the stopped agent left an interest row naming the delivering listener, which
+  every agent that ran on one leaves and which outlives its session record, or left none — are
+  published to
   `notifications.legion.<legion_project>.agents.<session>` as
   `{original_topic, target_session, role_token, project, envelope}` when the Legion agent
   registry names the session (for a role, the role token's newest session), the project's

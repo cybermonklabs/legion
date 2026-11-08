@@ -333,6 +333,67 @@ func TestHandOffToLegionLeavesTheseAsTheyWere(t *testing.T) {
 	}
 }
 
+// The counterpart of TestAMessageToAStoppedAgentWhoseInterestNamesThisListenerIsHandedToItsDaemon
+// (stopped_agent_thread_reply_test.go): the same interest-path miss - a stored row naming this
+// listener, no session entry behind it - for a session the Legion agent registry does not hold is
+// refused exactly as it was before the hand-off was offered on that path. Nothing is handed off,
+// the delivery_failed exception goes out, and the message is NAKed for the stream to redeliver
+// it. Every session that is not a Legion agent's is in this shape, which is why the hand-off is
+// offered and not assumed: what it does not take keeps the answer it always had.
+func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsRefusedAsBefore(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	const sessionID = "ses-not-a-legion-agent"
+
+	agents, err := legionagents.Open(harness.client.Conn, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the legion agent registry: %v", err)
+	}
+	// The project answers, so the registry naming no session is the one condition the hand-off
+	// fails on: what this test pins is that failing it answers as before.
+	if _, err := agents.PutProject(ctx, "infra", legionagents.Project{
+		Answering: true, UpdatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}); err != nil {
+		t.Fatalf("state that the project answers: %v", err)
+	}
+
+	cfg := harness.config
+	cfg.handoff = &legionHandoff{
+		client: cfg.client, registry: cfg.registry, sessions: cfg.sessions,
+		agents: newLegionAgentRegistry(agents), logger: logging.NewWithWriter("test", harness.logs),
+	}
+	handler := durableTestHandler(t, cfg)
+
+	if _, err := harness.registry.Upsert(store.Interest{
+		SessionID: sessionID, MachineID: cfg.machineID, Dir: "/legion/workspaces/infra-204",
+	}, nil); err != nil {
+		t.Fatalf("record the interest row the stopped session left: %v", err)
+	}
+	// No session entry is written: the delivery resolves session.ErrNoSessionRecord, as it does
+	// for the stopped Legion agent.
+
+	item := envelopeFor(contracts.AgentTopicPrefix+sessionID, "dispatch-17", "dispatch")
+	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
+	if err != nil {
+		t.Fatalf("subscribe the exception probe: %v", err)
+	}
+	t.Cleanup(func() { _ = probe.Unsubscribe() })
+
+	handler(&nats.Msg{Data: marshalListenerEnvelope(t, item)})
+
+	assertDeliveryException(t, probe, item, "delivery_failed")
+	if records := deliveryRecords(t, harness.logs.String(), "listener agent delivery failed"); len(records) != 1 || records[0].SessionID != sessionID {
+		t.Fatalf("%d lines report the delivery failed, want one naming %s:\n%s", len(records), sessionID, harness.logs.String())
+	}
+	if naked := counterValue(t, metricsBody(t, harness), nakedCounter); naked != 1 {
+		t.Fatalf("the NAK counter reads %d, want 1: an interest-path failure nothing took is retried, not acknowledged", naked)
+	}
+	if count, data := handoffs(t, harness.client, sessionID); count != 0 {
+		t.Fatalf("the stream holds %d hand-offs for %s, want none: the registry names no such agent; the last: %s", count, sessionID, data)
+	}
+}
+
 // The subject a hand-off is published on is read back exactly: notifications.legion.<project>.
 // agents.<session> and nothing else, so a listener's durable acknowledges a hand-off unread and
 // treats no other retained message as one.
