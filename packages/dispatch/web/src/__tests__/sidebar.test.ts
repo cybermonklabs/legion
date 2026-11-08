@@ -1,6 +1,7 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { createElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -16,6 +17,7 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     resolved_repo: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
     key: "CORE-1",
     labels: [],
     last_seq: 0,
@@ -75,6 +77,7 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       question: "Ship?",
       state: "open",
@@ -104,6 +107,7 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       question: "Review?",
       state: "open",
@@ -135,6 +139,7 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       question: "Confirm?",
       state: "open",
@@ -179,16 +184,16 @@ function renderSidebar(pathname = "/", pending?: CredentialPendingRow[]) {
   return { getCredentialPending, getInbox, getIssue, listIssues, listProjects, view };
 }
 
-test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Needs-you count", async () => {
+test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Inbox count", async () => {
   const sidebar = renderSidebar();
 
   try {
     await screen.findByRole("link", { name: /CORE.*Core/ });
-    expect(screen.getByRole("link", { name: /Inbox.*Needs you 2/ })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Inbox 2" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Pinned" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /CORE-1.*Pinned work/ }).textContent).toContain("1");
+    expect(screen.getByRole("link", { name: /CORE-1.*Pinned work/ })).toHaveTextContent("1");
     expect(screen.getByRole("heading", { name: "Projects" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: /CORE.*Core/ }).textContent).toContain("3");
+    expect(screen.getByRole("link", { name: /CORE.*Core/ })).toHaveTextContent("3");
     expect(screen.getByRole("link", { name: /OPS.*Operations/ })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Settings" })).toBeTruthy();
   } finally {
@@ -201,7 +206,7 @@ test("sidebar lists Inbox, Pinned, Projects, and Settings with a truthful Needs-
   }
 });
 
-test("sidebar counts a pending credential request in Needs you, beside the asks waiting on you", async () => {
+test("sidebar counts a pending credential request in the Inbox count, beside the asks waiting on you", async () => {
   const sidebar = renderSidebar("/", [
     {
       identifiers: ["DEMO_API_KEY"],
@@ -212,7 +217,7 @@ test("sidebar counts a pending credential request in Needs you, beside the asks 
   ]);
 
   try {
-    expect(await screen.findByRole("link", { name: /Inbox.*Needs you 3/ })).toBeTruthy();
+    expect(await screen.findByRole("link", { name: "Inbox 3" })).toBeTruthy();
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
@@ -228,7 +233,7 @@ test("sidebar marks the current project", async () => {
 
   try {
     const core = await screen.findByRole("link", { name: /CORE.*Core/ });
-    expect(core.getAttribute("aria-current")).toBe("page");
+    expect(core).toHaveAttribute("aria-current", "page");
   } finally {
     sidebar.view.unmount();
     sidebar.getCredentialPending.mockRestore();
@@ -257,32 +262,35 @@ test("sidebar never requests the full issue list", async () => {
   }
 });
 
+// The Inbox lists the threads beside the asks now, so the rail has one row and one number for
+// both: the work waiting on the reader plus the threads they have not read.
 for (const [unread, name] of [
-  [2, "Replies 2"],
-  [0, "Replies"],
+  [2, "Inbox4"],
+  [0, "Inbox2"],
 ] as const) {
-  test(`sidebar lists the Replies row with ${unread === 0 ? "no badge" : "its count"} at ${unread}`, async () => {
+  test(`sidebar adds ${unread} unread threads to the Inbox count`, async () => {
     const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
       event_head: "0",
       kind: "user",
       login: "alice",
     });
     const listMyReplies = spyOn(api, "listMyReplies").mockResolvedValue({
+      as_of: "2026-10-12T00:00:00Z",
       limit: 1,
       offset: 0,
       rows: [],
       total: unread,
     });
-    const sidebar = renderSidebar("/replies");
+    const sidebar = renderSidebar("/");
 
     try {
-      const row = await screen.findByRole("link", { name });
-      expect(row.getAttribute("href")).toBe("/replies");
-      expect(row.getAttribute("aria-current")).toBe("page");
-      await waitFor(() => expect(listMyReplies).toHaveBeenCalledWith({ limit: 1 }));
-      expect(screen.getByRole("link", { name }).textContent).toBe(
-        unread === 0 ? "Replies" : `Replies${unread}`
+      await waitFor(() =>
+        expect(listMyReplies).toHaveBeenCalledWith({ kind: ["reply", "agent"], limit: 1 })
       );
+      await waitFor(() =>
+        expect(screen.getByRole("link", { name: /^Inbox/ }).textContent).toBe(name)
+      );
+      expect(screen.queryByRole("link", { name: /^Replies/ })).not.toBeInTheDocument();
     } finally {
       sidebar.view.unmount();
       sidebar.getCredentialPending.mockRestore();
@@ -296,7 +304,8 @@ for (const [unread, name] of [
   });
 }
 
-test("sidebar keeps its hide control available while navigation loads", () => {
+test("sidebar keeps its hide control available while navigation loads", async () => {
+  const user = userEvent.setup();
   const getInbox = spyOn(api, "getInbox").mockImplementation(() => new Promise<never>(() => {}));
   const getCredentialPending = spyOn(api, "getCredentialPending").mockImplementation(
     () => new Promise<never>(() => {})
@@ -323,7 +332,7 @@ test("sidebar keeps its hide control available while navigation loads", () => {
 
   try {
     expect(screen.getByText("Loading navigation…")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Hide sidebar" }));
+    await user.click(screen.getByRole("button", { name: "Hide sidebar" }));
     expect(hideCount).toBe(1);
   } finally {
     view.unmount();

@@ -4,8 +4,6 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
-  ASK_QUESTION_MAX,
-  DISPATCH_BODY_MAX,
   DISPATCH_HANDOFF_BODY_MAX,
   dispatchToolSchema,
   dispatchToolSpecs,
@@ -48,6 +46,7 @@ function recordingSchemaApi(): {
       number: leaf,
       boolean: leaf,
       enum: leaf,
+      literal: leaf,
       array: leaf,
       unknown: leaf,
       object,
@@ -72,6 +71,43 @@ function specFor(name: string) {
   if (!spec) throw new Error(`missing ${name}`);
   return spec;
 }
+
+/** A schema node that keeps every description its chain carries and validates nothing. */
+interface Described extends SchemaNode<Described> {}
+
+/**
+ * Every description one spec's arguments carry, nested objects' and array items' included: what
+ * a host shows beside each field, read through the builder rather than off the source.
+ */
+function argumentDescriptions(name: string): readonly string[] {
+  const texts: string[] = [];
+  const node = (): Described => ({
+    optional: node,
+    nullable: node,
+    describe: (text) => {
+      texts.push(text);
+      return node();
+    },
+  });
+  dispatchToolSchema(specFor(name), {
+    string: node,
+    number: node,
+    boolean: node,
+    enum: node,
+    literal: node,
+    array: node,
+    unknown: node,
+    object: node,
+    refineObject: node,
+  });
+  return texts;
+}
+
+/** The one rule every ask instruction gives, written once in `dispatch-tools.ts`. */
+const ASK_RULE =
+  "An ask is short and asks one thing; its reasoning goes in the document, not in the question.";
+/** A character count in words: a group of digits, then `character`. */
+const characterCount = /\d[\d,]*[\s-]*characters?\b/iu;
 
 const validCalls = {
   dispatch_issue: { project: "DSP", title: "Native workspace" },
@@ -124,6 +160,7 @@ const validCalls = {
   dispatch_open_asks: {},
   dispatch_answers: {},
   dispatch_whoami: {},
+  dispatch_limits: {},
   dispatch_handoff_write: specFor("dispatch_handoff_write").example,
   dispatch_handoff_read: { issue: "DSP-1", phase: "implement", version: 2 },
   dispatch_inbox: {},
@@ -136,7 +173,7 @@ function schemaFor(name: keyof typeof validCalls) {
 const ISSUE_UPDATE_FIELDS_RULE =
   "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
-  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes because a closed issue refuses messages, comments, and artifacts.";
+  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
   `reason goes only with status done: it is the note posted on the issue as it closes, and ${status} closes nothing. Drop reason, or set status done to close the issue.`;
 
@@ -146,13 +183,13 @@ describe("zodSchemaApi", () => {
   });
 
   test("names how far an over-limit string is over its cap", () => {
-    const result = schemaFor("dispatch_ask").safeParse({
+    const result = schemaFor("dispatch_issue_update").safeParse({
       issue: "DSP-1",
-      question: "x".repeat(ASK_QUESTION_MAX + 50),
+      title: "x".repeat(ISSUE_TITLE_MAX + 50),
     });
     expect(result.success).toBe(false);
     expect(result.error?.issues.map((issue) => issue.message)).toEqual([
-      `is 50 characters over the ${ASK_QUESTION_MAX}-character limit (${ASK_QUESTION_MAX + 50}/${ASK_QUESTION_MAX})`,
+      `is 50 characters over the ${ISSUE_TITLE_MAX}-character limit (${ISSUE_TITLE_MAX + 50}/${ISSUE_TITLE_MAX})`,
     ]);
   });
 
@@ -162,6 +199,33 @@ describe("zodSchemaApi", () => {
         .array(schemaApi.string(), { max: 8 })
         .safeParse(Array.from({ length: 9 }, () => "item")).success
     ).toBe(false);
+  });
+
+  test("refuses every value outside a literal set", () => {
+    const field = schemaApi.literal([false, "optional", "required"] as const);
+
+    expect([false, "optional", "required"].map((value) => field.safeParse(value).success)).toEqual([
+      true,
+      true,
+      true,
+    ]);
+    expect(field.safeParse("none").success).toBe(false);
+  });
+
+  // Oh My Pi's `pi.zod` facade has a `literal` that takes one value: handed the set, it builds a
+  // literal equal to the array, which would refuse every call a model can make. A field built on
+  // such a host must still take the whole vocabulary; the refusal comes from real Zod where the
+  // arguments are parsed.
+  test("takes every value of a literal set on a host whose own literal holds one value", () => {
+    const oneValueLiteral = {
+      ...z,
+      literal: (value: unknown) => z.unknown().refine((input) => input === value),
+    };
+
+    const field = zodSchemaApi(oneValueLiteral).literal([false, "optional", "required"] as const);
+
+    expect(field.safeParse("optional").success).toBe(true);
+    expect(field.safeParse(false).success).toBe(true);
   });
 });
 
@@ -196,6 +260,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_open_asks",
       "dispatch_answers",
       "dispatch_whoami",
+      "dispatch_limits",
       "dispatch_handoff_write",
       "dispatch_handoff_read",
       "dispatch_inbox",
@@ -459,6 +524,16 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({ session_id: "another-session" }).success).toBe(false);
   });
 
+  test("dispatch_limits accepts no arguments and says the server refuses an over-long text", () => {
+    const schema = schemaFor("dispatch_limits");
+
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ project: "CORE" }).success).toBe(false);
+    expect(specFor("dispatch_limits").description).toContain(
+      "Dispatch refuses a text over a bound and names the block or the field it passed"
+    );
+  });
+
   test("dispatch_inbox accepts no arguments, names the Envoy tool it is not, and rejects any key", () => {
     const schema = schemaFor("dispatch_inbox");
 
@@ -468,18 +543,17 @@ describe("dispatchToolSpecs", () => {
     expect(specFor("dispatch_inbox").description).toContain("envoy_inbox");
   });
 
-  test("dispatch_handoff_write takes one JSON object body up to the byte cap, and a phase slug", () => {
+  test("dispatch_handoff_write takes one JSON object body of any length, and a phase slug", () => {
     const schema = schemaFor("dispatch_handoff_write");
     const refusals = (args: Record<string, unknown>) =>
       schema.safeParse(args).error?.issues.map((issue) => issue.message);
     const call = { issue: "DSP-1", phase: "implement" };
 
-    // A body of exactly the cap, counted in UTF-8 bytes: "é" is two of them.
+    // A body of exactly the server's cap, counted in UTF-8 bytes ("é" is two of them), and one
+    // a byte over it: the server owns that bound and answers 413 CAP_EXCEEDED, so both reach it.
     const filler = "é".repeat((DISPATCH_HANDOFF_BODY_MAX - '{"a":""}'.length) / 2);
     expect(schema.safeParse({ ...call, body: `{"a":"${filler}"}` }).success).toBe(true);
-    expect(refusals({ ...call, body: `{"a":"${filler}x"}` })).toEqual([
-      `body is 1 bytes over the ${DISPATCH_HANDOFF_BODY_MAX}-byte limit (${DISPATCH_HANDOFF_BODY_MAX + 1}/${DISPATCH_HANDOFF_BODY_MAX})`,
-    ]);
+    expect(schema.safeParse({ ...call, body: `{"a":"${filler}x"}` }).success).toBe(true);
     for (const body of ["[1]", '"text"', "null", "{not json", "{} {}"]) {
       expect(refusals({ ...call, body }), body).toEqual([
         'body is not one JSON object: a handoff body is a JSON object such as {"schemaVersion":1}',
@@ -683,9 +757,8 @@ describe("dispatchToolSpecs", () => {
     }
   });
 
-  // A closed issue refuses messages, comments, and artifacts, so the reason an issue closed can
-  // only be written before the close: the tool takes it in the same call and refuses the close
-  // without it.
+  // The reason is the close's note, so the tool takes it in the same call, posts it before the
+  // close, and refuses the close without it.
   // Each refusal names the part of the rule the call broke, so a reopen that also passed reason
   // is told reason is the close's, never that it named no field.
   test("dispatch_issue_update closes only with a reason, and takes a reason only to close", () => {
@@ -713,17 +786,33 @@ describe("dispatchToolSpecs", () => {
         JSON.stringify(args)
       ).toEqual([refusal]);
     }
+    // The Dispatch server owns the bound on a body (INFRA-370), so the schema takes a reason the
+    // old client-side cap of 32,000 characters refused.
     expect(
-      schema.safeParse({
-        issue: "DSP-1",
-        status: "done",
-        reason: "x".repeat(DISPATCH_BODY_MAX + 1),
-      }).success
-    ).toBe(false);
-    expect(
-      schema.safeParse({ issue: "DSP-1", status: "done", reason: "x".repeat(DISPATCH_BODY_MAX) })
-        .success
+      schema.safeParse({ issue: "DSP-1", status: "done", reason: "x".repeat(32001) }).success
     ).toBe(true);
+  });
+
+  // The server owns the bound on an ask's question too, and names it in its refusal.
+  test("dispatch_ask takes a question longer than the old client-side cap", () => {
+    expect(
+      schemaFor("dispatch_ask").safeParse({ issue: "DSP-1", question: "x".repeat(2001) }).success
+    ).toBe(true);
+  });
+
+  // Every instruction an agent reads about an ask gives one rule and no count: the server owns
+  // the bound on a question and its options, names the bound in its refusal, and prints it
+  // through `dispatch limits`, so a number written here would be a second source that drifts the
+  // day the server's changes (INFRA-370). The rule itself is what the instruction carries.
+  test("every ask instruction gives one rule and states no character count", () => {
+    for (const name of ["dispatch_ask", "dispatch_edit_ask"]) {
+      const texts = [specFor(name).description, ...argumentDescriptions(name)];
+
+      for (const text of texts) {
+        expect(characterCount.exec(text), `${name}: ${text}`).toBeNull();
+      }
+      expect(texts.join(" "), name).toContain(ASK_RULE);
+    }
   });
 
   // Agents may set an issue's priority (dispatch://LEGION/artifact/issue-status-conventions-md);
@@ -1239,7 +1328,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_message",
-      "keep --issue whenever the frame you answer gave one. A BTW, Aside or Steer frame carries a reply_with command: answer with it, on that issue. On Oh My Pi an Agents-page Send or Aside arrives as a user message: answer in the conversation, with no dispatch message.",
+      "keep --issue whenever the frame you answer gave one. A frame reading expects_reply: optional or required carries a reply_with command: answer with it, on that issue. One reading false carries none and asks for no answer; where you answer one anyway, its card names what to answer. On Oh My Pi an Agents-page Send or Aside arrives as a user message: answer in the conversation, with no dispatch message.",
     ],
     [
       "dispatch_ask",

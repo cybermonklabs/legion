@@ -6,6 +6,7 @@ import {
   buildDispatchReference,
   buildInboxPath,
   buildIssuePath,
+  buildMachinePath,
   buildProjectPath,
   buildReferencePath,
   documentItemPath,
@@ -17,6 +18,7 @@ import {
   parseDispatchReference,
   parseInboxSearch,
   parseIssuePath,
+  parseMachinePath,
   parseNodeReference,
   parseProjectPath,
   pictureReference,
@@ -512,6 +514,9 @@ test("issue routes select Spec and artifact routes select Artifacts unless prima
   expect(issueTabForRoute({ key: "CORE-1", kind: "activity" }, undefined)).toBe("activity");
   expect(issueTabForRoute({ key: "CORE-1", kind: "verification" }, undefined)).toBe("verification");
   expect(issueTabForRoute({ key: "CORE-1", kind: "plan" }, undefined)).toBe("plan");
+  expect(issueTabForRoute({ key: "CORE-1", kind: "collaborators" }, undefined)).toBe(
+    "collaborators"
+  );
   expect(
     issueTabForRoute(
       { key: "CORE-1", kind: "artifact", slug: "diagram", version: 2 },
@@ -619,6 +624,22 @@ test("the activity tab owns its path, its reference and its short form", () => {
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/activity"));
   expect(
     referenceRouteFromHref("https://dispatch.test/issues/CORE-1/activity", "https://dispatch.test")
+  ).toEqual(route);
+});
+
+test("the collaborators tab owns its path, its reference and its short form", () => {
+  const route = { key: "CORE-1", kind: "collaborators" as const };
+
+  expect(parseDispatchReference("dispatch://CORE-1/collaborators")).toEqual(route);
+  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/collaborators");
+  expect(shortForm(route)).toBe("CORE-1 collaborators");
+  expect(parseIssuePath("/issues/CORE-1/collaborators")).toEqual(route);
+  expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/collaborators"));
+  expect(
+    referenceRouteFromHref(
+      "https://dispatch.test/issues/CORE-1/collaborators",
+      "https://dispatch.test"
+    )
   ).toEqual(route);
 });
 
@@ -974,6 +995,67 @@ test("the inbox's selected item round-trips beside the filters and is absent whe
   expect(buildInboxPath({ assignees: [], item: undefined })).toBe("/?assignee=everyone");
 });
 
+// A thread row is named in the address the same way the list names it, so `?item=` carries a
+// reply and an agent message as well as an ask.
+test("the inbox's selected item carries a thread as well as an ask", () => {
+  expect(buildInboxPath({ item: "reply:thread-1" })).toBe("/?item=reply%3Athread-1");
+  expect(parseInboxSearch("?item=reply%3Athread-1")).toEqual({ item: "reply:thread-1" });
+  expect(parseInboxSearch("?item=agent%3Amessage-1")).toEqual({ item: "agent:message-1" });
+});
+
+// Every one of these is absent while it holds its default, so the Inbox as it opens is `/`.
+test("the inbox's view and filters round-trip and leave their defaults out of the address", () => {
+  const route = {
+    filters: { priority: ["P0", "none"], type: ["reply", "agent"] },
+    group: "waiting-on",
+    sort: "urgency",
+    show: "dismissed",
+  } as const;
+  const path = buildInboxPath(route);
+  expect(path).toBe(
+    "/?show=dismissed&sort=urgency&group=waiting-on&priority=P0%2Cnone&type=reply%2Cagent"
+  );
+  expect(parseInboxSearch(path.slice(1))).toEqual(route);
+
+  expect(buildInboxPath({ group: "priority", sort: "newest" })).toBe("/");
+  expect(parseInboxSearch("?sort=newest&group=priority")).toEqual({});
+  expect(buildInboxPath({ filters: { urgency: [] } })).toBe("/");
+
+  expect(buildInboxPath({ filters: { project: ["CORE", "OPS"], urgency: ["blocking"] } })).toBe(
+    "/?urgency=blocking&project=CORE%2COPS"
+  );
+  expect(parseInboxSearch("?urgency=blocking&project=CORE,OPS")).toEqual({
+    filters: { project: ["CORE", "OPS"], urgency: ["blocking"] },
+  });
+});
+
+// A word this build does not know is dropped rather than refused: an older link still opens.
+test("the inbox drops filter values, sorts and groupings it does not know", () => {
+  expect(parseInboxSearch("?sort=sideways&group=colour&show=everything")).toEqual({});
+  expect(parseInboxSearch("?priority=P9&urgency=mild&type=rumour")).toEqual({});
+  expect(parseInboxSearch("?priority=P0,,P0,P1")).toEqual({ filters: { priority: ["P0", "P1"] } });
+  // A project key is the workspace's own word, so only an empty one is dropped.
+  expect(parseInboxSearch("?project=+,CORE")).toEqual({ filters: { project: ["CORE"] } });
+});
+
+// The Inbox's search text rides in the address like its other filters: `usePaneSelection`
+// rebuilds the whole query string on every selection change, so anything not in the route is
+// lost on the next `j`.
+test("the inbox's search text round-trips in the address and is absent when empty", () => {
+  expect(buildInboxPath({ q: "two words" })).toBe("/?q=two+words");
+  expect(parseInboxSearch("?q=two+words")).toEqual({ q: "two words" });
+  expect(parseInboxSearch("?q=")).toEqual({});
+  // Nothing trims it: a reader mid-word has a trailing space, and it is part of what they typed.
+  expect(parseInboxSearch("?q=two+")).toEqual({ q: "two " });
+  const route = {
+    agent: "s1",
+    assignees: ["ana@example.com"],
+    item: "ask-3",
+    q: "two words",
+  };
+  expect(parseInboxSearch(buildInboxPath(route).slice(1))).toEqual(route);
+});
+
 // The shell reserves its right gutter from this, and `features/margin/Margin.tsx` renders from
 // it, so the two cannot disagree: an 80 px gutter beside a rail that is not there is exactly
 // what two separate answers produced.
@@ -1015,5 +1097,42 @@ test("routeIsInbox covers every path that renders the Inbox, and not the machine
   }
   for (const pathname of ["/credentials/machine", "/agents", "/settings", "/issues/CORE-1"]) {
     expect([pathname, routeIsInbox(pathname)]).toEqual([pathname, false]);
+  }
+});
+
+// A machine name is `ENVOY_MACHINE_ID` or the kernel hostname: it holds dots, may be a whole
+// domain name, and a deployment may put anything in it, so its segment is encoded and decoded
+// exactly as a session id's is.
+test("a machine path percent-encodes its name and reads it back", () => {
+  for (const host of [
+    "sami-devbox",
+    "example-host-devbox.example-tailnet.ts.net",
+    "legion infra/daemon",
+    "box%2F1",
+    "ホスト",
+  ]) {
+    const path = buildMachinePath(host);
+
+    expect([host, path.startsWith("/machines/")]).toEqual([host, true]);
+    expect([host, path.includes("/", "/machines/".length)]).toEqual([host, false]);
+    expect(parseMachinePath(path)).toBe(host);
+  }
+  expect(buildMachinePath("example-host-devbox.example-tailnet.ts.net")).toBe(
+    "/machines/example-host-devbox.example-tailnet.ts.net"
+  );
+  expect(buildMachinePath("legion infra/daemon")).toBe("/machines/legion%20infra%2Fdaemon");
+});
+
+test("a path that names no one machine names no machine at all", () => {
+  for (const pathname of [
+    "/machines",
+    "/machines/",
+    "/machines/one/two",
+    "/machines/%",
+    "/machines/%01",
+    "/agents",
+    "/credentials/machine",
+  ]) {
+    expect([pathname, parseMachinePath(pathname)]).toEqual([pathname, undefined]);
   }
 });

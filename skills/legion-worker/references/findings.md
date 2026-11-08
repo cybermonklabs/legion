@@ -1,7 +1,8 @@
 # A finding outside your issue
 
 Read this when you find a problem the issue you work does not cover: a defect in another
-component, repository or tool, a gap in Legion itself, or a production check's `fail`. It holds for
+component, repository or tool, a gap in Legion itself, or a `fail` on a look of the production
+check the project's `production_check` setting gives the tester. It holds for
 every Legion role (each phase worker, each architect, the controller) and for each of their
 subagents, and it replaces the filing step of `skill://dispatch-first` and `skill://dispatch`. The
 controller fixes nothing itself: it hands a finding to the tree that owns the code, as
@@ -55,7 +56,7 @@ Post the evidence first as a `dispatch comment` on the report issue ([Where it g
 says which), its first line exactly `Clear defect from <your role token>`. It prints
 `Posted comment <id>`. Then send the controller one message with
 `envoy_publish` to the controller topic your `Legion addressing` line names, with
-`expects_reply: none`. It holds:
+`expects_reply: false`. It holds:
 
 - your role token, from your `Legion addressing` line
 - the defect: what went wrong, where and to whom, with the numbers, and the issue it came from
@@ -68,20 +69,27 @@ The controller hands it to the running tree whose code it is, and files a Legion
 tree owns that code. Either way it replies under your evidence comment with where the work went.
 You file nothing, and you wait for nothing. When the report issue is missing or closed, put the
 evidence in the message itself. A production check's recorded result then names the defect as
-sent to the controller.
+sent to the controller, and the `fail` that records it closes the check, so that look names no
+next look of its own.
 
 ### When no controller takes it
 
-`envoy_publish`'s own answer tells you whether a controller took the finding: a publish to a role
-answers with its live `holder`. With no live controller, or with one whose claim has lapsed, the
-answer says Envoy kept the message instead (`packages/envoy/cmd/listener`, the test "unheld role
-is kept and answered 202 without publishing on the role topic"). The next session that claims
-`legion-<project>-controller` is handed each kept message once, within one hour of the keep. A
-keep is not a delivery: a controller can stay away for the whole hour, and a message kept longer
-than an hour is dropped unread, so a kept finding can reach nobody. Treat a kept answer as a
-controller not taking it, and make the finding an ask as well, as [What the ask
-says](#what-the-ask-says) spells it, on the first of these that holds, so a person sees it and
-the controller finds it when it returns:
+The controller topic is a live wake: a message published while no controller runs reaches nobody
+at the time. `envoy_publish`'s own answer tells you whether one took it. A publish to a role
+answers with its live `holder`. With no claim on `legion-<project>-controller` at all, the answer
+says Envoy kept the message instead (`packages/envoy/cmd/listener`, the test "unheld role is kept
+and answered 202 without publishing on the role topic"): the next session that claims the role is
+handed each kept message once, within one hour of the keep. A keep is not a delivery: a
+controller can stay away for the whole hour, and a message kept longer than an hour is dropped
+unread, so a kept finding can reach nobody. It fails with `role legion-<project>-controller
+holder <session> lapsed; claim retained`, naming the holder, its `holder_state` and its
+`last_seen`, when a controller holds the role and its session has not registered within the live
+window: an `unresponsive` controller is not a stopped one, so release nothing, take nothing from
+it, and publish no second copy.
+Treat a kept answer as a controller not taking it. Either way the finding has not been taken yet,
+so make it an ask, as
+[What the ask says](#what-the-ask-says) spells it, on the first
+of these that holds, so a person sees it and the controller finds it when it returns:
 
 1. **The report issue is open:** ask there, the question opening `Clear defect from <your role
    token>` and `--ref` naming your evidence comment. Then reply `Asked dispatch://<REPORT
@@ -114,7 +122,9 @@ the controller finds it when it returns:
    - Then post the evidence there and ask there, as [What the ask says](#what-the-ask-says)
      spells it. Say in your summary that you reopened or created it, so the controller knows.
 
-Name the ask in your summary, and in the result a production check records.
+Name the ask in your summary, and in the result a production check records. A look that must wait
+for the answer reports `pending` with a `wake_at` of its own, the time you want to look again:
+nothing else starts the next look.
 
 ## Where it goes
 
@@ -129,7 +139,7 @@ answers (`409 ISSUE_CLOSED`). The question names the issue the finding came from
 When the project has no report issue yet, or a person closed it (`dispatch read` shows `Status:
 done`, and Dispatch refuses the ask with `409 ISSUE_CLOSED`), do not create or reopen one yourself
 (the controller does): send the finding to the controller as text, with `envoy_publish` to the
-controller topic your `Legion addressing` line names (`expects_reply: none`), holding the problem,
+controller topic your `Legion addressing` line names (`expects_reply: false`), holding the problem,
 the issue it came from, the evidence and the decision it needs. The controller creates or reopens
 the report issue and opens the ask. When that publish fails because no controller holds the role,
 take step 2 or 3 of [When no controller takes it](#when-no-controller-takes-it). A production
@@ -183,7 +193,7 @@ Legion refuses to record an issue on a repository the project does not map, henc
 The person answers in Dispatch, and the answer reaches only the ask's followers. So once the ask is
 open, `envoy_publish` its reference, `dispatch://<REPORT KEY>/ask/<id>` (the id from the
 `Asked <id> on …` line), to the controller topic your `Legion addressing` line names, with
-`expects_reply: none`. The controller follows the ask and files what the person's answer asks for;
+`expects_reply: false`. The controller follows the ask and files what the person's answer asks for;
 you file nothing, whatever the answer says. The controller itself skips this step, since it follows
 each ask it opens. When the listener kept that publish rather than a holder taking it, do nothing
 more for an ask on the report issue: the controller's catch-up follows it at its next start.

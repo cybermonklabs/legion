@@ -54,6 +54,13 @@ signin_domain=example.com
 pod_audience=example-broker-pod
 launcher_service=example-launcher
 launcher_account=system:serviceaccount:example-system:example-launcher
+# The account requestseed's worker pods run as, which BROKER_SERVICES binds to the launcher's
+# service below: that binding is the deployment saying the launcher launches those pods, and
+# without it the launcher's own token login enrols its own pod alone and every seeded pod is
+# refused 403 POD_NOT_LAUNCHED (enroll.Service.podUnderTokenLogin). It is a different account
+# from launcher_account, which it must be: the broker refuses a BROKER_SERVICE_LOGINS account
+# that BROKER_SERVICES also binds for that service's pods.
+pod_account=system:serviceaccount:example:example-worker
 dispatch_account=system:serviceaccount:example-ns:example-dispatch
 
 # The namespace and key the fake secrets sit under; the key is an example ARN in AWS's
@@ -109,18 +116,29 @@ if ! [[ "$DATABASE_URL" =~ ^(postgres(ql)?://[^/?]+)/([^/?]+)(\?.*)?$ ]]; then
   echo "run-broker.sh: DATABASE_URL must be postgres://<user>@<host>:<port>/<database>" >&2
   exit 2
 fi
+broker_server="${BASH_REMATCH[1]}"
 broker_database="${BASH_REMATCH[3]}_broker"
-broker_database_url="${BASH_REMATCH[1]}/${broker_database}${BASH_REMATCH[4]}"
+broker_database_url="${broker_server}/${broker_database}${BASH_REMATCH[4]}"
 env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
   -c "drop database if exists \"$broker_database\" with (force)" \
   -c "create database \"$broker_database\""
 
 # The fake Secrets Manager: a human-tier secret each of the suite's people owns, which a pod's
 # request waits on that person to approve, and a shared one anyone signed in may approve.
-fake_secrets_file="$PWD/$bin/fake-secrets-$broker_database.json"
+#
+# The name carries this lane's own server, and the file is renamed into place rather than written
+# in place. Each lane runs a Postgres of its own and names the database in it the same as every
+# other lane does (databaseName, e2e/harness-postgres.ts), so the database alone named one path
+# for every lane of a run while the directory they write it in is shared. A plain redirect
+# truncates first, so a broker that read between one lane's truncate and its write got an empty
+# file. The rename is atomic within the directory, and the server's host and port differ by lane,
+# so each lane now writes and reads a file of its own and a re-run overwrites it rather than
+# leaving another behind.
+fake_secrets_lane="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
+fake_secrets_file="$PWD/$bin/fake-secrets-$broker_database-$fake_secrets_lane.json"
 (
   umask 077
-  cat >"$fake_secrets_file" <<EOF
+  cat >"$fake_secrets_file.$$.tmp" <<EOF
 {"secrets": [
   {"name": "${secrets_prefix}alice-deploy-key", "kms_key_id": "${secrets_kms_key_arn}",
    "tags": {"owner": "alice@${signin_domain}", "tier": "human"}, "value": "alice-deploy-value"},
@@ -130,6 +148,7 @@ fake_secrets_file="$PWD/$bin/fake-secrets-$broker_database.json"
    "tags": {"owner": "shared", "tier": "human"}, "value": "shared-deploy-value"}
 ]}
 EOF
+  mv -f "$fake_secrets_file.$$.tmp" "$fake_secrets_file"
 )
 
 # The broker discovers its token issuer before it listens and refuses to boot without it. The
@@ -165,6 +184,7 @@ exec env \
   BROKER_K8S_OIDC_ISSUER="$issuer_url" \
   BROKER_K8S_OIDC_AUDIENCE="$pod_audience" \
   BROKER_SERVICE_LOGINS="$launcher_service=$launcher_account" \
+  BROKER_SERVICES="$launcher_service=$pod_account" \
   BROKER_API_ACCOUNTS="dispatch=$dispatch_account" \
   BROKER_SIGNIN_ISSUER="$issuer_url" \
   BROKER_SIGNIN_CLIENT_ID="$signin_client" \

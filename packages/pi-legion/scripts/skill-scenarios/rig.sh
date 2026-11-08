@@ -127,10 +127,14 @@
 #                                 host, once per judge, and its container gets only the token
 #                                 (cmd_judge_omp)
 #   LEGION_E2E_MODEL_GATEWAY_URL  gateway: the model gateway (scripts/e2e/lib/install-model-gateway.sh)
-#   LEGION_E2E_ANTHROPIC_KEY_FILE key-file: a 0600 file holding a plaintext Anthropic key
-#                                 (scripts/e2e/lib/install-key-file-model-route.sh); the key command
-#                                 that reads it lives in the label's profile directory, and removing
-#                                 that directory removes it
+#   LEGION_E2E_ANTHROPIC_KEY_FILE key-file: a 0600 file holding the plaintext key the endpoint
+#                                 takes (scripts/e2e/lib/install-key-file-model-route.sh); the key
+#                                 command that reads it lives in the label's profile directory,
+#                                 and removing that directory removes it
+#   LEGION_E2E_MODEL_BASE_URL     key-file: an Anthropic-compatible gateway in place of Anthropic
+#                                 itself, whose key the file above holds, so a batch reaches a
+#                                 gateway on the documented route rather than a hand-written
+#                                 provider block
 #   LEGION_E2E_MODEL_PROVIDER_FILE, LEGION_E2E_MODEL_PROVIDER
 #                                 provider: an operator's own models.yml and the name of the
 #                                 anthropic-messages provider block in it to route through
@@ -328,8 +332,14 @@ install_model_route() {
       echo "LEGION_E2E_ANTHROPIC_KEY_FILE is unset: name a 0600 file holding a plaintext Anthropic key" >&2
       return 1
     fi
+    local base=()
+    # An Anthropic-compatible gateway, whose key the file holds, in place of Anthropic itself:
+    # the installer's own --base-url, which this route did not pass, so a batch on a gateway had
+    # to be written as a provider block by hand (scripts/e2e/claude-backend-tmux.sh takes the
+    # same variable for the same reason).
+    [ -z "${LEGION_E2E_MODEL_BASE_URL:-}" ] || base=(--base-url "$LEGION_E2E_MODEL_BASE_URL")
     bash "$co/scripts/e2e/lib/install-key-file-model-route.sh" --profile "$profile" --home "$dir/home" --dest "$dir/key" \
-      --key-dir "$dir/model-key" --key-file "$LEGION_E2E_ANTHROPIC_KEY_FILE" || {
+      --key-dir "$dir/model-key" --key-file "$LEGION_E2E_ANTHROPIC_KEY_FILE" "${base[@]}" || {
       rm -rf "$dir/model-key"
       return 1
     }
@@ -382,6 +392,9 @@ install_provider_route() {
   {
     echo "# Written by rig.sh install_provider_route: $model is the one model, and no other provider"
     echo "# a session or a subagent could fall back to without a word is enabled."
+    # The handler limit the gateway and key-file installers write, and which load_label requires
+    # of every profile: AskGate's review is one tool call, and the default limit cuts it short.
+    printf 'extensionHandlers:\n  toolCallTimeoutMs: 120000\n'
     printf 'enabledModels:\n  - %s\n' "$model"
     printf 'disabledProviders:\n'
     printf '  - %s\n' anthropic amazon-bedrock bedrock-mantle google ollama llama.cpp lm-studio
@@ -1249,11 +1262,14 @@ cmd_judge_omp() {
   key_file=$(judge_keys "$P" "$agent" "$keys") || exit 1
   route=(-v "$keys:/opt/key:ro")
   [ -z "$key_file" ] || route+=(-v "$key_file:$key_file:ro")
-  if [ "${LEGION_E2E_MODEL_ROUTE:-gateway}" != key-file ]; then
-    host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
-    ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
-    [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
-  fi
+  # The judge's container resolves the model endpoint's hostname itself, and a tailnet name the
+  # host resolves is often not resolvable inside Docker, so the host's answer is passed in. This
+  # once skipped the key-file route, which reached Anthropic's own public name and needed none;
+  # since that route takes LEGION_E2E_MODEL_BASE_URL it can name a gateway like any other, and a
+  # route left out here would let the scenario agents reach it while its judges could not.
+  host=$(sed -n 's#^ *"\{0,1\}baseUrl"\{0,1\}: *"\{0,1\}https\{0,1\}://\([^/:"]*\).*#\1#p' "$agent/models.yml" | head -1)
+  ip=$(getent hosts "$host" 2>/dev/null | awk '{print $1; exit}') || ip=
+  [ -z "$ip" ] || [ "$ip" = "$host" ] || route+=(--add-host "$host:$ip")
   printf 'model %s\nthinking %s\n' "$judge_model" "$judge_thinking" >"$dir/judge-model.txt"
   mkdir -p "$dir/sessions"
   : >>"$dir/$output"
@@ -1262,9 +1278,21 @@ cmd_judge_omp() {
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
   # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
-  # failed pull names itself.
-  docker image inspect "$judge_image" >/dev/null 2>&1 || docker pull --quiet "$judge_image" >/dev/null ||
-    fail "judge-omp: docker could not pull $judge_image"
+  # failed pull names itself. The registry answers one request of a batch badly now and then (a
+  # token it refuses to mint, a manifest GET it drops) and serves the next, so the pull is asked
+  # three times a couple of seconds apart before the rig refuses. Only the last attempt's own
+  # words are kept, and only for the refusal: an attempt the next one makes good says nothing.
+  if ! docker image inspect "$judge_image" >/dev/null 2>&1; then
+    local pulled='' pull_error='' attempt
+    for attempt in 1 2 3; do
+      pull_error=$(docker pull --quiet "$judge_image" 2>&1 >/dev/null) && {
+        pulled=1
+        break
+      }
+      [ "$attempt" -eq 3 ] || sleep 2
+    done
+    [ -n "$pulled" ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
+  fi
   docker run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
     -v "$(dirname "$omp"):/opt/omp:ro" -v "$agent:/opt/profile:ro" \

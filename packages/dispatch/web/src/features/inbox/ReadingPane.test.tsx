@@ -1,25 +1,37 @@
-import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { ChangeDecorations } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { Node as ProseMirrorNode } from "prosemirror-model";
 import { MemoryRouter } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock, tick } from "../../__tests__/fake-clock";
 import { ApiError, api } from "../../api/client";
-import type { Artifact, AskSnooze, InboxRow, IssueDetails, Version } from "../../api/types";
+import type {
+  Anchor,
+  Artifact,
+  AskSnooze,
+  InboxRow,
+  IssueDetails,
+  MyReplyRow,
+  MyReplyThreadRow,
+  Version,
+} from "../../api/types";
 import { CHANGED_BLOCK_CLASS, changeMarksAgainst } from "../doc/change-marks";
 import type { CreateEditor, EditorHandle } from "../doc/editor";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { loadedEngine, warmMarkdownRenderer } from "../refs/markdown-engine";
-import { installInboxApiMocks, issueAsk } from "./inbox-fixture";
+import { plannerAgentRow } from "../threads/replies-fixture";
+import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 import { ReadingPane } from "./ReadingPane";
 
 installInboxApiMocks();
 
 /** The pane waits this long after the last change of the selected question before it opens
- *  another document (`DOCUMENT_SETTLE_MS` in `ReadingPane.tsx`). */
+ *  another document (`DOCUMENT_SETTLE_MS` in `PaneDocument.tsx`). */
 const SETTLE_MS = 200;
 
 let getArtifact: Mock<typeof api.getArtifact>;
@@ -184,9 +196,9 @@ function renderPane({
         <DocumentRuntime.Provider value={runtime}>
           <MarginProvider>
             <ReadingPane
-              ask={row}
               onAnswered={(id) => answered.push(id)}
               onSnoozeLive={(askId, live) => snoozeLiveness.push([askId, live])}
+              row={{ ask: row, kind: "ask" }}
               viewer="alice"
             />
           </MarginProvider>
@@ -254,7 +266,7 @@ test("a decision block draws the document in pane mode, with Skip to the answer 
     runtime.sync();
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     // What `surface="pane"` means where the editor is built: no presence, and no edits.
-    expect(runtime.editors[0]?.options).toMatchObject({ awareness: null, readOnly: true });
+    expect(runtime.editors[0]?.options).toMatchObject({ access: "read", awareness: null });
     expect(await screen.findByRole("button", { name: "Skip to the answer" })).toBeDefined();
   } finally {
     view.unmount();
@@ -297,9 +309,9 @@ test("a decision block before any heading sits in no section, so no bar is drawn
     runtime.sync();
     await waitFor(() => expect(runtime.editors).toHaveLength(1));
     await waitFor(() =>
-      expect(screen.getByTestId("inbox-pane").textContent).toContain("Ship behind a flag?")
+      expect(screen.getByTestId("inbox-pane")).toHaveTextContent("Ship behind a flag?")
     );
-    expect(screen.queryByTestId("pane-section-bar")).toBeNull();
+    expect(screen.queryByTestId("pane-section-bar")).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -358,9 +370,9 @@ test("an approval of a document nobody has approved marks nothing and offers no 
 
   try {
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
-    await waitFor(() => expect(screen.queryByText("Loading version…")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Loading version…")).not.toBeInTheDocument());
     expect(drawn).toEqual([]);
-    expect(screen.queryByRole("button", { name: "Next change" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next change" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -421,7 +433,7 @@ test("an approval whose baseline loaded but whose marks never drew offers no Nex
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
     await waitFor(() => expect(drawn).toHaveLength(1));
     expect(drawn[0]?.text.length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "Next change" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Next change" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -448,8 +460,51 @@ test("an approved document shows the approval it follows in place of the actions
 
   try {
     expect(await screen.findByLabelText("Document version 4")).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Approve" })).not.toBeInTheDocument();
     expect(screen.getByText(/Approved at version 3 on/)).toBeDefined();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval draws the request's own question above the document, inside the scroller", async () => {
+  await warmMarkdownRenderer();
+  const latest = "# Plan\n\nThe plan ships behind a canary today.\n";
+  const { view } = renderPane({
+    ask: approvalAsk(),
+    seed: (client) =>
+      seedDocument(
+        client,
+        document({ approval: { latest_version: 4, state: "awaiting" }, versions: [version(4)] }),
+        { 4: latest }
+      ),
+  });
+
+  try {
+    // The block is drawn before the document's own reads land, so it is on screen beside the
+    // skeleton as well as beside the version.
+    const block = await screen.findByTestId("pane-approval-question");
+    expect(block).toHaveTextContent("Approve spec.md at version 4?");
+    const drawn = await screen.findByLabelText("Document version 4");
+    expect(block.compareDocumentPosition(drawn) & Node.DOCUMENT_POSITION_FOLLOWING).toBeGreaterThan(
+      0
+    );
+    // Inside the one scroller, so the document holds the whole column again once the reader
+    // has scrolled past the question.
+    expect(screen.getByTestId("inbox-pane-scroller").contains(block)).toBe(true);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("an approval that falls back to the card draws the question once, as the card's own", async () => {
+  const { view } = renderPane({ ask: approvalAsk() });
+
+  try {
+    // `getArtifact` is refused by default, so the column never reads a version to show.
+    expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
+    expect(screen.queryByTestId("pane-approval-question")).not.toBeInTheDocument();
+    expect(screen.getAllByText("Approve spec.md at version 4?")).toHaveLength(1);
   } finally {
     view.unmount();
   }
@@ -490,14 +545,16 @@ test("a question in no document is today's card", async () => {
 });
 
 test("the head's Snooze registers its write, so the list keeps the row the column is on", async () => {
+  const user = userEvent.setup();
   const held = Promise.withResolvers<AskSnooze>();
   const snoozeAsk = spyOn(api, "snoozeAsk").mockImplementation(() => held.promise);
   const { snoozeLiveness, view } = renderPane({ ask: issueAsk() });
 
   try {
-    fireEvent.change(await screen.findByLabelText("Snooze CORE-1: Which approach?"), {
-      target: { value: "tomorrow" },
-    });
+    await user.selectOptions(
+      await screen.findByLabelText("Snooze CORE-1: Which approach?"),
+      "tomorrow"
+    );
     // The optimistic snooze folds the row into Later and the column follows the list, so a
     // head that kept its write to itself would be unmounted with the row it wrote about.
     await waitFor(() => expect(snoozeLiveness).toEqual([["ask-a", true]]));
@@ -529,12 +586,13 @@ test("a project document's head names the project and the document, and opens it
   try {
     expect(await screen.findByText("CORE · Design notes")).toBeDefined();
     // Neither applies to a project document: it has no priority and nobody is assigned to it.
-    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Assign / })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: /^Priority of/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Assign / })).not.toBeInTheDocument();
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     runtime.sync();
     await waitFor(() =>
-      expect(screen.getByRole("link", { name: "Open page" }).getAttribute("href")).toBe(
+      expect(screen.getByRole("link", { name: "Open page" })).toHaveAttribute(
+        "href",
         "/projects/CORE/documents/design-notes#b-rollout"
       )
     );
@@ -552,7 +610,7 @@ test("a document that cannot be read falls back to the card, with Open page at t
     expect(screen.getByRole("link", { name: "Open page" })).toBeDefined();
     // Never the document page's own repair or rebuild prompt: the column opened no document.
     expect(opened).toEqual([]);
-    expect(screen.queryByText(/Rebuild from the latest version/)).toBeNull();
+    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
   }
@@ -576,9 +634,11 @@ test("a document the editor is refused admission to leaves the column on the car
   try {
     expect(await screen.findByRole("article", { name: "Urgency: Medium" })).toBeDefined();
     expect(screen.getByRole("link", { name: "Open page" })).toBeDefined();
-    expect(screen.queryByText(/Upload markdown to replace and repair this document/)).toBeNull();
-    expect(screen.queryByText(/Rebuild from the latest version/)).toBeNull();
-    expect(screen.queryByText(/This document is outside the Proof schema/)).toBeNull();
+    expect(
+      screen.queryByText(/Upload markdown to replace and repair this document/)
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Rebuild from the latest version/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/This document is outside the Proof schema/)).not.toBeInTheDocument();
     // The refusal is what closed the editor: no room was ever opened.
     expect(opened).toEqual([]);
   } finally {
@@ -587,6 +647,9 @@ test("a document the editor is refused admission to leaves the column on the car
 });
 
 test("a selection changed twice inside the settle opens the second document alone", async () => {
+  // On the fake clock from the first render, so the settle of the first selection is a timer this
+  // test moves the clock past rather than a wait of its own.
+  jest.useFakeTimers();
   const { opened, rerender, runtime, view } = renderPane({
     ask: decisionAsk({ id: "ask-1" }),
     seed: (client) => {
@@ -606,9 +669,206 @@ test("a selection changed twice inside the settle opens the second document alon
     await waitFor(() => expect(opened).toEqual(["artifact-2"]));
     await waitFor(() => expect(runtime.connections).toHaveLength(1));
     // Long past the settle, the first selection has still opened nothing.
-    await Bun.sleep(SETTLE_MS * 2);
+    await tick(SETTLE_MS * 2);
     expect(opened).toEqual(["artifact-2"]);
   } finally {
+    realClock();
     view.unmount();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// The four thread bodies: what the column shows for a Reply or an Agent row.
+// ---------------------------------------------------------------------------------------------
+
+function threadRow(overrides: Partial<MyReplyThreadRow>): MyReplyThreadRow {
+  return {
+    kind: "comment",
+    read_through: "2026-10-12T00:30:00Z",
+    ref: "/issues/CORE-1?comment=comment-1",
+    reply: {
+      author: { id: "bob", kind: "user" },
+      created_at: "2026-10-12T01:00:00Z",
+      first_line: "Agreed.",
+      id: "comment-2",
+      kind: "reply",
+    },
+    subject: "The retry budget",
+    thread_id: "comment-1",
+    unread: true,
+    unread_count: 1,
+    version: 1,
+    ...overrides,
+  };
+}
+
+/** The anchor a comment thread in a project document carries. */
+function anchor(overrides: Partial<Anchor> = {}): Anchor {
+  return {
+    artifact_id: "artifact-1",
+    block_id: "b-1",
+    mark_id: "mark-1",
+    orphaned: false,
+    quote: "three attempts",
+    version: 2,
+    ...overrides,
+  };
+}
+
+function renderThread(thread: MyReplyRow, seed: (client: QueryClient) => void = () => {}) {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const client = createQueryClient();
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  seed(client);
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={client}>
+        <DocumentRuntime.Provider value={fake.runtime}>
+          <MarginProvider>
+            <ReadingPane
+              onAnswered={() => {}}
+              onSnoozeLive={() => {}}
+              row={{ kind: "thread", thread }}
+              viewer="alice"
+            />
+          </MarginProvider>
+        </DocumentRuntime.Provider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  return { client, runtime: fake, view };
+}
+
+/** Which of the column's four thread bodies is drawn. */
+async function paneBody(): Promise<HTMLElement> {
+  const pane = await screen.findByTestId("inbox-pane");
+  const body = pane.querySelector<HTMLElement>("[data-inbox-pane-body]");
+  if (body === null) throw new Error("the column drew no thread body");
+  return body;
+}
+
+test("a comment thread on an issue shows the issue and the thread, with no document", async () => {
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
+  const { view } = renderThread(threadRow({ issue: { key: "CORE-1", title: "Fix the thing" } }));
+  try {
+    const body = await paneBody();
+    expect(body).toHaveAttribute("data-inbox-pane-body", "issue");
+    // The head names the owner and opens the thread's own page.
+    const pane = screen.getByTestId("inbox-pane");
+    expect(within(pane).getByText("CORE-1")).toBeTruthy();
+    expect(within(pane).getByRole("link", { name: "Open page" })).toHaveAttribute(
+      "href",
+      "/issues/CORE-1?comment=comment-1"
+    );
+    await waitFor(() => expect(listComments).toHaveBeenCalled());
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+  }
+});
+
+test("an issue message conversation reads the issue's messages", async () => {
+  const listIssueMessages = spyOn(api, "listIssueMessages").mockResolvedValue([]);
+  const { view } = renderThread(
+    threadRow({
+      issue: { key: "CORE-1", title: "Fix the thing" },
+      kind: "message",
+      thread_id: "message-1",
+    })
+  );
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "issue");
+    await waitFor(() => expect(listIssueMessages).toHaveBeenCalledWith("CORE-1"));
+  } finally {
+    view.unmount();
+    listIssueMessages.mockRestore();
+  }
+});
+
+test("an Agent row shows the session's name and reads that session's messages", async () => {
+  const listAgentMessages = spyOn(api, "listAgentMessages").mockResolvedValue([]);
+  const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  const { view } = renderThread(plannerAgentRow());
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "agent");
+    const pane = screen.getByTestId("inbox-pane");
+    expect(within(pane).getByText("Planner")).toBeTruthy();
+    // An Agent row has no reference, so the head draws no copy control at all.
+    expect(pane.querySelector("[data-copy-ref]")).toBeNull();
+    expect(within(pane).getByRole("link", { name: "Open page" })).toHaveAttribute(
+      "href",
+      "/agents/planner/live"
+    );
+    await waitFor(() => expect(listAgentMessages).toHaveBeenCalledWith("planner"));
+  } finally {
+    view.unmount();
+    listAgentMessages.mockRestore();
+    listAgents.mockRestore();
+  }
+});
+
+test("an ask's thread shows the ask's own card", async () => {
+  const row = issueAsk({ id: "ask-a" });
+  const getAsk = mockAskReads([row]);
+  const { view } = renderThread(
+    threadRow({
+      issue: { key: "CORE-1", title: "Fix the thing" },
+      kind: "ask",
+      ref: "/issues/CORE-1/asks/ask-a",
+      thread_id: "ask-a",
+    })
+  );
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "ask");
+    await waitFor(() => expect(screen.getByTestId("ask-ask-a")).toBeTruthy());
+    expect(getAsk).toHaveBeenCalledWith("ask-a");
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+  }
+});
+
+test("a comment thread in a document opens that document at its block", async () => {
+  const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([]);
+  const thread = threadRow({
+    anchor: anchor(),
+    document: { name: "spec.md", project: "CORE", slug: "spec" },
+    ref: "/projects/CORE/documents/spec?comment=comment-1",
+  });
+  const { runtime, view } = renderThread(thread, (client) => {
+    seedDocument(client, document({ issue_key: null, versions: [version(1)] }));
+  });
+  try {
+    expect(await paneBody()).toHaveAttribute("data-inbox-pane-body", "document");
+    // The live document is opened, not a card: the column connects a room for it.
+    await waitFor(() => expect(runtime.connections).toHaveLength(1));
+    expect(screen.getByTestId("inbox-pane").querySelector("[data-inbox-pane-fallback]")).toBeNull();
+  } finally {
+    view.unmount();
+    listArtifactComments.mockRestore();
+  }
+});
+
+test("an orphaned anchor falls back to the thread alone, with its quote", async () => {
+  const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue([]);
+  const thread = threadRow({
+    anchor: anchor({ orphaned: true }),
+    document: { name: "spec.md", project: "CORE", slug: "spec" },
+    ref: "/projects/CORE/documents/spec?comment=comment-1",
+  });
+  const { runtime, view } = renderThread(thread, (client) => {
+    seedDocument(client, document({ issue_key: null, versions: [version(1)] }));
+  });
+  try {
+    const body = await paneBody();
+    expect(body).toHaveAttribute("data-inbox-pane-body", "document");
+    expect(body.hasAttribute("data-inbox-pane-fallback")).toBe(true);
+    expect(body.querySelector("[data-inbox-thread-quote]")?.textContent).toBe("three attempts");
+    // Nothing opened the document: an anchor nothing can be placed at opens no room.
+    await Bun.sleep(SETTLE_MS * 2);
+    expect(runtime.connections).toHaveLength(0);
+  } finally {
+    view.unmount();
+    listArtifactComments.mockRestore();
   }
 });

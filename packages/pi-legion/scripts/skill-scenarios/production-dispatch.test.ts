@@ -1,9 +1,11 @@
-import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { bearerCredential } from "@legion/envoy-client/bearer";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   checkoutAbove,
+  type DispatchCredentials,
   type Fetch,
   inWindow,
   mapLimit,
@@ -13,8 +15,7 @@ import {
   resolveDispatch,
 } from "./production-dispatch";
 
-const scratch = mkdtempSync(path.join(tmpdir(), "production-dispatch-"));
-afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+const scratch = temporaryDirectory("production-dispatch");
 
 function dir(name: string): string {
   const made = path.join(scratch, name);
@@ -47,17 +48,28 @@ function json(value: unknown, status = 200): Response {
   });
 }
 
-const credentials = { url: "http://dispatch.test", token: "dispatch-token" };
+const credentials: DispatchCredentials = {
+  url: "http://dispatch.test",
+  credential: bearerCredential("dispatch-token"),
+};
+/** The credentials as these tests compare them: the bearer the credential presents. */
+const presented = (found: DispatchCredentials) => ({
+  url: found.url,
+  token: found.credential.secret(),
+});
+const presentedCredentials = { url: "http://dispatch.test", token: "dispatch-token" };
 const noSleep = async () => {};
 
 test("DISPATCH_URL with DISPATCH_TOKEN gives the server and the token", () => {
   const home = dir("home-variables");
   expect(
-    resolveDispatch(
-      { HOME: home, DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN: "dispatch-token" },
-      home
+    presented(
+      resolveDispatch(
+        { HOME: home, DISPATCH_URL: "http://dispatch.test/", DISPATCH_TOKEN: "dispatch-token" },
+        home
+      )
     )
-  ).toEqual(credentials);
+  ).toEqual(presentedCredentials);
 });
 
 test("the envoy.json ENVOY_CONFIG_FILE names gives the server and the token", () => {
@@ -67,7 +79,9 @@ test("the envoy.json ENVOY_CONFIG_FILE names gives the server and the token", ()
     file,
     JSON.stringify({ dispatch: { serverUrl: "http://dispatch.test", token: "dispatch-token" } })
   );
-  expect(resolveDispatch({ HOME: home, ENVOY_CONFIG_FILE: file }, home)).toEqual(credentials);
+  expect(presented(resolveDispatch({ HOME: home, ENVOY_CONFIG_FILE: file }, home))).toEqual(
+    presentedCredentials
+  );
 });
 
 test("no Dispatch configuration stops the run and names what is missing", () => {

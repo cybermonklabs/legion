@@ -14,6 +14,16 @@
       "bun": "./src/askgate-new-asks.ts",
       "default": "./dist/askgate-new-asks.js"
     },
+    "./bearer": {
+      "types": "./src/bearer.ts",
+      "bun": "./src/bearer.ts",
+      "default": "./dist/bearer.js"
+    },
+    "./broker-credential": {
+      "types": "./src/broker-credential.ts",
+      "bun": "./src/broker-credential.ts",
+      "default": "./dist/broker-credential.js"
+    },
     "./consumer-delivery": {
       "types": "./src/consumer-delivery.ts",
       "bun": "./src/consumer-delivery.ts",
@@ -109,6 +119,11 @@
       "bun": "./src/nats-connection.ts",
       "default": "./dist/nats-connection.js"
     },
+    "./process-ancestry": {
+      "types": "./src/process-ancestry.ts",
+      "bun": "./src/process-ancestry.ts",
+      "default": "./dist/process-ancestry.js"
+    },
     "./replay": {
       "types": "./src/replay.ts",
       "bun": "./src/replay.ts",
@@ -143,6 +158,10 @@
       "types": "./test/envoy-stack.ts",
       "bun": "./test/envoy-stack.ts"
     },
+    "./test/fake-dispatch": {
+      "types": "./test/fake-dispatch.ts",
+      "bun": "./test/fake-dispatch.ts"
+    },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",
       "bun": "./test/stall-proxy.ts"
@@ -150,6 +169,21 @@
     "./test/stall-scenario": {
       "types": "./test/stall-scenario.ts",
       "bun": "./test/stall-scenario.ts"
+    },
+    "./tmux-place": {
+      "types": "./src/tmux-place.ts",
+      "bun": "./src/tmux-place.ts",
+      "default": "./dist/tmux-place.js"
+    },
+    "./tmux-place-cache": {
+      "types": "./src/tmux-place-cache.ts",
+      "bun": "./src/tmux-place-cache.ts",
+      "default": "./dist/tmux-place-cache.js"
+    },
+    "./tmux-server": {
+      "types": "./src/tmux-server.ts",
+      "bun": "./src/tmux-server.ts",
+      "default": "./dist/tmux-server.js"
     },
     "./tool-contract": {
       "types": "./src/tool-contract.ts",
@@ -163,12 +197,13 @@
     }
   },
   "scripts": {
-    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/consumer-delivery.ts src/delivery.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/machine.ts src/nats-connection.ts src/replay.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tool-contract.ts src/transport.ts --outdir dist --target bun --format esm",
+    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/machine.ts src/nats-connection.ts src/process-ancestry.ts src/replay.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
     "test": "bun test",
     "lint": "bunx biome check src/ bin/ test/"
   },
   "dependencies": {
+    "@legion/broker-client": "workspace:*",
     "@legion/contracts": "workspace:*",
     "@toon-format/toon": "^4.1.1",
     "nats": "^2.29.2",
@@ -176,6 +211,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.3.14",
+    "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "typescript": "^5.3.0"
   }

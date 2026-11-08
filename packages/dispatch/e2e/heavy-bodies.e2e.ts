@@ -1,12 +1,17 @@
 // What a heavy body costs a reader's own thread, in the surfaces that draw one: the Conversation,
-// the Inbox's ask card and a hover card. The same shapes written as documents through the API are
-// `heavy-document-writes.e2e.ts`, and both specs read the bodies from `heavy-bodies.ts`, so the
-// two measure the very same bytes. The one surface where a body grows under a paint - the live
-// view, where a streaming turn arrives whole with every frame - is `heavy-streamed-turn.e2e.ts`,
-// which reads a drawn body through the same `heavy-bodies-page.ts` as the rows here
-// (sjawhar/legion#2519). What a row here holds the main thread for is measured by
-// `main-thread-hold.ts`, which `nested-directive.e2e.ts` measures its own two rows with, so one
-// instrument and one bound answer for both (sjawhar/legion#2612).
+// the Inbox's ask card and a hover card. Six of the seven shapes drawn here are written as
+// documents through the API by Go, in `packages/envoy/internal/dispatch/api`'s
+// heavy-document-write test over `pmdoc/heavybodies`, which spells those six as the very bytes
+// `heavy-bodies.ts` does - the seventh, `nestedThenTextLines`, no Go shape spells. What holds
+// the two spellings to each other is the digest table
+// `pmdoc/heavybodies/testdata/shared-bodies.json`, read over this side by
+// `e2e/__tests__/heavy-bodies-digests.test.ts` and over Go's by `heavybodies/digests_test.go`.
+// The one surface where a body grows under a paint - the live view, where a streaming turn
+// arrives whole with every frame - is `heavy-streamed-turn.e2e.ts`, which reads a drawn body
+// through the same `heavy-bodies-page.ts` as the rows here (sjawhar/legion#2519). What a row
+// here holds the main thread for is measured by `main-thread-hold.ts`, which
+// `nested-directive.e2e.ts` measures its own two rows with, so one instrument and one bound
+// answer for both (sjawhar/legion#2612).
 import { type BrowserContext, expect, type Locator, type Page, test } from "@playwright/test";
 
 // `markdownWorkerThreshold` comes from the module that carries it and imports nothing: the
@@ -295,10 +300,11 @@ test("Conversation draws a message of 8,000 list items without holding the main 
   }
 });
 
-// The ask card draws a long body in its thread, not in its question: the server caps a question
-// at `contracts.AskQuestionMax` (2,000 UTF-16 units), under the worker's own threshold, so no ask
-// question can carry this list. The surface under test is the same one - the Inbox's ask card,
-// drawing a body through `MarkdownBody` - and its reply is the longest body it ever draws.
+// The ask card draws a long body in its thread, not in its question: the server holds a question
+// and its options together to `DISPATCH_EVENT_BODY_MAX` (32,000 UTF-16 units), which this list
+// fills on its own, so the list reaches the card as a reply. The surface under test is the same
+// one - the Inbox's ask card, drawing a body through `MarkdownBody` - and its reply is the
+// longest body it ever draws.
 // SLOW(>=2s): the reply's 8,000 items are drawn in the card before the hold is read, and the
 // Inbox pays for them where a reader does: the inbox GET brings the card and its reply together,
 // so the parse and the paint of 16,000 elements are what this row waits out.
@@ -432,8 +438,8 @@ test("a long comment above the reader keeps the comment they are reading where i
   browser,
 }, testInfo) => {
   test.skip(
-    testInfo.project.name !== "chromium" && testInfo.project.name !== "webkit",
-    "the reader's place is proven in Chromium and WebKit"
+    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
+    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
   );
   const issue = await seedIssue("A late paint above the reader");
   for (let turn = 1; turn <= 12; turn += 1) {
@@ -519,8 +525,8 @@ test("a reader who scrolls while a long body above them formats keeps where they
   browser,
 }, testInfo) => {
   test.skip(
-    testInfo.project.name !== "chromium" && testInfo.project.name !== "webkit",
-    "the reader's place is proven in Chromium and WebKit"
+    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
+    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
   );
   const issue = await seedIssue("A reader scrolling through a late paint");
   for (let turn = 1; turn <= 12; turn += 1) {
@@ -592,8 +598,8 @@ test("Jump to latest keeps a newest long comment under the composer when it form
   browser,
 }, testInfo) => {
   test.skip(
-    testInfo.project.name !== "chromium" && testInfo.project.name !== "webkit",
-    "the reader's place is proven in Chromium and WebKit"
+    testInfo.project.name !== "chromium-alone" && testInfo.project.name !== "webkit-alone",
+    "the reader's place is proven in Chromium and WebKit, which run this file as the -alone projects"
   );
   const issue = await seedIssue("A late paint at the newest turn");
   for (let turn = 1; turn <= 12; turn += 1) {

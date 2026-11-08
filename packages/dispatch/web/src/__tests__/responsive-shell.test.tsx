@@ -10,6 +10,10 @@ import { AuthGate } from "../app";
 const issue: IssueDetails = {
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   artifacts: [
     {
       created_at: "2026-09-10T00:00:00Z",
@@ -54,15 +58,19 @@ const issue: IssueDetails = {
 };
 
 const originalApi = {
+  getAsk: api.getAsk,
   getInbox: api.getInbox,
   getIssue: api.getIssue,
+  getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
   listIssues: api.listIssues,
   listMyReplies: api.listMyReplies,
+  listProjectArchitectureSources: api.listProjectArchitectureSources,
   listProjects: api.listProjects,
+  listRepoProjects: api.listRepoProjects,
   whoAmI: api.whoAmI,
 };
 const originalMatchMedia = window.matchMedia;
@@ -85,7 +93,8 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
   setViewport(width);
   api.whoAmI = async () => ({ event_head: "0", kind: "user", login: "alice" });
   api.listMyReplies = async (query) => ({
-    limit: query.limit,
+    as_of: "2026-10-12T00:00:00Z",
+    limit: query.limit ?? 0,
     offset: 0,
     rows: [],
     total: unreadThreads,
@@ -97,6 +106,7 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
       resolved_repo: null,
       route_status: null,
       route_holder: null,
+      route_status_reason: null,
       key: issue.key,
       open_asks: 0,
       progress: { tasks: null, children: null },
@@ -124,6 +134,20 @@ function renderShellAt(width: number, inbox: InboxRow[] = [], unreadThreads = 0)
   ];
   api.listIssueAsks = async () => [];
   api.listComments = async () => [];
+  // The issue page under the shell reads these of its own; no test here asserts them.
+  api.getIssueSubscribers = async () => [];
+  api.listRepoProjects = async () => [];
+  api.listProjectArchitectureSources = async () => [];
+  // Each ask card refreshes its own thread; the row the Inbox listed carries the one Dispatch
+  // would answer with.
+  api.getAsk = async (id) => {
+    const row = inbox.find((ask) => ask.id === id);
+    if (row === undefined) {
+      throw new Error(`the Inbox lists no ask ${id}`);
+    }
+    const { thread, ...ask } = row;
+    return { ...thread, ask };
+  };
 
   render(
     <QueryClientProvider
@@ -157,8 +181,8 @@ test("tablet uses the drawer and bottom-sheet controls instead of hidden desktop
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeNull()
   );
-  expect(screen.queryByRole("navigation", { name: "Issues" })).toBeNull();
-  expect(screen.queryByRole("complementary", { name: "Review margin" })).toBeNull();
+  expect(screen.queryByRole("navigation", { name: "Issues" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeInTheDocument();
 });
 
 test("desktop exposes the persistent sidebar navigation and review margin", async () => {
@@ -171,8 +195,8 @@ test("desktop exposes the persistent sidebar navigation and review margin", asyn
   await waitFor(() =>
     expect(screen.queryByRole("complementary", { name: "Review margin" })).not.toBeNull()
   );
-  expect(screen.queryByRole("button", { name: "Open navigation" })).toBeNull();
-  expect(screen.queryByRole("button", { name: /Open review panel/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /Open review panel/ })).not.toBeInTheDocument();
 });
 test("compact top bar shows only asks waiting on the viewer", async () => {
   renderShellAt(800, [
@@ -199,6 +223,7 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       priority: null,
       snoozed_until: null,
@@ -229,6 +254,7 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
       priority: null,
       snoozed_until: null,
@@ -239,24 +265,26 @@ test("compact top bar shows only asks waiting on the viewer", async () => {
     },
   ]);
 
-  expect(await screen.findByText("Needs you 1")).not.toBeNull();
+  // One number now: the asks waiting on the reader and the threads they have not read.
+  expect(await screen.findByText("Inbox 1")).not.toBeNull();
 });
 
-test("the compact header links Replies N to the Replies page, beside the Agents replies badge", async () => {
+test("the compact header's one Inbox link counts the unread threads too and opens the Inbox", async () => {
   api.getMyAgentState = async () => ({ planner: { unread_replies: 1 } });
   renderShellAt(800, [], 2);
 
-  const replies = await screen.findByRole("link", { name: "Replies 2" });
-  expect(replies.getAttribute("href")).toBe("/replies");
+  const inbox = await screen.findByRole("link", { name: "Inbox 2" });
+  expect(inbox).toHaveAttribute("href", "/");
   const agents = screen.getByRole("link", { name: "New reply 1" });
-  expect(replies.previousElementSibling).toBe(agents);
+  expect(inbox.nextElementSibling).toBe(agents);
 });
 
-test("the compact header shows no Replies link while nothing is unread", async () => {
+test("the compact header's Inbox link is plain while nothing waits and nothing is unread", async () => {
   renderShellAt(800, [], 0);
 
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "Open navigation" })).not.toBeNull()
   );
-  expect(screen.queryByRole("link", { name: /^Replies/ })).toBeNull();
+  expect(screen.getByRole("link", { name: "Inbox" })).toHaveAttribute("href", "/");
+  expect(screen.queryByRole("link", { name: /^Replies/ })).not.toBeInTheDocument();
 });

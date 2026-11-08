@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import {
   copyFileSync,
   existsSync,
@@ -10,16 +10,18 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { appTokenSources } from "./app-logins";
 
 // lib/app-logins.ts run as the stage proofs run it, against a stand-in GitHub that answers
 // GraphQL's viewer and GET /apps/<slug> under an installation token of one of its Apps, and
 // refuses every other request, the JWT routes (GET /app, the installation routes) among them. The
 // implement App holds checks: read alone, as the real one does.
-const dir = mkdtempSync(join(tmpdir(), "app-logins-test."));
+const dir = temporaryDirectory("app-logins-test");
 const script = join(import.meta.dir, "app-logins.ts");
+// The home every child of this file runs under, so none of them reads the caller's.
+const home = join(dir, "home");
 
 interface StandInApp {
   id: number;
@@ -91,7 +93,6 @@ const unreachable = `http://127.0.0.1:${closed.port}/`;
 await closed.stop(true);
 afterAll(() => {
   github.stop(true);
-  rmSync(dir, { recursive: true, force: true });
 });
 
 /** A release as the secrets broker gives one: one entry per installation, keyed by login. */
@@ -105,9 +106,7 @@ function release(installations: Record<string, string>, expires = "2099-01-01T00
     ),
   });
 }
-for (const id of [101, 202, 303, 404]) {
-  writeFileSync(join(dir, `release-${id}.json`), release({ sjawhar: tokenOf(id) }));
-}
+const releaseIDs = [101, 202, 303, 404];
 
 let configs = 0;
 function config(implement: string, review: string): string {
@@ -121,12 +120,13 @@ function config(implement: string, review: string): string {
 const app = (id: string, command = `cat ${join(dir, `release-${id}.json`)}`) =>
   `    app_id: "${id}"\n    token_command: ${JSON.stringify(command)}`;
 
-// The run is asynchronous: the stand-in GitHub answers from this test's own event loop. `env` is
-// added to this test's own environment. The helper is given stdin, so a token command that
-// inherited it would read `stdin-leak` where the closed-stdin case expects nothing.
+// The run is asynchronous: the stand-in GitHub answers from this test's own event loop. The child
+// gets PATH, a home of the test's own and `env`, never the caller's whole environment. The helper
+// is given stdin, so a token command that inherited it would read `stdin-leak` where the
+// closed-stdin case expects nothing.
 async function run(path: string, env: Record<string, string> = {}, api = standIn) {
   const child = Bun.spawn(["bun", script, path, api], {
-    env: { ...process.env, ...env },
+    env: { PATH: process.env.PATH ?? "", HOME: home, ...env },
     stdin: new Blob(["stdin-leak"]),
     stdout: "pipe",
     stderr: "pipe",
@@ -155,7 +155,13 @@ bun() { command bun "$@" "$API"; }
 read_app_logins
 ${then}`;
   const child = Bun.spawn(["bash", "-c", shell], {
-    env: { ...process.env, LIB: join(import.meta.dir, "workflow.sh"), work, API: api },
+    env: {
+      PATH: process.env.PATH ?? "",
+      HOME: home,
+      LIB: join(import.meta.dir, "workflow.sh"),
+      work,
+      API: api,
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -172,6 +178,25 @@ const namesApp = (role: string, id: string) => new RegExp(`\\b${role} App\\b.*\\
 const holdsNoToken = (text: string) => {
   for (const token of allTokens) expect(text).not.toContain(token);
 };
+
+/**
+ * Ends the process whose pid the file holds, and answers whether that process was still running.
+ * A command that escapes its caller's session outlives the run that started it, so the test that
+ * starts one has it write its pid down and ends it here.
+ */
+function endRecordedProcess(pidFile: string): boolean {
+  if (!existsSync(pidFile)) return false;
+  const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
+  rmSync(pidFile, { force: true });
+  if (!Number.isInteger(pid) || pid <= 1) return false;
+  try {
+    process.kill(pid, "SIGKILL");
+    return true;
+  } catch {
+    // Already gone: nothing to end.
+    return false;
+  }
+}
 
 describe("app-logins.ts", () => {
   test("prints each App's bot login from GraphQL's viewer, proved by GET /apps/<slug> under its own token", async () => {
@@ -227,21 +252,23 @@ describe("app-logins.ts", () => {
     holdsNoToken(stderr);
   });
 
-  test("a token command runs as the daemon runs it: no NATS seed, stdin closed, owner and read-only set empty", async () => {
-    // An unset variable prints `unset`, so a set-empty owner and read-only flag print nothing.
+  test("a token command runs as the daemon runs it: no NATS seed, stdin closed, owner, repositories and read-only set empty", async () => {
+    // An unset variable prints `unset`, so a set-empty owner, repository list and read-only flag
+    // each print nothing.
     const probe =
       // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
-      'printf "%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
+      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_REPOS-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
     const { code, stderr } = await run(config(app("101", probe), app("202")), {
       NATS_NKEY_SEED: "pane-seed",
       NATS_DAEMON_NKEY_SEED: "daemon-seed",
       NATS_NKEY_SEED_FILE: "/seed-file",
       LEGION_GITHUB_OWNER: "leaked-owner",
+      LEGION_GITHUB_REPOS: "leaked-repo",
       LEGION_GITHUB_READ_ONLY: "1",
     });
     expect(code).toBe(1);
     expect(stderr).toBe(
-      "||/seed-file|||app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 4): ||/seed-file|||"
+      "||/seed-file||||app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 4): ||/seed-file||||"
     );
   });
 
@@ -261,13 +288,42 @@ describe("app-logins.ts", () => {
     expect(stderr.slice(-1000)).toContain("wrote more than 1048576 bytes to stderr");
   });
 
-  test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
-    const escaped = "setsid sleep 60 >&2 & exit 0";
-    const started = Date.now();
-    const { code, stderr } = await run(config(app("101", escaped), app("202")));
+  // A token command that fails under the cap has the whole of its stderr quoted in the failure,
+  // so the line this process ends on is about a megabyte long, written in one go with nothing
+  // after it but the exit. An exit that does not wait for that write discards most of it, and
+  // the caller is left with the command's noise and no reason for the run's failure.
+  test("the failure a token command's stderr is quoted in reaches the caller whole, and last", async () => {
+    const noisy = "printf '%01000000d' 0 >&2; printf 'END-OF-STDERR\\n' >&2; exit 3";
+    const { code, stderr } = await run(config(app("101", noisy), app("202")));
     expect(code).toBe(1);
-    expect(stderr).toContain("still held its output open");
-    expect(Date.now() - started).toBeLessThan(30_000);
+    const failure = `app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 3): ${"0".repeat(1_000_000)}END-OF-STDERR`;
+    // By length and by both ends: a mismatch between two megabyte-long lines prints no diff
+    // anyone can read.
+    const last = stderr.split("\n").at(-1) ?? "";
+    expect(last.length).toBe(failure.length);
+    expect(last.slice(0, 120)).toBe(failure.slice(0, 120));
+    expect(last.slice(-40)).toBe(failure.slice(-40));
+  });
+
+  test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
+    // The descendant leaves the token command's session, so nothing app-logins does ends it: it
+    // records the pid it ends up with — `sh` prints its own, then becomes the `sleep` through
+    // `exec` — and this test ends it once the run it must outlive is over.
+    const pidFile = join(dir, "escaped.pid");
+    const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
+    const started = Date.now();
+    let wasRunning = false;
+    try {
+      const { code, stderr } = await run(config(app("101", escaped), app("202")));
+      expect(code).toBe(1);
+      expect(stderr).toContain("still held its output open");
+      expect(Date.now() - started).toBeLessThan(30_000);
+    } finally {
+      wasRunning = endRecordedProcess(pidFile);
+    }
+    // The descendant held the output open for the whole drain: a descendant that ended before the
+    // run did would leave the row proving nothing.
+    expect(wasRunning).toBe(true);
   }, 30_000);
 
   test("output that is no release, an expired token, or no installation is refused without quoting it", async () => {
@@ -407,14 +463,22 @@ describe("read_app_logins", () => {
 // FAIL_MINT, releases nothing when EMPTY_MINT is set, and streams stdout when OVERSIZED_MINT is set.
 const store = join(dir, "store");
 const fakeBin = join(dir, "bin");
-mkdirSync(store);
-mkdirSync(fakeBin);
-writeFileSync(join(store, "IMPLEMENT_APP"), release({ sjawhar: tokenOf(101) }));
-writeFileSync(join(store, "REVIEW_APP"), release({ sjawhar: tokenOf(202) }));
-writeFileSync(join(store, "OTHER_APP"), release({ sjawhar: tokenOf(404) }));
-writeFileSync(
-  join(fakeBin, "agent-secrets"),
-  `#!/bin/sh
+// Every directory and stand-in this file's children read, staged before the first row: `dir` is
+// reserved at module scope and made by the hook that reservation registered, so a run that
+// selects no row of this file stages nothing and leaves nothing behind.
+beforeAll(() => {
+  mkdirSync(home);
+  for (const id of releaseIDs) {
+    writeFileSync(join(dir, `release-${id}.json`), release({ sjawhar: tokenOf(id) }));
+  }
+  mkdirSync(store);
+  mkdirSync(fakeBin);
+  writeFileSync(join(store, "IMPLEMENT_APP"), release({ sjawhar: tokenOf(101) }));
+  writeFileSync(join(store, "REVIEW_APP"), release({ sjawhar: tokenOf(202) }));
+  writeFileSync(join(store, "OTHER_APP"), release({ sjawhar: tokenOf(404) }));
+  writeFileSync(
+    join(fakeBin, "agent-secrets"),
+    `#!/bin/sh
 printf '%s\\n' "$*" >>"\${ARGV_LOG:-/dev/null}"
 name=$1
 shift
@@ -434,8 +498,9 @@ value=$(cat "\${STORE:-${store}}/$name") || exit 9
 export "$name=$value"
 exec "$@"
 `,
-  { mode: 0o755 }
-);
+    { mode: 0o755 }
+  );
+});
 const appInputs = {
   LEGION_E2E_IMPLEMENT_APP_ID: "101",
   LEGION_E2E_IMPLEMENT_APP_SECRET: "IMPLEMENT_APP",
@@ -488,7 +553,7 @@ ${then}`;
 const line = (stdout: string, prefix: string) =>
   (stdout.split("\n").find((l) => l.startsWith(prefix)) ?? "").slice(prefix.length);
 const tokenCommand = (name: string) =>
-  `agent-secrets ${name} --reason=legion-live-proof-github-app-token \${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} \${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$${name}"'`;
+  `agent-secrets ${name} --ttl 12h --reason=legion-live-proof-github-app-token \${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} \${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} \${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$${name}"'`;
 
 describe("lib/github-apps.sh", () => {
   const proveBoth = `require_app_inputs implement review
@@ -589,7 +654,7 @@ env "\${app_key_unsets[@]}" sh -c "echo \\"left \\$(env | grep -c -E '^($names)=
     }
   });
 
-  test("app_token_command prints the broker client's command, its owner and read-only words left to the daemon's sh", async () => {
+  test("app_token_command prints the broker client's command, its owner, repository and read-only words left to the daemon's sh", async () => {
     const { code, stdout, stderr } = await githubApps(
       appInputs,
       `require_app_inputs implement review
@@ -600,24 +665,36 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     expect(line(stdout, "command ")).toBe(tokenCommand("IMPLEMENT_APP"));
   });
 
-  test("the token command asks agent-secrets for the owner and read-only flag the daemon names, and prints the release", async () => {
+  test("the token command asks agent-secrets for the owner, repositories and read-only flag the daemon names, and prints the release", async () => {
     const argvLog = join(dir, "argv-command");
     const cases: [Record<string, string>, string][] = [
       [
         {},
-        'IMPLEMENT_APP --reason=legion-live-proof-github-app-token -- sh -c printf %s "$IMPLEMENT_APP"',
+        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s "$IMPLEMENT_APP"',
       ],
       [
         { LEGION_GITHUB_OWNER: "Acme-Org" },
-        'IMPLEMENT_APP --reason=legion-live-proof-github-app-token --github-owner Acme-Org -- sh -c printf %s "$IMPLEMENT_APP"',
+        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org -- sh -c printf %s "$IMPLEMENT_APP"',
+      ],
+      [
+        { LEGION_GITHUB_OWNER: "Acme-Org", LEGION_GITHUB_REPOS: "legion" },
+        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-repo legion -- sh -c printf %s "$IMPLEMENT_APP"',
+      ],
+      [
+        {
+          LEGION_GITHUB_OWNER: "Acme-Org",
+          LEGION_GITHUB_REPOS: "legion nats-server",
+          LEGION_GITHUB_READ_ONLY: "1",
+        },
+        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-repo legion --github-repo nats-server --github-read-only -- sh -c printf %s "$IMPLEMENT_APP"',
       ],
       [
         { LEGION_GITHUB_OWNER: "Acme-Org", LEGION_GITHUB_READ_ONLY: "1" },
-        'IMPLEMENT_APP --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-read-only -- sh -c printf %s "$IMPLEMENT_APP"',
+        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token --github-owner Acme-Org --github-read-only -- sh -c printf %s "$IMPLEMENT_APP"',
       ],
       [
-        { LEGION_GITHUB_OWNER: "", LEGION_GITHUB_READ_ONLY: "" },
-        'IMPLEMENT_APP --reason=legion-live-proof-github-app-token -- sh -c printf %s "$IMPLEMENT_APP"',
+        { LEGION_GITHUB_OWNER: "", LEGION_GITHUB_REPOS: "", LEGION_GITHUB_READ_ONLY: "" },
+        'IMPLEMENT_APP --ttl 12h --reason=legion-live-proof-github-app-token -- sh -c printf %s "$IMPLEMENT_APP"',
       ],
     ];
     for (const [daemonEnv, argv] of cases) {
@@ -709,18 +786,18 @@ echo minted`
         expect(readFileSync(path, "utf8")).toBe(readFileSync(join(store, secret), "utf8"));
       }
     }
-    const reason = "--reason=legion-live-proof-github-app-token";
+    const flags = "--ttl 12h --reason=legion-live-proof-github-app-token";
     const asked = readFileSync(argvLog, "utf8")
       .trim()
       .split("\n")
       .map((argv) => argv.replace(/ -- sh -c .*$/, ""));
     expect(asked).toEqual(
       ["IMPLEMENT_APP", "REVIEW_APP"].flatMap((secret) => [
-        `${secret} ${reason}`,
-        `${secret} ${reason} --github-owner sjawhar`,
-        `${secret} ${reason} --github-owner sjawhar --github-read-only`,
-        `${secret} ${reason} --github-owner acme-org`,
-        `${secret} ${reason} --github-owner acme-org --github-read-only`,
+        `${secret} ${flags}`,
+        `${secret} ${flags} --github-owner sjawhar`,
+        `${secret} ${flags} --github-owner sjawhar --github-read-only`,
+        `${secret} ${flags} --github-owner acme-org`,
+        `${secret} ${flags} --github-owner acme-org --github-read-only`,
       ])
     );
     holdsNoToken(stdout + stderr);

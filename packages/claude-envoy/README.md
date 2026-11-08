@@ -1,17 +1,17 @@
 # claude-envoy
 
-Claude Code channel plugin for Legion's Envoy subsystem. One MCP stdio server consumes Envoy NATS
-events and sends them to the current Claude Code session as supported
-`notifications/claude/channel` notifications.
+Claude Code plugin for Legion's Envoy subsystem. One MCP stdio server consumes Envoy NATS events
+and puts them into the current Claude Code session's own conversation, and takes a person's
+message from Dispatch's Agents page as that person's own turn.
 
 ## Architecture
 
-- `.mcp.json` launches the committed bundle `dist/envoy-channel.js` (built from
-  `bin/envoy-channel.ts`; see "The bundle" below). It declares the experimental `claude/channel`
-  capability, so Claude Code accepts its event notifications; it also exposes the Envoy messaging
+- `.mcp.json` launches the built bundle `dist/envoy-channel.js` (built from
+  `bin/envoy-channel.ts`; see "The bundle" below). It reaches the model through this plugin's
+  Claude Code mod (`hooks/mod.ts`); it also exposes the Envoy messaging
   tools through that same MCP server.
 - `bin/dispatch` is the `dispatch` command, which Claude Code puts on the Bash tool's `PATH` while
-  the plugin is enabled; it runs the committed bundle `dist/dispatch.js`. Agents reach Dispatch
+  the plugin is enabled; it runs the built bundle `dist/dispatch.js`. Agents reach Dispatch
   through it (see "Dispatch" below).
 - `.omp-plugin/plugin.json` declares an empty `mcpServers`, so Oh My Pi starts no server from this
   plugin: the channel server needs Claude Code's session identity and exits without it, and an omp
@@ -76,12 +76,16 @@ events and sends them to the current Claude Code session as supported
   Envoy's notification stream and relays on `notifications.envoy.deliver.<session_id>`, which
   the server subscribes before it registers: the session's own subject, the stored copies of role
   messages to a role it holds, and every followed topic the stream stores, in stream order. The
-  server answers each frame `received` as it decodes and `done` once Claude Code has it: in a
-  Legion pane once the bridge reports that Claude Code took the delivery, and in channel mode once
-  the channel notification is written, the last signal Claude Code gives there, so a notification
-  Claude Code drops after that (a channel it did not load) is not sent again. A frame not taken
-  yet when Claude Code stops, or published while the session was not running or disconnected,
-  comes again and is delivered once, for up to 72 hours. Team and other ad-hoc topics, which the
+  server answers each frame `received` as it decodes and `done` once the session has it: in a
+  Legion pane once the bridge reports that Claude Code took the delivery, and in a terminal
+  session once the mod reports the write: a row stored in the turn running
+  (`$.session.append`), or, while the session is idle, a prompt the engine took
+  (`$.prompt.submit`). Envoy sends a frame the mod reported no write for again, and the mod
+  writes each Envoy event once, by its event id (`writeOnce` in `hooks/mod-writer.ts`), so the
+  repeat is answered from the first write's record.
+  A frame not taken yet when Claude Code stops, or published while the session was not running
+  or disconnected, comes again and is delivered once, for up to 72 hours.
+  Team and other ad-hoc topics, which the
   stream does not store, stay live only. The resume point is kept in `replay-<session id>.json`
   with the replay state below. `packages/envoy/AGENTS.md`, "Session consumers", states the rule.
 - The core path is the rollout fallback dispatch://INFRA-771 removes (a listener that answers
@@ -106,99 +110,57 @@ events and sends them to the current Claude Code session as supported
   messages are not recovered, and live delivery goes on as before.
 - A forwarded role-lane envelope (one that still names its `notifications.role.<role>` topic while
   arriving on the direct subject) receives its empty receipt immediately after the server accepts
-  the event into its ordered MCP notification queue. That confirms adapter acceptance, not that
-  Claude Code or the model processed the event: the channel protocol has no processing ack. A plain
-  direct send (`/v1/messages/send`) is a JetStream publish and gets no receipt: its reply subject is
-  the publisher's acknowledgement inbox, and an empty receipt there fails the publish.
-- The server registers the session as self-subscribed with `capabilities: ["aside"]`, or
-  `["aside", "steer"]` in a Legion pane whose deliveries go to the bridge's inbox (below). It never
-  advertises `btw`, and a plain session does not advertise `steer` (see "Intentionally omitted").
-  A plain session whose channel Claude Code did not load registers no capability. Claude Code never
-  tells a server whether it loaded its channel: the MCP handshake is the same either way, and a
-  notification sent while it is not loaded is dropped without a word, so Dispatch would record an
-  Aside to that session as sent while the model never saw it. The server therefore reads the
-  command line of the `claude` process that runs it (`src/claude-channel.ts`; the nearest ancestor
-  whose program is `claude`, since Claude Code may run the server through a shell prefix or a
-  `bun` shim) and applies Claude Code's gate as of 2.1.301: an entry naming this plugin (from a
-  bare MCP config, any `server:` entry) in `--channels`, or in
-  `--dangerously-load-development-channels` in an interactive session (no `-p`, `--print`,
-  `--init-only` or `--sdk-url` option, and, where `/proc` shows it, a terminal on stdout), the
-  arguments read as Claude Code's own scanner reads them; the marketplace the plugin is loaded from
-  (`inline` for `--plugin-dir`, else the plugin cache's, compared as Claude Code names its cache
-  directory); and, for `--channels`, an `allowedChannelPlugins` entry (an object, or a
-  `plugin@marketplace` string; an invalid entry is dropped alone) from the managed settings
-  source that owns it: the cached `remote-settings.json`, else `managed-settings.json` with its
-  `managed-settings.d/` drop-ins (`.json` names not starting with a dot), and under
-  `managedSourcesBehavior: "merge"` the highest of them that sets the key. With no capability the
-  listener refuses every targeted delivery (`session … does not advertise aside`), Dispatch shows
-  the session as taking no messages, and the server says why on stderr and in its MCP
-  instructions. `ENVOY_CHANNEL_LOADED=1` or `0` overrides the check, for an allowlist an MDM
-  profile delivers. A command line it cannot read, or no `claude` among the server's ancestors,
-  counts as loaded (a Claude Code run under another program name inside another `claude`
-  session's shell reads as the outer one), and so does the command line of a Claude Code that runs
-  on Node, whose `process.title = "claude"` overwrites the arguments (on Linux, the title and NUL
-  padding, whatever the executable's name; elsewhere, one word from a program named `node…`). A
-  Legion pane whose deliveries go to the bridge's inbox needs no channel, so the check does not
-  apply there.
-
-  The check cannot see every reason Claude Code refuses a channel. Claude Code also turns channels
-  off for the account (not signed in, or an account without the channels feature), for a
-  third-party provider (Bedrock, Vertex or Foundry), and when the managed settings do not set
-  `channelsEnabled: true`; outside Linux it cannot tell whether stdout is a terminal;
-  Claude Code skips a channel on a connection that negotiated an MCP protocol revision with no
-  unsolicited notifications. Claude Code then shows
-  `--dangerously-load-development-channels ignored` (or `--channels ignored`) with the reason when
-  the session starts, and drops every notification. The server still advertises Aside, so Dispatch
-  records a message to that session as sent while the model never sees it. If the session shows
-  that warning, start it with `ENVOY_CHANNEL_LOADED=0` so it advertises no delivery mode.
-
-  Two more cases turn on what Claude Code has cached in the profile, which the check does not
-  read (both measured on Claude Code 2.1.309, 2026-10-23). Read from Claude Code's code: it checks
-  each channel notification as it arrives, against the usage policy it fetches from Anthropic
-  (`policy-limits.json` in the profile) and its feature flags (`cachedGrowthBookFeatures` in the
-  profile's `.claude.json`), and draws the channel banner once, at startup.
-  - **A new profile's first launch with the key in `ANTHROPIC_API_KEY`** shows
-    `--channels waiting for your organization's policy` and "Messages are dropped until it loads",
-    even with the channel allowlisted in managed settings, and the banner does not clear once the
-    policy loads. That policy is Anthropic's, not `managed-settings.json`. The profile had cached
-    it a second after the prompt appeared, and an Aside sent 45 s in, under that banner, reached
-    the model. With `policy-limits.json` in the profile, messages arrive whatever the banner says,
-    and the next launch shows the channel loaded.
-  - **A new profile whose key comes only from an `apiKeyHelper`** had no feature flags on its
-    first launch in all four profiles tried, and showed `--channels ignored` and "Channels are not
-    currently available". The server still advertises Aside, and an Aside Dispatch recorded as sent
-    never reached the model. One profile loaded the channel on its second launch; another on its
-    third, its second (with the key in `ANTHROPIC_API_KEY`, quit 13 s in) still ignored; a third
-    was ignored on its second launch too, and the fourth was not launched again. The launch that
-    loaded the channel fetched the flags at startup, and an Aside then reached the model. With the
-    key in `ANTHROPIC_API_KEY` instead, two new profiles fetched the flags during their first
-    launch.
-
-  The other way round, the check runs once at startup, so a channel an SDK host turns on later
-  (`enableChannel`) is not seen: that session advertises no mode and Dispatch refuses messages
-  Claude Code would pass on. Start such a session with `ENVOY_CHANNEL_LOADED=1`. And because the
-  install path holds a marketplace name as Claude Code writes it into its cache (every character
-  outside `[A-Za-z0-9_-]` made `-`), a flag naming `legion-plugins` for a plugin installed from
-  `legion.plugins` counts as a match, though Claude Code refuses it.
+  the event into its ordered notification queue.
+  That confirms the server took the event, not that the model read it: nothing in the mod
+  protocol says the model read a row.
+  A plain direct send (`/v1/messages/send`) is a JetStream publish and gets no receipt: its reply
+  subject is the publisher's acknowledgement inbox, and an empty receipt there fails the publish.
+- The server registers the session as self-subscribed with what it can take now
+  (`sessionCapabilities` in `src/envoy-channel-server.ts`), read again at every registration. A
+  terminal session reaches the model only through its mod (`hooks/mod.ts`, `src/mod-session.ts`),
+  so it advertises nothing until the mod connects and `aside`, `btw` and `steer` once it has; a
+  Legion pane, whose deliveries go to the bridge's inbox (below), advertises `aside` and `steer`
+  from the start and gains `btw` with the mod. It registers again as soon as the link hears from
+  the mod - its hello, or its first poll, since a mod says hello once per Claude Code process -
+  so Dispatch learns what the session takes without waiting for a heartbeat. With no capability
+  the listener refuses every targeted delivery (`session … does not advertise aside`) and
+  Dispatch shows the session as taking no messages, which is the right answer for a session
+  nothing can reach.
 - A targeted Dispatch delivery the shared renderer rejects is never shown to the model: when it
   names a message, the server posts `Invalid Dispatch targeted delivery frame` to
   `POST /api/v1/messages/{id}/reply` so the attempt fails visibly; otherwise it is logged and dropped.
 - A resumed server rebuilds the interests its session id already registered. `envoy_list` reports
   the union of live NATS subscriptions and registry interests with each topic's `source` (`live`,
   `registry`, `both`).
-- `envoy_role_set` persists the held role in `${CLAUDE_PLUGIN_DATA}/roles/<session-id>.json`.
+- `envoy_role_set` persists the held role in `${CLAUDE_PLUGIN_DATA}/roles/<session-id>.json`,
+  which names the writing process's client instance beside the session id and the role.
   `claude --resume <session-id>` finds that file and soft-reclaims the role with the saved
-  `previous_session_id`; a plain relaunch is a new session and inherits nothing. The listener
+  `previous_session_id`; a plain relaunch is a new session and inherits nothing. A record another
+  process wrote is pressed only while this process holds no role, since two `claude` processes of
+  one user share the state directory and a record is keyed by session id alone. The listener
   moves the role off that predecessor only when the predecessor has no live registration, when
   its live registration carries this process's own client instance id, or when either side
   carries no instance id. A predecessor another process still runs keeps the role, and the claim
   is refused naming it: this session goes on running and registered without the role, claims it
   again only on an explicit claim, and keeps the predecessor's role file, since that record
-  belongs to the live holder. Every healthy registration heartbeat checks and reasserts the role
-  if the listener lost it. Shutdown (stdin end, SIGTERM, SIGINT, or the SIGHUP a closing pane
-  sends the whole process group) drains NATS and deregisters the session, naming this process's
-  client instance id, so the listener removes the registry entry only while it still carries
-  that id or none.
+  belongs to the live holder. A claim of a role already held under this session's own id is
+  decided on the standing claim: the listener grants it to the process that claim names, grants
+  it once nobody renewed that claim inside its live window, and otherwise refuses it naming this
+  very session, which keeps the role and the record here and asks again on the next heartbeat.
+  Only a refusal naming a different session ends the role and removes the record. Every healthy
+  registration heartbeat checks and reasserts the role if the listener lost it, and it confirms
+  the role only when the lookup names this session *and* this process and reports no hand-back
+  (`handed_back`); each heartbeat also renews the claims this process holds, whatever topics
+  that registration carries, and renews no claim the listener has marked handed back. A client
+  built before a release stated its process can hand this session's role lane back without
+  freeing the claim, which the listener marks rather than frees, so the mark is read as a role
+  this process does not hold and the next heartbeat claims it back, its grant a fresh record
+  with no mark. This process hands no lane back itself. Shutdown (stdin end, SIGTERM, SIGINT, or the SIGHUP a
+  closing pane sends the whole process group) drains NATS and deregisters the session, naming
+  this process's client instance id, so the listener removes the registry entry only while it
+  still carries that id or none, and every topic hand-back names it too, so a release frees only
+  the role claims this process holds; a release the holder's own renewal beat under each of the
+  route's three conditional deletes fails rather than reporting one it did not make.
 - `/clear` mints a new Claude session id, but a stdio MCP server keeps the `CLAUDE_CODE_SESSION_ID`
   it was spawned with. The SessionStart hook writes the current id to
   `${CLAUDE_PLUGIN_DATA}/sessions/<claude-pid>/session-id` (keyed by the `claude` process both the
@@ -221,21 +183,23 @@ events and sends them to the current Claude Code session as supported
   session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
   section. With Envoy off it sends nothing and exits 1, saying why.
 
-## Channel metadata
+## What a delivered line carries
 
-Each notification has rendered Envoy content and only identifier-safe, string-valued metadata.
-Claude Code drops invalid meta keys, so the server filters them before writing to stdio.
+Every line the server writes into the session is one Envoy envelope as the shared
+`@legion/envoy-client/delivery` renderer renders it; raw envelope bytes are never exposed.
+The rendering names the sender (`from`), the time (`at`) and the event's id (`id`), and, where the
+envelope carries them, `urgency`, `expects_reply` — what the sender wants back, as a string:
+`false` (nothing, so do not reply and do not acknowledge), `optional` or `required`, the old `none`
+reaching the reader as `false` — `re` for a correlated inbound event, and
+`reply_with`, the command that answers it.
 
-| Key | Meaning |
+Three envelope fields the server acts on and shows nowhere:
+
+| Field | What the server does with it |
 | --- | --- |
-| `producer` | Envoy producer, or `unknown` for a malformed envelope (`source` is Claude Code's own attribute, naming the channel). |
-| `topic` | NATS subject that delivered the event. |
-| `event_id` | Envoy event identity of this publish; the listener mints a new one for every send. The channel uses it to deliver one copy of a publish that arrives on two overlapping subscriptions. |
-| `dedupe_key` | Identity a re-send shares with the first delivery; the channel uses it to drop the re-send. |
-| `urgency` | Optional: how soon the sender asks the reader to act. Informational only: it does not change when or in what order deliveries arrive. |
-| `from_session` | Optional source session identifier. |
-| `expects_reply` | Optional Envoy reply expectation. |
-| `in_reply_to` | Optional correlated inbound event id. |
+| `event_id` | Envoy event identity of this publish; the listener mints a new one for every send. The server writes one copy of a publish that arrives on two overlapping subscriptions. |
+| `dedupe_key` | Identity a re-send shares with the first delivery; the server drops the re-send. |
+| `topic` | The NATS subject the event arrived on: the session's own subject, a followed topic, or a role lane. |
 
 ## Envoy tools
 
@@ -256,30 +220,35 @@ follow an ask prints `Following ask <id> on <issue>: …` once per ask, after it
 longer than 25,000 characters is written to a file the output names. It reads the envoy.json
 below on every call.
 
-Dispatch asks remain on native Dispatch. Channel notifications are one-way ingress, not a remote
+Dispatch asks remain on native Dispatch.
+An Envoy delivery is one-way ingress, not a remote
 human approval surface.
 
 ## Skills
 
-The plugin ships eight skills, `claude-envoy:envoy`, `claude-envoy:dispatch`,
+The plugin ships ten skills, `claude-envoy:envoy`, `claude-envoy:dispatch`,
 `claude-envoy:dispatch-first`, `claude-envoy:dispatch-writing-specs`, `claude-envoy:asd-ste100`,
-`claude-envoy:outside-message`, `claude-envoy:plain-words` and `claude-envoy:agent-secrets`.
+`claude-envoy:outside-message`, `claude-envoy:plain-words`, `claude-envoy:agent-secrets` and the
+reviewer's pair, `claude-envoy:thermonuclear-code-quality` and
+`claude-envoy:thermonuclear-deep-review`.
 The first four teach the Envoy tools, the `dispatch` command and how to write a spec; `asd-ste100` gives the
 ASD-STE100 rules for text a person reads; `outside-message` holds the steps and the approval before text
 reaches a person outside the company; `plain-words` the empty verb phrases to delete from any text a
 person reads, and `agent-secrets` the secrets broker's client, which gives a credential to one command
 in that command's environment, so no value reaches your shell or your transcript.
 `skills/` holds one relative symlink per skill into the repository-root `skills/`, which
-stays their only source; Claude Code copies each target into the plugin cache at install. With
+stays their only source; the pack resolves each link into the skill's own files, since a published
+package carries no link of this kind (`package.json`'s `prepack`, `scripts/pack-skills.sh`). With
 Dispatch configured, the `dispatch-first` hook also puts `dispatch-first` into the model's context
 on every `SessionStart` (startup, resume, clear, compact, fork) and `SubagentStart`, as the
 `hooks/hooks.json` bullet above describes; it sends a spec, or an ask, comment or message a person
 reads, to `dispatch-writing-specs`, which the session loads by name.
 
-`envoy`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`, `asd-ste100`, `outside-message`, `plain-words` and `agent-secrets` are the eight a standalone Claude Code session uses. The other root skills
+`envoy`, `dispatch`, `dispatch-first`, `dispatch-writing-specs`, `asd-ste100`, `outside-message`, `plain-words` and `agent-secrets` are the eight a standalone Claude Code session uses, and the
+reviewer's pair, `thermonuclear-code-quality` and `thermonuclear-deep-review`, ships here too, so
+one copy of each rubric reaches both harnesses. The other root skills
 stay out of this plugin: they belong to Legion's roles (the architect, controller, oracle and retro
-skills, and the phase workers' `legion-worker` and `ce-simplify-code`) and to the reviewer's
-`thermonuclear-*` pair (`skills/AGENTS.md`). A phase worker on Claude Code gets them from the
+skills, and the phase workers' `legion-worker` and `simplify-settled-diff`) (`skills/AGENTS.md`). A phase worker on Claude Code gets them from the
 generated `legion/` plugin (below). Link another root skill here only when a standalone Claude
 Code session needs it.
 
@@ -296,8 +265,8 @@ Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}` (tmux ru
 - serves the `legion` tool: `read_record`, `handoff_complete` and `request_backward_move`, the
   phase ops `@sjawhar/pi-legion`'s tool serves, on the same schema and executor
   (`src/legion-tool.ts`);
-- hands each Envoy delivery to the bridge's socket (`LEGION_CLAUDE_INBOX`), which sends it as a
-  user turn, since print mode delivers no channel notification (`src/legion-inbox.ts`): the bridge
+- hands each Envoy delivery to the bridge's socket (`LEGION_CLAUDE_INBOX`), which sends it to
+  Claude Code as a user turn (`src/legion-inbox.ts`): the bridge
   starts a turn with it when Claude Code is idle, and sends it as the next user message of the
   running turn otherwise. So the session advertises `steer` (Dispatch's Send) beside `aside`, and
   the bridge handles both alike. The bridge runs Claude Code with `--replay-user-messages` and
@@ -305,16 +274,19 @@ Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}` (tmux ru
   error once Claude Code ended a step without taking it or exited; a relayed frame is `done` on
   that answer.
 
-`legion/` is generated by `scripts/build.ts` from Legion's worker skills and task agents; main's
-Rebuild Claude Envoy plugin workflow commits it with the bundle (below), and nobody edits it by
-hand. A standalone Claude Code session doesn't load it.
+`legion/` is generated by `scripts/build.ts` from Legion's worker skills and task agents; the
+release builds it with the bundle and packs it into the published package (below), and nobody
+edits it by hand. A standalone Claude Code session doesn't load it.
 
 ## The bundle
 
-The marketplace installs this package's git tree into Claude Code's plugin cache with no
-`node_modules`: `workspace:*` dependencies cannot resolve there, and Claude Code skips its automatic
-dependency install because the package has no lockfile of its own (the monorepo's lives at the
-root). So the four executables ship as committed single-file Bun bundles,
+The marketplace installs this package from npm, as `@sjawhar/claude-envoy`, into Claude
+Code's plugin cache with no `node_modules`: Claude Code never runs an install script, and it
+installs dependencies only when a supported lockfile sits beside `package.json` in the tarball,
+which this one does not ship (the monorepo's lockfile lives at the repository root). So the
+package declares no runtime dependency at all — every one of them is a `devDependency`, as
+`@sjawhar/pi-envoy`'s are — and the four executables ship as built single-file Bun
+bundles,
 `dist/envoy-channel.js`, `dist/session-hook.js`, `dist/session-title-hook.js` and
 `dist/dispatch.js` (the `dispatch` command, built from `@legion/envoy-client`'s
 `bin/dispatch.ts`), with every dependency inlined (`@legion/contracts`,
@@ -324,114 +296,118 @@ is inlined from `package.json`, so the MCP server reports `package.json`'s versi
 every third-party package they inline, written from Bun's metafile by
 `scripts/third-party-notices.ts` at the repository root.
 
-- Main's tree carries the bundles and `legion/`; a pull request never commits them. Main's Rebuild
-  Claude Envoy plugin workflow (`.github/workflows/claude-envoy-rebuild.yaml`) builds main's tip
-  after each merge that changes a build input (`scripts/build-inputs.txt`, which the workflow's
-  `on.push.paths` covers; a merge that changes none starts no run, since it would rebuild the
-  bundles main already holds) and commits `dist/` and `legion/` when they differ, onto main's tip
-  at the time it lands even when main moved meanwhile, unless main already holds a newer build;
-  when a build input changed in between, it starts a fresh run too. So main's
-  built files are a build of a recent main, at most one run behind its inputs, its two jobs'
-  runner queues included (more than an hour when the Actions queue is long). In that window
-  `hooks/hooks.json`, `.mcp.json`, `bin/` and `.claude-plugin/` from the merge are live beside the
-  previous build, so an install then gets a hook or server entry that names a bundle the previous
-  build lacks; add a bundle in one pull request and the entry that runs it in a later one.
-  `scripts/build.ts` takes exactly one mode and refuses a run that names none (exit 2); neither
-  mode writes the package's own `dist/` or `legion/`. `--check` (`bun run check-dist`) builds into
-  a scratch directory and fails when the committed files differ from it; `--out <dir>` makes a new
+- The published tarball carries the bundles and `legion/`; nothing commits them, and `.gitignore`
+  names both. `release.yaml`'s `claude_envoy_build` builds them after each merge whose commits
+  touch one of `$CLAUDE_ENVOY_VERSION_ARGS`' paths (the paths of `scripts/build-inputs.txt`; a
+  merge that touches none releases nothing and leaves the newest release standing), packs them
+  into the tarball with the rest of the package, and the `publish` job uploads that tarball to
+  npm with provenance, tags the release `claude-envoy-v<version>` and creates its GitHub release.
+  Nothing is pushed to `main`, so a release resets no merge queue. The hand-written plugin files
+  (`hooks/hooks.json`, `.mcp.json`, `bin/` and `.claude-plugin/`) are packed from the same tree
+  as the build beside them, so a change that makes one of them name a new or renamed bundle ships
+  with that bundle in one release.
+  `scripts/build.ts` takes its one mode and refuses a run that names none (exit 2); it never
+  writes the package's own `dist/` or `legion/`. `--out <dir>` makes a new
   or empty directory outside the repository a runnable copy of the plugin built from the tree (its
   manifests, `.mcp.json`, `bin/`, `hooks/`, `package.json` and skills, the skill links
   dereferenced, with a fresh `dist/` and `legion/`), which is how to run an unmerged tree.
-- `bun run verify-build <tar>` (`scripts/verify-build.sh`) is that workflow's build step: it builds
+- `bun run verify-build <tar>` (`scripts/verify-build.sh`) is that job's build step: it builds
   the plugin twice into a scratch directory outside the repository and says so when the two builds
-  differ, runs the private-name check over the first build's `dist/` and `legion/`, refuses a
-  generated file git ignores (`git add -A` would skip it, so main would silently lack it), packs
-  the two directories into `<tar>`, which must be outside the repository, and runs
-  `release-push.sh check-built` over it, the member checks the push job's `push-built` runs before
-  it commits. It writes no file of the checkout, so running it on a pull request's tree changes
+  differ, runs the private-name check over the first build's `dist/` and `legion/`,
+  packs the two directories into `<tar>`, which must be outside the repository, and runs
+  `release-push.sh check-built` over it, the member checks a build must pass before the job
+  extracts it into the checkout it packs. It writes no file of the checkout, so running it on a
+  pull request's tree changes
   nothing jj records; nothing a person runs locally writes `dist/` or `legion/`. The jobs that
   run it are named in its header, and the jobs that extract the checked tar into their own CI
   checkout in `release-push.sh`'s `extract-built` paragraph. Pull-request CI runs it, so a skill
   file that is executable, a symlink or named with a space, or a bundle `BUNDLE_ENTRYPOINTS` no
-  longer names, fails there instead of failing every rebuild on main.
+  longer names, fails there instead of failing every release on main.
 - The build is `Bun.build`, target `bun`, `minify: false`, no sourcemap, notices included. Minification is off entirely, not case by case: the partial-disable form (`{whitespace: false, identifiers: false, syntax: false}`) still routes through Bun 1.3.14's minifying code-generation path, which picks a non-deterministic CJS/ESM interop check on repeated builds of this exact module graph — on top of the syntax minifier's own separate bug, truncating constant-folded multi-operand string concatenation in CI builds, that made the partial form necessary before this. A plain `false` bypasses that whole path; whitespace and identifiers stay readable as a side effect, so independent changes still merge at line level.
-- Every mode builds only on the Bun version pinned in the repo-root `.bun-version`, because
+- The build runs only on the Bun version pinned in the repo-root `.bun-version`, because
   the bundler's own output depends on the exact Bun build, not only the declared version. Two
-  separate, compounding causes made `check-dist` fail unpredictably: the minify setting above (a
+  separate, compounding causes made two builds of one tree disagree: the minify setting above (a
   non-determinism *within* one Bun build's own bundler) and a second, independent bug
-  (LEGION-568) — `bun run build`/`bun run check-dist` spawn a new "bun" process to run
+  (LEGION-568) — `bun run verify-build` spawns a new "bun" process to run
   `scripts/build.ts`, and that spawn resolves "bun" from PATH rather than reusing whichever binary
   the caller invoked `bun run` with, so a devbox whose default Bun (a version manager's active
   version) differs from the pin would otherwise silently bundle with that *other Bun version*
   instead — confirmed directly between a devbox and the CI runner, same source, same lockfile,
   same `.bun-version`. Either alone could produce this symptom; the first investigation (LEGION-548
   round 5) found the first and mistakenly attributed a failure actually caused by the second to
-  the build machine itself. Both scripts now refuse outright when the running Bun does not match
-  the pin, rather than commit whatever that other build produced: invoke the pinned binary's own
+  the build machine itself. The build now refuses outright when the running Bun does not match
+  the pin, rather than publish whatever that other build produced: invoke the pinned binary's own
   path directly — not `bun run` — when a version manager's default differs from it.
 - pi-envoy solves the same problem with `scripts/pi-plugin-prepack.sh` (at the repository root, the
-  prepack of both Oh My Pi plugins) for npm; this plugin's distribution channel is
-  the git repository, so its bundle lives in main's tree. An npm-published plugin and a `dist`
-  release branch were considered and rejected as more moving parts for the same result.
+  prepack of both Oh My Pi plugins). This plugin is a third released package of the same build and
+  publish split, beside `@sjawhar/pi-envoy` and `@sjawhar/pi-legion`, versioned and tagged from
+  the tags as they are. A commit on `main` carried the build before, and every push to `main`
+  resets the merge queue; publishing to npm takes that commit away without putting the build on a
+  branch of its own, which was the design before this one and was rejected.
 
 ## Updates
 
-Neither `.claude-plugin/plugin.json` nor the plugin's entry in the repository's
-`.claude-plugin/marketplace.json` declares a `version`, so Claude Code takes claude-envoy's version
-from the marketplace commit it installs from (the SHA's first 12 characters), and every commit on
-main is a new version, one that changes nothing in the plugin included.
+The marketplace entry declares no `version` of its own, and the committed
+`.claude-plugin/plugin.json` declares none either; the entry's `npm` source declares
+`version: ">=1.0.0"`, a range that keeps an install off the 0.0.0 placeholder a person published
+so that trusted publishing could attach to the package, and otherwise takes `latest`, which the
+resolver prefers while it satisfies the range.
+Claude Code names an installed plugin by the `version` of the `.claude-plugin/plugin.json` it
+installed and never by the version the registry served, so `release.yaml`'s `claude_envoy_build`
+writes the release's version into the `.claude-plugin/plugin.json` it packs, beside the one it
+writes into `package.json`, and its
+tarball check refuses a tarball without it: a package published with none is cached under the
+name `unknown` and no later release reads as an update (measured on Claude Code 2.1.311). The
+version a session reports is therefore the version that was published, which is what makes this
+plainer than the derivation before it, where it was the first 12 characters of the commit the
+plugin was installed from.
 `claude plugin marketplace update legion-plugins` then
-`claude plugin update claude-envoy@legion-plugins` installs main's current tree, which the next
+`claude plugin update claude-envoy@legion-plugins` installs the newest release, which the
 Claude Code session loads. Claude Code's background auto-update does the same once it is on for
 `legion-plugins`, which it is not by default: **Enable auto-update** on the marketplace under
 `/plugin` **Marketplaces**, or set `"autoUpdate": true` beside `source` on the marketplace's
-`extraKnownMarketplaces` entry, in whichever settings file declares it. A `version` in either
-file would hold every install at the tree it was first installed from until someone changed the
-string, so a test holds both files to none.
-`package.json`'s version plays no part in an update.
-claude-envoy has no release of its own, so `.github/workflows/changelog-fold.yaml` folds its
-changelog fragments (`.changes/unreleased/`) into `CHANGELOG.md` under `main@<commit>` at the
-first fold run after they merge.
+`extraKnownMarketplaces` entry, in whichever settings file declares it. A `version` committed in
+either file would hold every install at that string until someone changed it, so a test holds
+both committed files to none; the range is a field of the entry's source, not a version of the
+entry.
+A checkout's `package.json` version names no release either, for the same reason: the build job
+writes the release's version into the manifest it packs.
+Each release publishes its own changelog entries into its GitHub release body, rendered from the
+fragments its own commits added, and each fragment stays under `.changes/unreleased/`.
+`CHANGELOG.md` is the history before that and stops where the fragments begin.
 
-## Enable the channel
+## How a message reaches the model
 
-Channels are gated by Claude Code's managed settings: whoever administers the machine writes
-`/etc/claude-code/managed-settings.json` (on macOS,
-`/Library/Application Support/ClaudeCode/managed-settings.json`), which turns channels on and
-allowlists the plugin, and the user opts the plugin into each session with `--channels`. An
-account that receives server-managed settings (cached as `remote-settings.json` in the Claude Code
-config directory) takes these keys from them instead, and under the default
-`managedSourcesBehavior` the local file then changes nothing:
+Nothing has to be enabled on the machine: the plugin carries a Claude Code mod (`hooks/mod.ts`,
+loaded by the `modules` key of `hooks/hooks.json`), and the mod and this server meet on a Unix
+socket of the session's own (`hooks/mod-protocol.ts`, `src/mod-link.ts`). Claude Code 2.1.310 or
+newer runs the mod; below that it never connects, and a terminal session advertises no delivery
+mode, so Dispatch refuses a message to it rather than reporting it delivered.
 
-```json
-{
-  "channelsEnabled": true,
-  "allowedChannelPlugins": [
-    { "marketplace": "legion-plugins", "plugin": "claude-envoy" }
-  ]
-}
-```
+That socket is `claude-envoy/ce-<hash of the session id>.sock` under `XDG_RUNTIME_DIR`, and
+under Claude Code's own configuration directory — `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` —
+where that variable is unset. Both are directories only their own user can create anything in,
+which is where ssh's `ControlPath` and gpg-agent put theirs; `TMPDIR` and `/tmp` are no bases,
+since whoever else can write a directory can bind the path first and then read the conversation
+and submit prompts as the person. The server also refuses a directory that is anyone else's or
+open to anyone else, rather than binding in it, and a session whose environment names no base of
+its own gets no link at all, with the reason on stderr. The name is the session id's hash
+because the whole path has 100 bytes to fit in (Claude Code's bound on `HttpInit.socketPath`):
+a macOS `/Users/<name>/.claude` comes to 62 bytes and a Legion pane's `CLAUDE_CONFIG_DIR` to 78,
+where the id spelled out passed 100 on a macOS temp directory. A resolved path past that bound
+is refused with the reason too, never moved to a base other users share. One link serves one
+mod: the first mod instance to name itself holds it, and a second Claude Code process booted on
+the same session id is refused and stops, so one conversation is in the live view and a person's
+Send has one place to go.
 
-```bash
-claude --channels plugin:claude-envoy@legion-plugins
-```
-
-Restart Claude Code once after its first launch on a new profile (a fresh `~/.claude` or a new
-`CLAUDE_CONFIG_DIR`), with the same flag, and read the banner it shows at startup.
-"Channels (experimental) messages from plugin:claude-envoy@legion-plugins inject directly in this
-session" means the channel is loaded. `--channels ignored` and "Channels are not currently
-available" mean it is not: the session drops every channel message while it still advertises
-Aside, so restart again. A first launch that says `--channels waiting for your organization's
-policy` keeps saying so after the policy has loaded, and its messages arrive (the channel check's
-limits, above).
-
-For a plugin outside the allowlist (a development marketplace, a bare `server:` entry) use
-`--dangerously-load-development-channels <entry>`; it bypasses the allowlist only, so
-`channelsEnabled` still applies. Do not combine it with any `--channels` entry that names the
-same plugin: Claude Code matches the `--channels` entry first, so that entry then needs the
-allowlist and the installed plugin's marketplace, and otherwise Claude Code skips the channel
-(`Channel notifications skipped: you asked for plugin:…@legion-plugins but the installed
-claude-envoy plugin is from …`).
+A person's own message from Dispatch's Agents page becomes the session's own user turn
+(`src/user-turn-router.ts`): the frame is only a candidate, and what makes a turn is Dispatch
+recording that this session accepted that attempt, whose stored body is what is injected. During
+a turn it is a row of the conversation the model reads at the turn's next request; while the
+session is idle it is the prompt of a new turn, in the person's own words. A `/` message runs as
+the command it is and its output is the reply on Dispatch; `/model` and `/effort` set what they
+name; a BTW is answered off to the side and adds nothing to the conversation. Every other frame
+arrives as the rendered card that names its sender.
 
 The plugin reads one envoy.json: `$CLAUDE_CONFIG_DIR/envoy.json` when `CLAUDE_CONFIG_DIR` is set,
 else the file `ENVOY_CONFIG_FILE` names, else `${XDG_CONFIG_HOME:-~/.config}/legion/envoy.json`,
@@ -510,48 +486,24 @@ comment or message from the session carries the same name. With inbound messages
 writes it once, for the id the session starts with. It writes nothing when the session starts with
 Dispatch off, or under the QA override `ENVOY_SESSION_ID`.
 
-`claude -p` can run a channel session, but it disables features that need terminal input, including
-multiple-choice questions and plan approval. Production Legion workers must have MCP and channel
-consent preconfigured and must not depend on local dialogs.
+`claude -p` can run a session with this plugin, but it disables features that need terminal
+input, including multiple-choice questions and plan approval.
+Production Legion workers must have
+MCP consent preconfigured and must not depend on local dialogs.
 
 ## Intentionally omitted
 
-- **Targeted BTW:** no session advertises `btw`. A channel notification has no model or
-  Claude Code acknowledgement, so advertising BTW would promise an automatic correlated Dispatch
-  reply that does not exist. Add it only with a server-owned pending-delivery state and explicit
-  reply tool design.
-- **Steer outside a Legion pane:** Claude Code queues channel notifications for the model's next
-  turn, so a steer cannot be honoured any differently from an aside; a session whose deliveries
-  are channel notifications does not advertise it.
-- **Permission relay:** the server does not declare `claude/channel/permission`. It has no
-  sender-authenticated reply path or reply-ack design for remote permission decisions; declaring
-  one would let unauthenticated Envoy payloads approve tool use. Dispatch asks stay on Dispatch.
+- **A delivery to a session with no mod:** a terminal session whose mod has not connected
+  advertises no delivery mode at all, rather than taking a message nothing can show. Claude Code
+  below 2.1.310 never runs the mod, so such a session takes nothing.
+- **Permission relay:** remote permission decisions have no sender-authenticated reply path or
+  reply-ack design here; carrying them would let unauthenticated Envoy payloads approve tool use.
+  Dispatch asks stay on Dispatch.
 
 ## Manual smoke
 
-`smoke-channel.sh` is a real manual smoke, never a CI step. It starts an isolated, interactive
-Claude Code session, answers its startup dialogs unattended (folder trust, the development-channel
-warning, first-use MCP consent — in whatever order they appear), waits for the Envoy registration,
-sends an actual direct Envoy event, and asserts the model writes the unique payload before checking
-teardown. It requires a live Envoy listener, NATS, Claude authentication, a configured model,
-managed settings that enable channels and allowlist the plugin (see "Enable the channel"), and an
-installed plugin entry:
-
-```bash
-ENVOY_NATS_URL=nats://envoy-nats:4222 \
-  CLAUDE_CHANNEL_ENTRY=plugin:claude-envoy@legion-plugins \
-  bash -c 'cd packages/claude-envoy/scripts && ./smoke-channel.sh'
-```
-
-`CLAUDE_CHANNEL_FLAG` defaults to `--channels` when the entry ends in `@legion-plugins` (the
-allowlisted marketplace) and to `--dangerously-load-development-channels` for every other entry;
-set it explicitly to override. The `PASS` line prints the registered session row (id, dir,
-capabilities); a failure dumps the pane and the full `tmux pipe-pane` capture of everything Claude
-printed. The session runs on the smoke's own tmux server, on a socket in its temp directory, so its
-teardown can end only that session; the script prints the `tmux -S <socket> attach -t <session>` line
-that watches it. Use `CLAUDE_BIN` or `ENVOY_URL` to select a different Claude binary or listener. For
-source-tree diagnostics, pass a temporary bare-server config through `CLAUDE_MCP_CONFIG` and use
-`CLAUDE_CHANNEL_ENTRY=server:envoy`; the marketplace command above is the plugin packaging check.
+`smoke-clear-rebind.sh` and `smoke-session-title.sh` are real manual smokes, never CI steps. Each
+needs a live Envoy listener, NATS, Claude authentication and a configured model.
 
 To exercise an unmerged checkout the way the marketplace would install it, register a development
 marketplace with a `command` source in copy mode whose command builds a copy of the plugin with
@@ -570,8 +522,8 @@ heartbeats later. It also fails when the entry moves later than the handoff poll
 `ENVOY_HEARTBEAT_MS=60000` that checks the poll rather than a heartbeat that happened to fall soon
 after `/clear`. It needs `tmux`, `curl`, `jq`, `bun` (for the default build), an authenticated
 `claude`, and the listener and NATS; it sends no prompt to the model and removes both ids' registry
-entries when it exits. Like `smoke-channel.sh`, it runs its session on its own tmux server, on a
-socket in its temp directory, and prints the `tmux -S <socket> attach -t <session>` line that
+entries when it exits. It runs its session on its own tmux server, on a socket in its temp
+directory, and prints the `tmux -S <socket> attach -t <session>` line that
 watches it. Pointed at an older build (an installed plugin cache directory), it reproduces the
 stale subject that build leaves behind:
 
@@ -609,8 +561,9 @@ bun run --cwd packages/claude-envoy test
 bun packages/claude-envoy/scripts/build.ts --out "$(mktemp -d)"
 ```
 
-`bun run --cwd packages/claude-envoy check-dist` compares main's committed `dist/` and `legion/`
-with a fresh build: run it at a commit on main, since a pull request's tree carries no fresh copy.
+`bun run --cwd packages/claude-envoy verify-build "$(mktemp -d)/built.tar"` builds the plugin
+twice and compares the two builds, which is what the release's build job runs; nothing in a
+checkout holds a built copy to compare against.
 `tests/answers-claude.test.ts` runs the real Claude Code, the release `.claude-code-pin` at the
 repository root pins, against a stand-in Messages endpoint and Dispatch: the list reaches the model
 at startup, on `--resume`, after `/compact` and in a subagent. It skips without `LEGION_TEST_CLAUDE`

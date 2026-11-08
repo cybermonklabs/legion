@@ -1,10 +1,33 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import * as os from "node:os";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
-import { dispatchSettings } from "../dispatch-config";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { type DispatchConfigResolution, dispatchSettings } from "../dispatch-config";
 import { type EnvoyConfig, readEnvoyConfig } from "../envoy-config";
-import { type EnvoyEnvironment, envoySettings } from "../envoy-settings";
+import {
+  type EnvoyEnvironment,
+  type EnvoySettings,
+  envoySettings,
+  HEARTBEAT_RETRY_MAX_MS,
+  HEARTBEAT_RETRY_MIN_MS,
+  heartbeatRetryDelayMs,
+} from "../envoy-settings";
+
+/** Envoy as these tests compare it: an enabled resolution's credential flattened to the bearer
+ * it presents, so a comparison names the token a request would carry rather than the object that
+ * carries it. */
+function envoyAsToken(settings: EnvoySettings) {
+  if (!settings.enabled) return settings;
+  const { credential, ...rest } = settings;
+  return { ...rest, token: credential?.secret() };
+}
+
+/** Dispatch the same way (`envoyAsToken`). */
+function dispatchAsToken(resolution: DispatchConfigResolution) {
+  if (!resolution.enabled) return resolution;
+  const { credential, ...rest } = resolution;
+  return { ...rest, token: credential.secret() };
+}
 
 /** The error a read failed with, or a test failure naming what it read instead. */
 function errorOf(config: EnvoyConfig): string {
@@ -12,9 +35,7 @@ function errorOf(config: EnvoyConfig): string {
   return config.error;
 }
 
-function tempDir(): string {
-  return mkdtempSync(path.join(os.tmpdir(), "envoy-settings-"));
-}
+const tempDir = temporaryDirectories("envoy-settings");
 
 /** The configuration read from a file holding `contents`, with no checkout file beside it. */
 function configFrom(contents: unknown) {
@@ -40,7 +61,7 @@ const listener = {
 describe("envoySettings", () => {
   test("takes url, natsUrls, token and natsSeed from the file", () => {
     const config = configFrom({ envoy: listener });
-    expect(envoySettings({}, config)).toEqual({
+    expect(envoyAsToken(envoySettings({}, config))).toEqual({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: "file-token",
@@ -49,6 +70,7 @@ describe("envoySettings", () => {
         natsSeed: { value: "SUFILESEED", source: `envoy.natsSeed in ${config.path}` },
       },
       heartbeatMs: 90_000,
+      tmuxPlaceCacheMs: 30_000,
       passDeadlineMs: 90_000,
       passDeadlineRaisedFrom: undefined,
     });
@@ -57,15 +79,17 @@ describe("envoySettings", () => {
   test("each variable overrides its own field", () => {
     const config = configFrom({ envoy: listener });
     expect(
-      envoySettings(
-        {
-          ENVOY_URL: "http://other-listener.internal.example:9020/",
-          ENVOY_NATS_URL: "nats://one.internal.example:4222, nats://two.internal.example:4222",
-          ENVOY_TOKEN: "environment-token",
-          NATS_NKEY_SEED: " SUENVSEED ",
-          ENVOY_HEARTBEAT_MS: "10",
-        },
-        config
+      envoyAsToken(
+        envoySettings(
+          {
+            ENVOY_URL: "http://other-listener.internal.example:9020/",
+            ENVOY_NATS_URL: "nats://one.internal.example:4222, nats://two.internal.example:4222",
+            ENVOY_TOKEN: "environment-token",
+            NATS_NKEY_SEED: " SUENVSEED ",
+            ENVOY_HEARTBEAT_MS: "10",
+          },
+          config
+        )
       )
     ).toEqual({
       enabled: true,
@@ -76,6 +100,7 @@ describe("envoySettings", () => {
         natsSeed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" },
       },
       heartbeatMs: 25,
+      tmuxPlaceCacheMs: 30_000,
       passDeadlineMs: 30_000,
       passDeadlineRaisedFrom: undefined,
     });
@@ -91,7 +116,7 @@ describe("envoySettings", () => {
       },
       config
     );
-    expect(pointers).toMatchObject({
+    expect(envoyAsToken(pointers)).toMatchObject({
       enabled: true,
       token: "pointer-token",
       inbound: {
@@ -205,6 +230,27 @@ describe("envoySettings", () => {
     });
   });
 
+  // The cache spares a shared tmux server one call per session per event; a test that shortens
+  // the heartbeat shortens this with it, so it is held to the same bounds the heartbeat is.
+  test("ENVOY_TMUX_PLACE_CACHE_MS names the tmux place cache, inside the interval bounds", () => {
+    const config = configFrom({ envoy: listener });
+    expect(envoySettings({}, config)).toMatchObject({ tmuxPlaceCacheMs: 30_000 });
+    expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "50" }, config)).toMatchObject({
+      tmuxPlaceCacheMs: 50,
+    });
+    expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "10" }, config)).toMatchObject({
+      tmuxPlaceCacheMs: 25,
+    });
+    expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: "99999999999" }, config)).toMatchObject({
+      tmuxPlaceCacheMs: 2_147_483_647,
+    });
+    for (const value of ["soon", "0", "-5000", ""]) {
+      expect(envoySettings({ ENVOY_TMUX_PLACE_CACHE_MS: value }, config)).toMatchObject({
+        tmuxPlaceCacheMs: 30_000,
+      });
+    }
+  });
+
   test("a section with enabled: false is off whatever the variables say, and the notice says so", () => {
     const config = configFrom({ envoy: { ...listener, enabled: false } });
     expect(
@@ -230,12 +276,15 @@ describe("envoySettings", () => {
     expect(settings).toMatchObject({ error: null });
 
     // The variables alone still name an Envoy: how a Legion pane gets the one its daemon names.
-    expect(envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, config)).toEqual({
+    expect(
+      envoyAsToken(envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, config))
+    ).toEqual({
       enabled: true,
       url: "http://127.0.0.1:9020",
       token: undefined,
       inbound: { natsUrls: ["nats://nats.internal.example:4222"], natsSeed: undefined },
       heartbeatMs: 90_000,
+      tmuxPlaceCacheMs: 30_000,
       passDeadlineMs: 90_000,
       passDeadlineRaisedFrom: undefined,
     });
@@ -267,19 +316,24 @@ describe("envoySettings", () => {
   // its refusal turns off inbound messages and leaves the listener on.
   test("an empty ENVOY_* variable reads as unset; an empty seed variable is refused, inbound alone", () => {
     const config = configFrom({ envoy: listener });
-    const fromFile = envoySettings({}, config);
+    const fromFile = envoyAsToken(envoySettings({}, config));
     if (!fromFile.enabled) throw new Error(`the file's Envoy is off: ${fromFile.error}`);
     expect(
-      envoySettings(
-        { ENVOY_URL: "", ENVOY_NATS_URL: "", ENVOY_TOKEN: "", ENVOY_TOKEN_FILE: "" },
-        config
+      envoyAsToken(
+        envoySettings(
+          { ENVOY_URL: "", ENVOY_NATS_URL: "", ENVOY_TOKEN: "", ENVOY_TOKEN_FILE: "" },
+          config
+        )
       )
     ).toEqual(fromFile);
     for (const [env, refusal] of [
       [{ NATS_NKEY_SEED_FILE: "" }, "NATS_NKEY_SEED_FILE is set but empty"],
       [{ NATS_NKEY_SEED: "" }, "NATS_NKEY_SEED is set but empty"],
     ] as const) {
-      expect(envoySettings(env, config)).toEqual({ ...fromFile, inbound: { off: refusal } });
+      expect(envoyAsToken(envoySettings(env, config))).toEqual({
+        ...fromFile,
+        inbound: { off: refusal },
+      });
     }
   });
 
@@ -319,7 +373,9 @@ describe("envoySettings", () => {
       envoy: { url: "http://listener.internal.example:9020", token: "file-token" },
     });
     expect(
-      envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, notEnabled)
+      envoyAsToken(
+        envoySettings({ ENVOY_NATS_URL: "nats://nats.internal.example:4222" }, notEnabled)
+      )
     ).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020",
@@ -346,12 +402,13 @@ describe("envoySettings", () => {
       { PATH: process.env.PATH, NATS_NKEY_SEED_FILE: path.join(home, "missing") },
       { PATH: process.env.PATH, ENVOY_NATS_URL: "nats://elsewhere.internal.example:4222" },
     ]) {
-      expect(envoySettings(env, config, { nats: false })).toEqual({
+      expect(envoyAsToken(envoySettings(env, config, { nats: false }))).toEqual({
         enabled: true,
         url: "http://listener.internal.example:9020",
         token: "file-token",
         inbound: { off: "this session opens no NATS connection" },
         heartbeatMs: 90_000,
+        tmuxPlaceCacheMs: 30_000,
         passDeadlineMs: 90_000,
         passDeadlineRaisedFrom: undefined,
       });
@@ -391,7 +448,7 @@ describe("envoySettings", () => {
       [{ NATS_NKEY_SEED: "  " }, "NATS_NKEY_SEED is set but empty"],
     ] as const) {
       const settings = envoySettings(env, config);
-      expect(settings).toMatchObject({
+      expect(envoyAsToken(settings)).toMatchObject({
         enabled: true,
         url: "http://listener.internal.example:9020",
         token: "file-token",
@@ -412,7 +469,7 @@ describe("envoySettings", () => {
       error: `ENVOY_URL names http://other.internal.example:9020, but ${config.path}'s envoy.token is for http://listener.internal.example:9020; set ENVOY_TOKEN or ENVOY_TOKEN_FILE for it`,
     });
     expect(
-      envoySettings({ ENVOY_URL: "http://listener.internal.example:9020/v1" }, config)
+      envoyAsToken(envoySettings({ ENVOY_URL: "http://listener.internal.example:9020/v1" }, config))
     ).toMatchObject({
       enabled: true,
       url: "http://listener.internal.example:9020/v1",
@@ -435,7 +492,9 @@ describe("envoySettings", () => {
       notice: null,
       error: `ENVOY_URL names http://other.internal.example:9020, but ${bare.path}'s envoy.token is for http://127.0.0.1:9020; set ENVOY_TOKEN or ENVOY_TOKEN_FILE for it`,
     });
-    expect(envoySettings({ ENVOY_URL: "http://127.0.0.1:9020/v1" }, bare)).toMatchObject({
+    expect(
+      envoyAsToken(envoySettings({ ENVOY_URL: "http://127.0.0.1:9020/v1" }, bare))
+    ).toMatchObject({
       enabled: true,
       token: "file-token",
     });
@@ -482,7 +541,7 @@ describe("the NATS seed in envoy.json", () => {
       PATH: process.env.PATH,
       ENVOY_NATS_URL: "nats://elsewhere.internal.example:4222",
     };
-    expect(envoySettings(other, config)).toEqual({
+    expect(envoyAsToken(envoySettings(other, config))).toEqual({
       enabled: true,
       url: "http://listener.internal.example:9020",
       token: "file-token",
@@ -490,6 +549,7 @@ describe("the NATS seed in envoy.json", () => {
         off: `ENVOY_NATS_URL names other servers than ${config.path}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`,
       },
       heartbeatMs: 90_000,
+      tmuxPlaceCacheMs: 30_000,
       passDeadlineMs: 90_000,
       passDeadlineRaisedFrom: undefined,
     });
@@ -587,10 +647,32 @@ describe("the NATS seed in envoy.json", () => {
         natsSeed: { value: "SUENVSEED", source: "NATS_NKEY_SEED" },
       },
     });
-    expect(dispatchSettings(env, config)).toEqual({
+    expect(dispatchAsToken(dispatchSettings(env, config))).toEqual({
       enabled: true,
       url: "https://dispatch.example",
       token: "user-token",
     });
+  });
+});
+
+// Both plugins' heartbeats arm their one extra registration from this draw, so the window it
+// stays inside is what keeps a listener that failed many sessions at once from being met by all
+// of them on the same tick.
+describe("heartbeatRetryDelayMs", () => {
+  test("spans the retry window and never leaves it", () => {
+    expect(heartbeatRetryDelayMs(() => 0)).toBe(HEARTBEAT_RETRY_MIN_MS);
+    expect(heartbeatRetryDelayMs(() => 1)).toBe(HEARTBEAT_RETRY_MAX_MS);
+    expect(heartbeatRetryDelayMs(() => 0.5)).toBe(
+      (HEARTBEAT_RETRY_MIN_MS + HEARTBEAT_RETRY_MAX_MS) / 2
+    );
+  });
+
+  test("draws afresh each call, so failing sessions come back spread out", () => {
+    const drawn = new Set(Array.from({ length: 50 }, () => heartbeatRetryDelayMs()));
+    for (const delay of drawn) {
+      expect(delay).toBeGreaterThanOrEqual(HEARTBEAT_RETRY_MIN_MS);
+      expect(delay).toBeLessThanOrEqual(HEARTBEAT_RETRY_MAX_MS);
+    }
+    expect(drawn.size).toBeGreaterThan(1);
   });
 });

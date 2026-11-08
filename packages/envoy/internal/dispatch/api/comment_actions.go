@@ -10,24 +10,45 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// lockedComment is the prologue of every comment mutation: read the comment, refuse a closed
-// owner, then re-read it `for update` so the mutation holds its row lock.
+// lockedComment is the prologue of every change to an existing comment - resolve, reopen,
+// edit, accept, reject: read the comment, lock its owner and refuse a closed one, then re-read
+// it `for update` so the mutation holds its row lock.
 func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
-	unlockedComment, err := s.loadComment(ctx, tx, id)
+	open, err := s.lockOwnerOfComment(ctx, tx, id)
 	if err != nil {
 		return model.Comment{}, err
 	}
-	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID)); err != nil {
+	if err := refuseClosed(open, refusedWhenClosed); err != nil {
 		return model.Comment{}, err
 	}
 	return s.loadCommentForUpdate(ctx, tx, id)
+}
+
+// lockedCommentForDelivery is the same prologue for a comment's mention delivery and the
+// mentioned agent's reply to it, which a closed issue still takes: it takes the owner's lock in
+// the same order without the closed refusal.
+func (s *server) lockedCommentForDelivery(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
+	if _, err := s.lockOwnerOfComment(ctx, tx, id); err != nil {
+		return model.Comment{}, err
+	}
+	return s.loadCommentForUpdate(ctx, tx, id)
+}
+
+// lockOwnerOfComment reads the comment and locks its owner, answering whether that owner is
+// open.
+func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
+	unlockedComment, err := s.loadComment(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	_, open, err := ownerStatus(ctx, tx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), ownerRowLock)
+	return open, err
 }
 
 func (s *server) resolveComment(w http.ResponseWriter, r *http.Request) {
@@ -145,8 +166,8 @@ func (s *server) editComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
 		return
 	}
-	if length := len16(input.Body); length > contracts.DispatchBodyMax {
-		capExceeded(w, "body", length, contracts.DispatchBodyMax)
+	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var carried *refs.CarriedEdit
@@ -415,6 +436,9 @@ func (s *server) commentAction(w http.ResponseWriter, r *http.Request, action st
 		if summary == "" {
 			summary = fmt.Sprintf("Accepted suggestion: %q → %q", comment.Anchor.Quote, comment.Suggestion.ReplaceWith)
 		}
+		// The version's name rides the artifact.version event, so it takes the part an event
+		// carries: a comment body is bounded block by block and can be far longer than that.
+		summary, _ = model.EventBody(summary)
 		named, err := s.deps.Docs.NamedVersion(documentCtx, comment.Anchor.ArtifactID, summary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)

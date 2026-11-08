@@ -10,11 +10,15 @@ import {
   spyOn,
   test,
 } from "bun:test";
+import { readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type IssueKey, type LegionRole, roleToken } from "@legion/contracts";
-import type { LegionCapabilityRow } from "@legion/contracts/legion-api";
+import { type IssueKey, LEGION_ROLES, type LegionRole, roleToken } from "@legion/contracts";
+import {
+  LegionCapabilityReport,
+  type LegionCapabilityReportBody,
+} from "@legion/contracts/legion-api";
 import { sessionDirectory } from "@legion/envoy-client/dispatch-session-directory";
 import { readSessionTitle } from "@legion/envoy-client/dispatch-session-state";
 import { noteInjectedUserTurn, noteTypedUserTurn } from "@legion/pi-shared/injected-user-turns";
@@ -43,10 +47,37 @@ import type {
 } from "@legion/pi-shared/pi-types";
 import { DEFAULT_STALL_LIMITS } from "@legion/pi-shared/stall-limits";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
+import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { skipWithout } from "@legion/test-fixtures/host-tools";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
+import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
 import { logger } from "@oh-my-pi/pi-utils";
+import type { ConnectionOptions, NatsConnection } from "nats";
+import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
+import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
 import pkg from "../package.json";
-import { type CapabilityHost, ENVOY_TOOL_NAMES } from "../src/capability-report";
+import {
+  type CapabilityHost,
+  ENVOY_TOOL_NAMES,
+  LIVE_CAPABILITIES,
+  type SearchQueryResult,
+} from "../src/capability-report";
+import {
+  CAPABILITY_ATTEMPTS,
+  CAPABILITY_FIRST_DUE_TICK,
+  CAPABILITY_RETRY_TICKS,
+} from "../src/capability-schedule";
 import { classifySession } from "../src/classify";
+import type legionEntryDefault from "./legion";
+import type {
+  setLegionBootstrapExitForTests as SetLegionBootstrapExitForTests,
+  setLegionCapabilityBudgetsForTests as SetLegionCapabilityBudgetsForTests,
+  setLegionCapabilityHostForTests as SetLegionCapabilityHostForTests,
+  setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
+} from "./legion";
 
 const natsConnections: {
   readonly name: string;
@@ -76,79 +107,200 @@ const widgetCalls: { readonly key: string; readonly lines: string[] | undefined 
 function recordWidget(key: string, lines: string[] | undefined): void {
   widgetCalls.push({ key, lines });
 }
-// @legion/envoy-client/nats-connection resolves the NATS credential with the real nkey exports.
-const { nkeyAuthenticator, nkeys } = await import("nats");
-mock.module("nats", () => ({
-  nkeyAuthenticator,
-  nkeys,
-  connect: async (options: { readonly name: string }) => {
-    await natsConnectGates.get(options.name)?.();
-    const endings: (() => void)[] = [];
-    const connection = {
-      name: options.name,
-      subjects: [] as string[],
-      unsubscribed: [] as string[],
-      closed: false,
-      drop: () => {
-        connection.closed = true;
-        for (const end of endings.splice(0)) end();
-      },
-    };
-    natsConnections.push(connection);
-    return {
-      close: async () => undefined,
-      drain: async () => undefined,
-      isClosed: () => connection.closed,
-      flush: async () => undefined,
-      publish: () => undefined,
-      subscribe: (subject: string) => {
-        natsSubscribeObserver?.(subject);
-        connection.subjects.push(subject);
-        const ended = Promise.withResolvers<void>();
-        endings.push(ended.resolve);
-        return {
-          unsubscribe: () => {
-            connection.unsubscribed.push(subject);
+// The dial the Envoy entry opens NATS with, handed to it through `setNatsConnectForTests` once
+// that entry is loaded below. The `nats` module itself stays as it is, so
+// `@legion/envoy-client/nats-connection` resolves the NATS credential with the real nkey exports,
+// and every other file in this `bun test` process reads the real module. The dial is not the
+// module: the setter writes a slot of the process, not of one entry instance, so the cleanup
+// below puts that slot back with `resetNatsConnectForTests` and no later file dials this
+// stand-in.
+const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<NatsConnection> => {
+  const name = options.name ?? "";
+  await natsConnectGates.get(name)?.();
+  const endings: (() => void)[] = [];
+  const connection = {
+    name,
+    subjects: [] as string[],
+    unsubscribed: [] as string[],
+    closed: false,
+    drop: () => {
+      connection.closed = true;
+      for (const end of endings.splice(0)) end();
+    },
+  };
+  natsConnections.push(connection);
+  // The stand-in answers the members the entry calls, not the whole `NatsConnection`.
+  return {
+    close: async () => undefined,
+    drain: async () => undefined,
+    isClosed: () => connection.closed,
+    flush: async () => undefined,
+    publish: () => undefined,
+    subscribe: (subject: string) => {
+      natsSubscribeObserver?.(subject);
+      connection.subjects.push(subject);
+      const ended = Promise.withResolvers<void>();
+      endings.push(ended.resolve);
+      return {
+        unsubscribe: () => {
+          connection.unsubscribed.push(subject);
+        },
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            await ended.promise;
+            return { done: true, value: undefined };
           },
-          [Symbol.asyncIterator]: () => ({
-            next: async () => {
-              await ended.promise;
-              return { done: true, value: undefined };
-            },
-          }),
-        };
-      },
-    };
-  },
-  StringCodec: () => ({
-    decode: (data: Uint8Array) => new TextDecoder().decode(data),
-    encode: (text: string) => new TextEncoder().encode(text),
-  }),
-}));
+        }),
+      };
+    },
+  } as unknown as NatsConnection;
+};
 
 mock.module("@oh-my-pi/pi-coding-agent", () => ({
   copyToClipboard: async () => undefined,
   ...hostAgentRegistryMock,
 }));
 
+// Every name a test in this file sets or deletes. They are captured here, above the lines that
+// set ENVOY_CONFIG_FILE and delete OMP_PROFILE and PI_CODING_AGENT_DIR, so what the caller's own
+// process holds — a worker pane's live LEGION_* and DISPATCH_* among them — goes back after each
+// test and once more when this file ends: `bun test` runs every file of a package in one process,
+// and the next file reads the environment this one leaves.
+const environmentKeys = [
+  "ENVOY_NATS_URL",
+  "ENVOY_URL",
+  "LEGION_CONTROLLER",
+  "LEGION_CONTROLLER_START_MESSAGE",
+  "LEGION_CONTROLLER_SECRET",
+  "LEGION_DAEMON_URL",
+  "LEGION_BOOT_TOKEN",
+  "LEGION_TREE",
+  "LEGION_PROJECT",
+  "LEGION_ROLE",
+  "LEGION_ISSUE",
+  "LEGION_WORKSPACE",
+  "LEGION_STATE_DIR",
+  "LEGION_SLACK_CHANNELS",
+  "LEGION_STALL_REMINDER_MS",
+  "LEGION_STALL_WAITING_MS",
+  "LEGION_STALL_RESUME_MS",
+  "LEGION_STALL_ARCHITECT_AFTER",
+  "HOME",
+  "DISPATCH_URL",
+  "DISPATCH_TOKEN",
+  "LEGION_BOOT_TOKEN_FILE",
+  "LEGION_CONTROLLER_SECRET_FILE",
+  "DISPATCH_TOKEN_FILE",
+  "LEGION_WORKSPACE_RECREATED",
+  "DISPATCH_STATE_DIR",
+  "ENVOY_CONFIG_FILE",
+  "OMP_PROFILE",
+  "PI_CODING_AGENT_DIR",
+] as const;
+
+/** The names the Envoy entry writes for a pane this file starts, rather than a test: `PATH`,
+ *  which it puts its own `bin/` first on when it loads, and the two a session's `dispatch`
+ *  command reads (packages/pi-envoy/AGENTS.md). They go back with the keys above and are never
+ *  deleted with them: the baseline below is "not a Legion pane", and a process with no `PATH`
+ *  finds none of the programs these tests run. */
+const entryEnvironmentKeys = ["PATH", "DISPATCH_HOST", "DISPATCH_SESSION_ID"] as const;
+restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
+
+// The probe for the defect the restore above fixes: when this file ends, every name this Bun
+// process started with holds the value it started with. `/proc/self/environ` is the kernel's copy
+// of the process's own envp, which no `setenv` rewrites, so it says what the caller handed this
+// process however many names a test has set since — a pod's live LEGION_* and DISPATCH_* among
+// them. It is read rather than `process.env` because the two are the same thing only until the
+// first test runs, and a list of names that forgot one would compare that name with itself.
+//
+// `bun test` runs a package's files in one process and `afterAll` hooks run in the order they
+// were registered, so the hook below is registered under this file's cleanup hook: it still runs
+// after the restore above and sees what the next file would read, and Bun stops at the first
+// `afterAll` that throws, so a hook registered above the cleanup would leak this file's
+// temporary directories on the one run the probe exists to report. The probe is in this file,
+// and not in a file of its own, because Bun runs a directory's test files in the order the
+// filesystem lists them, which no file name decides: in packages/pi-legion/extensions, eight
+// files named a- to h- ran in the order e, d, c, h, a, f, b, g, which is what `readdirSync`
+// returns there.
+const startingEnvironment = readStartingEnvironment();
+if (startingEnvironment === undefined) {
+  console.warn(
+    `Skipped the environment probe in ${import.meta.path}. This host has no /proc/self/environ, ` +
+      "which is the one record of what this process started with. Run the tests on Linux for it."
+  );
+}
+
+/** Each name this process started with and its value, or undefined where the host keeps no such
+ *  record. An entry with no `=`, and the empty entry a trailing separator leaves, are no name. */
+function readStartingEnvironment(): Map<string, string> | undefined {
+  let environ: string;
+  try {
+    environ = readFileSync("/proc/self/environ", "utf8");
+  } catch {
+    return undefined;
+  }
+  const started = new Map<string, string>();
+  for (const entry of environ.split("\0")) {
+    const equals = entry.indexOf("=");
+    if (equals > 0) started.set(entry.slice(0, equals), entry.slice(equals + 1));
+  }
+  return started;
+}
+
 // The Envoy entry picks its envoy.json when its module loads: a file that holds no section, so
 // these panes take Dispatch and Envoy from the variables each test sets, never from the caller's
 // own envoy.json or Oh My Pi profile. `beforeEach` hands the same file on again.
-const envoyConfigDirectory = await mkdtemp(path.join(os.tmpdir(), "legion-envoy-config-"));
+//
+// The path is reserved here; the directory is made, the file written, the environment put into
+// its baseline and both entries loaded in the `beforeAll` below. Everything that hook does is
+// undone by a hook — the directory by the fixture's own `afterAll`, the environment by the
+// `restoreEnvironment` above and the `resetNatsConnectForTests` below — and a `bun test -t
+// <pattern>` that selects no row of this file runs none of them: a module body that made the
+// directory, deleted the names or handed over the NATS dial would leave all three to the next
+// file of the same process.
+const envoyConfigDirectory = temporaryDirectory("legion-envoy-config");
 const envoyConfigFile = path.join(envoyConfigDirectory, "envoy.json");
-await writeFile(envoyConfigFile, "{}\n");
-process.env.ENVOY_CONFIG_FILE = envoyConfigFile;
-delete process.env.OMP_PROFILE;
-delete process.env.PI_CODING_AGENT_DIR;
 
-// The extension modules must load after their OMP and NATS host dependencies are mocked. The
-// Envoy entry is the sibling plugin's, reached by path: these panes run both, as a Legion pane does.
-const { default: envoyExtension } = await import("../../pi-envoy/extensions/envoy");
-const {
-  default: legionExtension,
-  setLegionBootstrapExitForTests,
-  setLegionCapabilityHostForTests,
-} = await import("./legion");
+/** The two entries, loaded by the `beforeAll` below once the environment is in place. Every row
+ *  reads them from its own body: no pane starts before that hook. */
+let envoyExtension: typeof envoyEntryDefault;
+let legionExtension: typeof legionEntryDefault;
+let resetNatsConnectForTests: typeof ResetNatsConnectForTests | undefined;
+let setLegionBootstrapExitForTests: typeof SetLegionBootstrapExitForTests;
+let setLegionCapabilityBudgetsForTests: typeof SetLegionCapabilityBudgetsForTests;
+let setLegionCapabilityHostForTests: typeof SetLegionCapabilityHostForTests;
+let setLegionCapabilitySendTimeoutForTests: typeof SetLegionCapabilitySendTimeoutForTests;
+
+beforeAll(async () => {
+  await writeFile(envoyConfigFile, "{}\n");
+  process.env.ENVOY_CONFIG_FILE = envoyConfigFile;
+  delete process.env.OMP_PROFILE;
+  delete process.env.PI_CODING_AGENT_DIR;
+  // The extension modules must load after their OMP host dependencies are mocked. The Envoy entry
+  // is the sibling plugin's, reached by path: these panes run both, as a Legion pane does. Its
+  // NATS dial is the stand-in above, handed over as soon as the entry is loaded and before any
+  // pane here starts a session; the slot it goes in is the process's, so the `afterAll` below
+  // puts it back and the two run together or not at all.
+  const envoyEntry = await import("../../pi-envoy/extensions/envoy");
+  envoyExtension = envoyEntry.default;
+  resetNatsConnectForTests = envoyEntry.resetNatsConnectForTests;
+  envoyEntry.setNatsConnectForTests(natsStandInConnect);
+  const legionEntry = await import("./legion");
+  legionExtension = legionEntry.default;
+  setLegionBootstrapExitForTests = legionEntry.setLegionBootstrapExitForTests;
+  setLegionCapabilityBudgetsForTests = legionEntry.setLegionCapabilityBudgetsForTests;
+  setLegionCapabilityHostForTests = legionEntry.setLegionCapabilityHostForTests;
+  setLegionCapabilitySendTimeoutForTests = legionEntry.setLegionCapabilitySendTimeoutForTests;
+  // The suite's baseline is "not a Legion pane": every key above except HOME starts unset, and
+  // `beforeEach` deletes them again before each test and hands on the Envoy entry's file as
+  // ENVOY_CONFIG_FILE. Run from inside a worker pane — whose LEGION_BOOT_TOKEN_FILE,
+  // DISPATCH_URL, and friends are live — the suite would otherwise boot fixtures with the pane's
+  // own boot token and see a different environment from CI. The `restoreEnvironment` above puts
+  // the pane's own values back. It runs below the two entry loads, which read ENVOY_CONFIG_FILE.
+  for (const key of environmentKeys) {
+    if (key !== "HOME") delete process.env[key];
+  }
+});
 
 type RegisteredCommand = {
   readonly name: string;
@@ -181,60 +333,35 @@ type TestPi = {
 type Handler = (event: unknown, context: SessionContext) => Promise<unknown> | unknown;
 
 const originalFetch = globalThis.fetch;
-const environmentKeys = [
-  "ENVOY_NATS_URL",
-  "ENVOY_URL",
-  "LEGION_CONTROLLER",
-  "LEGION_CONTROLLER_START_MESSAGE",
-  "LEGION_CONTROLLER_SECRET",
-  "LEGION_DAEMON_URL",
-  "LEGION_BOOT_TOKEN",
-  "LEGION_TREE",
-  "LEGION_PROJECT",
-  "LEGION_ROLE",
-  "LEGION_ISSUE",
-  "LEGION_WORKSPACE",
-  "LEGION_STATE_DIR",
-  "LEGION_SLACK_CHANNELS",
-  "LEGION_STALL_REMINDER_MS",
-  "LEGION_STALL_WAITING_MS",
-  "LEGION_STALL_RESUME_MS",
-  "LEGION_STALL_ARCHITECT_AFTER",
-  "HOME",
-  "DISPATCH_URL",
-  "DISPATCH_TOKEN",
-  "LEGION_BOOT_TOKEN_FILE",
-  "LEGION_CONTROLLER_SECRET_FILE",
-  "DISPATCH_TOKEN_FILE",
-  "LEGION_WORKSPACE_RECREATED",
-  "DISPATCH_STATE_DIR",
-  "ENVOY_CONFIG_FILE",
-  "OMP_PROFILE",
-  "PI_CODING_AGENT_DIR",
-] as const;
-// The suite's baseline is "not a Legion pane": every key above except HOME starts unset and is
-// reset to unset after each test, and `beforeEach` hands on the Envoy entry's file again as
-// ENVOY_CONFIG_FILE. Run from inside a worker pane — whose LEGION_BOOT_TOKEN_FILE, DISPATCH_URL,
-// and friends are live — the suite would otherwise boot fixtures with the pane's own boot token
-// and see a different environment from CI.
-const baselineEnvironment: Record<(typeof environmentKeys)[number], string | undefined> =
-  Object.fromEntries(
-    environmentKeys.map((key) => [key, key === "HOME" ? process.env.HOME : undefined])
-  ) as Record<(typeof environmentKeys)[number], string | undefined>;
-for (const key of environmentKeys) {
-  if (key !== "HOME") delete process.env[key];
-}
 
 const temporaryPaths: string[] = [];
+const paneStateDirectory = temporaryDirectories("legion-pane-state");
+const controllerStateDirectory = temporaryDirectories("legion-controller");
+
+/** The home the suite's one `jj git init` runs under, so no configuration of the developer's
+ * decides what the template holds. */
+const jjHomeDirectory = temporaryDirectory("legion-jj-home");
 
 /** The repository every workspace in this file is a copy of: one `jj git init` before the tests.
  * A copy spawns no process, so a test's workspace costs none of bun's 5 s test timeout, which a
  * `jj` process, whose run time is the machine's load, would otherwise spend. */
 let jjTemplate = "";
 
+// The template the beforeAll below builds is `jj git init`'s, and every workspace a row here runs
+// in is a copy of it, so a host with no jj builds nothing and runs none of them. Read once, at
+// module scope: a call per row would print the warning per row. The environment probe's hook,
+// registered below the cleanup, still runs when the rows do not: this gate skips tests, never a
+// hook.
+const skip = skipWithout("jj");
+
 beforeAll(async () => {
+  if (skip) return;
   jjTemplate = await mkdtemp(path.join(os.tmpdir(), "legion-omp-extension-template-"));
-  const child = Bun.spawn(["jj", "git", "init", jjTemplate], { stdout: "ignore", stderr: "pipe" });
+  const child = Bun.spawn(["jj", "git", "init", jjTemplate], {
+    stdout: "ignore",
+    stderr: "pipe",
+    env: { PATH: process.env.PATH ?? "", ...versionControlEnvironment(jjHomeDirectory) },
+  });
   const exitCode = await child.exited;
   if (exitCode !== 0) {
     // A spawn killed under the runner exits non-zero with nothing on stderr, so name the code and
@@ -248,8 +375,24 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await rm(jjTemplate, { force: true, recursive: true });
-  await rm(envoyConfigDirectory, { force: true, recursive: true });
+  // The template was never built when the file skipped, and there is nothing to remove.
+  if (jjTemplate !== "") await rm(jjTemplate, { force: true, recursive: true });
+  // The stand-in dial is the process's, not this file's: the next file of this `bun test` run
+  // gets nats.js's own `connect` back. It is undefined when the `beforeAll` above never ran.
+  resetNatsConnectForTests?.();
+});
+
+// The environment probe's hook; what it compares is read at the top of this file, where the
+// comment says why it is registered here and not there.
+afterAll(() => {
+  if (startingEnvironment === undefined) return;
+  const changed = [...startingEnvironment]
+    .filter(([name, value]) => process.env[name] !== value)
+    .map(
+      ([name, value]) =>
+        `${name} started as ${JSON.stringify(value)} and now holds ${JSON.stringify(process.env[name])}`
+    );
+  expect(changed).toEqual([]);
 });
 
 beforeEach(async () => {
@@ -277,13 +420,13 @@ afterEach(async () => {
   scheduledTimeouts.splice(0);
   widgetCalls.splice(0);
   setLegionBootstrapExitForTests((code) => process.exit(code) as never);
+  // The budgets a capability test shortened; production never sets them, and no later test may
+  // inherit a 20 ms check.
+  setLegionCapabilityBudgetsForTests(undefined);
+  // The same for the bound on one `claims/ready` the schedule sends: back to the real 10 s.
+  setLegionCapabilitySendTimeoutForTests(undefined);
   delete (globalThis as Record<symbol, unknown>)[LEGACY_LEGION_LOADED_KEY];
   testAgentRoster().splice(0);
-  for (const key of environmentKeys) {
-    const value = baselineEnvironment[key];
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
   await Promise.all(
     temporaryPaths.splice(0).map((directory) => rm(directory, { force: true, recursive: true }))
   );
@@ -584,6 +727,24 @@ function fakeCapabilityHost(overrides: Partial<CapabilityHost> = {}): Capability
   };
 }
 
+/** `fakeCapabilityHost`, wrapped so every member called pushes its name into `calls`: what proves
+ * a path measures nothing. */
+function recordingCapabilityHost(
+  calls: string[],
+  overrides?: Partial<CapabilityHost>
+): CapabilityHost {
+  const host = fakeCapabilityHost(overrides);
+  return Object.fromEntries(
+    Object.entries(host).map(([name, member]) => [
+      name,
+      (...args: never[]) => {
+        calls.push(name);
+        return (member as (...rest: never[]) => unknown)(...args);
+      },
+    ])
+  ) as unknown as CapabilityHost;
+}
+
 interface ClaimPane {
   readonly claimToken: string;
   /** The daemon's `claims/register` answer: the claim it issued this pane. */
@@ -648,11 +809,21 @@ async function claimPane(options: {
   readonly capabilityHost?: () => CapabilityHost;
   /** Whether the host exposes `pi.agents`; the subagents row fails first without it. */
   readonly agentsExposed?: boolean;
+  /** The host's live idle answer (`ctx.isIdle()`), read afresh at every reading. Absent leaves
+   * the context without the member, as a host that answers nothing about its idleness is. */
+  readonly idle?: () => boolean;
   readonly register?: () => Response | Promise<Response>;
   readonly ready?: (attempt: number) => Response | Promise<Response>;
   readonly readyPosted?: () => void;
   readonly roleHolder?: () => string | undefined;
-  readonly extraRoutes?: (url: URL, body: unknown) => Response | undefined;
+  /** A route the stub answers ahead of the daemon's own. `init` is the request as the caller
+   * made it, so a test can read what never reaches `requests`: the `AbortSignal` a bounded call
+   * carries. */
+  readonly extraRoutes?: (
+    url: URL,
+    body: unknown,
+    init: RequestInit | undefined
+  ) => Response | undefined;
   readonly ensureOnDisk?: () => Promise<void>;
   readonly branch?: readonly unknown[];
   readonly title?: { readonly name: string; readonly source: "auto" | "user" };
@@ -678,10 +849,9 @@ async function claimPane(options: {
     promptAgents: options.promptAgents ?? [],
   };
   const bootToken = `boot-${sessionId}`;
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "legion-pane-state-"));
+  const stateDir = paneStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
-  temporaryPaths.push(stateDir);
   const bootTokenFile = path.join(secretsDir, claimToken);
   await writeFile(bootTokenFile, `${bootToken}\n`, { mode: 0o600 });
   process.env.ENVOY_URL = "http://envoy.test";
@@ -701,7 +871,7 @@ async function claimPane(options: {
     const url = new URL(input.toString());
     const body = init?.body == null ? undefined : JSON.parse(init.body.toString());
     requests.push({ path: url.pathname, body });
-    const extra = options.extraRoutes?.(url, body);
+    const extra = options.extraRoutes?.(url, body, init);
     if (extra !== undefined) return extra;
     if (url.pathname === "/legion/v1/claims/register") {
       return (await options.register?.()) ?? Response.json(registration);
@@ -769,6 +939,7 @@ async function claimPane(options: {
       intervals.push(callback);
     },
     ...(options.asyncJobs === undefined ? {} : { getAsyncJobSnapshot: options.asyncJobs }),
+    ...(options.idle === undefined ? {} : { isIdle: options.idle }),
     // The reminder's own timer: the host's `setTimeout` cannot be cancelled, so the pane keeps
     // every one armed and a test fires the one it means to.
     setTimeout: (callback, delayMs) => {
@@ -816,7 +987,33 @@ async function bootPane(options: Parameters<typeof claimPane>[0]): Promise<Claim
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
   requests.filter((request) => request.path.startsWith("/legion/"));
 
-describe("Legion OMP extension", () => {
+/** The Envoy client instance a recorded request list registered `sessionID` under: the
+ * `client_instance_id` the latest `/v1/interests/subscribe` for that session carried. pi-envoy
+ * mints one such id per extension instance and sends it on every registration, and a role claim
+ * now carries it too. A claim's process is pinned to the registration's rather than to a literal
+ * id, because a literal would pass while the session claimed its role under some other process —
+ * the very thing the claim's `client_instance_id` exists to stop. */
+function registeredClientInstance(requests: readonly DaemonRequest[], sessionID: string): string {
+  const registration = requests.findLast(
+    (request) =>
+      request.path === "/v1/interests/subscribe" &&
+      typeof request.body === "object" &&
+      request.body !== null &&
+      "session_id" in request.body &&
+      request.body.session_id === sessionID
+  );
+  const body = registration?.body;
+  const clientInstance =
+    typeof body === "object" && body !== null && "client_instance_id" in body
+      ? body.client_instance_id
+      : undefined;
+  if (typeof clientInstance !== "string") {
+    throw new Error(`no registration of ${sessionID} carrying a client instance id`);
+  }
+  return clientInstance;
+}
+
+describe.skipIf(skip)("Legion OMP extension", () => {
   test("classifies controllers, root architects, sub-architects, phase workers, and ordinary sessions", () => {
     // The root architect's own issue key equals the tree's.
     expect(
@@ -1096,12 +1293,14 @@ describe("Legion OMP extension", () => {
       "LEGION_CONTROLLER_SECRET or LEGION_CONTROLLER_SECRET_FILE is required to claim the controller."
     );
   });
-  test("a claim registers, claims its Envoy role, and reports ready through the claim routes alone", async () => {
+  test("a claim registers, claims its Envoy role, measures nothing, and reports ready through the claim routes alone", async () => {
+    const calls: string[] = [];
     const pane = await bootPane({
       role: "tester",
       sessionId: "ses_worker",
       promptAgents: ["deep-worker", "oracle"],
       agentsExposed: true,
+      capabilityHost: () => recordingCapabilityHost(calls),
     });
 
     expect(daemonRequests(pane.requests)).toEqual([
@@ -1122,104 +1321,29 @@ describe("Legion OMP extension", () => {
           sessionId: "ses_worker",
           secret: pane.registration.secret,
           generation: pane.registration.generation,
-          capabilities: {
-            measuredAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/),
-            elapsedMs: expect.any(Number),
-            rows: [
-              {
-                name: "subagents",
-                ok: true,
-                detail: "task resolves 2 agents, every one the prompts dispatch",
-              },
-              { name: "web-search", ok: false, detail: "web_search is not a registered tool" },
-              { name: "mcp", ok: true, detail: "no MCP server configured" },
-              {
-                name: "repository-extensions",
-                ok: true,
-                detail: "the repository carries no .omp/extensions, .omp/skills or .claude/skills",
-              },
-              {
-                name: "dispatch-envoy-tools",
-                ok: false,
-                detail: `Envoy tools missing: ${[...ENVOY_TOOL_NAMES].join(", ")}`,
-              },
-              { name: "github", ok: true, detail: "gh viewer login: legion-reviewer[bot]" },
-            ],
-          },
         },
       },
     ]);
     // The Envoy role is the claim token, claimed after the registration issued it and before ready.
+    // The claim names the process making it: the client instance the pane's own registration
+    // carried, never a literal id, so a claim another process made under this session id would
+    // not match.
     const paths = pane.requests.map((request) => request.path);
+    const roleClaimBody = {
+      session_id: "ses_worker",
+      role: pane.claimToken,
+      client_instance_id: registeredClientInstance(pane.requests, "ses_worker"),
+    };
     const roleClaim = pane.requests.findIndex(
       (request) =>
         request.path === "/v1/roles/set" &&
-        JSON.stringify(request.body) ===
-          JSON.stringify({ session_id: "ses_worker", role: pane.claimToken })
+        JSON.stringify(request.body) === JSON.stringify(roleClaimBody)
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
     expect(roleClaim).toBeLessThan(paths.indexOf("/legion/v1/claims/ready"));
     expect(pane.exits).toEqual([]);
-  });
-  test("the ready's capability report measures the registration's promptAgents against the task tool's agents", async () => {
-    const measured = await bootPane({
-      role: "implementer",
-      sessionId: "ses_capabilities",
-      promptAgents: ["oracle", "plan-reviewer"],
-      agentsExposed: true,
-      capabilityHost: () => fakeCapabilityHost({ disabledAgents: async () => ["oracle"] }),
-    });
-    const ready = daemonRequests(measured.requests).find(
-      (request) => request.path === "/legion/v1/claims/ready"
-    )?.body as { readonly capabilities: { readonly rows: LegionCapabilityRow[] } };
-    expect(ready.capabilities.rows).toHaveLength(6);
-    expect(ready.capabilities.rows[0]).toEqual({
-      name: "subagents",
-      ok: false,
-      detail:
-        "agents the prompts dispatch that the task tool does not resolve: plan-reviewer; disabled by task.disabledAgents: oracle",
-    });
-    expect(measured.exits).toEqual([]);
-    expect(measured.errors).toEqual([]);
-
-    // Without `pi.agents` the subagents row says so; the pane boots all the same.
-    const unexposed = await bootPane({ role: "planner", sessionId: "ses_no_agents" });
-    const unexposedReady = daemonRequests(unexposed.requests).find(
-      (request) => request.path === "/legion/v1/claims/ready"
-    )?.body as { readonly capabilities: { readonly rows: LegionCapabilityRow[] } };
-    expect(unexposedReady.capabilities.rows[0]).toEqual({
-      name: "subagents",
-      ok: false,
-      detail: "pi.agents is not exposed",
-    });
-    expect(unexposed.exits).toEqual([]);
-  });
-  test("a measurer that fails outright costs the report alone: one log line, ready without capabilities, no exit", async () => {
-    const pane = await bootPane({
-      role: "reviewer",
-      sessionId: "ses_no_measurer",
-      capabilityHost: () => {
-        throw new Error("no capability host in this pane");
-      },
-    });
-    expect(
-      daemonRequests(pane.requests).filter((request) => request.path === "/legion/v1/claims/ready")
-    ).toEqual([
-      {
-        path: "/legion/v1/claims/ready",
-        body: {
-          claimToken: pane.claimToken,
-          sessionId: "ses_no_measurer",
-          secret: pane.registration.secret,
-          generation: pane.registration.generation,
-        },
-      },
-    ]);
-    expect(pane.errors).toEqual([
-      "[legion] capability measurement failed; ready carries no report: no capability host in this pane",
-    ]);
-    expect(pane.exits).toEqual([]);
-    expect(pane.tools.find((tool) => tool.name === "legion")).toBeDefined();
+    // The boot measures nothing: no capability host member was called before its ready.
+    expect(calls).toEqual([]);
   });
   test("does nothing for a session with no Legion environment markers", async () => {
     const requests: { readonly path: string }[] = [];
@@ -1581,7 +1705,7 @@ describe("Legion OMP extension", () => {
       signal,
     });
     /** An assistant message that ran a real tool call, as Oh My Pi hands it to `message_end`: its
-     * tool-call block is `toolCall` (`packages/pi-envoy/src/agent-stream.ts` reads the same
+     * tool-call block is `toolCall` (`packages/pi-shared/src/agent-stream.ts` reads the same
      * shape), not Claude Code's `tool_use`. */
     const ranTool = {
       message: {
@@ -1633,7 +1757,7 @@ describe("Legion OMP extension", () => {
           firstBootAt: "2026-09-18T14:03:27Z",
           startedAt: "2026-09-22T09:15:02Z",
         },
-        admission: { cap: 1, active: ["REPO-42"], waiting: [], blocked: [] },
+        admission: { cap: 1, active: ["REPO-42"], waiting: [], trees: ["REPO-42"], blocked: [] },
         issues: {
           "REPO-43": {
             key: "REPO-43",
@@ -1648,6 +1772,7 @@ describe("Legion OMP extension", () => {
         pendingStatusWrites: [],
         heldOutboxRows: [],
         strandedClaims: [],
+        wakesWaiting: [],
         capabilities: [],
         repositories: {
           owners: ["acme"],
@@ -2878,7 +3003,8 @@ describe("Legion OMP extension", () => {
     pane.intervals[0]?.();
     await secondReady.promise;
 
-    // The same ready, the boot's capability report included: the regain measures nothing anew.
+    // The one ready the boot built, sent again: the regain measures nothing anew, and neither
+    // ready carries a capability report.
     const readyBodies = daemonRequests(pane.requests).filter(
       (request) => request.path === "/legion/v1/claims/ready"
     );
@@ -2890,10 +3016,637 @@ describe("Legion OMP extension", () => {
         sessionId: "ses_regain",
         secret: pane.registration.secret,
         generation: pane.registration.generation,
-        capabilities: expect.objectContaining({ rows: expect.any(Array) }),
       },
     });
     expect(readyBodies[1]).toEqual(readyBodies[0]);
+    expect(readyBodies[0]?.body).not.toHaveProperty("capabilities");
+    expect(readyBodies[1]?.body).not.toHaveProperty("capabilities");
+  });
+
+  /**
+   * INFRA-927: the session measures its six rows on its own 5 s interval, while it is idle, up to
+   * three times, until every row is present — the boot measured once, so a check that lost that
+   * race stayed reported open for the session's whole life. The machine is
+   * `src/capability-schedule.ts`; these tests drive it through the interval the pane armed, as
+   * the host does when the period is up, and read the tick count from the reports themselves.
+   */
+  describe("the capability report a session measures on its interval", () => {
+    /** The active tools every row needs beside the pane's own `read`, `task` and `wait`. */
+    const MEASURED_TOOLS = ["web_search", ...ENVOY_TOOL_NAMES];
+    /** The tick an implementer first measures at: `CAPABILITY_FIRST_DUE_TICK` and its index in
+     * `LEGION_ROLES`. */
+    const IMPLEMENTER_DUE_TICK = CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.indexOf("implementer");
+    /** One web search that answers, as the pane's host answers it. */
+    const searchAnswer: SearchQueryResult = {
+      content: [{ type: "text", text: "[1] Jujutsu" }],
+      details: { response: { provider: "stub" } },
+    };
+
+    /** The report a `claims/ready` body carries, read through the wire schema the daemon reads it
+     * with; the boot's own ready carries none. */
+    const capabilityReport = (body: unknown): LegionCapabilityReportBody | undefined =>
+      typeof body === "object" && body !== null && "capabilities" in body
+        ? LegionCapabilityReport.parse(body.capabilities)
+        : undefined;
+
+    /** How many measurements a recording host's `calls` hold: every measurement reads the MCP
+     * configuration exactly once, whatever each row answers. */
+    const measurements = (calls: readonly string[]): number =>
+      calls.filter((name) => name === "loadMCPConfigs").length;
+
+    /** `count` readings of the pane's managed interval: every callback it armed, as the host runs
+     * them when the period is up — the Envoy heartbeat's and this plugin's. */
+    const ticks = async (pane: ClaimPane, count: number): Promise<void> => {
+      for (let reading = 0; reading < count; reading += 1) {
+        for (const tick of pane.intervals) await tick();
+      }
+    };
+
+    /** Lets what a tick started run to its end: the interval callback awaits neither the activity
+     * report nor the schedule's tick, so a few turns of the event loop stand in for the awaits
+     * the production caller does not make. It waits on no duration — three `setTimeout(0)` turns
+     * cover the measurement's own file reads and the send's fetch — and a test asserting that
+     * something happened waits on that event instead; this is for asserting that nothing did.
+     */
+    const drain = async (): Promise<void> => {
+      for (let turn = 0; turn < 3; turn += 1) {
+        const passed = Promise.withResolvers<void>();
+        setTimeout(passed.resolve, 0);
+        await passed.promise;
+      }
+    };
+
+    interface CapabilitySession {
+      readonly pane: ClaimPane;
+      /** Every capability host member called, in order, over every measurement. */
+      readonly calls: string[];
+      /** Every report the session sent, in order, however the daemon answered it. */
+      readonly reports: LegionCapabilityReportBody[];
+      /** The `AbortSignal` each report-carrying `claims/ready` was made with, in the order of
+       * `reports`: `undefined` where the request carried none. */
+      readonly readySignals: (AbortSignal | undefined)[];
+      /** Resolves once the session has sent its `nth` report (1 is the first). */
+      readonly reported: (nth: number) => Promise<void>;
+    }
+
+    /** What a test waits on for one report: `Promise.withResolvers`, as far as the gate map
+     * holds it. */
+    interface ReportGate {
+      readonly promise: Promise<void>;
+      readonly resolve: () => void;
+    }
+
+    /**
+     * A booted claim pane whose six rows all read `ok`: `web_search` and every Envoy tool among
+     * its active tools before `session_start` snapshots them, `pi.agents` exposed, and a
+     * recording capability host. Its `claims/activity` answers 204 — the pane's stub 404s that
+     * route, and the warning its report then logs is not this machine's. Nothing has ticked yet.
+     *
+     * `agentsExposed` and `promptAgents` are the pane's, so a test can measure a session whose
+     * host exposes no `pi.agents`, or whose registration names agents the task tool does not
+     * resolve. `capabilityHost` replaces the recording host the pane measures through, called
+     * once per measurement and handed the session's own `calls`: a host that throws on its first
+     * call is how a measurement that fails outright is made.
+     */
+    const capabilitySession = async (
+      options: {
+        readonly role?: LegionRole;
+        readonly sessionId?: string;
+        readonly idle?: () => boolean;
+        readonly host?: Partial<CapabilityHost>;
+        readonly ready?: (attempt: number) => Response | Promise<Response>;
+        readonly promptAgents?: readonly string[];
+        readonly agentsExposed?: boolean;
+        readonly capabilityHost?: (calls: string[]) => CapabilityHost;
+      } = {}
+    ): Promise<CapabilitySession> => {
+      const calls: string[] = [];
+      const reports: LegionCapabilityReportBody[] = [];
+      const readySignals: (AbortSignal | undefined)[] = [];
+      const gates = new Map<number, ReportGate>();
+      const pane = await claimPane({
+        role: options.role ?? "implementer",
+        sessionId: options.sessionId ?? `ses_capability_${options.role ?? "implementer"}`,
+        agentsExposed: options.agentsExposed ?? true,
+        promptAgents: options.promptAgents,
+        capabilityHost: () =>
+          options.capabilityHost?.(calls) ?? recordingCapabilityHost(calls, options.host),
+        idle: options.idle,
+        ready: options.ready,
+        extraRoutes: (url, body, init) => {
+          if (url.pathname === "/legion/v1/claims/activity") {
+            return new Response(null, { status: 204 });
+          }
+          if (url.pathname === "/legion/v1/claims/ready") {
+            const report = capabilityReport(body);
+            if (report !== undefined) {
+              reports.push(report);
+              readySignals.push(init?.signal ?? undefined);
+              gates.get(reports.length)?.resolve();
+            }
+          }
+          return undefined;
+        },
+      });
+      pane.activeTools.push(...MEASURED_TOOLS);
+      await pane.start();
+      return {
+        pane,
+        calls,
+        reports,
+        readySignals,
+        reported: (nth) => {
+          const gate = gates.get(nth) ?? Promise.withResolvers<void>();
+          gates.set(nth, gate);
+          if (reports.length >= nth) gate.resolve();
+          return gate.promise;
+        },
+      };
+    };
+
+    test("a session whose context answers nothing about its idleness measures at its due tick, and at no tick before it", async () => {
+      const session = await capabilitySession({ sessionId: "ses_capability_due" });
+      // The absent-answer case: this host tells nothing about its idleness, which counts as idle.
+      expect(session.pane.context.isIdle).toBeUndefined();
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK - 1);
+      await drain();
+      expect(measurements(session.calls)).toBe(0);
+      expect(session.reports).toEqual([]);
+
+      await ticks(session.pane, 1);
+      await session.reported(1);
+      await drain();
+
+      expect(measurements(session.calls)).toBe(1);
+      const report = session.reports[0];
+      expect(report?.rows.map((row) => row.name)).toEqual([...LIVE_CAPABILITIES]);
+      expect(report?.rows.every((row) => row.ok)).toBe(true);
+      // The report rides the claim's own ready, beside the credentials the daemon issued it: the
+      // boot's ready carries none, and this one carries the measurement.
+      expect(
+        daemonRequests(session.pane.requests).filter(
+          (request) => request.path === "/legion/v1/claims/ready"
+        )
+      ).toEqual([
+        {
+          path: "/legion/v1/claims/ready",
+          body: {
+            claimToken: session.pane.claimToken,
+            sessionId: "ses_capability_due",
+            secret: session.pane.registration.secret,
+            generation: session.pane.registration.generation,
+          },
+        },
+        {
+          path: "/legion/v1/claims/ready",
+          body: {
+            claimToken: session.pane.claimToken,
+            sessionId: "ses_capability_due",
+            secret: session.pane.registration.secret,
+            generation: session.pane.registration.generation,
+            capabilities: report,
+          },
+        },
+      ]);
+    });
+
+    test("a tick whose idle answer reads false starts no measurement, and the next idle tick measures", async () => {
+      let idle = false;
+      const session = await capabilitySession({
+        sessionId: "ses_capability_busy",
+        idle: () => idle,
+      });
+
+      // Two ticks past the due one, every one of them under a running turn.
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK + 2);
+      await drain();
+      expect(measurements(session.calls)).toBe(0);
+      expect(session.reports).toEqual([]);
+
+      idle = true;
+      await ticks(session.pane, 1);
+      await session.reported(1);
+
+      expect(measurements(session.calls)).toBe(1);
+      expect(session.reports[0]?.rows.every((row) => row.ok)).toBe(true);
+    });
+
+    test("a tick that finds this session's measurement still running starts no second one", async () => {
+      const searching = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<SearchQueryResult>();
+      const session = await capabilitySession({
+        sessionId: "ses_capability_running",
+        host: {
+          runSearchQuery: () => {
+            searching.resolve();
+            return answer.promise;
+          },
+        },
+      });
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+      // The measurement is in flight: its search is held open.
+      await searching.promise;
+      expect(measurements(session.calls)).toBe(1);
+
+      await ticks(session.pane, 1);
+      await drain();
+      expect(measurements(session.calls)).toBe(1);
+      expect(session.reports).toEqual([]);
+
+      answer.resolve(searchAnswer);
+      await session.reported(1);
+
+      expect(measurements(session.calls)).toBe(1);
+      expect(session.reports).toHaveLength(1);
+      expect(session.reports[0]?.rows.every((row) => row.ok)).toBe(true);
+    });
+
+    test("the six roles of a pod come due one tick apart: the architect at the sixth tick, the merger at the eleventh", async () => {
+      expect(CAPABILITY_FIRST_DUE_TICK).toBe(6);
+      expect(CAPABILITY_FIRST_DUE_TICK + LEGION_ROLES.length - 1).toBe(11);
+      for (const [index, role] of LEGION_ROLES.entries()) {
+        const session = await capabilitySession({ role, sessionId: `ses_capability_${role}` });
+        const due = CAPABILITY_FIRST_DUE_TICK + index;
+
+        await ticks(session.pane, due - 1);
+        await drain();
+        expect(measurements(session.calls), `the ${role} measures before tick ${due}`).toBe(0);
+
+        await ticks(session.pane, 1);
+        await session.reported(1);
+        expect(measurements(session.calls), `the ${role} measures at tick ${due}`).toBe(1);
+      }
+    });
+
+    test("a row that failed on its budget is measured again, and the second report is a measurement of its own", async () => {
+      setLegionCapabilityBudgetsForTests({ checkMs: 20, reportMs: 500 });
+      let searches = 0;
+      const session = await capabilitySession({
+        sessionId: "ses_capability_afresh",
+        host: {
+          // The first measurement's search never answers, so that row fails on its budget; the
+          // second's answers.
+          runSearchQuery: () => {
+            searches += 1;
+            return searches === 1
+              ? Promise.withResolvers<SearchQueryResult>().promise
+              : Promise.resolve(searchAnswer);
+          },
+        },
+      });
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+      await session.reported(1);
+      await drain();
+      const first = session.reports[0];
+      expect(first?.rows.find((row) => row.name === "web-search")).toEqual({
+        name: "web-search",
+        ok: false,
+        detail: "did not finish within 20 ms",
+      });
+      expect(first?.rows.filter((row) => row.ok)).toHaveLength(5);
+
+      // The next attempt is due `CAPABILITY_RETRY_TICKS` after the last one ended.
+      await ticks(session.pane, CAPABILITY_RETRY_TICKS - 1);
+      await drain();
+      expect(measurements(session.calls)).toBe(1);
+
+      await ticks(session.pane, 1);
+      await session.reported(2);
+      await drain();
+
+      const second = session.reports[1];
+      expect(second?.rows.map((row) => row.name)).toEqual([...LIVE_CAPABILITIES]);
+      expect(second?.rows.every((row) => row.ok)).toBe(true);
+      // A measurement of its own, not the first with one row patched: its own `measuredAt`, and
+      // every row measured afresh — each check asked the host a second time.
+      expect(Date.parse(String(second?.measuredAt))).toBeGreaterThan(
+        Date.parse(String(first?.measuredAt))
+      );
+      expect(measurements(session.calls)).toBe(2);
+      expect(session.calls.filter((name) => name === "discoverAgents")).toHaveLength(2);
+      expect(session.calls.filter((name) => name === "disabledAgents")).toHaveLength(2);
+      expect(session.calls.filter((name) => name === "runSearchQuery")).toHaveLength(2);
+      // `dispatch` and `gh`, once each per measurement.
+      expect(session.calls.filter((name) => name === "run")).toHaveLength(4);
+    });
+
+    test("a measurement that keeps failing a row is spent three times in all, and no later tick measures again", async () => {
+      setLegionCapabilityBudgetsForTests({ checkMs: 20, reportMs: 500 });
+      const session = await capabilitySession({
+        sessionId: "ses_capability_attempts",
+        host: { runSearchQuery: () => Promise.withResolvers<SearchQueryResult>().promise },
+      });
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+      await session.reported(1);
+      await drain();
+      for (const attempt of [2, 3]) {
+        await ticks(session.pane, CAPABILITY_RETRY_TICKS);
+        await session.reported(attempt);
+        await drain();
+      }
+      expect(CAPABILITY_ATTEMPTS).toBe(3);
+      expect(measurements(session.calls)).toBe(CAPABILITY_ATTEMPTS);
+      expect(session.reports).toHaveLength(CAPABILITY_ATTEMPTS);
+
+      // The attempts are spent: however many ticks follow, nothing is measured or sent again.
+      await ticks(session.pane, CAPABILITY_RETRY_TICKS * 4);
+      await drain();
+
+      expect(measurements(session.calls)).toBe(3);
+      expect(session.reports).toHaveLength(3);
+      expect(
+        session.reports.every((report) =>
+          report.rows.some((row) => row.name === "web-search" && !row.ok)
+        )
+      ).toBe(true);
+    });
+
+    test("a first report the daemon takes with every row present is the only one the session sends", async () => {
+      const session = await capabilitySession({ sessionId: "ses_capability_settled" });
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+      await session.reported(1);
+      await drain();
+      expect(session.reports[0]?.rows.every((row) => row.ok)).toBe(true);
+
+      await ticks(session.pane, CAPABILITY_RETRY_TICKS * 4);
+      await drain();
+
+      expect(measurements(session.calls)).toBe(1);
+      expect(session.reports).toHaveLength(1);
+    });
+
+    test("a turn that starts while the measurement runs holds its report until an idle tick", async () => {
+      let idle = true;
+      const searching = Promise.withResolvers<void>();
+      const answer = Promise.withResolvers<SearchQueryResult>();
+      const session = await capabilitySession({
+        sessionId: "ses_capability_held",
+        idle: () => idle,
+        host: {
+          runSearchQuery: () => {
+            searching.resolve();
+            return answer.promise;
+          },
+        },
+      });
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+      await searching.promise;
+      // The turn starts while the measurement runs, and the measurement then answers: the report
+      // is held rather than sent from under a working session.
+      idle = false;
+      answer.resolve(searchAnswer);
+      await drain();
+      expect(measurements(session.calls)).toBe(1);
+      expect(session.reports).toEqual([]);
+
+      // Still busy: the held report waits, and no second measurement is started for it.
+      await ticks(session.pane, 1);
+      await drain();
+      expect(session.reports).toEqual([]);
+      expect(measurements(session.calls)).toBe(1);
+
+      idle = true;
+      await ticks(session.pane, 1);
+      await session.reported(1);
+
+      expect(session.reports).toHaveLength(1);
+      expect(session.reports[0]?.rows.every((row) => row.ok)).toBe(true);
+      // The report the held measurement made, not a second one.
+      expect(measurements(session.calls)).toBe(1);
+    });
+
+    test("a report the daemon refuses and one lost in transport each cost one log line, and the session measures again at its next due tick", async () => {
+      const session = await capabilitySession({
+        sessionId: "ses_capability_refused",
+        // The boot's own ready is the first; the schedule's reports are the ones after it.
+        ready: (attempt) => {
+          if (attempt === 2) return Response.json({ error: "claim is suspended" }, { status: 409 });
+          if (attempt === 3) throw new Error("connection refused");
+          return new Response(null, { status: 204 });
+        },
+      });
+
+      const { warnings } = await loggedWarnings(async () => {
+        await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+        await session.reported(1);
+        await drain();
+        await ticks(session.pane, CAPABILITY_RETRY_TICKS);
+        await session.reported(2);
+        await drain();
+        await ticks(session.pane, CAPABILITY_RETRY_TICKS);
+        await session.reported(3);
+        await drain();
+      });
+
+      // Neither failure ends the session: it measured again at each due tick, and nothing exited.
+      expect(session.pane.exits).toEqual([]);
+      expect(measurements(session.calls)).toBe(3);
+      expect(session.reports).toHaveLength(3);
+      const failures = warnings.filter(
+        (warning) =>
+          warning.message === "legion: this session's capability report did not reach the daemon"
+      );
+      expect(failures).toHaveLength(2);
+      expect(failures.map((warning) => warning.context?.issue)).toEqual(["REPO-43", "REPO-43"]);
+      expect(String(failures[0]?.context?.error)).toContain("409: claim is suspended");
+      expect(String(failures[1]?.context?.error)).toContain("connection refused");
+      // The activity route answered 204, so no warning of the activity report's is among these.
+      expect(warnings.filter((warning) => warning.message.includes("activity report"))).toEqual([]);
+    });
+
+    test("the measurement reads the registration's promptAgents against the task tool's agents", async () => {
+      // The claim's prompts dispatch two agents: the task tool resolves neither `plan-reviewer`,
+      // nor `oracle` while `task.disabledAgents` turns it off.
+      const session = await capabilitySession({
+        sessionId: "ses_capability_prompt_agents",
+        promptAgents: ["oracle", "plan-reviewer"],
+        host: { disabledAgents: async () => ["oracle"] },
+      });
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+      await session.reported(1);
+      await drain();
+
+      expect(session.reports[0]?.rows[0]).toEqual({
+        name: "subagents",
+        ok: false,
+        detail:
+          "agents the prompts dispatch that the task tool does not resolve: plan-reviewer; disabled by task.disabledAgents: oracle",
+      });
+      expect(session.pane.exits).toEqual([]);
+    });
+
+    test("a session whose host exposes no pi.agents measures a subagents row that says so", async () => {
+      const session = await capabilitySession({
+        sessionId: "ses_capability_no_agents",
+        agentsExposed: false,
+      });
+
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+      await session.reported(1);
+      await drain();
+
+      expect(session.reports[0]?.rows[0]).toEqual({
+        name: "subagents",
+        ok: false,
+        detail: "pi.agents is not exposed",
+      });
+      expect(session.pane.exits).toEqual([]);
+    });
+
+    test("a measurement that fails outright costs the report alone: one log line, no report, and the next due tick measures again", async () => {
+      let hosts = 0;
+      const session = await capabilitySession({
+        sessionId: "ses_capability_no_host",
+        // The host is built once per measurement, and this factory throws at the first: a
+        // measurement that rejects outright, which no production host makes — `ompCapabilityHost`
+        // imports each Oh My Pi module lazily inside its own check and `measureCapabilities`
+        // catches every check, so a module that is missing is a failing row rather than a host
+        // that throws. The second measurement measures as every other.
+        capabilityHost: (calls) => {
+          hosts += 1;
+          if (hosts === 1) throw new Error("no capability host in this pane");
+          return recordingCapabilityHost(calls);
+        },
+      });
+
+      const { warnings } = await loggedWarnings(async () => {
+        await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+        await drain();
+        // The measurement rejected: nothing was measured and no report reached the daemon.
+        expect(measurements(session.calls)).toBe(0);
+        expect(session.reports).toEqual([]);
+
+        // The attempt was spent, so the next attempt is due `CAPABILITY_RETRY_TICKS` later.
+        await ticks(session.pane, CAPABILITY_RETRY_TICKS - 1);
+        await drain();
+        expect(measurements(session.calls)).toBe(0);
+
+        await ticks(session.pane, 1);
+        await session.reported(1);
+        await drain();
+      });
+
+      const failures = warnings.filter(
+        (warning) => warning.message === "legion: this session's capability measurement failed"
+      );
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.context?.claim).toBe(session.pane.claimToken);
+      expect(failures[0]?.context?.issue).toBe("REPO-43");
+      expect(String(failures[0]?.context?.error)).toContain("no capability host in this pane");
+      // The failure cost the one attempt and nothing else: the session kept running, and the
+      // next due tick measured afresh and sent its report.
+      expect(hosts).toBe(2);
+      expect(measurements(session.calls)).toBe(1);
+      expect(session.reports).toHaveLength(1);
+      expect(session.reports[0]?.rows.every((row) => row.ok)).toBe(true);
+      expect(session.pane.exits).toEqual([]);
+    });
+
+    test("a measurement that fails outright at every attempt is spent three times in all, and no later tick measures again", async () => {
+      let hosts = 0;
+      const session = await capabilitySession({
+        sessionId: "ses_capability_no_host_ever",
+        // Every measurement's host throws, so every attempt rejects outright: the three attempts
+        // are what ends the measuring, since no report is ever made to settle it.
+        capabilityHost: () => {
+          hosts += 1;
+          throw new Error("no capability host in this pane");
+        },
+      });
+
+      const { warnings } = await loggedWarnings(async () => {
+        // Past the last attempt's due tick: the first comes due at `IMPLEMENTER_DUE_TICK`, and
+        // each failure leaves the next due `CAPABILITY_RETRY_TICKS` later.
+        await ticks(
+          session.pane,
+          IMPLEMENTER_DUE_TICK + CAPABILITY_ATTEMPTS * CAPABILITY_RETRY_TICKS
+        );
+        await drain();
+      });
+
+      // The attempts are spent, and a host that keeps throwing is not measured a fourth time.
+      expect(hosts).toBe(CAPABILITY_ATTEMPTS);
+      expect(
+        warnings.filter(
+          (warning) => warning.message === "legion: this session's capability measurement failed"
+        )
+      ).toHaveLength(CAPABILITY_ATTEMPTS);
+      // Nothing reached the daemon, and the failures cost the session nothing else.
+      expect(session.reports).toEqual([]);
+      expect(session.pane.exits).toEqual([]);
+    });
+
+    test("a send the daemon takes and never answers is bounded: the request is aborted, the tick ends, the failure costs one log line, and the session measures again at its next due tick", async () => {
+      // The real bound is 10 s, past Bun's limit for one test; the machine is the same at 50 ms.
+      setLegionCapabilitySendTimeoutForTests(50);
+      const session = await capabilitySession({
+        sessionId: "ses_capability_hung",
+        // The boot's own ready is the first; the schedule's first report is the second, which
+        // this daemon takes and never answers.
+        ready: (attempt) =>
+          attempt === 2
+            ? Promise.withResolvers<Response>().promise
+            : new Response(null, { status: 204 }),
+      });
+      /** Resolves at the line the bound writes, which is what a test waits for here: the bound
+       * is a real timer inside the schedule, and no duration is guessed at. */
+      const bounded = Promise.withResolvers<void>();
+
+      const { warnings } = await loggedWarnings(async () => {
+        const stopSink = logger.registerLogSink((entry) => {
+          if (entry.message.includes("capability report did not reach the daemon")) {
+            bounded.resolve();
+          }
+        });
+        try {
+          await ticks(session.pane, IMPLEMENTER_DUE_TICK);
+          await session.reported(1);
+          // The bound passes: the send is aborted and the tick that made it ends, rather than
+          // leaving the schedule's in-flight guard set for the session's life.
+          await bounded.promise;
+          await drain();
+          await ticks(session.pane, CAPABILITY_RETRY_TICKS);
+          await session.reported(2);
+          await drain();
+        } finally {
+          stopSink();
+        }
+      });
+
+      // The attempt was spent as a refused one is, and the next due tick measured afresh.
+      expect(measurements(session.calls)).toBe(2);
+      expect(session.reports).toHaveLength(2);
+      expect(session.reports[1]?.rows.every((row) => row.ok)).toBe(true);
+      expect(session.pane.exits).toEqual([]);
+      const failures = warnings.filter(
+        (warning) =>
+          warning.message === "legion: this session's capability report did not reach the daemon"
+      );
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.context?.issue).toBe("REPO-43");
+      expect(String(failures[0]?.context?.error)).toContain("claims/ready did not answer within");
+      // The bound aborted the request the daemon took, rather than only ending the race the
+      // schedule runs it under: a daemon that never answers is left no open connection.
+      const hung = session.readySignals[0];
+      expect(hung?.aborted).toBe(true);
+      expect(String((hung?.reason as Error | undefined)?.message)).toContain(
+        "claims/ready did not answer within 50 ms"
+      );
+      // The send the daemon took ends its own bound: its request is never aborted. The wait is
+      // what makes that an assertion — the second send answered at once, well before its own
+      // 50 ms bound, so only a wait past that bound tells a cleared timer from one still armed.
+      // It is a real wait on purpose: the bound is a real `setTimeout` inside the schedule, and
+      // a timer that was cleared fires nothing there is to await.
+      await Bun.sleep(150);
+      expect(session.readySignals[1]?.aborted).toBe(false);
+    });
   });
 });
 
@@ -2966,10 +3719,9 @@ async function launchedController(options: {
     generation: 2,
     secret: `controller-secret-${options.sessionId}`,
   };
-  const stateDir = await mkdtemp(path.join(os.tmpdir(), "legion-controller-"));
+  const stateDir = controllerStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
-  temporaryPaths.push(stateDir);
   const capabilityFile = path.join(secretsDir, token);
   await writeFile(capabilityFile, "controller-capability\n", { mode: 0o600 });
   process.env.LEGION_CONTROLLER = "1";
@@ -3196,6 +3948,27 @@ async function loggedErrors<T>(
   }
 }
 
+/** One `logger.warn` line: its message, and the fields it carried. */
+interface LoggedWarning {
+  readonly message: string;
+  readonly context: Record<string, unknown> | undefined;
+}
+
+/** `logger.warn` lines while `run` runs, kept off the test's output. */
+async function loggedWarnings<T>(
+  run: () => Promise<T>
+): Promise<{ readonly value: T; readonly warnings: LoggedWarning[] }> {
+  const warnings: LoggedWarning[] = [];
+  const stopSink = logger.registerLogSink((entry) => {
+    if (entry.level === "warn") warnings.push({ message: entry.message, context: entry.context });
+  });
+  try {
+    return { value: await run(), warnings };
+  } finally {
+    stopSink();
+  }
+}
+
 /** `startOperatorController` for a claim that is refused: resolves to what the command notified
  * and what was logged. */
 async function startRefusedController(
@@ -3206,7 +3979,7 @@ async function startRefusedController(
   return { notices: value, errors };
 }
 
-describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
+describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
   // Oh My Pi holds every send a session_start handler makes and drains them at the end of its
   // startup, and an Envoy card starts its own turn, so a role claim made there would let a card
   // take the first turn: the operator's controller claims nothing until its start command runs.
@@ -3237,11 +4010,18 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
       },
     ]);
     const paths = controller.requests.map((request) => request.path);
+    // The claim names the process making it: the client instance this controller registered
+    // under, never a literal id, so a claim another process made under this session id would not
+    // match.
+    const roleClaimBody = {
+      session_id: "ses_controller",
+      role: controller.token,
+      client_instance_id: registeredClientInstance(controller.requests, "ses_controller"),
+    };
     const roleClaim = controller.requests.findIndex(
       (request) =>
         request.path === "/v1/roles/set" &&
-        JSON.stringify(request.body) ===
-          JSON.stringify({ session_id: "ses_controller", role: controller.token })
+        JSON.stringify(request.body) === JSON.stringify(roleClaimBody)
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
     expect(controller.exits).toEqual([]);
@@ -4247,7 +5027,7 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
   // topic, reports ready, which is when the daemon hands it the start message, so it marks the
   // start turn sent just before that report. The state it reads first is the daemon's own while
   // that daemon holds the controller's claim (internal/projection's golden), which the plugin's
-  // strict client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
+  // client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
   // sends no start message of its own: the daemon's delivery at ready is its one start message.
   test("a controller the daemon launched registers with its boot token, then reports ready once it holds the role", async () => {
     const markAtReady: EnvoyPluginInterface["startupTurn"][] = [];
@@ -4505,9 +5285,17 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
           request.body !== null &&
           "soft" in request.body
       );
+      // The re-assertion names the process making it: the client instance the pane registered its
+      // new session under, never a literal id — a claim the subagent's instance made would carry
+      // its own.
       expect(softClaims.at(-1)).toEqual({
         path: "/v1/roles/set",
-        body: { session_id: "ses_pane_second", role: controller.token, soft: true },
+        body: {
+          session_id: "ses_pane_second",
+          role: controller.token,
+          soft: true,
+          client_instance_id: registeredClientInstance(controller.requests, "ses_pane_second"),
+        },
       });
       expect(softClaims.map((request) => JSON.stringify(request.body))).not.toContainEqual(
         expect.stringContaining('"session_id":"ses_subagent"')
@@ -4665,12 +5453,20 @@ describe("the operator-launched controller (LEGION_CONTROLLER=1)", () => {
       claimRefused("POST /legion/v1/claims/register failed with 403: Invalid boot token"),
     ]);
 
+    // One soft claim, and it names the process that made it: the client instance the resumed
+    // process registered this session id under, never a literal id — the claim the first process
+    // made under that same id carries its own.
     expect(
       first.requests.filter(
         (request) =>
           request.path === "/v1/roles/set" &&
           JSON.stringify(request.body) ===
-            JSON.stringify({ session_id: "ses_controller_first", role: first.token, soft: true })
+            JSON.stringify({
+              session_id: "ses_controller_first",
+              role: first.token,
+              soft: true,
+              client_instance_id: registeredClientInstance(first.requests, "ses_controller_first"),
+            })
       )
     ).toHaveLength(1);
     const resumedConnections = natsConnections.slice(connectionsBeforeResume);
@@ -5326,7 +6122,7 @@ function registrationBeforeClaim(
   return registration.body;
 }
 
-describe("a Legion session's title", () => {
+describe.skipIf(skip)("a Legion session's title", () => {
   test("a phase worker is titled by its role and issue before its role claim registers it with Envoy", async () => {
     const worker = await bootPane({ role: "implementer" });
 
@@ -5423,7 +6219,7 @@ describe("a Legion session's title", () => {
   });
 });
 
-describe("the recreated-workspace notice", () => {
+describe.skipIf(skip)("the recreated-workspace notice", () => {
   const notices = (pane: ClaimPane) =>
     pane.sentMessages.flatMap((message, i) =>
       "customType" in message && message.customType === "legion-workspace-recreated"

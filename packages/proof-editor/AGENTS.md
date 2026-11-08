@@ -9,16 +9,48 @@ release, an npm publish and a pin bump.
 
 Two different commits of `sjawhar/proof-sdk` matter here, and they are not the same fact.
 
-The files in the table below, but for `src/directive-factories.ts`, were copied byte for byte out
-of **24a5fc94915cda5704897c497af6312c140db40d**, the fork's v0.3.13 — the last commit that still
-held them. The cut that followed deleted them from the fork, so that commit stays the audit
-source however far the fork line moves. `src/directive-factories.ts` comes from
-micromark-extension-directive 4.0.0 instead.
+The files in the table below, but for `src/directive-factories.ts` and `src/html-flow.ts`, were
+copied byte for byte out of **24a5fc94915cda5704897c497af6312c140db40d**, the fork's v0.3.13 —
+the last commit that still held them. The cut that followed deleted them from the fork, so that
+commit stays the audit source however far the fork line moves. `src/directive-factories.ts` comes
+from micromark-extension-directive 4.0.0 instead, and `src/html-flow.ts` from
+micromark-core-commonmark 2.0.3.
 
-The upstream modules this package imports at runtime come from the git dependency, pinned at
-**dc6a852b2ab45463dc9d3d17762235450c8ff0d6** on the fork's cleaned `library` line. Moving that
-pin changes nothing in the table; it changes what `node_modules/proof-sdk-upstream` holds, and
-`tests/upstream-pin.test.ts` is what checks it.
+The upstream modules this package imports at runtime are pinned at
+**dc6a852b2ab45463dc9d3d17762235450c8ff0d6** on the fork's cleaned `library` line, and they come
+from `proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz`, the tarball committed beside this
+file, which `package.json` installs as `"proof-sdk-upstream": "file:./proof-sdk-<commit>.tgz"`.
+It used to be a `github:` dependency, so every `bun install` — every CI job's and both image
+builds' — fetched those sources from api.github.com, and a bad minute there failed jobs that
+read nothing else of GitHub. Moving the pin changes nothing in the table below; it changes what
+`node_modules/proof-sdk-upstream` holds, and `tests/upstream-pin.test.ts` is what checks that.
+
+To move the pin to a new commit, in this order:
+
+1. Run `bun run build-upstream-tarball <commit>`, with the commit's full 40-character sha, which
+   writes `proof-sdk-<commit>.tgz` beside `package.json`. It needs GNU tar, whose options it
+   passes; on macOS put the `gnubin` directory of Homebrew's `gnu-tar` first on `PATH`.
+2. Delete the old tarball. The `.gitignore` entry that tracks it is a glob, so a forgotten one
+   stays tracked, and `tests/one-upstream-tarball.test.ts` fails until the directory holds
+   exactly one.
+3. Change `package.json`'s `proof-sdk-upstream` value to `file:./proof-sdk-<new commit>.tgz`.
+   That value is the one place the file's name is written in full.
+4. Run `bun install`, which rewrites `bun.lock` and the `sha512` it records for the dependency.
+5. Run `bun run upstream-declarations`, which rewrites `upstream/`.
+6. Update this file's own references to the old commit.
+
+`bun.lock`'s `sha512` ties the tarball to the lockfile and to nothing upstream, and a reviewer
+reads the tarball's diff as a binary. So whoever reviews a raise rebuilds it,
+`bun run build-upstream-tarball <commit> "$TMPDIR/rebuild.tgz"`, and compares the rebuild with the
+committed file using `cmp`: the bytes are that commit's only when the rebuild reproduces them.
+
+Nothing else names the file. The `.gitignore` negation `!packages/proof-editor/proof-sdk-*.tgz`
+and the eight path patterns that select on the tarball — the three filter lists of
+`.github/workflows/ci.yaml` (`bun_install`, `envoy_smoke`, `worker_image`),
+`.github/workflows/docs-pages.yaml`, `.github/workflows/release.yaml`, the `bun_job` reads of
+`.github/scripts/ci_job_reads.py`, and the `COPY` line of
+`packages/daemon/docker/worker.Dockerfile` and of `packages/envoy/docker/Dockerfile` — are each
+the glob `packages/proof-editor/proof-sdk-*.tgz`, so a new name needs no edit in any of them.
 
 | File | What it is |
 | --- | --- |
@@ -31,8 +63,9 @@ pin changes nothing in the table; it changes what `node_modules/proof-sdk-upstre
 | `src/lib.css` | The editor stylesheet |
 | `src/tests/*.test.ts` | The suites that came with those files |
 | `src/directive-factories.ts` | `factoryName`, `factoryLabel` and `factoryAttributes`, copied from micromark-extension-directive 4.0.0 (`lib/factory-name.js`, `lib/factory-label.js` and `lib/factory-attributes.js`), which does not export them: `src/directive-container.ts` tokenizes a `:::` opener's name, label and attributes with them. They are kept whole, the `disallowEol` branches for `false` that neither call takes included (INFRA-581) |
+| `src/html-flow.ts` | `htmlFlowStrict`, micromark's HTML (flow) construct, copied from micromark-core-commonmark 2.0.3 (`dev/lib/html-flow.js`), which exports its own but gives no way to change the one reading this package needs: `./html-blocks` registers it under `<` with micromark's disabled by name. One line differs, and the paragraph below says which |
 
-Twenty files under `src/` are legion's own rather than copies, so the file-by-file audit below does
+Twenty-two files under `src/` are legion's own rather than copies, so the file-by-file audit below does
 not reach them:
 
 | File | What it is |
@@ -41,6 +74,8 @@ not reach them:
 | `src/editor/schema/dom-attributes.ts` | `withDomAttributes`, the DOM-output-spec helper lifted out of `block-ids.ts` so the typed-block schema can use it too |
 | `src/editor-highlights.ts` | Presentation-only active and pulse highlights for marks and blocks, and the marks a host draws on blocks (`setBlockMarks`: a class each and an optional `title`, the whole set in one call, which replaces the last), drawn as a cached ProseMirror `DecorationSet`, because a host class write on editor DOM is read back as an edit (LEGION-458). The set is mapped through edits inside one node and rebuilt when the active, pulsed or marked set changes, or an edit can change which nodes carry a highlighted id or where a highlighted block ends: a mark or attribute step, inserted content that holds a highlighted target (a collaborator's update replaces the whole document), and, while a block is highlighted or marked, a replace across a node boundary; it is also biome-checked |
 | `src/editor-change-decorations.ts` | Presentation-only change marks a host draws over a read-only document, as a ProseMirror `DecorationSet`, for the same reason `src/editor-highlights.ts` is one (INFRA-575): one `setChangeDecorations({ text, widgets })` carries the whole set and replaces the last one, since its one caller computes both lists from one `ChangeMarks`. A text entry draws a class over a run of a block's own text, by a `range` of character offsets into that text (the block's inline content is walked, counting each leaf node the characters its type's `leafText` draws, a `hardbreak`'s newline among them, exactly as `textContent` counts them, so an offset after an inline atom or a hard break still lands on its character) or over the whole block where it names no range - the two ends are one optional field, so an entry with only one end cannot be written - and a widget entry draws a piece of text beside the document, before the top-level block it names or at the end of it. An entry names its block by index among the document's top-level blocks, and one naming a block the document does not hold, or text it does not reach, is dropped. The editor this serves is read-only and `setMarkdown` replaces its whole document, so a document change rebuilds the set from the entries rather than mapping stale positions; it is also biome-checked |
+| `src/reference-decorations.ts` | Presentation-only reference titles a host draws over the document, as a ProseMirror `DecorationSet`, for the same reason `src/editor-change-decorations.ts` is one (INFRA-869): one `setReferences({ scan, targets, onKeys })` carries the host's whole side of it and replaces the last one. The editor reads each text block's own text - a link's words and code masked out, so each candidate's offsets are the block's positions - through the host's `scan`, reports the distinct keys it found through `onKeys`, and draws each candidate the host's `targets` resolved as a `dispatch://` link holding its target's title, with the stored text hidden under it; an unresolved candidate stays the words the author wrote. A link whose text its author wrote keeps those words and is never drawn over; a link whose text is its own address - the autolink a document stores as `[dispatch://…](dispatch://…)` - is one candidate of that address, drawn beside its anchor rather than inside it, since the whole of the address reads as one reference. The stored text is never changed, and it shows in place of its title while the focused editor's selection touches that candidate, so an author always types over what is stored. A `length` on a target draws the title over only that many of the candidate's characters, never past its end, so a `#q2-` whose question is q2 keeps its `-`. An edit re-reads only the text blocks its steps touched (one position wider each way, so a block a deletion joined or split is read whole) and maps the rest; it is also biome-checked |
+| `src/document-reading.ts` | `@legion/proof-editor/reading`: `readDocument(doc, document)`, what a reader sees of a parsed document - each paragraph's text with the text of its `em`, `strong` and `del` elements, and each table's cells. It is taken from the DOM `DOMSerializer` draws into the caller's `document`, never from a walk over the nodes, because the element a mark draws is the mark's own `toDOM` answer and where one run of a mark is cut into several elements follows the serializer's mark ordering. One definition for its three readers: the pmdoc fixture generator stores it per corpus document, `packages/dispatch/e2e/engine-reading.ts` prints it, and Dispatch's web unit tests and the one browser row of five of its eight markdown parity families compare against it, the other three reading a shape no paragraph reading holds (INFRA-1404); it is also biome-checked |
 | `src/trailing-newline-input.ts` | Types over a selection that would leave its text block ending in a newline, where Firefox otherwise puts the text before a code block's newline or deletes a paragraph's hard break (LEGION-289); it is also biome-checked |
 | `src/editor/schema/uuid.ts` | `uuidV4`, the block-id default generator: a v4 UUID from `crypto.getRandomValues`, which every browsing context defines, where `crypto.randomUUID` exists only in a secure context, so a document opened over plain HTTP by a LAN address or a host name minted no id (LEGION-461); it is also biome-checked |
 | `src/record-mark-history.ts` | The plugin that keeps the composer's own record-mark writes out of undo history in both undo managers, so neither undo nor redo writes one back: a write of `proofComment`, `proofSuggestion` or `dispatchAsk` steps that takes nothing from another record (it removes no span, as a creation over another record's mark does not since the three declare `excludes: ''`, or puts back what it removes, as upstream's suggestion restamp does), and `removeRecordMark`'s removal; any other removal of a record mark keeps its undo step (LEGION-363, LEGION-458); it is also biome-checked |
@@ -57,9 +92,10 @@ not reach them:
 | `src/block-nesting.ts` | The block-nesting bound: micromark's own `list` and `blockQuote` held to `maxBlockNesting` (100), the number of blocks Dispatch's document service lets a document open inside one another. "The block-nesting bound" below says why it rewrites the two constructs in place and what that rewrite reaches; it is also biome-checked |
 | `src/editor/schema/leaf-marks.ts` | `withoutLeafMarks`: a node that is inline, is a leaf and is not text - `html`, `image`, `hardbreak`, `footnote_reference` - may hold no mark, so every parse seam (`src/lib-headless.ts`'s `parseMarkdown`, `src/lib.ts`'s shared `parserCtx` and its `setMarkdown`) strips the emphasis, strong, strikethrough or link mark the markdown wrapped around one. Go's reader of the same document holds marks on text alone (`packages/envoy/internal/dispatch/pmdoc/node.go` refuses a mark on any node that is not text) and the editor's own collaborative store drops such a mark on the next round trip, so a document drew one way in the editor and another way in a comment or a past version. The rule is structural rather than a list of those four names, because that is the shape both readers have. The bottom-up walk returns the same node wherever nothing changed, so a document holding no marked leaf comes back as it went in, and it builds with `node.mark` and `node.copy` rather than `Node.fromJSON` or `doc.check()`, which validate attributes the commonmark preset's own image parser leaves `null`. It is composed beside `withBlockIds`, never folded into it, since that walk returns its input unchanged when no block was missing an id |
 | `src/nested-links.ts` | `remarkHoistNestedLinks` and the `$remark` plugin that registers it: a `link` holding a `link` is rewritten into siblings, the inner link beside the runs around it and each run wrapped in a copy of the outer link's `url` and `title`, so `[a <https://u.test> b](u)` reads as `a ` under the label's link, the autolink's text under its own, and ` b` under the label's again. The only markdown that nests the two is an autolink inside a link label, since CommonMark forbids an inline link there, and `@milkdown/transformer` cannot read that label as written: it holds one flat mark set, so the link mark runner's `closeMark` on the inner autolink removes the `link` type outright (`removeFromSet`) and every later run of the label was left with no link at all, where Go's reader gives it the label's link again (`packages/envoy/internal/dispatch/pmdoc/parse.go`). The hoisted spelling is the tree Go's renderer writes for itself (`[a ](u)<https://u.test>[ b](u)`), so both readers agree rather than meeting at a third reading. It is registered at every parse seam - the explicit chain in `src/lib-headless.ts` and, through `remarkCtx`, `src/lib.ts`'s shared `parserCtx` and its `setMarkdown` - and changes no output, since a unified transformer runs on `runSync` at parse and never on `stringify` |
+| `src/html-blocks.ts` | How this package reads a block of HTML: `strictHtmlFlowSyntax`, which registers `htmlFlowStrict` from `./html-flow` under `<` and disables micromark's `htmlFlow` by name, and `remarkHtmlBlockParagraphs`, which draws each block of HTML as a paragraph holding the same text as one inline `html` node, since the Proof schema has no node for a block of HTML and Milkdown drew one as a thrown parse or a dropped container. `remarkStrictHtmlFlow`, `libraryRemarkHtmlFlowPlugin` and `libraryRemarkHtmlBlockPlugin` install them on the headless parse processor and on the editor: the construct beside the directive construct, the transform after the mark plugins, whose own block-level span is a pair of blocks of HTML until they have paired it, and before the typed-block transforms, which read the drawn paragraph as the block's content (#2507); it is also biome-checked |
 | `src/tests/harness.ts` | The `bun test` registration the copied suites call instead of their own `test()` tally |
 
-Twenty-four kinds of edit are allowed in the copied files, and no others: the import specifiers of
+Twenty-six kinds of edit are allowed in the copied files, and no others: the import specifiers of
 upstream modules; `bun test` registration in the suites (`src/tests/harness.ts` replaces each
 file's own `test()` tally and its `process.exit` tail); `src/tests/headless-no-dom.test.ts`,
 whose entry named the fork's built `dist/headless.js` and now names `../lib-headless.js` — its
@@ -86,6 +122,11 @@ cursors through `collabCursorPlugin` from `./collab-cursor-plugin` instead of ca
 `src/lib.ts` installing `editorChangeDecorationsPlugin` and routing the
 handle's new `setChangeDecorations` through `./editor-change-decorations`, whose
 `ChangeDecorations`, `TextDecoration` and `BlockWidget` it re-exports (INFRA-575);
+`src/lib.ts` installing `referenceDecorationsPlugin` and routing the handle's new
+`setReferences` through `./reference-decorations`, whose `EditorReferences`,
+`ReferenceCandidate` and `ReferenceTarget` it re-exports, with `src/lib.css` holding the rules
+that draw a reference's title on one line, cut with an ellipsis, and hide the stored text under
+it (INFRA-869);
 `src/dispatch-marks.ts`'s `dispatchAsk` schema declaring `excludes: ''`,
 so two readers' asks may cover the same text, with `removeAskMark` removing that mark's instance
 by id rather than every `dispatchAsk` over its range and the parse runner closing its own span of
@@ -95,7 +136,19 @@ so a click on text two record marks cover opens the narrower one (LEGION-458);
 `src/dispatch-action-bar.ts`'s Comment / Suggest / Ask buttons and its exported
 `commentOnSelection` taking one path, `ActionBarController.act`, which marks nothing for an empty
 or stale range or a read-only view, with `src/lib.ts` exposing `commentOnSelection` on the handle
-for Dispatch's `Ctrl+Alt+M` (LEGION-680); `src/block-schema.ts` exporting `typedBlockRefusal`,
+for Dispatch's `Ctrl+Alt+M` (LEGION-680); comments on a read-only document (INFRA-448), where
+`src/lib.ts`'s `readOnly` option and `setReadOnly` give way to one access mode, the `access`
+option and `setAccess` (`'edit' | 'comment' | 'read'`), which make the view editable for `'edit'`
+alone and hand the mode to the bar's own `setAccess`, and the bar hides itself on a read-only view
+unless its access is `'comment'` and the selection holds text, and then offers Comment alone,
+which writes no mark and reports a `quote-comment` action with the selection's range, and the
+bar's touch focus loss (`editorLostFocus`) hiding it on an editable view alone, since a read-only
+view - one its issue closed while it was focused, which the change blurs - never takes focus again,
+`src/dispatch-marks.ts`'s `MarkAction` carrying that kind, and
+`src/tests/dispatch-action-bar-position.test.ts`'s view double declaring `editable: true`, since
+the bar reads it before it shows, its element double declaring `hidden`, and its case for a touch
+view that turns read-only with comment access after losing focus;
+`src/block-schema.ts` exporting `typedBlockRefusal`,
 the refusal `visit` throws, so the read-only transform decides with the same rule, and
 `src/lib-headless.ts`'s `readOnly` option installing `remarkReadOnlyDirectives` from
 `./read-only-directives` in place of `remarkTypedBlocks` (INFRA-529); `src/lib-headless.ts`
@@ -150,11 +203,15 @@ that make a file type-check, each of which erases before runtime (below).
 
 To audit a copied file, diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r
 24a5fc94 root:src/<file>`; every file in the copied-files table but `src/directive-factories.ts`
-has that counterpart, and the only lines that differ should be the twenty-four kinds.
+and `src/html-flow.ts` has that counterpart, and the only lines that differ should be the
+twenty-six kinds.
 `src/directive-factories.ts`'s counterparts are those three files of micromark-extension-directive
 4.0.0 (`node_modules/.bun/micromark-extension-directive@4.0.0` at the repository root, or the
 package's npm tarball); each function there differs from its source by the join and the type
-annotations and casts alone.
+annotations and casts alone. `src/html-flow.ts`'s counterpart is
+`node_modules/.bun/micromark-core-commonmark@2.0.3/node_modules/micromark-core-commonmark/dev/lib/html-flow.js`,
+and it differs from it by the construct's name, the one line its notice quotes, the import of
+`blankLine` from the package rather than a copy of it, and the type annotations alone.
 
 `scripts/`, `tests/` and `upstream/` are legion's own. `scripts/` and `tests/` are linted and
 type-checked like any other package's; `upstream/` is generated, and Biome is off over it the
@@ -162,19 +219,52 @@ way it is over the copy. `tests/upstream-pin.test.ts` is the guard on the pin: i
 installed dependency and fails when a fix the pinned line carries has gone missing, or when
 `upstream/` stops being what the pinned sources emit. `tests/upstream-boundary.ts` has no
 runtime at all — `bun run typecheck` is what runs it, and it fails when a name crossing the
-boundary is `any` again.
+boundary is `any` again. `tests/going-answer-no-link.test.ts` is the ground truth for Dispatch's
+answer filter (`packages/envoy/going/filter.go`): it parses what that filter emitted for every
+probe of its own Go suite — `packages/envoy/going/testdata/filtered-answers.json`, a golden
+`packages/envoy/going/filter_golden_test.go` writes under `-update` — with the plugin list
+`src/lib-headless.ts` parses a body with, and fails on a `link`, an `image` or an `html` node,
+which no cleared answer may hold.
 
 The copied files are proof-sdk's and stay under its MIT license, as does `upstream/`, which tsc
 derives from proof-sdk's pinned sources; `LICENSE` beside this file is that license, taken from the
 fork at 24a5fc94. `src/directive-factories.ts` is micromark-extension-directive's instead and
-stays under that package's MIT license, whose notice the file carries at its top. Legion's own
-files listed above, `scripts/` and `tests/` are under the repository's Apache-2.0 license.
+`src/html-flow.ts` micromark-core-commonmark's, and each stays under that package's MIT license,
+whose notice the file carries at its top. Legion's own files listed above, `scripts/` and
+`tests/` are under the repository's Apache-2.0 license.
 
 `src/directive-container.ts` relies on two parts of micromark's document tokenizer: a container
 state's `_closeFlow`, which a closing fence sets to end the flow inside the block, and a
 construct's `resolveAll`, which runs over the document's events once it is tokenized. micromark,
 which reaches this package through `mdast-util-from-markdown`, stays at 4.0.2 in `bun.lock`: a
 move must keep both working, and 4.0.3 is quadratic for quotes and lists (micromark/micromark#246).
+
+`src/html-flow.ts` is micromark's HTML (flow) construct with one line changed, in `tagName`,
+where a block of one complete tag (an HTML block of kind 7) is found: upstream returns
+`self.interrupt && !self.parser.lazy[self.now().line]`, the copy returns `self.interrupt`, so
+such a block never opens while interrupting a paragraph, on a lazy line as on any other.
+CommonMark forbids a type-7 block from interrupting a paragraph at all and goldmark, which the
+Dispatch server reads documents with, obeys that: the server reads `> a` then `<b>` as one quoted
+paragraph of `a ` and the inline HTML. Here the block opened, exiting the containers behind the
+lazy line, and milkdown, which has no node for a block of HTML there, dropped the block with its
+container and the container's text, so a reader of that comment saw neither the quote nor the
+word `a`. Every other kind of HTML block reads as micromark reads it, a kind-7 block that opens a
+paragraph of its own included.
+
+A block of HTML that does open still has to draw: the schema has no node for one and gains none,
+and Milkdown built the schema's inline `html` node where only a block may stand, so the parse
+threw `Cannot create node for doc` and the whole view failed to draw rather than drawing — and in
+a block quote, a list item or a footnote definition it dropped the container with the block and
+every word around it, the same loss of a reader's text the lazy line used to cause.
+`src/html-blocks.ts`'s `remarkHtmlBlockParagraphs` draws each block of HTML as a
+paragraph whose one child is that block's text as one inline `html` node, so the block draws in
+place, keeps its container, and writes back as the markdown it was written as, with neither the
+copied construct nor the schema touched (#2507). It is registered after the mark plugins, since a
+record mark covering whole blocks is written as a `<span …>` line and a `</span>` line — two
+blocks of HTML until `remarkProofMarks` and `remarkDispatchMarks` have paired them — and before
+the typed-block transforms, which check a `:::` block's content against the node types its rule
+names. `tests/html-flow.test.ts` holds every half, in both engines, with the markdown each tree
+writes back.
 
 ## The block-nesting bound
 
@@ -225,8 +315,10 @@ both `lib/` and `dev/lib/`, because Vite resolves the `development` export condi
 
 Everything `src/` imports as `proof-sdk-upstream/src/…` — the mark plugins, the mark popover,
 `editor/schema/{proof-marks,code-block-ext,frontmatter}`, `formats/*` — still belongs to the fork
-and comes from a git dependency pinned to that same commit. Three resolvers reach it, and each
-needs telling, because proof-sdk's `package.json` `exports` publishes only its built `dist`:
+and comes from the committed tarball, which packs that same commit's `src/`. Three resolvers
+reach it, and each needs telling, because the upstream manifest at this pin declares no `main`,
+no `module`, no `types`, no `exports` and no `files`: the package publishes no entry point at
+all, so each consumer reaches `src/` by path:
 
 | Consumer | Mechanism |
 | --- | --- |
@@ -276,8 +368,8 @@ fails: it reads the Dark Reader fix where it lives, renders each proof mark, red
 replacement in a happy-dom view, rejects an insert split by another, comments twice over one word,
 round-trips that through markdown and deletes one of the two, and renders one diagram of every
 Mermaid type while still refusing a flowchart that ends in an arrow. Moving the pin changes the
-package dependency, `bun.lock`, `upstream/` and this file's source audit references; no Bun patch
-applies to this source.
+tarball, the package dependency, `bun.lock`, `upstream/` and this file's source audit references;
+no Bun patch applies to this source.
 
 ## No build step
 
@@ -288,10 +380,11 @@ TypeScript, Vite compiles it. There is no `dist` and nothing to build before usi
 ## Commands
 
 ```bash
-bun run test                   # the moved suites through src/tests/harness.ts, plus tests/
-bun run typecheck              # tsc against tsconfig.check.json (src/, tests/ and scripts/)
-bun run lint                   # Biome over the package; the root biome.json turns it off for the copy
-bun run upstream-declarations  # rewrite upstream/ from the pinned sources (only a moved pin needs it)
+bun run test                    # the moved suites through src/tests/harness.ts, plus tests/
+bun run typecheck               # tsc against tsconfig.check.json (src/, tests/ and scripts/)
+bun run lint                    # Biome over the package; the root biome.json turns it off for the copy
+bun run upstream-declarations   # rewrite upstream/ from the pinned sources (only a moved pin needs it)
+bun run build-upstream-tarball  # write proof-sdk-<commit>.tgz beside package.json for the commit given
 ```
 
 ## Conventions
@@ -303,7 +396,7 @@ against the source stays readable. `assist` matters as much as the other two: it
 `organizeImports` is a safe fix, so one `biome check --write` or an editor with organize-on-save
 would reorder the copy's imports. `upstream/` is excluded the same way, for the same reason:
 it is tsc's output, not source. Anything legion writes here — `scripts/`, `tests/`,
-`src/block-pointers.ts`, `src/collab-cursor-plugin.ts`, `src/editor-highlights.ts`, `src/editor-change-decorations.ts`, `src/editor/schema/uuid.ts`, `src/trailing-newline-input.ts`,
+`src/block-pointers.ts`, `src/collab-cursor-plugin.ts`, `src/editor-highlights.ts`, `src/editor-change-decorations.ts`, `src/reference-decorations.ts`, `src/editor/schema/uuid.ts`, `src/trailing-newline-input.ts`,
 `src/record-mark-history.ts`, `src/record-mark-retype.ts`, `src/record-mark-target.ts`, `src/read-only-directives.ts`, `src/typed-block-drawing.ts`, `src/ask-content.ts`, `src/mermaid-svg.ts`, `src/mermaid-render.ts`, `src/mermaid-code-block-view.ts`,
 `src/directive-container.ts`, `src/block-nesting.ts`,
 `src/tests/harness.ts` — follow the

@@ -1,13 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS, MINTED_DEDUPE_KEY_PATTERN } from "@legion/contracts";
+import { bearerCredential, type RequestCredential } from "../bearer";
 import { machineID } from "../machine";
+import type { TmuxPlace } from "../tmux-place";
 import {
   createEnvoyClient,
   type DeliveryAnswer,
   EnvoyApiError,
   EnvoySendUnconfirmedError,
+  mayActOnRoleRecord,
   newClientInstanceID,
+  type RoleInfo,
+  roleHeldBy,
+  UNRESPONSIVE_RULE,
 } from "../transport";
+
+/** The grace the unresponsive rule names, in minutes, from the constant the Dispatch server
+ *  refuses a claim take by: a change of that constant must change the rule's text, and these
+ *  expectations with it, rather than leaving the text saying a number nothing enforces. */
+const GRACE_MINUTES = ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS / 60_000;
 
 type RecordedFetch = {
   readonly fetch: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -119,6 +130,49 @@ describe("EnvoyClient", () => {
       plugin: "@sjawhar/pi-envoy",
       plugin_version: "11.0.0",
     });
+  });
+
+  test("a subscription carries the session's tmux place, and no key when it has none", async () => {
+    const interest = {
+      session_id: "ses_sender",
+      machine_id: "host-a",
+      dir: "/work",
+      topics: ["notifications.agent.ses_sender"],
+    };
+    const recorded = recordFetch([jsonResponse(interest), jsonResponse(interest)]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    const register = (place?: TmuxPlace) =>
+      client.subscribe({
+        sessionID: "ses_sender",
+        directory: "/work",
+        topics: ["notifications.agent.ses_sender"],
+        port: 0,
+        title: "Envoy QA",
+        driving: true,
+        plugin: PLUGIN,
+        ...(place === undefined ? {} : { place }),
+      });
+
+    const place: TmuxPlace = {
+      socket: "/tmp/tmux-1000/default",
+      server_pid: "4242",
+      session_name: "legion",
+      window_id: "@7",
+      window_index: 3,
+      window_name: "worker",
+      pane_id: "%3",
+      pane_index: 1,
+      layout: "b2f1,208x52,0,0,5",
+      zoomed: false,
+    };
+    await register(place);
+    await register();
+
+    expect(await recorded.requests[0]?.json()).toMatchObject({ tmux_place: place });
+    const outside = (await recorded.requests[1]?.json()) as Record<string, unknown>;
+    // The key is absent, not undefined: a registration that reports no place must not read as
+    // one reporting an empty place.
+    expect(Object.hasOwn(outside, "tmux_place")).toBe(false);
   });
 
   test("asks for consumer delivery and reads each delivery answer", async () => {
@@ -257,6 +311,35 @@ describe("EnvoyClient", () => {
 
     expect(recorded.requests[0]?.url).toBe("http://listener/v1/interests/unsubscribe");
     expect(await recorded.requests[0]?.json()).toEqual({ session_id: "ses_sender", topics: [] });
+  });
+
+  test("an unsubscribe names the releasing process, and omits the key without one", async () => {
+    const recorded = recordFetch([new Response("ok"), new Response("ok")]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await client.unsubscribe({
+      sessionID: "ses_sender",
+      topics: ["notifications.agent.ses_sender"],
+      clientInstanceID: "0f8c2b1a4d6e7f90",
+    });
+    await client.unsubscribe({
+      sessionID: "ses_sender",
+      topics: ["notifications.agent.ses_sender"],
+    });
+
+    expect(await recorded.requests[0]?.json()).toEqual({
+      session_id: "ses_sender",
+      topics: ["notifications.agent.ses_sender"],
+      client_instance_id: "0f8c2b1a4d6e7f90",
+    });
+    const unnamed = (await recorded.requests[1]?.json()) as Record<string, unknown>;
+    // The key is absent, not undefined: a release naming no process frees no claim, and an
+    // older listener sees an unchanged body.
+    expect(Object.hasOwn(unnamed, "client_instance_id")).toBe(false);
+    expect(unnamed).toEqual({
+      session_id: "ses_sender",
+      topics: ["notifications.agent.ses_sender"],
+    });
   });
 
   test("gets one session interest using the listener response shape", async () => {
@@ -458,6 +541,53 @@ describe("EnvoyClient", () => {
     });
   });
 
+  // The listener answers 200 for an ad-hoc topic send whose subscriber stopped answering: it
+  // stored that session's copy and asked it for no receipt, and names the session under
+  // `unresponsive` (`cmd/listener/api.go`'s `publishResponse`). The field has to survive the
+  // client, because an agent told only "published" reads a stalled peer as one that took the
+  // message (dispatch://INFRA-392, R7).
+  test("a publish names every recipient the listener only stored it for", async () => {
+    const envelope = {
+      event_id: "event-stored",
+      source: "agent",
+      source_event_id: "agent.ses_sender.event-stored",
+      source_session: "ses_sender",
+      topic: "notifications.team.deploy-squad.all",
+      dedupe_key: "agent.team.event-stored",
+      issued_at: 3,
+      payload_summary: "broadcast",
+      trace_id: "trace-3",
+    };
+    const recorded = recordFetch([
+      jsonResponse({ ...envelope, unresponsive: ["ses_stalled", "ses_quiet"] }),
+      jsonResponse({
+        ...envelope,
+        topic: "notifications.role.controller",
+        holder: "ses_holder",
+        holder_state: "live",
+      }),
+      jsonResponse(envelope),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+    const publish = (topic: string) =>
+      client.publish({ sourceSessionID: "ses_sender", topic, message: "broadcast" });
+
+    const stored = await publish("notifications.team.deploy-squad.all");
+    const role = await publish("notifications.role.controller");
+    const taken = await publish("notifications.team.deploy-squad.all");
+
+    expect(stored.unresponsive).toEqual(["ses_stalled", "ses_quiet"]);
+    // A role publish's holder and the state the listener resolved it in, under the two names
+    // every role answer uses.
+    expect(role.holder).toBe("ses_holder");
+    expect(role.holderState).toBe("live");
+    expect(role.unresponsive).toEqual([]);
+    // An answer naming none — every recipient confirmed, or a listener predating the field —
+    // reads as it always did.
+    expect(taken.unresponsive).toEqual([]);
+    expect(taken.holderState).toBeUndefined();
+  });
+
   test("reads a 202 kept answer as a published message the listener holds for the role's next holder", async () => {
     // Nobody holds the role, so the listener kept the message on the role's kept lane and
     // answered 202. That is a success, not a refusal: the message reaches whoever claims the
@@ -474,8 +604,7 @@ describe("EnvoyClient", () => {
         payload_summary: "the worker is stalled",
         trace_id: "trace-kept",
         kept: true,
-        kept_reason: "holder_lapsed",
-        holder: "ses_lapsed",
+        kept_reason: "unclaimed",
       }),
       { status: 202, headers: { "Content-Type": "application/json" } }
     );
@@ -489,8 +618,7 @@ describe("EnvoyClient", () => {
     });
 
     expect(result.kept).toBe(true);
-    expect(result.keptReason).toBe("holder_lapsed");
-    expect(result.holder).toBe("ses_lapsed");
+    expect(result.keptReason).toBe("unclaimed");
     expect(result.envelope.event_id).toBe("event-kept");
   });
 
@@ -654,6 +782,31 @@ describe("EnvoyClient", () => {
     });
   });
 
+  test("a claim names the process making it, and omits the key without one", async () => {
+    const interest = { session_id: "ses_sender", machine_id: "host-a", dir: "/work", topics: [] };
+    const recorded = recordFetch([jsonResponse(interest), jsonResponse(interest)]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    await client.setRole({
+      sessionID: "ses_sender",
+      role: "controller",
+      soft: true,
+      clientInstanceID: "0f8c2b1a4d6e7f90",
+    });
+    await client.setRole({ sessionID: "ses_sender", role: "controller", soft: true });
+
+    expect(await recorded.requests[0]?.json()).toEqual({
+      session_id: "ses_sender",
+      role: "controller",
+      soft: true,
+      client_instance_id: "0f8c2b1a4d6e7f90",
+    });
+    const unnamed = (await recorded.requests[1]?.json()) as Record<string, unknown>;
+    // The key is absent, not undefined, so an older listener sees an unchanged body.
+    expect(Object.hasOwn(unnamed, "client_instance_id")).toBe(false);
+    expect(unnamed).toEqual({ session_id: "ses_sender", role: "controller", soft: true });
+  });
+
   test("a 409 without the held-role shape stays a typed API error", async () => {
     const recorded = recordFetch([Response.json({ error: "duplicate" }, { status: 409 })]);
     const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
@@ -706,8 +859,271 @@ describe("EnvoyClient", () => {
 
     const sessions = await client.listSessions();
 
-    expect(sessions).toEqual([unversioned, versioned]);
+    // A listener that names no state lists only sessions it holds a registration for, so every
+    // row of its answer is live; reading the absence as anything else buries working sessions.
+    expect(sessions).toEqual([
+      { ...unversioned, state: "live" },
+      { ...versioned, state: "live" },
+    ]);
     expect(recorded.requests[0]?.url).toBe("http://listener/v1/sessions");
+  });
+
+  test("drops a session row's tmux place, and any other member this build does not read", async () => {
+    const row = {
+      session_id: "ses_placed",
+      machine_id: "host-a",
+      dir: "/work",
+      port: 0,
+      title: "Envoy QA",
+      topics: ["notifications.agent.ses_placed"],
+      self_subscribed: false,
+    };
+    const placed = {
+      ...row,
+      // The listener answers the place of a session in a pane. Nothing on this side reads it —
+      // the one reader of this list is the `envoy_sessions` tool, which hands the model every
+      // member of every row, and a layout string is up to 2 000 characters of them — so the
+      // schema leaves it off and zod drops it.
+      tmux_place: {
+        socket: "/tmp/tmux-1000/default",
+        server_pid: "4242",
+        session_name: "legion",
+        window_id: "@7",
+        window_index: 3,
+        window_name: "worker",
+        pane_id: "%3",
+        pane_index: 1,
+        zoomed: true,
+      },
+    };
+    const recorded = recordFetch([
+      jsonResponse([
+        placed,
+        // A newer listener's row, read by this build: the member it does not know is dropped,
+        // not refused, so one added field never blanks a machine's session list.
+        { ...placed, session_id: "ses_newer", pane_title: "worker 3" },
+      ]),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions();
+
+    // A row carrying a place still parses, which is what keeps an older reader working against a
+    // listener that answers one.
+    expect(sessions[0]).toEqual({ ...row, state: "live" });
+    expect(sessions[1]).toEqual({ ...row, session_id: "ses_newer", state: "live" });
+  });
+
+  test("keeps an unresponsive row's state and its last registration, and asks for it by name", async () => {
+    const stalled = {
+      session_id: "ses_stalled",
+      machine_id: "host-a",
+      dir: "/work",
+      port: 0,
+      title: "Reviewer",
+      topics: ["notifications.agent.ses_stalled"],
+      self_subscribed: true,
+      last_seen: 1_700_000_000_000,
+      state: "unresponsive",
+    };
+    const recorded = recordFetch([jsonResponse([stalled])]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const sessions = await client.listSessions({ include: "unresponsive" });
+
+    // A caller that must see a stalled peer asks for it: without the selector the listener
+    // answers the live rows alone, and the peer reads as a session nobody is running.
+    expect(recorded.requests[0]?.url).toBe("http://listener/v1/sessions?include=unresponsive");
+    expect(sessions[0]).toMatchObject({ state: "unresponsive", last_seen: 1_700_000_000_000 });
+  });
+
+  test("names the recipient's state on a send, and reads a listener that names none as live", async () => {
+    const envelope = {
+      event_id: "event-stalled",
+      source: "agent",
+      source_event_id: "agent.sender.event-stalled",
+      topic: "notifications.agent.ses_stalled",
+      dedupe_key: "event-stalled",
+      issued_at: 1,
+      payload_summary: "hello",
+      trace_id: "trace-stalled",
+      recipient: "ses_stalled",
+    };
+    const recorded = recordFetch([
+      jsonResponse({ ...envelope, recipient_state: "unresponsive" }),
+      jsonResponse(envelope),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const stalled = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_stalled",
+      message: "hello",
+    });
+    const older = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_stalled",
+      message: "hello",
+    });
+
+    expect(stalled.recipientState).toBe("unresponsive");
+    expect(older.recipientState).toBe("live");
+  });
+
+  // A sender decides whether to wait on the recipient's state and on how long it has been
+  // silent, and the listener sends both; dropping last_seen left the caller the state alone
+  // (dispatch://INFRA-392, R7).
+  test("carries the recipient's last registration from a send, and omits one the listener cannot name", async () => {
+    const envelope = {
+      event_id: "event-stalled",
+      source: "agent",
+      source_event_id: "agent.sender.event-stalled",
+      topic: "notifications.agent.ses_stalled",
+      dedupe_key: "event-stalled",
+      issued_at: 1,
+      payload_summary: "hello",
+      trace_id: "trace-stalled",
+      recipient: "ses_stalled",
+      recipient_state: "unresponsive",
+    };
+    const recorded = recordFetch([
+      jsonResponse({ ...envelope, last_seen: 1_700_000_000_000 }),
+      jsonResponse(envelope),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const timed = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_stalled",
+      message: "hello",
+    });
+    const untimed = await client.send({
+      sourceSessionID: "ses_sender",
+      targetSessionID: "ses_stalled",
+      message: "hello",
+    });
+
+    expect(timed.lastSeen).toBe(1_700_000_000_000);
+    expect(untimed.lastSeen).toBeUndefined();
+  });
+
+  // The refusal an agent reads at the moment it decides whether its peer is alive. The
+  // listener's own text names no state, so an unresponsive holder's lapsed role read as a dead
+  // one, and the next agent took its work (dispatch://INFRA-392, R7).
+  test("a lapsed role's refusal says which state its holder is in, and that the claim stands", async () => {
+    const recorded = recordFetch([
+      Response.json(
+        {
+          error:
+            "role reviewer holder ses_stalled lapsed; claim retained (last seen 1700000000000)",
+          reason: "holder_lapsed",
+          holder: "ses_stalled",
+          holder_state: "unresponsive",
+          last_seen: 1_700_000_000_000,
+          claim_released: false,
+        },
+        { status: 404 }
+      ),
+      Response.json(
+        {
+          error: "role reviewer holder ses_ended lapsed; claim retained (last seen unavailable)",
+          reason: "holder_lapsed",
+          holder: "ses_ended",
+          holder_state: "gone",
+          claim_released: false,
+        },
+        { status: 404 }
+      ),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const stalled = await client.getRole("reviewer").catch((error: unknown) => error);
+    const ended = await client.getRole("reviewer").catch((error: unknown) => error);
+
+    expect(stalled).toBeInstanceOf(EnvoyApiError);
+    const unresponsive = stalled as EnvoyApiError;
+    expect(unresponsive.message).toBe(
+      "role reviewer holder ses_stalled lapsed; claim retained (last seen 1700000000000) Holder ses_stalled is unresponsive, last seen 2023-11-14T22:13:20.000Z. An unresponsive session is not dead: it keeps its role claims and its issue claims, and a message sent to it is stored until it answers. Start no replacement for it and take no claim from it until it is gone, " +
+        `or until ${GRACE_MINUTES} minutes have passed since its last_seen, the time of its last registration.`
+    );
+    expect(unresponsive.sessionState).toBe("unresponsive");
+    expect(unresponsive.holder).toBe("ses_stalled");
+    expect(unresponsive.lastSeen).toBe(1_700_000_000_000);
+    expect(unresponsive.claimReleased).toBe(false);
+
+    // A holder past the gone horizon is said to be gone, with no rule to wait on, and a time
+    // the listener cannot name is left unsaid rather than guessed.
+    const gone = ended as EnvoyApiError;
+    expect(gone.message).toBe(
+      "role reviewer holder ses_ended lapsed; claim retained (last seen unavailable) Holder ses_ended is gone."
+    );
+    expect(gone.sessionState).toBe("gone");
+    expect(gone.lastSeen).toBeUndefined();
+  });
+
+  // A send refused for a session the listener will not answer for names that session's state
+  // the same way, so "no live session" no longer reads as death on its own.
+  test("a refused send says whether the session is unresponsive or gone", async () => {
+    const recorded = recordFetch([
+      Response.json(
+        {
+          error: "no live session ses_stalled",
+          state: "unresponsive",
+          last_seen: 1_700_000_000_000,
+        },
+        { status: 404 }
+      ),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const refusal = (await client
+      .send({ sourceSessionID: "ses_sender", targetSessionID: "ses_stalled", message: "hello" })
+      .catch((error: unknown) => error)) as EnvoyApiError;
+
+    expect(refusal.message).toStartWith(
+      "no live session ses_stalled That session is unresponsive, last seen 2023-11-14T22:13:20.000Z. An unresponsive session is not dead:"
+    );
+    expect(refusal.sessionState).toBe("unresponsive");
+    expect(refusal.lastSeen).toBe(1_700_000_000_000);
+  });
+
+  // The 504 of a topic send one recipient did not confirm names the stalled recipients too
+  // (`cmd/listener/confirmed.go`'s `topicSendFailure`), and its own text names neither them nor
+  // what they mean. An agent reading the refusal must not count a session the message was
+  // stored for among the sessions that failed it.
+  test("a refused topic send says which recipients it was stored for all the same", async () => {
+    const refused = {
+      error:
+        "1 of 3 sessions subscribed to notifications.team.deploy-squad.all did not confirm event event-late within 4s: ses_busy (receipt_timeout)",
+      reason: "not_confirmed",
+      event_id: "event-late",
+      dedupe_key: "agent.team.event-late",
+      delivered: ["ses_live"],
+      undelivered: [{ session_id: "ses_busy", reason: "receipt_timeout" }],
+      unresponsive: ["ses_stalled"],
+    };
+    // A 504 is answered twice: the client sends an unanswered or 5xx request once more.
+    const recorded = recordFetch([
+      Response.json(refused, { status: 504 }),
+      Response.json(refused, { status: 504 }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const refusal = (await client
+      .publish({
+        sourceSessionID: "ses_sender",
+        topic: "notifications.team.deploy-squad.all",
+        message: "broadcast",
+      })
+      .catch((error: unknown) => error)) as EnvoyApiError;
+
+    expect(refusal.message).toBe(
+      `${refused.error} Envoy stored the message for ses_stalled. That session stopped answering, so it did not fail this send. ${UNRESPONSIVE_RULE}`
+    );
+    expect(refusal.unresponsive).toEqual(["ses_stalled"]);
+    // The stalled recipient is no state of the refusal itself: nothing here says the send was
+    // refused for it.
+    expect(refusal.sessionState).toBeUndefined();
   });
 
   test("normalizes non-success responses into a typed API error", async () => {
@@ -1124,8 +1540,35 @@ describe("EnvoyClient", () => {
       role: "legion-reviewer",
       holder: "01a00000-0000-7000-0000-000000000001",
       last_seen: 42,
+      // The listener named no state, and a role answer it gives names a holder it resolved.
+      state: "live",
+      holder_state: undefined,
     });
     expect(recorded.requests[1]?.url).toBe("http://listener/v1/roles/legion-reviewer");
+  });
+
+  test("a role lookup gives the holder's process, and parses an answer naming none", async () => {
+    const recorded = recordFetch([
+      jsonResponse({
+        role: "controller",
+        holder: "ses_holder",
+        last_seen: 42,
+        state: "live",
+        client_instance_id: "0f8c2b1a4d6e7f90",
+      }),
+      jsonResponse({ role: "controller", holder: "ses_holder", last_seen: 42, state: "live" }),
+    ]);
+    const client = createEnvoyClient({ baseUrl: "http://listener", fetch: recorded.fetch });
+
+    const named = await client.getRole("controller");
+    const unnamed = await client.getRole("controller");
+
+    // The holder's process is what tells a caller that the role is held under its own session
+    // id by another process, which `setRole`'s 409 does not say.
+    expect(named.client_instance_id).toBe("0f8c2b1a4d6e7f90");
+    // A listener predating the field still parses: the caller reads no holding process.
+    expect(unnamed.client_instance_id).toBeUndefined();
+    expect(unnamed).toMatchObject({ role: "controller", holder: "ses_holder" });
   });
 
   test("surfaces listener error text and expected fields without retrying a 400", async () => {
@@ -1155,7 +1598,7 @@ describe("EnvoyClient", () => {
     const client = createEnvoyClient({
       baseUrl: "http://listener",
       fetch: recorded.fetch,
-      token: "listener-token",
+      credential: bearerCredential("listener-token"),
     });
 
     await client.unregisterSession({ sessionID: "ses_closed" });
@@ -1177,6 +1620,39 @@ describe("EnvoyClient", () => {
       if (previous === undefined) delete process.env.ENVOY_TOKEN;
       else process.env.ENVOY_TOKEN = previous;
     }
+  });
+
+  test("a credential this machine could not mint leaves a listener that asks for none working", async () => {
+    // The broker is down, or has refused this machine's trade. A listener that asks for no
+    // credential answers the same with or without one, so its calls stand; one that did want it
+    // answers 401, and the error names the trade that failed rather than the status alone.
+    const unmintable: RequestCredential = {
+      scheme: "DPoP",
+      headers: () => Promise.reject(new Error("the secrets broker did not answer")),
+      secret: () => "",
+    };
+    const open = recordFetch([new Response(null, { status: 200 })]);
+    const client = createEnvoyClient({
+      baseUrl: "http://listener",
+      fetch: open.fetch,
+      credential: unmintable,
+    });
+
+    await client.unregisterSession({ sessionID: "ses_closed" });
+
+    expect(open.requests[0]?.headers.has("Authorization")).toBe(false);
+
+    const closed = recordFetch([
+      new Response(null, { status: 401 }),
+      new Response(null, { status: 401 }),
+    ]);
+    await expect(
+      createEnvoyClient({
+        baseUrl: "http://listener",
+        fetch: closed.fetch,
+        credential: unmintable,
+      }).unregisterSession({ sessionID: "ses_closed" })
+    ).rejects.toThrow("the secrets broker did not answer");
   });
 
   test("asks for a replay in the listener's request shape and parses its answer", async () => {
@@ -1286,5 +1762,83 @@ describe("newClientInstanceID", () => {
 
   test("mints a different id for each client instance", () => {
     expect(newClientInstanceID()).not.toBe(newClientInstanceID());
+  });
+});
+
+describe("roleHeldBy", () => {
+  /** A role lookup's 200 for `holder`, naming `instance` as the process whose claim stands. */
+  const answer = (holder: string, instance?: string): RoleInfo => ({
+    role: "legion-controller",
+    holder,
+    last_seen: 2,
+    state: "live",
+    ...(instance === undefined ? {} : { client_instance_id: instance }),
+  });
+
+  /** The same answer, with the hand-back mark the listener puts on a claim it could not free. */
+  const handedBack = (holder: string, instance?: string): RoleInfo => ({
+    ...answer(holder, instance),
+    handed_back: true,
+  });
+
+  test("the lookup names this session and this process", () => {
+    expect(roleHeldBy(answer("ses_a", "proc-one"), "ses_a", "proc-one")).toBe(true);
+  });
+
+  test("a claim this very session id carries under another process is not this one's", () => {
+    expect(roleHeldBy(answer("ses_a", "another-process"), "ses_a", "proc-one")).toBe(false);
+  });
+
+  test("a claim naming no process is read as this one's, absent or empty alike", () => {
+    expect(roleHeldBy(answer("ses_a"), "ses_a", "proc-one")).toBe(true);
+    expect(roleHeldBy(answer("ses_a", ""), "ses_a", "proc-one")).toBe(true);
+  });
+
+  test("a caller naming no process holds nothing a claim names a process for", () => {
+    expect(roleHeldBy(answer("ses_a", "proc-one"), "ses_a", undefined)).toBe(false);
+    expect(roleHeldBy(answer("ses_a", "proc-one"), "ses_a", "")).toBe(false);
+    expect(roleHeldBy(answer("ses_a"), "ses_a", "")).toBe(true);
+  });
+
+  test("another session's hold, and the 404 that names no holder, are neither of them this one's", () => {
+    expect(roleHeldBy(answer("ses_other", "proc-one"), "ses_a", "proc-one")).toBe(false);
+    expect(roleHeldBy(undefined, "ses_a", "proc-one")).toBe(false);
+  });
+
+  test("a claim marked handed back is no hold, even of the session and process it names", () => {
+    expect(roleHeldBy(handedBack("ses_a", "proc-one"), "ses_a", "proc-one")).toBe(false);
+    expect(roleHeldBy(handedBack("ses_a"), "ses_a", "proc-one")).toBe(false);
+  });
+
+  test("an unmarked claim is still this one's, however the listener says it is unmarked", () => {
+    expect(roleHeldBy(answer("ses_a", "proc-one"), "ses_a", "proc-one")).toBe(true);
+    expect(
+      roleHeldBy({ ...answer("ses_a", "proc-one"), handed_back: false }, "ses_a", "proc-one")
+    ).toBe(true);
+    // A listener predating the field sends none, which reads as no mark.
+    expect(Object.hasOwn(answer("ses_a", "proc-one"), "handed_back")).toBe(false);
+  });
+});
+
+describe("mayActOnRoleRecord", () => {
+  test("a record this process wrote is acted on whether or not it holds a role", () => {
+    expect(mayActOnRoleRecord("proc-one", "proc-one", true)).toBe(true);
+    expect(mayActOnRoleRecord("proc-one", "proc-one", false)).toBe(true);
+  });
+
+  test("a record naming no writer is acted on as it always was, absent or empty alike", () => {
+    expect(mayActOnRoleRecord(undefined, "proc-one", true)).toBe(true);
+    expect(mayActOnRoleRecord("", "proc-one", true)).toBe(true);
+  });
+
+  test("a record another process wrote is acted on only while this one holds no role", () => {
+    expect(mayActOnRoleRecord("another-process", "proc-one", true)).toBe(false);
+    expect(mayActOnRoleRecord("another-process", "proc-one", false)).toBe(true);
+  });
+
+  test("a reader naming no process is another process than any record names one", () => {
+    expect(mayActOnRoleRecord("another-process", undefined, true)).toBe(false);
+    expect(mayActOnRoleRecord("another-process", "", true)).toBe(false);
+    expect(mayActOnRoleRecord("", "", true)).toBe(true);
   });
 });

@@ -1,22 +1,55 @@
-import { expect, spyOn, test } from "bun:test";
-import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { beforeEach, expect, spyOn, test } from "bun:test";
+import { act, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http } from "msw";
 import { type Node as ProseMirrorNode, Schema } from "prosemirror-model";
 
-import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { type FakeDocumentRuntime, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
   artifact,
   createQueryClient,
+  documentSurfaceHandlers,
   renderProofDocument,
 } from "../../__tests__/proof-document";
 import { ApiError, api } from "../../api/client";
-import type { Ask, IssueDetails } from "../../api/types";
+import type { Ask, IssueDetails, IssueReferenceSummary } from "../../api/types";
 import { heldSends } from "../conversation/held-sends";
 import { marginComposeSendKey } from "../margin/margin-context";
 import { appKeymap } from "../shell/keymap";
 import { colorForLogin } from "./connection";
 
 answerTextReadsWithTheSeededText();
+
+/**
+ * The document surface's own shared reads (`documentSurfaceHandlers`), and the read this file
+ * adds to them: a reference link the pointer rests on opens a preview card, which reads the
+ * issue the reference names and the documents it holds.
+ */
+beforeEach(() => {
+  answerRequests(
+    http.get("/api/v1/issues/:key/summary", ({ params }) =>
+      Response.json({
+        documents: [
+          {
+            id: artifact.id,
+            kind: artifact.kind,
+            latest_version: null,
+            name: artifact.name,
+            primary: artifact.primary,
+            slug: artifact.slug,
+          },
+        ],
+        key: String(params.key),
+        project: artifact.project,
+        status: "todo",
+        title: "Review the spec",
+      } satisfies IssueReferenceSummary)
+    ),
+    ...documentSurfaceHandlers()
+  );
+});
 
 test("ProofDocument creates the editor on the synced document as the signed-in user", async () => {
   const { connections, editors, sync, toolbar, view } = renderProofDocument();
@@ -27,9 +60,9 @@ test("ProofDocument creates the editor on the synced document as the signed-in u
     expect(connections).toHaveLength(1);
     await waitFor(() => expect(editors).toHaveLength(1));
     expect(editors[0]?.options).toMatchObject({
+      access: "edit",
       awareness: connections[0]?.awareness,
       heatMapMode: "hidden",
-      readOnly: false,
       user: { color: colorForLogin("alice"), name: "alice" },
       ydoc: connections[0]?.doc,
     });
@@ -91,6 +124,7 @@ test("ProofDocument clears the parent's toolbar bag on unmount", () => {
 // The dialog closes with no refusal, so a second press names nothing twice, and the document says
 // what was made.
 test("a version named with its answer lost closes the dialog and says it was made", async () => {
+  const user = userEvent.setup();
   const createArtifactVersion = spyOn(api, "createArtifactVersion").mockRejectedValue(
     new ApiError(409, { code: "KEY_COMMITTED", error: "made; the answer was lost" })
   );
@@ -98,16 +132,15 @@ test("a version named with its answer lost closes the dialog and says it was mad
   try {
     act(() => toolbar.current?.requestNamedVersion());
     const dialog = await screen.findByRole("dialog", { name: "Name this version" });
-    fireEvent.change(within(dialog).getByLabelText("What changed?"), {
-      target: { value: "Settled the rollout" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+    await user.click(within(dialog).getByLabelText("What changed?"));
+    await user.paste("Settled the rollout");
+    await user.click(within(dialog).getByRole("button", { name: "Save" }));
     const made = await screen.findByTestId("landed-without-answer");
     expect(made.textContent).toBe(
       "The version “Settled the rollout” was made, but Dispatch lost its answer, so it may take a moment to appear."
     );
-    expect(screen.queryByRole("dialog", { name: "Name this version" })).toBeNull();
-    expect(screen.queryByText("Could not name this version. Try again.")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Name this version" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Could not name this version. Try again.")).not.toBeInTheDocument();
     expect(createArtifactVersion).toHaveBeenCalledTimes(1);
   } finally {
     createArtifactVersion.mockRestore();
@@ -178,9 +211,14 @@ test("ProofDocument highlights a routed search term again after route and docume
 });
 
 test("ProofDocument opens a hover card for a dispatch:// link in the live editor and navigates in-app", async () => {
+  const user = userEvent.setup();
   const issue: IssueDetails = {
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
+    holder_state: null,
+    last_seen: null,
+    takeable_at: null,
     artifacts: [],
     children: [],
     closed_at: null,
@@ -235,14 +273,14 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
       anchor.focus();
     });
     const card = await screen.findByRole("tooltip");
-    await waitFor(() => expect(card.textContent).toContain("Ship the release"));
-    expect(anchor.getAttribute("aria-describedby")).toBe(card.id);
+    await waitFor(() => expect(card).toHaveTextContent("Ship the release"));
+    expect(anchor).toHaveAttribute("aria-describedby", card.id);
     act(() => {
       anchor.blur();
     });
-    expect(screen.queryByRole("tooltip")).toBeNull();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 
-    fireEvent.click(anchor);
+    await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe("/issues/CORE-1");
   } finally {
     getIssue.mockRestore();
@@ -255,6 +293,7 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
 // holds) opens that document in-app, rather than leaving the browser to follow the sanitized
 // mark's empty href.
 test("ProofDocument opens an explicit link to a long-named document in-app", async () => {
+  const user = userEvent.setup();
   const slug = "a".repeat(2683);
   const { editors, sync, view } = renderProofDocument();
 
@@ -270,7 +309,7 @@ test("ProofDocument opens an explicit link to a long-named document in-app", asy
     const anchor = root.querySelector("a");
     if (anchor === null) throw new Error("anchor missing");
 
-    fireEvent.click(anchor);
+    await user.click(anchor);
     expect(within(view.container).getByTestId("current-route").textContent).toBe(
       `/issues/CORE-1/artifacts/${slug}`
     );
@@ -306,8 +345,8 @@ test("ProofDocument reports connection status and pending edits through the tool
     );
     await waitFor(() => expect(toolbar.current?.connection).toBe("offline"));
     rerender({ isClosed: true });
-    expect(editors[0]?.readOnly).toBe(true);
-    expect(within(view.container).getByRole("article").getAttribute("data-read-only")).toBe("true");
+    expect(editors[0]?.access).toBe("comment");
+    expect(within(view.container).getByRole("article")).toHaveAttribute("data-read-only", "true");
     expect(
       within(view.container).getByText("This issue is closed. Its document is read-only.")
     ).toBeDefined();
@@ -490,7 +529,7 @@ test("ProofDocument shows the current document when Version changes back to Curr
     await within(view.container).findByTestId("version-view");
     rerender({ version: undefined });
     await waitFor(() =>
-      expect(within(view.container).getByRole("article").textContent).toContain("The live document")
+      expect(within(view.container).getByRole("article")).toHaveTextContent("The live document")
     );
   } finally {
     view.unmount();
@@ -498,6 +537,7 @@ test("ProofDocument shows the current document when Version changes back to Curr
 });
 
 test("the block reference gutter filters the margin and focuses its block", async () => {
+  const user = userEvent.setup();
   const queryClient = createQueryClient();
   queryClient.setQueryData(
     ["artifact", artifact.id, "blocks"],
@@ -516,7 +556,7 @@ test("the block reference gutter filters the margin and focuses its block", asyn
   try {
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
-    fireEvent.click(
+    await user.click(
       await within(view.container).findByRole("button", { name: "2 references on block" })
     );
     expect(editors[0]?.focusedBlocks).toEqual(["block-1"]);
@@ -551,10 +591,8 @@ test("ProofDocument links to the current version when a historic version is unav
   try {
     await within(view.container).findByText("No version 9 of spec.md.");
     expect(
-      within(view.container)
-        .getByRole("link", { name: "View current version" })
-        .getAttribute("href")
-    ).toBe("/issues/CORE-1/spec");
+      within(view.container).getByRole("link", { name: "View current version" })
+    ).toHaveAttribute("href", "/issues/CORE-1/spec");
   } finally {
     view.unmount();
     getArtifactVersion.mockRestore();
@@ -684,6 +722,157 @@ test("a selection-bar action opens the margin composer for the mark and settles 
   } finally {
     view.unmount();
     createComment.mockRestore();
+  }
+});
+
+// A closed issue's document takes no mark, so the bar's Comment there reports the selection, and
+// the margin's composer names the text by quote and occurrence, which the server anchors.
+test("a closed document's Comment opens a quote composer with no mark, which posts the quote and its occurrence", async () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: "paragraph+" },
+      paragraph: { content: "text*", group: "block" },
+      text: {},
+    },
+  });
+  // "brown" twice: the reader selects the second (positions 11 to 16).
+  const document = schema.node("doc", undefined, [
+    schema.node("paragraph", undefined, [schema.text("brown fox brown")]),
+  ]);
+  const fake = fakeDocumentRuntime({ text: "brown fox brown" });
+  const removed: string[] = [];
+  const createEditor = fake.runtime.createEditor;
+  fake.runtime.createEditor = async (root, options) => {
+    const handle = await createEditor(root, options);
+    // The fake view's state is a plain object whose `doc` the test supplies.
+    const state = handle.view.state as unknown as { doc: ProseMirrorNode };
+    state.doc = document;
+    handle.removeMark = (markId) => void removed.push(markId);
+    return handle;
+  };
+  const queryClient = createQueryClient();
+  const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
+  const { editors, margin, sync, view } = renderProofDocument({
+    fake,
+    isClosed: true,
+    queryClient,
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    expect(editors[0]?.options).toMatchObject({ access: "comment" });
+    const onMarkAction = editors[0]?.options.onMarkAction;
+    if (onMarkAction === undefined) {
+      throw new Error("The editor did not receive an onMarkAction handler.");
+    }
+
+    let cancelled: Promise<void> | undefined;
+    act(() => {
+      cancelled = Promise.resolve(onMarkAction({ from: 11, kind: "quote-comment", to: 16 }));
+      void cancelled.catch(() => {});
+    });
+    const open = margin.current?.pendingCompose;
+    expect(open).toMatchObject({
+      anchor: { artifact: artifact.id, occurrence: 1, quote: "brown" },
+      kind: "comment",
+    });
+    expect(open?.anchor.mark_id).toBeUndefined();
+    // Ending it unsent takes nothing out of the document: there is no mark.
+    act(() => margin.current?.cancelCompose(open?.seq ?? -1));
+    await expect(cancelled).rejects.toThrow("composer closed");
+    expect(removed).toEqual([]);
+
+    let sent: Promise<void> | undefined;
+    act(() => {
+      sent = Promise.resolve(onMarkAction({ from: 11, kind: "quote-comment", to: 16 }));
+    });
+    const { anchor } = margin.current?.pendingCompose ?? {};
+    if (anchor === undefined) throw new Error("expected an open compose");
+    act(() =>
+      heldSends(queryClient).send(marginComposeSendKey(anchor.artifact), {
+        anchor,
+        ask: { multiple: false, options: [], urgency: "med" },
+        draft: { body: "After the close", mentions: [], replacement: "" },
+        edit: undefined,
+        kind: "comment",
+        owner: { issueKey: "CORE-1", kind: "issue" },
+        plainDelivery: "steer",
+        replyTo: null,
+        sendKey: "send-quote-comment",
+      })
+    );
+    await expect(sent).resolves.toBeUndefined();
+    await waitFor(() =>
+      expect(createComment).toHaveBeenCalledWith(
+        "CORE-1",
+        {
+          anchor: { artifact: artifact.id, occurrence: 1, quote: "brown" },
+          body: "After the close",
+        },
+        expect.objectContaining({ key: "send-quote-comment" })
+      )
+    );
+  } finally {
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
+// The bar offers a closed document's Comment only for a selection that holds text; should the
+// host's own reading of a selection still find none, it tells the reader so, opens no composer and
+// rejects nothing into the bar. The next Comment that opens one takes the notice away.
+test("a closed document's Comment on a selection with no text to quote says so and opens no composer", async () => {
+  const schema = new Schema({
+    nodes: {
+      doc: { content: "paragraph+" },
+      image: { group: "inline", inline: true },
+      paragraph: { content: "inline*", group: "block" },
+      text: { group: "inline" },
+    },
+  });
+  // "brown " then an image: the image alone is positions 7 to 8.
+  const document = schema.node("doc", undefined, [
+    schema.node("paragraph", undefined, [schema.text("brown "), schema.node("image")]),
+  ]);
+  const fake = fakeDocumentRuntime({ text: "brown " });
+  const createEditor = fake.runtime.createEditor;
+  fake.runtime.createEditor = async (root, options) => {
+    const handle = await createEditor(root, options);
+    // The fake view's state is a plain object whose `doc` the test supplies.
+    const state = handle.view.state as unknown as { doc: ProseMirrorNode };
+    state.doc = document;
+    return handle;
+  };
+  const { editors, margin, sync, view } = renderProofDocument({ fake, isClosed: true });
+  const notice = "This selection holds no text to quote. Select text to comment on it.";
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    const onMarkAction = editors[0]?.options.onMarkAction;
+    if (onMarkAction === undefined) {
+      throw new Error("The editor did not receive an onMarkAction handler.");
+    }
+
+    let refused: Promise<void> | undefined;
+    act(() => {
+      refused = Promise.resolve(onMarkAction({ from: 7, kind: "quote-comment", to: 8 }));
+    });
+    await expect(refused).resolves.toBeUndefined();
+    expect(within(view.container).getByRole("status").textContent).toBe(notice);
+    expect(margin.current?.pendingCompose).toBeUndefined();
+
+    act(() => {
+      void Promise.resolve(onMarkAction({ from: 1, kind: "quote-comment", to: 6 })).catch(() => {});
+    });
+    expect(margin.current?.pendingCompose).toMatchObject({
+      anchor: { artifact: artifact.id, occurrence: 0, quote: "brown" },
+      kind: "comment",
+    });
+    expect(within(view.container).queryByText(notice)).toBeNull();
+  } finally {
+    view.unmount();
   }
 });
 
@@ -854,7 +1043,8 @@ test("Ctrl+Alt+M comments on the selection while the editor has focus, and nowhe
     expect(pressCommentChord(composer)).toBe(false);
     expect(editor.commented).toBe(1);
 
-    // A closed issue's document is read-only, where the bar offers nothing.
+    // A closed issue's document is read-only and cannot hold focus, so the chord stays out of it;
+    // the bar's own Comment is how a reader comments there.
     editor.root.focus();
     rerender({ isClosed: true });
     expect(pressCommentChord(editor.root)).toBe(false);
@@ -895,8 +1085,8 @@ test("a pane's editor is read-only and publishes no presence, where the page's t
   try {
     await pane.sync();
     await waitFor(() => expect(pane.editors).toHaveLength(1));
-    expect(pane.editors[0]?.options).toMatchObject({ awareness: null, readOnly: true });
-    expect(pane.editors[0]?.readOnly).toBe(true);
+    expect(pane.editors[0]?.options).toMatchObject({ access: "read", awareness: null });
+    expect(pane.editors[0]?.access).toBe("read");
   } finally {
     pane.view.unmount();
   }
@@ -906,10 +1096,10 @@ test("a pane's editor is read-only and publishes no presence, where the page's t
     await page.sync();
     await waitFor(() => expect(page.editors).toHaveLength(1));
     expect(page.editors[0]?.options).toMatchObject({
+      access: "edit",
       awareness: page.connections[0]?.awareness,
-      readOnly: false,
     });
-    expect(page.editors[0]?.readOnly).toBe(false);
+    expect(page.editors[0]?.access).toBe("edit");
   } finally {
     page.view.unmount();
   }
@@ -922,11 +1112,11 @@ test("a read-only admission and a close each leave a pane read-only", async () =
     await sync();
     await waitFor(() => expect(editors).toHaveLength(1));
     act(() => admit(false));
-    expect(editors[0]?.readOnly).toBe(true);
+    expect(editors[0]?.access).toBe("read");
     act(() => rerender({ isClosed: true }));
-    expect(editors[0]?.readOnly).toBe(true);
+    expect(editors[0]?.access).toBe("read");
     act(() => rerender({ isClosed: false }));
-    expect(editors[0]?.readOnly).toBe(true);
+    expect(editors[0]?.access).toBe("read");
   } finally {
     view.unmount();
   }
@@ -946,7 +1136,7 @@ test("a pane registers no document with the margin, reports no toolbar and shows
     expect(pane.toolbarChanges).toEqual([]);
     expect(
       within(pane.view.container).queryByRole("navigation", { name: "Open decisions" })
-    ).toBeNull();
+    ).not.toBeInTheDocument();
   } finally {
     pane.view.unmount();
   }
@@ -1042,6 +1232,127 @@ test("a pane pushes no document keymap scope and registers no binding of its own
     await waitFor(() => expect(editors).toHaveLength(1));
     expect(appKeymap.describe().some((entry) => entry.id === "comment-on-selection")).toBe(false);
   } finally {
+    view.unmount();
+  }
+});
+
+/** A block id as the editor mints one, and the first eight characters of it, which is how a
+ *  person or an agent writes it short. */
+const WHOLE_BLOCK = "2a7f1c90-7d5e-4a21-9b3c-6f0e5d4c3b2a";
+const OTHER_BLOCK = "2a7f1c90-0000-4000-8000-000000000000";
+const SHORT_BLOCK = "2a7f1c90";
+
+/** The fake editor draws no blocks of its own, so a test that links to one draws them: these
+ *  are the `[data-block-id]` elements a short id is resolved against and `focusBlock` looks a
+ *  whole one up in. */
+function runtimeWithBlocks(blockIds: readonly string[]): FakeDocumentRuntime {
+  const fake = fakeDocumentRuntime({ text: "The live document" });
+  const createEditor = fake.runtime.createEditor;
+  return {
+    ...fake,
+    runtime: {
+      ...fake.runtime,
+      createEditor: async (root, options) => {
+        const handle = await createEditor(root, options);
+        root.innerHTML = blockIds.map((id) => `<p data-block-id="${id}">a block</p>`).join("");
+        return handle;
+      },
+    },
+  };
+}
+
+test("ProofDocument focuses the whole block a hash names short and replaces the address with it", async () => {
+  const originalHash = window.location.hash;
+  window.history.replaceState(null, "", `#b-${SHORT_BLOCK}`);
+  const entries = window.history.length;
+  const { editors, sync, view } = renderProofDocument({ fake: runtimeWithBlocks([WHOLE_BLOCK]) });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors[0]?.focusedBlocks).toEqual([WHOLE_BLOCK]));
+    // The address carries the whole id from here on, and it replaced the short one rather than
+    // leaving a second entry in the reader's history.
+    expect(window.location.hash).toBe(`#b-${WHOLE_BLOCK}`);
+    expect(window.history.length).toBe(entries);
+  } finally {
+    window.history.replaceState(null, "", originalHash || "/");
+    view.unmount();
+  }
+});
+
+test("ProofDocument focuses a whole block id as written, resolving nothing against the document", async () => {
+  const originalHash = window.location.hash;
+  window.history.replaceState(null, "", `#b-${WHOLE_BLOCK}`);
+  // No block of this document is drawn: a whole id is focused as the hash wrote it, as it was
+  // before a short one could be written.
+  const { editors, sync, view } = renderProofDocument();
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors[0]?.focusedBlocks).toEqual([WHOLE_BLOCK]));
+    expect(window.location.hash).toBe(`#b-${WHOLE_BLOCK}`);
+  } finally {
+    window.history.replaceState(null, "", originalHash || "/");
+    view.unmount();
+  }
+});
+
+test("ProofDocument focuses nothing for a short block id two blocks of the document carry", async () => {
+  const originalHash = window.location.hash;
+  window.history.replaceState(null, "", `#b-${SHORT_BLOCK}`);
+  const { editors, sync, view } = renderProofDocument({
+    fake: runtimeWithBlocks([WHOLE_BLOCK, OTHER_BLOCK]),
+  });
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    // Two blocks start with it, so it names neither; the address stays as the reader wrote it.
+    expect(editors[0]?.focusedBlocks).toEqual([]);
+    expect(window.location.hash).toBe(`#b-${SHORT_BLOCK}`);
+  } finally {
+    window.history.replaceState(null, "", originalHash || "/");
+    view.unmount();
+  }
+});
+
+// INFRA-869: a `#id` names a question of the text's own document, so a reader who follows one
+// from the margin stays on the page already open. The editor binds once; the block focus
+// follows the address from then on.
+test("a hash change on the page already open focuses the block it names, whole and short", async () => {
+  const originalHash = window.location.hash;
+  window.history.replaceState(null, "", "/");
+  const { connections, editors, sync, view } = renderProofDocument({
+    fake: runtimeWithBlocks([WHOLE_BLOCK]),
+  });
+
+  const follow = async (fragment: string) => {
+    await act(async () => {
+      window.history.replaceState(null, "", fragment);
+      window.dispatchEvent(new Event("hashchange"));
+    });
+  };
+
+  try {
+    await sync();
+    await waitFor(() => expect(editors).toHaveLength(1));
+    // The page was opened at no block, so the bind focused none.
+    expect(editors[0]?.focusedBlocks).toEqual([]);
+
+    await follow(`#b-${WHOLE_BLOCK}`);
+    await waitFor(() => expect(editors[0]?.focusedBlocks).toEqual([WHOLE_BLOCK]));
+
+    // A short id names the one block of this document it starts, and the address carries the
+    // whole one from then on.
+    await follow(`#b-${SHORT_BLOCK}`);
+    await waitFor(() => expect(editors[0]?.focusedBlocks).toEqual([WHOLE_BLOCK, WHOLE_BLOCK]));
+    expect(window.location.hash).toBe(`#b-${WHOLE_BLOCK}`);
+
+    // One editor on one connection throughout: following the address binds nothing again.
+    expect(editors).toHaveLength(1);
+    expect(connections).toHaveLength(1);
+  } finally {
+    window.history.replaceState(null, "", originalHash || "/");
     view.unmount();
   }
 });

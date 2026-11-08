@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
@@ -35,6 +37,10 @@ const issue: Issue = {
 const details: IssueDetails = {
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   ...issue,
   artifacts: [],
   children: [],
@@ -48,6 +54,7 @@ const summary: IssueSummary = {
   resolved_repo: null,
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
   key: issue.key,
   labels: [],
   last_seq: 1,
@@ -87,6 +94,7 @@ const inboxRow: InboxRow = {
     route: null,
     route_status: null,
     route_holder: null,
+    route_status_reason: null,
   },
   priority: issue.priority,
   snoozed_until: null,
@@ -119,12 +127,13 @@ function renderControl() {
   queryClient.setQueryData(detailKey, details);
   queryClient.setQueryData(listKey, [summary, otherSummary]);
   queryClient.setQueryData(inboxKey, [inboxRow]);
+  const user = userEvent.setup();
   const view = render(
     <QueryClientProvider client={queryClient}>
       <CachedControl />
     </QueryClientProvider>
   );
-  return { queryClient, unmount: view.unmount };
+  return { queryClient, unmount: view.unmount, user };
 }
 
 function select(): HTMLSelectElement {
@@ -145,10 +154,10 @@ test("PriorityControl shows the issue's priority and offers Unset and P0-P3", ()
 test("PriorityControl saves the picked priority, shows it before the server answers, and keeps focus", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { queryClient, unmount } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
     select().focus();
-    fireEvent.change(select(), { target: { value: "2" } });
+    await user.selectOptions(select(), "2");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 2 }, keyedAttempt)
     );
@@ -157,7 +166,7 @@ test("PriorityControl saves the picked priority, shows it before the server answ
     // A disabled control drops focus and leaves the tab order for the length of the save, so
     // the picker stays enabled while the request is in flight.
     expect(select().disabled).toBe(false);
-    expect(document.activeElement).toBe(select());
+    expect(select()).toHaveFocus();
     expect(queryClient.getQueryData<IssueSummary[]>(listKey)).toEqual([
       { ...summary, priority: 2 },
       otherSummary,
@@ -171,7 +180,7 @@ test("PriorityControl saves the picked priority, shows it before the server answ
     await waitFor(() =>
       expect(queryClient.getQueryData<IssueDetails>(detailKey)?.priority).toBe(2)
     );
-    expect(document.activeElement).toBe(select());
+    expect(select()).toHaveFocus();
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -180,15 +189,15 @@ test("PriorityControl saves the picked priority, shows it before the server answ
 
 test("PriorityControl sends null for Unset and shows the muted tag", async () => {
   const patchIssue = answerIssuePatches().mockResolvedValue({ ...issue, priority: null });
-  const { unmount } = renderControl();
+  const { unmount, user } = renderControl();
   try {
-    fireEvent.change(select(), { target: { value: "" } });
+    await user.selectOptions(select(), "");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: null }, keyedAttempt)
     );
     expect(select().value).toBe("");
     expect(screen.getByText("Priority", { selector: "span" })).toBeTruthy();
-    expect(screen.queryByText("P1", { selector: "span" })).toBeNull();
+    expect(screen.queryByText("P1", { selector: "span" })).not.toBeInTheDocument();
   } finally {
     unmount();
     patchIssue.mockRestore();
@@ -198,9 +207,9 @@ test("PriorityControl sends null for Unset and shows the muted tag", async () =>
 test("PriorityControl rolls every surface back and offers Retry when the save fails", async () => {
   const save = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches().mockImplementation(() => save.promise);
-  const { queryClient, unmount } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
-    fireEvent.change(select(), { target: { value: "0" } });
+    await user.selectOptions(select(), "0");
     await waitFor(() => expect(select().value).toBe("0"));
 
     act(() => {
@@ -213,10 +222,10 @@ test("PriorityControl rolls every surface back and offers Retry when the save fa
     expect(queryClient.getQueryData<InboxRow[]>(inboxKey)).toEqual([inboxRow]);
 
     patchIssue.mockResolvedValue({ ...issue, priority: 0 });
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
     expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt);
-    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(select().value).toBe("0");
   } finally {
     unmount();
@@ -230,14 +239,14 @@ test("PriorityControl saves a pick made during the first save once that save set
   const patchIssue = answerIssuePatches()
     .mockImplementationOnce(() => first.promise)
     .mockImplementationOnce(() => second.promise);
-  const { queryClient, unmount } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
-    fireEvent.change(select(), { target: { value: "0" } });
+    await user.selectOptions(select(), "0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    fireEvent.change(select(), { target: { value: "3" } });
-    fireEvent.change(select(), { target: { value: "2" } });
+    await user.selectOptions(select(), "3");
+    await user.selectOptions(select(), "2");
     // One request at a time: the later picks wait for the first answer, but the badge already
     // shows the newest one and never snaps back to the value still being saved.
     expect(select().value).toBe("2");
@@ -272,13 +281,13 @@ test("a queued pick that fails rolls back to the priority the server last confir
   const patchIssue = answerIssuePatches()
     .mockImplementationOnce(() => first.promise)
     .mockImplementationOnce(() => second.promise);
-  const { queryClient, unmount } = renderControl();
+  const { queryClient, unmount, user } = renderControl();
   try {
-    fireEvent.change(select(), { target: { value: "0" } });
+    await user.selectOptions(select(), "0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
-    fireEvent.change(select(), { target: { value: "2" } });
+    await user.selectOptions(select(), "2");
     expect(select().value).toBe("2");
 
     await act(async () => {
@@ -322,6 +331,8 @@ test("PriorityControl keeps mouse, pointer and touch presses on the select out o
     </QueryClientProvider>
   );
   try {
+    // Bare mouse, pointer and touch presses: user-event sends a whole press sequence and cannot
+    // deliver one of these events on its own.
     fireEvent.mouseDown(select());
     fireEvent.pointerDown(select());
     fireEvent.touchStart(select());

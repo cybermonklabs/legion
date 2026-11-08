@@ -3,6 +3,7 @@ package config
 
 import (
 	"maps"
+	"net/netip"
 	"os"
 	"reflect"
 	"slices"
@@ -33,18 +34,22 @@ const signInSecret = "do-not-print-this-client-secret"
 // are required.
 var signInSecretFile string
 
-func TestMain(m *testing.M) {
+func TestMain(m *testing.M) { os.Exit(runWithASignInSecretFile(m)) }
+
+// runWithASignInSecretFile writes the sign-in secret file every test's environment names and
+// removes its directory afterwards. The removal is deferred, so it also runs when the panics
+// below fire. A run killed by a signal still keeps the directory, which nothing here can help.
+func runWithASignInSecretFile(m *testing.M) int {
 	dir, err := os.MkdirTemp("", "broker-config-signin")
 	if err != nil {
 		panic(err)
 	}
+	defer os.RemoveAll(dir)
 	signInSecretFile = dir + "/client-secret"
 	if err := os.WriteFile(signInSecretFile, []byte("\n  "+signInSecret+"  \n"), 0o600); err != nil {
 		panic(err)
 	}
-	code := m.Run()
-	_ = os.RemoveAll(dir)
-	os.Exit(code)
+	return m.Run()
 }
 
 // validEnv is a complete, minimal valid environment: every test starts from a copy of this and
@@ -72,15 +77,31 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 	}
 }
 
-// TestLoadRequiresMachineLoginURL: the page a person types a machine login's code into is
-// required, and must be an absolute http(s) URL, since the device grant names it to the machine.
-func TestLoadRequiresMachineLoginURL(t *testing.T) {
-	for _, v := range []string{"", "/credentials/machine", "dispatch.example/credentials/machine", "ftp://dispatch.example/x", "https:///x"} {
+// TestTheMachineLoginURLIsOptionalAndHeldToItsForm: the page a person types a machine login's
+// code into is not required — a broker without it serves no device grant and starts all the
+// same, which is the deployment whose machines hold a cloud identity and whose people never
+// type a code — and a page that is given must still be an absolute http(s) URL, since the
+// device grant names it to the machine.
+func TestTheMachineLoginURLIsOptionalAndHeldToItsForm(t *testing.T) {
+	for _, v := range []string{"/credentials/machine", "dispatch.example/credentials/machine", "ftp://dispatch.example/x", "https:///x"} {
 		e := validEnv()
 		e["BROKER_MACHINE_LOGIN_URL"] = v
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_MACHINE_LOGIN_URL") {
 			t.Errorf("Load(BROKER_MACHINE_LOGIN_URL=%q) = %v, want a refusal naming it", v, err)
 		}
+	}
+	for _, unset := range []string{"", "   "} {
+		e := validEnv()
+		e["BROKER_MACHINE_LOGIN_URL"] = unset
+		cfg, err := Load(env(e))
+		if err != nil || cfg.MachineLoginURL != "" {
+			t.Errorf("Load(BROKER_MACHINE_LOGIN_URL=%q) = (%q, %v), want a broker that starts with no machine login page", unset, cfg.MachineLoginURL, err)
+		}
+	}
+	e := validEnv()
+	delete(e, "BROKER_MACHINE_LOGIN_URL")
+	if cfg, err := Load(env(e)); err != nil || cfg.MachineLoginURL != "" {
+		t.Fatalf("Load with no BROKER_MACHINE_LOGIN_URL = (%q, %v), want a broker that starts with no machine login page", cfg.MachineLoginURL, err)
 	}
 	cfg, err := Load(env(validEnv()))
 	if err != nil || cfg.MachineLoginURL != "https://dispatch.internal.example/credentials/machine" {
@@ -119,6 +140,64 @@ func TestLoadLimitsAzureLoginToOneNamedSecret(t *testing.T) {
 		e["BROKER_AZURE_LOGIN_SECRET"] = name
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_AZURE_LOGIN_SECRET") {
 			t.Fatalf("Load an invalid Azure login secret name = %v, want refusal naming the setting", err)
+		}
+	}
+}
+
+// The deployment's binding of each google-service-account agent secret to the one Google account
+// the broker may mint a token for it, BROKER_SERVICE_ACCOUNT_SECRETS: whitespace-separated
+// <SECRET NAME>=<account email> entries, keyed by the name a session asks for, and nil when the
+// setting is unset, which binds nothing and so mints nothing of that kind. Two secrets may name
+// one account, since only the secret name is the key; each refusal names the setting and the
+// whole entry, so an operator reads which one to fix.
+func TestServiceAccountBindingSettingIsRead(t *testing.T) {
+	const (
+		dev   = "dev-aditya@theorem-agent-identities.iam.gserviceaccount.com"
+		admin = "gcp-admin@example-project.iam.gserviceaccount.com"
+	)
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ServiceAccountSecrets != nil {
+		t.Fatalf("ServiceAccountSecrets = %v, want nil when BROKER_SERVICE_ACCOUNT_SECRETS is unset", cfg.ServiceAccountSecrets)
+	}
+
+	e := validEnv()
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = " DEV_ADITYA=" + dev + "\tGCP_ADMIN=" + admin + "\n"
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"DEV_ADITYA": dev, "GCP_ADMIN": admin}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
+		t.Fatalf("ServiceAccountSecrets = %v, want %v", cfg.ServiceAccountSecrets, want)
+	}
+
+	// Two secrets of one account: a person's own account may back both their dev secret and a
+	// second one, and the mint is refused by the secret's name, not the account's.
+	e = validEnv()
+	e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_ADITYA=" + dev + " DEV_ADITYA_2=" + dev
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"DEV_ADITYA": dev, "DEV_ADITYA_2": dev}; !maps.Equal(cfg.ServiceAccountSecrets, want) {
+		t.Fatalf("ServiceAccountSecrets with one account on two secrets = %v, want %v", cfg.ServiceAccountSecrets, want)
+	}
+
+	for _, row := range []struct{ entry, want string }{
+		{"DEV_ADITYA", "must be <SECRET NAME>=<account email> entries"},
+		{"dev-aditya=" + dev, "not an agent secret name"},
+		{"DEV_ADITYA=aditya@theorem.dev", "user-managed Google service account"},
+		{"DEV_ADITYA=service-123456789012@gcp-sa-example.iam.gserviceaccount.com", "Google-managed service agent"},
+		{"DEV_ADITYA=" + admin, "names the secret DEV_ADITYA twice"},
+	} {
+		e := validEnv()
+		e["BROKER_SERVICE_ACCOUNT_SECRETS"] = "DEV_ADITYA=" + dev + " " + row.entry
+		_, err := Load(env(e))
+		if err == nil || !strings.HasPrefix(err.Error(), "BROKER_SERVICE_ACCOUNT_SECRETS ") ||
+			!strings.Contains(err.Error(), row.want) || !strings.Contains(err.Error(), strconv.Quote(row.entry)) {
+			t.Errorf("Load(BROKER_SERVICE_ACCOUNT_SECRETS with %q) = %v, want a refusal naming the setting, the entry and %q", row.entry, err, row.want)
 		}
 	}
 }
@@ -206,9 +285,10 @@ func TestLoadDefaultsTheIntegerSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.LeaseSeconds != 900 || cfg.ProofSkewSeconds != 60 || cfg.AccessTokenSeconds != 900 ||
-		cfg.LauncherCredentialSeconds != 2592000 || cfg.SweepSeconds != 5 || cfg.DrainSeconds != 5 {
-		t.Fatalf("defaults wrong: LeaseSeconds=%d ProofSkewSeconds=%d AccessTokenSeconds=%d LauncherCredentialSeconds=%d SweepSeconds=%d DrainSeconds=%d",
-			cfg.LeaseSeconds, cfg.ProofSkewSeconds, cfg.AccessTokenSeconds, cfg.LauncherCredentialSeconds, cfg.SweepSeconds, cfg.DrainSeconds)
+		cfg.LauncherCredentialSeconds != 2592000 || cfg.SweepSeconds != 5 || cfg.DrainSeconds != 5 ||
+		cfg.SessionCarrySeconds != 43200 {
+		t.Fatalf("defaults wrong: LeaseSeconds=%d ProofSkewSeconds=%d AccessTokenSeconds=%d LauncherCredentialSeconds=%d SweepSeconds=%d DrainSeconds=%d SessionCarrySeconds=%d",
+			cfg.LeaseSeconds, cfg.ProofSkewSeconds, cfg.AccessTokenSeconds, cfg.LauncherCredentialSeconds, cfg.SweepSeconds, cfg.DrainSeconds, cfg.SessionCarrySeconds)
 	}
 }
 
@@ -315,6 +395,117 @@ func TestLoadReadsTrustedProxyHeaderOptionally(t *testing.T) {
 	}
 	if cfg.TrustedProxyHeader != "X-Forwarded-For" {
 		t.Fatalf("TrustedProxyHeader = %q, want X-Forwarded-For", cfg.TrustedProxyHeader)
+	}
+}
+
+// TestLoadReadsTheAirlockRulesFileOptionally pins that BROKER_AIRLOCK_RULES_FILE is optional —
+// unset is "", a deployment with no airlock — and that a path given is read as written. Load
+// opens nothing: the broker reads the file itself at start, where a file it cannot read refuses
+// the boot.
+func TestLoadReadsTheAirlockRulesFileOptionally(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AirlockRulesFile != "" {
+		t.Fatalf("AirlockRulesFile = %q, want empty when BROKER_AIRLOCK_RULES_FILE is unset", cfg.AirlockRulesFile)
+	}
+
+	e := airlockEnv()
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AirlockRulesFile != "/etc/broker/airlock.json" {
+		t.Fatalf("AirlockRulesFile = %q, want /etc/broker/airlock.json", cfg.AirlockRulesFile)
+	}
+}
+
+// airlockEnv is validEnv with the airlock in force: a rules file and the three settings its
+// proxy cannot run without.
+func airlockEnv() map[string]string {
+	e := validEnv()
+	e["BROKER_AIRLOCK_RULES_FILE"] = "/etc/broker/airlock.json"
+	e["BROKER_AIRLOCK_PROXY_URL"] = "http://broker.legion.svc:13381"
+	e["BROKER_AIRLOCK_CA_CERT_FILE"] = "/etc/broker/airlock-ca/tls.crt"
+	e["BROKER_AIRLOCK_CA_KEY_FILE"] = "/etc/broker/airlock-ca/tls.key"
+	return e
+}
+
+// TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile: a broker that reads the rules but
+// cannot proxy would hold back every name the file names and release nothing in their place, so
+// each missing setting refuses the boot by name. With no rules file there is no proxy and the
+// four are ignored, whatever they say.
+func TestTheAirlocksProxySettingsAreRequiredWithItsRulesFile(t *testing.T) {
+	if _, err := Load(env(airlockEnv())); err != nil {
+		t.Fatalf("Load with the airlock fully configured: %v", err)
+	}
+	for _, missing := range []string{"BROKER_AIRLOCK_PROXY_URL", "BROKER_AIRLOCK_CA_CERT_FILE", "BROKER_AIRLOCK_CA_KEY_FILE"} {
+		e := airlockEnv()
+		delete(e, missing)
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") || !strings.Contains(err.Error(), "missing "+missing) {
+			t.Errorf("Load without %s = %v; want a refusal naming the rules file and the missing setting", missing, err)
+		}
+	}
+
+	// No rules file: the same configuration minus the file, and minus every proxy setting, is
+	// accepted, and so is one that still names the listen address and the idle bound.
+	e := validEnv()
+	e["BROKER_AIRLOCK_LISTEN_ADDR"] = "127.0.0.1:13999"
+	e["BROKER_AIRLOCK_IDLE_SECONDS"] = "60"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load with no rules file: %v", err)
+	}
+	if cfg.AirlockProxyURL != "" || cfg.AirlockCACertFile != "" || cfg.AirlockCAKeyFile != "" {
+		t.Errorf("with no rules file the proxy settings read %q, %q, %q; want none", cfg.AirlockProxyURL, cfg.AirlockCACertFile, cfg.AirlockCAKeyFile)
+	}
+	if cfg.AirlockListenAddr != "127.0.0.1:13999" || cfg.AirlockIdleSeconds != 60 {
+		t.Errorf("airlock listen addr = %q and idle = %d; want 127.0.0.1:13999 and 60", cfg.AirlockListenAddr, cfg.AirlockIdleSeconds)
+	}
+
+	// And their defaults, which a deployment that configures neither takes.
+	if cfg, err = Load(env(validEnv())); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AirlockListenAddr != "127.0.0.1:13381" || cfg.AirlockIdleSeconds != 300 {
+		t.Errorf("default airlock listen addr = %q and idle = %d; want 127.0.0.1:13381 and 300", cfg.AirlockListenAddr, cfg.AirlockIdleSeconds)
+	}
+}
+
+// TestTheAirlocksProxyURLIsHeldToItsForm: every release of a name the rules hold back carries
+// this string, and a command's own client reads it as the proxy to dial, so a value with no
+// scheme or no host must refuse the boot rather than fail every airlock run one command at a
+// time. It is held to the same form BROKER_MACHINE_LOGIN_URL beside it is.
+func TestTheAirlocksProxyURLIsHeldToItsForm(t *testing.T) {
+	for _, row := range []struct{ name, value string }{
+		{"a host and a port with no scheme", "proxy:13381"},
+		{"a host with no scheme at all", "broker.legion.svc"},
+		{"an authority with no scheme", "//broker.legion.svc:13381"},
+		{"a scheme that is not http", "socks5://broker.legion.svc:13381"},
+		{"a scheme and no host", "http://"},
+		{"a path alone", "/airlock"},
+		{"no URL at all", "http://%zz"},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			e := airlockEnv()
+			e["BROKER_AIRLOCK_PROXY_URL"] = row.value
+			_, err := Load(env(e))
+			if err == nil || !strings.Contains(err.Error(), "BROKER_AIRLOCK_PROXY_URL") {
+				t.Errorf("Load(BROKER_AIRLOCK_PROXY_URL=%q) = %v; want a refusal naming the variable", row.value, err)
+			}
+		})
+	}
+	// And the two shapes a deployment really sets: the Service a command reaches inside the
+	// cluster, and a proxy behind TLS.
+	for _, value := range []string{"http://broker.legion.svc:13381", "https://airlock.example.com"} {
+		e := airlockEnv()
+		e["BROKER_AIRLOCK_PROXY_URL"] = value
+		cfg, err := Load(env(e))
+		if err != nil || cfg.AirlockProxyURL != value {
+			t.Errorf("Load(BROKER_AIRLOCK_PROXY_URL=%q) = (%q, %v); want it taken as it is", value, cfg.AirlockProxyURL, err)
+		}
 	}
 }
 
@@ -450,11 +641,9 @@ func TestLoadReadsTheVMServices(t *testing.T) {
 	if want := map[string]string{exampleVMServiceAccount: "example-service"}; !maps.Equal(cfg.VMServicesByAccount, want) {
 		t.Fatalf("VMServicesByAccount = %v, want %v", cfg.VMServicesByAccount, want)
 	}
-	if want := map[string]string{exampleVMServiceAccount: "example-project"}; !maps.Equal(cfg.VMProjects, want) {
-		t.Fatalf("VMProjects = %v, want %v", cfg.VMProjects, want)
-	}
-	if want := map[string]string{exampleVMServiceAccount: "example-vm-*"}; !maps.Equal(cfg.VMInstancePatterns, want) {
-		t.Fatalf("VMInstancePatterns = %v, want %v", cfg.VMInstancePatterns, want)
+	pinned := []exchange.GoogleEntry{{Account: exampleVMServiceAccount, Service: "example-service", CloudProject: "example-project", Instance: "example-vm-*"}}
+	if !slices.Equal(cfg.ExchangeGoogleAccounts, pinned) {
+		t.Fatalf("ExchangeGoogleAccounts = %+v, want %+v: the two pins are read into the entry and nowhere else", cfg.ExchangeGoogleAccounts, pinned)
 	}
 
 	// Two accounts for one service, entries separated by any white space, and an audience with
@@ -475,21 +664,128 @@ func TestLoadReadsTheVMServices(t *testing.T) {
 	if want := map[string]string{exampleVMServiceAccount: "example-service", second: "example-service"}; !maps.Equal(cfg.VMServicesByAccount, want) {
 		t.Fatalf("VMServicesByAccount with two accounts = %v, want %v", cfg.VMServicesByAccount, want)
 	}
-	if want := map[string]string{exampleVMServiceAccount: "example-project", second: "example-other"}; !maps.Equal(cfg.VMProjects, want) {
-		t.Fatalf("VMProjects with two accounts = %v, want %v", cfg.VMProjects, want)
+	bothPinned := []exchange.GoogleEntry{
+		{Account: exampleVMServiceAccount, Service: "example-service", CloudProject: "example-project", Instance: "example-vm-*"},
+		{Account: second, Service: "example-service", CloudProject: "example-other", Instance: "example-vm-[0-9]*"},
 	}
-	if want := map[string]string{exampleVMServiceAccount: "example-vm-*", second: "example-vm-[0-9]*"}; !maps.Equal(cfg.VMInstancePatterns, want) {
-		t.Fatalf("VMInstancePatterns with two accounts = %v, want %v", cfg.VMInstancePatterns, want)
+	if !slices.Equal(cfg.ExchangeGoogleAccounts, bothPinned) {
+		t.Fatalf("ExchangeGoogleAccounts with two accounts = %+v, want %+v", cfg.ExchangeGoogleAccounts, bothPinned)
 	}
-	// The second account's missing project or glob is refused naming it, not only the first's.
+	// A second account pinned in one setting and not the other is half a pin, refused naming
+	// both settings and that account, not only the first's.
 	for _, missing := range []string{"BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
 		e := maps.Clone(two)
 		e[missing] = validVMEnv()[missing]
+		named := "BROKER_VM_INSTANCES"
+		if missing == "BROKER_VM_INSTANCES" {
+			named = "BROKER_VM_PROJECTS"
+		}
 		_, err := Load(env(e))
-		want := "BROKER_VM_SERVICES names " + second + `, got "example-service=` + second + `", but ` + missing + " does not"
+		want := named + " names " + second + " but " + missing + ` does not, got "example-service=` + second + `"`
 		if err == nil || !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("Load with the second account missing from %s = %v, want a refusal starting %q", missing, err, want)
 		}
+	}
+	// The pinned account with no BROKER_VM_EXCHANGE_ACCOUNTS entry is one machine entry of the
+	// exchange: its service and its two pins, and no person, no project and no session.
+	oneEntry, err := Load(env(validVMEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []exchange.GoogleEntry{{
+		Account: exampleVMServiceAccount, Service: "example-service",
+		CloudProject: "example-project", Instance: "example-vm-*",
+	}}
+	if !slices.Equal(oneEntry.ExchangeGoogleAccounts, want) {
+		t.Fatalf("ExchangeGoogleAccounts = %+v, want %+v", oneEntry.ExchangeGoogleAccounts, want)
+	}
+}
+
+// TestTheGoogleIssuerDefaultsToGooglesOwn: BROKER_GOOGLE_OIDC_ISSUER is Google's own issuer when
+// the environment names none, and a dev stack's stand-in when it does, which is the only reason
+// the variable exists.
+func TestTheGoogleIssuerDefaultsToGooglesOwn(t *testing.T) {
+	cfg, err := Load(env(validVMEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.GoogleOIDCIssuer != DefaultGoogleOIDCIssuer || DefaultGoogleOIDCIssuer != "https://accounts.google.com" {
+		t.Fatalf("GoogleOIDCIssuer = %q, want %q", cfg.GoogleOIDCIssuer, DefaultGoogleOIDCIssuer)
+	}
+	e := validVMEnv()
+	e["BROKER_GOOGLE_OIDC_ISSUER"] = " http://127.0.0.1:8080\n"
+	if cfg, err = Load(env(e)); err != nil || cfg.GoogleOIDCIssuer != "http://127.0.0.1:8080" {
+		t.Fatalf("GoogleOIDCIssuer with a stand-in issuer = %q, %v; want the issuer with its white space trimmed", cfg.GoogleOIDCIssuer, err)
+	}
+	// With no Google audience the issuer is still answered, since nothing reads it then: it is
+	// the audience that turns Google identity tokens on at all.
+	if cfg, err = Load(env(validEnv())); err != nil || cfg.GoogleOIDCIssuer != DefaultGoogleOIDCIssuer {
+		t.Fatalf("GoogleOIDCIssuer with no Google audience = %q, %v; want the default", cfg.GoogleOIDCIssuer, err)
+	}
+}
+
+// TestTheVMExchangeAccountsGiveAFleetItsPersonAndProject pins BROKER_VM_EXCHANGE_ACCOUNTS: a
+// listed account it names writes that project, acts for that person and may fix its session,
+// while a listed account it does not name is its service and nothing else. Its refusals are each
+// its own: an entry that is not of the form, a blank field, an account no VM service lists, an
+// account named twice, an account no VM setting may name, and the setting with no Google
+// audience.
+func TestTheVMExchangeAccountsGiveAFleetItsPersonAndProject(t *testing.T) {
+	const second = "second-fleet@example-project.iam.gserviceaccount.com"
+	e := validVMEnv()
+	e["BROKER_VM_SERVICES"] += " example-other=" + second
+	e["BROKER_VM_PROJECTS"] += " " + second + "=example-other"
+	e["BROKER_VM_INSTANCES"] += " " + second + "=example-vm-*"
+	e["BROKER_VM_EXCHANGE_ACCOUNTS"] = exampleVMServiceAccount + "=EXAMPLE=ada@example.com=example-fleet-1"
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []exchange.GoogleEntry{
+		{
+			Account: exampleVMServiceAccount, Service: "example-service",
+			CloudProject: "example-project", Instance: "example-vm-*",
+			Project: "EXAMPLE", Person: "ada@example.com", Session: "example-fleet-1",
+		},
+		{
+			Account: second, Service: "example-other",
+			CloudProject: "example-other", Instance: "example-vm-*",
+		},
+	}
+	if !slices.Equal(cfg.ExchangeGoogleAccounts, want) {
+		t.Fatalf("ExchangeGoogleAccounts = %+v, want %+v", cfg.ExchangeGoogleAccounts, want)
+	}
+	// An entry that fixes no session: everything after the third = is the session, so there is
+	// none to read.
+	noSession := validVMEnv()
+	noSession["BROKER_VM_EXCHANGE_ACCOUNTS"] = exampleVMServiceAccount + "=EXAMPLE=ada@example.com"
+	cfg, err = Load(env(noSession))
+	if err != nil || len(cfg.ExchangeGoogleAccounts) != 1 || cfg.ExchangeGoogleAccounts[0].Session != "" ||
+		cfg.ExchangeGoogleAccounts[0].Person != "ada@example.com" {
+		t.Fatalf("ExchangeGoogleAccounts with no session fixed = %+v, %v", cfg.ExchangeGoogleAccounts, err)
+	}
+	for _, row := range []struct{ value, want string }{
+		{exampleVMServiceAccount + "=EXAMPLE", "BROKER_VM_EXCHANGE_ACCOUNTS must be <service account email>=<project>=<person>[=<session>] entries"},
+		{exampleVMServiceAccount + "==ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS must be <service account email>=<project>=<person>[=<session>] entries"},
+		{exampleVMServiceAccount + "=EXAMPLE=", "BROKER_VM_EXCHANGE_ACCOUNTS must be <service account email>=<project>=<person>[=<session>] entries"},
+		{"not-an-email=EXAMPLE=ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS must name user-managed service accounts"},
+		{"system:serviceaccount:example-ns:example-worker=EXAMPLE=ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS must name user-managed service accounts"},
+		{exampleVMServiceAccount + "=EXAMPLE=ada@example.com " + exampleVMServiceAccount + "=OTHER=bob@example.com",
+			"BROKER_VM_EXCHANGE_ACCOUNTS names the service account " + exampleVMServiceAccount + " twice"},
+		{second + "=EXAMPLE=ada@example.com", "BROKER_VM_EXCHANGE_ACCOUNTS names " + second},
+	} {
+		bad := validVMEnv()
+		bad["BROKER_VM_EXCHANGE_ACCOUNTS"] = row.value
+		_, err := Load(env(bad))
+		if err == nil || !strings.HasPrefix(err.Error(), row.want) {
+			t.Errorf("Load(BROKER_VM_EXCHANGE_ACCOUNTS=%q) = %v, want a refusal starting %q", row.value, err, row.want)
+		}
+	}
+	withoutAudience := validEnv()
+	withoutAudience["BROKER_VM_EXCHANGE_ACCOUNTS"] = exampleVMServiceAccount + "=EXAMPLE=ada@example.com"
+	_, err = Load(env(withoutAudience))
+	if want := "BROKER_VM_EXCHANGE_ACCOUNTS needs BROKER_GOOGLE_OIDC_AUDIENCE"; err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("Load with the fleet grants and no Google audience = %v, want a refusal starting %q", err, want)
 	}
 }
 
@@ -517,7 +813,8 @@ func TestTheVMSettingsLeaveEveryOtherFieldAlone(t *testing.T) {
 	if got.VMServicesByAccount == nil {
 		t.Fatal("the VM settings were not read")
 	}
-	got.GoogleOIDCAudience, got.VMServicesByAccount, got.VMProjects, got.VMInstancePatterns = "", nil, nil, nil
+	got.GoogleOIDCAudience, got.VMServicesByAccount = "", nil
+	got.ExchangeGoogleAccounts = nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Config with the VM settings, VM fields cleared = %+v, want it equal to the Config without them, %+v", got, want)
 	}
@@ -590,20 +887,39 @@ func TestAGoogleAudienceWithNoVMServicesIsRefused(t *testing.T) {
 	}
 }
 
-// TestVMServicesNeedAProjectAndAnInstancePattern pins that every VM account needs both its
-// project and its instance pattern, refused naming the account and its entry; that neither setting
-// may name an account no VM service lists (the first such entry as written is the one named), an
-// account twice, or a malformed value; and that an instance glob holds only an instance name's
-// characters and path.Match's.
-func TestVMServicesNeedAProjectAndAnInstancePattern(t *testing.T) {
+// TestAVMAccountIsPinnedToBothOrToNeither pins the rule each pin follows: an account named in
+// BROKER_VM_PROJECTS and in BROKER_VM_INSTANCES is held to that project and those names, an
+// account named in neither takes its machines wherever they run, and an account named in one and
+// not the other is refused at boot naming both settings and the account, since half a pin says
+// nothing clear. It also pins that neither setting may name an account no VM service lists (the
+// first such entry as written is the one named), an account twice, or a malformed value; and that
+// an instance glob holds only an instance name's characters and path.Match's.
+func TestAVMAccountIsPinnedToBothOrToNeither(t *testing.T) {
 	for _, missing := range []string{"BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
+		named := "BROKER_VM_INSTANCES"
+		if missing == "BROKER_VM_INSTANCES" {
+			named = "BROKER_VM_PROJECTS"
+		}
 		e := validVMEnv()
 		delete(e, missing)
 		_, err := Load(env(e))
-		want := "BROKER_VM_SERVICES names " + exampleVMServiceAccount + `, got "example-service=` + exampleVMServiceAccount + `", but ` + missing + " does not"
+		want := named + " names " + exampleVMServiceAccount + " but " + missing + ` does not, got "example-service=` + exampleVMServiceAccount + `"`
 		if err == nil || !strings.HasPrefix(err.Error(), want) {
 			t.Errorf("Load with %s unset = %v, want a refusal starting %q", missing, err, want)
 		}
+	}
+	// Neither pin: the account is listed, and its entry takes a machine wherever it runs.
+	unpinned := validVMEnv()
+	delete(unpinned, "BROKER_VM_PROJECTS")
+	delete(unpinned, "BROKER_VM_INSTANCES")
+	cfg, err := Load(env(unpinned))
+	if err != nil {
+		t.Fatalf("Load with neither pin = %v, want an unpinned account", err)
+	}
+	// Neither pin reaches the entry, which is the only place a pin is read.
+	want := []exchange.GoogleEntry{{Account: exampleVMServiceAccount, Service: "example-service"}}
+	if !slices.Equal(cfg.ExchangeGoogleAccounts, want) {
+		t.Errorf("ExchangeGoogleAccounts with neither pin = %+v, want %+v", cfg.ExchangeGoogleAccounts, want)
 	}
 	const other, third = "other-fleet@example-project.iam.gserviceaccount.com", "third-fleet@example-project.iam.gserviceaccount.com"
 	for name, values := range map[string][2]string{
@@ -653,8 +969,9 @@ func TestVMServicesNeedAProjectAndAnInstancePattern(t *testing.T) {
 	for _, glob := range []string{"example-vm-[0-9]*", "example-vm-[^x]?", "*"} {
 		e := validVMEnv()
 		e["BROKER_VM_INSTANCES"] = exampleVMServiceAccount + "=" + glob
-		if cfg, err := Load(env(e)); err != nil || cfg.VMInstancePatterns[exampleVMServiceAccount] != glob {
-			t.Errorf("Load(BROKER_VM_INSTANCES glob %q) = %v, %v; want it accepted", glob, cfg.VMInstancePatterns, err)
+		cfg, err := Load(env(e))
+		if err != nil || len(cfg.ExchangeGoogleAccounts) != 1 || cfg.ExchangeGoogleAccounts[0].Instance != glob {
+			t.Errorf("Load(BROKER_VM_INSTANCES glob %q) = %+v, %v; want it accepted", glob, cfg.ExchangeGoogleAccounts, err)
 		}
 	}
 	for _, setting := range []string{"BROKER_VM_PROJECTS", "BROKER_VM_INSTANCES"} {
@@ -721,8 +1038,11 @@ func TestWithNoGoogleAudienceEveryVMFieldIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.GoogleOIDCAudience != "" || cfg.VMServicesByAccount != nil || cfg.VMProjects != nil || cfg.VMInstancePatterns != nil {
-		t.Fatalf("VM configuration = audience %q, services %v, projects %v, instances %v; want empty with no Google audience", cfg.GoogleOIDCAudience, cfg.VMServicesByAccount, cfg.VMProjects, cfg.VMInstancePatterns)
+	if cfg.GoogleOIDCAudience != "" || cfg.VMServicesByAccount != nil {
+		t.Fatalf("VM configuration = audience %q, services %v; want empty with no Google audience", cfg.GoogleOIDCAudience, cfg.VMServicesByAccount)
+	}
+	if cfg.ExchangeGoogleAccounts != nil {
+		t.Fatalf("ExchangeGoogleAccounts = %+v, want none with no Google audience: the exchange then registers no Google subject token type", cfg.ExchangeGoogleAccounts)
 	}
 }
 
@@ -801,7 +1121,9 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 }
 
 // TestLoadRefusesTheRulesFileVariables pins that a deployment still configured for the rules file
-// refuses to start naming the variable, rather than running with its rules silently ignored.
+// refuses to start naming the variable, rather than running with its rules silently ignored. The
+// reason names both halves of what replaced it: the tags each secret's owner and tier come from,
+// and BROKER_AIRLOCK_RULES_FILE, the file the broker does read, for the other question.
 func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 	for name, value := range map[string]string{
 		"BROKER_RULES_FILE":           "/r.yaml",
@@ -811,8 +1133,8 @@ func TestLoadRefusesTheRulesFileVariables(t *testing.T) {
 		e := validEnv()
 		e[name] = value
 		_, err := Load(env(e))
-		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") {
-			t.Fatalf("Load(%s set) = %v, want a refusal naming it and the tags that replace it", name, err)
+		if err == nil || !strings.HasPrefix(err.Error(), name+" is removed; ") || !strings.Contains(err.Error(), "tags") || !strings.Contains(err.Error(), "BROKER_AIRLOCK_RULES_FILE") {
+			t.Fatalf("Load(%s set) = %v, want a refusal naming it, the tags that replace it and BROKER_AIRLOCK_RULES_FILE", name, err)
 		}
 	}
 }
@@ -1108,18 +1430,22 @@ func withK8sIssuer() map[string]string {
 	return e
 }
 
+// exampleListenerAccount is the placeholder Google service account a listed caller on a VM runs
+// as, as BROKER_API_ACCOUNTS names it; this repository is public, so no real account appears.
+const exampleListenerAccount = "example-listener@example-project.iam.gserviceaccount.com"
+
 // TestLoadReadsTheAPIAccounts pins BROKER_API_ACCOUNTS: whitespace-separated <caller>=<account>
 // entries keyed by account, each answering the caller and the powers its name carries, none when
-// unset, and refusals naming the entry for one that is not of that form, a namespace's default
-// account and an account named twice. It needs the cluster issuer, since the broker verifies
-// those callers' tokens against it.
+// unset, and refusals naming the entry for one that is not of either form, a namespace's default
+// account and an account named twice. A Kubernetes entry needs the cluster issuer, since the
+// broker verifies that caller's token against it.
 func TestLoadReadsTheAPIAccounts(t *testing.T) {
 	cfg, err := Load(env(validEnv()))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.APIAccounts != nil {
-		t.Fatalf("APIAccounts = %v, want nil when BROKER_API_ACCOUNTS is unset", cfg.APIAccounts)
+	if cfg.APIAccounts != nil || cfg.GoogleAPIAccounts != nil {
+		t.Fatalf("APIAccounts = %v and GoogleAPIAccounts = %v, want neither when BROKER_API_ACCOUNTS is unset", cfg.APIAccounts, cfg.GoogleAPIAccounts)
 	}
 	e := withK8sIssuer()
 	e["BROKER_API_ACCOUNTS"] = " dispatch=system:serviceaccount:example-ns:example-dispatch\nlistener=system:serviceaccount:example-ns:example-listener "
@@ -1133,8 +1459,8 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 		"system:serviceaccount:example-ns:example-dispatch": dispatchCaller,
 		"system:serviceaccount:example-ns:example-listener": listenerCaller,
 	}
-	if !maps.Equal(cfg.APIAccounts, want) {
-		t.Fatalf("APIAccounts = %v, want %v", cfg.APIAccounts, want)
+	if !maps.Equal(cfg.APIAccounts, want) || cfg.GoogleAPIAccounts != nil {
+		t.Fatalf("APIAccounts = %v and GoogleAPIAccounts = %v, want %v and no Google caller", cfg.APIAccounts, cfg.GoogleAPIAccounts, want)
 	}
 	for _, bad := range []string{
 		"dispatch", "=system:serviceaccount:a:b", "Dispatch=system:serviceaccount:a:b",
@@ -1155,6 +1481,71 @@ func TestLoadReadsTheAPIAccounts(t *testing.T) {
 	e["BROKER_API_ACCOUNTS"] = "dispatch=system:serviceaccount:example-ns:example-dispatch"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_K8S_OIDC_ISSUER") {
 		t.Errorf("BROKER_API_ACCOUNTS with no token issuer: err = %v, want a refusal naming BROKER_K8S_OIDC_ISSUER", err)
+	}
+}
+
+// TestLoadReadsAGoogleAPIAccount pins the other kind of BROKER_API_ACCOUNTS entry: an account
+// written google:<address> is a Google service account, kept apart from the Kubernetes accounts
+// and keyed by the address its identity token carries in email, which is how the Envoy listener
+// calls from a VM that holds no Kubernetes token. It needs BROKER_GOOGLE_OIDC_AUDIENCE, the
+// audience that token must carry, and not the cluster's issuer; a Google address no machine may
+// prove is refused here as BROKER_VM_SERVICES refuses it; and the two kinds live side by side.
+func TestLoadReadsAGoogleAPIAccount(t *testing.T) {
+	listenerCaller, _ := api.AccountFor("listener")
+	dispatchCaller, _ := api.AccountFor("dispatch")
+
+	e := validVMEnv()
+	e["BROKER_API_ACCOUNTS"] = "listener=google:" + exampleListenerAccount
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantGoogle := map[string]api.Account{exampleListenerAccount: listenerCaller}
+	if !maps.Equal(cfg.GoogleAPIAccounts, wantGoogle) || cfg.APIAccounts != nil {
+		t.Fatalf("GoogleAPIAccounts = %v and APIAccounts = %v, want %v and no Kubernetes caller: a Google entry needs no cluster at all", cfg.GoogleAPIAccounts, cfg.APIAccounts, wantGoogle)
+	}
+
+	both := validVMEnv()
+	both["BROKER_K8S_OIDC_ISSUER"] = "https://oidc.eks.example.invalid/id/EXAMPLE"
+	both["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+	both["BROKER_API_ACCOUNTS"] = "dispatch=system:serviceaccount:example-ns:example-dispatch listener=google:" + exampleListenerAccount
+	cfg, err = Load(env(both))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantK8s := map[string]api.Account{"system:serviceaccount:example-ns:example-dispatch": dispatchCaller}
+	if !maps.Equal(cfg.APIAccounts, wantK8s) || !maps.Equal(cfg.GoogleAPIAccounts, wantGoogle) {
+		t.Fatalf("APIAccounts = %v, GoogleAPIAccounts = %v; want %v and %v: each entry goes to the list its own kind is verified from", cfg.APIAccounts, cfg.GoogleAPIAccounts, wantK8s, wantGoogle)
+	}
+
+	noAudience := validEnv()
+	noAudience["BROKER_API_ACCOUNTS"] = "listener=google:" + exampleListenerAccount
+	_, err = Load(env(noAudience))
+	if err == nil || !strings.Contains(err.Error(), "BROKER_GOOGLE_OIDC_AUDIENCE") {
+		t.Errorf("a Google API account with no Google audience: err = %v, want a refusal naming BROKER_GOOGLE_OIDC_AUDIENCE, the audience its token must carry", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "BROKER_K8S_OIDC_ISSUER") {
+		t.Errorf("a Google API account was refused for the cluster's issuer: %v: a Google caller presents no Kubernetes token", err)
+	}
+
+	for _, bad := range []string{
+		"listener=google:",
+		"listener=google:example-listener@example-project.IAM.gserviceaccount.com",
+		"listener=google:123456789-compute@developer.gserviceaccount.com",
+		"listener=google:service-123456@gcp-sa-pubsub.iam.gserviceaccount.com",
+		"listener=google:ada@example.com",
+	} {
+		e := validVMEnv()
+		e["BROKER_API_ACCOUNTS"] = bad
+		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_API_ACCOUNTS") || !strings.Contains(err.Error(), strconv.Quote(bad)) {
+			t.Errorf("BROKER_API_ACCOUNTS = %q: err = %v, want a refusal naming the setting and the entry", bad, err)
+		}
+	}
+
+	twice := validVMEnv()
+	twice["BROKER_API_ACCOUNTS"] = "dispatch=google:" + exampleListenerAccount + " listener=google:" + exampleListenerAccount
+	if _, err := Load(env(twice)); err == nil || !strings.Contains(err.Error(), exampleListenerAccount) {
+		t.Errorf("BROKER_API_ACCOUNTS naming one Google account twice: err = %v, want a refusal naming the account", err)
 	}
 }
 
@@ -1437,6 +1828,77 @@ func TestLoadRefusesASignInIssuerThatIsNotHTTPS(t *testing.T) {
 		e["BROKER_SIGNIN_ISSUER"] = bad
 		if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SIGNIN_ISSUER") || strings.Contains(err.Error(), signInSecret) {
 			t.Errorf("BROKER_SIGNIN_ISSUER = %q: err = %v, want a refusal naming it", bad, err)
+		}
+	}
+}
+
+// TestLoadReadsTheAirlocksTestOnlySettings pins each of the seven settings the broker's local
+// stack configures the airlock with: the two minter bases, the addresses the proxy may dial
+// although they are loopback, the extra upstream roots, where a name resolves to, and the two
+// negative-control switches. Each is read as it is given and is empty or off when unset. The
+// refusal of each on a production start is cmd/broker's, which has its own rows.
+func TestLoadReadsTheAirlocksTestOnlySettings(t *testing.T) {
+	cfg, err := Load(env(validEnv()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AirlockTestGitHubAPIBase != "" || cfg.AirlockTestGoogleTokenURL != "" || cfg.AirlockTestUpstreamCAFile != "" ||
+		len(cfg.AirlockTestDialAllow) != 0 || len(cfg.AirlockTestResolve) != 0 || cfg.AirlockTestKeepValues || cfg.AirlockTestNoKind {
+		t.Fatalf("with none of them set the airlock's test settings read %+v; want every one empty or off", cfg)
+	}
+
+	e := validEnv()
+	e["BROKER_AIRLOCK_TEST_GITHUB_API_BASE"] = "http://127.0.0.1:18080"
+	e["BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL"] = "http://127.0.0.1:18081/token"
+	e["BROKER_AIRLOCK_TEST_DIAL_ALLOW"] = "s.airlock.test:443 t.airlock.test:8443"
+	e["BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE"] = "/run/airlock/ca.crt"
+	e["BROKER_AIRLOCK_TEST_RESOLVE"] = "s.airlock.test=127.0.0.1 login.microsoftonline.com=127.0.0.2"
+	e["BROKER_AIRLOCK_TEST_KEEP_VALUES"] = "true"
+	e["BROKER_AIRLOCK_TEST_NO_KIND"] = "1"
+	cfg, err = Load(env(e))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AirlockTestGitHubAPIBase != "http://127.0.0.1:18080" || cfg.AirlockTestGoogleTokenURL != "http://127.0.0.1:18081/token" {
+		t.Errorf("the minter bases read %q and %q; want the two the environment named", cfg.AirlockTestGitHubAPIBase, cfg.AirlockTestGoogleTokenURL)
+	}
+	if cfg.AirlockTestUpstreamCAFile != "/run/airlock/ca.crt" {
+		t.Errorf("the upstream roots file reads %q; want /run/airlock/ca.crt", cfg.AirlockTestUpstreamCAFile)
+	}
+	if !slices.Equal(cfg.AirlockTestDialAllow, []string{"s.airlock.test:443", "t.airlock.test:8443"}) {
+		t.Errorf("the dial allow list reads %v; want both addresses in the order they were given", cfg.AirlockTestDialAllow)
+	}
+	want := map[string]netip.Addr{
+		"s.airlock.test":            netip.MustParseAddr("127.0.0.1"),
+		"login.microsoftonline.com": netip.MustParseAddr("127.0.0.2"),
+	}
+	if !maps.Equal(cfg.AirlockTestResolve, want) {
+		t.Errorf("the resolve map reads %v; want %v", cfg.AirlockTestResolve, want)
+	}
+	if !cfg.AirlockTestKeepValues || !cfg.AirlockTestNoKind {
+		t.Errorf("the two switches read %v and %v; want both on", cfg.AirlockTestKeepValues, cfg.AirlockTestNoKind)
+	}
+}
+
+// TestLoadRefusesAnAirlockTestSettingItCannotActOn pins that a value the proxy could not act
+// on refuses the start naming the setting, rather than being read as none: an address with no
+// port, an entry that is no IP address, a host resolved twice, and a switch that is neither
+// true nor false.
+func TestLoadRefusesAnAirlockTestSettingItCannotActOn(t *testing.T) {
+	for _, c := range []struct{ setting, value, want string }{
+		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", "s.airlock.test", "must be <host>:<port>"},
+		{"BROKER_AIRLOCK_TEST_DIAL_ALLOW", "s.airlock.test:https", "names no port number"},
+		{"BROKER_AIRLOCK_TEST_RESOLVE", "s.airlock.test", "must be <host>=<address>"},
+		{"BROKER_AIRLOCK_TEST_RESOLVE", "s.airlock.test=localhost", "names no IP address"},
+		{"BROKER_AIRLOCK_TEST_RESOLVE", "s.airlock.test=127.0.0.1 s.airlock.test=127.0.0.2", "twice"},
+		{"BROKER_AIRLOCK_TEST_KEEP_VALUES", "yes please", "must be true or false"},
+		{"BROKER_AIRLOCK_TEST_NO_KIND", "off-ish", "must be true or false"},
+	} {
+		e := validEnv()
+		e[c.setting] = c.value
+		_, err := Load(env(e))
+		if err == nil || !strings.Contains(err.Error(), c.setting) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s = %q: err = %v; want a refusal naming it and %q", c.setting, c.value, err, c.want)
 		}
 	}
 }

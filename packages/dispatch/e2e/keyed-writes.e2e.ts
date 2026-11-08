@@ -1,8 +1,10 @@
 import { type AddressInfo, createServer, type Socket } from "node:net";
 
+import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import type { Event } from "../web/src/api/types";
+import { expiredRetryNote } from "../web/src/features/writes/keyed-write";
 import {
   baseUrl,
   createAsk,
@@ -18,6 +20,7 @@ import {
   userHeaders,
 } from "./api";
 import {
+  cutFirstAnswerBody,
   dropFirstAnswer,
   keptWrites,
   recordUploadAttempts,
@@ -114,7 +117,11 @@ async function queueBehindAHeldStatus(page: Page, issue: string, label: string):
   await expect(pendingWrites(page)).toContainText(`Labels of ${issue} — Waiting to send`);
 }
 
-test("a comment whose answer is lost lands once, under one key @phone", async ({ browser }) => {
+// @webkit @firefox: the keyed write path's request failure, which each engine hands the page its
+// own way.
+test("a comment whose answer is lost lands once, under one key @webkit @firefox", async ({
+  browser,
+}) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A comment once" });
   const path = `/api/v1/issues/${issue.key}/comments`;
@@ -150,11 +157,146 @@ test("a comment whose answer is lost lands once, under one key @phone", async ({
   }
 });
 
+// An answer whose body stops part way down says nothing of what Dispatch did, as a connection
+// that never answered says nothing, so it is a transport failure and not a refusal: the write
+// asks again under its own key. Here the first attempt reaches Dispatch for real and the comment
+// is made; the page is handed that answer's own status and headers over a body that errors as it
+// is read (`cutFirstAnswerBody`, which says why no `page.route` can do this). The page tries
+// again under the same key, Dispatch replays the answer it kept, and the issue holds one comment
+// with nothing refused. A page that let that read's failure out of `send` refused the write
+// instead, and its Retry, under a key of its own, would have made the comment a second time.
+// SLOW(>=2s): a Conversation page load and two real round trips to Dispatch - the attempt whose
+// answer is cut under the page, which Dispatch makes the comment on, and the repeat it replays -
+// are what is left; the backoff between them is the page's own clock and costs none.
+// @webkit @firefox: the keyed write path's request failure, which each engine hands the page its
+// own way - here a body read that fails after a 2xx's headers have arrived, where the browser,
+// not Dispatch, decides what the page sees.
+test("a comment whose answer the browser cannot read is written once @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A comment the browser cannot read" });
+  const path = `/api/v1/issues/${issue.key}/comments`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    const posts = watchWrites(page, "POST", path);
+    const made = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === path
+    );
+    const landed = replayed(page, "POST", path);
+    await cutFirstAnswerBody(page, "POST", path);
+    // The repeat waits `FIRST_BACKOFF_MS` after the failed read; the page's own clock runs that
+    // wait out, so nothing here is spent on it.
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    const composer = page.getByRole("form", { name: "Comment composer" }).last();
+    await composer.getByLabel("Comment").fill("Read once");
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+
+    expect((await made).status()).toBe(201);
+    // The failed read ends the attempt without a verdict, so the write is made again under its
+    // own key rather than refused; a page that refused it sends no second attempt at all.
+    await runClockUntil(page, expect.poll(() => posts.length, { timeout: 15_000 }).toBe(2));
+    const answer = await runClockUntil(page, landed);
+    expect(answer.status()).toBe(201);
+    expect(posts[0]).toEqual({
+      input: expect.objectContaining({ body: "Read once" }),
+      key: expect.any(String),
+    });
+    expect(posts[1]).toEqual(posts[0]);
+    await expect(composer.getByLabel("Comment")).toHaveValue("");
+    await expect(page.getByText(/^Couldn't send/)).toHaveCount(0);
+    await expect(composer.getByRole("button", { exact: true, name: "Retry" })).toHaveCount(0);
+    await expect(page.locator(`[data-turn="comment:${(await answer.json()).id}"]`)).toHaveCount(1);
+    expect(await eventsOf(issue.key, "comment.created")).toHaveLength(1);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A key names the person's action only for as long as Dispatch keeps it - `IDEMPOTENCY_KEY_TTL_MS`
+// from the first request - and a send key carries the millisecond it was minted, so the page can
+// tell. Two writes are held at the network and never answered: a status change the shell's
+// indicator names, and a comment the composer holds. The tab's own clock then passes that
+// lifetime, which costs this row no real time. Neither write goes out again - an attempt under a
+// key Dispatch has forgotten would be a second write of the person's action - and each surface
+// says so in the reader's words and offers Retry and Discard, the Retry being a new write.
+// SLOW(>=2s): a Conversation page load with its header and composer, and the attempts two
+// writes make at the network before their keys run out, are what is left: the jump past the key
+// lifetime and the straggler window after it are the page's own clock and cost no real time.
+// @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
+// read back beside a key the server has forgotten, which each engine times and stores its own way.
+test("a write whose key has expired stops and offers a new write @webkit @firefox", async ({
+  browser,
+}) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A key that runs out" });
+  const before = (await getIssue(issue.key)).status;
+  const path = `/api/v1/issues/${issue.key}`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // Every attempt of either write, whether or not the route let it reach Dispatch: the request
+    // event fires before the route answers.
+    const attempts: string[] = [];
+    page.on("request", (request) => {
+      const { pathname } = new URL(request.url());
+      const write = request.method() === "PATCH" || request.method() === "POST";
+      if (write && pathname.startsWith(path)) attempts.push(pathname);
+    });
+    // Neither write ever reaches Dispatch, so neither has a verdict and both keep trying - until
+    // their keys run out. The outages are never ended: this row is about what the page does with
+    // a key it can no longer use, not about a network that comes back.
+    await outage(page, `**${path}`, "PATCH");
+    await outage(page, `**${path}/comments`, "POST");
+    await page.clock.install();
+    await page.goto(`/issues/${issue.key}/conversation`);
+    await page.getByLabel("Status").selectOption("todo");
+    const composer = page.getByRole("form", { name: "Comment composer" }).last();
+    await composer.getByLabel("Comment").fill("Older than its key");
+    await composer.getByRole("button", { exact: true, name: "Send" }).click();
+    const indicator = pendingWrites(page);
+    await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
+    await expect.poll(() => attempts.length).toBeGreaterThanOrEqual(2);
+
+    await page.clock.fastForward(IDEMPOTENCY_KEY_TTL_MS + 1_000);
+    // Every attempt the route saw by the time the keys ran out. Each write is between attempts,
+    // waiting out a backoff on a page timer the jump fires; the one that follows it is refused
+    // before it goes out, so this count is the last.
+    const spent = attempts.length;
+    await runClockUntil(
+      page,
+      expect(indicator).toContainText(`Not saved: ${issue.key} set to todo`)
+    );
+
+    await expect(indicator).toContainText(expiredRetryNote("saved"));
+    await expect(indicator.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+    await expect(indicator.getByRole("button", { exact: true, name: "Discard" })).toBeVisible();
+    await expect(composer).toContainText(expiredRetryNote("delivered"));
+    await expect(composer.getByRole("button", { exact: true, name: "Retry" })).toBeVisible();
+    await expect(composer.getByRole("button", { name: "Discard draft" })).toBeVisible();
+    // Nothing more went out under either key, and nothing of either write was made. Running the
+    // page's clock past `MAX_BACKOFF_MS` shows every straggler a timer of its own could still
+    // have scheduled, which a few seconds of real time would not, and costs none.
+    await page.clock.runFor(60_000);
+    expect(attempts).toHaveLength(spent);
+    expect((await getIssue(issue.key)).status).toBe(before);
+    expect(await statusEvents(issue.key, "todo")).toEqual([]);
+    expect(await eventsOf(issue.key, "comment.created")).toEqual([]);
+  } finally {
+    await alice.close();
+  }
+});
+
 // The status change is the one kept through a reload: the page keeps an unconfirmed write in the
 // tab's storage, asks before the tab is left, and the reloaded page sends it again under the same
 // key. The shell's pending-writes indicator names it while it is out and clears once Dispatch
 // answers it.
-test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows and clears @phone", async ({
+// @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
+// and the ask before the tab unloads.
+test("a status change whose answer is lost survives a reload, lands once, and the pending-writes indicator shows and clears @webkit @firefox", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -198,7 +340,15 @@ test("a status change whose answer is lost survives a reload, lands once, and th
   }
 });
 
-test("an ask answer whose answer is lost lands once, under one key @phone", async ({ browser }) => {
+// @webkit under the second of the two reasons for an engine tag (`e2e/playwright.config.ts`, the
+// comment above `tagged`): not a WebKit behaviour of its own - the keyed write path's request
+// failure is the one the tagged rows above exercise in every engine - but the engine this row's
+// own failures were in, both of them, two timeouts in 213 CI runs. The tag is what keeps the row
+// there now that the projects select rows by tag rather than by file (`webkitTagged`); without it
+// the row would run only where its defect was never seen.
+test("an ask answer whose answer is lost lands once, under one key @webkit", async ({
+  browser,
+}) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "An answer once" });
   const ask = await createAsk(
@@ -245,7 +395,7 @@ test("an ask answer whose answer is lost lands once, under one key @phone", asyn
 // no page clock can move. 3 s is the shortest hold that still has the key in flight when the
 // page's repeat arrives a second after the abort (`FIRST_BACKOFF_MS`), with room for the press
 // and the attempt's flight: 2 s left Firefox's press on the wrong side of it.
-test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once @phone", async ({
+test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, and the page asks again until it lands once", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -322,7 +472,9 @@ test("a repeat while the first is still running is answered 409 KEY_IN_FLIGHT, a
 // SLOW(>=2s): Dispatch's own delay is real time on the server (`writes/_test/slow`); only the
 // page's 15 s give-up is driven by `page.clock`. 4 s is the shortest hold that still has the key
 // claimed when the repeat arrives.
-test("a comment Dispatch takes 20 s to make lands once from the page, every repeat waiting on the first @phone", async ({
+// @webkit @firefox: the keyed write path's abort of an attempt gone silent, which the engine must
+// not take for the server's answer.
+test("a comment Dispatch takes 20 s to make lands once from the page, every repeat waiting on the first @webkit @firefox", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -391,10 +543,10 @@ test("a comment Dispatch takes 20 s to make lands once from the page, every repe
 // SLOW(>=2s): The upload must really keep moving while the page's clock crosses
 // `KEYED_SEND_ATTEMPT_MS`; a throttled 4 s transfer is the shortest one that still emits progress
 // across the fast-forwards.
-test("an upload throttled to take 30 s is one attempt and lands once @phone", async ({
+test("an upload throttled to take 30 s is one attempt and lands once", async ({
   browser,
   browserName,
-}, testInfo) => {
+}) => {
   test.skip(browserName !== "chromium", "only Chromium's DevTools protocol paces a page's upload");
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A slow upload" });
@@ -413,10 +565,6 @@ test("an upload throttled to take 30 s is one attempt and lands once @phone", as
     const answers = watchAnswers(page, "POST", path);
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    if (testInfo.project.name === "iphone") {
-      const reviewPanel = page.getByRole("button", { name: /review panel/i });
-      if ((await reviewPanel.getAttribute("aria-expanded")) === "true") await reviewPanel.click();
-    }
     await page.getByRole("tab", { name: "Artifacts" }).click();
     await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
@@ -482,10 +630,12 @@ test("an upload throttled to take 30 s is one attempt and lands once @phone", as
 // Dispatch's 409 would no longer be written while the body is still arriving, which is the drain
 // this row proves. Three real uploads of it, plus a 5 s server hold the page's give-up must
 // outlast, are the real time left.
-test("a 20 MB upload repeated while its first request runs is answered 409 KEY_IN_FLIGHT, never a failed connection, and lands once @phone", async ({
+// @webkit @firefox: the keyed write path's abort, where the engine sends a whole upload before it
+// reads the answer and would otherwise hand the page a reset connection.
+test("a 20 MB upload repeated while its first request runs is answered 409 KEY_IN_FLIGHT, never a failed connection, and lands once @webkit @firefox", async ({
   browser,
   browserName,
-}, testInfo) => {
+}) => {
   test.setTimeout(60_000);
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A repeated upload" });
@@ -498,10 +648,6 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
     const attempts = await recordUploadAttempts(page, path);
     await page.clock.install();
     await page.goto(`/issues/${issue.key}`);
-    if (testInfo.project.name === "iphone") {
-      const reviewPanel = page.getByRole("button", { name: /review panel/i });
-      if ((await reviewPanel.getAttribute("aria-expanded")) === "true") await reviewPanel.click();
-    }
     await page.getByRole("tab", { name: "Artifacts" }).click();
     await page.getByLabel("Upload artifact").setInputFiles({
       buffer: Buffer.alloc(bytes, 7),
@@ -568,6 +714,167 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
   }
 });
 
+// A Retry Dispatch's own verdict sends goes under a new key - Dispatch would replay that verdict
+// to the old one - and the file the tab kept for the write moves to that key with it, so a
+// reload before the new attempt lands makes the upload again from it. The refusal has to reach
+// the shell's indicator for the reader to retry the write rather than press Upload afresh, and
+// that is what a resumed write does: the Artifacts tab's own control shows its refusal beside
+// the file and lets the write go, while a write a reload brought back belongs to the indicator.
+// So the first attempt is held at the network and the page reloaded; the attempt the resumed
+// write makes is answered as Dispatch answers a multipart body that arrived cut short, which is
+// its verdict on that key; and the Retry's attempt is held in turn, so the second reload comes
+// before it lands. A page that forgot the file at the Retry resumes nothing after that reload,
+// and the issue is left with no file at all.
+// SLOW(>=2s): the kept file is only observable across real reloads, so the row pays three loads
+// of the issue page - the press, the resume that brings the refusal to the indicator, and the
+// resume that makes the upload - with the browser's own "leave this page?" prompt between them.
+// @webkit @firefox: whether the engine's IndexedDB gives a kept upload its `File` back across a
+// reload - WebKit's stores no `File` at all, which is why this row keeps the bytes with the name
+// and type and rebuilds the `File` on the way out (`web/src/features/writes/kept-files.ts`).
+test("a retried upload survives a reload with its file @webkit @firefox", async ({ browser }) => {
+  await createProject({ key: "KW", name: "Keyed writes" });
+  const issue = await createIssue({ project: "KW", title: "A retried upload" });
+  const path = `/api/v1/issues/${issue.key}/artifacts`;
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    page.on("dialog", (dialog) => void dialog.accept());
+    // The defect this row guards was a 3.3 ms race - the page named a kept file IndexedDB had
+    // not committed yet - and no load this suite can put on a runner reproduces a window that
+    // narrow. So the row holds the window open itself: the page's own IndexedDB open of the
+    // kept-files database answers its caller a second late, which is longer than every step
+    // between the press and the reload. Only the kept-files database is delayed, so the
+    // editor's store (`dispatch-pending-edits`) and every other page read are untouched, and
+    // both windows the product closes are held open at once: the one at the press
+    // (`Writes.run`) and the one at the Retry (`Writes.retry`). The delay is paid by each of
+    // the three loads, and by the resumed read after the last of them, which the 10 s bound
+    // below absorbs; the row runs in about 19 s against Playwright's 30 s default.
+    //
+    // What the hook needs to be true is not in this file: that `kept-files.ts` opens the
+    // database by that name and sets its handler by assignment (`request.onsuccess = …`).
+    // Either could change and the hook would then delay nothing, the window would be 3.3 ms
+    // again, and this row would pass with the product reverted. So the page counts the opens
+    // whose success it actually held back - an open it matched by name but whose handler it
+    // never caught counts for nothing - and the row asserts that count at its end, where no
+    // wait of its own can close a window: a selector that cannot fail is no guard
+    // (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
+    await page.addInitScript(() => {
+      let held = 0;
+      Object.defineProperty(window, "keptFilesOpensHeld", { get: () => held });
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function delayed(name: string, version?: number) {
+        const request = open.call(this, name, version);
+        if (name !== "dispatch-kept-files") return request;
+        // The page's handler is taken off the request and called a second after the browser
+        // opened the database, so the page waits where it would have gone on. A page that
+        // listened for `success` another way would set no handler here, and then this open is
+        // not held and is not counted.
+        // `Event` here is this file's Dispatch event, so the handler's type is read off
+        // `IDBRequest` itself rather than written out.
+        let onsuccess: IDBRequest["onsuccess"] = null;
+        Object.defineProperty(request, "onsuccess", {
+          configurable: true,
+          get: () => onsuccess,
+          set: (handler: IDBRequest["onsuccess"]) => {
+            onsuccess = handler;
+          },
+        });
+        request.addEventListener("success", (event) => {
+          setTimeout(() => {
+            if (onsuccess === null) return;
+            held += 1;
+            onsuccess.call(request, event);
+          }, 1_000);
+        });
+        return request;
+      };
+    });
+    /** How many opens of the kept-files database this load has held back a second. */
+    const opensHeld = async (): Promise<number> =>
+      await page.evaluate(() => Number(Reflect.get(window, "keptFilesOpensHeld") ?? -1));
+    // A multipart body is no JSON, so the row keeps each attempt's key alone. The listener is the
+    // page's, so it keeps counting across the reloads.
+    const keys: (string | undefined)[] = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && new URL(request.url()).pathname === path) {
+        keys.push(request.headers()["idempotency-key"]);
+      }
+    });
+    // What the route does with the upload's next attempt: hold it, so the reload after it finds
+    // the write still out and kept; refuse it as Dispatch refuses a body that arrived cut short,
+    // which is its verdict on that key; or let it through to Dispatch.
+    let answers: "hold" | "refuse" | "through" = "hold";
+    await page.route(`**${path}`, async (route) => {
+      if (route.request().method() !== "POST" || answers === "through") return route.fallback();
+      if (answers === "hold") return;
+      await route.fulfill({
+        json: { code: "ARTIFACT_INPUT", error: "invalid multipart body: unexpected EOF" },
+        status: 400,
+      });
+    });
+    const openArtifacts = async () => {
+      await page.getByRole("tab", { name: "Artifacts" }).click();
+    };
+    await page.goto(`/issues/${issue.key}`);
+    await openArtifacts();
+    await page.getByLabel("Upload artifact").setInputFiles({
+      buffer: Buffer.from("kept through a retry\n"),
+      mimeType: "application/octet-stream",
+      name: "once.bin",
+    });
+    await page.getByRole("button", { exact: true, name: "Upload" }).click();
+    const indicator = pendingWrites(page);
+    await expect(indicator.getByRole("status")).toHaveText("Saving 1 change…");
+    await expect.poll(() => keys.length).toBe(1);
+
+    // The held attempt leaves the write out and kept, so the reloaded page makes it again on its
+    // own - and this time Dispatch's verdict refuses it, in the indicator, with Retry.
+    answers = "refuse";
+    await page.reload();
+    await expect(indicator).toContainText("Not saved: Upload of once.bin");
+    await expect.poll(() => keys.length).toBe(2);
+    const refused = keys[1];
+    expect(refused).toEqual(expect.any(String));
+
+    // The Retry is the person's new write under a key of its own, and the kept file moves to it.
+    answers = "hold";
+    await indicator.getByRole("button", { exact: true, name: "Retry" }).click();
+    await expect.poll(() => keys.length).toBe(3);
+    expect(keys[2]).toEqual(expect.any(String));
+    expect(keys[2]).not.toBe(refused);
+
+    // The reload comes before that attempt lands: what goes out after it is the resumed write,
+    // made from the file the Retry moved.
+    answers = "through";
+    await page.reload();
+    await openArtifacts();
+    await expect(page.getByTestId("artifact-once-bin")).toContainText("1 version", {
+      timeout: 10_000,
+    });
+    await expect(indicator).toHaveCount(0);
+    await expect.poll(() => keptWrites(page)).toBe(0);
+    expect(keys.length).toBeGreaterThanOrEqual(4);
+    expect(keys.slice(3).every((key) => key === keys[2])).toBe(true);
+    expect(
+      await sql(
+        `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.issue_key = '${issue.key}' and a.name = 'once.bin'`
+      )
+    ).toBe("1");
+    // Everything above rests on the hook at the head of this row still delaying the page's own
+    // opens of the kept-files database, which in turn rests on two facts of `kept-files.ts`
+    // this file cannot see: the database's name, and its setting the open handler by
+    // assignment. Either could change and the hook would delay nothing, the windows would be
+    // 3.3 ms again, and this row would pass with the product reverted. So the last load's
+    // count of the opens the hook actually held back - an open matched by name whose handler
+    // it never caught counts for nothing - is asserted here, after every step whose timing
+    // the row depends on, where reading it costs the row nothing and no wait of its own can
+    // close a window the row is meant to reload inside.
+    expect(await opensHeld()).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
 // Signing out discards the person's unsent writes and starts none of them. In each of two tabs of
 // alice's, a status change is held at the network, out and never answered, and a label added
 // behind it on the same issue waits its turn. Tab 1 signs out and the person confirms the discard:
@@ -582,7 +889,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
 // SLOW(>=2s): Two tabs are the property - the discard has to reach the tab that did not sign out
 // - and each is a real page load with a status change held at the network and a label queued
 // behind it. That setup is what is left; the straggler window costs no real time.
-test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab @phone", async ({
+test("a sign-out confirmed with a write queued behind a held one sends nothing after the confirm, in either tab", async ({
   browser,
 }, testInfo) => {
   test.skip(
@@ -628,9 +935,6 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
     const [signingOut] = tabs;
     if (signingOut === undefined) throw new Error("no tab was opened");
     await signingOut.bringToFront();
-    if (testInfo.project.name === "iphone") {
-      await signingOut.getByRole("button", { name: "Open navigation" }).click();
-    }
     await signingOut.getByRole("button", { name: "Sign out" }).click();
     await expect(signingOut.getByRole("link", { name: "Sign in with Google" })).toBeVisible();
     expect(confirmedAt).toEqual(expect.any(Number));
@@ -668,7 +972,7 @@ test("a sign-out confirmed with a write queued behind a held one sends nothing a
 // `chromium-plain-http-sign-out` project runs these on the lease a page without `navigator.locks`
 // holds by.
 for (const landed of [false, true]) {
-  test(`a sign-out ${landed ? "that landed" : "that never reached Dispatch"}, its tab closed before the answer, ${landed ? "discards" : "lets go on"} the write another tab held for it @phone`, async ({
+  test(`a sign-out ${landed ? "that landed" : "that never reached Dispatch"}, its tab closed before the answer, ${landed ? "discards" : "lets go on"} the write another tab held for it`, async ({
     browser,
   }, testInfo) => {
     test.skip(
@@ -711,9 +1015,6 @@ for (const landed of [false, true]) {
       await holding.getByLabel("Status").selectOption("backlog");
       await expect(pendingWrites(holding).getByRole("status")).toHaveText("Saving 1 change…");
       await signingOut.bringToFront();
-      if (testInfo.project.name === "iphone") {
-        await signingOut.getByRole("button", { name: "Open navigation" }).click();
-      }
       await signingOut.getByRole("button", { name: "Sign out" }).click();
       await sent.promise;
       // The hold is read before alice's session ends: Dispatch closes the holding tab's live
@@ -780,7 +1081,7 @@ for (const landed of [false, true]) {
 // SLOW(>=2s): Two real tabs are the property - alice's issue page, with a write queued behind a
 // held one, and the tab bob signs in from - and their two loads are what is left; the straggler
 // window costs no real time.
-test("alice's write queued behind her held one sends nothing once bob signs in from another tab @phone", async ({
+test("alice's write queued behind her held one sends nothing once bob signs in from another tab", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -837,7 +1138,7 @@ test("alice's write queued behind her held one sends nothing once bob signs in f
 // shell's pending-writes indicator names it, and the reloaded page sends it again once the network
 // is back. The Conversation's pin on a turn goes through the pin queue; the issue header's pin is
 // a `PUT` of the issue's own state, which a reload resumes as it resumes a `POST` or a `PATCH`.
-test("a pin on a turn pressed during an outage survives a reload and lands once the network is back @phone", async ({
+test("a pin on a turn pressed during an outage survives a reload and lands once the network is back", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -875,7 +1176,9 @@ test("a pin on a turn pressed during an outage survives a reload and lands once 
 // page loads, the browser's own "leave this page?" prompt between them, and the resumed write's
 // round trip after it - in Firefox, one of the engines this spec runs in because each keeps a
 // tab's storage and asks before it unloads its own way.
-test("the issue header's pin pressed during an outage survives a reload and lands once the network is back @phone", async ({
+// @webkit @firefox: the keyed write path's storage of a tab's unconfirmed write across a reload,
+// and the ask before the tab unloads.
+test("the issue header's pin pressed during an outage survives a reload and lands once the network is back @webkit @firefox", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
@@ -913,7 +1216,7 @@ test("the issue header's pin pressed during an outage survives a reload and land
 // sends. Alice's write is dropped, in memory and in the tab's storage, and nothing runs as bob: an
 // attempt that still reaches Dispatch names alice (`Dispatch-Login`), so Dispatch refuses it
 // `409 LOGIN_CHANGED` before anything runs.
-test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob @phone", async ({
+test("a write pending for alice is dropped when bob signs in from another tab, and nothing runs as bob", async ({
   browser,
 }) => {
   await createProject({ key: "KW", name: "Keyed writes" });

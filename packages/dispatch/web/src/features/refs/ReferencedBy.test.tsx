@@ -1,6 +1,7 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -54,6 +55,33 @@ afterEach(() => {
   restore = undefined;
 });
 
+test("an answers edge is labelled Answer", async () => {
+  const { getReferences, view } = renderPanel({
+    edges: [
+      {
+        created_at: createdAt,
+        direction: "in",
+        kind: "answers",
+        node: {
+          id: "11111111-1111-4111-8111-111111111111",
+          issue_key: "OPS-1",
+          kind: "comment",
+          project: "OPS",
+          ref: "dispatch://OPS-1/comment/11111111-1111-4111-8111-111111111111",
+        },
+        source_seq: null,
+      },
+    ],
+    node: { id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: "dispatch://CORE-1" },
+  });
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  expect(await within(panel).findByRole("link", { name: "Answer · OPS-1" })).toBeDefined();
+});
+
 test("two blocks of one document version citing the node are two rows under that document, each linked to its block", async () => {
   const notes = "dispatch://OPS-1/artifact/notes-md";
   const consoleError = spyOn(console, "error");
@@ -77,7 +105,8 @@ test("two blocks of one document version citing the node are two rows under that
   const sources = panel.querySelectorAll(":scope > ul > li");
   expect(sources).toHaveLength(1);
   const source = within(sources[0] as HTMLElement);
-  expect(source.getByRole("link", { name: "Artifact · OPS-1" }).getAttribute("href")).toBe(
+  expect(source.getByRole("link", { name: "Artifact · OPS-1" })).toHaveAttribute(
+    "href",
     "/issues/OPS-1/artifacts/notes-md"
   );
   // Each block its own row, with its own excerpt and a link to that block, its id encoded as
@@ -124,10 +153,12 @@ test("a source of one citing node links to where its mention is: a block at the 
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
   await within(panel).findByText("Hold it.");
-  expect(within(panel).getByRole("link", { name: "Artifact · OPS-1" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Artifact · OPS-1" })).toHaveAttribute(
+    "href",
     "/issues/OPS-1/spec#b-ship%5Fit"
   );
-  expect(within(panel).getByRole("link", { name: "Artifact · CORE" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Artifact · CORE" })).toHaveAttribute(
+    "href",
     "/projects/CORE/documents/handbook-md#b-hold%5Fit"
   );
   // A one-node source's header is its only link.
@@ -135,6 +166,7 @@ test("a source of one citing node links to where its mention is: a block at the 
 });
 
 test("one source citing two blocks of the shown document is two rows, each linked to its block and keeping its own state across a refetch", async () => {
+  const user = userEvent.setup();
   const spec = "dispatch://CORE-1/spec";
   const citing = (blockId: string) =>
     ({
@@ -190,7 +222,7 @@ test("one source citing two blocks of the shown document is two rows, each linke
 
   // Expand the excerpt of the row citing b only.
   const showMore = within(panel).getAllByRole("button", { name: "Show more" });
-  fireEvent.click(showMore[1] as HTMLElement);
+  await user.click(showMore[1] as HTMLElement);
   expect(rows()).toEqual([
     ["/issues/CORE-1/spec#b-a", "false"],
     ["/issues/CORE-1/spec#b-b", "true"],
@@ -248,7 +280,8 @@ test("blocks of one comment citing the node are rows under that comment, labelle
   expect(sources).toHaveLength(2);
   // The comment is one source: its header names and opens the comment.
   const commentSource = within(sources[0] as HTMLElement);
-  expect(commentSource.getByRole("link", { name: "Comment · OPS-1" }).getAttribute("href")).toBe(
+  expect(commentSource.getByRole("link", { name: "Comment · OPS-1" })).toHaveAttribute(
+    "href",
     `/issues/OPS-1/comments/${comment}`
   );
   const rows = (sources[0] as HTMLElement).querySelectorAll(":scope > ul > li");
@@ -263,7 +296,8 @@ test("blocks of one comment citing the node are rows under that comment, labelle
   ]);
   // A message's one block is a source of one node: its header opens the message at the block.
   const messageSource = within(sources[1] as HTMLElement);
-  expect(messageSource.getByRole("link", { name: "Message · OPS-1" }).getAttribute("href")).toBe(
+  expect(messageSource.getByRole("link", { name: "Message · OPS-1" })).toHaveAttribute(
+    "href",
     `/issues/OPS-1/messages/${message}#b-b1`
   );
   expect(messageSource.getByText("The message cites dispatch://CORE-1.")).toBeTruthy();
@@ -288,10 +322,11 @@ test("parts of one ask citing the node are rows under that ask, named as the ask
   const sources = panel.querySelectorAll<HTMLElement>(":scope > ul > li");
   expect(sources).toHaveLength(1);
   // The ask is the source: the question and the option are its rows, each linked to its part.
-  expect(within(panel).getByRole("link", { name: "Ask · OPS-1" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Ask · OPS-1" })).toHaveAttribute(
+    "href",
     `/issues/OPS-1/asks/${ask}`
   );
-  expect(within(panel).queryByRole("link", { name: /^Artifact/ })).toBeNull();
+  expect(within(panel).queryByRole("link", { name: /^Artifact/ })).not.toBeInTheDocument();
   const rows = (sources[0] as HTMLElement).querySelectorAll(":scope > ul > li");
   expect(
     [...rows].map((row) => [
@@ -337,7 +372,8 @@ test("a block of a project document's comment links to its comment, with no frag
 
   const panel = await screen.findByRole("region", { name: "Referenced by" });
   await within(panel).findByText("Beta cites dispatch://CORE-1.");
-  expect(within(panel).getByRole("link", { name: "Comment · CORE" }).getAttribute("href")).toBe(
+  expect(within(panel).getByRole("link", { name: "Comment · CORE" })).toHaveAttribute(
+    "href",
     `/projects/CORE/documents/handbook-md?comment=${comment}`
   );
 });

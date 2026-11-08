@@ -6,6 +6,7 @@ import { Link, useParams } from "react-router-dom";
 import { agentMessageRequest, apiErrorMessage } from "../../api/client";
 import { agentMessagesQuery, whoAmIQuery } from "../../api/queries";
 import type { Message } from "../../api/types";
+import { AgentListRefilling } from "../../components/QueryError";
 import {
   connectionDotConnecting,
   connectionDotFailed,
@@ -21,7 +22,7 @@ import { useMarkRepliesRead } from "../agents/unread";
 import { MODE_LABELS } from "../conversation/delivery";
 import { useAgents } from "../conversation/useAgents";
 import { useSessionSends } from "../conversation/useSessionSends";
-import { AgentName, useAgentText } from "../refs/AgentName";
+import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { SendStoppedError } from "../writes/keyed-write";
@@ -42,9 +43,8 @@ const STATUS: Record<AgentStreamStatus, { dot: string; label: string }> = {
 };
 
 /** Where each mode stands in the composer. Send comes first wherever the session takes it, since
- *  that is Enter at its terminal, and Aside next, so a session that takes only asides (a Claude
- *  Code session, which refuses a steer) opens on Aside. A mode the contracts add must be placed
- *  here before it compiles. */
+ *  that is Enter at its terminal, and Aside next, so a session that advertises Aside and no Send
+ *  opens on Aside. A mode the contracts add must be placed here before it compiles. */
 const MODE_ORDER: Record<MessageDeliveryMode, number> = { aside: 1, btw: 2, steer: 0 };
 
 /** The modes a human can talk to a session in, narrowed to the ones it advertises, in
@@ -59,22 +59,24 @@ function deliveryModes(capabilities: readonly string[]): MessageDeliveryMode[] {
 /**
  * What an empty transcript means for this session, which only the session can say: it answers
  * the relay on its control subject, or nobody is there. Saying "the next turn appears here" to a
- * viewer of a session that answers nothing was a promise the page could not keep. Not every
- * silent plugin has a newer one to install - no claude-envoy release streams at all - so the
- * text names what is true of the plugin rather than telling its reader to upgrade. The relay
- * keeps asking, so a session restarted onto a plugin that streams turns this around without a
- * reload, and the wording stays neutral until the first answer arrives.
+ * viewer of a session that answers nothing was a promise the page could not keep. A silent
+ * session is not always one with a newer plugin to install - it may have been started without
+ * its plugin, or have ended - so the text names what is true of the session rather than telling
+ * its reader to upgrade. The relay keeps asking, so a session that starts answering turns this
+ * around without a reload, and the wording stays neutral until the first answer arrives. A
+ * resumed session answers with the conversation since its process started, so this text is also
+ * what a reader sees until such a session takes its next turn.
  */
 function emptyText(responding: boolean | undefined): string {
   if (responding === false) {
-    return "This session is not answering the live view: its Envoy plugin does not stream (Claude Code sessions don't, nor pi-legion-envoy before 5.8.0), or the session is no longer running. Nothing appears here until it answers.";
+    return "This session is not answering the live view: its plugin does not stream its conversation, or the session is no longer running. Nothing appears here until it answers.";
   }
   return "Nothing yet. This session's next turn appears here as it happens.";
 }
 
 export function AgentConversationPage(): ReactNode {
   const { sessionId = "" } = useParams<{ sessionId: string }>();
-  const { agents } = useAgents(true, true);
+  const { agents, current, isPending, refilling } = useAgents(true, true);
   const agent = agents.find((candidate) => candidate.session_id === sessionId);
   // The page knows the route's session id and the registry, not a stamped title: the agent is
   // named by its registry title, else its short id.
@@ -86,7 +88,9 @@ export function AgentConversationPage(): ReactNode {
   // newest `settings` frame reports, or, for a session that reports none, the most recent
   // assistant turn's own model (LEGION-548), nothing guessed for a client that never sends one.
   const settings = sessionSettingsView(conversation, responding, replays);
-  const modes = deliveryModes(agent?.capabilities ?? []);
+  // Only a current list says what the session takes: while it is refilling or unreachable every
+  // mode is offered, as unknown, rather than narrowed to what an empty or earlier list says.
+  const modes = deliveryModes(current ? (agent?.capabilities ?? []) : DELIVERY_CAPABILITIES);
   // The human's pick holds only while the session still offers it: the session list loads after
   // the page, and a pick the session does not advertise would be refused.
   const [picked, setPicked] = useState<MessageDeliveryMode | null>(null);
@@ -99,14 +103,14 @@ export function AgentConversationPage(): ReactNode {
     mode === "btw" || listed === undefined || listed.length === 0 ? undefined : listed;
 
   // The human's direct messages and the session's replies to them, as Dispatch stores them. A
-  // person's Send or Aside to an Oh My Pi session becomes the session's own user turn, which the
-  // stream carries tagged with this message's id, and the thread shows it once; one the stream
-  // carries untagged shows twice (`packages/pi-envoy/AGENTS.md`, the phase-worker section, says
-  // when). A BTW, an issue message, and any message to a session that takes no user turn from
-  // Envoy (a Claude Code session) arrive as notices the stream has no frame for, and the session
-  // answers them with a `dispatch message` command, which the stream shows only as a `bash` tool
-  // call whose arguments hold that command. Without these the thread would show replies to
-  // messages the human cannot see, and no replies at all.
+  // person's Send or Aside to a session that takes one becomes the session's own user turn, which
+  // the stream carries tagged with this message's id, and the thread shows it once; one the
+  // stream carries untagged shows twice (`packages/pi-envoy/AGENTS.md`, the phase-worker section,
+  // says when). A BTW, an issue message, and any message to a session that takes no user turn
+  // from Envoy arrive as notices the stream has no frame for, and the session answers them with a
+  // `dispatch message` command, which the stream shows only as a `bash` tool call whose arguments
+  // hold that command. Without these the thread would show replies to messages the human cannot
+  // see, and no replies at all.
   // Seeing them here is reading them.
   const stored = useQuery(agentMessagesQuery(sessionId));
   useMarkRepliesRead(sessionId, stored.data);
@@ -200,15 +204,36 @@ export function AgentConversationPage(): ReactNode {
             {presence.label}
           </span>
         </span>
-        {agent === undefined ? (
-          <span className={`text-xs ${textMutedOnCanvas}`}>
-            Not in the live session list — it may have ended.
+        {current ? null : refilling ? (
+          <AgentListRefilling className={`text-xs ${textMutedOnCanvas}`} />
+        ) : isPending ? (
+          <span className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-list-loading">
+            Loading the live session list…
           </span>
         ) : (
-          <span className={`min-w-0 truncate text-xs ${textMutedOnCanvas}`}>
-            {agent.host} · {agent.dir}
+          <span className={`text-xs ${dangerText}`} data-testid="agent-list-unreachable">
+            Could not check the live session list — Envoy listener unreachable.
           </span>
         )}
+        {/* Only a current list says the session is gone; one that failed or is refilling keeps
+            the details an earlier read gave and says nothing of what it lacks. A session that
+            has missed its heartbeats is listed and named as such: its transcript has stopped
+            arriving, and this is the difference between waiting for it and giving up on it. */}
+        {agent !== undefined ? (
+          <>
+            <span className={`min-w-0 truncate text-xs ${textMutedOnCanvas}`}>
+              {agent.host} · {agent.dir}
+            </span>
+            <AgentUnresponsiveNote
+              lastSeen={agent.last_seen}
+              state={agent.state === "unresponsive" ? "unresponsive" : "running"}
+            />
+          </>
+        ) : current ? (
+          <span className={`text-xs ${textMutedOnCanvas}`} data-testid="agent-not-listed">
+            Not in the live session list — it may have ended.
+          </span>
+        ) : null}
         <label className={`ml-auto flex items-center gap-2 text-xs ${textMutedOnCanvas}`}>
           Send as
           <select
@@ -239,10 +264,10 @@ export function AgentConversationPage(): ReactNode {
           This Dispatch cannot reach the session's conversation.
         </p>
       ) : null}
-      {agent !== undefined && agent.capabilities.length === 0 ? (
+      {current && agent !== undefined && agent.capabilities.length === 0 ? (
         <p className={`mt-2 text-sm ${dangerText}`} data-testid="agent-takes-no-messages">
           This session advertises no delivery mode, so a message sent here records a failed attempt.
-          A Claude Code session takes messages only when it was started with its Envoy channel.
+          A session advertises none while its plugin cannot reach its conversation.
         </p>
       ) : null}
       {switchRefusal === null ? null : (

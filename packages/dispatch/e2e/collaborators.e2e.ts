@@ -1,0 +1,290 @@
+import { type LegionRole, roleToken } from "@legion/contracts";
+import { expect, type Locator, test } from "@playwright/test";
+
+import {
+  legionAgentEntry,
+  setLegionAgents,
+  setLegionRegistryState,
+  setLiveSessions,
+  setSessionRecord,
+} from "./agents";
+import {
+  createComment,
+  createIssue,
+  createMessage,
+  createProject,
+  listComments,
+  patchIssue,
+} from "./api";
+import { resetDatabase } from "./seed";
+import { assertPageFits } from "./unclipped";
+import { asUser } from "./users";
+
+// An issue's agents stay reachable from its page once they stop (dispatch://INFRA-470): the
+// Collaborators tab lists everyone who worked the issue, running or not, each agent one click from
+// its live conversation, and the mention picker offers the issue's Legion roles nobody live holds
+// under "Not running", addressed to the role rather than to a session that has ended.
+//
+// Fixture: a closed issue assigned to alice, which bob commented on and messaged before the close;
+// one live Legion tester, two reviewer sessions of one role token (the old one started first) and a
+// stopped implementer. Every role token is built from a Legion project token, `e2elegion`, that is
+// not the Dispatch project, so a token built from the wrong segment fails the picker's read-back.
+
+const LEGION_PROJECT = "e2elegion";
+const spec = "The quick brown fox jumps over the lazy dog.";
+
+const liveTester = "e2e-live-tester";
+const oldReviewer = "e2e-old-reviewer";
+const newReviewer = "e2e-new-reviewer";
+const oldImplementer = "e2e-old-implementer";
+
+interface Fixture {
+  readonly issueKey: string;
+  readonly tokens: Readonly<Record<"implementer" | "reviewer" | "tester", string>>;
+}
+
+test.beforeEach(async () => {
+  await resetDatabase();
+});
+
+async function seed(): Promise<Fixture> {
+  await createProject({ key: "E2E", name: "Collaborators" });
+  const issue = await createIssue({ project: "E2E", spec, title: "Asked after it closed" });
+  const issueKey = issue.key;
+  await patchIssue(issueKey, { assignee: "alice" });
+  await createComment(issueKey, { body: "Bob was here before the close" }, { login: "bob" });
+  await createMessage(issueKey, { body: "Bob's question" }, { login: "bob" });
+  await patchIssue(issueKey, { status: "done" }, { login: "bob" });
+
+  const token = (role: LegionRole) => roleToken(LEGION_PROJECT, issueKey, role);
+  const entry = (sessionId: string, role: LegionRole, startedAt: string) =>
+    legionAgentEntry({
+      issue: issueKey,
+      legionProject: LEGION_PROJECT,
+      role,
+      sessionId,
+      startedAt,
+    });
+  await setLiveSessions([
+    {
+      capabilities: ["aside", "btw", "steer"],
+      roles: [token("tester")],
+      session_id: liveTester,
+      title: `Legion tester · ${issueKey}`,
+    },
+    { session_id: oldReviewer, title: `Legion reviewer · ${issueKey}` },
+    { session_id: newReviewer, title: `Legion reviewer · ${issueKey}` },
+    { session_id: oldImplementer, title: `Legion implementer · ${issueKey}` },
+  ]);
+  for (const stopped of [oldReviewer, newReviewer, oldImplementer]) {
+    await setSessionRecord(stopped, "absent");
+  }
+  await setLegionAgents([
+    entry(oldImplementer, "implementer", "2026-10-26T00:00:00Z"),
+    entry(liveTester, "tester", "2026-10-26T01:00:00Z"),
+    entry(oldReviewer, "reviewer", "2026-10-26T02:00:00Z"),
+    entry(newReviewer, "reviewer", "2026-10-26T03:00:00Z"),
+  ]);
+  return {
+    issueKey,
+    tokens: {
+      implementer: token("implementer"),
+      reviewer: token("reviewer"),
+      tester: token("tester"),
+    },
+  };
+}
+
+/** The selector for an agent's own row name: the name `Row` marks `data-collaborator`
+ *  (`CollaboratorsTab.tsx`), never one that names it as another row's replacement. */
+const rowNameSelector = (sessionId: string) =>
+  `[data-collaborator] [data-agent-name="${sessionId}"]`;
+
+/** An agent's own row name in the Legion agents section. */
+function agentRowName(legion: Locator, sessionId: string): Locator {
+  return legion.locator(rowNameSelector(sessionId));
+}
+
+// No `@phone` tag: this row starts at the project's own desktop width and narrows the window
+// itself, so under `iphone` it would start from the wrong layout (packages/dispatch/AGENTS.md,
+// "Phone acceptance").
+test("the Collaborators tab lists an issue's people and its Legion agents, running or not", async ({
+  browser,
+}) => {
+  const { issueKey } = await seed();
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issueKey}/collaborators`);
+    await expect(page.getByRole("tab", { name: "Collaborators" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+
+    // People, with how each of them worked the issue.
+    const people = page.getByRole("region", { name: "People" });
+    await expect(people.getByRole("listitem").filter({ hasText: "alice" })).toContainText(
+      "assignee"
+    );
+    await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText("posted");
+
+    // The Legion agents, by role in workflow order (`LEGION_ROLES`), each role's newest first.
+    const legion = page.getByRole("region", { name: "Legion agents" });
+    await expect(legion.getByRole("heading", { level: 3 })).toHaveText([
+      "implementer",
+      "tester",
+      "reviewer",
+    ]);
+    const reviewers = legion.getByRole("region", { name: "reviewer" });
+    const reviewerNames = reviewers.locator("[data-collaborator] [data-agent-name]");
+    await expect(reviewerNames).toHaveCount(2);
+    expect(
+      await reviewerNames.evaluateAll((nodes) =>
+        nodes.map((node) => node.getAttribute("data-agent-name"))
+      )
+    ).toEqual([newReviewer, oldReviewer]);
+    // Only the old reviewer's own row names its replacement; the newest row names nobody else.
+    // The row is found by the name it carries as its own (`data-collaborator`): the old row also
+    // holds the new session's name, in the line that says what replaced it, so a row selected by
+    // any name inside it would match both.
+    const rowOf = (sessionId: string) =>
+      reviewers.getByRole("listitem").filter({ has: page.locator(rowNameSelector(sessionId)) });
+    await expect(rowOf(oldReviewer).locator(`[data-replaced-by="${newReviewer}"]`)).toContainText(
+      `replaced by Legion reviewer · ${issueKey}`
+    );
+    await expect(rowOf(newReviewer).locator("[data-replaced-by]")).toHaveCount(0);
+
+    // Each agent's running state, as the agents registry has it: the tester is live, and every
+    // session the listener has lost reads as stopped.
+    await expect(agentRowName(legion, liveTester)).toHaveAttribute("data-agent-state", "running");
+    await expect(
+      agentRowName(legion, liveTester).getByRole("img", { name: "Running" })
+    ).toBeVisible();
+    for (const stopped of [oldReviewer, newReviewer, oldImplementer]) {
+      await expect(agentRowName(legion, stopped)).toHaveAttribute(
+        "data-agent-state",
+        "not-running"
+      );
+      await expect(
+        agentRowName(legion, stopped).getByRole("img", { name: "Not running" })
+      ).toBeVisible();
+    }
+
+    // A session title is a whole sentence of its own, and the tab holds four of them: the page
+    // stays as wide as the window at a desktop width and at a phone's.
+    await assertPageFits(page);
+    await page.setViewportSize({ height: page.viewportSize()?.height ?? 800, width: 390 });
+    await expect(agentRowName(legion, oldReviewer)).toBeVisible();
+    await assertPageFits(page);
+
+    // A stopped agent is one click from the conversation it had, which names it.
+    await agentRowName(legion, oldReviewer).getByRole("link").click();
+    await expect(page).toHaveURL(`/agents/${oldReviewer}/live`);
+    await expect(
+      page.getByRole("heading", { level: 1 }).locator(`[data-agent-name="${oldReviewer}"]`)
+    ).toBeVisible();
+    await page.goBack();
+    await agentRowName(legion, oldImplementer).getByRole("link").click();
+    await expect(page).toHaveURL(`/agents/${oldImplementer}/live`);
+    await expect(
+      page.getByRole("heading", { level: 1 }).locator(`[data-agent-name="${oldImplementer}"]`)
+    ).toBeVisible();
+  } finally {
+    await alice.close();
+  }
+});
+
+// A registry the listener cannot read is an answer of its own, never a tab that failed: Dispatch
+// answers `legion_registry: "unavailable"` and still names the issue's people and the sessions
+// its own events hold (packages/envoy/internal/dispatch/api/issue_collaborators.go,
+// `issueLegionAgents`). So the tab says the record could not be read, and alice and bob stand
+// where they did - their place in the issue is Dispatch's own record, not Legion's.
+test("the Collaborators tab says so when Legion's record of the issue cannot be read", async ({
+  browser,
+}) => {
+  const { issueKey } = await seed();
+  await setLegionRegistryState("unreadable");
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    const collaborators = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === `/api/v1/issues/${issueKey}/collaborators`
+    );
+    await page.goto(`/issues/${issueKey}/collaborators`);
+    // What the tab is showing is the server's answer: the read itself succeeded, and it named the
+    // registry unavailable and held no agent, the issue's events naming none of these sessions.
+    const answer = await collaborators;
+    expect(answer.status()).toBe(200);
+    expect(await answer.json()).toMatchObject({ agents: [], legion_registry: "unavailable" });
+
+    const tab = page.getByRole("tabpanel", { name: "Collaborators" });
+    await expect(tab.getByRole("status")).toHaveText(
+      "Legion's record of this issue's agents could not be read."
+    );
+
+    // The people are Dispatch's own, so the notice takes none of them with it.
+    const people = tab.getByRole("region", { name: "People" });
+    await expect(people.getByRole("listitem").filter({ hasText: "alice" })).toContainText(
+      "assignee"
+    );
+    await expect(people.getByRole("listitem").filter({ hasText: "bob" })).toContainText("posted");
+    // And nothing stands in for the agents: an empty section would read as an issue no agent
+    // ever worked, which is the one thing the registry did not say.
+    await expect(tab.getByRole("region", { name: "Legion agents" })).toHaveCount(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+test("the mention picker offers the issue's stopped roles and sends one as a role mention", async ({
+  browser,
+}) => {
+  const { issueKey, tokens } = await seed();
+  // On the closed issue itself, which is this issue's whole point: a finished issue's agents are
+  // asked from its own page, so the composer is the one a closed issue keeps and the comment is a
+  // closed issue's comment.
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issueKey}/conversation`);
+    const form = page.getByRole("form", { name: "Comment composer" });
+    const field = form.getByLabel("Comment");
+    await field.fill("@");
+
+    // The roles no live agent holds, in workflow order: the implementer, then the reviewer, each
+    // drawn by the newest session of its token. The tester is live, so it is a live option alone.
+    const listbox = page.getByRole("listbox", { name: "Mention suggestions" });
+    const notRunning = listbox.getByRole("group", { name: "Not running" });
+    await expect(notRunning.getByRole("option")).toHaveCount(2);
+    await expect(notRunning.getByRole("option").nth(0)).toHaveAccessibleName(tokens.implementer);
+    const reviewer = notRunning.getByRole("option").nth(1);
+    await expect(reviewer).toHaveAccessibleName(tokens.reviewer);
+    await expect(reviewer).toContainText("reviewer · not running");
+    await expect(reviewer.locator(`[data-agent-name="${newReviewer}"]`)).toHaveCount(1);
+    await expect(listbox.getByRole("option", { exact: true, name: tokens.tester })).toHaveCount(1);
+    await expect(notRunning.getByRole("option", { name: tokens.tester })).toHaveCount(0);
+
+    // Choosing the reviewer addresses the comment to its role, not to a session that has ended.
+    await notRunning.getByRole("option", { exact: true, name: tokens.reviewer }).click();
+    await expect(field).toHaveValue(`@${tokens.reviewer}`);
+    await field.press("End");
+    await field.pressSequentially(" please review the fix");
+    await form.getByRole("button", { exact: true, name: "Send" }).click();
+    await expect(field).toHaveValue("");
+    await expect
+      .poll(
+        async () =>
+          (await listComments(issueKey)).find((comment) =>
+            comment.body.endsWith("please review the fix")
+          )?.mentions[0]?.target
+      )
+      .toBe(`role:${tokens.reviewer}`);
+  } finally {
+    await alice.close();
+  }
+});

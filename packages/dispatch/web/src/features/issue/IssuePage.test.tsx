@@ -1,18 +1,33 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeEach, expect, spyOn, test } from "bun:test";
+import { ID_AMBIGUOUS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { Link, MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http } from "msw";
+import type { ReactNode } from "react";
+import { Link, MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { answerRequests } from "../../__tests__/network";
+import {
+  artifactRecordHandler,
+  decisionsAndReadMarkHandlers,
+} from "../../__tests__/proof-document";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
 import type {
   Agent,
+  ArtifactText,
+  ArtifactVersionText,
   Ask,
+  GraphReferences,
   InboxRow,
+  IssueCoverage,
   IssueDetails,
+  IssueReferences,
+  Project,
   Subscriber,
   UserIssueState,
 } from "../../api/types";
@@ -24,6 +39,10 @@ import { IssuePage } from "./IssuePage";
 const issue: IssueDetails = {
   route_status: null,
   route_holder: null,
+  route_status_reason: null,
+  holder_state: null,
+  last_seen: null,
+  takeable_at: null,
   artifacts: [
     {
       created_at: "2026-09-09T00:00:00Z",
@@ -142,6 +161,10 @@ function issueWithExternalLink(url: string): IssueDetails {
   return { ...issue, external_links: [{ url }] };
 }
 
+/** The issue the file's stub is answering for, so the handlers below hand a panel that re-reads
+ *  one of its documents the same document the test stubbed. */
+let stubbedIssue: IssueDetails = issue;
+
 function stubIssuePage(
   nextIssue: IssueDetails,
   inbox: InboxRow[] = [],
@@ -160,6 +183,8 @@ function stubIssuePage(
   const originalGetMyState = api.getMyState;
   const originalListAgents = api.listAgents;
   const originalGetIssueSubscribers = api.getIssueSubscribers;
+  const originalListProjects = api.listProjects;
+  stubbedIssue = nextIssue;
   api.getIssue = async () => nextIssue;
   api.getInbox = async () => inbox;
   api.getMyState = async () => ({ "CORE-1": state });
@@ -173,6 +198,10 @@ function stubIssuePage(
   api.listHandoffs = async () => [];
   api.listAgents = async () => agents;
   api.getIssueSubscribers = async () => subscribers;
+  // The header reads the shared project list to learn which design-gate steps the project
+  // gates; a list without this issue's project gates nothing, which is the one chip these
+  // tests assert.
+  api.listProjects = async () => [];
   return () => {
     api.getIssue = originalGetIssue;
     api.getInbox = originalGetInbox;
@@ -185,8 +214,64 @@ function stubIssuePage(
     api.listHandoffs = originalListHandoffs;
     api.listAgents = originalListAgents;
     api.getIssueSubscribers = originalGetIssueSubscribers;
+    api.listProjects = originalListProjects;
+    stubbedIssue = issue;
   };
 }
+
+/**
+ * The reads the issue page's own panels make: the header's repository and component lines, the
+ * Spec tab's requirements, the Artifacts tab's lists, the issue's references, and each
+ * document's own record, text, blocks and versions, with the decisions and read marks
+ * `decisionsAndReadMarkHandlers` answers. Each is answered with the API's empty shape, so a
+ * panel renders its loaded-empty state rather than its error state. A test that asserts one of
+ * these spies the `api` method that fetches it (`spyOn(api, "getArtifactText")`) and never
+ * reaches these handlers.
+ */
+function answerIssuePageReads(): void {
+  answerRequests(
+    http.get("/api/v1/settings/repo-projects", () => Response.json([])),
+    http.get("/api/v1/projects/:project/architecture-sources", () => Response.json([])),
+    http.get("/api/v1/issues/:key/coverage", ({ params }) =>
+      Response.json({
+        gaps: [],
+        has_plan: false,
+        issue: String(params.key),
+        requirements: [],
+        spec_artifact_id: "",
+      } satisfies IssueCoverage)
+    ),
+    http.get("/api/v1/issues/:key/artifacts", () => Response.json([])),
+    http.get("/api/v1/issues/:key/references", () =>
+      Response.json({ members: [], truncated: false } satisfies IssueReferences)
+    ),
+    http.get("/api/v1/references", ({ request }) =>
+      Response.json({
+        edges: [],
+        node: { id: new URL(request.url).searchParams.get("to") ?? "", kind: "artifact" },
+      } satisfies GraphReferences)
+    ),
+    http.get("/api/v1/artifacts/:id/blocks", () => Response.json([])),
+    http.get("/api/v1/artifacts/:id/text", () =>
+      Response.json({ markdown: "", version: null } satisfies ArtifactText)
+    ),
+    http.get("/api/v1/artifacts/:id/versions/:version", ({ params }) =>
+      Response.json({
+        authors: [],
+        created_at: "2026-09-09T00:00:00Z",
+        markdown: "",
+        named: false,
+        number: Number(params.version),
+        summary: null,
+      } satisfies ArtifactVersionText)
+    ),
+    // The document the page re-reads is the one the stubbed issue carries.
+    artifactRecordHandler((id) => stubbedIssue.artifacts.find((each) => each.id === id)),
+    ...decisionsAndReadMarkHandlers()
+  );
+}
+
+beforeEach(answerIssuePageReads);
 
 function CurrentRoute() {
   const location = useLocation();
@@ -227,10 +312,11 @@ function renderIssuePage(
 }
 
 async function openSubscribedAgents(count: number) {
+  const user = userEvent.setup();
   const toggle = await screen.findByRole("button", { name: `Subscribers: ${count}` });
-  expect(toggle.getAttribute("aria-expanded")).toBe("false");
-  fireEvent.click(toggle);
-  expect(toggle.getAttribute("aria-expanded")).toBe("true");
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await user.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
   return screen.findByRole("region", { name: "Subscribed agents" });
 }
 
@@ -276,7 +362,8 @@ test("IssuePage shows a session creator's live title and personal-token owner", 
 
   try {
     const creator = await expectCreator("chief of staff (for sami)");
-    expect(within(creator).getByRole("link", { name: "chief of staff" }).getAttribute("href")).toBe(
+    expect(within(creator).getByRole("link", { name: "chief of staff" })).toHaveAttribute(
+      "href",
       "/agents/creator-session/live"
     );
     expect(creator.querySelector("[data-agent-name]")?.getAttribute("data-agent-state")).toBe(
@@ -294,7 +381,7 @@ test("IssuePage shows a human creator by login", async () => {
 
   try {
     const creator = await expectCreator("alice");
-    expect(within(creator).queryByRole("link")).toBeNull();
+    expect(within(creator).queryByRole("link")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -307,7 +394,7 @@ test("IssuePage omits creator metadata for historical issues", async () => {
 
   try {
     await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).toBeNull();
+    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -326,8 +413,8 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   const unheldView = renderIssuePage();
   try {
     const marker = within(await stateRow()).getByTestId("issue-route-unreachable");
-    expect(marker.textContent).toContain("role:sre:");
-    expect(marker.textContent).toContain("Nobody holds it right now");
+    expect(marker).toHaveTextContent("role:sre:");
+    expect(marker).toHaveTextContent("Nobody holds it right now");
   } finally {
     unheldView.unmount();
     unheld();
@@ -342,22 +429,99 @@ test("IssuePage's header warns when nobody holds the route, and adds nothing whe
   const liveView = renderIssuePage();
   try {
     const row = await stateRow();
-    expect(within(row).queryByTestId("issue-route-unreachable")).toBeNull();
-    expect(within(row).queryByTestId("issue-route-unknown")).toBeNull();
+    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
   } finally {
     liveView.unmount();
     live();
   }
 
-  const unjudged = stubIssuePage({ ...issue, route: "role:sre", route_status: "unknown" });
+  const unjudged = stubIssuePage({
+    ...issue,
+    route: "role:sre",
+    route_status: "unknown",
+    route_status_reason: "unreachable",
+  });
   const unjudgedView = renderIssuePage();
   try {
     const row = await stateRow();
     expect(within(row).getByTestId("issue-route-unknown").textContent).toBe("Route reach unknown");
-    expect(within(row).queryByTestId("issue-route-unreachable")).toBeNull();
+    expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
   } finally {
     unjudgedView.unmount();
     unjudged();
+  }
+
+  // A listener that is refilling its agent list says so: the route is unknown for that reason,
+  // never unheld.
+  const refilling = stubIssuePage({
+    ...issue,
+    route: "role:sre",
+    route_status: "unknown",
+    route_status_reason: "refilling",
+  });
+  const refillingView = renderIssuePage();
+  try {
+    const row = await stateRow();
+    expect(within(row).getByTestId("issue-route-refilling").textContent).toBe(
+      `Route reach unknown: ${AGENT_LIST_REFILLING}`
+    );
+    expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+  } finally {
+    refillingView.unmount();
+    refilling();
+  }
+});
+
+// A route whose holder has missed its heartbeats is neither unreachable nor unjudged: the
+// listener judged it and said the session is stalled, and what is sent to the issue waits for
+// it. Folding that into either of the other two markers tells a reader to re-staff a role that
+// is still held, or hides that anything is wrong at all (dispatch://INFRA-392).
+test("IssuePage's header marks an unresponsive route holder apart from an unheld and a refilling route", async () => {
+  const stateRow = async () => {
+    const rail = await screen.findByTestId("issue-metadata-rail");
+    await within(rail).findByRole("button", { name: "Messages default to role:sre" });
+    return screen.getByTestId("issue-state-actions");
+  };
+
+  const stalled = stubIssuePage({
+    ...issue,
+    route: "role:sre",
+    route_status: "holder_unresponsive",
+    route_holder: "ses-sre",
+  });
+  const stalledView = renderIssuePage();
+  try {
+    const row = await stateRow();
+    const marker = within(row).getByTestId("issue-route-unresponsive");
+    expect(marker).toHaveTextContent("role:sre:");
+    expect(marker).toHaveTextContent("Unresponsive, still reached");
+    expect(marker.getAttribute("title")).toContain("waits until it answers");
+    expect(within(row).queryByTestId("issue-route-unreachable")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("issue-route-unknown")).not.toBeInTheDocument();
+    expect(within(row).queryByTestId("issue-route-refilling")).not.toBeInTheDocument();
+  } finally {
+    stalledView.unmount();
+    stalled();
+  }
+
+  // The other two states leave this marker off, so the three never read as one another.
+  for (const reach of [
+    { route_status: "no_holder" } as const,
+    { route_status: "unknown", route_status_reason: "refilling" } as const,
+  ]) {
+    const other = stubIssuePage({ ...issue, route: "role:sre", ...reach });
+    const otherView = renderIssuePage();
+    try {
+      expect(
+        within(await stateRow()).queryByTestId("issue-route-unresponsive")
+      ).not.toBeInTheDocument();
+    } finally {
+      otherView.unmount();
+      other();
+    }
   }
 });
 
@@ -370,7 +534,7 @@ test("IssuePage omits creator metadata when an issue response omits it", async (
 
   try {
     await screen.findByText(issue.title);
-    expect(screen.queryByText(/^Opened by/)).toBeNull();
+    expect(screen.queryByText(/^Opened by/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -396,7 +560,7 @@ test("IssuePage shows subscribed agents with their title and their running state
     const subscribed = await openSubscribedAgents(2);
     expect(within(subscribed).getAllByRole("listitem")).toHaveLength(2);
     const planner = within(subscribed).getByRole("link", { name: "Planner (live)" });
-    expect(planner.getAttribute("href")).toBe("/agents/0123456789abcdef/live");
+    expect(planner).toHaveAttribute("href", "/agents/0123456789abcdef/live");
     expect(planner.closest("[title]")?.getAttribute("title")).toBe("0123456789abcdef");
     expect(within(subscribed).getByRole("link", { name: "Historical (offline)" })).toBeDefined();
     const states = () =>
@@ -466,7 +630,7 @@ test("IssuePage hides the Subscribed agents header when there are no subscribers
   try {
     await screen.findByText(issue.title);
     await waitFor(() =>
-      expect(screen.queryByRole("region", { name: "Subscribed agents" })).toBeNull()
+      expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
   } finally {
     view.unmount();
@@ -475,6 +639,7 @@ test("IssuePage hides the Subscribed agents header when there are no subscribers
 });
 
 test("IssuePage lists project labels with issue labels selected and filters them", async () => {
+  const user = userEvent.setup();
   const labeledIssue = { ...issue, labels: ["bug"] };
   const restore = stubIssuePage(labeledIssue);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([
@@ -485,18 +650,20 @@ test("IssuePage lists project labels with issue labels selected and filters them
   const view = renderIssuePage();
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Edit labels" }));
+    await user.click(await screen.findByRole("button", { name: "Edit labels" }));
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
     await waitFor(() => expect(listIssues).toHaveBeenCalledWith({ project: "CORE" }));
-    expect(screen.getByRole("option", { name: "bug" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByRole("option", { name: "frontend" }).getAttribute("aria-selected")).toBe(
+    expect(screen.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("option", { name: "frontend" })).toHaveAttribute(
+      "aria-selected",
       "false"
     );
 
-    fireEvent.change(input, { target: { value: "front" } });
+    await user.click(input);
+    await user.paste("front");
 
     expect(screen.getByRole("option", { name: "frontend" })).toBeDefined();
-    expect(screen.queryByRole("option", { name: "backend" })).toBeNull();
+    expect(screen.queryByRole("option", { name: "backend" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     listIssues.mockRestore();
@@ -505,6 +672,7 @@ test("IssuePage lists project labels with issue labels selected and filters them
 });
 
 test("IssuePage creates a label from the multi-select and saves the final draft once on close", async () => {
+  const user = userEvent.setup();
   const labeledIssue = { ...issue, labels: ["bug"] };
   const restore = stubIssuePage(labeledIssue);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([
@@ -518,15 +686,14 @@ test("IssuePage creates a label from the multi-select and saves the final draft 
   const view = renderIssuePage();
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Edit labels" }));
+    await user.click(await screen.findByRole("button", { name: "Edit labels" }));
     const input = await screen.findByRole("combobox", { name: "Search or create label" });
-    fireEvent.change(input, { target: { value: "urgent" } });
-    fireEvent.keyDown(input, { key: "Enter" });
+    await user.click(input);
+    await user.paste("urgent");
+    await user.keyboard("{Enter}");
 
-    expect(screen.getByRole("option", { name: "urgent" }).getAttribute("aria-selected")).toBe(
-      "true"
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Edit labels" }));
+    expect(screen.getByRole("option", { name: "urgent" })).toHaveAttribute("aria-selected", "true");
+    await user.click(screen.getByRole("button", { name: "Edit labels" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { labels: ["bug", "urgent"] }, keyedAttempt)
@@ -541,6 +708,7 @@ test("IssuePage creates a label from the multi-select and saves the final draft 
 });
 
 test("IssuePage does not save after a label is toggled off and back on", async () => {
+  const user = userEvent.setup();
   const labeledIssue = { ...issue, labels: ["bug", "api"] };
   const restore = stubIssuePage(labeledIssue);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([
@@ -551,14 +719,14 @@ test("IssuePage does not save after a label is toggled off and back on", async (
 
   try {
     const trigger = await screen.findByRole("button", { name: "Edit labels" });
-    fireEvent.click(trigger);
+    await user.click(trigger);
     await screen.findByRole("combobox", { name: "Search or create label" });
-    fireEvent.click(screen.getByRole("option", { name: "bug" }));
+    await user.click(screen.getByRole("option", { name: "bug" }));
     await act(async () => {
       await Promise.resolve();
     });
-    fireEvent.click(screen.getByRole("option", { name: "bug" }));
-    fireEvent.click(trigger);
+    await user.click(screen.getByRole("option", { name: "bug" }));
+    await user.click(trigger);
     await act(async () => {
       await Promise.resolve();
     });
@@ -573,6 +741,7 @@ test("IssuePage does not save after a label is toggled off and back on", async (
 });
 
 test("IssuePage returns focus to the label trigger when Escape closes an unchanged draft", async () => {
+  const user = userEvent.setup();
   const labeledIssue = { ...issue, labels: ["bug"] };
   const restore = stubIssuePage(labeledIssue);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([
@@ -583,11 +752,11 @@ test("IssuePage returns focus to the label trigger when Escape closes an unchang
 
   try {
     const trigger = await screen.findByRole("button", { name: "Edit labels" });
-    fireEvent.click(trigger);
-    const input = await screen.findByRole("combobox", { name: "Search or create label" });
-    fireEvent.keyDown(input, { key: "Escape" });
+    await user.click(trigger);
+    await screen.findByRole("combobox", { name: "Search or create label" });
+    await user.keyboard("{Escape}");
 
-    expect(screen.queryByRole("listbox", { name: "Label options" })).toBeNull();
+    expect(screen.queryByRole("listbox", { name: "Label options" })).not.toBeInTheDocument();
     expect(document.activeElement === trigger).toBe(true);
     expect(patchIssue).not.toHaveBeenCalled();
   } finally {
@@ -608,7 +777,7 @@ test("IssuePage shows a retryable error and hides the section when the subscribe
   try {
     await screen.findByText(issue.title);
     await waitFor(() =>
-      expect(screen.queryByRole("region", { name: "Subscribed agents" })).toBeNull()
+      expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
     await screen.findByText("Subscribed agents unavailable — Envoy listener unreachable.");
   } finally {
@@ -617,7 +786,32 @@ test("IssuePage shows a retryable error and hides the section when the subscribe
   }
 });
 
+// A refilling agent list is not an unreachable listener, and a failed read counts nobody: the
+// header's toggle drops its number rather than say the issue has no subscribers.
+test("IssuePage says the agent list is refilling and counts no subscribers from a failed read", async () => {
+  const restore = stubIssuePage(issue);
+  api.getIssueSubscribers = async () => {
+    throw new ApiError(503, { code: "ENVOY_REFILLING", error: AGENT_LIST_REFILLING });
+  };
+  const view = renderIssuePage();
+
+  try {
+    await screen.findByText(issue.title);
+    const notice = await screen.findByTestId("agent-list-refilling");
+    expect(notice.textContent).toBe(AGENT_LIST_REFILLING);
+    expect(
+      screen.queryByText("Subscribed agents unavailable — Envoy listener unreachable.")
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Subscribers" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Subscribers: / })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    restore();
+  }
+});
+
 test("IssuePage unsubscribes an agent after confirming the dialog", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   let currentSubscribers = [subscriber("0123456789abcdef", "Planner (live)")];
   api.getIssueSubscribers = async () => currentSubscribers;
@@ -631,14 +825,14 @@ test("IssuePage unsubscribes an agent after confirming the dialog", async () => 
   try {
     const subscribed = await openSubscribedAgents(1);
     await within(subscribed).findByText("Planner (live)");
-    fireEvent.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));
+    await user.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));
 
     const dialog = await screen.findByRole("dialog", { name: "Unsubscribe" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm" }));
+    await user.click(within(dialog).getByRole("button", { name: "Confirm" }));
 
     await waitFor(() => expect(unsubscribeCalls).toEqual([["CORE-1", "0123456789abcdef"]]));
     await waitFor(() =>
-      expect(screen.queryByRole("region", { name: "Subscribed agents" })).toBeNull()
+      expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
     );
   } finally {
     view.unmount();
@@ -647,6 +841,7 @@ test("IssuePage unsubscribes an agent after confirming the dialog", async () => 
 });
 
 test("IssuePage cancels an unsubscribe confirmation without calling the mutation", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue, [], [subscriber("0123456789abcdef", "Planner (live)")]);
   let unsubscribeCalled = false;
   api.unsubscribeIssueSession = async () => {
@@ -656,11 +851,11 @@ test("IssuePage cancels an unsubscribe confirmation without calling the mutation
 
   try {
     const subscribed = await openSubscribedAgents(1);
-    fireEvent.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));
+    await user.click(within(subscribed).getByRole("button", { name: "Unsubscribe" }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
 
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(unsubscribeCalled).toBe(false);
     expect(within(subscribed).getByText("Planner (live)")).toBeDefined();
   } finally {
@@ -866,10 +1061,8 @@ test("IssuePage keeps a pull request's title and state when only its check-runs 
     const link = screen.getByRole("link", { name: /#7 Keep the title when checks vanish/ });
     expect(within(link).getByText("Keep the title when checks vanish")).toBeDefined();
     expect(within(link).getByText("open")).toBeDefined();
-    expect(within(link).queryByText(/^checks:/)).toBeNull();
-    expect(link.getAttribute("title")).toBe(
-      "owner/repository#7: Keep the title when checks vanish"
-    );
+    expect(within(link).queryByText(/^checks:/)).not.toBeInTheDocument();
+    expect(link).toHaveAttribute("title", "owner/repository#7: Keep the title when checks vanish");
   } finally {
     view.unmount();
     githubRest.mockRestore();
@@ -914,6 +1107,7 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
         route: null,
         route_status: null,
         route_holder: null,
+        route_status_reason: null,
       },
     },
   ]);
@@ -924,7 +1118,7 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
     expect(screen.getByRole("tab", { name: "Conversation", selected: false })).toBeDefined();
     expect(screen.getByRole("tab", { name: "Children", selected: false })).toBeDefined();
     expect(screen.getByRole("tab", { name: "Activity", selected: false })).toBeDefined();
-    expect(screen.queryByLabelText("Issue board")).toBeNull();
+    expect(screen.queryByLabelText("Issue board")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -934,13 +1128,14 @@ test("IssuePage opens the Spec tab and leaves open asks out of the main column",
 // `t a` is already Artifacts, so Activity's chord is `t v`; it reaches the same tablist button a
 // click does, and the route it lands on is the tab's own.
 test("IssuePage opens the Activity tab with the t v chord", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/spec");
 
   try {
     await screen.findByRole("tab", { name: "Spec", selected: true });
-    fireEvent.keyDown(document.body, { key: "t" });
-    fireEvent.keyDown(document.body, { key: "v" });
+    await user.keyboard("t");
+    await user.keyboard("v");
 
     await screen.findByRole("tab", { name: "Activity", selected: true });
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity");
@@ -951,6 +1146,7 @@ test("IssuePage opens the Activity tab with the t v chord", async () => {
 });
 
 test("IssuePage opens the Decisions tab with the t d chord", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
     decisions: [],
@@ -961,8 +1157,8 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
 
   try {
     await screen.findByRole("tab", { name: "Spec", selected: true });
-    fireEvent.keyDown(document.body, { key: "t" });
-    fireEvent.keyDown(document.body, { key: "d" });
+    await user.keyboard("t");
+    await user.keyboard("d");
 
     await screen.findByRole("tab", { name: "Decisions", selected: true });
     expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/decisions");
@@ -970,6 +1166,32 @@ test("IssuePage opens the Decisions tab with the t d chord", async () => {
   } finally {
     view.unmount();
     decisions.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage opens the Collaborators tab with the t o chord", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const collaborators = spyOn(api, "getIssueCollaborators").mockResolvedValue({
+    agents: [],
+    issue_key: "CORE-1",
+    legion_registry: "ok",
+    people: [],
+  });
+  const view = renderIssuePage("/issues/CORE-1/spec");
+
+  try {
+    await screen.findByRole("tab", { name: "Spec", selected: true });
+    await user.keyboard("t");
+    await user.keyboard("o");
+
+    await screen.findByRole("tab", { name: "Collaborators", selected: true });
+    expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/collaborators");
+    await waitFor(() => expect(collaborators).toHaveBeenCalledWith("CORE-1"));
+  } finally {
+    view.unmount();
+    collaborators.mockRestore();
     restore();
   }
 });
@@ -984,7 +1206,7 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
   try {
     await screen.findByRole("heading", { name: "Page not found" });
     expect(screen.getByRole("link", { name: "Back to inbox" })).toBeDefined();
-    expect(screen.queryByRole("tablist", { name: "Issue detail" })).toBeNull();
+    expect(screen.queryByRole("tablist", { name: "Issue detail" })).not.toBeInTheDocument();
     expect(document.title).toBe("Not found · Dispatch");
     expect(getIssueSpy).not.toHaveBeenCalled();
     expect(getMyStateSpy).not.toHaveBeenCalled();
@@ -996,6 +1218,7 @@ test("IssuePage renders a not-found view for an unrecognized tab suffix without 
 });
 
 test("IssuePage keeps the Spec mounted across tabs", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
@@ -1010,17 +1233,17 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
   try {
     await screen.findByRole("tab", { name: "Spec", selected: true });
     await waitFor(() =>
-      expect(within(view.container).getByRole("article").textContent).toContain(
+      expect(within(view.container).getByRole("article")).toHaveTextContent(
         "The mounted specification"
       )
     );
 
-    fireEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    await user.click(screen.getByRole("tab", { name: "Conversation" }));
     await screen.findByRole("tab", { name: "Conversation", selected: true });
-    fireEvent.click(screen.getByRole("tab", { name: "Spec" }));
+    await user.click(screen.getByRole("tab", { name: "Spec" }));
     await screen.findByRole("tab", { name: "Spec", selected: true });
 
-    expect(within(view.container).getByRole("article").textContent).toContain(
+    expect(within(view.container).getByRole("article")).toHaveTextContent(
       "The mounted specification"
     );
   } finally {
@@ -1032,18 +1255,20 @@ test("IssuePage keeps the Spec mounted across tabs", async () => {
 });
 
 test("IssuePage preserves an in-progress Conversation composer draft across a tab round-trip", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
     await screen.findByRole("tab", { name: "Conversation", selected: true });
     const composer = (await screen.findByLabelText("Comment")) as HTMLTextAreaElement;
-    fireEvent.change(composer, { target: { value: "Draft in progress" } });
+    await user.click(composer);
+    await user.paste("Draft in progress");
     expect(composer.value).toBe("Draft in progress");
 
-    fireEvent.click(screen.getByRole("tab", { name: "Spec" }));
+    await user.click(screen.getByRole("tab", { name: "Spec" }));
     await screen.findByRole("tab", { name: "Spec", selected: true });
-    fireEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    await user.click(screen.getByRole("tab", { name: "Conversation" }));
     await screen.findByRole("tab", { name: "Conversation", selected: true });
 
     expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe(
@@ -1056,6 +1281,7 @@ test("IssuePage preserves an in-progress Conversation composer draft across a ta
 });
 
 test("IssuePage remounts when switching issues, discarding unsaved local state", async () => {
+  const user = userEvent.setup();
   const secondIssue: IssueDetails = {
     ...issue,
     artifacts: [
@@ -1114,24 +1340,25 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
     );
 
     try {
-      fireEvent.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+      await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
       expect(
         await screen.findByText(
           "New asks, comments, and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim."
         )
       ).toBeDefined();
       const routeInput = await screen.findByLabelText("Message route");
-      fireEvent.change(routeInput, { target: { value: "role:not-saved-draft" } });
+      await user.click(routeInput);
+      await user.paste("role:not-saved-draft");
       await screen.findByDisplayValue("role:not-saved-draft");
 
-      fireEvent.click(screen.getByRole("link", { name: "Go to CORE-2" }));
+      await user.click(screen.getByRole("link", { name: "Go to CORE-2" }));
 
       await screen.findByRole("heading", { level: 1, name: "Second issue" });
       // The route field marks itself dirty on edit and, absent a remount,
       // skips resyncing to the newly loaded issue's own route — leaking
       // CORE-1's unsaved draft onto CORE-2's page instead of showing CORE-2's
       // own route.
-      expect(screen.queryByDisplayValue("role:not-saved-draft")).toBeNull();
+      expect(screen.queryByDisplayValue("role:not-saved-draft")).not.toBeInTheDocument();
       expect(
         await screen.findByRole("button", { name: "Messages default to role:second-issue-route" })
       ).toBeDefined();
@@ -1320,6 +1547,7 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
 });
 
 test("IssuePage does not mount an image as the hidden Spec document", async () => {
+  const user = userEvent.setup();
   const imageArtifact = {
     created_at: "2026-09-09T01:00:00Z",
     created_by: { id: "alice", kind: "user" as const },
@@ -1355,7 +1583,7 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
     await screen.findByRole("tab", { name: "Spec", selected: true });
     await waitFor(() => expect(getArtifactText).toHaveBeenCalledWith("artifact-1"));
     getArtifactText.mockClear();
-    fireEvent.click(screen.getByRole("link", { name: "Navigate to test route" }));
+    await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
     await screen.findByRole("img", { name: "diagram.png version 1" });
     expect(getArtifactText).not.toHaveBeenCalledWith("artifact-image");
   } finally {
@@ -1366,6 +1594,7 @@ test("IssuePage does not mount an image as the hidden Spec document", async () =
 });
 
 test("IssuePage opens a non-spec document at its version route", async () => {
+  const user = userEvent.setup();
   const documentArtifact = {
     created_at: "2026-09-09T01:00:00Z",
     created_by: { id: "alice", kind: "user" as const },
@@ -1404,9 +1633,7 @@ test("IssuePage opens a non-spec document at its version route", async () => {
     await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
     expect(screen.getByRole("heading", { name: "design.md" })).not.toBeNull();
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
-    fireEvent.change(screen.getByRole("combobox", { name: "Version" }), {
-      target: { value: "1" },
-    });
+    await user.selectOptions(screen.getByRole("combobox", { name: "Version" }), "1");
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe(
         "/issues/CORE-1/artifacts/design?v=1"
@@ -1450,7 +1677,7 @@ test("IssuePage shows an unavailable image version instead of the latest image",
   try {
     await screen.findByRole("tab", { name: "Artifacts (2)", selected: true });
     expect(screen.getByText("Version 999 is not available for this artifact.")).not.toBeNull();
-    expect(screen.queryByRole("img", { name: "diagram.png version 1" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "diagram.png version 1" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -1463,7 +1690,8 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
 
   try {
     await screen.findByText("No artifact missing on CORE-1.");
-    expect(screen.getByRole("link", { name: "View artifacts" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "View artifacts" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/artifacts"
     );
     expect(screen.getByRole("tablist", { name: "Issue detail" })).not.toBeNull();
@@ -1474,12 +1702,13 @@ test("IssuePage explains when an artifact slug does not exist", async () => {
 });
 
 test("IssuePage hides the Artifacts panel after switching to Spec", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const view = renderIssuePage("/issues/CORE-1/artifacts");
 
   try {
     await screen.findByRole("tab", { name: "Artifacts (1)", selected: true });
-    fireEvent.click(screen.getByRole("tab", { name: "Spec" }));
+    await user.click(screen.getByRole("tab", { name: "Spec" }));
     await screen.findByRole("tab", { name: "Spec", selected: true });
     const artifactsPanel = view.container.querySelector<HTMLDivElement>("#issue-artifacts-panel");
     expect(artifactsPanel?.hidden).toBe(true);
@@ -1491,6 +1720,7 @@ test("IssuePage hides the Artifacts panel after switching to Spec", async () => 
 });
 
 test("IssuePage encodes primary-document version selection in the artifact route", async () => {
+  const user = userEvent.setup();
   const primaryArtifact = issue.artifacts[0];
   if (primaryArtifact === undefined) {
     throw new Error("IssuePage test fixture needs a primary document.");
@@ -1528,7 +1758,7 @@ test("IssuePage encodes primary-document version selection in the artifact route
 
   try {
     await screen.findByLabelText("Version");
-    fireEvent.change(screen.getByLabelText("Version"), { target: { value: "1" } });
+    await user.selectOptions(screen.getByLabelText("Version"), "1");
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe(
         "/issues/CORE-1/artifacts/spec?v=1"
@@ -1561,7 +1791,7 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   try {
     await screen.findByRole("combobox", { name: "Version" });
     expect(screen.getAllByRole("combobox", { name: "Version" })).toHaveLength(1);
-    expect(screen.queryByTestId("artifact-header")).toBeNull();
+    expect(screen.queryByTestId("artifact-header")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getArtifact.mockRestore();
@@ -1570,6 +1800,7 @@ test("IssuePage renders exactly one Version combobox on the Spec tab", async () 
   }
 });
 test("IssuePage keeps version controls in the active Spec tab row", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
@@ -1585,13 +1816,13 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
     const tabs = await screen.findByTestId("issue-tabs");
     expect(within(tabs).getByRole("combobox", { name: "Version" })).not.toBeNull();
     expect(within(tabs).getByRole("button", { name: "Name version" })).not.toBeNull();
-    expect(screen.queryByTestId("spec-document-toolbar")).toBeNull();
+    expect(screen.queryByTestId("spec-document-toolbar")).not.toBeInTheDocument();
 
     for (const tab of ["Conversation", "Children", "Artifacts (1)", "Activity"] as const) {
-      fireEvent.click(screen.getByRole("tab", { name: tab }));
+      await user.click(screen.getByRole("tab", { name: tab }));
       await screen.findByRole("tab", { name: tab, selected: true });
-      expect(screen.queryByRole("combobox", { name: "Version" })).toBeNull();
-      expect(screen.queryByRole("button", { name: "Name version" })).toBeNull();
+      expect(screen.queryByRole("combobox", { name: "Version" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Name version" })).not.toBeInTheDocument();
     }
   } finally {
     view.unmount();
@@ -1602,6 +1833,7 @@ test("IssuePage keeps version controls in the active Spec tab row", async () => 
 });
 
 test("IssuePage copies the issue key on click, its reference on a modifier click, and the Spec's reference at the shown version", async () => {
+  const user = userEvent.setup();
   const originalClipboard = navigator.clipboard;
   const writeText = spyOn({ writeText: async () => undefined }, "writeText");
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
@@ -1626,19 +1858,23 @@ test("IssuePage copies the issue key on click, its reference on a modifier click
 
   try {
     const keyButton = await screen.findByRole("button", { name: /^Copy issue key CORE-1 · / });
-    fireEvent.click(keyButton);
+    await user.click(keyButton);
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("CORE-1"));
-    fireEvent.click(keyButton, { ctrlKey: true });
+    // A modifier click is the modifier held across the press: user-event's `click` takes no
+    // modifier of its own.
+    await user.keyboard("{Control>}");
+    await user.click(keyButton);
+    await user.keyboard("{/Control}");
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1"));
 
     const tabs = await screen.findByTestId("issue-tabs");
-    fireEvent.click(
+    await user.click(
       within(tabs).getByRole("button", { name: "Copy reference dispatch://CORE-1/spec" })
     );
     await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("dispatch://CORE-1/spec"));
 
-    fireEvent.click(screen.getByRole("link", { name: "Navigate to test route" }));
-    fireEvent.click(
+    await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
+    await user.click(
       await within(tabs).findByRole("button", {
         name: "Copy reference dispatch://CORE-1/artifact/spec@v1",
       })
@@ -1698,7 +1934,7 @@ test("IssuePage hides whose turn when the server sent open asks without waiting_
 
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
-    expect(screen.queryByText(/^Waiting on (you|agents)/)).toBeNull();
+    expect(screen.queryByText(/^Waiting on (you|agents)/)).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -1720,7 +1956,7 @@ test("IssuePage keeps state actions available while approval awaits", async () =
     await screen.findByRole("heading", { level: 1, name: issue.title });
     const pin = screen.getByRole("button", { name: "Pin issue" });
     expect(pin).not.toBeNull();
-    expect(pin.getAttribute("aria-pressed")).toBe("false");
+    expect(pin).toHaveAttribute("aria-pressed", "false");
     expect(pin.querySelector("path")?.getAttribute("fill")).toBe("none");
 
     const stateActions = screen.getByTestId("issue-state-actions");
@@ -1737,6 +1973,97 @@ test("IssuePage keeps state actions available while approval awaits", async () =
   }
 });
 
+test("IssuePage draws a gated root issue's steps where the header's one chip sat", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 1, state: "awaiting" },
+      },
+    ],
+  });
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria", "spec"],
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    // One line per gated step, in the order the deployment published them.
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria", "spec"]);
+    // The primary document keeps today's chip and its review actions, inside its own step.
+    expect(within(steps).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
+    expect(within(steps).getByRole("button", { name: "Approve" })).not.toBeNull();
+    // The two steps nobody has written say so, rather than borrowing the spec's state.
+    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    // The steps take the chip's place when one of them holds the primary document: the row
+    // draws one approval area, not both, so it carries one pair of controls.
+    expect(
+      within(stateActions).queryAllByRole("button", { name: "Awaiting approval" }).length
+    ).toBe(1);
+    expect(within(stateActions).queryAllByRole("button", { name: "Approve" }).length).toBe(1);
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage keeps the primary document's chip when no gated step reviews it", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [
+      {
+        ...issue.artifacts[0],
+        approval: { latest_version: 1, state: "awaiting" },
+      },
+    ],
+  });
+  // A deployment may gate the decisions and the Verification document and not the spec; the
+  // spec still has an approval to answer, and only the header's own chip can answer it.
+  const gated: Project = {
+    created_at: "2026-09-09T00:00:00Z",
+    gated_steps: ["decisions", "criteria"],
+    key: "CORE",
+    name: "Core",
+  };
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([gated]);
+  const view = renderIssuePage("/issues/CORE-1/conversation");
+
+  try {
+    await screen.findByRole("heading", { level: 1, name: issue.title });
+    const stateActions = screen.getByTestId("issue-state-actions");
+    const steps = await within(stateActions).findByTestId("issue-approval-steps");
+    expect(
+      Array.from(steps.querySelectorAll("[data-approval-step]")).map((step) =>
+        step.getAttribute("data-approval-step")
+      )
+    ).toEqual(["decisions", "criteria"]);
+    // Neither step holds the primary document, so neither carries its state or its actions.
+    expect(within(steps).getAllByText("Not requested").length).toBe(2);
+    expect(within(steps).queryByRole("button", { name: "Awaiting approval" })).toBeNull();
+    // The primary document's own chip stays in the state row, with both of its controls.
+    expect(within(stateActions).getByRole("button", { name: "Awaiting approval" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: "Approve" })).not.toBeNull();
+    expect(within(stateActions).getByRole("button", { name: "Request changes" })).not.toBeNull();
+  } finally {
+    view.unmount();
+    listProjects.mockRestore();
+    restore();
+  }
+});
+
 test("IssuePage fills and marks the issue pin when it is pinned", async () => {
   const restore = stubIssuePage(issue, [], [], {
     dismissed: [],
@@ -1749,7 +2076,7 @@ test("IssuePage fills and marks the issue pin when it is pinned", async () => {
   try {
     await screen.findByRole("heading", { level: 1, name: issue.title });
     const pin = screen.getByRole("button", { name: "Unpin issue" });
-    expect(pin.getAttribute("aria-pressed")).toBe("true");
+    expect(pin).toHaveAttribute("aria-pressed", "true");
     expect(pin.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
   } finally {
     view.unmount();
@@ -1758,6 +2085,7 @@ test("IssuePage fills and marks the issue pin when it is pinned", async () => {
 });
 
 test("IssuePage's pin refreshes the sidebar's pinned list once the pin is saved", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const saved = { dismissed: [], last_read_seq: 0, pinned: true, seq: 1 };
   const putIssueState = spyOn(api, "putIssueState").mockResolvedValue(saved);
@@ -1771,7 +2099,7 @@ test("IssuePage's pin refreshes the sidebar's pinned list once the pin is saved"
   try {
     await within(view.container).findByRole("heading", { level: 1, name: issue.title });
     expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(false);
-    fireEvent.click(within(view.container).getByRole("button", { name: "Pin issue" }));
+    await user.click(within(view.container).getByRole("button", { name: "Pin issue" }));
     await waitFor(() =>
       expect(queryClient.getQueryState(["issues", "pinned"])?.isInvalidated).toBe(true)
     );
@@ -1800,9 +2128,9 @@ test("IssuePage keeps an unrequested draft approval passive", async () => {
   const view = renderIssuePage("/issues/CORE-1/conversation");
 
   try {
-    expect(screen.queryByRole("button", { name: "Draft" })).toBeNull();
-    expect(screen.queryByRole("button", { name: /^Approve$/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Request changes" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Draft" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Approve$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Request changes" })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     restore();
@@ -1826,7 +2154,8 @@ test("IssuePage shows a failed historical document version", async () => {
 
   try {
     await screen.findByText("No version 999 of spec.md.");
-    expect(screen.getByRole("link", { name: "View current version" }).getAttribute("href")).toBe(
+    expect(screen.getByRole("link", { name: "View current version" })).toHaveAttribute(
+      "href",
       "/issues/CORE-1/spec"
     );
   } finally {
@@ -1839,6 +2168,7 @@ test("IssuePage shows a failed historical document version", async () => {
 });
 
 test("IssuePage closes an issue and reopens it into Backlog", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue({
     ...issue.artifacts[0],
@@ -1861,7 +2191,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     const openStatus = (await screen.findByLabelText("Status")) as HTMLSelectElement;
     expect([...openStatus.options].map((option) => option.value)).not.toContain("done");
 
-    fireEvent.click(screen.getByRole("button", { name: "Close issue" }));
+    await user.click(screen.getByRole("button", { name: "Close issue" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "done" }, keyedAttempt)
     );
@@ -1879,7 +2209,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
     expect(closedStatus.disabled).toBe(true);
     expect(closedStatus.value).toBe("done");
 
-    fireEvent.click(screen.getByRole("button", { name: "Reopen issue" }));
+    await user.click(screen.getByRole("button", { name: "Reopen issue" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -1891,7 +2221,9 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
       await reopenSave.promise;
     });
 
-    await waitFor(() => expect(screen.queryByText("This issue is closed.")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByText("This issue is closed.")).not.toBeInTheDocument()
+    );
     expect(((await screen.findByLabelText("Status")) as HTMLSelectElement).value).toBe("backlog");
   } finally {
     view.unmount();
@@ -1903,6 +2235,7 @@ test("IssuePage closes an issue and reopens it into Backlog", async () => {
 });
 
 test("IssuePage lets a human move a Todo issue to In progress", async () => {
+  const user = userEvent.setup();
   const restore = stubIssuePage(issue);
   const patchIssue = answerIssuePatches().mockResolvedValue({
     ...issue,
@@ -1926,7 +2259,7 @@ test("IssuePage lets a human move a Todo issue to In progress", async () => {
       { text: "Retro", value: "retro" },
     ]);
 
-    fireEvent.change(status, { target: { value: "in_progress" } });
+    await user.selectOptions(status, "in_progress");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenCalledWith("CORE-1", { status: "in_progress" }, keyedAttempt)
     );
@@ -1953,10 +2286,220 @@ test("IssuePage reports a failed issue read on an item deep link instead of load
   try {
     expect(await screen.findByText("Couldn't load this issue")).not.toBeNull();
     expect(screen.getByRole("button", { name: "Retry" })).not.toBeNull();
-    expect(screen.queryByText("Loading issue…")).toBeNull();
+    expect(screen.queryByText("Loading issue…")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getComment.mockRestore();
+    restore();
+  }
+});
+
+// INFRA-869. An address may write an item's id short; the page resolves it, opens the item
+// under the whole id, and rewrites the address to it.
+const WHOLE_ID = "4c9f3e12-1111-4222-8333-444444444444";
+const OTHER_ID = "4c9f3e12-5555-4666-8777-888888888888";
+const SHORT_ID = "4c9f3e12";
+
+/** The comment the ids above name: unanchored, so the landing opens its Conversation turn
+ *  rather than a document. */
+const shortIdComment = { ...itemComment, anchor: null, id: WHOLE_ID };
+
+function GoBack(): ReactNode {
+  const navigate = useNavigate();
+  return (
+    <button onClick={() => navigate(-1)} type="button">
+      Go back
+    </button>
+  );
+}
+
+/** The issue page over a history of its own, so a test can go back from the address it opened
+ *  and see what the page left behind it. */
+function renderLandingHistory(entries: string[]) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const runtime = fakeDocumentRuntime({});
+  queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
+  const view = render(
+    <MemoryRouter initialEntries={entries} initialIndex={entries.length - 1}>
+      <QueryClientProvider client={queryClient}>
+        <KeymapProvider>
+          <DocumentRuntime.Provider value={runtime.runtime}>
+            <MarginProvider>
+              <CurrentRoute />
+              <GoBack />
+              <Routes>
+                <Route path="/issues/:key/*" element={<IssuePage />} />
+              </Routes>
+            </MarginProvider>
+          </DocumentRuntime.Provider>
+        </KeymapProvider>
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  window.setTimeout(runtime.sync);
+  return view;
+}
+
+test("IssuePage reads an item whose address writes its id whole without resolving anything", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences");
+  const getComment = spyOn(api, "getComment").mockResolvedValue({
+    comment: shortIdComment,
+    replies: [],
+  });
+  const view = renderIssuePage(`/issues/CORE-1/comments/${WHOLE_ID}`);
+
+  try {
+    await waitFor(() => expect(getComment).toHaveBeenCalledWith(WHOLE_ID));
+    await screen.findByRole("tab", { name: /Conversation/ });
+    // The whole id is read once, under itself, and nothing is resolved for it.
+    expect(getComment.mock.calls).toEqual([[WHOLE_ID]]);
+    expect(getReferences).not.toHaveBeenCalled();
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/comments/${WHOLE_ID}`
+    );
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage resolves an address that writes an id short and replaces it with the whole id", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: { id: WHOLE_ID, kind: "comment", ref: `dispatch://CORE-1/comment/${WHOLE_ID}` },
+  });
+  const getComment = spyOn(api, "getComment").mockResolvedValue({
+    comment: shortIdComment,
+    replies: [],
+  });
+  const view = renderLandingHistory(["/issues/CORE-1", `/issues/CORE-1/comments/${SHORT_ID}`]);
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        `/issues/CORE-1/comments/${WHOLE_ID}`
+      )
+    );
+    expect(getReferences).toHaveBeenCalledWith(`dispatch://CORE-1/comment/${SHORT_ID}`);
+    // The item is read under the whole id alone: the prefix is no key anything is cached under.
+    await waitFor(() => expect(getComment.mock.calls).toEqual([[WHOLE_ID]]));
+    // The rewrite replaced the address, so Back leaves the page the reader came from rather
+    // than returning to the short address.
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1")
+    );
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage lists every item an ambiguous id names, each linking to its whole id", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          first_line: "The first note",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        {
+          first_line: "The other note",
+          id: OTHER_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${OTHER_ID}`,
+        },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 2 items; write more of the id`,
+    })
+  );
+  const getComment = spyOn(api, "getComment");
+  const view = renderIssuePage(`/issues/CORE-1/comments/${SHORT_ID}`);
+
+  try {
+    await screen.findByText("Several items match that link");
+    const first = await screen.findByRole("link", { name: "The first note" });
+    const other = screen.getByRole("link", { name: "The other note" });
+    expect(first).toHaveAttribute("href", `/issues/CORE-1/comments/${WHOLE_ID}`);
+    expect(other).toHaveAttribute("href", `/issues/CORE-1/comments/${OTHER_ID}`);
+    // The list is a view of the page at the address the reader followed, not a route of its own.
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/comments/${SHORT_ID}`
+    );
+    expect(getComment).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage lists a match the reader cannot open by its kind alone, with no empty line", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(409, {
+      candidates: [
+        {
+          first_line: "The first note",
+          id: WHOLE_ID,
+          issue_key: "CORE-1",
+          kind: "comment",
+          ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+        },
+        // A direct message: no address to open and no line the reader may read.
+        { id: OTHER_ID, kind: "message", ref: "" },
+      ],
+      code: ID_AMBIGUOUS,
+      error: `the id prefix "${SHORT_ID}" names 2 items; write more of the id`,
+    })
+  );
+  const view = renderIssuePage(`/issues/CORE-1/messages/${SHORT_ID}`);
+
+  try {
+    await screen.findByText("Several items match that link");
+    const rows = screen.getAllByRole("listitem");
+    const unreadable = rows.find((row) => row.textContent?.includes("Message"));
+    if (unreadable === undefined) throw new Error("the unreadable match is not listed");
+    expect(unreadable.textContent?.trim()).toBe("Message");
+    expect(unreadable.querySelector("a")).toBeNull();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+test("IssuePage shows its not-found view for an id prefix that names nothing", async () => {
+  const restore = stubIssuePage(issue);
+  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
+    new ApiError(404, { code: "NOT_FOUND", error: `no comment at ${SHORT_ID}` })
+  );
+  const getComment = spyOn(api, "getComment");
+  const view = renderIssuePage(`/issues/CORE-1/comments/${SHORT_ID}`);
+
+  try {
+    expect(await screen.findByText("Comment not found")).not.toBeNull();
+    expect(getComment).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    getComment.mockRestore();
+    getReferences.mockRestore();
     restore();
   }
 });

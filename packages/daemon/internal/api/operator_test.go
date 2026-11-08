@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -21,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -68,7 +70,7 @@ func TestOperatorRoutesRefuseAnythingButTheOperatorBearer(t *testing.T) {
 // included: nothing compares equal to a token that is not there.
 func TestOperatorRoutesAreClosedWithoutAnOperatorToken(t *testing.T) {
 	h := newHarness(t)
-	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject}).Handler
+	h.handler = NewServer("127.0.0.1", 8437, Options{Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Steps: config.DesignGateRootIssues.Steps()}).Handler
 
 	for _, header := range []http.Header{nil, {"Authorization": {"Bearer "}}} {
 		wantRefusal(t, h.request(http.MethodGet, "/legion/v1/operator/claims", nil, header), http.StatusForbidden,
@@ -109,6 +111,38 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 	}
 	if stored := h.stored(architectToken); stored.State != supervise.StateLaunching || stored.Pending == nil {
 		t.Errorf("stored %+v, want the launched claim with its task", stored)
+	}
+}
+
+// The operator's spawn never waits for the wake pacing, whatever the daemon's wake queue holds: a
+// person is waiting on this answer, and the route answers with the claim launched rather than
+// with one parked launching for a turn minutes out (supervise's reserveWake, RequestSpawn.Exempt).
+// One person's spawn is not the wave the pacing exists for.
+func TestTheOperatorsSpawnLaunchesWhileTheWakeQueueIsSpent(t *testing.T) {
+	h := newHarness(t)
+	// One wake a minute, its burst already taken by another claim of this daemon, so the next
+	// reservation is a minute out: that is the wait a paced spawn would be held for.
+	limiter := wakepace.New(1, 1, nil)
+	now := stillClock{}.Now()
+	limiter.Reserve(now)
+	if at := limiter.Reserve(now); !at.After(now) {
+		t.Fatalf("the limiter reserved %s for a spent queue, want a moment after %s", at, now)
+	}
+	h.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: 1, Burst: 1}
+
+	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims", spawnBody())
+
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("spawn = %d, want 201; body %s", recorder.Code, recorder.Body)
+	}
+	var got OperatorClaim
+	decodeInto(t, recorder, &got)
+	if got.State != string(supervise.StateLaunching) || got.Locator == nil {
+		t.Fatalf("spawn answered %s recording %+v, want %s recording the process it launched",
+			got.State, got.Locator, supervise.StateLaunching)
+	}
+	if spawns := h.runtime.CallsOf("Spawn"); len(spawns) != 1 || spawns[0].Spec.Claim != architectToken {
+		t.Fatalf("spawns = %+v, want the one launch the route made inside the request", spawns)
 	}
 }
 
@@ -564,6 +598,7 @@ func failedImplementer(t *testing.T, handler intake.Handler) (*harness, claim.To
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
 		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken, Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store, Handlers: []intake.Handler{handler}, RoleFor: workflow.RoleFor,
 	}).Handler
@@ -1107,11 +1142,78 @@ func TestListShowsAClaimsDeathsAndItsInterruptedTask(t *testing.T) {
 	}
 }
 
+// A claim's view carries the record of the sends of its task that never reached a turn — how
+// many failed, when the last of them failed and the error it failed with — beside the queued,
+// delivered and confirmed times. Without it, a claim that has waited days on a send which never
+// lands says so only in a log line inside its own pod (INFRA-1480). The three are omitempty, and
+// the send that reaches a turn clears them, so a task no send has failed for carries none of
+// them on the wire.
+func TestClaimViewCarriesTheSendFailures(t *testing.T) {
+	h := newHarness(t)
+	token := claim.Token("legion-legion-legion-209-implementer")
+	queued := time.Date(2026, 9, 26, 7, 0, 0, 0, time.UTC)
+	failedAt := queued.Add(30 * time.Second)
+	if err := h.store.PutClaim(h.ctx, supervise.Claim{Token: token, Project: testProject, Tree: "LEGION-208", Issue: "LEGION-209",
+		Role: claim.RoleImplementer, State: supervise.StateReady}); err != nil {
+		t.Fatalf("put the claim: %v", err)
+	}
+	failing := supervise.Delivery{ID: "delivery-1", Task: "implement the plan", QueuedAt: queued,
+		SendFailures: 4, LastSendFailureAt: failedAt,
+		LastSendError: "worker-stream: " + string(token) + " refused adopt-working-copy: " +
+			"the git lock /legion/workspaces/acme/widgets/legion-209/.git/index.lock was last written 31m ago"}
+	if err := h.store.PutDelivery(h.ctx, token, failing); err != nil {
+		t.Fatalf("put the delivery: %v", err)
+	}
+
+	var got OperatorClaims
+	decodeInto(t, h.operator(http.MethodGet, "/legion/v1/operator/claims", nil), &got)
+
+	if len(got.Claims) != 1 || got.Claims[0].Pending == nil {
+		t.Fatalf("list answered %+v, want the claim with its pending task", got.Claims)
+	}
+	pending := got.Claims[0].Pending
+	if pending.SendFailures != failing.SendFailures || pending.LastSendFailureAt == nil ||
+		!pending.LastSendFailureAt.Equal(failedAt) || pending.LastSendError != failing.LastSendError {
+		t.Fatalf("pending %+v, want %d failed sends, the last at %v, with its error", pending, failing.SendFailures, failedAt)
+	}
+	if !pending.QueuedAt.Equal(queued) || pending.DeliveredAt != nil || pending.ConfirmedAt != nil {
+		t.Fatalf("pending %+v, want the record beside the three times, of which only the queue has happened", pending)
+	}
+
+	// The send that reached a turn: the task is acknowledged and confirmed, and supervise's
+	// confirm cleared all three with the budgets.
+	confirmed := failing
+	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = failedAt.Add(time.Second), failing.ID, failedAt.Add(2*time.Second)
+	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
+	if err := h.store.PutDelivery(h.ctx, token, confirmed); err != nil {
+		t.Fatalf("put the confirmed delivery: %v", err)
+	}
+
+	recorder := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
+
+	body := recorder.Body.String()
+	for _, key := range []string{"sendFailures", "lastSendFailureAt", "lastSendError"} {
+		if strings.Contains(body, key) {
+			t.Errorf("the wire carries %q for a task no send has failed for: %s", key, body)
+		}
+	}
+	got = OperatorClaims{}
+	decodeInto(t, recorder, &got)
+	if len(got.Claims) != 1 || got.Claims[0].Pending == nil || got.Claims[0].Pending.ConfirmedAt == nil {
+		t.Fatalf("list answered %+v, want the confirmed task the cleared record belongs to", got.Claims)
+	}
+}
+
+// A daemon supervising no claim answers `claims` as the empty array, never `null`, and the
+// sweep's record beside it with each of its own lists the same way: the readers on the other
+// side of this wire require each list as an array, and one of them is the operator's own listing.
 func TestListOfNoClaimsIsAnEmptyArray(t *testing.T) {
 	h := newHarness(t)
 	recorder := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
-	if got := strings.TrimSpace(recorder.Body.String()); recorder.Code != http.StatusOK || got != `{"claims":[]}` {
-		t.Fatalf("list = %d %s, want 200 {\"claims\":[]}", recorder.Code, got)
+	want := `{"claims":[],"pod_update_rounds":{"swept":false,"max_open_rounds":null,"rounds_per_minute":null,` +
+		`"in_round":[],"waiting_on_max_open_rounds":[],"waiting_on_rounds_per_minute":[]}}`
+	if got := strings.TrimSpace(recorder.Body.String()); recorder.Code != http.StatusOK || got != want {
+		t.Fatalf("list = %d %s, want 200 %s", recorder.Code, got, want)
 	}
 }
 
@@ -1236,5 +1338,62 @@ func TestForgetSessionRefusesDaemonStopAfterPreflight(t *testing.T) {
 	wantRefusal(t, <-response, http.StatusServiceUnavailable, "forget-session refused: the daemon is stopping; ask again once it is back")
 	if got := h.stored(architectToken); got.State != supervise.StateSuspended || got.Session != "ses_architect" || got.SessionFile != "/sessions/ses_architect.jsonl" {
 		t.Fatalf("stopped forget changed the claim to %+v", got)
+	}
+}
+
+// The claim listing carries what the daemon's last pod-update sweep decided beside the claims
+// (Options.PodUpdateRounds): the project's two limits on how fast a pod template change reaches
+// the fleet, the issues holding a round under them, and the issues each limit held back. No claim
+// row carries it — an issue a limit held back is posted nothing at all — so the route is where an
+// operator's `legion claims list` reads it.
+//
+// Each limit is a pointer, so a key legion.yaml does not set is `null` rather than 0, which would
+// read as a project that opens no round at all; and each list is an array, empty rather than
+// `null`, because the readers on the other side of this wire require each list as an array
+// (packages/contracts's LegionOperatorClaimsResponse). A daemon whose first sweep has not run
+// answers the zero record, whose `swept` says so. The route fills the field on every answer it
+// writes (list), so a body that carries no `pod_update_rounds` at all is a daemon of an older
+// release, which the operator's own command tells apart (cmd/legion's podUpdateRoundsLine).
+func TestClaimsListPodUpdateLine(t *testing.T) {
+	h := newHarness(t)
+	for _, testCase := range []struct {
+		name   string
+		rounds PodUpdateRounds
+		want   string
+	}{
+		{
+			name: "both limits set, with issues in a round and issues waiting",
+			rounds: PodUpdateRounds{
+				Swept: true, MaxOpenRounds: new(2), RoundsPerMinute: new(1),
+				InRound: []string{"INFRA-10", "INFRA-1000"}, WaitingOnMaxOpenRounds: []string{"INFRA-2"},
+			},
+			want: `{"claims":[],"pod_update_rounds":{"swept":true,"max_open_rounds":2,"rounds_per_minute":1,` +
+				`"in_round":["INFRA-10","INFRA-1000"],"waiting_on_max_open_rounds":["INFRA-2"],"waiting_on_rounds_per_minute":[]}}`,
+		},
+		{
+			name:   "a project that sets neither key",
+			rounds: PodUpdateRounds{Swept: true, WaitingOnRoundsPerMinute: []string{"INFRA-2"}},
+			want: `{"claims":[],"pod_update_rounds":{"swept":true,"max_open_rounds":null,"rounds_per_minute":null,` +
+				`"in_round":[],"waiting_on_max_open_rounds":[],"waiting_on_rounds_per_minute":["INFRA-2"]}}`,
+		},
+		{
+			name:   "a daemon that has not swept",
+			rounds: PodUpdateRounds{},
+			want: `{"claims":[],"pod_update_rounds":{"swept":false,"max_open_rounds":null,"rounds_per_minute":null,` +
+				`"in_round":[],"waiting_on_max_open_rounds":[],"waiting_on_rounds_per_minute":[]}}`,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			*h.podUpdateRounds = testCase.rounds
+
+			list := h.operator(http.MethodGet, "/legion/v1/operator/claims", nil)
+
+			if list.Code != http.StatusOK {
+				t.Fatalf("list = %d; body %s", list.Code, list.Body)
+			}
+			if got := strings.TrimSpace(list.Body.String()); got != testCase.want {
+				t.Fatalf("the listing is %s, want %s", got, testCase.want)
+			}
+		})
 	}
 }

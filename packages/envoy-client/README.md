@@ -4,9 +4,9 @@ Shared HTTP transport, tool contract, inbound delivery renderer, and missed-mess
 hosts. pi-envoy and claude-envoy consume these modules rather than maintaining host-specific
 envelope parsers.
 
-This package has no release of its own: `.github/workflows/changelog-fold.yaml` folds its
-changelog fragments (`.changes/unreleased/`) into `CHANGELOG.md` under `main@<commit>` at the
-first fold run after they merge.
+This package has no release of its own, so nothing renders its changelog entries: each stays
+readable as the fragment file that holds it, under `.changes/unreleased/`. `CHANGELOG.md` is the
+history before that and stops where the fragments begin.
 
 ## Inbound delivery
 
@@ -227,25 +227,75 @@ refused with a 4xx on every attempt stays an `EnvoyApiError`. Listener error res
 `error` and optional `expected` fields. The listener's bearer is the `token` the client is given
 (`envoySettings`); without one it sends no `Authorization` header.
 
+Every call whose body names the session it acts for — `subscribe`, `unsubscribe`,
+`unregisterSession`, `setRole`, `replay`, and a `send` or `publish` with a `sourceSessionID` —
+presents that session's own credential, since the listener holds such a write to the session its
+broker token names and answers 403 to any other. That is what lets a process that has switched
+sessions hand back a role the session it left still holds: the old session's credential is a
+client of its own and answers out of the token it already has. A read of another session's
+record (`getInterest`, `getRole`, `listSessions`) names no session and is answered the
+credential the client was built with. A bearer is the same header whichever session a call acts
+for.
+
 `subscribe` sends the host's `plugin` (`{name, version}`, required) as `plugin` and
 `plugin_version` on every registration, and exposes listener warnings, including a topic that has
 no event in the configured stream. It sends the client instance driving the session
 (`clientInstanceID`: one Oh My Pi Envoy extension instance, one Claude Code channel-server
 process, minted once when that instance starts) as `client_instance_id`, omitted when the host
 has none so an older listener sees an unchanged body; the listener stores it on the session's
-registry entry. `getRole` returns a role holder with its last-seen timestamp,
-and `listSessions` accepts optional directory and title filters; its rows carry `plugin` and
-`plugin_version` when the session registered them.
+registry entry and renews with it every role claim this session holds that names that same
+process, so each registration is the holder's answer for the roles it holds. It renews every such
+claim the listener has not marked handed back, whatever topics the registration carries: what
+says a role was given up is the mark a hand-back leaves on a claim it could not free, and a
+marked claim is renewed by nobody. A registration that
+states no instance renews the claims of its own session that name no process, and adopts none, so
+a claim standing at a deploy is kept by a client that cannot say which process it is.
+`getRole` returns a role holder with its last-seen timestamp and, where the
+claim names a process, the `client_instance_id` of that process; a claim that names none leaves
+the field out, on the 200 as on a lapsed holder's 404. It also returns `handed_back` where the
+claim carries the listener's hand-back mark, on both answers and left out where it carries none.
+`listSessions` accepts optional directory
+and title filters; its rows carry `plugin` and `plugin_version` when the session registered them.
 
-A `setRole` soft claim (`soft`) naming a predecessor (`previousSessionID`) takes the role from it
+`roleHeldBy(info, sessionID, clientInstanceID)` and `mayActOnRoleRecord(writer, clientInstanceID,
+holdsRole)` are exported beside `RoleInfo` as the two rules every client keeps over those ids:
+whether a role lookup's answer is this caller's own hold of the role — this session *and* this
+process, a claim naming no process read as this one's, and a claim the listener marked handed
+back no hold of anyone's — and whether a persisted role record, a
+transcript's claim entry or a channel server's role file, is this process's to act on, which a
+record another process wrote is only while this one holds no role. Both read an empty id as no
+process named, exactly as an absent one. The mark is why a holder an older client's hand-back
+reached claims its role again at its next heartbeat and has it back, the grant writing a fresh
+record that carries no mark, rather than reading the lookup as confirmation until the role claim
+reaper frees the role a live window and up to one reap interval later.
+
+`setRole` and `unsubscribe` take a `clientInstanceID` of their own, sent as `client_instance_id`
+and omitted from the wire when the caller states none: the listener records the claim's as the
+process holding the role, and frees on a release only the role claims naming the release's own,
+so a second process that resumed this session id can neither take the role nor hand it back, and
+a release naming no process frees no claim that names one, while it frees a claim that names
+none outright. `unsubscribe` answers in `removed` the topics that left the record rather than the
+ones it named: a role lane topic whose claim the release did not free stays in the record,
+because one interest record serves every process running under one session id and that topic is
+the interest half of a claim that still stands. Such a release,
+where it names that role's own lane topic, is a hand-back, and the listener marks the claim it
+could not free. A release the holder's own renewal beat under
+each of its three conditional deletes fails rather than answering success, so `unsubscribe`
+rejects and the caller sends the hand-back again rather than treating the role as given up. A
+`setRole` soft claim (`soft`) naming a predecessor (`previousSessionID`) takes the role from it
 only when that predecessor has no live registry entry, when its live entry carries this client
-instance's own instance id, or when either side carries no instance id; any other live holder
-keeps the role and is answered as `{claimed: false, holder}`. `unregisterSession({sessionID,
-clientInstanceID?})` deletes the session's registry entry: with an instance id the listener
-deletes it only when the entry carries the same id or none, so a departing client instance never
-deletes the registration a successor instance made under the same session id, and without one it
-deletes the entry as before. The answer says whether the entry stayed, and the call resolves
-`void` because no caller acts on it: a deregistering client has nothing to retry either way.
+instance's own instance id, or when either side carries no instance id. A soft claim of a role
+already held under the claimant's own session id is decided on the standing claim rather than on
+the session record: granted when that claim names this very process, granted when nobody renewed
+it inside the listener's live window, and otherwise `{claimed: false, holder}` naming that same
+session — which `getRole`'s `client_instance_id` tells apart from a different session holding
+the role. Any other live holder keeps the role and is answered as `{claimed: false, holder}`.
+`unregisterSession({sessionID, clientInstanceID?})` deletes the session's registry entry: with an
+instance id the listener deletes it only when the entry carries the same id or none, so a
+departing client instance never deletes the registration a successor instance made under the
+same session id, and without one it deletes the entry as before. The answer says whether the
+entry stayed, and the call resolves `void` because no caller acts on it: a deregistering client
+has nothing to retry either way.
 
 `replay` posts `POST /v1/replay` once, with no retry and a 10 s timeout, and returns the
 listener's answer in its wire shape; an error body's `code` (such as `REPLAY_UNAVAILABLE`) is on
@@ -620,6 +670,20 @@ against it rather than the API's URL, which every call still goes to; a dashboar
 `ref` resolves on either address; and a value that is not an http or https URL disables Dispatch,
 naming it in `error`.
 
+With no bearer configured at all, a machine that proves an identity of its own trades it at the
+secrets broker instead (`AGENT_SECRETS_URL` with `AGENT_SECRETS_MACHINE_IDENTITY`,
+`brokerCredential`): the credential is then a DPoP-bound access token presented under the `DPoP`
+scheme rather than a bearer. Every bearer source above is resolved first and unchanged, so a
+session that has one behaves exactly as it did. `DISPATCH_TOKEN_BROKER=1` makes that route the
+only one: no bearer is read at all — not the variables, not the chosen file's `dispatch.token`,
+not a checkout's pair — and a machine that can trade none leaves Dispatch disabled with an
+`error` naming the broker variable that is missing, rather than falling back to whatever bearer
+the box holds. A deployment sets it on a session whose Dispatch credential must be that machine's
+own identity and nothing else, such as the controller `legion controller start` launches under
+`dispatch_token_broker`, which runs in the operator's own HOME where that person's envoy.json
+holds their `dispatch.token`. Any other value of the variable is refused, naming it:
+`DISPATCH_TOKEN_BROKER is "<value>" and takes 1 …`.
+
 ### The `dispatch` command
 
 Agents reach Dispatch through one command, `dispatch <command> [flags]`, which each host plugin
@@ -685,7 +749,8 @@ replacing them, and an explicit empty list (`--clear-external-links`) clears eve
 above that issue, below it, or between the two — and go as the server's `rank` field on the same
 PATCH only when a neighbour is named, since a `rank` with neither neighbour ranks the issue last
 in its project. Closing an issue (`status: "done"`) requires `reason`, which it posts as an issue
-message before the PATCH, since a closed issue refuses messages; a failed post sends no PATCH, and
+message before the PATCH, so the close carries its note; an issue already closed when it is read
+is refused `ISSUE_CLOSED` before anything is posted. A failed post sends no PATCH, and
 a PATCH that fails after the post names the posted message. The result is one line —
 `KEY: status a -> b; priority -> P1; rank -> before KEY; linked <url> (N links)`, with
 `priority cleared` on a clear and `reason posted as message <id> (<ref>)` ahead of a close — and a

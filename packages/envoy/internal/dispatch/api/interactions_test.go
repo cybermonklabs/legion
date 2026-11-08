@@ -470,21 +470,22 @@ func TestAskAnchorAmbiguityAndOccurrence(t *testing.T) {
 func TestInteractionCapsAndAnswerValidation(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Caps", "A spec")
-	// A whole-cap question is accepted, since a question names its concrete case; one past it is
-	// refused by name.
-	atCap := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
-		"question": strings.Repeat("a", contracts.AskQuestionMax), "actor": sessionActor(),
+	// A question of several paragraphs is accepted; a question and options that together pass
+	// the ask bound are refused by name, whichever part carries the text.
+	twoParagraphs := strings.Repeat("a", 1000) + "\n\n" + strings.Repeat("b", 1000)
+	atBound := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
+		"question": twoParagraphs, "actor": sessionActor(),
 	})
-	if atCap.Code != http.StatusCreated {
-		t.Fatalf("question at the cap: status=%d body=%s", atCap.Code, atCap.Body.String())
+	if atBound.Code != http.StatusCreated {
+		t.Fatalf("question of two 1,000-unit paragraphs: status=%d body=%s", atBound.Code, atBound.Body.String())
 	}
+	const label = "Ship"
 	tooLong := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
-		"question": strings.Repeat("a", contracts.AskQuestionMax+1), "actor": sessionActor(),
+		"question": strings.Repeat("a", contracts.DispatchEventBodyMax+1-len(label)),
+		"options":  []map[string]string{{"label": label}},
+		"actor":    sessionActor(),
 	})
-	overCap := fmt.Sprintf("question is 1 characters over the %d-character limit (%d/%d)", contracts.AskQuestionMax, contracts.AskQuestionMax+1, contracts.AskQuestionMax)
-	if tooLong.Code != http.StatusBadRequest || !strings.Contains(tooLong.Body.String(), `"code":"CAP_EXCEEDED"`) || !strings.Contains(tooLong.Body.String(), overCap) {
-		t.Fatalf("question cap: status=%d body=%s", tooLong.Code, tooLong.Body.String())
-	}
+	assertCapExceeded(t, "ask wording", tooLong, "question and options", contracts.DispatchEventBodyMax+1, contracts.DispatchEventBodyMax, "")
 	tooManyOptions := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Options", "options": []map[string]string{{"label": "1"}, {"label": "2"}, {"label": "3"}, {"label": "4"}, {"label": "5"}, {"label": "6"}, {"label": "7"}, {"label": "8"}, {"label": "9"}}, "actor": sessionActor(),
 	})
@@ -545,15 +546,17 @@ func TestInteractionCapsAndAnswerValidation(t *testing.T) {
 		t.Fatalf("blank text answer: status=%d body=%s", blankTextAnswer.Code, blankTextAnswer.Body.String())
 	}
 
-	overCapBody := strings.Repeat("a", contracts.DispatchBodyMax+1)
+	// A body is bounded block by block now, so one 32,001-unit paragraph is refused for its
+	// block and a body of many blocks far longer than the old cap is not.
+	overCapBody := strings.Repeat("a", contracts.DispatchBlockUnits+1)
 	tooLongComment := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": overCapBody, "actor": sessionActor(),
 	})
-	assertCapExceeded(t, "comment cap", tooLongComment, "body", contracts.DispatchBodyMax+1, contracts.DispatchBodyMax, "")
+	assertBlockCapExceeded(t, "comment block", tooLongComment, "body", 1, "paragraph", contracts.DispatchBlockUnits+1)
 	tooLongMessage := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": overCapBody, "actor": sessionActor(),
 	})
-	assertCapExceeded(t, "message cap", tooLongMessage, "body", contracts.DispatchBodyMax+1, contracts.DispatchBodyMax, "")
+	assertBlockCapExceeded(t, "message block", tooLongMessage, "body", 1, "paragraph", contracts.DispatchBlockUnits+1)
 }
 
 func TestAskAnswerAcceptsFreeTextAloneOrWithSelection(t *testing.T) {
@@ -1851,7 +1854,9 @@ func TestAskReplyMustBelongToItsIssue(t *testing.T) {
 	}
 }
 
-func TestAskReplyOnClosedIssueIsRefused(t *testing.T) {
+// A closed issue still takes a comment, a reply on one of its asks included: the ask stays open
+// and unanswerable, but the conversation under it goes on.
+func TestAskReplyOnClosedIssueIsPosted(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Closing soon", "before")
 	askResponse := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
@@ -1867,11 +1872,26 @@ func TestAskReplyOnClosedIssueIsRefused(t *testing.T) {
 	reply := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Too late?", "ask_id": ask.ID,
 	}, "alice")
-	if reply.Code != http.StatusConflict || !strings.Contains(reply.Body.String(), `"code":"ISSUE_CLOSED"`) {
+	if reply.Code != http.StatusCreated {
 		t.Fatalf("reply on closed issue: status=%d body=%s", reply.Code, reply.Body.String())
+	}
+	if posted := decodeBody[model.Comment](t, reply); posted.AskID == nil || *posted.AskID != ask.ID {
+		t.Fatalf("reply on closed issue = %#v, want it under ask %s", posted, ask.ID)
+	}
+	agentReply := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Not too late.", "ask_id": ask.ID, "actor": sessionActor(),
+	})
+	if agentReply.Code != http.StatusCreated {
+		t.Fatalf("agent's reply on closed issue: status=%d body=%s", agentReply.Code, agentReply.Body.String())
+	}
+	answer := dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask.ID+"/answer", map[string]any{"text": "Yes"}, "alice")
+	if answer.Code != http.StatusConflict || !strings.Contains(answer.Body.String(), `"code":"ISSUE_CLOSED"`) {
+		t.Fatalf("answer on closed issue: status=%d body=%s, want 409 ISSUE_CLOSED", answer.Code, answer.Body.String())
 	}
 }
 
+// A done issue refuses every mutation but a comment and a message, which a closed issue still
+// takes (TestClosedIssueTakesCommentsAndMessagesFromPeopleAndAgents).
 func TestDoneIssueRejectsEveryMutation(t *testing.T) {
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Done issue", "before")
@@ -1954,17 +1974,21 @@ func TestDoneIssueRejectsEveryMutation(t *testing.T) {
 	assertClosed("ask resolution", sessionRequest(t, handler, http.MethodPost, "/api/v1/asks/"+askID+"/resolve", map[string]any{
 		"kind": "retracted", "reason": "Later retraction.", "actor": sessionActor(),
 	}))
-	assertClosed("comment", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+	if later := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
 		"body": "Later comment", "actor": sessionActor(),
-	}))
+	}); later.Code != http.StatusCreated {
+		t.Fatalf("comment after done: status=%d body=%s, want 201", later.Code, later.Body.String())
+	}
 	assertClosed("comment resolution", sessionRequest(t, handler, http.MethodPost, "/api/v1/comments/"+commentID+"/resolve", map[string]any{
 		"actor": sessionActor(),
 	}))
 	assertClosed("suggestion acceptance", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+suggestionID+"/accept", map[string]any{}, "alice"))
 	assertClosed("suggestion rejection", dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+secondSuggestionID+"/reject", map[string]any{}, "alice"))
-	assertClosed("message", sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
+	if later := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]any{
 		"body": "Later message", "actor": sessionActor(),
-	}))
+	}); later.Code != http.StatusCreated {
+		t.Fatalf("message after done: status=%d body=%s, want 201", later.Code, later.Body.String())
+	}
 	assertClosed("upload", multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
 		"name": "later.md",
 	}, "later.md", "text/markdown", []byte("later"), "alice"))

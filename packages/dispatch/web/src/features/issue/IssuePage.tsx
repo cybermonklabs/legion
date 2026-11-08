@@ -32,9 +32,11 @@ import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { VerificationTab } from "../verification/VerificationTab";
 import { ChildrenTab } from "./ChildrenTab";
+import { CollaboratorsTab } from "./CollaboratorsTab";
 import { DecisionsPanel } from "./DecisionsPanel";
 import { IssueHeader } from "./IssueHeader";
 import { IssueTabs } from "./IssueTabs";
+import { ItemMatchList } from "./ItemMatchList";
 import { stateForIssue } from "./pins";
 import { SpecRequirements } from "./SpecRequirements";
 import { SpecToolbar } from "./SpecToolbar";
@@ -152,6 +154,8 @@ const tabChords: readonly { keys: string; label: string; tab: IssueTab }[] = [
   // `t a` is Artifacts and `l` is the issue's label editor, so Activity takes `t v`.
   { keys: "t v", label: "Activity tab", tab: "activity" },
   { keys: "t d", label: "Decisions tab", tab: "decisions" },
+  // `s k p c h a v d` are taken, so Collaborators, the last tab, takes `t o`.
+  { keys: "t o", label: "Collaborators tab", tab: "collaborators" },
 ];
 
 /** One of the two role-document tab panels, Verification and Plan. They differ only in the tab
@@ -341,6 +345,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     activity: activeTab === "activity",
     artifacts: activeTab === "artifacts",
     children: activeTab === "children",
+    collaborators: activeTab === "collaborators",
     conversation: activeTab === "conversation",
     decisions: activeTab === "decisions",
     plan: activeTab === "plan",
@@ -399,8 +404,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   if (issue.data === undefined) {
     return <p className={dangerText}>Could not load this issue.</p>;
   }
-  if (landing?.kind === "redirect") {
+  // The rewrite replaces the address with the whole id rather than adding to the reader's
+  // history, so Back still leaves the page they came from.
+  if (landing?.kind === "redirect" || landing?.kind === "rewrite") {
     return <Navigate replace to={landing.to} />;
+  }
+  if (isItemRoute(route) && landing?.kind === "ambiguous") {
+    return <ItemMatchList candidates={landing.candidates} route={route} />;
   }
   if (isItemRoute(route) && (landing?.kind === "missing" || landing?.kind === "unavailable")) {
     return <ItemLandingFailure landing={landing} route={route} />;
@@ -581,6 +591,15 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             issueKey={issueKey}
           />
         ) : null}
+      </div>
+      <div
+        aria-hidden={activeTab !== "collaborators"}
+        aria-labelledby="issue-collaborators-tab"
+        hidden={activeTab !== "collaborators"}
+        id="issue-collaborators-panel"
+        role="tabpanel"
+      >
+        {activatedTabs.collaborators ? <CollaboratorsTab issueKey={issueKey} /> : null}
       </div>
     </section>
   );

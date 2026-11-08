@@ -10,6 +10,7 @@ import (
 	"math"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/persistence"
@@ -54,7 +55,20 @@ type UpdateCredit struct {
 	// hold is the room instance whose update this is (roomHold), which holds the update once its
 	// append commits.
 	hold *roomHold
-	done bool
+	// askAuthors are the ask blocks the update's render first showed with no write's registration,
+	// each with the author the update observer named (observeAskBlocks), which the append records
+	// in its own transaction (recordAskAuthors) whether or not a version already listed the credit.
+	askAuthors map[string]model.Actor
+	done       bool
+}
+
+// takeAskAuthors is the ask block authors the update's append records. It is fixed before the
+// update's class is recorded anywhere, so it needs no lock.
+func (credit *UpdateCredit) takeAskAuthors() map[string]model.Actor {
+	if credit == nil {
+		return nil
+	}
+	return credit.askAuthors
 }
 
 // take is what the update's append writes: the credit's authors and latest edit source, and
@@ -108,10 +122,10 @@ func (credit *UpdateCredit) held(version persistence.Version) {
 
 // roomHold is which durable updates one instance of a room holds: every update through loaded,
 // the head the instance loaded at, and each later update the instance itself took whose write
-// can have recorded a pending author - a browser update it appended, and a committed live write
-// it published. Another process's append after the load is in neither, since only a reload brings
-// it into this instance. An upload deletes only the pending-author rows whose writing update its
-// room's instance holds (heldUpdates).
+// can have recorded a pending author - a browser update it appended, a committed live write it
+// published, and another process's append its catch-up applied (Service.catchUpRoom). An upload
+// deletes only the pending-author rows whose writing update its room's instance holds
+// (heldUpdates).
 //
 // It stays bounded: an update just past loaded folds into loaded, with the run of updates since
 // that follows it, and an upload's commit drops the updates it consumed the rows of (consumed).
@@ -356,12 +370,12 @@ func cloneActor(actor *model.Actor) *model.Actor {
 // room, whose room stands behind the durable head (captureLiveTextAndAuthors). The store holds no
 // change still in flight in the room, so the version lists none of the room's in-flight credits
 // and its commit consumes none: each stays in F, to reach R when its append lands, or, when the
-// gate refuses that append from a room behind the head, to be credited again when its browser
-// resends the edit to the reloaded room. Listed here, that author would be listed again on the
-// version holding the resent edit. The pending authors it read (R) and actor stay, as
-// captureAuthors gave them. The person who edited last is read again without those credits
-// (latestEditSource over the stored person alone), since an edit the version does not hold cannot
-// name its notice.
+// gate refuses that append from a room whose stored history was replaced, to be credited again
+// when its browser resends the edit to the reloaded room. Listed here, that author would be
+// listed again on the version holding the resent edit. The pending authors it read (R) and actor
+// stay, as captureAuthors gave them. The person who edited last is read again without those
+// credits (latestEditSource over the stored person alone), since an edit the version does not
+// hold cannot name its notice.
 func (capture authorCapture) withoutInflight(actor *model.Actor) authorCapture {
 	authors := make(map[string]model.Actor, len(capture.rAuthors)+1)
 	for _, author := range capture.rAuthors {
@@ -451,14 +465,25 @@ func pendingAuthorsAt(authors map[string]model.Actor, version persistence.Versio
 }
 
 // upsertPendingAuthors writes authors to R in tx, which holds the document's advisory lock, in one
-// statement, each as recorded by its own update. An author keeps one row per update that recorded
-// it, so an upload that holds one of those updates and not another deletes only the first.
-// authors must name each author at most once per update: one statement cannot write one row twice,
-// so a repeated author and version is refused, naming it, before anything is written.
+// statement (pendingAuthorsStatement).
 func upsertPendingAuthors(ctx context.Context, tx pgx.Tx, room string, authors []pendingAuthor) error {
 	if len(authors) == 0 {
 		return nil
 	}
+	statement, err := pendingAuthorsStatement(room, authors)
+	if err != nil {
+		return err
+	}
+	return statement.exec(ctx, tx)
+}
+
+// pendingAuthorsStatement is the one statement that writes authors, at least one, to R, each as
+// recorded by its own update: an append transaction's authors at every credited update's own
+// version, or a transaction's upsertPendingAuthors. An author keeps one row per update that
+// recorded it, so an upload that holds one of those updates and not another deletes only the
+// first. authors must name each author at most once per update: one statement cannot write one
+// row twice, so a repeated author and version is refused, naming it, before anything is written.
+func pendingAuthorsStatement(room string, authors []pendingAuthor) (writeStatement, error) {
 	type row struct {
 		key     string
 		version persistence.Version
@@ -471,27 +496,28 @@ func upsertPendingAuthors(ctx context.Context, tx pgx.Tx, room string, authors [
 	for _, author := range authors {
 		pair := row{key: actorKey(author.actor), version: author.writtenThrough}
 		if _, repeated := seen[pair]; repeated {
-			return fmt.Errorf("record the document's pending authors: %s/%s at update %d is named twice", author.actor.Kind, author.actor.ID, author.writtenThrough)
+			return writeStatement{}, fmt.Errorf("record the document's pending authors: %s/%s at update %d is named twice", author.actor.Kind, author.actor.ID, author.writtenThrough)
 		}
 		seen[pair] = struct{}{}
 		raw, err := json.Marshal(author.actor)
 		if err != nil {
-			return fmt.Errorf("encode the document's pending authors: %w", err)
+			return writeStatement{}, fmt.Errorf("encode the document's pending authors: %w", err)
 		}
 		kinds = append(kinds, author.actor.Kind)
 		ids = append(ids, author.actor.ID)
 		encoded = append(encoded, string(raw))
 		versions = append(versions, int64(author.writtenThrough))
 	}
-	if _, err := tx.Exec(ctx, `
+	return writeStatement{
+		sql: `
 		insert into doc_pending_authors (artifact_id, actor_kind, actor_id, actor, written_through)
 		select $1::uuid, kind, id, actor, version
 		from unnest($2::text[], $3::text[], $4::jsonb[], $5::bigint[]) as author(kind, id, actor, version)
 		on conflict (artifact_id, actor_kind, actor_id, written_through) do update set actor = excluded.actor
-	`, room, kinds, ids, encoded, versions); err != nil {
-		return fmt.Errorf("record the document's pending authors: %w", err)
-	}
-	return nil
+	`,
+		args: []any{room, kinds, ids, encoded, versions},
+		what: "record the document's pending authors",
+	}, nil
 }
 
 // readPendingAuthors is R for room, keyed by actorKey. It says nothing about who edited last: the
@@ -568,19 +594,48 @@ func recordLatestEditSource(ctx context.Context, tx pgx.Tx, room string, lastAct
 	return markSettlementPending(ctx, tx, []string{room}, lastActor, true, false, person, setPerson)
 }
 
-// markUpdateOwed records, in the transaction appending a document update, that the document owes
-// a settlement from now, keeping the latest edit source the row names.
-func markUpdateOwed(ctx context.Context, tx pgx.Tx, room string) error {
-	return markSettlementPending(ctx, tx, []string{room}, nil, false, true, nil, false)
+// owedUpdates is what the updates of one append transaction leave on the document's
+// pending-settlement row, folded update by update in the order they are stored (credit). The zero
+// value is a transaction none of whose updates is credited to an edit.
+type owedUpdates struct {
+	credited  bool
+	lastActor *model.Actor
+	person    *model.Actor
+	setPerson bool
 }
 
-// markUpdateOwedBy is markUpdateOwed for an update credited to an edit, which names lastActor as
-// its latest edit source, nil for an edit no one peer can be credited with. creditsPerson says
-// whether the edit credits a person, which decides what an unknown sender does to the latest
-// person sender (latestPersonOf).
-func markUpdateOwedBy(ctx context.Context, tx pgx.Tx, room string, lastActor *model.Actor, creditsPerson bool) error {
-	person, setPerson := latestPersonOf(lastActor, creditsPerson)
-	return markSettlementPending(ctx, tx, []string{room}, lastActor, true, true, person, setPerson)
+// credit folds in the next update of the transaction that is credited to an edit, with authors or
+// a latest edit source: lastActor is its latest edit source, nil for an edit no one peer can be
+// credited with, and creditsPerson says whether its authors hold a person (anyPerson). The update
+// names lastActor, replacing any earlier update's, and does to the latest person sender what
+// latestPersonOf says, which an update that leaves it as it is does not touch.
+func (o *owedUpdates) credit(lastActor *model.Actor, creditsPerson bool) {
+	o.credited, o.lastActor = true, lastActor
+	if person, set := latestPersonOf(lastActor, creditsPerson); set {
+		o.person, o.setPerson = person, true
+	}
+}
+
+// updateOwedStatement is the write that records, in a transaction appending document updates, that
+// the document owes a settlement from now. When some update of the transaction is credited, the
+// row names the last credited update's latest edit source as its last_actor; otherwise it keeps
+// the one it names. Its last_person is the person the credited updates leave, folded in order by
+// latestPersonOf, the last one that sets it deciding; when none sets it, the row keeps the one it
+// names. Either way it is the row the same updates leave appended one at a time, each credited one
+// naming its own latest edit source and doing its own latestPersonOf, and each other keeping the
+// row's.
+func updateOwedStatement(room string, owed owedUpdates) (writeStatement, error) {
+	return settlementPendingStatement([]string{room}, owed.lastActor, owed.credited, true, owed.person, owed.setPerson)
+}
+
+// markSettlementPending records, in tx, that each document of rooms owes a settlement
+// (settlementPendingStatement).
+func markSettlementPending(ctx context.Context, tx pgx.Tx, rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) error {
+	statement, err := settlementPendingStatement(rooms, lastActor, setLastActor, updateMarkedAt, person, setPerson)
+	if err != nil {
+		return err
+	}
+	return statement.exec(ctx, tx)
 }
 
 // latestPersonOf is what an edit does to the document's latest person sender
@@ -607,40 +662,41 @@ func latestPersonOf(sender *model.Actor, creditsPerson bool) (person *model.Acto
 	}
 }
 
-// markSettlementPending records, in the transaction that appends a document update, that each
-// document of rooms owes a settlement. With setLastActor it also records lastActor as the latest
-// edit source that settlement names on its events, nil for an edit no one peer can be credited
-// with (creditContentChange); without it each row keeps the one it has. With setPerson it records
-// person as the latest person sender a version's edit notice names (latestPersonOf), nil to clear
-// it; without it each row keeps the one it has. The timer that runs the
-// settlement lives only in memory, so one a shutdown cuts short is found here by the room's next
-// load (onLoadDocument) and by the resumption (RunSettlementResumption). The settlement that
+// settlementPendingStatement is the one statement that records, in the transaction that appends a
+// document update, that each document of rooms owes a settlement. With setLastActor it also
+// records lastActor as the latest edit source that settlement names on its events, nil for an edit
+// no one peer can be credited with (creditContentChange); without it each row keeps the one it
+// has. With setPerson it records person as the latest person sender a version's edit notice names
+// (latestPersonOf), nil to clear it; without it each row keeps the one it has. The timer that runs
+// the settlement lives only in memory, so one a shutdown cuts short is found here by the room's
+// next load (onLoadDocument) and by the resumption (RunSettlementResumption). The settlement that
 // covers the update deletes the row in the transaction that commits its writes
 // (clearSettlementPending). A caller marking its own document holds that document's advisory lock,
 // which orders the row's writers as it orders updates; owedCopiesOf marks the copies of an ask on
 // other documents, in one statement however many there are. updateMarkedAt is true for a newly
 // appended update and for an owed copy: recording the latest edit source after a write or while
 // closing an issue must not make an old row wait another resumption age.
-func markSettlementPending(ctx context.Context, tx pgx.Tx, rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) error {
+func settlementPendingStatement(rooms []string, lastActor *model.Actor, setLastActor, updateMarkedAt bool, person *model.Actor, setPerson bool) (writeStatement, error) {
 	encoded, err := encodeActor(lastActor)
 	if err != nil {
-		return fmt.Errorf("encode the document's latest edit source: %w", err)
+		return writeStatement{}, fmt.Errorf("encode the document's latest edit source: %w", err)
 	}
 	encodedPerson, err := encodeActor(person)
 	if err != nil {
-		return fmt.Errorf("encode the document's latest person sender: %w", err)
+		return writeStatement{}, fmt.Errorf("encode the document's latest person sender: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
+	return writeStatement{
+		sql: `
 		insert into doc_settlements_pending (artifact_id, last_actor, last_person)
 		select unnest($1::uuid[]), $2::jsonb, $5::jsonb
 		on conflict (artifact_id) do update set
 			last_actor = case when $3 then excluded.last_actor else doc_settlements_pending.last_actor end,
 			marked_at = case when $4 then now() else doc_settlements_pending.marked_at end,
 			last_person = case when $6 then excluded.last_person else doc_settlements_pending.last_person end
-	`, rooms, encoded, setLastActor, updateMarkedAt, encodedPerson, setPerson); err != nil {
-		return fmt.Errorf("record the document's pending settlement: %w", err)
-	}
-	return nil
+	`,
+		args: []any{rooms, encoded, setLastActor, updateMarkedAt, encodedPerson, setPerson},
+		what: "record the document's pending settlement",
+	}, nil
 }
 
 // encodeActor is actor as the jsonb text the pending-settlement row stores, nil for none.
@@ -678,7 +734,8 @@ func readLastPerson(ctx context.Context, q Queryer, room string) (*model.Actor, 
 
 // readOwedSettlement reports whether room owes a settlement and the latest edit source its row
 // names. A room's load reads it on the pool reserved for loads and takes no advisory lock, which
-// a durable writer can hold for as long as its transaction runs.
+// a durable writer can hold for as long as its transaction runs; a settlement reads it in its own
+// transaction under that lock, for the actor its version names (settlementAuthors).
 func readOwedSettlement(ctx context.Context, q Queryer, room string) (owed bool, lastActor *model.Actor, err error) {
 	var encoded []byte
 	err = q.QueryRow(ctx, `
@@ -700,26 +757,162 @@ func readOwedSettlement(ctx context.Context, q Queryer, room string) (owed bool,
 	return true, &actor, nil
 }
 
-// persistLastActor records lastActor on room's pending-settlement row, in a transaction of its own
-// holding the document's advisory lock: closing an issue keeps the latest edit source its
-// settlement names once the room has gone. It leaves the latest person sender (last_person) as it
-// is: lastActor is the room's memory, which can be older than the row, since a joined write sets
-// it at commit after a browser edit its transaction saw (Ledger.creditRooms) while that edit's
-// append lands later and records the browser's editor. The row is the order the edits landed in.
-func (s *Service) persistLastActor(ctx context.Context, room string, lastActor model.Actor) error {
+// settlementRowFacts is one reading of a document's pending-settlement row: whether a row was
+// there and, where it was, the age it carries (marked_at) and the latest edit source it names
+// (last_actor, kept as the stored jsonb text, empty for none, which Postgres renders one way for
+// one value however it was written). A close for a closed issue reads it before it reads the
+// room's record, and its write reads it again under the document's advisory lock: the source
+// reaches the row only where the close read a row there and the two readings agree
+// (persistLastActor).
+type settlementRowFacts struct {
+	present   bool
+	markedAt  time.Time
+	lastActor string
+}
+
+// unchangedSince is whether the row reads now as it read at snapshot. It is asked only where the
+// snapshot read a row, since a close that read none writes nothing (persistLastActor). Each fact
+// catches a writer of its own:
+//   - the row being there, or not, catches the settlement, which deletes the row whether or not
+//     it wrote a version (clearSettlementPending);
+//   - marked_at catches every append that leaves the document owing a settlement, which stamps
+//     it now() as it marks the document owed (updateOwedStatement, appendUpdateTxClass), so a row
+//     deleted and written again carries an age no reading of the row before it holds. An append
+//     that leaves nothing owed - parked bytes alone - writes no row, and nor does a prune: each
+//     moves the document's stored history and leaves standing the very row this write would put
+//     the source on;
+//   - last_actor catches a write that names a newer edit source without moving that age: a
+//     committed write, a seed or a rebuild (recordLatestEditSource).
+func (facts settlementRowFacts) unchangedSince(snapshot settlementRowFacts) bool {
+	return facts.present == snapshot.present && facts.markedAt.Equal(snapshot.markedAt) &&
+		facts.lastActor == snapshot.lastActor
+}
+
+// readSettlementRowFacts reads room's pending-settlement row: no row at all, or the age and the
+// latest edit source the row carries. marked_at is not null on a row that exists (migration
+// 0063), so the reading needs no null of its own for it.
+//
+// It takes no lock and waits for none: a plain select reads the row as the reader's own snapshot
+// of the database holds it, whatever writer has it locked meanwhile, so a caller that holds the
+// room's close gate waits here on nothing that could want that gate (closeRefusedAppendRoom).
+// The write reads it again through its own transaction, under the document's advisory lock, so
+// no append can land between that reading and the statement (persistLastActor).
+func readSettlementRowFacts(ctx context.Context, q Queryer, room string) (settlementRowFacts, error) {
+	var (
+		markedAt  time.Time
+		lastActor []byte
+	)
+	err := q.QueryRow(ctx, `
+		select marked_at, last_actor from doc_settlements_pending where artifact_id = $1
+	`, room).Scan(&markedAt, &lastActor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return settlementRowFacts{}, nil
+	}
+	if err != nil {
+		return settlementRowFacts{}, fmt.Errorf("read the document's pending settlement: %w", err)
+	}
+	return settlementRowFacts{present: true, markedAt: markedAt, lastActor: string(lastActor)}, nil
+}
+
+// persistLastActor records the latest edit source snapshot holds on room's pending-settlement
+// row, in a transaction of its own holding the document's advisory lock, and answers whether it
+// wrote the row: closing an issue keeps the latest edit source its settlement names once the room
+// has gone. It leaves the latest person sender (last_person) as it is: that source is the room's
+// memory, which can be older than the row, since a joined write sets it at commit after a browser
+// edit its transaction saw (Ledger.creditRooms) while that edit's append lands later and records
+// the browser's editor. The row is the order the edits landed in.
+//
+// A close whose snapshot read no row writes nothing. A document that owes no settlement has no
+// settlement for a source to name, so the only thing a write could do there is put a row back
+// that a settlement has just taken, owing a version for an edit that settlement already
+// credited. The source stays on the record, as it does for any refused write
+// (persistClosedLastActor).
+//
+// Where the snapshot did read a row, the document can still move between that reading and this
+// write, and the row is then not this close's to write. Two things decide, both taken at that
+// snapshot (closeSnapshot). The room's record must still read closed at the credit sequence the
+// source was read at (recordClosedAt), the condition the record's own clearing takes
+// (lastActorPersisted): a reopen this process heard, or an edit it observed since, moves one of
+// the two. And the row must read as it did (settlementRowFacts.unchangedSince), because the
+// record answers for neither a settlement nor another process's append: a settlement deletes the
+// row and clears the record's source without moving the credit sequence, so the record alone
+// would let an older source through.
+//
+// The order the snapshot reads the two in is what makes that pair enough: the row first, the
+// record after it (closeRefusedAppendRoom, setRoomIssueOpen). Every writer of the row then falls
+// on one side of that first reading. One before it is in what the snapshot holds - a settlement
+// that took the row leaves the snapshot no row, and this write makes none - and one after it
+// shows in this transaction's own reading under the advisory lock: the row is gone, or carries
+// an age or a source the snapshot does not hold, and the write is refused. Reading the record
+// first let through a settlement in between followed by a newer write of the row: the record
+// went on reading closed at the same credit sequence, since a settlement moves neither the flag
+// nor that sequence and the close's own generation bump had already told that settlement's
+// commit to leave the record's source standing, and the row read after both found the newer
+// row, which is what this transaction found too, so the older source went over it (INFRA-1470).
+//
+// The two closes write at different points. The append gate's close reads the row and snapshots
+// the source under the room's close gate and writes after the close and outside that gate
+// (closeRefusedAppendRoom), and the issue can reopen inside that window: ygo takes a room out of
+// its map before CloseRoom waits for the flush, and the wait for a caller inside the room lets the
+// gate go between tries (closeWhenFree), so a newer room can load, its edit's append can write
+// that edit's own source to this row under the same advisory lock, and the issue can close a
+// second time. Writing the snapshot then would put the older source back and the settlement would
+// name the person whose edit is not the latest. The issue-open lane reads the row, snapshots the
+// source under the record's lock and writes while the room is still live (setRoomIssueOpen): a
+// keystroke the room takes in between moves the credit sequence, and that keystroke's own append
+// writes the row where it is stored.
+//
+// The row is read here through tx, not the pool, so the advisory lock this transaction holds
+// covers it. The record is read after that lock is taken, the order settlement takes the two in,
+// and its lock is let go before the statement runs: the advisory lock holds off every other
+// writer of this row for as long as this transaction lasts (append_writes.go), so nothing is
+// gained by keeping the record locked across the statement, and every user of the record's lock -
+// a keystroke's credit, a connect - would wait on a database round trip meanwhile.
+func (s *Service) persistLastActor(ctx context.Context, room string, snapshot closeSnapshot) (bool, error) {
+	if !snapshot.row.present {
+		return false, nil
+	}
 	tx, err := s.store.Pool.Begin(ctx)
 	if err != nil {
-		return fmt.Errorf("begin the latest-edit-source transaction: %w", err)
+		return false, fmt.Errorf("begin the latest-edit-source transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	if err := lockDocumentRoom(ctx, tx, room); err != nil {
-		return err
+		return false, err
 	}
-	if err := markSettlementPending(ctx, tx, []string{room}, &lastActor, true, false, nil, false); err != nil {
-		return err
+	if !s.recordClosedAt(room, snapshot.creditSeq) {
+		return false, nil
+	}
+	row, err := readSettlementRowFacts(ctx, tx, room)
+	if err != nil {
+		return false, err
+	}
+	if !row.unchangedSince(snapshot.row) {
+		return false, nil
+	}
+	if err := markSettlementPending(ctx, tx, []string{room}, snapshot.lastActor, true, false, nil, false); err != nil {
+		return false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit the document's latest edit source: %w", err)
+		return false, fmt.Errorf("commit the document's latest edit source: %w", err)
 	}
-	return nil
+	return true, nil
+}
+
+// recordClosedAt is whether room's record is still the closed record a close snapshotted its
+// latest edit source from: the service still holds a record for the room, it reads closed, and it
+// stands at creditSeq, the credit sequence of that snapshot (closeRecordLocked). A reopen this
+// process heard, or an edit it observed since, answers false. A settlement that took the source
+// since, or an append another process made, moves neither the flag nor the sequence, so this
+// check does not see them; the row's own facts, read before it, do
+// (settlementRowFacts.unchangedSince). Its caller holds the document's advisory lock and no
+// record lock (persistLastActor).
+func (s *Service) recordClosedAt(room string, creditSeq uint64) bool {
+	state := s.lockExistingState(room)
+	if state == nil {
+		return false
+	}
+	closedAt := state.closed && state.creditSeq.Load() == creditSeq
+	s.unlockState(room, state)
+	return closedAt
 }

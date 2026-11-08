@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -46,7 +47,10 @@ func tmuxClaim(token claim.Token) supervise.Claim {
 		// is waiting on, and queue a task the claim was already given.
 		LastStartRow:      7,
 		ServingGeneration: 4,
-		DeliveredRows:     []int64{5, 6},
+		// The look of the production check this claim's worker last took, which says its next
+		// turn's completion is a report on that look rather than a phase completion.
+		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: at(3)},
+		DeliveredRows:    []int64{5, 6},
 	}
 }
 
@@ -56,8 +60,16 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	t.Helper()
 	gotPending, wantPending := got.Pending, want.Pending
 	got.Pending, want.Pending = nil, nil
+	// The served look's check instance is a timestamptz, handed back in the session's zone, so it
+	// is compared as an instant and left out of the whole-struct comparison, as the delivery's
+	// times are below.
+	gotOpened, wantOpened := got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt
+	got.ServingCheckLook.OpenedAt, want.ServingCheckLook.OpenedAt = time.Time{}, time.Time{}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("claim read back differs:\n got %+v\nwant %+v", got, want)
+	}
+	if !gotOpened.Equal(wantOpened) {
+		t.Errorf("the served look's check opened %v, want %v", gotOpened, wantOpened)
 	}
 	if (gotPending == nil) != (wantPending == nil) {
 		t.Fatalf("pending delivery read back = %+v, want %+v", gotPending, wantPending)
@@ -68,7 +80,7 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 	// Every field but the times is compared whole, so a field added to the delivery is read back
 	// or this fails; the times are compared below as instants.
 	untimed := func(d supervise.Delivery) supervise.Delivery {
-		d.QueuedAt, d.DeliveredAt, d.ConfirmedAt = time.Time{}, time.Time{}, time.Time{}
+		d.QueuedAt, d.DeliveredAt, d.ConfirmedAt, d.CheckLook.OpenedAt = time.Time{}, time.Time{}, time.Time{}, time.Time{}
 		return d
 	}
 	if !reflect.DeepEqual(untimed(*gotPending), untimed(*wantPending)) {
@@ -81,6 +93,7 @@ func sameClaim(t *testing.T, got, want supervise.Claim) {
 		{"QueuedAt", gotPending.QueuedAt, wantPending.QueuedAt},
 		{"DeliveredAt", gotPending.DeliveredAt, wantPending.DeliveredAt},
 		{"ConfirmedAt", gotPending.ConfirmedAt, wantPending.ConfirmedAt},
+		{"CheckLook.OpenedAt", gotPending.CheckLook.OpenedAt, wantPending.CheckLook.OpenedAt},
 	} {
 		if !field.got.Equal(field.want) {
 			t.Errorf("pending delivery %s = %v, want %v", field.name, field.got, field.want)
@@ -109,6 +122,7 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 		Task:        "implement the plan",
 		Phase:       phase.Implementing,
 		Generation:  4,
+		CheckLook:   supervise.CheckLook{Look: 2, OpenedAt: at(3)},
 		QueuedAt:    at(1),
 		DeliveredAt: at(2),
 		Interrupted: true,
@@ -127,9 +141,100 @@ func TestAClaimRoundTripsWithItsLocatorAndDelivery(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
-// A task is queued uninterrupted, and a death marks it interrupted by writing the same delivery
-// again: the mark only ever reaches the store through the upsert's update. It has to survive that
-// write, or a restart re-sends the task without the sentence saying its turn was interrupted.
+// The record of this task's sends that never reached a turn round-trips with the delivery: how
+// many failed, when the last of them failed and the error it failed with. A restart rebuilds
+// every claim from this table, so a record lost here is a claim that has waited days on a send
+// which never lands and says nothing of it after the next restart (INFRA-1480). The last
+// failure's time is compared as an instant: Postgres hands a timestamptz back in the session's
+// zone, not the one it was written in.
+func TestADeliverysFailedSendsRoundTripAndItsConfirmationClearsThem(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	failing := supervise.Delivery{
+		ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, Generation: 4, QueuedAt: at(1),
+		SendFailures: 4, LastSendFailureAt: at(5),
+		LastSendError: "worker-stream: legion-LEGION-209-implementer refused adopt-working-copy: " +
+			"the git lock /legion/workspaces/acme/widgets/legion-209/.git/index.lock was last written 31m ago",
+	}
+	if err := store.PutDelivery(ctx, c.Token, failing); err != nil {
+		t.Fatalf("put the failing delivery: %v", err)
+	}
+
+	got := onlyClaim(t, store).Pending
+	if got == nil {
+		t.Fatal("the restarted daemon read no pending delivery")
+	}
+	if got.SendFailures != failing.SendFailures || !got.LastSendFailureAt.Equal(failing.LastSendFailureAt) ||
+		got.LastSendError != failing.LastSendError {
+		t.Fatalf("delivery read back = %+v, want %d failed sends, the last at %v, with its error",
+			got, failing.SendFailures, failing.LastSendFailureAt)
+	}
+
+	// The send that reached a turn clears all three (supervise's confirm), through the same
+	// upsert: a delivery read back still counting failures an earlier turn got past would name a
+	// stall that is over.
+	confirmed := failing
+	confirmed.DeliveredAt, confirmed.MarkedBy, confirmed.ConfirmedAt = at(6), failing.ID, at(7)
+	confirmed.SendFailures, confirmed.LastSendFailureAt, confirmed.LastSendError = 0, time.Time{}, ""
+	if err := store.PutDelivery(ctx, c.Token, confirmed); err != nil {
+		t.Fatalf("put the confirmed delivery: %v", err)
+	}
+
+	if got := onlyClaim(t, store).Pending; got == nil || got.SendFailures != 0 ||
+		!got.LastSendFailureAt.IsZero() || got.LastSendError != "" {
+		t.Fatalf("delivery read back = %+v, want its failure record cleared", got)
+	}
+}
+
+// The text of a failed send is the far side's own: the wedged command's stderr, relayed by the
+// shim, or Oh My Pi's `error` decoded from JSON, where a `\u0000` becomes a NUL byte. This column
+// takes only what its server encoding can read, so supervise scrubs the text before it is stored
+// (scrubSendError) and the rule it holds is valid UTF-8 with no NUL.
+//
+// Both halves of that are pinned here, against the real server. The raw text is refused outright,
+// which is what made the record's write fail; that failure used to return before the refused
+// adoption was charged, so the send was re-sent with no bound (INFRA-1480). The same words
+// without the NUL — the text the daemon stores — round-trip whole, so the diagnosis an operator
+// reads survives a restart.
+func TestADeliverysSendErrorRoundTripsOnceItsNULIsScrubbed(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-implementer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	const raw = "worker-stream: legion-LEGION-209-implementer refused adopt-working-copy: " +
+		"Command failed (exit 1): jj metaedit: the git lock " +
+		"/legion/workspaces/acme/widgets/legion-209/.git/index.lock\x00 was last written 31m ago"
+	scrubbed := strings.ReplaceAll(raw, "\x00", "")
+	d := supervise.Delivery{
+		ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing, Generation: 4, QueuedAt: at(1),
+		SendFailures: 1, LastSendFailureAt: at(5), LastSendError: raw,
+	}
+
+	if err := store.PutDelivery(ctx, c.Token, d); err == nil {
+		t.Fatal("the store took a send error holding a NUL; this test needs the write the server refuses")
+	}
+
+	d.LastSendError = scrubbed
+	if err := store.PutDelivery(ctx, c.Token, d); err != nil {
+		t.Fatalf("put the scrubbed delivery: %v", err)
+	}
+	got := onlyClaim(t, store).Pending
+	if got == nil || got.LastSendError != scrubbed {
+		t.Fatalf("delivery read back = %+v, want the scrubbed text whole", got)
+	}
+}
+
+// A task is queued uninterrupted, and a death marks it interrupted — and, when its pod ran out of
+// memory, marks that too — by writing the same delivery again: both marks only ever reach the
+// store through the upsert's update. They have to survive that write, or a restart re-sends the
+// task without the sentence saying its turn was interrupted and without the note saying the pod
+// ran out of memory.
 func TestARePutDeliveryCarriesItsInterruption(t *testing.T) {
 	ctx := context.Background()
 	store := migratedStore(t)
@@ -142,13 +247,13 @@ func TestARePutDeliveryCarriesItsInterruption(t *testing.T) {
 		t.Fatalf("queue the delivery: %v", err)
 	}
 	interrupted := queued
-	interrupted.ID, interrupted.Interrupted = "delivery-2", true
+	interrupted.ID, interrupted.Interrupted, interrupted.OutOfMemory = "delivery-2", true, true
 	if err := store.PutDelivery(ctx, c.Token, interrupted); err != nil {
 		t.Fatalf("mark it interrupted: %v", err)
 	}
 
-	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "delivery-2" || !got.Interrupted {
-		t.Fatalf("delivery read back = %+v, want the re-put delivery, interrupted", got)
+	if got := onlyClaim(t, store).Pending; got == nil || got.ID != "delivery-2" || !got.Interrupted || !got.OutOfMemory {
+		t.Fatalf("delivery read back = %+v, want the re-put delivery, interrupted and out of memory", got)
 	}
 }
 
@@ -382,6 +487,57 @@ func TestRetireDeliveryRefusesADeliveryTheClaimDoesNotHold(t *testing.T) {
 		t.Errorf("refusal does not name the delivery it refused: %v", err)
 	}
 	c.Pending = &delivery
+	sameClaim(t, onlyClaim(t, store), c)
+}
+
+// A delete that removes no row says one of two things, because pending_task_deliveries is keyed
+// on the claim rather than on the delivery, and the daemon answers them in opposite ways. The
+// row holds no delivery at all: the retirement this caller already committed, whose answer a
+// broken connection lost, which supervise reads as its own write made good. Or the row holds a
+// delivery under another id: a write that rotated the id committed after its answer was cut
+// off, which is no retirement of anything and fails the decision. Only the row can tell them
+// apart, so the store does, in the transaction the delete found nothing in, and the second
+// refusal names both ids — the one asked for and the one the row holds — since an operator
+// reading it has no other way to learn which delivery is stranded.
+func TestRetireDeliveryTellsARetirementAlreadyMadeFromARetirementUnderAnotherId(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	c := tmuxClaim("legion-LEGION-209-reviewer")
+	if err := store.PutClaim(ctx, c); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+
+	err := store.RetireDelivery(ctx, c, "delivery-retired")
+	if !errors.Is(err, supervise.ErrNoSuchDelivery) {
+		t.Fatalf("retiring against a row with no delivery = %v, want supervise.ErrNoSuchDelivery", err)
+	}
+	if errors.Is(err, supervise.ErrOtherDelivery) {
+		t.Fatalf("the refusal of a row holding nothing also reads as one holding another delivery: %v", err)
+	}
+
+	// The rotation committed after its answer was cut off: the row holds the new delivery while
+	// the caller is retiring the old one.
+	rotated := supervise.Delivery{ID: "delivery-rotated", Task: "review it again", QueuedAt: at(8)}
+	if err := store.PutDelivery(ctx, c.Token, rotated); err != nil {
+		t.Fatalf("put the rotated delivery: %v", err)
+	}
+
+	err = store.RetireDelivery(ctx, c, "delivery-old")
+	if !errors.Is(err, supervise.ErrOtherDelivery) {
+		t.Fatalf("retiring against a row holding another delivery = %v, want supervise.ErrOtherDelivery", err)
+	}
+	if errors.Is(err, supervise.ErrNoSuchDelivery) {
+		t.Fatalf("the refusal reads as a retirement already made, which would drop the delivery its caller holds: %v", err)
+	}
+	for _, want := range []string{"delivery-old", rotated.ID} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal does not name %q: %v", want, err)
+		}
+	}
+
+	// Neither refusal wrote anything: the claim it carried went back with the delete, and the
+	// delivery the row holds is where it was.
+	c.Pending = &rotated
 	sameClaim(t, onlyClaim(t, store), c)
 }
 

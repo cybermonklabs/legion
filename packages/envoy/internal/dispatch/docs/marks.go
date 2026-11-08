@@ -9,11 +9,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
-	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -87,8 +85,12 @@ type Anchored struct {
 	BlockID string
 }
 
-// MarkQuote marks one matching quote and returns what the new mark anchors to.
+// MarkQuote marks one matching quote and returns what the new mark anchors to. A comment mark
+// made under WithCommentMarks is written on a closed issue's document too; a suggestion's is not.
 func (s *Service) MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error) {
+	if mark.Kind == MarkComment {
+		ctx = commentMarkOperation(ctx)
+	}
 	err := s.applyLive(ctx, artifactID, mark.By, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		fragment := doc.GetXmlFragment(fragmentName)
 		valid, err := startTree(current, doc)
@@ -149,11 +151,35 @@ func markQuoteInTxn(txn *crdt.Transaction, fragment *crdt.YXmlFragment, doc *pmd
 // room looked up again once that Apply returned can have been evicted in between. The wait ends
 // with one last read rather than on the subscription alone, so a mark written into a room
 // instance that replaced the subscribed one - which another process's eviction can leave behind -
-// is still found.
+// is still found. Each look reads docTree, which is never older than the stored head: a mark a
+// browser on another process placed and that process stored is found at once, from the store
+// while this room's catch-up has not applied it. One stored after a look wakes the next look
+// through the room's update, a catch-up batch (roomCatchUps) when another process stored it, or a
+// browser's update on this process. A comment mark read under WithCommentMarks is read on a
+// closed issue's document too.
+//
+// On a closed issue each look reads the stored document instead (closedIssueCommentAnchor): the
+// same tree the comment's anchor is pinned a version from (captureLiveTextAndAuthors) and
+// written on (readFork). The usual mark_id is one the browser wrote into the room itself, and on
+// a process that has not heard the close that browser is still writable, so its mark can be in
+// the room while the store will never take it - the gate refuses the update that carries it
+// (gateAppend). Verified from the room, such a comment was answered 201 with an anchor the next
+// refresh orphaned at once. Read from the store, a mark the store does not hold is
+// ErrAnchorMissing, which the browser's margin recovers from (closedIssueCommentAnchor says
+// how). A mark whose append is still in flight - one the room took inside closeMargin, which the
+// gate admits - is found by the same wait as any other, from the store it lands in; the version
+// pinned after it holds it, since this read comes first and the store only grows.
 func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKind, id string) (Anchored, error) {
+	if kind == MarkComment {
+		ctx = commentMarkOperation(ctx)
+	}
+	fromStore, err := s.closedIssueCommentAnchor(ctx, s.queryFrom(ctx), artifactID)
+	if err != nil {
+		return Anchored{}, err
+	}
 	updates := make(chan struct{}, 1)
 	var unsubscribe func()
-	err := s.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
+	err = s.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
 		unsubscribe = doc.OnUpdate(func(_ []byte, _ any) {
 			select {
 			case updates <- struct{}{}:
@@ -176,7 +202,7 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	defer timer.Stop()
 	final := false
 	for {
-		tree, err := s.docTree(ctx, artifactID)
+		tree, err := s.anchorTree(ctx, artifactID, fromStore)
 		if err != nil {
 			return Anchored{}, err
 		}
@@ -201,6 +227,15 @@ func (s *Service) VerifyMark(ctx context.Context, artifactID string, kind MarkKi
 	}
 }
 
+// anchorTree is the document a mark is verified against: the stored document for a comment's
+// anchor on a closed issue (VerifyMark says why), the live one every other read sees (docTree).
+func (s *Service) anchorTree(ctx context.Context, artifactID string, fromStore bool) (*pmdoc.Node, error) {
+	if fromStore {
+		return s.storedTree(ctx, artifactID)
+	}
+	return s.docTree(ctx, artifactID)
+}
+
 // BlockForQuote returns the stable block that contains the one matching quote.
 // A quote spanning top-level siblings has no block identity.
 func (s *Service) BlockForQuote(ctx context.Context, artifactID, quote string) (string, error) {
@@ -215,9 +250,10 @@ func (s *Service) BlockForQuote(ctx context.Context, artifactID, quote string) (
 	return pmdoc.BlockIDForRange(tree, r)
 }
 
-// SuggestionKind returns the kind recorded on a verified browser or server suggestion mark.
+// SuggestionKind returns the kind recorded on a verified browser or server suggestion mark. A
+// reply's projection of its thread root reads it under WithCommentMarks on a closed issue too.
 func (s *Service) SuggestionKind(ctx context.Context, artifactID, id string) (string, error) {
-	tree, err := s.docTree(ctx, artifactID)
+	tree, err := s.docTree(commentMarkOperation(ctx), artifactID)
 	if err != nil {
 		return "", err
 	}
@@ -424,13 +460,15 @@ func suggestionKind(attrs pmdoc.Attrs, id string) (string, error) {
 	}
 }
 
-// ProjectMark writes a comment or suggestion record for Proof's margin projection.
+// ProjectMark writes a comment or suggestion record for Proof's margin projection. Under
+// WithCommentMarks - a comment's own record, or its thread root's that a reply adds itself to -
+// it is written on a closed issue's document too.
 func (s *Service) ProjectMark(ctx context.Context, artifactID, markID string, record MarkRecord, actor model.Actor) error {
 	plain, err := toPlain(record)
 	if err != nil {
 		return err
 	}
-	return s.applyMargin(ctx, artifactID, actor, markID, plain)
+	return s.applyMargin(commentMarkOperation(ctx), artifactID, actor, markID, plain)
 }
 
 func toPlain(record MarkRecord) (map[string]any, error) {
@@ -446,326 +484,6 @@ func toPlain(record MarkRecord) (map[string]any, error) {
 		return nil, err
 	}
 	return plain, nil
-}
-
-type anchoredMark struct {
-	id       string
-	markType string
-	anchor   model.Anchor
-}
-
-// markRef is the mark identity the row anchors to.
-func (m anchoredMark) markRef() pmdoc.MarkRef {
-	return pmdoc.MarkRef{Type: m.markType, ID: m.anchor.MarkID}
-}
-
-// openAnchoredMarksQuery is the statement openAnchoredMarks runs over target's table: every row
-// anchored on the document bound to $1 whose mark is still open, oldest first. The open filter
-// is the target's own (anchorTarget.open), so a table added to anchorTargets brings the
-// predicate that holds its rows open with it.
-func openAnchoredMarksQuery(target anchorTarget) string {
-	return fmt.Sprintf(`
-			select id::text, anchor, %s
-			from %s
-			where %s and %s
-			order by created_at, id
-		`, commentMarkType(target.table), target.table, target.anchoredOn(), target.open)
-}
-
-// openAnchoredMarks lists the open anchored asks, then the unresolved anchored comments, each by
-// creation time and id, so a refresh announces its rows, and an upload re-anchors them, in the same
-// order every time it runs over the same rows.
-func (s *Service) openAnchoredMarks(ctx context.Context, source Queryer, artifactID string) ([]anchoredMark, error) {
-	var marks []anchoredMark
-	for _, target := range anchorTargets {
-		rows, err := source.Query(ctx, openAnchoredMarksQuery(target), artifactID)
-		if err != nil {
-			return nil, fmt.Errorf("list %s anchors: %w", target.table, err)
-		}
-		for rows.Next() {
-			var mark anchoredMark
-			var encoded []byte
-			var typeFromRow string
-			if err := rows.Scan(&mark.id, &encoded, &typeFromRow); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("scan %s anchor: %w", target.table, err)
-			}
-			if err := model.DecodeAnchor(encoded, &mark.anchor); err != nil {
-				rows.Close()
-				return nil, fmt.Errorf("decode %s anchor: %w", target.table, err)
-			}
-			mark.markType = typeFromRow
-			marks = append(marks, mark)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("list %s anchors: %w", target.table, err)
-		}
-		rows.Close()
-	}
-	return marks, nil
-}
-
-func commentMarkType(table string) string {
-	if table == "comments" {
-		return `case when suggestion is null then 'proofComment' else 'proofSuggestion' end`
-	}
-	return `'dispatchAsk'`
-}
-
-// refreshAnchors updates each open anchor from its current tree mark. Each
-// persisted change appends the affected row's own full refresh event in this
-// transaction; callers publish the collected committed events afterward.
-func (s *Service) refreshAnchors(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc.Node, actor model.Actor) error {
-	anchors, err := s.openAnchoredMarks(ctx, tx, artifactID)
-	if err != nil {
-		return err
-	}
-	skippedMarkID, skipping := ctx.Value(skippedAnchorRefreshKey{}).(string)
-	skipped := func(mark anchoredMark) bool { return skipping && mark.anchor.MarkID == skippedMarkID }
-	// One walk finds every anchor: a walk per row would make each write quadratic in a document
-	// carrying many anchors. Rows sharing a key look the same result up, each refreshed in turn.
-	keys := make([]pmdoc.MarkRef, 0, len(anchors))
-	for _, mark := range anchors {
-		if !skipped(mark) {
-			keys = append(keys, mark.markRef())
-		}
-	}
-	found := pmdoc.FindMarks(tree, keys)
-	for _, mark := range anchors {
-		if skipped(mark) {
-			continue
-		}
-		refreshed := mark.anchor
-		if hit, ok := found[mark.markRef()]; ok {
-			refreshed.Quote = hit.Quote
-			refreshed.Orphaned = false
-		} else {
-			refreshed.Orphaned = true
-		}
-		if refreshed == mark.anchor {
-			continue
-		}
-		table := "asks"
-		if mark.markType == string(MarkComment) || mark.markType == string(MarkSuggestion) {
-			table = "comments"
-		}
-		// Only the two fields this refresh owns are written. The row was read before the
-		// events and lookups below, so writing the whole anchor column back would erase what
-		// another writer - the one-time block-id backfill - put in it in between (LEGION-149).
-		if _, err := tx.Exec(ctx, fmt.Sprintf(`
-			update %s
-			set anchor = jsonb_set(
-				jsonb_set(anchor, '{quote}', to_jsonb($2::text)),
-				'{orphaned}', to_jsonb($3::boolean))
-			where id = $1
-		`, table), mark.id, refreshed.Quote, refreshed.Orphaned); err != nil {
-			return fmt.Errorf("update %s anchor: %w", table, err)
-		}
-		event, err := s.anchorRefreshEvent(ctx, tx, mark, actor)
-		if err != nil {
-			return err
-		}
-		event, err = s.events.Append(ctx, tx, event)
-		if err != nil {
-			return fmt.Errorf("append anchor refresh event: %w", err)
-		}
-		collectEvent(ctx, event)
-	}
-	return nil
-}
-
-func (s *Service) anchorRefreshEvent(ctx context.Context, tx pgx.Tx, mark anchoredMark, actor model.Actor) (model.Event, error) {
-	if mark.markType == string(MarkAsk) {
-		ask, err := loadAnchorRefreshedAsk(ctx, tx, mark.id)
-		if err != nil {
-			return model.Event{}, err
-		}
-		// Re-anchoring moves the mark, never the question text, so it cites nothing new.
-		return model.Event{
-			IssueKey: ask.IssueKey, ArtifactID: ask.ArtifactID,
-			Type:    "ask.anchor_refreshed",
-			Actor:   actor,
-			Payload: model.NewAskEventPayload(ask, model.ReferenceChanges{}),
-		}, nil
-	}
-	payload, err := loadAnchorRefreshedCommentPayload(ctx, tx, mark.id)
-	if err != nil {
-		return model.Event{}, err
-	}
-	return model.Event{
-		IssueKey: payload.IssueKey, ArtifactID: payload.ArtifactID,
-		Type: "comment.anchor_refreshed", Actor: actor, Payload: payload,
-	}, nil
-}
-
-func loadAnchorRefreshedAsk(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
-	var blockArtifactID, blockArtifactSlug *string
-	var blockArtifactPrimary *bool
-	var anchorProject, anchorSlug, anchorName *string
-	var anchorPrimary *bool
-	ask, err := ScanAsk(tx.QueryRow(ctx, `
-		select `+AskColumns+`, ba.id::text, ba.slug, ba.is_primary,
-			aa.project_key, aa.slug, aa.name, aa.is_primary
-		from asks a
-		left join artifacts ba on ba.id = a.block_artifact_id
-		left join artifacts aa on aa.id = `+store.CastableUUID(`a.anchor->>'artifact_id'`)+`
-		where a.id = $1
-	`, id), &blockArtifactID, &blockArtifactSlug, &blockArtifactPrimary, &anchorProject, &anchorSlug, &anchorName, &anchorPrimary)
-	if err != nil {
-		return model.Ask{}, fmt.Errorf("load refreshed ask %q: %w", id, err)
-	}
-	if blockArtifactID != nil {
-		ask.BlockArtifact = &model.AskBlockArtifact{
-			ID: *blockArtifactID, Slug: *blockArtifactSlug, Primary: *blockArtifactPrimary,
-		}
-	}
-	if anchorProject != nil {
-		ask.AnchorArtifact = &model.AskAnchorArtifact{
-			Project: *anchorProject, Slug: *anchorSlug, Name: *anchorName, Primary: *anchorPrimary,
-		}
-	}
-	openedEventIDs, err := events.OpenedEventIDs(ctx, tx, []string{ask.ID})
-	if err != nil {
-		return model.Ask{}, fmt.Errorf("load refreshed ask %q opened event: %w", id, err)
-	}
-	openedEventID, ok := openedEventIDs[ask.ID]
-	if !ok {
-		return model.Ask{}, fmt.Errorf("load refreshed ask %q opened event: ask has no event", id)
-	}
-	ask.OpenedEventID = &openedEventID
-	return ask, nil
-}
-
-func loadAnchorRefreshedCommentPayload(ctx context.Context, tx pgx.Tx, id string) (model.CommentEventPayload, error) {
-	comment, err := loadAnchorRefreshedComment(ctx, tx, id)
-	if err != nil {
-		return model.CommentEventPayload{}, err
-	}
-	if comment.Anchor == nil {
-		return model.CommentEventPayload{}, fmt.Errorf("refreshed comment %q has no anchor", id)
-	}
-	var payload model.CommentEventPayload
-	if err := tx.QueryRow(ctx, `
-		select name, coalesce(project_key, ''), slug
-		from artifacts where id = $1
-	`, comment.Anchor.ArtifactID).Scan(&payload.ArtifactName, &payload.ProjectKey, &payload.ArtifactSlug); err != nil {
-		return model.CommentEventPayload{}, fmt.Errorf("load refreshed comment %q artifact: %w", id, err)
-	}
-	payload.Comment = comment
-	return payload, nil
-}
-
-func loadAnchorRefreshedComment(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
-	var comment model.Comment
-	var author, anchor, resolvedBy, suggestion []byte
-	var resolvedAt, editedAt *time.Time
-	if err := tx.QueryRow(ctx, `
-		select id::text, issue_key, artifact_id::text, author, body, anchor, reply_to::text, ask_id::text, turn, resolved, resolved_by, resolved_at, edited_at, suggestion, created_at
-		from comments where id = $1
-	`, id).Scan(
-		&comment.ID, &comment.IssueKey, &comment.ArtifactID, &author, &comment.Body, &anchor, &comment.ReplyTo, &comment.AskID, &comment.Turn, &comment.Resolved,
-		&resolvedBy, &resolvedAt, &editedAt, &suggestion, &comment.CreatedAt,
-	); err != nil {
-		return model.Comment{}, fmt.Errorf("load refreshed comment %q: %w", id, err)
-	}
-	if err := json.Unmarshal(author, &comment.Author); err != nil {
-		return model.Comment{}, fmt.Errorf("decode refreshed comment %q author: %w", id, err)
-	}
-	if len(anchor) > 0 {
-		value := model.Anchor{}
-		if err := model.DecodeAnchor(anchor, &value); err != nil {
-			return model.Comment{}, fmt.Errorf("decode refreshed comment %q anchor: %w", id, err)
-		}
-		comment.Anchor = &value
-	}
-	if len(resolvedBy) > 0 {
-		value := model.Actor{}
-		if err := json.Unmarshal(resolvedBy, &value); err != nil {
-			return model.Comment{}, fmt.Errorf("decode refreshed comment %q resolver: %w", id, err)
-		}
-		comment.ResolvedBy = &value
-	}
-	if resolvedAt != nil {
-		value := resolvedAt.UTC().Format(time.RFC3339Nano)
-		comment.ResolvedAt = &value
-	}
-	if editedAt != nil {
-		value := editedAt.UTC().Format(time.RFC3339Nano)
-		comment.EditedAt = &value
-	}
-	if len(suggestion) > 0 {
-		value := model.Suggestion{}
-		if err := json.Unmarshal(suggestion, &value); err != nil {
-			return model.Comment{}, fmt.Errorf("decode refreshed comment %q suggestion: %w", id, err)
-		}
-		comment.Suggestion = &value
-	}
-	mentions, err := loadAnchorRefreshedCommentMentions(ctx, tx, id)
-	if err != nil {
-		return model.Comment{}, err
-	}
-	deliveries, err := loadAnchorRefreshedCommentDeliveries(ctx, tx, id)
-	if err != nil {
-		return model.Comment{}, err
-	}
-	comment.Mentions = mentions
-	comment.Deliveries = deliveries
-	return comment, nil
-}
-
-func loadAnchorRefreshedCommentMentions(ctx context.Context, tx pgx.Tx, id string) ([]model.Mention, error) {
-	rows, err := tx.Query(ctx, `
-		select target, delivery, resolved_session_id
-		from comment_mentions
-		where comment_id = $1
-		order by target
-	`, id)
-	if err != nil {
-		return nil, fmt.Errorf("load refreshed comment %q mentions: %w", id, err)
-	}
-	defer rows.Close()
-	mentions := []model.Mention{}
-	for rows.Next() {
-		mention := model.Mention{}
-		if err := rows.Scan(&mention.Target, &mention.Delivery, &mention.SessionID); err != nil {
-			return nil, fmt.Errorf("scan refreshed comment %q mention: %w", id, err)
-		}
-		mentions = append(mentions, mention)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate refreshed comment %q mentions: %w", id, err)
-	}
-	return mentions, nil
-}
-
-func loadAnchorRefreshedCommentDeliveries(ctx context.Context, tx pgx.Tx, id string) ([]model.CommentDelivery, error) {
-	rows, err := tx.Query(ctx, `
-		select comment_id::text, target, attempt, delivery, session_id, envelope_id, duplicate, state, error, resolve_error, reply_id::text, created_at
-		from comment_deliveries
-		where comment_id = $1
-		order by target, attempt
-	`, id)
-	if err != nil {
-		return nil, fmt.Errorf("load refreshed comment %q deliveries: %w", id, err)
-	}
-	defer rows.Close()
-	deliveries := []model.CommentDelivery{}
-	for rows.Next() {
-		delivery := model.CommentDelivery{}
-		if err := rows.Scan(
-			&delivery.CommentID, &delivery.Target, &delivery.Attempt, &delivery.Delivery, &delivery.SessionID,
-			&delivery.EnvelopeID, &delivery.Duplicate, &delivery.State, &delivery.Error, &delivery.ResolveError,
-			&delivery.ReplyID, &delivery.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan refreshed comment %q delivery: %w", id, err)
-		}
-		deliveries = append(deliveries, delivery)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate refreshed comment %q deliveries: %w", id, err)
-	}
-	return deliveries, nil
 }
 
 // anchorTarget is one table a document's anchored rows live in: its name, the SQL expression

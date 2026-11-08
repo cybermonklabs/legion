@@ -2,12 +2,18 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import type { SearchAsk, Suggestions, WriteAdvice, WriteSuggestion } from "@legion/contracts";
+import { bearerCredential } from "../bearer";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 
 type AdviceFixture = WriteAdvice;
 
-const config = { enabled: true, url: "http://dispatch.test", token: "secret", error: null };
+const config = {
+  enabled: true,
+  url: "http://dispatch.test",
+  credential: bearerCredential("secret"),
+  error: null,
+};
 const issueSuffix =
   "(not subscribed to DSP-42; envoy_subscribe notifications.dispatch.issue.DSP-42.> for every event on it)";
 
@@ -910,7 +916,7 @@ describe("the related-item check", () => {
       [
         createdLine,
         "No related-item check was made: the search behind it failed. Search before you rely on this being new: dispatch search --project DSP --query 'Created issue'",
-        "Title overlaps you forced past: DSP-3 [todo] Created issue → http://dispatch.test/issues/DSP-3",
+        "Near copy you forced past: DSP-3 [todo] Created issue → http://dispatch.test/issues/DSP-3",
       ].join("\n")
     );
   });
@@ -1203,7 +1209,7 @@ describe("dispatch_related", () => {
         project: "DSP",
         title: "Retry failed webhook deliveries",
         text: "Back off exponentially.",
-        exclude_issue: "DSP-9",
+        exclude_issues: ["DSP-9"],
         keywords_only: true,
       },
       answer
@@ -1216,7 +1222,7 @@ describe("dispatch_related", () => {
         body: {
           title: "Retry failed webhook deliveries",
           text: "Back off exponentially.",
-          exclude_issue: "DSP-9",
+          exclude_issues: ["DSP-9"],
           keywords_only: true,
         },
       },

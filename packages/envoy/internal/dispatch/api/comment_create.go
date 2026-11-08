@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -91,7 +91,13 @@ func validateCommentMentions(input commentInput) (string, []string, error) {
 }
 
 type commentThreadTarget struct {
-	ReplyTo     *string
+	ReplyTo *string
+	// Answers is the comment the request named (reply_to, or the comment a delivery callback
+	// answers), which the thread climb keeps while ReplyTo moves to the head of the thread. It
+	// is set whenever the request named a comment, the head of its own thread included, so a
+	// reader never has to guess which replies carry it; nil on a reply that names an ask alone
+	// and on a root comment.
+	Answers     *string
 	AskID       *string
 	ReplyRoot   *model.Comment
 	AskQuestion string
@@ -309,7 +315,24 @@ func (s *server) namedReplyBlock(
 // walk is bounded like every other parent walk (the outbox's thread walk, the issue ancestor
 // walk): comments.reply_to has no acyclicity constraint, so a cyclic chain answers 400
 // instead of holding the transaction open.
+//
+// The climb flattens the thread into one level, which is what every thread read selects on, so
+// the comment the writer answered - `from`, the one the request named - is kept beside the head
+// as Answers and stored in comments.answers, and the graph's `answers` arm nests a reply under
+// it (migration 20261105014808).
 func (s *server) threadHeadOf(
+	ctx context.Context, tx pgx.Tx, owner owner, from model.Comment,
+) (commentThreadTarget, error) {
+	target, err := s.threadHeadFrom(ctx, tx, owner, from)
+	if err != nil {
+		return commentThreadTarget{}, err
+	}
+	target.Answers = &from.ID
+	return target, nil
+}
+
+// threadHeadFrom is threadHeadOf's climb alone, without the answered comment its caller adds.
+func (s *server) threadHeadFrom(
 	ctx context.Context, tx pgx.Tx, owner owner, from model.Comment,
 ) (commentThreadTarget, error) {
 	root := from
@@ -509,14 +532,14 @@ func (s *server) readCommentRoutes(ctx context.Context, owner owner, askID *stri
 // route the listener resolved is still the one the locked issue row carries. A route that
 // moved in between leaves the resolution unusable, so the write is resolved once more rather
 // than suppressing the wrong session's fan-out.
-func (s *server) beginCommentWrite(ctx context.Context, owner owner, resolved commentResolution) (commentWrite, error) {
+func (s *server) beginCommentWrite(ctx context.Context, owner owner, resolved commentResolution, write closedWrite) (commentWrite, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
 		return commentWrite{}, err
 	}
 	// The transaction is the caller's on success only, so every refusal unwinds here: a later
 	// check that forgot its own rollback would hold a pooled connection for the process's life.
-	status, err := s.lockCommentOwner(ctx, tx, owner, resolved.route)
+	status, err := s.lockCommentOwner(ctx, tx, owner, resolved.route, write)
 	if err != nil {
 		_ = tx.Rollback(ctx)
 		return commentWrite{}, err
@@ -526,10 +549,16 @@ func (s *server) beginCommentWrite(ctx context.Context, owner owner, resolved co
 
 // lockCommentOwner takes the owner's lock inside an open comment transaction and returns its
 // lifecycle status, refusing with errStaleResolution when the locked issue no longer carries the
-// route the resolution was taken for.
-func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, owner owner, route commentRoute) (*string, error) {
-	status, err := s.requireOpenOwnerStatus(ctx, tx, owner)
+// route the resolution was taken for. A closed issue still takes a comment - issue-level, a
+// reply, a reply on an ask, one anchored to a document's quote - but not a suggestion: that is
+// a proposed document edit, and accepting it, its only outcome, is refused on a closed issue,
+// which is what write says (refuseClosed).
+func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, owner owner, route commentRoute, write closedWrite) (*string, error) {
+	status, open, err := ownerStatus(ctx, tx, owner, ownerRowLock)
 	if err != nil {
+		return nil, err
+	}
+	if err := refuseClosed(open, write); err != nil {
 		return nil, err
 	}
 	if !route.checked {
@@ -566,8 +595,8 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "comment body is required")
 		return
 	}
-	if length := len16(input.Body); length > contracts.DispatchBodyMax {
-		capExceeded(w, "body", length, contracts.DispatchBodyMax)
+	if err := blockBoundError(itemblocks.Check("body", input.Body)); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	delivery, mentionTargets, err := validateCommentMentions(input)
@@ -579,10 +608,17 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
 	// pooled connection held (resolveCommentDeliveries). beginCommentWrite re-reads the issue's
 	// route under the owner's lock and refuses a resolution the locked row no longer agrees with -
-	// and refuses, under that same lock, an owner this pooled read already found missing or
-	// closed, which is why a comment the write cannot accept pays for no lookup here.
+	// and refuses, under that same lock, an owner this pooled read already found missing (or, for
+	// a suggestion, closed), which is why a comment the write cannot accept pays for no lookup
+	// here.
+	isSuggestion := input.Suggestion != nil
+	// A suggestion is the one comment write a closed issue refuses (refuseClosed).
+	write := takenWhenClosed
+	if isSuggestion {
+		write = refusedWhenClosed
+	}
 	if len(mentionTargets) > 0 {
-		if err := s.refuseClosedOwnerBeforeResolving(r.Context(), owner); err != nil {
+		if err := s.refuseOwnerBeforeResolving(r.Context(), owner, write); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -592,7 +628,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
-			return s.beginCommentWrite(ctx, owner, resolved)
+			return s.beginCommentWrite(ctx, owner, resolved, write)
 		},
 		errorf(http.StatusConflict, "ROUTE_CHANGED",
 			"the issue's delivery route changed while this comment was being written; post it again"),
@@ -615,6 +651,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	// The owner lock above decided this comment is written, a closed issue's included, so its
+	// anchor's document writes are comment marks (docs.WithCommentMarks); a suggestion's are not,
+	// and the document service still refuses them on a closed issue.
+	if !isSuggestion {
+		documentCtx = docs.WithCommentMarks(documentCtx)
+	}
 	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, owner, input)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -693,11 +735,11 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	}
 	var comment model.Comment
 	if err := tx.QueryRow(r.Context(), `
-		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		insert into comments (id, issue_key, artifact_id, author, body, anchor, reply_to, ask_id, turn, suggestion, replies_to_block, answers)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		returning created_at
 	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Body, anchorJSON, input.ReplyTo, input.AskID, turn, suggestionJSON,
-		threadTarget.ReplyBlock.nodeID()).Scan(&comment.CreatedAt); err != nil {
+		threadTarget.ReplyBlock.nodeID(), threadTarget.Answers).Scan(&comment.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -728,6 +770,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	comment.Mentions = mentions
 	comment.Deliveries = []model.CommentDelivery{}
 	comment.RepliesToBlock = threadTarget.ReplyBlock.nodeID()
+	comment.Answers = threadTarget.Answers
 	if comment.Anchor != nil {
 		if err := s.deps.Docs.ProjectMark(documentCtx, comment.Anchor.ArtifactID, comment.Anchor.MarkID, commentMarkRecord(comment, nil, projectionKind), actor); err != nil {
 			s.writeHandlerError(w, err)

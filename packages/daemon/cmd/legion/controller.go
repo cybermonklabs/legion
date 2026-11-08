@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/registry"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
@@ -74,9 +75,12 @@ func runControllerStart(ctx context.Context, args []string, stdout, stderr io.Wr
 // but the probe is launched, until the daemon has answered: read the strict operator-side file;
 // refuse an operator token file others can read, then a stdin that is no terminal (stdinIsTerminal:
 // given a positional word there, Oh My Pi runs headless print mode, which would run the start
-// command after the mint revoked the running controller), a blank or unreadable Envoy or Dispatch
-// token file, a NATS nkey seed file that is blank, unreadable, or holds no nkey user seed, an
-// instructions file that is missing or blank, and an Oh My Pi invocation that does not resolve;
+// command after the mint revoked the running controller), a blank or unreadable Envoy token file,
+// a NATS nkey seed file that is blank, unreadable, or holds no nkey user seed, a configured
+// `dispatch_url` whose file names neither of the two Dispatch credentials, a secrets broker that
+// refuses this machine's identity under `dispatch_token_broker` (controllerDispatchBroker) and a
+// blank or unreadable Dispatch token file under `dispatch_token_file`, an instructions file that
+// is missing or blank, and an Oh My Pi invocation that does not resolve;
 // then probe that Oh My Pi as the controller will run it — the launch prefix, the invocation, the
 // controller's whole environment, in
 // `<state_dir>/controller`, created for it, at the operator's terminal — and refuse a
@@ -140,10 +144,25 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 			return 0, err
 		}
 	}
-	if cfg.DispatchTokenFile != "" {
+	// Exactly one credential writes the configured Dispatch, and the file says which: the bearer
+	// `dispatch_token_file` points at, read here as every other pointer is, or this machine's own
+	// identity (`dispatch_token_broker`), traded at the secrets broker once here to prove the
+	// controller can hold a credential at all (controllerDispatchBroker). The loader takes a
+	// `dispatch_url` with neither, since it reads no environment and the broker route is proved
+	// only by trading; naming neither here is a controller that could write nothing, so the start
+	// refuses it by name.
+	switch {
+	case cfg.DispatchURL == "":
+	case cfg.DispatchTokenBroker:
+		if err := controllerDispatchBroker(ctx, stderr); err != nil {
+			return 0, err
+		}
+	case cfg.DispatchTokenFile != "":
 		if _, err := config.ReadSecretPointer("dispatch_token_file", cfg.DispatchTokenFile); err != nil {
 			return 0, err
 		}
+	default:
+		return 0, errors.New("dispatch_url is configured with no Dispatch credential: set dispatch_token_file to the bearer's file, or dispatch_token_broker: true where this machine proves an identity of its own and the controller's session trades it at the secrets broker")
 	}
 	if cfg.InstructionsPath != "" {
 		if _, err := config.ReadDeploymentInstructions(cfg.InstructionsPath); err != nil {
@@ -175,8 +194,17 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	// token, which a start from inside a Legion pane inherits, is dropped too: the plugin takes a
 	// controller carrying one for a controller the daemon launched (`controller: daemon`). So are
 	// the Slack channels the daemon tells its own controller (LEGION_SLACK_CHANNELS): only that
-	// controller can reply in Slack, and an inherited list is no project's word for this one. The
-	// one difference between the probed and the launched environment is GH_CONFIG_DIR, which names
+	// controller can reply in Slack, and an inherited list is no project's word for this one. A
+	// machine that holds its Dispatch credential at the broker drops the operator's own Dispatch
+	// bearer and pointer as well: either would be presented in place of the traded token as a
+	// bearer Dispatch refuses (controllerDispatchBroker). The drop is not the whole of it — the
+	// operator's HOME is the controller's, and the envoy.json there holds that person's
+	// `dispatch.token`, which no delete here reaches — so the controller's set carries
+	// DISPATCH_TOKEN_BROKER, the session's word that its Dispatch credential is this machine's
+	// own identity and nothing else, under which the client reads no bearer from any source and
+	// turns Dispatch off saying so when it can trade none (dispatch-config.ts, dispatchTarget).
+	// The one difference between the probed and the launched
+	// environment is GH_CONFIG_DIR, which names
 	// the default owner's directory only once the credential fetch after the mint has named that
 	// owner.
 	env := processEnvironment()
@@ -185,6 +213,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	delete(env, "LEGION_BOOT_TOKEN")
 	delete(env, "LEGION_BOOT_TOKEN_FILE")
 	delete(env, "LEGION_SLACK_CHANNELS")
+	if cfg.DispatchTokenBroker {
+		delete(env, "DISPATCH_TOKEN")
+		delete(env, "DISPATCH_TOKEN_FILE")
+	}
 	for _, pair := range controllerEnvironment(cfg, stateDir, runtime.SecretFilePath(stateDir, token), gh) {
 		env[pair[0]] = pair[1]
 	}
@@ -203,7 +235,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	}
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
 		omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation), controllerDir)
-	secret, designGate, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
+	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: stderr,
 		Contract: api.DaemonAPIVersion, Log: slog.New(slog.NewTextHandler(stderr, nil)),
 	}, operatorToken)
@@ -221,7 +253,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	}
 	defer stopGitHubRefresh()
 	if defaultOwner != "" {
-		env["GH_CONFIG_DIR"] = ghconfig.OwnerDir(controllerGHDir(stateDir), defaultOwner)
+		env["GH_CONFIG_DIR"] = ghconfig.Dir(controllerGHDir(stateDir), defaultOwner)
 	}
 	composer, err := prompts.New(stateDir)
 	if err != nil {
@@ -244,12 +276,12 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 			return 0, err
 		}
 	}
-	// The daemon's design gate policy, then the project's whole repository list (fetched and
-	// validated above, before the capability mint), is the controller's addressing, the line its
-	// take comment reads before it promises anyone a design approval (skill://legion-controller).
+	// The design-gate steps the daemon gates, then the project's whole repository list (fetched
+	// and validated above, before the capability mint), is the controller's addressing, the line
+	// its take comment reads before it promises anyone a design approval (skill://legion-controller).
 	// The start message travels as LEGION_CONTROLLER_START_MESSAGE (controllerEnvironment) and the
 	// command line ends with the word daemon.ControllerStartCommand, whose doc says why.
-	addressing := daemon.DesignGateFragment(designGate) + " " + daemon.RepositoriesSentence(repositories)
+	addressing := daemon.DesignGateFragment(designSteps) + " " + daemon.RepositoriesSentence(repositories)
 	command := omplaunch.WithPrefix(cfg.OmpLaunchPrefix, invocation) + " " + omplaunch.SystemPromptArgument(runtime.PromptParts{
 		RolePromptPaths:            controllerPrompts,
 		Addressing:                 addressing,
@@ -290,8 +322,16 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // empty directory when the daemon has no GitHub App, and controllerStart points it at the default
 // owner's directory once the fetch names one; GH_TOKEN, GITHUB_TOKEN and GH_HOST are blanked so gh
 // and git read the bundle's hosts.yml rather than an inherited pointer of the operator's own.
-// Secrets travel as `<NAME>_FILE` pointers only. Later pairs replace any inherited value of the
-// same name.
+// Secrets travel as `<NAME>_FILE` pointers only, and under `dispatch_token_broker` — this machine
+// holding its Dispatch credential at the secrets broker (controllerDispatchBroker) — DISPATCH_URL
+// travels with DISPATCH_TOKEN_BROKER=1 and no bearer beside it at all: the client trades for a
+// DPoP-bound token of its own, and that variable is what keeps it on that route. Without it the
+// client takes the broker route only where no bearer resolves, and the operator's own envoy.json,
+// which the controller reads because it keeps the operator's HOME, names a `dispatch.token` that
+// resolves first — the controller would write Dispatch as the operator, which is the whole of
+// what this setting exists to stop. Set, no bearer of any source is read, and a machine that can
+// trade nothing turns Dispatch off saying so rather than falling back to a person's token. Later
+// pairs replace any inherited value of the same name.
 func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh string) [][2]string {
 	bin := workerbin.LauncherDir(stateDir)
 	env := [][2]string{
@@ -315,7 +355,12 @@ func controllerEnvironment(cfg config.ControllerConfig, stateDir, secretFile, gh
 		{"LEGION_CONTROLLER_START_MESSAGE", daemon.ControllerStartMessage},
 	}
 	if cfg.DispatchURL != "" {
-		env = append(env, [2]string{"DISPATCH_URL", cfg.DispatchURL}, [2]string{"DISPATCH_TOKEN_FILE", cfg.DispatchTokenFile})
+		env = append(env, [2]string{"DISPATCH_URL", cfg.DispatchURL})
+		if cfg.DispatchTokenBroker {
+			env = append(env, [2]string{"DISPATCH_TOKEN_BROKER", "1"})
+		} else {
+			env = append(env, [2]string{"DISPATCH_TOKEN_FILE", cfg.DispatchTokenFile})
+		}
 	}
 	env = append(env, [2]string{controllerSecretVariable + "_FILE", secretFile})
 	if cfg.EnvoyTokenFile != "" {
@@ -373,9 +418,9 @@ func executableFile(info os.FileInfo) bool {
 // probeAndMint is the controller probe and then the one daemon call, which mints the capability:
 // the probe's refusal comes before the mint, never after it, and the call names the contract the
 // probe held the plugin to, so a daemon of another contract refuses it before minting.
-func probeAndMint(ctx context.Context, daemonURL string, probe daemon.ControllerProbe, operatorToken string) (string, config.DesignGate, error) {
+func probeAndMint(ctx context.Context, daemonURL string, probe daemon.ControllerProbe, operatorToken string) (string, []record.DesignStep, error) {
 	if err := daemon.ProbeController(ctx, probe); err != nil {
-		return "", "", err
+		return "", nil, err
 	}
 	return fetchControllerSecret(ctx, daemonURL, operatorToken, probe.Contract)
 }
@@ -447,38 +492,48 @@ func removeDirs(created []string) {
 
 // fetchControllerSecret is `POST /legion/v1/controller/secret` with the operator token as a
 // bearer and the plugin's daemon API contract in the body, answering the capability and the
-// daemon's design gate policy. A failed request names the daemon URL and never tries another
-// address; a refusal quotes the daemon's `error`, except a daemon from before contract 12, which
-// refuses the contract field itself as unknown, so the refusal names the side to upgrade instead.
-// An answer without a known policy is a daemon from before the controller was told it, refused
-// rather than guessed at.
-func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string, contract int) (string, config.DesignGate, error) {
+// design-gate steps the deployment gates. A failed request names the daemon URL and never tries
+// another address; a refusal quotes the daemon's `error`, except a daemon from before contract
+// 12, which refuses the contract field itself as unknown, so the refusal names the side to
+// upgrade instead.
+//
+// An answer that names no step list at all (`designGateSteps` absent or null) is a daemon from
+// before contract 55, and one that names a step this release does not know is a daemon beyond
+// it: both are refused rather than guessed at, since the controller would otherwise promise, or
+// withhold, a design approval on an assumption. The empty list is not that case — it is a
+// deployment that gates no step, which the daemon answers as `[]`.
+func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string, contract int) (string, []record.DesignStep, error) {
 	const route = "/legion/v1/controller/secret"
 	status, body, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
-		return "", "", fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
 	}
 	if status/100 != 2 {
 		var refused legionclaim.Refusal
 		if status == http.StatusBadRequest && json.Unmarshal(body, &refused) == nil &&
 			strings.Contains(refused.Message, `unknown field "pluginContract"`) {
-			return "", "", fmt.Errorf("%s%s: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon", daemonURL, route, contract)
+			return "", nil, fmt.Errorf("%s%s: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon", daemonURL, route, contract)
 		}
 		hint := ""
 		if status == http.StatusForbidden {
 			hint = " — the operator token does not match the daemon's operator_token_file"
 		}
-		return "", "", fmt.Errorf("%s%s: %s%s", daemonURL, route, refusal(status, body), hint)
+		return "", nil, fmt.Errorf("%s%s: %s%s", daemonURL, route, refusal(status, body), hint)
 	}
 	var answer api.ControllerSecretResponse
 	if err := json.Unmarshal(body, &answer); err != nil {
-		return "", "", fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+		return "", nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
 	}
 	if answer.Secret == "" {
-		return "", "", fmt.Errorf("%s%s answered with no secret", daemonURL, route)
+		return "", nil, fmt.Errorf("%s%s answered with no secret", daemonURL, route)
 	}
-	if !answer.DesignGate.Valid() {
-		return "", "", fmt.Errorf("%s%s answered design gate policy %q, not 'root-issues' or 'off'; upgrade the daemon to this legion's release", daemonURL, route, answer.DesignGate)
+	if answer.DesignGateSteps == nil {
+		return "", nil, fmt.Errorf("%s%s answered no design gate steps (designGateSteps); upgrade the daemon to this legion's release", daemonURL, route)
 	}
-	return answer.Secret, answer.DesignGate, nil
+	for _, step := range answer.DesignGateSteps {
+		if !step.Valid() {
+			return "", nil, fmt.Errorf("%s%s answered design gate step %q, not %s; upgrade the daemon to this legion's release", daemonURL, route, step, record.StepWords())
+		}
+	}
+	return answer.Secret, answer.DesignGateSteps, nil
 }

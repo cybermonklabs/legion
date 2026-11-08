@@ -109,7 +109,7 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 	if locator := state.ControllerLocator; locator == nil || locator.SessionID != "ses_controller" {
 		t.Fatalf("controllerLocator = %+v, want the daemon's controller's session", locator)
 	}
-	// The controller is the project's, never an issue's worker; the strict client's own parse of
+	// The controller is the project's, never an issue's worker; the client's own parse of
 	// this shape is packages/contracts' state-controller-claim fixture.
 	if view, listed := state.Issues[""]; listed {
 		t.Fatalf("the state lists the controller's claim as an issue keyed \"\": %+v", view)
@@ -458,7 +458,7 @@ func TestASwitchedBackDaemonWhoseStopFailsLeavesItsControllerRegistered(t *testi
 	cfg.ControllerLaunch = config.ControllerLaunchOperator
 	refused := errors.New("the cluster refused the Sandbox delete")
 	rt.FailReleaseOf(token, refused)
-	err = run(context.Background(), cfg, Build{}, quietLogger(), o)
+	err = run(context.Background(), cfg, quietLogger(), o)
 	if err == nil || !strings.Contains(err.Error(), "stop "+string(token)) || !strings.Contains(err.Error(), refused.Error()) {
 		t.Fatalf("the operator's daemon whose stop of the controller failed booted with %v, want a refusal naming the stop of %s", err, token)
 	}

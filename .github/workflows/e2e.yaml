@@ -42,8 +42,8 @@ on:
   pull_request:
     types: [labeled]
   schedule:
-    # Nightly, at an hour no other workflow of this repository starts on (changelog-fold runs at
-    # 06:17 UTC, claude-envoy-rebuild at 05:23).
+    # Nightly. The one other schedule of this repository is dispatch-browser-nightly.yaml's,
+    # hours away at 02:17, so the two nightlies do not contend for runners.
     - cron: "41 4 * * *"
 
 # The jobs clone, download pinned tools and modules, and upload an artifact of the run's own.
@@ -162,7 +162,7 @@ jobs:
           # The module the proof builds: packages/daemon's driver, or packages/envoy's dispatch
           # and natsd.
           go-version-file: ${{ matrix.go_version_file }}
-          # No run of this repository outside a push to main writes an Actions cache entry, and
+          # Only a workflow that runs on a push to main writes an Actions cache entry here, and
           # this workflow saves none (ci.yaml's header, "Caches").
           cache: false
 

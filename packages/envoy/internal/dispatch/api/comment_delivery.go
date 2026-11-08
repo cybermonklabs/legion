@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	dispatchenvoy "github.com/sjawhar/envoy/internal/dispatch/envoy"
+	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -82,7 +83,8 @@ func (s *server) resolveMentionTargets(ctx context.Context, targets []string, de
 // the attempt's age, never frozen into the row here. A row written today would otherwise still
 // promise a safe retry next week.
 func (s *server) sendResolvedDelivery(
-	ctx context.Context, target ResolvedMention, body, idempotencyKey string, urgency *string, frame []byte,
+	ctx context.Context, target ResolvedMention, body, idempotencyKey string, urgency *string,
+	wanted contracts.ExpectsReply, frame []byte,
 ) (*string, bool, string) {
 	if target.ResolveError != "" {
 		return nil, false, target.ResolveError
@@ -90,13 +92,22 @@ func (s *server) sendResolvedDelivery(
 	if target.SessionID == nil {
 		return nil, false, "no live session"
 	}
-	expectsReply := "optional"
+	// What the delivered thing wants back, except in btw mode, which interrupts the session it
+	// reaches to ask something of it and so always waits on an answer, whatever the thing
+	// delivered says. The mode is read here, on every try, because a try after a listener
+	// take-over resolves the target again and sends in the mode that resolution names
+	// (mentionResolutionFor).
+	expectsReply := wanted
 	if target.Delivery == "btw" {
-		expectsReply = "required"
+		expectsReply = contracts.ExpectsReplyRequired
 	}
+	// Message is the body a second time, beside the frame, and the listener puts it on the
+	// envelope: it takes the part an event carries (model.EventBody), as the frame's own copy
+	// does, so one send never carries a body twice at two lengths.
+	carried, _ := model.EventBody(body)
 	send, err := s.deps.Envoy.Send(ctx, dispatchenvoy.SendInput{
 		TargetSession:  *target.SessionID,
-		Message:        body,
+		Message:        carried,
 		Payload:        frame,
 		IdempotencyKey: idempotencyKey,
 		Urgency:        deref(urgency),
@@ -113,6 +124,27 @@ func (s *server) sendResolvedDelivery(
 		return nil, true, ""
 	}
 	return &send.EnvelopeID, false, ""
+}
+
+// commentExpectsReply is what a mention of one comment wants back. A comment that joins no ask
+// thread and answers no comment is a remark: the session it names has nothing to answer, and a
+// receipt would cost the person who wrote it a read. A reply in a thread and a comment under an
+// ask are both conversation, so each keeps the invitation to reply.
+//
+// The two fields are the whole test. Nothing reads the body: a comment's text does not open an
+// ask, and a program that judged what an agent wrote is what this rule refuses to be.
+//
+// A remark leaves the field out (ExpectsReplyUnset) rather than writing the literal false that
+// says the same thing, because a listener built before #2903 reads expects_reply only as a
+// string and answers 400 to a send carrying false, so a Dispatch server rolled ahead of the
+// listeners of its deployment could deliver no plain mention at all. What removes the
+// workaround: every listener of a deployment at or after #2903, after which this returns
+// contracts.ExpectsReplyNone and the delivery says "nothing wanted back" out loud.
+func commentExpectsReply(comment model.Comment) contracts.ExpectsReply {
+	if comment.AskID == nil && comment.ReplyTo == nil {
+		return contracts.ExpectsReplyUnset
+	}
+	return contracts.ExpectsReplyOptional
 }
 
 // receiptTimeoutText is the CAUSE a receipt timeout records: what happened, and the one fact
@@ -181,7 +213,7 @@ func (s *server) claimCommentDeliveryAttempt(
 		return claimedCommentDelivery{}, err
 	}
 	defer tx.Rollback(ctx)
-	stored, err := s.lockedComment(ctx, tx, comment.ID)
+	stored, err := s.lockedCommentForDelivery(ctx, tx, comment.ID)
 	if err != nil {
 		return claimedCommentDelivery{}, err
 	}
@@ -496,11 +528,17 @@ func (s *server) deliverResolvedCommentMention(
 	// triple, so a retry of a send that already landed repeats its dedupe key and is recognised as
 	// the repeat it is (DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts says by what).
 	key := stored.ID + ":" + target.Target + ":" + target.Delivery
+	// What the comment itself wants back, the same for every try. The mode is read inside the
+	// send instead, because a try after a listener take-over resolves the mention again and
+	// sends in the mode that resolution names (mentionResolutionFor).
+	wanted := commentExpectsReply(stored)
 	var envelopeID *string
 	var duplicate bool
 	send := func() string {
 		var failure string
-		envelopeID, duplicate, failure = s.sendResolvedDelivery(ctx, target, stored.Body, key, nil, frame)
+		envelopeID, duplicate, failure = s.sendResolvedDelivery(
+			ctx, target, stored.Body, key, nil, wanted, frame,
+		)
 		return failure
 	}
 	var deliveryError string
@@ -716,9 +754,16 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "REPLY_FORBIDDEN", http.StatusForbidden, "reply requires one body or error for a delivery attempt")
 		return
 	}
-	if input.Body != nil && strings.TrimSpace(*input.Body) == "" {
-		writeError(w, "MENTION_INPUT", http.StatusBadRequest, "comment body is required")
-		return
+	if input.Body != nil {
+		if strings.TrimSpace(*input.Body) == "" {
+			writeError(w, "MENTION_INPUT", http.StatusBadRequest, "comment body is required")
+			return
+		}
+		// A reply is stored as a comment of its own, so it takes the comment routes' bound.
+		if err := blockBoundError(itemblocks.Check("body", *input.Body)); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if input.ReplyToBlock != nil && input.Body == nil {
 		writeError(w, "INVALID_COMMENT", http.StatusBadRequest, "reply_to_block names the block a reply's body answers; an error report has none")
@@ -731,7 +776,7 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
-	comment, err := s.lockedComment(r.Context(), tx, r.PathValue("id"))
+	comment, err := s.lockedCommentForDelivery(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			writeError(w, "COMMENT_NOT_FOUND", http.StatusNotFound, "comment not found")
@@ -867,8 +912,8 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// `reply_to_block` names a block of the comment this callback answers, the only item the
-	// request names, which lockedComment holds after its owner — never a part of the ask the
-	// thread hangs under, which a reply naming `ask_id` on the comments route names.
+	// request names, which lockedCommentForDelivery holds after its owner — never a part of the
+	// ask the thread hangs under, which a reply naming `ask_id` on the comments route names.
 	var block *namedBlock
 	if input.ReplyToBlock != nil {
 		block, err = s.namedReplyBlock(r.Context(), tx, refs.ItemComment, comment.ID, *input.ReplyToBlock)
@@ -881,10 +926,10 @@ func (s *server) replyComment(w http.ResponseWriter, r *http.Request) {
 	// with no `turn` does.
 	turn := thread.replyTurn(actor, nil)
 	reply, err := scanComment(tx.QueryRow(r.Context(), `
-		insert into comments (issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+		insert into comments (issue_key, artifact_id, author, body, reply_to, ask_id, turn, replies_to_block, answers)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		returning `+commentColumns+`
-	`, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn, block.nodeID()))
+	`, comment.IssueKey, comment.ArtifactID, author, *input.Body, thread.ReplyTo, thread.AskID, turn, block.nodeID(), thread.Answers))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

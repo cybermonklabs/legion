@@ -30,8 +30,11 @@ import (
 // roundCovers is whether an update round can be opened over a pod of kind: the one predicate that
 // says who replaces such a pod when it has drifted, read by both sides of that answer. PodDrift
 // answers nothing for a pod it excludes, so no round is ever opened over one; a launch into a live
-// pod it excludes replaces that pod for every kind of drift (relaunch, movedInPod), where a launch
-// into a pod it covers keeps the pod and leaves it to its round.
+// pod it excludes replaces that pod for the facets its roles' addresses carry, for the
+// ServiceAccount it runs as and, unless the launch is installing a stale-plugin pair, for the
+// shape its template was built from (relaunch, movedInPod, accountDrift, shapeDrift), where a
+// launch into a pod it covers keeps the pod — for the account as for every other kind of drift —
+// and leaves it to its round.
 //
 // A round covers every issue pod and nothing else. The project controller's pod is the one kind it
 // excludes: the controller holds no issue workspace and has nothing to push, so there is nobody in
@@ -64,30 +67,36 @@ const podShapeAnnotation = "legion.dev/pod-shape"
 // fleet would read as drifted at once — which TestPodShapeEncodesEqualConfigurationsIdentically
 // holds this to.
 type podShapeRecord struct {
-	Image     string                      `json:"image"`
-	Resources corev1.ResourceRequirements `json:"resources"`
-	Volumes   []corev1.Volume             `json:"volumes,omitempty"`
-	Mounts    []corev1.VolumeMount        `json:"mounts,omitempty"`
-	Disk      string                      `json:"disk"`
+	Image            string                      `json:"image"`
+	Resources        corev1.ResourceRequirements `json:"resources"`
+	Volumes          []corev1.Volume             `json:"volumes,omitempty"`
+	Mounts           []corev1.VolumeMount        `json:"mounts,omitempty"`
+	Disk             string                      `json:"disk"`
+	SkillsRepository string                      `json:"skills_repository,omitempty"`
 }
 
 // podShape is the configuration a pod of kind is built from now, as its template's annotation
 // records it: the image every container runs, the kind's own reservation (podKind.resources), the
-// operator's volumes and mounts, and the size of the pod's disk. An encoding failure is
-// unreachable — every field is an API object the API server itself round-trips as JSON — and is
-// logged and recorded as no shape at all, which reads as a pod built before this release: compared
-// by image alone, never replaced for a reservation, a volume, a mount or a disk.
+// operator's volumes and mounts, the size of the pod's disk, and the kind's skills repository.
+// Skills are cloned once at pod start, so changing that repository needs the same ordinary update
+// round as changing a volume. An encoding failure is unreachable — every field is an API object
+// or a string — and is logged and recorded as no shape, compared by image alone.
 //
 // Every field is settled when the runtime is built and never written again, so the runtime calls
 // this once per kind, as it is built, and keeps what it answers (r.podShapes): the pod template
 // that records a shape and the sweep that compares one read that string.
 func podShape(r *Runtime, kind podKind) string {
+	skills := ""
+	if repository := kind.skillsRepository(r); !repository.IsZero() {
+		skills = repository.String()
+	}
 	encoded, err := json.Marshal(podShapeRecord{
-		Image:     r.image,
-		Resources: kind.resources(r),
-		Volumes:   r.pod.Volumes,
-		Mounts:    r.pod.VolumeMounts,
-		Disk:      r.volumeSize.String(),
+		Image:            r.image,
+		Resources:        kind.resources(r),
+		Volumes:          r.pod.Volumes,
+		Mounts:           r.pod.VolumeMounts,
+		Disk:             r.volumeSize.String(),
+		SkillsRepository: skills,
 	})
 	if err != nil {
 		r.log.Error("sandbox runtime: the pod shape cannot be encoded; pods will be compared by image alone", "error", err)
@@ -98,7 +107,7 @@ func podShape(r *Runtime, kind podKind) string {
 
 // podShapeDrift names what the pod of the Sandbox read as s was built from that the runtime would
 // build a pod from otherwise now (want, podShape), one short phrase per key: `image`, `resources`,
-// `volumes`, `mounts` or `disk`, each with what the pod holds and what it would be handed now.
+// `volumes`, `mounts`, `disk` or `skills_repository`, with what the pod holds and would be handed now.
 // Nil means nothing drifted.
 //
 // It reads the stored Sandbox's template, never the pod: GKE Autopilot rewrites a pod's
@@ -142,6 +151,7 @@ func podShapeDrift(s *sandbox, want string) []string {
 	named("resources", was.Resources, now.Resources)
 	named("volumes", was.Volumes, now.Volumes)
 	named("mounts", was.Mounts, now.Mounts)
+	named("skills_repository", was.SkillsRepository, now.SkillsRepository)
 	if !sameQuantity(was.Disk, now.Disk) {
 		drifted = append(drifted, "disk "+was.Disk+", now "+now.Disk)
 	}
@@ -201,11 +211,11 @@ func (r *Runtime) shapeDrift(s *sandbox, kind podKind) []string {
 //
 // It is the configuration a running pod cannot be changed to carry: what its template was built
 // from (podShapeDrift — the image, the kind's reservation, the operator's volumes and mounts, and
-// the disk), and the four facets of the pod itself whose worker can be asked to push first — the
-// operator's volume and mount holding its role's overlays, the secrets broker's enrollment, the
-// session store, and the GitHub owners its gh volume projects a directory for (driftedInPod).
-// The two facets whose worker cannot be reached at all stay a launch's business and are never a
-// round's (movedInPod).
+// the disk), the ServiceAccount the pod runs as (accountDrift), and what driftedInPod reads of the
+// pod itself whose worker can be asked to push first — the operator's volume and mount holding its
+// role's overlays, the secrets broker's enrollment, the session store, and the GitHub owners its
+// gh volume projects a directory for. The two facets whose worker cannot be
+// reached at all stay a launch's business and are never a round's (movedInPod).
 //
 // It answers nothing for a claim with no process — such a claim records no pod, so no pod of it
 // is gone — and nothing for a pod no round covers (roundCovers), today the project controller's:
@@ -281,6 +291,14 @@ func (r *Runtime) PodDrift(_ context.Context, k runtime.Known) ([]string, error)
 			return nil, fmt.Errorf("sandbox runtime: pod drift %s: %w", k.Claim, err)
 		}
 		drifted = r.shapeDrift(s, kind)
+	}
+	// The account the pod runs as is read from the live pod this call already holds, and both
+	// sides go through serviceAccountOr, so a configured account left unset matches a pod on
+	// `default` rather than reading every pod of the deployment as drifted (accountDrift). The
+	// kind gate above (!roundCovers) is what keeps the controller's pod out of this reason, as
+	// it does of every other.
+	if account, accountDrifted := accountDrift(pod, r.pod.ServiceAccount); accountDrifted {
+		drifted = append(drifted, "account "+account+", now "+serviceAccountOr(r.pod.ServiceAccount))
 	}
 	for _, moved := range r.driftedInPod(pod, role) {
 		drifted = append(drifted, moved.String())

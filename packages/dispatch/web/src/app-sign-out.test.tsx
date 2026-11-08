@@ -1,13 +1,22 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { realClock, tick } from "./__tests__/fake-clock";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
+import { answerIssuePatches } from "./__tests__/send-answers";
+import { userOnFakeClock } from "./__tests__/user";
 import { ApiError, api, NetworkError } from "./api/client";
 import { liveSocketFor } from "./api/live-socket";
 import { AuthGate } from "./app";
-import { SIGN_OUT_SETTLE_MS, type UnsentChange } from "./features/shell/sign-in-channel";
+import {
+  OTHER_TABS_ANSWER_MS,
+  SIGN_OUT_SETTLE_MS,
+  type UnsentChange,
+} from "./features/shell/sign-in-channel";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
@@ -46,9 +55,16 @@ function renderApp({
   const spies = [
     spyOn(api, "whoAmI").mockImplementation(whoAmI),
     spyOn(api, "listIssues").mockResolvedValue([]),
+    spyOn(api, "listProjects").mockResolvedValue([]),
     spyOn(api, "getMyState").mockResolvedValue({}),
     spyOn(api, "getInbox").mockResolvedValue([]),
   ];
+  // A write this tab keeps is resumed from its stored request through `api.send`, which no spy
+  // above covers. It is answered here as alice's own attempts answer: failing at the connection,
+  // so a resumed attempt reaches no network and the write stands exactly where it stood.
+  answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
   const logoutSpy = spyOn(api, "logout").mockImplementation(logout);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -147,18 +163,16 @@ function otherTab(id: string, unsent: readonly UnsentChange[] | "silent" = []): 
 /** A change a sign-out would discard, as a tab names it: by its key and label. */
 const change = (label: string, key = `key of ${label}`): UnsentChange => ({ key, label });
 
-function sleep(ms: number): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, ms);
-  return promise;
-}
-
 // W48. A sign-out discards only once Dispatch has answered it. While it is out nothing more goes
 // out here - every write stops trying after the attempt in flight - and every other tab is told to
 // hold the person's writes too. Refused, it leaves the person signed in with every write, here and
 // in every other tab, and says the sign-out did not go through; its Retry, once it lands, drops
 // every write here and tells every other tab whose to drop.
 test("a sign-out discards only once Dispatch answers it, and one that fails keeps every write", async () => {
+  // On the fake clock from the first render: every timer of the product - the retry's backoff
+  // among them - is one this test moves the clock past, rather than one it waits out.
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const first = Promise.withResolvers<{ ok: true }>();
   let signedIn = true;
   let logouts = 0;
@@ -183,19 +197,19 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
     void aliceWrite(app.queryClient, attempts, "CORE-2 set to done", true);
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(2));
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
     expect(app.asked).toHaveLength(1);
     await waitFor(() => expect(tab.told).toContainEqual(about("signingOut", "alice")));
     const made = attempts.length;
-    await sleep(2_500);
+    await tick(2_500);
     expect(attempts).toHaveLength(made);
     expect(writesOf(app.queryClient).rows()).toHaveLength(3);
     expect(keptWrites()).toHaveLength(3);
 
     act(() => first.reject(new ApiError(403, { code: "FORBIDDEN", error: "not now" })));
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("The sign-out did not go through.");
+    expect(alert).toHaveTextContent("The sign-out did not go through.");
     expect(screen.getByText("Signed in as alice")).toBeTruthy();
     expect(
       writesOf(app.queryClient)
@@ -207,12 +221,13 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
     expect(tab.told).not.toContainEqual(about("signedOut", "alice"));
     await waitFor(() => expect(attempts.length).toBeGreaterThan(made));
 
-    fireEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    await user.click(within(alert).getByRole("button", { name: "Retry" }));
     await screen.findByRole("link", { name: "Sign in with Google" });
     expect(writesOf(app.queryClient).rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
     await waitFor(() => expect(tab.told).toContainEqual(about("signedOut", "alice")));
   } finally {
+    realClock();
     tab.close();
     app.teardown();
   }
@@ -223,6 +238,8 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
 // another browser revoked it. The changes the person chose to discard go, here and in every other
 // tab: the sign-in page keeps none of them, and none is sent once they sign in again.
 test("a sign-out answered 401 discards what it said it would, and nothing goes out at the next sign-in", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   let signedIn = true;
   const app = renderApp({
     logout: async () => {
@@ -242,23 +259,24 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.asked).toHaveLength(1));
     await screen.findByRole("link", { name: "Sign in with Google" });
     await waitFor(() => expect(tab.told).toContainEqual(about("signedOut", "alice")));
     expect(tab.told).not.toContainEqual(about("stillSignedIn", "alice"));
     expect(writesOf(app.queryClient).rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
-    expect(screen.queryByRole("region", { name: "Kept changes" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
 
     signedIn = true;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     await screen.findByText("Signed in as alice");
     const made = attempts.length;
-    await sleep(2_500);
+    await tick(2_500);
     expect(attempts).toHaveLength(made);
     expect(writesOf(app.queryClient).rows()).toEqual([]);
   } finally {
+    realClock();
     tab.close();
     app.teardown();
   }
@@ -268,6 +286,8 @@ test("a sign-out answered 401 discards what it said it would, and nothing goes o
 // it, and this page's sign-in check says so first - has ended as the sign-out asked: it discards,
 // rather than keeping every write for a sign-in the person chose to discard them before.
 test("a session that ends under its sign-out discards, and keeps nothing for the next sign-in", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const held = Promise.withResolvers<{ ok: true }>();
   let signedIn = true;
   const app = renderApp({
@@ -285,7 +305,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
     signedIn = false;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
@@ -294,15 +314,16 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
     expect(tab.told).not.toContainEqual(about("stillSignedIn", "alice"));
     expect(writesOf(app.queryClient).rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
-    expect(screen.queryByRole("region", { name: "Kept changes" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
 
     signedIn = true;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     await screen.findByText("Signed in as alice");
     const made = attempts.length;
-    await sleep(2_500);
+    await tick(2_500);
     expect(attempts).toHaveLength(made);
   } finally {
+    realClock();
     held.resolve({ ok: true });
     tab.close();
     app.teardown();
@@ -313,6 +334,7 @@ test("a session that ends under its sign-out discards, and keeps nothing for the
 // cannot be read to say the session lapsed, rather than asking again for good with every write
 // held.
 test("a sign-out answered 401 lands while the sign-in check cannot be read", async () => {
+  const user = userEvent.setup();
   let checkable = true;
   const app = renderApp({
     logout: async () => {
@@ -332,7 +354,7 @@ test("a sign-out answered 401 lands while the sign-in check cannot be read", asy
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(tab.told).toContainEqual(about("signedOut", "alice")));
     expect(app.logout).toHaveBeenCalledTimes(1);
     expect(writesOf(app.queryClient).rows()).toEqual([]);
@@ -348,6 +370,10 @@ test("a sign-out answered 401 lands while the sign-in check cannot be read", asy
 // go through. The person stays signed in with every change, as they do after any other refusal,
 // rather than having their changes discarded by a 401 Dispatch never gave.
 test("a 401 that is not Dispatch's own is a sign-out that did not go through", async () => {
+  // The second ask waits a second of the product's own: on the fake clock, which this test's
+  // `findByRole` moves on, rather than a second of the run's.
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const app = renderApp({
     logout: async () => {
       throw new ApiError(401, { error: "Unauthorized" });
@@ -362,12 +388,12 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     // The first 401 may be a session that rotated between the two reads, so the sign-out is
     // asked once more, a second after; the second, with the check still naming alice, is the
     // refusal.
     const alert = await screen.findByRole("alert", {}, { timeout: 5_000 });
-    expect(alert.textContent).toContain("The sign-out did not go through.");
+    expect(alert).toHaveTextContent("The sign-out did not go through.");
     expect(app.logout).toHaveBeenCalledTimes(2);
     expect(screen.getByText("Signed in as alice")).toBeTruthy();
     expect(
@@ -379,6 +405,7 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
     await waitFor(() => expect(tab.told).toContainEqual(about("stillSignedIn", "alice")));
     expect(tab.told).not.toContainEqual(about("signedOut", "alice"));
   } finally {
+    realClock();
     tab.close();
     app.teardown();
   }
@@ -390,6 +417,7 @@ test("a 401 that is not Dispatch's own is a sign-out that did not go through", a
 // the changes the person chose to discard go here too - keeping them would send, at their next
 // sign-in, the very writes they discarded.
 test("the writes held for a tab that went are discarded once whoami says the sign-out landed", async () => {
+  jest.useFakeTimers();
   let signedIn = true;
   const app = renderApp({
     whoAmI: async () => {
@@ -416,11 +444,12 @@ test("the writes held for a tab that went are discarded once whoami says the sig
     await screen.findByRole("link", { name: "Sign in with Google" });
     expect(writesOf(app.queryClient).rows()).toEqual([]);
     expect(keptWrites()).toEqual([]);
-    expect(screen.queryByRole("region", { name: "Kept changes" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
     const made = attempts.length;
-    await sleep(2_500);
+    await tick(2_500);
     expect(attempts).toHaveLength(made);
   } finally {
+    realClock();
     app.teardown();
   }
 }, 15_000);
@@ -431,6 +460,7 @@ test("the writes held for a tab that went are discarded once whoami says the sig
 // hold stays on and nothing of theirs goes out for `SIGN_OUT_SETTLE_MS`; the read after it still
 // names them, and only then do the writes go on.
 test("the writes held for a tab that went go on once whoami still names the person", async () => {
+  jest.useFakeTimers();
   const app = renderApp({
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
   });
@@ -450,14 +480,14 @@ test("the writes held for a tab that went go on once whoami still names the pers
     signer.close();
 
     // Nothing goes out while the question is open, however the first read answered.
-    await sleep(SIGN_OUT_SETTLE_MS - 500);
+    await tick(SIGN_OUT_SETTLE_MS - 500);
     expect(attempts).toHaveLength(held);
     expect(
       screen.getByText("CORE-1 set to done — Waiting for a sign-out in another tab")
     ).toBeTruthy();
 
     await waitFor(() => expect(attempts.length).toBeGreaterThan(held), { timeout: 5_000 });
-    expect(screen.queryByText(/Waiting for a sign-out in another tab/)).toBeNull();
+    expect(screen.queryByText(/Waiting for a sign-out in another tab/)).not.toBeInTheDocument();
     expect(
       writesOf(app.queryClient)
         .rows()
@@ -465,6 +495,7 @@ test("the writes held for a tab that went go on once whoami still names the pers
     ).toEqual(["CORE-1 set to done"]);
     expect(screen.getByText("Signed in as alice")).toBeTruthy();
   } finally {
+    realClock();
     signer.close();
     app.teardown();
   }
@@ -504,14 +535,15 @@ async function holdingForAnotherTab() {
 }
 
 /** Whether alice's held write was discarded, here and in what this tab keeps, with nothing of it
- *  sent after the sign-out and no sign-in page offering it back. */
+ *  sent after the sign-out and no sign-in page offering it back. Its caller holds the fake
+ *  clock: the window nothing goes out in is moved past here rather than waited out. */
 async function discardedFor(app: ReturnType<typeof renderApp>, attempts: string[]) {
   await screen.findByRole("link", { name: "Sign in with Google" });
   expect(writesOf(app.queryClient).rows()).toEqual([]);
   expect(keptWrites()).toEqual([]);
-  expect(screen.queryByRole("region", { name: "Kept changes" })).toBeNull();
+  expect(screen.queryByRole("region", { name: "Kept changes" })).not.toBeInTheDocument();
   const made = attempts.length;
-  await sleep(2_500);
+  await tick(2_500);
   expect(attempts).toHaveLength(made);
 }
 
@@ -520,6 +552,7 @@ async function discardedFor(app: ReturnType<typeof renderApp>, attempts: string[
 // whichever reaches this tab first. Here the tab's own sign-in check answers 401 first - Dispatch
 // closed its live socket as it ended the session - while the hold is still on.
 test("a 401 while another tab's sign-out holds the writes discards them, before that tab goes", async () => {
+  jest.useFakeTimers();
   const { app, attempts, signer, state } = await holdingForAnotherTab();
   try {
     state.signedIn = false;
@@ -527,9 +560,10 @@ test("a 401 while another tab's sign-out holds the writes discards them, before 
     await discardedFor(app, attempts);
     // That tab going afterwards changes nothing: there is nothing of alice's left to hold.
     signer.close();
-    await sleep(200);
+    await tick(200);
     expect(writesOf(app.queryClient).rows()).toEqual([]);
   } finally {
+    realClock();
     signer.close();
     app.teardown();
   }
@@ -540,6 +574,7 @@ test("a 401 while another tab's sign-out holds the writes discards them, before 
 // read after the session ended, answered 401 under the hold. The 401 decided; the late 200
 // lets go of a hold that has nothing left in it.
 test("a 401 while another tab's sign-out holds the writes discards them, after that tab goes", async () => {
+  jest.useFakeTimers();
   const { app, attempts, signer, state } = await holdingForAnotherTab();
   try {
     const goneRead = Promise.withResolvers<SignedInUser>();
@@ -551,6 +586,7 @@ test("a 401 while another tab's sign-out holds the writes discards them, after t
     await act(async () => goneRead.resolve({ event_head: "0", kind: "user", login: "alice" }));
     await discardedFor(app, attempts);
   } finally {
+    realClock();
     signer.close();
     app.teardown();
   }
@@ -562,18 +598,21 @@ test("a 401 while another tab's sign-out holds the writes discards them, after t
 // that follows it is that sign-out landing late, and the writes it would discard go rather than
 // being kept for a sign-in the person discarded them before.
 test("a 401 just after a gone tab's hold was let go discards the writes it held", async () => {
+  jest.useFakeTimers();
   const { app, attempts, signer, state } = await holdingForAnotherTab();
   try {
     signer.close();
     // Both reads its going makes still name alice, so the hold is let go and the write goes on.
     await waitFor(
-      () => expect(screen.queryByText(/Waiting for a sign-out in another tab/)).toBeNull(),
+      () =>
+        expect(screen.queryByText(/Waiting for a sign-out in another tab/)).not.toBeInTheDocument(),
       { timeout: 5_000 }
     );
     state.signedIn = false;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     await discardedFor(app, attempts);
   } finally {
+    realClock();
     signer.close();
     app.teardown();
   }
@@ -584,6 +623,7 @@ test("a 401 just after a gone tab's hold was let go discards the writes it held"
 // tab signs the same person out: that sign-out is live, so nothing of theirs goes out when the
 // read comes back, and it is that tab's to end.
 test("a sign-out begun while a gone tab's hold is being decided keeps the writes held", async () => {
+  jest.useFakeTimers();
   const { app, attempts, signer } = await holdingForAnotherTab();
   const second = otherTab("tab-3");
   try {
@@ -595,7 +635,7 @@ test("a sign-out begun while a gone tab's hold is being decided keeps the writes
     second.say({ signingOut: "alice" });
 
     // Well past the settle the first release would have ended at: the second sign-out holds.
-    await sleep(SIGN_OUT_SETTLE_MS + 1_500);
+    await tick(SIGN_OUT_SETTLE_MS + 1_500);
     expect(attempts).toHaveLength(held);
     expect(
       screen.getByText("CORE-1 set to done — Waiting for a sign-out in another tab")
@@ -604,8 +644,9 @@ test("a sign-out begun while a gone tab's hold is being decided keeps the writes
     // It ends as that tab says, and only then do the writes go on.
     second.say({ stillSignedIn: "alice" });
     await waitFor(() => expect(attempts.length).toBeGreaterThan(held), { timeout: 5_000 });
-    expect(screen.queryByText(/Waiting for a sign-out in another tab/)).toBeNull();
+    expect(screen.queryByText(/Waiting for a sign-out in another tab/)).not.toBeInTheDocument();
   } finally {
+    realClock();
     second.close();
     signer.close();
     app.teardown();
@@ -615,19 +656,22 @@ test("a sign-out begun while a gone tab's hold is being decided keeps the writes
 // A lapse with no other tab's sign-out holding the writes is a lapse, as before: they are kept
 // for the person's next sign-in.
 test("a 401 with no other tab's sign-out holding the writes keeps them", async () => {
+  jest.useFakeTimers();
   const { app, signer, state } = await holdingForAnotherTab();
   try {
     signer.say({ stillSignedIn: "alice" });
     await waitFor(
-      () => expect(screen.queryByText(/Waiting for a sign-out in another tab/)).toBeNull(),
+      () =>
+        expect(screen.queryByText(/Waiting for a sign-out in another tab/)).not.toBeInTheDocument(),
       { timeout: 5_000 }
     );
     state.signedIn = false;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     const kept = await screen.findByRole("region", { name: "Kept changes" });
-    expect(kept.textContent).toContain("CORE-1 set to done");
+    expect(kept).toHaveTextContent("CORE-1 set to done");
     expect(keptWrites()).toHaveLength(1);
   } finally {
+    realClock();
     signer.close();
     app.teardown();
   }
@@ -637,6 +681,12 @@ test("a 401 with no other tab's sign-out holding the writes keeps them", async (
 // browser first, over the sign-in channel, and lists what each of them would discard beside this
 // tab's own. A tab it knows of that does not answer within 300 ms is named as such.
 test("the sign-out question names every tab's unsent changes, and says when a tab did not answer", async () => {
+  // On the fake clock, so the window the question waits out for the silent tab is moved past in
+  // the test's own steps rather than waited through in real time, and the `started` below reads
+  // that clock: a loaded machine moves it no further than this test does. The clock is installed
+  // before the user, which captures the timers it will advance (dispatch://INFRA-1505).
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const answer = false;
   const app = renderApp({
     confirm: () => answer,
@@ -652,7 +702,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
     void aliceWrite(app.queryClient, attempts, "CORE-1 set to done");
     await waitFor(() => expect(writesOf(app.queryClient).rows()).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.asked).toHaveLength(1));
     expect(app.asked[0]).toBe(
       "Sign out and discard 3 unsent changes?\n\n• CORE-1 set to done\n• CORE-4 set to backlog\n• Labels of CORE-4"
@@ -666,9 +716,9 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
         expect(silent.told).toContainEqual(expect.objectContaining({ here: true }))
       );
       const started = Date.now();
-      fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+      await user.click(screen.getByRole("button", { name: "Sign out" }));
       await waitFor(() => expect(app.asked).toHaveLength(2));
-      expect(Date.now() - started).toBeGreaterThanOrEqual(250);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(OTHER_TABS_ANSWER_MS);
       expect(app.asked[1]).toBe(
         "Sign out and discard 3 unsent changes, and any unsent changes in your other Dispatch tabs?\n\n• CORE-1 set to done\n• CORE-4 set to backlog\n• Labels of CORE-4"
       );
@@ -678,6 +728,7 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
     expect(app.logout).not.toHaveBeenCalled();
     expect(writesOf(app.queryClient).rows()).toHaveLength(1);
   } finally {
+    realClock();
     second.close();
     app.teardown();
   }
@@ -688,6 +739,12 @@ test("the sign-out question names every tab's unsent changes, and says when a ta
 // same changes. A tab that did not answer the last question is taken for gone, so the next one
 // neither waits for it nor says the other tabs may hold more, until it speaks again.
 test("the sign-out question names a duplicated tab's copies once, and forgets a tab that missed it", async () => {
+  // On the fake clock, so the span the second question does not wait out is the clock this test
+  // moves: read under the real one, a loaded machine can spend the whole window on scheduling
+  // and fail a question that waited for nothing (dispatch://INFRA-1505). The clock is installed
+  // before the user, which captures the timers it will advance.
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
   const app = renderApp({
     confirm: () => false,
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
@@ -710,25 +767,32 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
     const listed = "\n\n• CORE-1 set to done\n• CORE-4 set to backlog";
     const elsewhere = ", and any unsent changes in your other Dispatch tabs";
 
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.asked).toHaveLength(1));
     expect(app.asked[0]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
 
     const started = Date.now();
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.asked).toHaveLength(2));
-    expect(Date.now() - started).toBeLessThan(250);
+    expect(Date.now() - started).toBeLessThan(OTHER_TABS_ANSWER_MS);
     expect(app.asked[1]).toBe(`Sign out and discard ${named}?${listed}`);
 
+    const beforeHello = tabs[2]?.told.length ?? 0;
     tabs[2]?.say({ hello: true });
+    // The app's answer to this hello, not the one it gave when the tab opened: until the app has
+    // heard the tab speak again it is still forgotten, and the question below would be the
+    // question above.
     await waitFor(() =>
-      expect(tabs[2]?.told).toContainEqual(expect.objectContaining({ here: true }))
+      expect(tabs[2]?.told.slice(beforeHello)).toContainEqual(
+        expect.objectContaining({ here: true })
+      )
     );
-    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(app.asked).toHaveLength(3));
     expect(app.asked[2]).toBe(`Sign out and discard ${named}${elsewhere}?${listed}`);
     expect(app.logout).not.toHaveBeenCalled();
   } finally {
+    realClock();
     for (const other of tabs) other.close();
     app.teardown();
   }
@@ -740,6 +804,10 @@ test("the sign-out question names a duplicated tab's copies once, and forgets a 
 // the writes go on once the sign-in check, read twice over `SIGN_OUT_SETTLE_MS`, still names the
 // person both times.
 test("a tab holding writes for another tab's sign-out resumes them once its lease lapses", async () => {
+  // On the fake clock, so the lease and the settle after it are moved past in steps rather than
+  // waited out: `resumed` below reads that clock, and a single jump would put the whole window
+  // at one instant.
+  jest.useFakeTimers();
   const app = renderApp({
     whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
   });
@@ -757,15 +825,16 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
     const said = Date.now();
     await screen.findByText("CORE-1 set to done — Waiting for a sign-out in another tab");
     const made = attempts.length;
-    await sleep(4_000);
+    await tick(4_000);
     expect(attempts).toHaveLength(made);
 
     await waitFor(() => expect(attempts.length).toBeGreaterThan(made), { timeout: 6_000 });
     const resumed = Date.now() - said;
     expect(resumed).toBeGreaterThanOrEqual(SIGN_OUT_SETTLE_MS + 5_500);
     expect(resumed).toBeLessThanOrEqual(SIGN_OUT_SETTLE_MS + 6_500);
-    expect(screen.queryByText(/Waiting for a sign-out in another tab/)).toBeNull();
+    expect(screen.queryByText(/Waiting for a sign-out in another tab/)).not.toBeInTheDocument();
   } finally {
+    realClock();
     signer.close();
     app.teardown();
   }
@@ -774,6 +843,7 @@ test("a tab holding writes for another tab's sign-out resumes them once its leas
 // W43. A lapsed tab shows the writes it keeps: the sign-in page lists the lapsed person's kept
 // writes by name, so they see what waits for them, and a refused one offers Discard there.
 test("a lapsed tab's sign-in page lists the writes it keeps, a refused one with Discard", async () => {
+  const user = userEvent.setup();
   let signedIn = true;
   const app = renderApp({
     whoAmI: async () => {
@@ -791,12 +861,12 @@ test("a lapsed tab's sign-in page lists the writes it keeps, a refused one with 
     signedIn = false;
     await act(() => app.queryClient.invalidateQueries({ queryKey: ["whoami"] }));
     const kept = await screen.findByRole("region", { name: "Kept changes" });
-    expect(kept.textContent).toContain("Kept until you sign in again as alice:");
-    expect(kept.textContent).toContain("CORE-7 set to todo");
-    expect(kept.textContent).toContain("CORE-7 set to backlog");
+    expect(kept).toHaveTextContent("Kept until you sign in again as alice:");
+    expect(kept).toHaveTextContent("CORE-7 set to todo");
+    expect(kept).toHaveTextContent("CORE-7 set to backlog");
     const buttons = within(kept).getAllByRole("button", { name: "Discard" });
     expect(buttons).toHaveLength(1);
-    fireEvent.click(buttons[0] as HTMLElement);
+    await user.click(buttons[0] as HTMLElement);
     await waitFor(() =>
       expect(
         writesOf(app.queryClient)
@@ -814,6 +884,7 @@ test("a lapsed tab's sign-in page lists the writes it keeps, a refused one with 
 // W44. The sign-in link of a lapsed tab raises no leave prompt: the writes it keeps resume in this
 // tab once the person is back, so its own navigation is no leaving. Any other way out still asks.
 test("the sign-in link of a lapsed tab raises no leave prompt", async () => {
+  const user = userEvent.setup();
   let signedIn = true;
   const app = renderApp({
     whoAmI: async () => {
@@ -839,9 +910,11 @@ test("the sign-in link of a lapsed tab raises no leave prompt", async () => {
     const link = await screen.findByRole("link", { name: "Sign in with Google" });
     expect(asksBeforeLeaving()).toBe(true);
 
-    fireEvent.click(link);
+    await user.click(link);
     expect(asksBeforeLeaving()).toBe(false);
     // Back on the page - the navigation never happened - leaving asks again.
+    // A bare pointer press: user-event's `click` would send the click this row proves the page
+    // has not had.
     fireEvent.pointerDown(document.body);
     expect(asksBeforeLeaving()).toBe(true);
   } finally {

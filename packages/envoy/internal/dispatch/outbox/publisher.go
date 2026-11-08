@@ -78,9 +78,9 @@ type Deps struct {
 	// store.Pool.Listener.
 	Listen func(ctx context.Context) (*pgx.Conn, error)
 	// RoleClaims and Sessions are where a role route's holder is resolved (roles.ResolveHolder,
-	// resolveRoleHolders): role claims read from the role bucket, released there when their holder
-	// is gone, and holders read from the session bucket. cmd/dispatch passes one roles.Buckets for
-	// both, reading on Publisher's connection.
+	// resolveRoleHolders): role claims read from the role bucket and holders read from the
+	// session bucket, neither of which the resolution writes to. cmd/dispatch passes one
+	// roles.Buckets for both, reading on Publisher's connection.
 	RoleClaims roles.ClaimStore
 	Sessions   roles.SessionLookup
 	// KeptLanes is where the handover behind a keep reads the role's kept lane and its drain
@@ -92,10 +92,13 @@ type Deps struct {
 	// no stream behind it leave it to.
 	KeptLanes KeptLaneReader
 	// PublishFailures counts a destination of a publish attempt that did not reach it, by
-	// reason (countPublishFailure). cmd/dispatch registers it on the process's metrics
-	// registry, so a denied or refused destination shows on /metrics rather than only in the
-	// log.
-	PublishFailures *metrics.Counter
+	// reason (countPublishFailure), and RoleForwardsHeld a role forward its holder's resolution
+	// held pending, by that holder's state (countRoleForwardHeld). cmd/dispatch registers both
+	// on the process's metrics registry, so a denied or refused destination shows on /metrics
+	// rather than only in the log, and a holder that stopped answering is read as the wait it is
+	// rather than paging whoever alerts on publish failures.
+	PublishFailures  *metrics.Counter
+	RoleForwardsHeld *metrics.Counter
 	// lanes is what the batches of one scan share: the owners they hold in flight, the outbox
 	// pool's one statement at a time, and the wake a released owner gives the scan (Outbox.scan).
 	// A batch run with none - one by itself, as this package's tests run it - holds no owner,
@@ -105,17 +108,31 @@ type Deps struct {
 
 // countPublishFailure counts one destination of a publish attempt that did not reach it, under
 // reason: "denied" for a send the server refused under this connection's own publish permissions,
-// "refused" for one NATS refuses however often it is retried, "holder" for a role forward its
-// holder's resolution held pending with nothing sent, "unanswered" for a forward NATS took whose
-// answer never came - the holder's receipt, or the stream's acknowledgement of the stored copy
-// for a holder whose entry records a port (roleForward.send) - and "failed" for every other
-// failure (sendChains). Every increment goes through here: a Deps built without a counter - the
-// package's own tests - then counts nothing instead of dereferencing nil.
+// "refused" for one NATS refuses however often it is retried, "unanswered" for a forward NATS
+// took whose answer never came - the holder's receipt, or the stream's acknowledgement of the
+// stored copy for a holder whose entry an earlier listener stored with a port (roleForward.send) -
+// and "failed" for every other failure
+// (sendChains). A role forward held pending is counted by countRoleForwardHeld and under none of
+// these. Every increment goes through here: a Deps built without a counter - the package's own
+// tests - then counts nothing instead of dereferencing nil.
 func (d Deps) countPublishFailure(reason string) {
 	if d.PublishFailures == nil {
 		return
 	}
 	d.PublishFailures.Inc([2]string{"reason", reason})
+}
+
+// countRoleForwardHeld counts one role forward its holder's resolution held pending with nothing
+// sent, under the holder's state it was held on: session.Unresponsive, or heldStateUndated or
+// heldStateUnresolved where the resolution reached no state of the holder's (forwardOf). It is no
+// publish failure: nothing left this process, so nothing of the bus failed, and the event waits
+// for the session to answer (sendChains, waitForHolders). A Deps built without the counter counts
+// nothing, as countPublishFailure does.
+func (d Deps) countRoleForwardHeld(holderState string) {
+	if d.RoleForwardsHeld == nil {
+		return
+	}
+	d.RoleForwardsHeld.Inc([2]string{"holder_state", holderState})
 }
 
 // fence is what a batch checks before each act it may make only while this process holds the
@@ -172,11 +189,16 @@ func lostToContextEnd(ctx context.Context, err error) bool {
 //
 // The batch runs under hold, the publisher hold: its window is the hold's (Publisher.WindowUntil
 // with the hold's deadline), which checks the deadline before each send and writes nothing past
-// it, answering bus.ErrWindowDeadline, and once it has passed the batch sends nothing more and is
-// left unrecorded - the record is the last act checked against the deadline - so a process that
-// froze past its deadline neither sends nor writes when it resumes. The record's back-offs,
-// hold-backs and releases are written only while holder still holds the hold on the database's
-// clock (recordBatch).
+// it, answering bus.ErrWindowDeadline. The deadline governs the sends: once one met it the batch
+// sends nothing more and is left unrecorded, since what its remaining sends came to is no longer
+// its to say, so a process that froze past its deadline neither sends nor writes when it
+// resumes. A batch whose sends all went out under the hold records what they came to however
+// long their answers took, the deadline passing while it waited for them included: the hold
+// covers the publish window it opened, and an answer that arrives after it is the answer to a
+// send the hold itself made. The record's back-offs, hold-backs and releases are written only
+// while holder still holds the hold on the database's clock, checked in the statement that
+// writes them (recordBatch), so a holder whose hold went to another process while it waited
+// schedules nothing beside the process that took it.
 func scanBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID) (batchResult, error) {
 	pending, stopped, excluded, err := readBatch(ctx, deps)
 	if err != nil {
@@ -196,12 +218,11 @@ func scanBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID) (ba
 // (sendChains), so its next events and the owners this batch left behind are read while the rest
 // of the batch is still sending: a chain waiting for a role holder's receipt then holds back its
 // own owner's later events alone. An owner with a send that failed for the connection, one with a
-// send the hold's deadline fenced, one with a send the batch's stop left unmade, one read past
-// the hold's deadline, and every owner of a batch whose context has ended wait for the batch's
-// end instead, where the connection check below decides what their sends came to: each of those
-// is an owner an early settle would release or leave unrecorded, so it is settled once, there.
-// Whichever way an owner settles, every lane the read took is given back before the batch
-// returns.
+// send the hold's deadline fenced, one with a send the batch's stop left unmade, and every owner
+// of a batch whose context has ended wait for the batch's end instead, where the connection check
+// below decides what their sends came to: each of those is an owner an early settle would release
+// or leave unrecorded, so it is settled once, there. Whichever way an owner settles, every lane
+// the read took is given back before the batch returns.
 func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, pending []pendingEvent, stopped bool) (batchResult, error) {
 	result := batchResult{}
 	events := make([]*batchEvent, len(pending))
@@ -245,9 +266,11 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 	// owners' windows left unread (deferPastWindow) and writes what they all came to in one
 	// statement. Every event the batch settles goes through here once, so each is logged once:
 	// an owner settled as its own chains finish, and at the batch's end every event no owner's
-	// settle recorded. Nothing is written once a send met the publisher hold's deadline or the
-	// deadline has passed, the record being the last act checked against it; the batch is then
-	// left unrecorded and reported fenced.
+	// settle recorded. Nothing is written once a send met the publisher hold's deadline: the
+	// batch is then left unrecorded, as the fenced batch it is reported. The deadline passing
+	// while the batch waited for the answers to the sends it made under the hold stops nothing
+	// here, the hold covering the window it opened; whether those answers may still be
+	// scheduled is the record's own check, on the database's clock (recordBatch).
 	settleAndRecord := func(owned []*batchEvent, releaseUnacknowledged bool) (settlement, error) {
 		var outcomes []outcome
 		var done settlement
@@ -270,10 +293,9 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		if done.released && !result.fenced && ctx.Err() == nil {
 			slog.Error("dispatch outbox: NATS is unreachable, so the batch's released events wait for the next scan")
 		}
-		if result.fenced || !time.Now().Before(hold.Deadline()) {
-			slog.Error("dispatch outbox: the publisher hold's deadline passed before the batch was recorded, so it is left unrecorded",
+		if result.fenced {
+			slog.Error("dispatch outbox: a send met the publisher hold's deadline, so the batch is left unrecorded",
 				"events", len(outcomes))
-			result.fenced = true
 			return done, nil
 		}
 		// Written even when ctx has ended: a process stopping mid-batch records what NATS already
@@ -285,7 +307,7 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		return done, err
 	}
 	settleOwner := func(owner string) {
-		if ctx.Err() != nil || !time.Now().Before(hold.Deadline()) {
+		if ctx.Err() != nil {
 			return
 		}
 		for _, event := range byOwner[owner] {
@@ -300,8 +322,6 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		switch {
 		case err != nil:
 			recordErr = err
-		case result.fenced:
-			return
 		case !done.holds:
 			slog.Error("dispatch outbox: the publisher hold is no longer this process's, so the owner's back-offs and releases were not written",
 				"holder", holder, "owner", owner)
@@ -403,8 +423,8 @@ func connectionReplaced(changed <-chan struct{}) bool {
 // sent how many of them it sent at least one envelope of, from firstID to lastID, the first send no
 // earlier than started, and published how many it marked published. blocked is a batch after which
 // the scan stops: a row it could not read, an event it released, or its record failed. fenced is
-// the publisher hold's deadline passing during it, or its record finding the hold another's, and
-// natsLost a probe of its connection failing after its sends failed for the connection. excluded
+// a send of it meeting the publisher hold's deadline, or its record finding the hold another's,
+// and natsLost a probe of its connection failing after its sends failed for the connection. excluded
 // is a read that left the owners the batches beside it held out (lanes.reserve): it may have read
 // past their events, so the scan reads again once every batch has given its owners back.
 type batchResult struct {
@@ -419,7 +439,7 @@ type batchResult struct {
 // settlement is what one settle-and-record (publishBatch's settleAndRecord) came to: how many of
 // its events it marked published, whether any of them was released, and, when it wrote them,
 // whether the hold was still this process's. It wrote them unless the batch is fenced
-// (result.fenced): a batch past the publisher hold's deadline is left unrecorded.
+// (result.fenced): a batch a send of which met the publisher hold's deadline is left unrecorded.
 type settlement struct {
 	published       int
 	released, holds bool
@@ -471,7 +491,9 @@ type outcome struct {
 // too. One with a send that met the hold's deadline settles as released as well, but its batch is
 // left unrecorded, not released (scanBatch): that outcome is never written. One whose destinations
 // could not all be resolved otherwise, or a send of which NATS answered with a failure, is backed
-// off. Otherwise one with a destination held back, or a session's copy held back for a mention
+// off - below ERROR when every failure behind it is a role forward its holder's resolution held
+// pending (waitForHolders), since such an event is waiting for a session, not failing. Otherwise
+// one with a destination held back, or a session's copy held back for a mention
 // still being sent (batchEvent.mentionPending), is blocked: on its blockers (holdBack), and for
 // mentionPendingDelay at most when its copy waits on a mention; and one with neither is published.
 // A held-back copy so blocks the event only when no send of it failed or was lost: a denied or
@@ -483,6 +505,9 @@ func settleEvent(event *batchEvent, releaseUnacknowledged bool) outcome {
 		return backOff(result, event.pendingEvent, event.failureLog, event.failure)
 	}
 	var failures []error
+	// holds are the forwards behind those failures that are a holder's hold and nothing else: an
+	// event all of whose failures are holds is a wait rather than a failure.
+	var holds []*roleForward
 	if event.resolveErr != nil {
 		failures = append(failures, event.resolveErr)
 	}
@@ -497,6 +522,9 @@ func settleEvent(event *batchEvent, releaseUnacknowledged bool) outcome {
 				release = true
 				continue
 			}
+			if hold := send.heldByHolder(); hold != nil {
+				holds = append(holds, hold)
+			}
 			failures = append(failures, fmt.Errorf("%s %q: %w", send.dest.label, send.dest.id, send.err))
 		case held:
 			blockers = append(blockers, blocker{event: send.heldBy})
@@ -510,6 +538,9 @@ func settleEvent(event *batchEvent, releaseUnacknowledged bool) outcome {
 		result.state = released
 		return result
 	case len(failures) > 0:
+		if len(holds) == len(failures) {
+			return waitForHolders(result, event.pendingEvent, holds, errors.Join(failures...))
+		}
 		return backOff(result, event.pendingEvent, "dispatch outbox: publish event", errors.Join(failures...))
 	case len(blockers) > 0 || event.mentionPending:
 		if len(blockers) > 0 {
@@ -527,10 +558,35 @@ func settleEvent(event *batchEvent, releaseUnacknowledged bool) outcome {
 	return result
 }
 
-// backOff reports item's failure under what and returns result backed off by retry.Delay of the
-// attempt it now counts, which the record adds to the database's clock.
+// backOff reports item's failure under what, at ERROR, and backs it off (backOffAttempt).
 func backOff(result outcome, item pendingEvent, what string, cause error) outcome {
 	slog.Error(what, "event_id", item.event.ID, "error", cause)
+	return backOffAttempt(result, item, cause)
+}
+
+// waitForHolders reports an event every failure of which is a role forward its holder's
+// resolution held pending, and backs it off exactly as backOff does. Nothing was sent and nothing
+// failed: the event is waiting for each holder to answer, so the line is below ERROR and names
+// the holders and the states they were held on, and an operator who greps ERROR or alerts on the
+// publish-failure counter is not paged for an agent that stopped typing (dispatch://INFRA-392).
+// An event with one hold and one real failure is a failure and goes through backOff.
+func waitForHolders(result outcome, item pendingEvent, holds []*roleForward, cause error) outcome {
+	holders := make([]string, 0, len(holds))
+	states := make([]string, 0, len(holds))
+	for _, hold := range holds {
+		holders = append(holders, hold.holder)
+		states = append(states, hold.heldState)
+	}
+	slog.Info("dispatch outbox: event waits for its role's holder", "event_id", item.event.ID,
+		"holder", strings.Join(holders, ","), "holder_state", strings.Join(states, ","), "error", cause)
+	return backOffAttempt(result, item, cause)
+}
+
+// backOffAttempt returns result backed off by retry.Delay of the attempt it now counts, which the
+// record adds to the database's clock. Reaching the dead-letter threshold is reported at ERROR
+// however the attempt itself was reported: an event given up on is a failure, one held for a
+// holder that never answered among them.
+func backOffAttempt(result outcome, item pendingEvent, cause error) outcome {
 	result.state = backedOff
 	result.attempts = item.attempts + 1
 	if result.attempts == retry.DeadLetterAttempts {
@@ -1211,6 +1267,14 @@ func envelope(event model.Event, slug string) (contracts.Envelope, error) {
 	if strings.HasPrefix(event.Type, "ask.") {
 		item.Urgency = payloadString(event.Payload, "urgency")
 	}
+	// An answered ask and an approved artifact are receipts: the event tells its reader what a
+	// person decided, and there is nothing to send back. The envelope leaves the field out all
+	// the same, as every other event type does, because a listener built before #2903 reads
+	// expects_reply only as a string: the literal false fails its decode, and the frame is
+	// acknowledged and dropped, so a Dispatch server rolled ahead of the listeners of its
+	// deployment would lose every answered ask and approved artifact. What removes the
+	// workaround: every listener of a deployment at or after #2903, after which these two types
+	// carry contracts.ExpectsReplyNone again and say "nothing wanted back" out loud.
 	return item, nil
 }
 

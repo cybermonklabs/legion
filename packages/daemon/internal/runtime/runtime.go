@@ -96,10 +96,10 @@ type Runtime interface {
 	ProvisionsWorkspaces() bool
 	// ProvisionBound is how much longer a launch may run before its agent's own process has even
 	// started: zero for a runtime whose process starts the agent at once (tmux), and the Sandbox
-	// runtime's own init-container budget (its two clones' bounds together) for a launch whose pod runs
-	// provisioning first, which that runtime's wait for the pod's launcher allows past its boot
-	// timeout. The supervisor also adds it to the registration deadline's base
-	// Boot×RegistrationIntervals bound while a claim is still StateLaunching.
+	// runtime's own init-container budget (its two clones' and the issue's checkout's bounds
+	// together) for a launch whose pod runs provisioning first, which that runtime's wait for the
+	// pod's launcher allows past its boot timeout. The supervisor also adds it to the registration
+	// deadline's base Boot×RegistrationIntervals bound while a claim is still StateLaunching.
 	ProvisionBound() time.Duration
 	// LaunchBound is the longest one launch try — one Spawn or Resume call — may run on the
 	// runtime's own account before the runtime ends it with an error, so a try that never answers
@@ -305,8 +305,17 @@ func (k Known) Validate() error {
 // image's own copies; nil for every launch that installs nothing — every tmux launch, and every
 // Kubernetes launch that is not replacing a process on another plugin contract. The tmux runtime
 // ignores it: a pane always resumes on the plugin installed on the daemon's host, which the boot
-// gate already holds to the daemon's contract. Backend is the harness the process runs
-// (`worker_backends`, Backends); "" is Oh My Pi (Of).
+// gate already holds to the daemon's contract. Memory is whether the claim's tree was drawn into
+// the project's memory group (record.Issue.MemoryGroup on the tree's root, which internal/daemon's
+// specs reads): such a launch names the project's memory overlays last in PI_CONFIG_FILES and ends
+// its system prompt with the memory instructions; false for every no-memory tree and for the
+// controller, which runs in no tree. IssueTrailer is the issue key this pane stamps into its
+// commits, as the `Dispatch: <KEY>` trailer the agent's jj overlay writes (LEGION_ISSUE_TRAILER,
+// which each runtime sets itself): the claim's own issue when the project names its repository in
+// `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
+// project does not name, for a launch with no repository, and for the controller, which works
+// neither. Backend is the harness the process runs (`worker_backends`,
+// Backends); "" is Oh My Pi (Of).
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -322,6 +331,8 @@ type SpawnSpec struct {
 	DefaultBranch     string
 	ResumeSessionFile string
 	Plugins           *PluginInstall
+	Memory            bool
+	IssueTrailer      string
 	Backend           Backend
 }
 
@@ -336,14 +347,18 @@ type PluginInstall struct {
 	Contract          int
 }
 
-// PromptParts are the pieces of the agent's system prompt: its role prompt files, the sentence
-// that tells it which claim it is, and the operator's deployment instructions. The runtime
+// PromptParts are the pieces of the agent's system prompt, in the one order the runtime
 // concatenates them into exactly one `--append-system-prompt` word — one, because a second
-// occurrence of the flag replaces the first rather than adding to it.
+// occurrence of the flag replaces the first rather than adding to it: the role prompt files, the
+// sentence that tells the agent which claim it is, the operator's deployment instructions, and
+// the project's memory instructions. MemoryInstructionsPath is set only for a launch whose tree
+// was drawn into the memory group (SpawnSpec.Memory) under a project whose `memory` block names
+// an instructions file; "" for every other launch, whose prompt ends at the deployment's own.
 type PromptParts struct {
 	RolePromptPaths            []string
 	Addressing                 string
 	DeploymentInstructionsPath string
+	MemoryInstructionsPath     string
 }
 
 // ObservationKind is what a runtime can say about a process.
@@ -393,6 +408,14 @@ type Observation struct {
 	// charging nothing, rather than count a death. It is a field rather than a shape of Detail,
 	// which is prose for an operator and nothing else.
 	Displaced bool
+	// OutOfMemory is a Gone whose pod's one container — the container every role of the issue runs
+	// in — the kubelet ended for running out of memory. The end was the pod's, not the role's work:
+	// the turn it cut off was stopped by the pod running out of memory, whatever that turn was
+	// doing, and the work that filled the pod may have been another role's. The supervisor sends
+	// the role's task again behind a note saying so. Only the Sandbox runtime reports it, since a
+	// pod is the only thing the kubelet ends this way. It is a field rather than a shape of Detail
+	// for the reason Displaced is: Detail is prose for an operator and nothing else.
+	OutOfMemory bool
 }
 
 // GitIdentity is the author a worker's commits carry.
