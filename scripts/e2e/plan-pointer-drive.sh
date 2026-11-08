@@ -12,7 +12,8 @@
 # (docs/solutions/testing/prove-a-prompt-change-with-the-production-composer-a-real-session-and-the-old-prompt-as-the-control-INFRA-336.md).
 #
 # Each run stages one issue on a Dispatch server and a database of its own, runs one real headless
-# Oh My Pi session against it, and moves the plan under that session while it works:
+# Oh My Pi session against it, and moves the plan under that session while it works. One attempt
+# is these steps:
 #
 #   1. a database of the run's own on the PostgreSQL LEGION_TEST_PG_DSN names, and the e2e
 #      harness's Dispatch server on it (packages/dispatch/e2e/run-server.sh), whose agent bearer
@@ -22,23 +23,33 @@
 #      plan.md version 1 and the sixth version 8, and the plan review's approval at version 1, so
 #      "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are
 #      different answers. Each design names one call - `pulumi.Import`, `aws.s3.BucketV2`, and
-#      `pulumi.Alias` at the version written mid-session - and the plan's one task is to write
-#      that call to a file, so the score reads an artifact rather than prose about one;
+#      `pulumi.Alias` at the version written mid-session - and each of the plan's two tasks is to
+#      write that call to a file, so the score reads an artifact rather than prose about one. The
+#      first task's file carries `note: <call>` and the second `adopt: <call>`. The second is the
+#      file the row scores, because a worker that reads the plan again between the two tasks
+#      reads it before that file is written;
 #   3. the implementer's pane prompt, composed from the arm's daemon module;
 #   4. the session: `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`,
 #      `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*` and `PI_SESSION_*` variable of this shell
 #      unset, `OMP_SESSION_STORAGE=file`, and the staged server as its own Dispatch. Its task is
 #      an ordinary implementing assignment whose `Handoff:` line is the one the daemon renders
 #      (packages/daemon/internal/workflow/effects.go), naming plan version 1 and nothing else: it
-#      asks for the plan's one task, written to a file of the run's own, and for the round's
-#      `implement` handoff body, written to another, which a worker with no workspace can both
-#      do and which the role prompt reads the plan again before;
+#      asks for the plan's two tasks, each one's line written to a file of the run's own, and for
+#      the round's `implement` handoff body, written to a third, which a worker with no workspace
+#      can all do and which the role prompt reads the plan again before;
 #   5. the watcher, which writes plan.md version 9 - the second design change, with the plan
 #      review's approval of it - the moment the session's first read of the plan's text appears in
 #      the transcript, and at its bound when no such read appears;
-#   6. the run's row: every plan version the session read and when, which design it wrote, read
-#      off the file it wrote, the task line it was given, the version the accepted handoff record
-#      cites, the trigger, and the times the trigger fired and the version landed.
+#   6. the run's row: every plan version the session read and when, the design each of the two
+#      files names, read off the files, whether the two differ, the task line the session was
+#      given, the version the accepted handoff record cites, the trigger, and the times the
+#      trigger fired and the version landed.
+#
+# An attempt whose mid-session version landed after the session stopped writing is unscorable: no
+# turn of the session saw the new version, so the attempt is neither a pass nor a failure. The
+# shell prints one line for each such attempt, with the two times, and makes the run again, up to
+# PLAN_POINTER_DRIVE_ATTEMPTS attempts. Only a scorable attempt's row reaches the summary. A run
+# whose every attempt is unscorable fails.
 #
 #   LEGION_TEST_PG_DSN=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
 #     LEGION_OMP_PATH=<omp> bash scripts/e2e/plan-pointer-drive.sh [--runs <n>] [--base-commit <rev>]
@@ -50,10 +61,12 @@
 # is taken from (default `jj log -r 'trunk()'`); `git archive` takes `packages/daemon` and
 # `packages/envoy` of it, the second because `packages/daemon/go.mod` replaces
 # `github.com/sjawhar/envoy` with `../envoy` and the composer runs `go run` in that module.
-# PLAN_POINTER_DRIVE_TRIGGER_SECONDS (120) is the watcher's bound, and
-# PLAN_POINTER_DRIVE_SESSION_SECONDS (900) each session's. The run refuses to start - no database,
-# no server, no session - when LEGION_TEST_PG_DSN is unset or names a host that is not loopback,
-# when LEGION_OMP_PATH is not executable, or when either arm's daemon module is missing.
+# PLAN_POINTER_DRIVE_TRIGGER_SECONDS (120) is the watcher's bound,
+# PLAN_POINTER_DRIVE_SESSION_SECONDS (900) each session's, and PLAN_POINTER_DRIVE_ATTEMPTS (3)
+# how many attempts one run makes before an unscorable run fails. The run refuses to start - no
+# database, no server, no session - when LEGION_TEST_PG_DSN is unset or names a host that is not
+# loopback, when LEGION_OMP_PATH is not executable, or when either arm's daemon module is
+# missing.
 #
 # Each run's database is dropped when the run ends, and the teardown drops every database the run
 # made, on success and on failure: the PostgreSQL server is a shared one. The work directory under
@@ -67,7 +80,9 @@
 # is an address nothing listens on, so no role topic and no message reach the session; and
 # `skills/legion-worker/SKILL.md` is the one this box has installed for a session's `skill://`
 # read, never the checkout's, so a change to that file is read by this drive rather than driven by
-# it. Two arms over a few runs are a reproduction and a control, not a rate.
+# it. A run whose two files name the same design does not say whether the session read the plan
+# again: it says only that the second file carries no newer design. Two arms over a few runs are
+# a reproduction and a control, not a rate.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -122,6 +137,7 @@ omp=${LEGION_OMP_PATH:-}
 gh_path=${LEGION_GH_PATH:-}
 trigger_seconds=${PLAN_POINTER_DRIVE_TRIGGER_SECONDS:-120}
 session_seconds=${PLAN_POINTER_DRIVE_SESSION_SECONDS:-900}
+attempts=${PLAN_POINTER_DRIVE_ATTEMPTS:-3}
 head_module=$root/packages/daemon
 
 # The work directory is made once the prerequisites hold, so a refused run leaves nothing behind.
@@ -129,6 +145,10 @@ work=''
 dispatch_pid=''
 watcher_pid=''
 databases=()
+
+# The directory of the attempt run_attempt made, and of the scorable attempt run_one kept.
+attempt_dir=''
+kept_dir=''
 
 # cleanup stops what the run started, drops every database it made, and exits with rc: the
 # script's own status for EXIT, 128 plus the signal's number for INT and TERM, so an interrupted
@@ -164,11 +184,11 @@ database_url() {
   printf '%s://%s%s/%s%s\n' "$db_scheme" "$db_userinfo" "$db_hostport" "$1" "$db_params"
 }
 
-# json_field FIELD FILE prints one string or number member of the JSON object FILE holds. bun is
-# already required: it runs this script's own driver.
+# json_field FIELD FILE prints one string, number or boolean member of the JSON object FILE
+# holds. bun is already required: it runs this script's own driver.
 json_field() {
   # shellcheck disable=SC2016 # the JavaScript below is bun's, not this shell's
-  bun -e 'const file = process.argv[2]; const value = JSON.parse(require("node:fs").readFileSync(file, "utf8"))[process.argv[1]]; if ((typeof value !== "string" && typeof value !== "number") || value === "") { console.error(`no ${process.argv[1]} in ${file}`); process.exit(1); } console.log(value);' "$1" "$2"
+  bun -e 'const file = process.argv[2]; const value = JSON.parse(require("node:fs").readFileSync(file, "utf8"))[process.argv[1]]; if (!["string", "number", "boolean"].includes(typeof value) || value === "") { console.error(`no ${process.argv[1]} in ${file}`); process.exit(1); } console.log(value);' "$1" "$2"
 }
 
 begin prerequisites
@@ -227,7 +247,10 @@ base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null
 case "$runs" in
   '' | *[!0-9]* | 0*) fail "--runs takes a count from 1 up, not '$runs'" ;;
 esac
-note "PostgreSQL $db_host:$db_port as $db_user, $runs run(s) per arm"
+case "$attempts" in
+  '' | *[!0-9]* | 0*) fail "PLAN_POINTER_DRIVE_ATTEMPTS takes a count from 1 up, not '$attempts'" ;;
+esac
+note "PostgreSQL $db_host:$db_port as $db_user, $runs run(s) per arm, up to $attempts attempt(s) each"
 note "head arm $head_module, base arm $base_sha"
 pass
 
@@ -258,15 +281,17 @@ for name in "${inherited[@]}"; do
   esac
 done
 
-# run_one ARM NUMBER MODULE stages one issue, runs one session on the prompt MODULE composes, and
-# prints that run's row.
-run_one() {
-  local arm=$1 number=$2 module=$3
-  local run=$arm-$number run_dir=$work/$arm-$number
-  # The database is this run's own, named for this shell, and dropped when the run ends.
-  local database=ppd_${$}_${arm}_${number} dispatch_port dispatch_url issue title versions status=0
-  local session_id=plan-pointer-drive-$arm-$number
+# run_attempt ARM NUMBER MODULE ATTEMPT stages one issue, runs one session on the prompt MODULE
+# composes, prints that attempt's row, and sets attempt_dir to the directory holding it.
+run_attempt() {
+  local arm=$1 number=$2 module=$3 attempt=$4
+  local run="$arm-$number try $attempt" run_dir=$work/$arm-$number-try$attempt
+  # The database is this attempt's own, named for this shell, and dropped when the attempt ends.
+  local database=ppd_${$}_${arm}_${number}_${attempt} dispatch_port dispatch_url issue title
+  local versions status=0
+  local session_id=plan-pointer-drive-$arm-$number-try$attempt
   local -a session_env args
+  attempt_dir=$run_dir
   evidence=$run_dir
   mkdir -p "$run_dir/logs" "$run_dir/cwd" "$run_dir/tmp"
 
@@ -339,8 +364,9 @@ run_one() {
   # The `Handoff:` line is the one the daemon renders (task, effects.go): the phase's word, the
   # version the daemon accepted, and the command that reads that version. Nothing else in the task
   # names a plan version, and nothing in it says the plan can have moved.
-  printf 'Continue %s. Issue: %s. Phase: implementing. Handoff: plan version 1 (dispatch handoff-read --issue %s --phase plan --version 1). This box carries no workspace, no jj and no GitHub for this issue, so your round is the plan task and your own record of it: write the plan task'"'"'s line to %s with the write tool, then write your `implement` handoff body to %s with the write tool. Record nothing with dispatch and open no pull request: the round ends when both files are written.\n' \
-    "$title" "$issue" "$issue" "$run_dir/adoption.txt" "$run_dir/implement.json" >"$run_dir/task.txt"
+  printf 'Continue %s. Issue: %s. Phase: implementing. Handoff: plan version 1 (dispatch handoff-read --issue %s --phase plan --version 1). This box carries no workspace, no jj and no GitHub for this issue, so your round is the plan'"'"'s two tasks and your own record of them: write task 1'"'"'s line to %s with the write tool, then write task 2'"'"'s line to %s with the write tool, then write your `implement` handoff body to %s with the write tool. Record nothing with dispatch and open no pull request: the round ends when the three files are written.\n' \
+    "$title" "$issue" "$issue" "$run_dir/note.txt" "$run_dir/adoption.txt" "$run_dir/implement.json" \
+    >"$run_dir/task.txt"
   note "task: $(cat "$run_dir/task.txt")"
   pass
 
@@ -363,8 +389,8 @@ run_one() {
 
   begin "$run row"
   PLAYWRIGHT_BASE_URL=$dispatch_url E2E_AGENT_TOKEN=e2e-token \
-    bun "$root/scripts/e2e/plan-pointer-drive.ts" score "$run_dir" "$arm" "$number" ||
-    fail "the run's row did not score; see $run_dir"
+    bun "$root/scripts/e2e/plan-pointer-drive.ts" score "$run_dir" "$arm" "$number" "$attempt" ||
+    fail "the attempt's row did not score; see $run_dir"
   pass
 
   begin "$run teardown"
@@ -375,18 +401,45 @@ run_one() {
   pass
 }
 
+# run_one ARM NUMBER MODULE makes one run of that arm. It makes attempts until one is scorable,
+# up to `attempts`, and sets kept_dir to that attempt's directory. An unscorable attempt is named
+# with the two times that make it one, and its row reaches no summary: the mid-session version
+# landed after the session stopped writing, so no turn of that session saw it.
+run_one() {
+  local arm=$1 number=$2 module=$3
+  local attempt row scorable
+  kept_dir=''
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    run_attempt "$arm" "$number" "$module" "$attempt"
+    row=$attempt_dir/row.json
+    scorable=$(json_field scorable "$row") || fail "the row in $row says nothing about scorable"
+    if [ "$scorable" = true ]; then
+      kept_dir=$attempt_dir
+      return 0
+    fi
+    note "$arm-$number try $attempt discarded as unscorable: the mid-session version landed at $(json_field landedAt "$row"), after the session stopped writing at $(json_field sessionLastWroteAt "$row")"
+  done
+  begin "$arm-$number"
+  fail "all $attempts attempt(s) were unscorable: the mid-session version landed after the session stopped writing each time, so the run is neither a pass nor a failure; see $work"
+}
+
+# The scorable attempt of each run, per arm: what the summary counts.
+head_dirs=()
+base_dirs=()
 for ((i = 1; i <= runs; i++)); do
   run_one head "$i" "$head_module"
+  head_dirs+=("$kept_dir")
   run_one base "$i" "$base_module"
+  base_dirs+=("$kept_dir")
 done
 
 begin summary
 evidence=$work
 for arm in head base; do
-  dirs=()
-  for ((i = 1; i <= runs; i++)); do dirs+=("$work/$arm-$i"); done
+  declare -n kept="${arm}_dirs"
   PLAYWRIGHT_BASE_URL=http://127.0.0.1:1 \
-    bun "$root/scripts/e2e/plan-pointer-drive.ts" summarize "$arm" "${dirs[@]}" ||
+    bun "$root/scripts/e2e/plan-pointer-drive.ts" summarize "$arm" "${kept[@]}" ||
     fail "the $arm arm's rows did not summarize"
+  unset -n kept
 done
 pass

@@ -6,7 +6,7 @@
  *   PLAYWRIGHT_BASE_URL=http://127.0.0.1:<port> E2E_AGENT_TOKEN=e2e-token \
  *     bun scripts/e2e/plan-pointer-drive.ts <step> <run directory> [...]
  *
- * The steps, in the order one run makes them:
+ * The steps, in the order one attempt of a run makes them:
  *
  *   seed <run>                  Seeds the staged issue on the run's own Dispatch through
  *                               packages/dispatch/e2e/api.ts, and writes <run>/seed.json.
@@ -18,8 +18,9 @@
  *                               version with the newest approval, and writes <run>/advance.json.
  *                               With no such read inside <seconds>, it writes that version at the
  *                               bound and says so.
- *   score <run> <arm> <n>       Reads the transcript and the file the session wrote, prints the
- *                               run's row, and writes <run>/row.json.
+ *   score <run> <arm> <n> <attempt>
+ *                               Reads the transcript and the two files the session wrote, prints
+ *                               the run's row, and writes <run>/row.json.
  *   summarize <arm> <run>...    Prints one summary line over those runs' rows.
  *
  * Every plan.md version carries the marker `PLANREV-<version>`, which is how a tool result in the
@@ -125,6 +126,8 @@ interface PlanRead {
 interface Row {
   readonly arm: string;
   readonly run: string;
+  /** Which attempt of that run wrote this row: an unscorable attempt is made again. */
+  readonly attempt: number;
   readonly issue: string;
   readonly taskHandoffVersion: number;
   readonly handoffCitesPlanVersion: number;
@@ -135,11 +138,19 @@ interface Row {
   readonly firedAt: string;
   readonly landedAt: string;
   readonly sessionLastWroteAt: string;
-  /** The call the session wrote into its file, `none` when the file holds no design's call and
-   *  `several` when it holds more than one. */
+  /** The call the session wrote into the first task's file, `none` when the file holds no
+   *  design's call and `several` when it holds more than one. */
+  readonly firstWrote: string;
+  /** Which design that call is: `early`, `standing`, `mid`, `none` or `several`. */
+  readonly firstDesign: string;
+  /** The call the session wrote into the second task's file, the one the summary counts, read
+   *  the same way. */
   readonly wrote: string;
   /** Which design that call is: `early`, `standing`, `mid`, `none` or `several`. */
   readonly design: string;
+  /** Whether the two files name different designs, which is the plan read again between the two
+   *  tasks. Two files that name the same design say nothing about a second read. */
+  readonly designsDiffer: boolean;
   /** Whether every plan read of the session's is older than the mid-session version's landing. */
   readonly startOnly: boolean;
   /** False when the mid-session version landed after the session stopped writing, which is a run
@@ -161,7 +172,10 @@ function writeJson(file: string, value: unknown): void {
 }
 
 /** The plan's text at `revision`, carrying `design`. Every version is this text: an edit moves
- *  the marker, and the two design changes replace the one sentence. */
+ *  the marker, and the two design changes replace the one sentence. The plan holds two tasks,
+ *  and each one asks for the design's own call in a file of its own: a worker that reads the
+ *  plan again before the second task writes the design that stands then, and a worker that reads
+ *  it once writes the same design twice. */
 function planText(issue: string, revision: number, design: Design): string {
   return `# How ${issue} moves the bucket
 
@@ -171,10 +185,16 @@ Plan revision PLANREV-${revision}.
 
 ${design.sentence}
 
-## Task 1: write the adoption line
+## Task 1: write the design note
 
-Write one line to the file your task names: \`adopt: <call>\`, where \`<call>\` is the call the
-design above names. Write that line and nothing else, and do no other task of this issue.
+Write one line to the file your task names for this task: \`note: <call>\`.
+\`<call>\` is the call the design above names. Write that line and nothing else.
+
+## Task 2: write the adoption line
+
+Write one line to the file your task names for this task: \`adopt: <call>\`.
+\`<call>\` is the call the design above names. Write that line and nothing else.
+Do no other task of this issue.
 `;
 }
 
@@ -260,9 +280,9 @@ The bucket serves the same objects from the new account.
   };
   writeJson(path.join(runDir, "seed.json"), seeded);
   process.stdout.write(
-    `   seeded ${issue.key}: plan.md v${versionsAtStart} (${standing.call} since v${standingFrom}),` +
-      ` ${handoffRecords} plan handoffs, the task's v${citedByTaskHandoff} citing plan.md` +
-      ` v${citedByTaskHandoff} (${early.call}), approved at v${citedByTaskHandoff}\n`
+    `   seeded ${issue.key}: plan.md v${versionsAtStart} (two tasks, ${standing.call} since` +
+      ` v${standingFrom}), ${handoffRecords} plan handoffs, the task's v${citedByTaskHandoff}` +
+      ` citing plan.md v${citedByTaskHandoff} (${early.call}), approved at v${citedByTaskHandoff}\n`
   );
 }
 
@@ -380,7 +400,8 @@ async function advance(runDir: string, boundSeconds: number): Promise<void> {
   writeJson(path.join(runDir, "advance.json"), landed);
 }
 
-/** Which design the session wrote, read off the file it wrote rather than off what it said. */
+/** Which design a file the session wrote names, read off the file rather than off what the
+ *  session said about it. */
 function wroteDesign(file: string): { wrote: string; design: string } {
   if (!existsSync(file)) return { design: "none", wrote: "none" };
   const written = readFileSync(file, "utf8");
@@ -399,6 +420,7 @@ function rowLine(row: Row): string {
     "row",
     `arm=${row.arm}`,
     `run=${row.run}`,
+    `attempt=${row.attempt}`,
     `issue=${row.issue}`,
     `task-handoff=plan-version-${row.taskHandoffVersion}`,
     `handoff-cites=plan.md@v${row.handoffCitesPlanVersion}`,
@@ -411,26 +433,36 @@ function rowLine(row: Row): string {
     `fired=${row.firedAt === "" ? "none" : row.firedAt}`,
     `landed=${row.landedAt}`,
     `session-last-wrote=${row.sessionLastWroteAt}`,
+    `first-wrote=${row.firstWrote}`,
+    `first-design=${row.firstDesign}`,
     `wrote=${row.wrote}`,
     `design=${row.design}`,
+    `designs-differ=${row.designsDiffer ? "yes" : "no"}`,
     `start-only-read=${row.startOnly ? "yes" : "no"}`,
     `scorable=${row.scorable ? "yes" : "no"}`,
   ].join(" ");
 }
 
-function score(runDir: string, arm: string, run: string): void {
+function score(runDir: string, arm: string, run: string, attempt: number): void {
   const seeded = readJson<Seed>(path.join(runDir, "seed.json"));
   const landed = readJson<Advance>(path.join(runDir, "advance.json"));
   const file = transcript(runDir);
   if (file === undefined) fail(`the session under ${runDir}/sess wrote no transcript`);
   const reads = planReads(file);
   const sessionLastWroteAt = lastWroteAt(file);
+  // The first task's file is the one the row records, the second task's the one it scores: the
+  // second is written after a read of the plan between the two tasks would have happened.
+  const first = wroteDesign(path.join(runDir, "note.txt"));
   const written = wroteDesign(path.join(runDir, "adoption.txt"));
   const row: Row = {
     approvedAtStart: seeded.approvedPlanVersionAtStart,
     arm,
+    attempt,
     design: written.design,
+    designsDiffer: first.design !== written.design,
     firedAt: landed.firedAt,
+    firstDesign: first.design,
+    firstWrote: first.wrote,
     handoffCitesPlanVersion: seeded.handoffCitesPlanVersion,
     issue: seeded.issue,
     landedAt: landed.landedAt,
@@ -455,11 +487,12 @@ function summarize(arm: string, runDirs: readonly string[]): void {
     "summary",
     `arm=${arm}`,
     `runs=${rows.length}`,
-    `scorable=${counted((row) => row.scorable)}`,
+    `attempts=${rows.reduce((made, row) => made + row.attempt, 0)}`,
     `wrote-mid=${counted((row) => row.design === mid.name)}`,
     `wrote-standing=${counted((row) => row.design === standing.name)}`,
     `wrote-early=${counted((row) => row.design === early.name)}`,
     `wrote-other=${counted((row) => !["early", "mid", "standing"].includes(row.design))}`,
+    `designs-differ=${counted((row) => row.designsDiffer)}`,
     `start-only-read=${counted((row) => row.startOnly)}`,
     `read-after-the-change=${counted((row) => row.reads.some((read) => read.at > row.landedAt))}`,
     `trigger-at-bound=${counted((row) => row.trigger === "bound")}`,
@@ -482,8 +515,8 @@ switch (step) {
     await advance(rest[0], Number(rest[1]));
     break;
   case "score":
-    if (rest.length !== 3) fail("usage: score <run directory> <arm> <run>");
-    score(rest[0], rest[1], rest[2]);
+    if (rest.length !== 4) fail("usage: score <run directory> <arm> <run> <attempt>");
+    score(rest[0], rest[1], rest[2], Number(rest[3]));
     break;
   case "summarize":
     if (rest.length < 2) fail("usage: summarize <arm> <run directory>...");

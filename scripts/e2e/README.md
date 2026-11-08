@@ -4205,32 +4205,38 @@ Its inputs:
 
 | input | what it is |
 | :--- | :--- |
-| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each run creates a database of its own on, named `ppd_<pid>_<arm>_<n>`, where the database the DSN itself names is never written and every database the run made is dropped when it ends, on success and on failure |
+| `LEGION_TEST_PG_DSN` | required: the loopback PostgreSQL server each attempt creates a database of its own on, named `ppd_<pid>_<arm>_<n>_<attempt>`, where the database the DSN itself names is never written and every database the run made is dropped when it ends, on success and on failure |
 | `LEGION_OMP_PATH` | required: the Oh My Pi binary each session runs, which must reach a model |
 | `LEGION_GH_PATH` | optional: the real `gh` the composer is told; the first `gh` on `PATH` otherwise, which the composer refuses when it is a script |
 | `--runs <n>` | how many runs each arm makes, default 1; three or more is what a reading needs |
 | `--base-commit <rev>` | the control's commit, default `jj log -r 'trunk()'` of this checkout |
 | `PLAN_POINTER_DRIVE_TRIGGER_SECONDS` | the watcher's bound, default 120 |
 | `PLAN_POINTER_DRIVE_SESSION_SECONDS` | each session's bound, default 900 |
+| `PLAN_POINTER_DRIVE_ATTEMPTS` | how many attempts one run makes before an unscorable run fails, default 3 |
 
-Each run stages its own world and reads one row off it:
+Each attempt of a run stages its own world and reads one row off it:
 
 | step | what it does |
 | :--- | :--- |
-| `<arm>-<n> database` | `createdb` on that server |
-| `<arm>-<n> dispatch` | the e2e harness's Dispatch on it ([`packages/dispatch/e2e/run-server.sh`](../../packages/dispatch/e2e/run-server.sh), its fakes at port 1 and no secrets broker, as pi-legion's skill-scenario rig starts it), on the port the kernel chose, read from its own `msg="dispatch: listening"` line; its agent bearer is the pinned `e2e-token` |
-| `<arm>-<n> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` at eight versions whose design changes at version 4, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), and the plan review's approval at version 1, so "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are three different answers |
-| `<arm>-<n> prompt` | the arm's prompt, composed as above |
-| `<arm>-<n> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` |
-| `<arm>-<n> task` | the task line, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names no plan version other than that line's and nowhere says the plan can have moved |
-| `<arm>-<n> session` | one real headless session, `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*` and `PI_SESSION_*` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), the staged server as its Dispatch and an Envoy address nothing listens on, the watcher beside it writing plan.md version 9 — the second design change, with the plan review's approval of it — the moment the session's first read of the plan's text reaches the transcript, or at its bound when no such read does |
-| `<arm>-<n> row` | the run's row, from the transcript and the file the session wrote |
+| `<arm>-<n> try <k> database` | `createdb` on that server |
+| `<arm>-<n> try <k> dispatch` | the e2e harness's Dispatch on it ([`packages/dispatch/e2e/run-server.sh`](../../packages/dispatch/e2e/run-server.sh), its fakes at port 1 and no secrets broker, as pi-legion's skill-scenario rig starts it), on the port the kernel chose, read from its own `msg="dispatch: listening"` line; its agent bearer is the pinned `e2e-token` |
+| `<arm>-<n> try <k> seed` | the staged issue through [`packages/dispatch/e2e/api.ts`](../../packages/dispatch/e2e/api.ts): a spec, a `plan.md` of two tasks at eight versions whose design changes at version 4, six `plan` handoff records (the first citing plan.md version 1, the sixth version 8), and the plan review's approval at version 1, so "approved" (v1), "the version the task's pointer cites" (v1) and "newest" (v8) are three different answers |
+| `<arm>-<n> try <k> prompt` | the arm's prompt, composed as above |
+| `<arm>-<n> try <k> dispatch-cli` | the real `dispatch` CLI reads the staged plan from the session's own environment before the session relies on it: `dispatch read --issue <key> --artifact plan-md` must print `Versions: 8` |
+| `<arm>-<n> try <k> task` | the task line, whose `Handoff:` sentence is byte for byte the shape the daemon renders (`task`, [`packages/daemon/internal/workflow/effects.go`](../../packages/daemon/internal/workflow/effects.go)), and which names a file for each of the plan's two tasks, a third for the `implement` handoff body, no plan version other than that line's, and nowhere says the plan can have moved |
+| `<arm>-<n> try <k> session` | one real headless session, `omp -p --session-dir`, with every `LEGION_*`, `DISPATCH_*`, `ENVOY_*`, `NATS_*`, `GH_*`, `GITHUB_*`, `OMP_SESSION_*` and `PI_SESSION_*` variable of the caller's shell unset, `OMP_SESSION_STORAGE=file` (which is what writes the transcript), the staged server as its Dispatch and an Envoy address nothing listens on, the watcher beside it writing plan.md version 9 — the second design change, with the plan review's approval of it — the moment the session's first read of the plan's text reaches the transcript, or at its bound when no such read does |
+| `<arm>-<n> try <k> row` | the attempt's row, from the transcript and the two files the session wrote |
 
-Each design names one call the plan tells the implementer to write to a file — `pulumi.Import` at version 1, `aws.s3.BucketV2` from version 4, `pulumi.Alias` at the version written mid-session — so the row says which design the session built from by reading that file, never by reading what the session said.
+Each design names one call — `pulumi.Import` at version 1, `aws.s3.BucketV2` from version 4, `pulumi.Alias` at the version written mid-session — and each of the plan's two tasks tells the implementer to write that call to a file of its own, `note: <call>` for the first task and `adopt: <call>` for the second.
+The row says which design the session built from by reading those two files, never by reading what the session said.
+The second task's file is the one the summary counts, because a worker that reads the plan again between the two tasks reads it before that file is written.
 Every version of `plan.md` carries a `PLANREV-<version>` marker, which is how a tool result in the transcript says which version the session read, and how the watcher tells a read of the plan from any other command.
-A row names the arm, the run, the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, every plan read with its time, the trigger and the times it fired and the version landed, the call the session wrote, and two judgements:
-`start-only-read=yes` when every plan read of the session's is older than the mid-session version's landing, and `scorable=no` when that version landed after the session stopped writing, which is a run to make again rather than a pass or a failure.
-One `summary` line per arm counts those rows.
+A row names the arm, the run, which attempt of it wrote the row, the task's handoff pointer, the version that handoff record cites, the newest and approved versions at the start, every plan read with its time, the trigger and the times it fired and the version landed, the call each of the two files holds, and three judgements:
+`designs-differ=yes` when the two files name different designs, which is the plan read again between the two tasks, `start-only-read=yes` when every plan read of the session's is older than the mid-session version's landing, and `scorable=no` when that version landed after the session stopped writing.
+An unscorable attempt is neither a pass nor a failure, since no turn of its session saw the new version.
+The shell prints one line for it, with the two times, and makes the run again, up to `PLAN_POINTER_DRIVE_ATTEMPTS` attempts.
+A run whose every attempt is unscorable fails.
+One `summary` line per arm counts the kept rows, one per run, and its `attempts=` is how many sessions that arm ran, the discarded attempts included.
 The work directory under `TMPDIR` is kept and printed either way, since the transcripts, prompts, task lines and rows in it are the evidence;
 only the extracted base tree is removed.
 
@@ -4239,6 +4245,7 @@ no daemon runs, so that the task line it writes is the line a daemon sends is th
 the session holds no `legion` tool, no jj workspace and no GitHub, so it completes no phase, opens no pull request and records nothing on the issue;
 Envoy is an address nothing listens on, so no role topic, message or notice reaches the session;
 and `skill://legion-worker` resolves to the `skills/legion-worker/SKILL.md` installed on the box, never this checkout's, so a change to that file is read by this drive rather than driven by it.
+A run whose two files name the same design does not say whether the session read the plan again, only that the second file carries no newer design.
 Two arms over a few runs are a reproduction and a control, not a rate.
 
 ## envoy-session-delivery.sh
