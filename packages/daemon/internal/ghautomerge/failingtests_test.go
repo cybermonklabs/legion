@@ -399,10 +399,10 @@ func TestTheFailingRunsLineSaysWhatEachJobsLogStatesFailed(t *testing.T) {
 
 // One removal names as many of its failing runs as fit a bound of their own and counts the rest,
 // however many jobs a merge group failed across. One job's line is held under some 2,400 units
-// by the names and the first failure line it carries (failingTestsNamed, failureLineUnits), so a
-// base broken across twenty jobs would write fifty thousand into the one block Dispatch holds a
-// post to, which Dispatch refuses whole (INFRA-1442). The first run is named whatever its own
-// line costs: a removal that named none would say nothing of what failed.
+// before any quoting by the names and the first failure line it carries (failingTestsNamed,
+// failureLineUnits), so a base broken across twenty jobs would write fifty thousand into the one
+// block Dispatch holds a post to, which Dispatch refuses whole (INFRA-1442). The first run is
+// named whatever its own line costs: a removal that named none would say nothing of what failed.
 func TestARemovalNamesItsRunsUpToABoundAndCountsTheRest(t *testing.T) {
 	// Each line is the worst a job's line runs to: ten cut names and a cut first failure line.
 	line := func(i int) FailingRun {
@@ -436,9 +436,10 @@ func TestARemovalNamesItsRunsUpToABoundAndCountsTheRest(t *testing.T) {
 		t.Fatalf("two runs are named %q, want both of them, \"; \" between", joined)
 	}
 	// The first run is named whole however long its own line is (FailingRuns), which is the one
-	// promise the bound on the rest has to give way to. No line a job's log writes reaches that
-	// far — ten cut names and a cut first failure line come to some 2,400 units — so the run
-	// this reads it with is built past failingRunsUnits on purpose.
+	// promise the bound on the rest has to give way to. The shapes measured here come nowhere
+	// near that far — ten cut names and a cut first failure line are some 2,400 units as the
+	// read writes them, and 22,092 where every one of them needed quoting (failureLineUnits) —
+	// so the run this reads the promise with is built past failingRunsUnits on purpose.
 	huge := FailingRun{Name: "integration-00", Result: "failure", URL: failedRun,
 		Log: ": its log names " + strings.Repeat("x", failingRunsUnits) + " as failing"}
 	if one := FailingRuns([]FailingRun{huge}); one != huge.String() {
@@ -518,6 +519,43 @@ func TestALogsLineIsCutToWhatARunsLineCarries(t *testing.T) {
 				t.Fatalf("cutLine of %d runes = %d runes, want %d", len([]rune(tc.line)), len([]rune(got)), len([]rune(tc.want)))
 			}
 		})
+	}
+}
+
+// A run's line carries three strings of GitHub's before whatever its log said: the check's name,
+// how it ended and the run it failed in. Each passes one cut there (FailingRun.String), since
+// each is as long as whoever wrote it made it — a generated job name runs as long as the matrix
+// shape it was built for, the result is the conclusion GitHub answered written as it came, and
+// the link is an Actions run's URL only where the check ran as an Actions job: a third-party
+// App's check run is named by the details URL that App wrote and a commit status by its target
+// URL (failingRuns), each as long as whoever posted the check made it. What is inside the bound
+// is left exactly as it stands, GitHub's own run URL among it (INFRA-1442).
+func TestARunsLineCutsEveryStringOfGitHubsItCarries(t *testing.T) {
+	// Each of the three ends in a word of its own, standing past the bound or across it, so a
+	// line still carrying that word was never cut there.
+	given := []struct{ what, value, past string }{
+		{"check's name", strings.Repeat("integration-shard-", 11) + "end", "end"}, // one rune past the bound
+		{"result", strings.Repeat("action_required-", 20) + "last", "last"},
+		{"link", "https://checks.example/builds/42?" + strings.Repeat("trace=0123456789&", 15) + "tail", "tail"},
+	}
+	cut := FailingRun{Name: given[0].value, Result: given[1].value, URL: given[2].value}.String()
+	for _, long := range given {
+		runes := []rune(long.value)
+		switch {
+		case strings.Contains(cut, long.past):
+			t.Fatalf("a run's line carries the end of the %d-rune %s GitHub gave it, want it cut to %d runes: %q",
+				len(runes), long.what, failureLineUnits, cut)
+		case !strings.Contains(cut, string(runes[:failureLineUnits])+"…"):
+			t.Fatalf("a run's line does not carry the first %d runes of the %d-rune %s and the mark of the cut: %q",
+				failureLineUnits, len(runes), long.what, cut)
+		}
+	}
+	// A name, a result and a run URL inside the bound are written as they came, the link
+	// GitHub names a failing Actions job with among them, which is some seventy characters.
+	run := FailingRun{Name: "integration", Result: "failure", URL: failedRun,
+		Log: ": its log names TestTheQueueTakesTheEntryOut as failing"}
+	if line := run.String(); line != "integration (failure, "+failedRun+")"+run.Log {
+		t.Fatalf("a run of strings inside the bound is named %q, want each of them as it stands", line)
 	}
 }
 

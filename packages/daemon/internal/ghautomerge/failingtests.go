@@ -177,10 +177,11 @@ const (
 )
 
 // failingTestsNamed is how many names one job's line carries, the rest counted after them ("and
-// 12 more"), and failureLineUnits how long any one string out of GitHub stays in that line —
-// each name, the first failure line it quotes, and the reason a read it could not make gives
-// (cutLine): a name is one word of a log line, and a table-driven subtest named for the
-// sentence its case is runs as long as the line it is printed on.
+// 12 more"), and failureLineUnits how long any one string out of GitHub stays in a line this
+// package writes — each name, the first failure line it quotes, the reason a read it could not
+// make gives, and the name, result and link of the run itself (cutLine, FailingRun.String): a
+// name is one word of a log line, and a table-driven subtest named for the sentence its case is
+// runs as long as the line it is printed on.
 //
 // Both are read off the bound the whole line has to fit under. Every line this package writes
 // is rendered into one block of a Dispatch post — the implementer's task and the architect's
@@ -190,15 +191,31 @@ const (
 // which is the failure this read exists to spare it. A mass failure states hundreds of names,
 // so a read that kept them all would write hundreds of kilobytes into that one block.
 //
-// What holds one job's line under some 2,400 units is not the shapes it happens to carry but
-// the rule it is written to: every string of GitHub's in it passes through cutLine exactly once
-// (jobFailures). A line that names tests is then at most failingTestsNamed names of
-// failureLineUnits runes, one first failure line of failureLineUnits, and the fixed prose
-// holding them; a line that could not read the log is one cut reason and one fixed sentence,
-// whatever GitHub answered the read with. The longest shape measured here, the browser row of
-// 141 characters browserLog carries, is well inside the first of those: ten of it and a first
-// failure line cut to 200 hold one job's line under 1,800 units. How many such lines one
-// removal names is bounded in its turn (failingRunsUnits).
+// What holds one job's line is not the shapes it happens to carry but the rule it is written
+// to: every string of GitHub's in it passes through cutLine exactly once (jobFailures). A line
+// that names tests is then at most failingTestsNamed names of failureLineUnits runes, one
+// first failure line of failureLineUnits, and the fixed prose holding them — some 2,400 units
+// as the read writes them — and a line that could not read the log is one cut reason and one
+// fixed sentence, whatever GitHub answered the read with.
+//
+// That 2,400 is counted before the quoting, and what a message carries is what the quoting
+// makes of it: a name is quoted where it is not plain text (quoteName) and the first failure
+// line always (the %q in jobFailures), both of them after the cut. Go's quoting writes one
+// unprintable rune as an escape of up to ten characters ("\U000e0001"), so a string of
+// failureLineUnits runes is at most 10 × failureLineUnits + 2 = 2,002 units once quoted. One
+// job's line is then at most ten such names (20,020), the ", " between them (9 × 2 = 18), one
+// first failure line (2,002) and the fixed prose holding them (52: 16 units before the names
+// and 36 before the first failure line), which is 22,092 units, a dozen more where the names
+// it did not state are counted after them ("and 12 more"). That is the quoted count, the one
+// Dispatch measures a block in, and it leaves some 9,900 of the 32,000 units one block takes.
+// It also stands above failingRunsUnits, the bound a removal's runs are held to, so a removal
+// carrying a line of that shape names it as its first run, which is never cut short, and
+// counts the rest.
+//
+// No log measured here comes near that, since a name of ordinary text is quoted at two units
+// or not at all: the longest shape measured, the browser row of 141 characters browserLog
+// carries, holds one job's line under 1,800 units, ten of it and a first failure line cut to
+// 200. How many such lines one removal names is bounded in its turn (failingRunsUnits).
 const (
 	failingTestsNamed = 10
 	failureLineUnits  = 200

@@ -156,14 +156,17 @@ type FailingRun struct {
 // String is the one line a removal names this run with: the check, how it ended and the run it
 // failed in, with what its log said after them where it has been read.
 //
-// Name and Result come out of GitHub's own check list, and this is the one place either is
-// written, so both pass through cutLine here: that is the rule every string of GitHub's this
-// package renders is held to, one cut each at one place (jobFailures). Log arrives cut, by the
-// read that wrote it. URL is deliberately left whole: it is GitHub's own run URL, of a fixed
-// shape and some seventy characters, so a cut of it would buy nothing and leave a broken link
-// where the one thing every line of a run carries is the link to read the rest at.
+// Name, Result and URL come out of GitHub's own check list, and this is the one place any of
+// them is written, so all three pass through cutLine here: that is the rule every string of
+// GitHub's this package renders is held to, one cut each at one place (jobFailures). Log
+// arrives cut, by the read that wrote it. The cut costs GitHub's own run link nothing, since
+// cutLine leaves a string of failureLineUnits runes or fewer exactly as it stands and that
+// link is of a fixed shape and some seventy characters. What it holds is the link of no fixed
+// shape: a third-party App's check run is named by the details URL that App wrote and a commit
+// status by its target URL (failingRuns), each as long as whoever posted the check made it,
+// and the first run of a removal is named however long its line is (FailingRuns).
 func (f FailingRun) String() string {
-	return fmt.Sprintf("%s (%s, %s)%s", cutLine(f.Name), cutLine(f.Result), f.URL, f.Log)
+	return fmt.Sprintf("%s (%s, %s)%s", cutLine(f.Name), cutLine(f.Result), cutLine(f.URL), f.Log)
 }
 
 // failingRunsUnits is how long the runs of one removal are named for before the rest are
@@ -175,10 +178,16 @@ func (f FailingRun) String() string {
 // withdrawal's post, the re-submission's, and merge-removed — and Dispatch refuses a block over
 // DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units (packages/contracts), naming it; the daemon then
 // tells the architect its message was refused, which is the failure this bound exists to spare
-// it. One job's line is bounded in itself (failingTestsNamed, failureLineUnits), at some 2,400
-// units in the worst measured shape, but a merge group a broken base fails across twenty jobs
-// names twenty such lines. Sixteen thousand holds every removal's runs to half that block,
-// which leaves the sentence they stand in, and the prose around it, the other half.
+// it. One job's line is bounded in itself (failingTestsNamed, failureLineUnits): some 2,400
+// units of names and prose as the read writes them, 22,092 once they are quoted, which is the
+// count a Dispatch post is measured in, and at most 608 more for the run's own name, result
+// and link, each cut to failureLineUnits runes and the mark of the cut here
+// (FailingRun.String). A merge group a broken base fails across twenty jobs names twenty such
+// lines. Sixteen thousand holds every removal's runs to half that block, which leaves the
+// sentence they stand in, and the prose around it, the other half. The one line this bound
+// gives way to is the first run's, which is named however long it is: a first line at that
+// quoted worst case writes some 22,700 units and every run after it is counted, so a removal's
+// runs stay inside the block whichever way they run.
 const failingRunsUnits = 16000
 
 // FailingRuns is runs as every removal that carries them names them, and as the daemon's own
