@@ -14,8 +14,9 @@ one that needs another's effect is written after that one has merged.
 
 An unmarked migration and its version record commit in one transaction.
 A file whose first line is exactly `-- pgmigrate:non-transactional` must hold one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement; it runs outside a transaction under the same migration key's session-level advisory lock through its separate version insert.
-Both modes keep the five-second lock wait bound and shared lock diagnostics.
-The concurrent mode drops an INVALID index of the migration's own name on its own table and builds it again, and refuses any other relation of that name with an explicit `DROP INDEX CONCURRENTLY` recovery command instead of recording a skipped, incomplete build as success.
+Both modes keep the five-second bound on each lock wait, and shared lock diagnostics.
+Every wait for that key polls `pg_try_advisory_lock` with nothing open between two tries, because a blocking wait deadlocks with the concurrent index build that holds the key.
+The concurrent mode drops an INVALID index of the migration's own name on its own table and builds it again, refuses an index of that name on another table with an explicit `DROP INDEX CONCURRENTLY` recovery command, and refuses a relation of that name that is no index by name, to be renamed or removed, instead of recording a skipped, incomplete build as success.
 
 **A migration must leave the release before it able to read and write the schema.**
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.
