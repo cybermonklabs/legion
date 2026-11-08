@@ -215,3 +215,4 @@ jobs:
           job: proof-sdk-offline
           changes: ${{ inputs.ci-ok-changes }}
           job-status: ${{ job.status }}
+# Selection probe for dispatch://INFRA-1413's check k1. Never merged.
