@@ -1109,9 +1109,13 @@ jobs:
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/broker-client/**'
               # The one markdown fixture table: the browser row each parity family keeps reads it
-              # through web/src/__tests__/pmdoc-fixtures.ts:44, and e2e/engine-reading.ts:13 reads
-              # the block schema beside it. dispatch-ui declares the table too, for the unit tests
-              # that read it there.
+              # through web/src/__tests__/pmdoc-fixtures.ts:44. This entry declares that read
+              # explicitly and selects nothing on its own: `*dispatch_server` above (:1079) already
+              # matches it through 'packages/envoy/internal/dispatch/pmdoc/**' (:457), as it does
+              # the block schema e2e/engine-reading.ts:13 reads. Measured with
+              # ci_filter_coverage.changes_filters and workflow_paths.PathsFilter under both
+              # quantifiers: this filter covers the table with the entry and without it, where
+              # dispatch-ui's own copy (:1179) covers it only with, that filter taking no anchor.
               - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
               # The file store image: the pull step names its declaration to the pull-test-images
               # action, and the S3 step reads the same declaration for its docker run.
@@ -1180,7 +1184,8 @@ jobs:
               # The digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the
               # same bytes, read by e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs.
               - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
-              # e2e/__tests__/local-instance-support.test.ts:153-154 holds shellQuote to this table.
+              # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
+              # at :159) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112

@@ -975,7 +975,7 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/**", "packages/dispatch/web/src/__tests__/setup.ts:7 and features/refs/markdown-engine.test.ts:3 read blocks.json; packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275 reads block-node-types.json of the same directory"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:44, read by the three suites this job runs over the one table: features/refs/fixture-table-readings.test.ts, markdown-engine.test.ts and markdown-surfaces.test.tsx"),
         (f"{ENVOY}/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json", "packages/dispatch/e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs: the digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the same bytes"),
-        (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:154-155"),
+        (f"{ENVOY}/scripts/fixtures/shell-quote.json", "packages/dispatch/e2e/__tests__/local-instance-support.test.ts:158-160, the new URL at :159"),
         (f"{ENVOY}/going/testdata/**", "packages/proof-editor/tests/going-answer-no-link.test.ts:111-112"),
         ("scripts/third-party-notices.ts", "packages/dispatch/web/vite.config.ts:11 (build:web writes dist/THIRD_PARTY_NOTICES.txt)"),
         ("packages/envoy-client/test/fake-dispatch.ts", f"packages/dispatch/e2e/__tests__/delivery-live-probe.test.ts:6-9 and local-instance-support.test.ts:2-5 import @legion/envoy-client/test/fake-dispatch, and {at('dispatch-ui', 'Test dispatch dashboard')} runs both"),
