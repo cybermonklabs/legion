@@ -710,14 +710,45 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 57: INFRA-204 -- api.State gains `questionsForController`, every question to a stopped agent
+// 57: dispatch://INFRA-1274 -- every claim view carries `step`, what the daemon last saw that
+// claim's agent do: `at`, when the daemon received that step, `turnStartedAt`, when the turn it
+// belongs to began, the `tool` and `callId` of the call the agent is in, that call's `argsBytes`
+// and `argsHash` — its arguments' length and an eight-byte fingerprint of them, never their text,
+// since a shell command routinely holds a credential — and its `startedAt` and `endedAt`. It is on
+// the claim views of `GET /legion/v1/state` and on the operator's `legion claims list` (api's
+// StepView, ClaimView.Step and OperatorClaim.Step), absent for a claim whose agent has neither
+// begun a turn nor made a call the daemon saw, and a call carrying `startedAt` and no `endedAt` is
+// the shape a turn that stopped moving leaves behind. A strict reader before 57 knows no such key
+// and refuses the whole state body for it, so the route serves a caller whose pod's claims record
+// a contract below 57 the state with no `step` at all (api's stateFor, withoutStallRecord), as it
+// serves a caller below 56 one whose claims nothing will wake name no retired claim, a caller
+// below 55 one with no gated steps, a caller below 53 one with no `wakesWaiting` and a caller
+// below 49 one with no memory group. The key is left off that body rather than
+// emptied, so it is left off the body a pod whose claims cannot be read is served as well, which
+// may be a pod at this contract. 57 also brings the three numbers a deployment moves a session's
+// watch on its own tool calls with — LEGION_STALL_CALL_BOUND_MS, LEGION_STALL_CALL_GRACE_MS and
+// LEGION_STALL_STEP_MS — in the environment of every pane and of every pod's worker container,
+// the controller's among them (`internal/daemon/specs.go`'s stallLimitVariables, merged into
+// `spec.Env` after SpawnSpec's fork, which a pane's `-e` pairs and a pod launcher's start command
+// carry verbatim): a session told none of them runs on the defaults its plugin holds. This change
+// adds the store migration the record is kept in, `20261107052815_claim_step_record`. (53 is the
+// contract this branch declared at its bump; main has since landed the optional production check
+// at 54, INFRA-1272's design-gate steps at 55 and INFRA-1480's retired stranded state at 56, none
+// of which carries the claim step record or the stall numbers, so this branch takes 57, above
+// them all, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
+// own number again at the next merge rather than from this line.)
+//
+// 58: INFRA-204 -- api.State gains `questionsForController`, every question to a stopped agent
 // that the daemon's answer loop passed to the controller in the last seven days (id, issue, role,
 // session, asker, ref, reason, passedAt), newest first and at most 100: the controller's
 // `agent-question` notice is a live wake only, so a controller that starts later reads what it
-// missed here. Never null, so a 56 plugin's strict reader refuses the state, and the boot gate
+// missed here. Never null, so a 57 plugin's strict reader refuses the state, and the boot gate
 // and `legion probe-image` refuse the mixed pair. (This branch took 38, then 52 while main stood
-// at 51; main has since reached 56, so this change takes the number above it, as
+// at 51, then 57 while main stood at 56; main has since landed INFRA-1274's claim step record at
+// 57, which carries no `questionsForController`, so this change takes the number above it, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says. main held 56 at the forward merge that renumbered this entry, b66b78d6d9f3; read main's
-// own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 57
+// says. main held 57 at the forward merge that renumbered this entry, main's 49a8ae28; read
+// main's own number again at the next merge rather than from this line.)
+const DaemonAPIVersion = 58
