@@ -41,8 +41,8 @@ type loopFound struct {
 	OverCap int
 }
 
-// loopQuerier is what readLoopFound reads over: a pool or a connection, as readReplayIDs takes
-// either (replay_check.go:357).
+// loopQuerier is what readLoopFound reads over: a pool or a connection, as replayRowQuerier is
+// what the replay's own reader reads over (replay_check.go:344).
 type loopQuerier interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
 }
@@ -51,10 +51,9 @@ type loopQuerier interface {
 // bodies, its documents by kind, and the documents past a cap. Every count is of rows the id map
 // names, so another seed in the same database counts for nothing here.
 //
-// Every table below names its schema. Dispatch's own are in public, and a database whose login
-// is named as a schema is - the deployment's login is loadtest - resolves an unqualified name in
-// that schema first (search_path "$user", public), which on that deployment counted an empty
-// copy of Dispatch's tables and reported 0 of everything (dispatch://INFRA-988).
+// Every table below names its schema, for the reason loopIDsDDL gives (loopseed_write.go): a
+// schema named as the database's login is shadows public for every unqualified name
+// (dispatch://INFRA-988).
 func readLoopFound(ctx context.Context, q loopQuerier, planID string) (loopFound, error) {
 	var f loopFound
 	// The issues of the seed that the database still holds, by the keys the id map recorded.
@@ -193,9 +192,8 @@ func printLoopCheck(w io.Writer, lines []loopCheckLine, rehearsal int) int {
 }
 
 // loopSeedCheckFlags are loop-seed-check's own flags. The Postgres URL carries the database's
-// password, so it has the file form every credential of this package has (readCredentials):
-// vm/vm.sh runs this phase on the pod that drives the deployment, where a value would be an
-// argument anything that can list processes reads.
+// password, so it has the file form every credential of this package has, for the reason
+// readCredentials gives (guard.go).
 type loopSeedCheckFlags struct {
 	plan, pg, pgFile string
 }

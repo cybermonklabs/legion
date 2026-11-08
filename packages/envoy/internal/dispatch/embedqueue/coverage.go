@@ -61,12 +61,12 @@ var issueItems = searchableItems(issueRows)
 // 20261102233626 and the three after it dropped the whole-text triggers these replace, so
 // every such row is written by the block-index tick's window arm, which writes the windows of
 // every comment, message, ask and document whose blocks a write recorded and whose windows it
-// left to that tick (INFRA-988). No statement of this pass may
-// invent one: the pass has no way to window an owner, and a row it inserted for a window that
-// no longer exists would be embedded for ever at a text no reader can reach. So no statement
-// here builds a window row (insertMissingIssues and repairStaleIssues are the issue's alone),
-// a window kind takes the settling and the identity steps alone (coverPass), and it is
-// counted in the report from its own rows (windowRows).
+// left to that tick (INFRA-988). No statement of this pass may invent one: the pass has no way
+// to window an owner, and a row it inserted for a window that no longer exists would be
+// embedded for ever at a text no reader can reach. So no statement here builds a window row
+// (insertMissingIssues and repairStaleIssues are the issue's alone), a window kind takes the
+// settling and the identity steps alone (coverPass), and it is counted in the report from its
+// own rows (windowRows).
 var windowCoverageKinds = []string{"document_block", "comment_block", "message_block", "ask_part"}
 
 // windowRows is a window kind's items, in the shape issueRows gives the issue's: its own

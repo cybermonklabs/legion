@@ -317,16 +317,7 @@ func requireDocumentOwedWindows(t *testing.T, tx pgx.Tx, artifactID string, owed
 	}
 }
 
-// The listing reads the owed rows through the partial index on windows_owed_at and touches
-// nothing else of the deployment's size: one scan of document_block_versions, through that
-// index, running once, and no scan at all of the stamps or of the window rows, which is what
-// the marker bought. The blocks are probed for the rows that index answered, not for every row
-// of the table.
-//
-// The control is the shape before the marker, read the same way over the same rows: it decides
-// owedness from state, so its plan reads document_block_versions through some other index and
-// reads both the stamps and the window rows. A test whose control did not do that would be
-// proving nothing about the index this one is for.
+// The documents owed their windows, held to the partial index on windows_owed_at.
 func TestDocumentsOwedWindowsReadsThePartialIndex(t *testing.T) {
 	fixture := newOwedDocumentFixture(t)
 	ctx := context.Background()
@@ -337,47 +328,13 @@ func TestDocumentsOwedWindowsReadsThePartialIndex(t *testing.T) {
 	defer connection.Release()
 	keys := explaintest.NewIndexKeys(fixture.database.Pool)
 
-	const subject = "the documents owed windows"
-	const owedIndex = "document_block_versions_windows_owed"
-	plan := analyzedPlan(t, connection, documentsOwedWindowsQuery, uuidAfter(""), 200)
-	scans := planScans(t, plan)
-	if under := namesUnderASubplan(scans); len(under) > 0 {
-		t.Errorf("%s read %s under a subplan, so a side is probed per row:\n%s",
-			subject, strings.Join(under, ", "), plan)
-	}
-	versions := readOnce(t, scans, plan, subject, "document_block_versions")
-	keys.RequireIndexKeyed(t, plan, owedIndex, subject, explaintest.CondRequired)
-	if slices.ContainsFunc(explaintest.IndexScans(t, plan), func(scan explaintest.IndexScan) bool {
-		return scan.Index == "document_block_versions_pkey"
-	}) {
-		t.Errorf("%s searched document_block_versions_pkey, want %s, the partial index over the marked rows:\n%s",
-			subject, owedIndex, plan)
-	}
-	for _, relation := range []string{"embedding_window_states", "embeddings"} {
-		for _, scan := range scans {
-			if scan.relation == relation {
-				t.Errorf("%s read %s, which the marker is here to stop it reading:\n%s", subject, relation, plan)
-			}
-		}
-	}
-	for _, scan := range scans {
-		if scan.relation == "document_blocks" && scan.loops > versions.rows {
-			t.Errorf("%s probes document_blocks %.0f times for %.0f rows of document_block_versions, want at most one probe per marked row:\n%s",
-				subject, scan.loops, versions.rows, plan)
-		}
-	}
-
-	// The control: the shape before the marker, over the same rows.
-	control := analyzedPlan(t, connection, documentsOwedWindowsFromState, uuidAfter(""), 200)
-	controlScans := planScans(t, control)
-	if slices.ContainsFunc(explaintest.IndexScans(t, control), func(scan explaintest.IndexScan) bool {
-		return scan.Index == owedIndex
-	}) {
-		t.Errorf("the shape before the marker searched %s, so this test's control proves nothing:\n%s", owedIndex, control)
-	}
-	for _, relation := range []string{"embedding_window_states", "embeddings"} {
-		if !slices.ContainsFunc(controlScans, func(scan planScan) bool { return scan.relation == relation }) {
-			t.Errorf("the shape before the marker read no %s, so this test's control proves nothing:\n%s", relation, control)
-		}
-	}
+	requireOwedWindowsReadsThePartialIndex(t, connection, keys, owedWindowsRead{
+		subject:      "the documents owed windows",
+		statement:    documentsOwedWindowsQuery,
+		control:      documentsOwedWindowsFromState,
+		driving:      "document_block_versions",
+		blocks:       "document_blocks",
+		owedIndex:    "document_block_versions_windows_owed",
+		otherIndexes: []string{"document_block_versions_pkey"},
+	})
 }

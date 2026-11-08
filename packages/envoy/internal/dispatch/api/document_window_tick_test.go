@@ -1,11 +1,7 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -59,7 +55,9 @@ func TestADocumentWriteWritesNoWindowUnderTheIssueRow(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "DWLK", "Hold the issue row", "A spec")
 	sent.take()
 
-	document := countedUpload(t, handler, issue.Key, "notes.md", "# Notes\n\nThe stored paragraph.\n")
+	document := countedRequest[uploadedArtifact](t, handler, "upload notes.md to "+issue.Key,
+		"/api/v1/issues/"+issue.Key+"/artifacts",
+		map[string]string{"name": "notes.md", "content": "# Notes\n\nThe stored paragraph.\n"})
 	statements := sent.take()
 	locked := slices.IndexFunc(statements, func(statement string) bool {
 		return strings.Contains(statement, "from issues where key = $1 for no key update")
@@ -81,27 +79,6 @@ func TestADocumentWriteWritesNoWindowUnderTheIssueRow(t *testing.T) {
 	if owed := documentsOwedWindows(t, database); !slices.Contains(owed, document.Artifact.ID) {
 		t.Fatalf("the write left document %s neither windowed nor owed its windows: %v", document.Artifact.ID, owed)
 	}
-}
-
-// countedUpload writes a document on the issue through the handler, on a request
-// sentStatements records (countedRead, issue_read_batch_test.go).
-func countedUpload(t *testing.T, handler http.Handler, issueKey, name, content string) uploadedArtifact {
-	t.Helper()
-	payload, err := json.Marshal(map[string]string{"name": name, "content": content})
-	if err != nil {
-		t.Fatalf("encode the upload: %v", err)
-	}
-	ctx := context.WithValue(context.Background(), countedRead{}, true)
-	request := httptest.NewRequestWithContext(ctx, http.MethodPost,
-		"/api/v1/issues/"+issueKey+"/artifacts", bytes.NewReader(payload))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", "alice")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated {
-		t.Fatalf("upload %s to %s: status=%d body=%s", name, issueKey, response.Code, response.Body.String())
-	}
-	return decodeBody[uploadedArtifact](t, response)
 }
 
 // documentWindowTexts is the text of each embedding window the document holds, in window id

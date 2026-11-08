@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -127,7 +126,9 @@ func TestACommentWriteWritesNoWindowUnderTheIssueRow(t *testing.T) {
 	issue := createInteractionIssue(t, handler, "CWLK", "Hold the issue row", "A spec")
 	sent.take()
 
-	comment := countedComment(t, handler, issue.Key, "The first paragraph.\n\nThe second paragraph.")
+	comment := countedRequest[model.Comment](t, handler, "create the comment",
+		"/api/v1/issues/"+issue.Key+"/comments",
+		map[string]any{"body": "The first paragraph.\n\nThe second paragraph."})
 	statements := sent.take()
 	locked := slices.IndexFunc(statements, func(statement string) bool {
 		return strings.Contains(statement, "from issues where key = $1 for no key update")
@@ -152,59 +153,36 @@ func TestACommentWriteWritesNoWindowUnderTheIssueRow(t *testing.T) {
 	}
 }
 
-// countedComment posts a comment on the issue through the handler, on a request sentStatements
-// records (countedRead, issue_read_batch_test.go).
-func countedComment(t *testing.T, handler http.Handler, issueKey, body string) model.Comment {
+// countedRequest sends one write through the handler on a request the traced pool counts
+// (countedRead, issue_read_batch_test.go) and answers what the route returned: path is the
+// route, payload the JSON body it is sent, and subject names the write in a failure. Every
+// route this is used for answers 201, so any other status is a request the caller did not mean
+// to make.
+func countedRequest[T any](t *testing.T, handler http.Handler, subject, path string, payload any) T {
 	t.Helper()
-	payload, err := json.Marshal(map[string]any{"body": body})
+	body, err := json.Marshal(payload)
 	if err != nil {
-		t.Fatalf("encode the comment: %v", err)
+		t.Fatalf("encode %s: %v", subject, err)
 	}
 	ctx := context.WithValue(context.Background(), countedRead{}, true)
-	request := httptest.NewRequestWithContext(ctx, http.MethodPost,
-		"/api/v1/issues/"+issueKey+"/comments", bytes.NewReader(payload))
+	request := httptest.NewRequestWithContext(ctx, http.MethodPost, path, bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("X-Dispatch-User", "alice")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusCreated {
-		t.Fatalf("create the comment: status=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("%s: status=%d body=%s", subject, response.Code, response.Body.String())
 	}
-	return decodeBody[model.Comment](t, response)
+	return decodeBody[T](t, response)
 }
 
 // sentStatements records every statement a counted request sends, the statements inside a
-// pipelined batch included: roundTrips counts a batch as one round trip and never names what
-// it holds, and a write hidden in one would be a write this test must see.
-type sentStatements struct {
-	mu         sync.Mutex
-	statements []string
-}
-
-// take returns the statements recorded since the last take.
-func (s *sentStatements) take() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	taken := s.statements
-	s.statements = nil
-	return taken
-}
-
-func (s *sentStatements) record(ctx context.Context, statement string) {
-	if ctx.Value(countedRead{}) == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.statements = append(s.statements, statement)
-}
-
-func (s *sentStatements) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	s.record(ctx, data.SQL)
-	return ctx
-}
-
-func (s *sentStatements) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+// pipelined batch included: roundTrips counts a batch as one round trip and never names what it
+// holds (issue_read_batch_test.go), and a write hidden in one would be a write this test must
+// see. It is that counter with its two batch calls answered otherwise: the batch itself is no
+// statement, and each statement inside it is one. take, record and what a request runs outside
+// a batch are the counter's own.
+type sentStatements struct{ roundTrips }
 
 func (s *sentStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
 	return ctx
@@ -213,8 +191,6 @@ func (s *sentStatements) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx
 func (s *sentStatements) TraceBatchQuery(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchQueryData) {
 	s.record(ctx, data.SQL)
 }
-
-func (s *sentStatements) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // itemWindowIDs is the id suffix of each embedding window the item holds, in id order.
 func itemWindowIDs(t *testing.T, database *store.Store, kind refs.ItemKind, itemID string) []string {

@@ -486,16 +486,7 @@ func TestItemsOwedWindowsAnswersWhatTheShapesBeforeTheMarkerAnswered(t *testing.
 // index it is read through rather than by a scan of the whole table.
 var windowPlanSettings = []string{"set local enable_seqscan = off"}
 
-// The listing reads the owed rows through the kind's partial index on windows_owed_at and
-// touches nothing else of the deployment's size: one scan of the state table, through that
-// index, running once, and no scan at all of the stamps or of the window rows, which is what
-// the marker bought. The blocks are probed for the rows that index answered, not for every row
-// of the state table.
-//
-// The control is the shape before the marker, read the same way over the same rows: it decides
-// owedness from state, so its plan reads the state table through some other index and reads
-// both the stamps and the window rows. A test whose control did not do that would be proving
-// nothing about the index this one is for.
+// Each kind's listing of the items owed their windows, held to that kind's own partial index.
 func TestItemsOwedWindowsReadsThePartialIndex(t *testing.T) {
 	fixture := newOwedWindowFixture(t)
 	ctx := context.Background()
@@ -511,57 +502,102 @@ func TestItemsOwedWindowsReadsThePartialIndex(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tables of %s: %v", kind, err)
 		}
-		subject := fmt.Sprintf("the %ss owed windows", kind)
-		owedIndex := tables.state + "_windows_owed"
-		plan := analyzedPlan(t, connection, itemsOwedWindowsQuery(tables), uuidAfter(""), blockIndexWindowBatch)
-		scans := planScans(t, plan)
-		if under := namesUnderASubplan(scans); len(under) > 0 {
-			t.Errorf("%s read %s under a subplan, so a side is probed per row:\n%s",
-				subject, strings.Join(under, ", "), plan)
-		}
-		state := readOnce(t, scans, plan, subject, tables.state)
-		// The one index the read searches on the state table is the partial one: a bitmap scan
-		// names it on its index node and the relation on its heap node, so the index is read
-		// from the plan's index scans rather than from the scan of the relation.
-		keys.RequireIndexKeyed(t, plan, owedIndex, subject, explaintest.CondRequired)
-		for _, other := range []string{tables.state + "_pkey", tables.state + "_owed"} {
-			if slices.ContainsFunc(explaintest.IndexScans(t, plan), func(scan explaintest.IndexScan) bool {
-				return scan.Index == other
-			}) {
-				t.Errorf("%s searched %s, want %s, the partial index over the marked rows:\n%s",
-					subject, other, owedIndex, plan)
-			}
-		}
-		for _, relation := range []string{"embedding_window_states", "embeddings"} {
-			for _, scan := range scans {
-				if scan.relation == relation {
-					t.Errorf("%s read %s, which the marker is here to stop it reading:\n%s", subject, relation, plan)
-				}
-			}
-		}
-		for _, scan := range scans {
-			if scan.relation == tables.blocks && scan.loops > state.rows {
-				t.Errorf("%s probe %s %.0f times for %.0f rows of %s, want at most one probe per marked row:\n%s",
-					subject, scan.relation, scan.loops, state.rows, tables.state, plan)
-			}
-		}
+		requireOwedWindowsReadsThePartialIndex(t, connection, keys, owedWindowsRead{
+			subject:      fmt.Sprintf("the %ss owed windows", kind),
+			statement:    itemsOwedWindowsQuery(tables),
+			control:      itemsOwedWindowsAntiJoins(kind, tables),
+			driving:      tables.state,
+			blocks:       tables.blocks,
+			owedIndex:    tables.state + "_windows_owed",
+			otherIndexes: []string{tables.state + "_pkey", tables.state + "_owed"},
+		})
+	}
+}
 
-		// The control: the shape before the marker, over the same rows.
-		control := analyzedPlan(t, connection, itemsOwedWindowsAntiJoins(kind, tables), uuidAfter(""), blockIndexWindowBatch)
-		controlScans := planScans(t, control)
-		if slices.ContainsFunc(explaintest.IndexScans(t, control), func(scan explaintest.IndexScan) bool {
-			return scan.Index == owedIndex
-		}) {
-			t.Errorf("the shape before the marker searched %s over %ss, so this test's control proves nothing:\n%s",
-				owedIndex, kind, control)
+// owedWindowsRead is one listing of the owners owed their windows, as the plan test reads it:
+// subject names the read in a failure, statement is the listing itself and control the shape
+// before the marker over the same rows, driving is the relation the listing walks and blocks
+// the one it probes for the owners that relation answered, owedIndex is the partial index on
+// windows_owed_at the listing must be read through, and otherIndexes are the indexes of
+// driving it must not search.
+type owedWindowsRead struct {
+	subject, statement, control string
+	driving, blocks, owedIndex  string
+	otherIndexes                []string
+}
+
+// windowStateRelations is what the shape before the marker reads for every row of the driving
+// relation and the marker read answers without: the stamp of the state each owner's windows
+// were written from, and the window rows themselves.
+var windowStateRelations = []string{"embedding_window_states", "embeddings"}
+
+// requireOwedWindowsReadsThePartialIndex holds one owed-windows listing to the marker's partial
+// index. The listing reads the owed rows through that index and touches nothing else of the
+// deployment's size: one scan of the driving relation, through that index, running once, and no
+// scan at all of the stamps or of the window rows, which is what the marker bought. The blocks
+// are probed for the rows that index answered, not for every row of the driving relation.
+//
+// The control is the shape before the marker, read the same way over the same rows: it decides
+// owedness from state, so its plan reads the driving relation through some other index and
+// reads both the stamps and the window rows. A test whose control did not do that would be
+// proving nothing about the index this one is for.
+func requireOwedWindowsReadsThePartialIndex(
+	t *testing.T, connection *pgxpool.Conn, keys *explaintest.IndexKeys, read owedWindowsRead,
+) {
+	t.Helper()
+	plan := analyzedPlan(t, connection, read.statement, uuidAfter(""), blockIndexWindowBatch)
+	scans := explaintest.Scans(t, plan)
+	if under := namesUnderASubplan(scans); len(under) > 0 {
+		t.Errorf("%s read %s under a subplan, so a side is probed per row:\n%s",
+			read.subject, strings.Join(under, ", "), plan)
+	}
+	driving := readOnce(t, scans, plan, read.subject, read.driving)
+	// The one index the read searches on the driving relation is the partial one: a bitmap scan
+	// names it on its index node and the relation on its heap node, so the index is read from
+	// the plan's index scans rather than from the scan of the relation.
+	keys.RequireIndexKeyed(t, plan, read.owedIndex, read.subject, explaintest.CondRequired)
+	for _, other := range read.otherIndexes {
+		if searchesIndex(t, plan, other) {
+			t.Errorf("%s searched %s, want %s, the partial index over the marked rows:\n%s",
+				read.subject, other, read.owedIndex, plan)
 		}
-		for _, relation := range []string{"embedding_window_states", "embeddings"} {
-			if !slices.ContainsFunc(controlScans, func(scan planScan) bool { return scan.relation == relation }) {
-				t.Errorf("the shape before the marker read no %s over %ss, so this test's control proves nothing:\n%s",
-					relation, kind, control)
+	}
+	for _, relation := range windowStateRelations {
+		for _, scan := range scans {
+			if scan.Relation == relation {
+				t.Errorf("%s read %s, which the marker is here to stop it reading:\n%s",
+					read.subject, relation, plan)
 			}
 		}
 	}
+	for _, scan := range scans {
+		if scan.Relation == read.blocks && scan.Loops > driving.Rows {
+			t.Errorf("%s probe %s %.0f times for %.0f rows of %s, want at most one probe per marked row:\n%s",
+				read.subject, scan.Relation, scan.Loops, driving.Rows, read.driving, plan)
+		}
+	}
+
+	// The control: the shape before the marker, over the same rows.
+	control := analyzedPlan(t, connection, read.control, uuidAfter(""), blockIndexWindowBatch)
+	controlScans := explaintest.Scans(t, control)
+	if searchesIndex(t, control, read.owedIndex) {
+		t.Errorf("the shape before the marker searched %s for %s, so this test's control proves nothing:\n%s",
+			read.owedIndex, read.subject, control)
+	}
+	for _, relation := range windowStateRelations {
+		if !slices.ContainsFunc(controlScans, func(scan explaintest.Scan) bool { return scan.Relation == relation }) {
+			t.Errorf("the shape before the marker read no %s for %s, so this test's control proves nothing:\n%s",
+				relation, read.subject, control)
+		}
+	}
+}
+
+// searchesIndex reports whether plan reads through the index named index anywhere.
+func searchesIndex(t *testing.T, plan json.RawMessage, index string) bool {
+	t.Helper()
+	return slices.ContainsFunc(explaintest.IndexScans(t, plan), func(scan explaintest.IndexScan) bool {
+		return scan.Index == index
+	})
 }
 
 // blockIndexWindowBatch is the batch the window arm asks each kind for
@@ -572,31 +608,31 @@ const blockIndexWindowBatch = 200
 // twice, or read once per row of something else, is a side this statement would be paying for
 // per row. It fails the test and answers a zero scan when the plan reads relation any other
 // number of times.
-func readOnce(t *testing.T, scans []planScan, plan json.RawMessage, subject, relation string) planScan {
+func readOnce(t *testing.T, scans []explaintest.Scan, plan json.RawMessage, subject, relation string) explaintest.Scan {
 	t.Helper()
-	var found []planScan
+	var found []explaintest.Scan
 	for _, scan := range scans {
-		if scan.relation == relation {
+		if scan.Relation == relation {
 			found = append(found, scan)
 		}
 	}
 	if len(found) != 1 {
 		t.Errorf("%s read %s with %d scans, want one:\n%s", subject, relation, len(found), plan)
-		return planScan{}
+		return explaintest.Scan{}
 	}
-	if found[0].loops != 1 {
-		t.Errorf("%s read %s %.0f times, want once:\n%s", subject, relation, found[0].loops, plan)
+	if found[0].Loops != 1 {
+		t.Errorf("%s read %s %.0f times, want once:\n%s", subject, relation, found[0].Loops, plan)
 	}
 	return found[0]
 }
 
 // namesUnderASubplan names every scan of a plan that runs under a subplan: the shape of a
 // question asked per row of the scan driving it.
-func namesUnderASubplan(scans []planScan) []string {
+func namesUnderASubplan(scans []explaintest.Scan) []string {
 	var names []string
 	for _, scan := range scans {
-		if scan.subplan != "" {
-			names = append(names, fmt.Sprintf("%s under %s", scan.relation, scan.subplan))
+		if scan.Subplan != "" {
+			names = append(names, fmt.Sprintf("%s under %s", scan.Relation, scan.Subplan))
 		}
 	}
 	return names
@@ -623,65 +659,4 @@ func analyzedPlan(t *testing.T, connection *pgxpool.Conn, statement string, args
 		t.Fatalf("explain the owed-windows read: %v", err)
 	}
 	return explaintest.OnePlan(t, raw)
-}
-
-// planNode is what the checks above read of one node of an `EXPLAIN (ANALYZE, FORMAT JSON)`
-// plan: what it is, the relation and index it names, the subplan it belongs to, how many times
-// it ran, how many rows it answered each time, and its children.
-type planNode struct {
-	NodeType    string          `json:"Node Type"`
-	Relation    string          `json:"Relation Name"`
-	Index       string          `json:"Index Name"`
-	Subplan     string          `json:"Subplan Name"`
-	Parent      string          `json:"Parent Relationship"`
-	ActualLoops float64         `json:"Actual Loops"`
-	ActualRows  float64         `json:"Actual Rows"`
-	Plans       json.RawMessage `json:"Plans"`
-}
-
-// planScan is one node of an analyzed plan that reads a relation: which relation, through which
-// index, under which subplan (empty: none), how many times it ran and how many rows it answered.
-type planScan struct {
-	relation, index, subplan string
-	loops, rows              float64
-}
-
-// planScans is every scan of a relation in plan, at any depth, each carrying the subplan it is
-// under: a node whose parent relationship is SubPlan starts one, and every node below it is in
-// it, since a plan under a subplan runs as often as the subplan does.
-func planScans(t *testing.T, plan json.RawMessage) []planScan {
-	t.Helper()
-	return scansUnder(t, plan, "")
-}
-
-func scansUnder(t *testing.T, plan json.RawMessage, subplan string) []planScan {
-	t.Helper()
-	var node planNode
-	if err := json.Unmarshal(plan, &node); err != nil {
-		t.Fatalf("read a plan node: %v\n%s", err, plan)
-	}
-	if node.Parent == "SubPlan" {
-		subplan = node.Subplan
-		if subplan == "" {
-			subplan = node.NodeType
-		}
-	}
-	var scans []planScan
-	if node.Relation != "" {
-		scans = append(scans, planScan{
-			relation: node.Relation, index: node.Index, subplan: subplan,
-			loops: node.ActualLoops, rows: node.ActualRows,
-		})
-	}
-	if len(node.Plans) == 0 {
-		return scans
-	}
-	var children []json.RawMessage
-	if err := json.Unmarshal(node.Plans, &children); err != nil {
-		t.Fatalf("read a plan node's children: %v\n%s", err, node.Plans)
-	}
-	for _, child := range children {
-		scans = append(scans, scansUnder(t, child, subplan)...)
-	}
-	return scans
 }

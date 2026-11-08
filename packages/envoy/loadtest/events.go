@@ -27,7 +27,7 @@ const (
 // The three write kinds of the Verified Linux spec loop, which a step sends against its own seed
 // (-loop-seed, loopseed_export.go) and no other.
 const (
-	// kindVerdict is a new version of one function's review page: POST /api/v1/artifacts/{id}/edits
+	// kindVerdict is a new version of one proposal's review page: POST /api/v1/artifacts/{id}/edits
 	// on a review page of the proposal, replacing the page's paragraph with one of the same size
 	// drawn afresh, as the loop's verdict rewrites the review text it reads. The page, and so the
 	// op's find and its with, average loopPageMean (9,954) bytes.

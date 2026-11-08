@@ -34,13 +34,8 @@ import (
 // with the anchors replay-check-seed reads beside it.
 //
 // Both are tables of public, the schema Dispatch's own tables live in, and not of a schema of
-// this tool's own. A schema this tool created could be named as the database's login is - one
-// deployment's login is loadtest - and Postgres's default search_path is "$user", public, so that
-// schema would stand in front of public for every unqualified statement the server itself runs
-// afterwards, Dispatch's own create table if not exists among them: that is how one deployment
-// came to hold a second, empty copy of Dispatch's schema (dispatch://INFRA-988). A tool that
-// creates no schema at all can shadow none, and public is there before this tool connects, so
-// nothing of these two tables has to be created outside it.
+// this tool's own, for the reason loopIDsDDL gives (loopseed_write.go): a schema named as the
+// database's login is shadows public for every unqualified name (dispatch://INFRA-988).
 const replayIDsDDL = `create table if not exists public.loadtest_replay_ids (
   kind text not null, logged_id text not null, local_id text not null,
   primary key (kind, logged_id));

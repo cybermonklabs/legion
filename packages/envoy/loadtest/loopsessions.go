@@ -226,14 +226,14 @@ func (p *unitPlacer) liveAt(now time.Time) int {
 	return n
 }
 
-// mostOnOneProposal is the most live unit sessions one proposal held, and spilled how many starts
-// drew a proposal that was at the cap.
+// mostOnOneProposal is the most live unit sessions one proposal held.
 func (p *unitPlacer) mostOnOneProposal() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.most
 }
 
+// spilled is how many starts drew a proposal that was already at the cap.
 func (p *unitPlacer) spilled() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()

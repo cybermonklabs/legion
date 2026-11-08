@@ -10,9 +10,9 @@ package main
 // moment it exists, as replay-seed records a logged id in public.loadtest_replay_ids
 // (replay_seed_ids.go), so a second run of the same plan against the same database creates
 // nothing again: the map is read whole at the start and every write whose logical path it
-// already holds is skipped. Every write
-// also carries an idempotency key minted from the plan's identity and that same path, so a retry
-// of a write whose answer was lost adds no second object either (api.go callRetryKeyed).
+// already holds is skipped. Every write also carries an idempotency key minted from the plan's
+// identity and that same path, so a retry of a write whose answer was lost adds no second
+// object either (api.go callRetryKeyed).
 //
 // A refusal is data, not a failure: a 413, a 400 CAP_EXCEEDED or any other non-2xx answer is
 // counted by route and error code, every object it left unwritable that the id map does not

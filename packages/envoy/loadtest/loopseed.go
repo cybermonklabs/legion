@@ -440,7 +440,7 @@ func loopReplies(j, ids, replies int) int {
 }
 
 // loopThreadOffset is where thread j's comment rows start in its proposal's row of body sizes: the
-// j roots before it and their replies. A proposal with no id has no thread to ask it about.
+// j roots before it and their replies.
 func loopThreadOffset(j, ids, replies int) int {
 	return j + j*replies/ids
 }

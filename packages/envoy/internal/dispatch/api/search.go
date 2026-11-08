@@ -576,16 +576,16 @@ totals as (
 ` + searchPageAndTailSQL("legs_unique")
 }
 
-// searchMeaningCommentArm is searchQueryMeaningBody's comment arm, written apart from the four
-// arms beside it because its order differs from theirs and that order is the whole of it: it
-// takes the nearest comment windows through embeddings_cosine first - under `embedding is not
-// null`, which is that index's own partial predicate, and the kind and model filters, which the
-// scan applies as it walks, so the ordering stays the index's to serve - and joins
-// comments, issues, artifacts and projects above that limit, for the project filter ($2) and the
-// row's own fields.
+// searchMeaningCommentArm is searchQueryMeaningBody's comment arm, written apart from the three
+// window arms beside it because its order differs from theirs and that order is the whole of
+// it: it takes the nearest comment windows through embeddings_cosine first - under `embedding
+// is not null`, which is that index's own partial predicate, and the kind and model filters,
+// which the scan applies as it walks, so the ordering stays the index's to serve - and joins
+// comments, issues, artifacts and projects above that limit, for the project filter ($2) and
+// the row's own fields.
 //
-// The four arms beside it filter and join inside the ordered, limited select, and for comments
-// that order costs the index. The item join is on an expression of the window's id
+// The three window arms beside it filter and join inside the ordered, limited select, and for
+// comments that order costs the index. The item join is on an expression of the window's id
 // (windowItemUUID), which carries no statistics, so the planner misreads it: measured on the
 // load-test deployment (INFRA-988, EXPLAIN (ANALYZE, BUFFERS) of this route's own statement with
 // its own eleven arguments), the join planned for 475 rows and got 120,519, its hash side

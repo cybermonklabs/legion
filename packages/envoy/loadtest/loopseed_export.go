@@ -515,9 +515,8 @@ func (ls *loopSeed) statusTerm(r *rand.Rand) string {
 // --- the subcommand --------------------------------------------------------------------------
 
 // loopSeedExportFlags are loop-seed-export's own flags. The Postgres URL carries the database's
-// password, so it has the file form every credential of this package has (readCredentials):
-// vm/vm.sh runs this phase on the pod that drives the deployment, where a value would be an
-// argument anything that can list processes reads.
+// password, so it has the file form every credential of this package has, for the reason
+// readCredentials gives (guard.go).
 type loopSeedExportFlags struct {
 	plan, pg, pgFile, out string
 	threads               int

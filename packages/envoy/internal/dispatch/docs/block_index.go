@@ -26,7 +26,10 @@ import (
 // BlockIndexReconcileInterval the wait
 // once none is. The owed reads go through partial indexes (document_block_versions_owed,
 // block_grammar_owed_enqueued, comment_block_state_owed, message_block_state_owed,
-// ask_block_state_owed), so a tick that finds nothing owed reads nothing else.
+// ask_block_state_owed), and the window arm's reads through the markers' own
+// (document_block_versions_windows_owed, comment_block_state_windows_owed,
+// message_block_state_windows_owed, ask_block_state_windows_owed), so a tick that finds
+// nothing owed reads nothing else.
 const (
 	blockIndexDocumentBatch     = 20
 	blockIndexItemBatch         = 200
@@ -195,18 +198,17 @@ type liveAheadDocuments map[string]owedDocument
 // embeddings rows the windows have replaced (retireWholeText). The item blocks run after the
 // block grammar's items, so an item that batch indexed, blocks included, is no longer owed, and
 // before the windows, so an item either batch indexed - which leaves its windows to this arm
-// (refs.recordItemIndexed) - is windowed by this tick rather than the next;
-// the whole grammar's sources run after them, so an item it would index the blocks of
-// again is indexed once by each queue that holds it rather than twice by one. A document that
-// batch owes an index is indexed by the documents batch, which owns that index, in this tick
-// when it was already owed and in the next otherwise. The documents are listed by keyset, so a
-// document it skips never holds back the ones past it: the tick's Cursor moves past every
-// document its batch lists, indexed or not, and goes back to the start once a batch lists fewer
-// than a full one, and the window and retirement arms walk their owners the same way. A
-// document, item or source it cannot index for a reason of its own is logged and left owed, so
-// one never holds back the rest of its batch. liveAhead is the documents the calling loop's
-// earlier ticks found live ahead, which this tick counts again without reading and keeps up to
-// date.
+// (refs.recordItemIndexed) - is windowed by this tick rather than the next; the whole grammar's
+// sources run after them, so an item it would index the blocks of again is indexed once by each
+// queue that holds it rather than twice by one. A document that batch owes an index is indexed
+// by the documents batch, which owns that index, in this tick when it was already owed and in
+// the next otherwise. The documents are listed by keyset, so a document it skips never holds
+// back the ones past it: the tick's Cursor moves past every document its batch lists, indexed
+// or not, and goes back to the start once a batch lists fewer than a full one, and the window
+// and retirement arms walk their owners the same way. A document, item or source it cannot
+// index for a reason of its own is logged and left owed, so one never holds back the rest of
+// its batch. liveAhead is the documents the calling loop's earlier ticks found live ahead,
+// which this tick counts again without reading and keeps up to date.
 func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCursors, liveAhead liveAheadDocuments) (BlockIndexTick, error) {
 	// A caller outside this package can only pass nil, since liveAheadDocuments is unexported:
 	// the api package's tests and cmd/dispatch's memory harness, which
@@ -401,9 +403,11 @@ func (s *Service) windowOwners() []windowOwner {
 // Each owner is windowed from the text its blocks were split from, and nothing else is
 // written: a document is read as the server serves it and windowed under its owner row
 // (windowDocument), an item is read as the blocks routes read it and windowed under its own
-// row (windowItem). Either way the write stamps the state the owner's blocks are in, and for
-// an item it clears the marker this arm reads (comment_block_state, message_block_state and
-// ask_block_state's windows_owed_at), so an owner this arm has served is no longer listed.
+// row (windowItem). Either way the write stamps the state the owner's blocks are in and clears
+// the marker this arm reads in the same statement - an item's in comment_block_state,
+// message_block_state or ask_block_state, a document's in document_block_versions
+// (refs.WriteItemWindows, refs.WriteDocumentWindows) - so an owner this arm has served is no
+// longer listed.
 func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, tick *BlockIndexTick) (bool, error) {
 	owners := s.windowOwners()
 	next := make(map[string]string, len(owners))
@@ -518,17 +522,11 @@ func (s *Service) windowDocument(ctx context.Context, artifactID string) (bool, 
 	case unreadable || markdown == "" && len(blocks) == 0:
 		markdown, blocks = stored, nil
 	case markdown != stored:
-		indexRows, err := indexedBlocks(ctx, tx, artifactID)
+		markdown, blocks, err = heldVersionBlocks(ctx, tx, artifactID, stored, markdown, blocks,
+			"dispatch: block index cannot read back a document version; its windows cover no block")
 		if err != nil {
 			return false, err
 		}
-		held, heldBlocks, err := closedVersionBlocks(stored, markdown, blocks, indexRows)
-		if err != nil {
-			slog.Warn("dispatch: block index cannot read back a document version; its windows cover no block",
-				"artifact", artifactID, "error", err)
-			held, heldBlocks = stored, nil
-		}
-		markdown, blocks = held, heldBlocks
 	}
 	if err := refs.WriteDocumentWindows(ctx, tx, artifactID, markdown, blocks); err != nil {
 		return false, err
@@ -978,17 +976,12 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument) 
 		if !markedAt.Equal(document.markedAt) {
 			return false, false, nil
 		}
-		indexRows, err := indexedBlocks(ctx, tx, document.id)
+		markdown, blocks, err = heldVersionBlocks(ctx, tx, document.id, stored, markdown, blocks,
+			"dispatch: block index cannot read back a closed issue's document version; it is indexed with no blocks",
+			"version", version)
 		if err != nil {
 			return false, false, err
 		}
-		held, heldBlocks, err := closedVersionBlocks(stored, markdown, blocks, indexRows)
-		if err != nil {
-			slog.Warn("dispatch: block index cannot read back a closed issue's document version; it is indexed with no blocks",
-				"artifact", document.id, "version", version, "error", err)
-			held, heldBlocks = stored, nil
-		}
-		markdown, blocks = held, heldBlocks
 	}
 	if _, err := s.indexRenderedVersion(ctx, tx, document.id, version, versionAt, markdown, blocks, nil); err != nil {
 		return false, false, err

@@ -419,14 +419,14 @@ func indexItemBlocks(
 // index's marker and leaves the window arm's standing.
 //
 // The two markers part here. owed_at is this write's to settle: the blocks it names are the
-// blocks this transaction wrote. windows_owed_at is not, since the windows of those blocks
-// are written by the tick's window arm now (indexItemBlocks), and only the statement that
-// writes them clears it (storedItemState, ItemsOwedWindows). It is left at the time it
-// already carries - the trigger of the write that owes these blocks set it in that write's
-// own transaction - and set to now() for an index no such write marked, a rebuild or an item
-// an older build left behind, so that an index and the marker for the windows it did not
-// write are one statement of one transaction: a crash after it leaves the item owed its
-// windows rather than silently windowless.
+// blocks this transaction wrote. windows_owed_at is not, since the windows of those blocks are
+// written by the tick's window arm now (indexItemBlocks), and only the statement that writes
+// them clears it (clearItemWindowsOwed, ItemsOwedWindows). It is left at the time it already
+// carries - the trigger of the write that owes these blocks set it in that write's own
+// transaction - and set to now() for an index no such write marked, a rebuild or an item an
+// older build left behind, so that an index and the marker for the windows it did not write
+// are one statement of one transaction: a crash after it leaves the item owed its windows
+// rather than silently windowless.
 func recordItemIndexed(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -437,13 +437,16 @@ func recordItemIndexed(
 	bodySum string,
 ) error {
 	const owed = `owed_at = null, windows_owed_at = coalesce(windows_owed_at, now())`
-	statement := `update ` + tables.state + ` set body_sha256 = $2, ` + owed +
-		` where ` + tables.item + ` = $1::uuid`
-	args := []any{itemID, bodySum}
+	var statement string
+	var args []any
 	if tables.revisions() {
 		statement = `update ` + tables.state + ` set revision = $2, next_block = $3, body_sha256 = $4, ` + owed +
 			` where ` + tables.item + ` = $1::uuid`
 		args = []any{itemID, revision, next, bodySum}
+	} else {
+		statement = `update ` + tables.state + ` set body_sha256 = $2, ` + owed +
+			` where ` + tables.item + ` = $1::uuid`
+		args = []any{itemID, bodySum}
 	}
 	if _, err := tx.Exec(ctx, statement, args...); err != nil {
 		return fmt.Errorf("record the blocks of %s %s indexed: %w", kind, itemID, err)
@@ -452,17 +455,24 @@ func recordItemIndexed(
 }
 
 // itemBlockState is the state of an item's blocks that its windows are stamped with
-// (storedItemState) and read back against (ItemsOwedWindows): the sum of the
-// body they were split from, over the kind's state table as s. An item with no sum recorded -
-// one no block-aware build has indexed - stamps and compares as the empty string.
+// (clearItemWindowsOwed): the sum of the body they were split from, over the kind's state table
+// as s. An item with no sum recorded - one no block-aware build has indexed - stamps as the
+// empty string.
+//
+// Nothing in the server reads the stamp back: windows_owed_at says which items are owed their
+// windows (ItemsOwedWindows), and that marker replaced the comparison this stamp served. Two
+// readers of it are left, which is why the write still makes it. Migration 20261107203841 reads
+// it once, to mark every item whose windows were already stale when the column arrived, and the
+// release before this one decides owedness from it, so a rollback finds the stamp it has always
+// read (20261107194001.up.sql, "Rolling deploy").
 const itemBlockState = `coalesce(s.body_sha256, '')`
 
-// storedItemState is the query the one write of an item's windows runs for its stamp: it keeps
-// the state the item's state row already holds, which is the state the blocks those windows
-// cover are indexed at, and clears windows_owed_at. It is an update rather than a read so that
-// clearing that marker and writing the windows it stands for are one statement, which is the
-// whole of the marker's rule (ItemsOwedWindows).
-func storedItemState(tables itemTables, itemID string) blockState {
+// clearItemWindowsOwed is the query the one write of an item's windows runs for its stamp: it
+// keeps the state the item's state row already holds, which is the state the blocks those
+// windows cover are indexed at, and clears windows_owed_at. It is an update rather than a read
+// so that clearing that marker and writing the windows it stands for are one statement, which
+// is the whole of the marker's rule (ItemsOwedWindows).
+func clearItemWindowsOwed(tables itemTables, itemID string) blockState {
 	return blockState{
 		query: `update ` + tables.state + ` s set windows_owed_at = null
 		        where s.` + tables.item + ` = $5::uuid returning ` + itemBlockState + ` as block_state`,
@@ -841,9 +851,9 @@ func lockItem(ctx context.Context, tx pgx.Tx, kind ItemKind, tables itemTables, 
 // lock an edit of the item takes, reads the text the item's blocks were split from - its stored
 // body, or an ask's parts (AskParts) - pairs it with the item's current block rows, and writes
 // one set of windows under those ids, stamping the state the blocks are in beside them and
-// clearing the marker that listed it in the same statement (storedItemState, writeWindows). It
-// writes no block row and no reference: the index of this item's blocks stands, and only its
-// windows are missing.
+// clearing the marker that listed it in the same statement (clearItemWindowsOwed,
+// writeWindows). It writes no block row and no reference: the index of this item's blocks
+// stands, and only its windows are missing.
 //
 // It is the one writer of an item's windows. An index of the item's blocks records the blocks
 // and leaves the windows that stand for them to this arm (indexItemBlocks), so every set of
@@ -880,7 +890,7 @@ func WriteItemWindows(ctx context.Context, tx pgx.Tx, kind ItemKind, itemID stri
 		windowed[index] = itemblocks.WindowBlock{ID: ids[index], Type: block.Type, Text: block.Text}
 	}
 	if err := writeWindows(ctx, tx, kind.WindowKind(), kind.WindowOwnerKey(itemID),
-		itemblocks.Windows(windowContext, windowed), storedItemState(tables, itemID)); err != nil {
+		itemblocks.Windows(windowContext, windowed), clearItemWindowsOwed(tables, itemID)); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -975,7 +985,7 @@ func markItemBlocksOwed(ctx context.Context, tx pgx.Tx, kind ItemKind, tables it
 //     once for every item whose windows were already stale when the column arrived, which no
 //     later write would have marked.
 //   - the one statement that writes an item's windows clears it, beside the stamp of the
-//     state those windows were written from (writeWindows, storedItemState), so the clear
+//     state those windows were written from (writeWindows, clearItemWindowsOwed), so the clear
 //     and the windows cannot come apart. An index of the item's blocks writes no window and
 //     clears nothing of this arm's (recordItemIndexed), so every item an index records is
 //     left here for this arm, which windows it one tick behind. That statement's own

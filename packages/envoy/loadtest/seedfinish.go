@@ -49,12 +49,11 @@ const (
 // gate reads it with the deployment's agent bearer like every other call the harness makes.
 const searchCoveragePath = "/api/v1/search/coverage"
 
-// The queries seed-finish runs. Each names the schema of every table it reads: Dispatch's are in
-// public, and on a database whose login is named as a schema is - the deployment's login is
-// loadtest - an unqualified name resolves in that schema first (search_path "$user", public),
-// which would count an empty copy of Dispatch's tables (dispatch://INFRA-988). The block-index
-// tables do not exist in a build older than migration 0121, which owes nothing; Postgres resolves
-// every table a statement names before it runs, so the existence check is its own query.
+// The queries seed-finish runs. Each names the schema of every table it reads, for the reason
+// loopIDsDDL gives (loopseed_write.go): a schema named as the database's login is shadows
+// public for every unqualified name (dispatch://INFRA-988). The block-index tables do not
+// exist in a build older than migration 0121, which owes nothing; Postgres resolves every table
+// a statement names before it runs, so the existence check is its own query.
 const (
 	sqlUnpublishedEvents = "select count(*) from public.events where published_at is null"
 	sqlBlockIndexTables  = "select to_regclass('public.document_block_versions') is not null and to_regclass('public.block_grammar_owed') is not null"
@@ -121,8 +120,7 @@ type seedFinisher struct {
 
 // seedFinishFlags are seed-finish's own flags. Two of them carry a secret -- the Postgres URL
 // with its password and the Dispatch agent bearer -- so each has the file form every credential
-// of this package has (readCredentials): vm/vm.sh runs this phase on the pod that drives the
-// deployment, where a value would be an argument anything that can list processes reads.
+// of this package has, for the reason readCredentials gives (guard.go).
 type seedFinishFlags struct {
 	pg, pgFile            string
 	url, token, tokenFile string

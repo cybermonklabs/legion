@@ -55,9 +55,10 @@ const (
 	r5LoopUnitStartsPerS   = 1.75
 )
 
-// The Postgres readings R6 names that no command of this package writes today: the slowest
-// statements and the lock waits over the step's window (one file, since one read of Postgres's
-// statistics takes both), the database's size at its start and its end, and the instance's
+// The Postgres readings R6 names, which this package's own commands write (pgstats.go): the
+// slowest statements and the lock waits over the step's window, which loadgen pg-statements
+// writes as one file, since one read of Postgres's statistics takes both; the database's size
+// at its start and its end, which the two phases of loadgen pg-size write; and the instance's
 // memory beside the CPU that loadgen cloudsql-cpu writes. The check names the file each is read
 // from, so a step that records them passes the clause and a step that does not is told what it
 // lacks by name rather than passing in silence.
@@ -809,9 +810,9 @@ func (sc *stepCheck) poolWaitersClause() stepClause {
 }
 
 // statementsAndLocksClause: Postgres's slowest statements and its lock waits, which R6 names
-// together and which one read of Postgres's own statistics takes together. No command of this
-// package writes them today, so the clause names the file it reads them from and fails until the
-// step holds it.
+// together and which one read of Postgres's own statistics takes together. loadgen
+// pg-statements writes them as one file over the step's window, so the clause names that file
+// and fails until the step holds it.
 //
 // A collector that never ran and one that ran and found nothing read differently. A step with no
 // file at all measured neither. A step whose file holds no statement found none over an hour
@@ -858,8 +859,8 @@ func (sc *stepCheck) profileClause() stepClause {
 	return okClause(name, fmt.Sprintf("%s, %s MiB", cpuProfileFileName, num(mib(float64(sc.profileB)), 2)))
 }
 
-// sizeClause: the database's size at the start of the step and at its end. No command of this
-// package writes it today, so the clause names the file it reads it from and fails until the
+// sizeClause: the database's size at the start of the step and at its end, which the two phases
+// of loadgen pg-size write into one file, so the clause names that file and fails until the
 // step holds it. A step with no file at all and a file whose figures are no measurement read
 // differently: the seeded database is never empty, and a step adds rows and never removes a
 // table, so a size of 0 or an end under the start is a read of another database or at another
