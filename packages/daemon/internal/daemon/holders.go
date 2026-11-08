@@ -154,7 +154,7 @@ func newRebuilder(log *slog.Logger, live *config.Live) *rebuilder {
 // register adds holders, each in the place its name's first registration gives it. That place
 // never moves and nor does the holder in it: a name already registered is a second place
 // registering what one place owns, which the daemon does not do, so it is logged and left as
-// it is. A test that deliberately puts another holder in a name's place uses replace.
+// it is.
 //
 // The order is load-bearing, which is why the rule is here and not left to the registry's
 // behaviour: rebuilder.observe builds the holders of one change in registration order. What that

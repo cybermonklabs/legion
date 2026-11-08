@@ -163,8 +163,8 @@ type SettingsChange struct {
 }
 
 // Answer is a daemon's answer to a relayed call: its status and the JSON body it sent. Dispatch
-// passes both to its own caller unchanged — the daemon decides each key, `applied` or `refused`,
-// and Dispatch re-reads neither verdict.
+// passes both to its own caller unchanged — the daemon decides each key, `applied`, `refused`
+// or `failed`, and Dispatch re-reads no verdict.
 type Answer struct {
 	Status int
 	Body   json.RawMessage

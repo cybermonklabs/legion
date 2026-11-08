@@ -91,10 +91,8 @@ func (a SettingsRouteAuth) configured() bool {
 // SettingsRebuildFailures is why the daemon could not build again something that holds the
 // value of a path it has just applied, by that path, with each holder's name in its text so a
 // path several things hold says which of them kept what it had, and two failures of one path
-// joined in the row's own order, the named holder first. A rebuild runs inside the apply,
-// under the settings holder's lock, so what it could not do is known by the time this answer
-// is written, and the apply that records it is the one whose paths are taken: the daemon's
-// rebuild observer decides both (internal/daemon's rebuilder.observe and rebuilder.route).
+// joined in the row's own order, the named holder first. The daemon's rebuild observer
+// records them (internal/daemon's rebuilder).
 type SettingsRebuildFailures map[string]string
 
 // ApplySettings is how the route reaches the daemon's one settings holder (internal/settings'
