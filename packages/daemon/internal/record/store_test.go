@@ -609,6 +609,50 @@ func TestClaimSessionAnswersTheSeededSessionOrEmpty(t *testing.T) {
 	})
 }
 
+// SessionClaimsTree and SessionClaimsAnywhere together separate the three answers a claim
+// release stands on (the outbox's releaseClaim): a session the daemon records in the tree being
+// asked about, a session it records only in another tree — which owns its own issue, not this
+// one — and a session it holds no claim row for at all, which it cannot attribute.
+func TestSessionClaimsSeparateTheAskedTreeFromAnotherAndFromNoClaimAtAll(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	seed := func(tx pgx.Tx, token, tree, session string) {
+		t.Helper()
+		_, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+			values ($1, 'LEGION', $2, $2, $3, 0, $4, '', $5, 0, 0, 0, 0)`,
+			token, tree, string(claim.RoleArchitect), session, string(supervise.StateWorking))
+		must(t, err)
+	}
+	inTx(t, st, func(tx pgx.Tx) {
+		seed(tx, "here", "LEGION-208", "ses-here")
+		seed(tx, "elsewhere", "LEGION-209", "ses-elsewhere")
+	})
+	for _, tc := range []struct {
+		name            string
+		session         string
+		inTree, claimed bool
+	}{
+		{name: "claims the asked tree", session: "ses-here", inTree: true, claimed: true},
+		{name: "claims only another tree", session: "ses-elsewhere", claimed: true},
+		{name: "claims nothing anywhere", session: "ses-unknown"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			inTx(t, st, func(tx pgx.Tx) {
+				inTree, err := records.SessionClaimsTree(ctx, tx, "LEGION-208", tc.session)
+				must(t, err)
+				claimed, err := records.SessionClaimsAnywhere(ctx, tx, tc.session)
+				must(t, err)
+				if inTree != tc.inTree || claimed != tc.claimed {
+					t.Fatalf("%s claims LEGION-208 = %t and anywhere = %t, want %t and %t",
+						tc.session, inTree, claimed, tc.inTree, tc.claimed)
+				}
+			})
+		})
+	}
+}
+
 func TestStoreRoundTripsLingerStateAndRefusesHeldFromHeld(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -2097,8 +2141,8 @@ func TestRecordMigrationCreatesTheRequiredColumns(t *testing.T) {
 			"default_branch", "github_repo", "awaiting_ask", "awaiting_gate_version", "awaiting_artifact", "awaiting_answered_at", "awaiting_answered_by",
 			"awaiting_answered_detail", "awaiting_since_seq", "awaiting_since", "handout_seq", "declared_seq", "declared_at", "caught_up_seq",
 			"ancestry", "handed_over_from", "memory_group", "memory_draw_mode", "memory_drawn_at", "memory_carried"},
-		"phases":            {"issue", "role", "claim", "handoff_commit", "rounds", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "assignment", "handoff_record", "handoff_version"},
-		"pull_requests":     {"issue", "repo", "number", "branch", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "merge_sha"},
+		"phases":            {"issue", "role", "claim", "handoff_commit", "rounds", "conflict_rounds", "verdict", "summary", "last_handoff", "decision", "completed_at", "merge_note", "assignment", "handoff_record", "handoff_version"},
+		"pull_requests":     {"issue", "repo", "number", "branch", "head_sha", "head_updated_at", "failing", "cancelled", "fix_attempts", "blocked_attempts", "check_runs", "generation", "snapshot", "pushes", "head_moves", "head_counted", "head_run", "planned_red", "review_seen", "review_seen_at", "state", "checked_head", "required", "required_workflows", "required_workflows_head", "mergeability", "conflicting_head", "merge_sha"},
 		"production_checks": {"issue", "project", "tree", "repo", "pr_number", "merge_sha", "opened_at", "bound_at", "role", "looks", "look_open", "look_wake_at", "last_wake_kind", "last_wake_detail", "last_wake_at", "wake_at", "last", "closed_at", "outcome"},
 		"design_gates":      {"issue", "step", "artifact_id", "latest_version", "approved_version", "approved_seq", "approved_at", "told_changes_version", "told_changes_reason", "told_changes_seq", "told_changes_at", "ever_opened"},
 		"root_asks":         {"issue", "ask", "kind", "artifact", "open", "seq", "waiting_on", "waiting_on_seq", "closed_by", "closed_seq", "by_tree", "person_seq", "person_answer_seq"},

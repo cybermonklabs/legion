@@ -5,6 +5,9 @@ import {
   type Artifact,
   type BlockPath,
   dispatchToolSpecs,
+  type GraphEdge,
+  type GraphEdgeKind,
+  type GraphReferences,
   type IssueComponents,
   overCapMessage,
   PROJECT_KEY_RULE,
@@ -11162,6 +11165,7 @@ describe("executeDispatchTool", () => {
     const root = "11111111-1111-4111-8111-111111111111";
     const middle = "22222222-2222-4222-8222-222222222222";
     const leaf = "33333333-3333-4333-8333-333333333333";
+    const ref = (id: string) => `dispatch://DSP-1/comment/${id}`;
     const comment = (id: string, body: string, answers: string | null) => ({
       id,
       issue_key: "DSP-1",
@@ -11174,6 +11178,22 @@ describe("executeDispatchTool", () => {
       suggestion: null,
       created_at: "2026-09-09T00:00:00Z",
     });
+    const edge = (
+      kind: GraphEdgeKind,
+      direction: "in" | "out",
+      id: string,
+      at: string
+    ): GraphEdge => ({
+      kind,
+      direction,
+      node: { kind: "comment", id, ref: ref(id) },
+      created_at: at,
+      source_seq: null,
+    });
+    const graph = (edges: GraphEdge[]): GraphReferences => ({
+      node: { kind: "comment", id: "node" },
+      edges,
+    });
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
       const target = new URL(String(url));
       if (target.pathname === `/api/v1/comments/${root}`) {
@@ -11182,22 +11202,75 @@ describe("executeDispatchTool", () => {
           replies: [comment(middle, "Middle.", root), comment(leaf, "Leaf.", middle)],
         });
       }
-      if (target.pathname === "/api/v1/references") return response(emptyGraph("comment"));
+      if (target.pathname === `/api/v1/comments/${leaf}`) {
+        return response({ comment: comment(leaf, "Leaf.", middle), replies: [] });
+      }
+      // The graph the server serves for this thread. Both replies hang off the root, so the
+      // root's incoming read carries their two replies_to edges and no answers edge at all:
+      // the server folds the answers edge of every comment whose reply_to is that same root
+      // (packages/envoy/internal/dispatch/refs/graph.go:344-357). The leaf's own links keep
+      // the answers edge, which is the only place the middle comment is named as answered.
+      //
+      // Every read is newest first, and the client prints the edges in the order it is given
+      // them: `readEdgeRows` (the same file) orders `created_at desc, kind, other_kind,
+      // other_id, at_block`. So the leaf's edge leads the root's incoming read, and the leaf's
+      // own two, made in the same second, stand in the order their kinds sort in.
+      if (target.pathname === "/api/v1/references") {
+        if (target.searchParams.get("to") === ref(root)) {
+          return response(
+            graph([
+              edge("replies_to", "in", leaf, "2026-09-09T02:00:00Z"),
+              edge("replies_to", "in", middle, "2026-09-09T01:00:00Z"),
+            ])
+          );
+        }
+        if (target.searchParams.get("from") === ref(leaf)) {
+          return response(
+            graph([
+              edge("answers", "out", middle, "2026-09-09T02:00:00Z"),
+              edge("replies_to", "out", root, "2026-09-09T02:00:00Z"),
+            ])
+          );
+        }
+        return response(emptyGraph("comment"));
+      }
       throw new Error(`unexpected request: ${target.pathname}`);
     };
-    const result = await executeDispatchTool({
-      tool: "dispatch_read",
-      args: { ref: `dispatch://DSP-1/comment/${root}` },
-      cwd: "/workspace",
-      host: "omp",
-      config,
-      env: {},
-      exec: repoExec("owner/repo"),
-      fetchImpl: fetchImpl as typeof fetch,
-    });
+    const read = (id: string) =>
+      executeDispatchTool({
+        tool: "dispatch_read",
+        args: { ref: ref(id) },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    const result = await read(root);
     expect(result.text).toContain(`${leaf} · user alice\nAnswers: ${middle}\nBody: Leaf.`);
     expect(result.text).toContain(`${middle} · user alice\nBody: Middle.`);
     expect(result.text).not.toContain(`Answers: ${root}`);
+    expect(result.text).toContain(
+      [
+        "Referenced by:",
+        `- replies_to comment ${ref(leaf)} (2026-09-09T02:00:00Z)`,
+        `- replies_to comment ${ref(middle)} (2026-09-09T01:00:00Z)`,
+        "Links:",
+        "- none",
+      ].join("\n")
+    );
+    expect(result.text).not.toContain(`- answers comment ${ref(middle)}`);
+    const leafRead = await read(leaf);
+    expect(leafRead.text).toContain(
+      [
+        "Referenced by:",
+        "- none",
+        "Links:",
+        `- answers comment ${ref(middle)} (2026-09-09T02:00:00Z)`,
+        `- replies_to comment ${ref(root)} (2026-09-09T02:00:00Z)`,
+      ].join("\n")
+    );
   });
 
   test("reads the targeted comment and quoted reply chain from a Dispatch comment reference", async () => {
