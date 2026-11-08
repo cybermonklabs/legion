@@ -340,7 +340,15 @@ test("a status change whose answer is lost survives a reload, lands once, and th
   }
 });
 
-test("an ask answer whose answer is lost lands once, under one key", async ({ browser }) => {
+// @webkit under the second of the two reasons for an engine tag (`e2e/playwright.config.ts`, the
+// comment above `tagged`): not a WebKit behaviour of its own - the keyed write path's request
+// failure is the one the tagged rows above exercise in every engine - but the engine this row's
+// own failures were in, both of them, two timeouts in 213 CI runs. The tag is what keeps the row
+// there now that the projects select rows by tag rather than by file (`webkitTagged`); without it
+// the row would run only where its defect was never seen.
+test("an ask answer whose answer is lost lands once, under one key @webkit", async ({
+  browser,
+}) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "An answer once" });
   const ask = await createAsk(
@@ -723,9 +731,7 @@ test("a 20 MB upload repeated while its first request runs is answered 409 KEY_I
 // @webkit @firefox: whether the engine's IndexedDB gives a kept upload its `File` back across a
 // reload - WebKit's stores no `File` at all, which is why this row keeps the bytes with the name
 // and type and rebuilds the `File` on the way out (`web/src/features/writes/kept-files.ts`).
-test("a retried upload survives a reload with its file @webkit @firefox", async ({
-  browser,
-}, testInfo) => {
+test("a retried upload survives a reload with its file @webkit @firefox", async ({ browser }) => {
   await createProject({ key: "KW", name: "Keyed writes" });
   const issue = await createIssue({ project: "KW", title: "A retried upload" });
   const path = `/api/v1/issues/${issue.key}/artifacts`;
@@ -733,6 +739,59 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
   try {
     const page = await alice.newPage();
     page.on("dialog", (dialog) => void dialog.accept());
+    // The defect this row guards was a 3.3 ms race - the page named a kept file IndexedDB had
+    // not committed yet - and no load this suite can put on a runner reproduces a window that
+    // narrow. So the row holds the window open itself: the page's own IndexedDB open of the
+    // kept-files database answers its caller a second late, which is longer than every step
+    // between the press and the reload. Only the kept-files database is delayed, so the
+    // editor's store (`dispatch-pending-edits`) and every other page read are untouched, and
+    // both windows the product closes are held open at once: the one at the press
+    // (`Writes.run`) and the one at the Retry (`Writes.retry`). The delay is paid by each of
+    // the three loads, and by the resumed read after the last of them, which the 10 s bound
+    // below absorbs; the row runs in about 19 s against Playwright's 30 s default.
+    //
+    // What the hook needs to be true is not in this file: that `kept-files.ts` opens the
+    // database by that name and sets its handler by assignment (`request.onsuccess = …`).
+    // Either could change and the hook would then delay nothing, the window would be 3.3 ms
+    // again, and this row would pass with the product reverted. So the page counts the opens
+    // whose success it actually held back - an open it matched by name but whose handler it
+    // never caught counts for nothing - and the row asserts that count at its end, where no
+    // wait of its own can close a window: a selector that cannot fail is no guard
+    // (`packages/dispatch/AGENTS.md`, "Two rules keep an assertion honest").
+    await page.addInitScript(() => {
+      let held = 0;
+      Object.defineProperty(window, "keptFilesOpensHeld", { get: () => held });
+      const open = IDBFactory.prototype.open;
+      IDBFactory.prototype.open = function delayed(name: string, version?: number) {
+        const request = open.call(this, name, version);
+        if (name !== "dispatch-kept-files") return request;
+        // The page's handler is taken off the request and called a second after the browser
+        // opened the database, so the page waits where it would have gone on. A page that
+        // listened for `success` another way would set no handler here, and then this open is
+        // not held and is not counted.
+        // `Event` here is this file's Dispatch event, so the handler's type is read off
+        // `IDBRequest` itself rather than written out.
+        let onsuccess: IDBRequest["onsuccess"] = null;
+        Object.defineProperty(request, "onsuccess", {
+          configurable: true,
+          get: () => onsuccess,
+          set: (handler: IDBRequest["onsuccess"]) => {
+            onsuccess = handler;
+          },
+        });
+        request.addEventListener("success", (event) => {
+          setTimeout(() => {
+            if (onsuccess === null) return;
+            held += 1;
+            onsuccess.call(request, event);
+          }, 1_000);
+        });
+        return request;
+      };
+    });
+    /** How many opens of the kept-files database this load has held back a second. */
+    const opensHeld = async (): Promise<number> =>
+      await page.evaluate(() => Number(Reflect.get(window, "keptFilesOpensHeld") ?? -1));
     // A multipart body is no JSON, so the row keeps each attempt's key alone. The listener is the
     // page's, so it keeps counting across the reloads.
     const keys: (string | undefined)[] = [];
@@ -754,10 +813,6 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
       });
     });
     const openArtifacts = async () => {
-      if (testInfo.project.name === "iphone") {
-        const reviewPanel = page.getByRole("button", { name: /review panel/i });
-        if ((await reviewPanel.getAttribute("aria-expanded")) === "true") await reviewPanel.click();
-      }
       await page.getByRole("tab", { name: "Artifacts" }).click();
     };
     await page.goto(`/issues/${issue.key}`);
@@ -805,6 +860,16 @@ test("a retried upload survives a reload with its file @webkit @firefox", async 
         `select count(*) from artifact_versions v join artifacts a on a.id = v.artifact_id where a.issue_key = '${issue.key}' and a.name = 'once.bin'`
       )
     ).toBe("1");
+    // Everything above rests on the hook at the head of this row still delaying the page's own
+    // opens of the kept-files database, which in turn rests on two facts of `kept-files.ts`
+    // this file cannot see: the database's name, and its setting the open handler by
+    // assignment. Either could change and the hook would delay nothing, the windows would be
+    // 3.3 ms again, and this row would pass with the product reverted. So the last load's
+    // count of the opens the hook actually held back - an open matched by name whose handler
+    // it never caught counts for nothing - is asserted here, after every step whose timing
+    // the row depends on, where reading it costs the row nothing and no wait of its own can
+    // close a window the row is meant to reload inside.
+    expect(await opensHeld()).toBeGreaterThan(0);
   } finally {
     await alice.close();
   }

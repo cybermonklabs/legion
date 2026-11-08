@@ -74,6 +74,9 @@ jobs:
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: bash scripts/dev-broker.test.sh
         working-directory: packages/envoy
+      - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
+        run: bash scripts/dev-airlock.test.sh
+        working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3; no real Postgres or network)
         run: bash scripts/dev-stack.test.sh
         working-directory: packages/envoy
