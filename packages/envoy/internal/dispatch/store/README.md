@@ -12,6 +12,11 @@ So a migration must not depend on its order relative to one written in a concurr
 one that needs another's effect is written after that one has merged.
 `max(version)`, the `schema_version` `/healthz` reports, is the highest version applied, not proof that every version below it is applied, which is why the auto-deployer's rollback guard compares the whole set of recorded versions.
 
+An unmarked migration and its version record commit in one transaction.
+A file whose first line is exactly `-- pgmigrate:non-transactional` must hold one `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement; it runs outside a transaction under the same migration key's session-level advisory lock through its separate version insert.
+Both modes keep the five-second lock wait bound and shared lock diagnostics.
+The concurrent mode refuses an existing INVALID index with an explicit `DROP INDEX CONCURRENTLY` recovery command instead of recording a skipped, incomplete build as success.
+
 **A migration must leave the release before it able to read and write the schema.**
 A Dispatch release rolls, so the old build and the new build run against this schema at once, and nothing at boot refuses a schema newer than the binary knows.
 A change is therefore expand-then-contract across two releases:
