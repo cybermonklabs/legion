@@ -1130,13 +1130,27 @@ jobs:
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
-              # e2e/cli-body-cap.e2e.ts:52,57,65 run envoy-client's dispatch CLI, spawned as its
+              # e2e/cli-reply-answers.e2e.ts:18 runs envoy-client's dispatch CLI, spawned as its
               # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
               # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
               # (ci_job_reads.py's envoy_client_dep).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/bin/dispatch.ts'
               - 'packages/broker-client/**'
+              # The one markdown fixture table: the browser row each of the seven parity families
+              # whose shapes the corpus holds keeps reads it at
+              # web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44. This
+              # entry declares that read explicitly and selects nothing on its own: the
+              # `*dispatch_server` anchor this filter takes above already matches it through its
+              # own 'packages/envoy/internal/dispatch/pmdoc/**', as it does the block schema
+              # e2e/engine-reading.ts:13 reads. Measured with ci_filter_coverage.changes_filters
+              # and workflow_paths.PathsFilter under both quantifiers: this filter covers the
+              # table with the entry and without it, where dispatch-ui's own entry for this same
+              # path covers it only with, that filter naming no anchor that reaches the table.
+              # Those three are named rather than cited by line: a citation into this file moves
+              # with every comment added above it, and one entry's line number took four values in
+              # two rounds that way.
+              - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
               # The file store image: the pull step names its declaration to the pull-test-images
               # action, and the S3 step reads the same declaration for its docker run.
               - 'packages/envoy/internal/tests3/seaweedfs.go'
@@ -1197,7 +1211,18 @@ jobs:
               # packages/proof-editor/tests/ask-concurrent-edit.test.ts:269-275, which this job
               # runs, reads block-node-types.json beside it.
               - 'packages/envoy/internal/dispatch/pmdoc/schema/**'
-              # e2e/__tests__/local-instance-support.test.ts:153-154 holds shellQuote to this table.
+              # The one markdown fixture table, read at web/src/__tests__/pmdoc-fixtures.ts:48,
+              # whose path is the new URL at :44, by the three suites this job runs over it:
+              # features/refs/fixture-table-readings.test.ts,
+              # markdown-engine.test.ts and markdown-surfaces.test.tsx. The dispatch-browser job
+              # declares it too, for the browser rows that import the same module, but that job
+              # runs no unit test.
+              - 'packages/envoy/internal/dispatch/pmdoc/testdata/fixtures.json'
+              # The digest table holding e2e/heavy-bodies.ts's bodies to the Go shapes that spell the
+              # same bytes, read by e2e/__tests__/heavy-bodies-digests.test.ts:44-50, which this job runs.
+              - 'packages/envoy/internal/dispatch/pmdoc/heavybodies/testdata/shared-bodies.json'
+              # e2e/__tests__/local-instance-support.test.ts:158-160 reads this table (the new URL
+              # at :159) and holds shellQuote to it.
               - 'packages/envoy/scripts/fixtures/shell-quote.json'
               # The answers packages/envoy/going's filter emitted for every probe of its own
               # suite, which packages/proof-editor/tests/going-answer-no-link.test.ts:111-112
