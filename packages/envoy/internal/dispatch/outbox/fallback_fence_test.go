@@ -213,9 +213,10 @@ func (resumedPastTheDeadline) Deadline() time.Time { return time.Now().Add(-time
 // hold's deadline has passed, as a scan starts no batch past it (Outbox.scan). The process may
 // be one the hold has left by then - the deadline is the margin a renewal must land inside - so
 // a claim of its own would keep up to batchSize rows out of the live holder's pass for
-// fallbackClaim, and what it decided it would write beside that holder: a row it settles with
-// nothing sent needs no send at all, so the window's refusal, which answers the sends
-// (bus.ErrWindowDeadline), holds nothing of it back.
+// fallbackClaim, and each of its sends would meet the window's refusal
+// (bus.ErrWindowDeadline). What it decided could not be written beside that holder all the
+// same: the record is fenced separately, on this process and the database's clock
+// (recordFallbackCopies).
 func TestAFallbackPassResumedPastItsHoldsDeadlineClaimsNothing(t *testing.T) {
 	const sessionTopic = "notifications.agent.s1"
 	var logged lockedBuffer
