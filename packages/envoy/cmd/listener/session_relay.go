@@ -875,7 +875,7 @@ func (m *sessionRelays) settleFilter(ctx context.Context, sessionID string, wrot
 	// before the fence runs, so that pass answers it as the write it is (filterWriteLanded) and
 	// sends nothing, and the passes after it correct it from the bucket's newest row.
 	restart := true
-	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, func() (uint64, filterWriteOutcome) {
+	fenceFilterWrite(ctx, m.logger, m.registry, sessionID, filterAfterRestart, func() (uint64, filterWriteOutcome) {
 		if restart {
 			restart = false
 			return wrote, filterWriteLanded

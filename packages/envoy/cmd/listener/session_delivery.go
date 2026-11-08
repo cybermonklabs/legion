@@ -400,24 +400,17 @@ const (
 // A pass that finds the bucket holding no record of the session ends the repair, and the fence
 // with it: the record was deleted by a clean stop or a reaper pass, the same delete takes the
 // consumer (deleteConsumer), and a session with no record has no next heartbeat to register
-// again, so nothing is left to repair and nothing is left to repair it. The fence's own line is
-// wrong there, naming a heartbeat that never comes, so the pass ends it silently
-// (filterWriteSettled) and the one case that leaves something behind - a pass of this repair
-// that wrote a filter before that delete - says so in words of its own below.
+// again, so nothing is left to repair and nothing is left to repair it. The fence's line that
+// leaves the filter to that heartbeat is wrong there, naming one that never comes, so the pass
+// answers filterWriteSessionGone and the fence reports the one case that leaves something
+// behind - a pass of this repair that wrote a filter before that delete - in a line of its own.
 //
 // A failure is logged, not returned: the caller's answer does not change, the record is deleted
 // or not whatever this call did, and the session's next registration repairs the consumer again.
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
-	// stands is the revision of the row a pass of this repair wrote the consumer's filter from,
-	// and landed says a pass wrote one, which stands alone cannot: a write built for a session
-	// the bucket holds no row for is fenced on revision 0. The pair is the fence's own
-	// (fenceFilterWrite), kept here because the deleted record's line is right only where a
-	// write of this repair stands on the consumer.
-	var stands uint64
-	landed := false
-	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, func() (uint64, filterWriteOutcome) {
+	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, after, func() (uint64, filterWriteOutcome) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
@@ -426,16 +419,10 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 		// that build no target leaves the fence something different (registeredFinding).
 		switch found {
 		case registeredRecordGone:
-			// The session is gone and no heartbeat of it will set any filter, so the fence
-			// ends here rather than on a line promising one. What a pass of this repair wrote
-			// before the record was deleted stands on a consumer no session reads, and that
-			// consumer is the delete's to take - or, where this repair created it after that
-			// delete, the stream's inactive threshold's (deleteConsumer, confirmRegistered).
-			if landed {
-				m.logger.Warn("listener left the filter of an older interest row on the consumer of a session the bucket holds no record for; the session is gone, so no heartbeat sets that filter and the consumer goes with the delete that took the record, or with the stream's inactive threshold",
-					slog.String("session_id", sessionID), slog.String("after", after), slog.Uint64("wrote_revision", stands))
-			}
-			return 0, filterWriteSettled
+			// The session is gone: the bucket holds no record of it, so no heartbeat of it
+			// registers again and nothing sets a filter this repair leaves. Whether a pass of
+			// it left one is the fence's own to know and to report (filterWriteSessionGone).
+			return 0, filterWriteSessionGone
 		case registeredNoConsumerDelivery:
 			// The record asks for no consumer of this session - it is delivered to on the core
 			// path (session.DeliveryConsumer) - so this repair has nothing to write and the
@@ -475,7 +462,6 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// than one that wrote.
 			return 0, filterWriteSettled
 		}
-		stands, landed = want.revision, true
 		return want.revision, filterWriteLanded
 	})
 }
@@ -497,8 +483,9 @@ type registeredConsumer struct {
 // registeredFinding is what registeredTarget found of a session's record and interest row, which
 // is what a repair's pass answers its fence with (repairRegistered, filterWriteOutcome). The
 // three findings that build no target are three different things to that caller and not one
-// false: a session the bucket holds no record of is gone, and the next heartbeat the fence's
-// line promises is a heartbeat it will not make.
+// false: each answers the fence with an outcome of its own (filterWriteSessionGone,
+// filterWriteSettled, filterWriteNotMade), since a session the bucket holds no record of is
+// gone, and the heartbeat the fence's other line promises is one that session will not make.
 type registeredFinding int
 
 const (

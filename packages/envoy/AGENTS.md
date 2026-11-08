@@ -4406,7 +4406,7 @@ The session's own user, such as a `gcp:NatsHub`'s credential-free `sessionUser`,
   A loop out of passes, or one ending on a corrective pass that planned nothing or whose write the server refused, logs WARN naming the session and both revisions.
   A loop whose bucket read failed after a write that landed logs `session consumer filter written and left unjudged` instead, with the revision it wrote from and the failure.
   Both leave that filter to the session's next heartbeat, since nothing else repairs it: the registration that stored the newer row set its filter and judged it before this write landed over them.
-  A pass that finds no record of the session leaves the line to `repairRegistered` instead.
+  A pass that finds no record of the session ends the loop on `listener left the filter of an older interest row on the consumer of a session the bucket holds no record for` instead, which the fence writes only where a pass of that loop landed a write (`filterWriteSessionGone`, `repairRegistered`): that session has no next heartbeat to leave the filter to, and a clean stop's or a reap's own restore, whose first pass finds the record its delete took with nothing written behind it, logs nothing.
   A pass that finds the consumer as its row asks, or none at all, ends the loop with no line.
   `fenceFilterWrite`'s doc states what that filter costs the session.
   A consumer call whose answer did not come back is judged a write that may stand, so the fence reads again rather than ending (`consumerCallAnswered`).

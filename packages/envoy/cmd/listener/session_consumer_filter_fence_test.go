@@ -554,9 +554,9 @@ func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind
 // A corrective pass that finds the session's record deleted promises no heartbeat: a session
 // the bucket holds no record of has none to make, and the delete that took that record takes
 // its consumer, so the fence's line - which leaves the filter to the next heartbeat - names a
-// repair nothing will do. What the pass reports instead is what it found: a filter of its own
-// write standing on the consumer of a session that is gone (repairRegistered,
-// filterWriteSettled).
+// repair nothing will do. What the fence reports instead is what the pass found: a filter of
+// its own write standing on the consumer of a session that is gone (repairRegistered,
+// filterWriteSessionGone).
 //
 // The order is built rather than waited for. The restore's first pass writes the row it read
 // and creates the consumer the delete took, and the hook below stores a newer row under that
@@ -870,9 +870,9 @@ func requireFenceReadFailureLogged(t *testing.T, rig *sessionConsumerRig, sessio
 	return reported.Wrote
 }
 
-// repairRecordGoneLine is what a repair of a session's consumer logs when a pass of it finds
-// the bucket holding no record of that session and a write of an earlier pass standing on the
-// consumer (repairRegistered).
+// repairRecordGoneLine is what the fence of a repair of a session's consumer logs when a pass
+// of it finds the bucket holding no record of that session and a write of an earlier pass
+// stands on the consumer (fenceFilterWrite, filterWriteSessionGone).
 const repairRecordGoneLine = "listener left the filter of an older interest row on the consumer of a session the bucket holds no record for; the session is gone, so no heartbeat sets that filter and the consumer goes with the delete that took the record, or with the stream's inactive threshold"
 
 // requireRepairRecordGoneLogged fails the test unless the listener logged that line for

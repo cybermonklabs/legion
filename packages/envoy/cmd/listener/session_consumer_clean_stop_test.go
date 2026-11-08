@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -77,6 +78,42 @@ func TestACleanStopDeletesTheStoppedSessionsConsumer(t *testing.T) {
 	}
 	rig.requireNoConsumer(t, "ses_clean_stop", "after the stop that deleted its record")
 	rig.requireConsumer(t, "ses_still_here", "after another session's clean stop")
+}
+
+// A clean stop's own restore reports no filter left behind. The stop deletes the session's
+// record and then its consumer, and the restore that follows that delete finds no record on
+// its first pass: it plans nothing, writes nothing, and the line that names a filter standing
+// on the consumer of a session that is gone would name a filter nothing wrote
+// (deleteConsumer, repairRegistered, filterWriteSessionGone).
+//
+// Every clean stop ends this way, and so does every reap, so the guard that line is written
+// under is what keeps a WARN off the ordinary end of a session: one logged here would have an
+// operator look for messages lost to an older row's filter on every session that ever stopped.
+func TestACleanStopsRestoreReportsNoFilterLeftOnTheSessionItTookAway(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_clean_stop_restore"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", "notifications.dispatch.issue.CLEANSTOPRESTORE.>"))
+	// The passes of the restore alone: the registration's own repair is behind this hook.
+	passes := 0
+	rig.deps.consumers.beforeRepairPlan = func() { passes++ }
+
+	stopSession(t, rig.mux, sessionID, "")
+
+	rig.deps.consumers.beforeRepairPlan = nil
+	if passes != 1 {
+		t.Fatalf("the stop's restore made %d passes, want the one pass that finds the record the stop itself deleted", passes)
+	}
+	if _, err := rig.deps.sessions.Refresh(context.Background(), sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("the bucket answers %v for %s's record, want no record at all: the restore's pass must have found it deleted", err, sessionID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if info, err := rig.consumers.Info(ctx, sessionID); !errors.Is(err, bus.ErrSessionConsumerNotFound) {
+		t.Fatalf("the consumer of %s after its clean stop: %+v, %v; want it deleted with the record, which is why its restore wrote no filter", sessionID, info, err)
+	}
+	if logs := rig.harness.logs.String(); strings.Contains(logs, repairRecordGoneLine) {
+		t.Errorf("the clean stop of %s reports a filter of an older row left on its consumer; the restore wrote none, and this line on a stop that wrote nothing is a WARN on every clean stop and every reap:\n%s", sessionID, logs)
+	}
 }
 
 // A conditional stop removes the session's consumer exactly when it removed the session's record.
