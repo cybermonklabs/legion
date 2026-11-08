@@ -195,6 +195,16 @@ type Claim struct {
 	// Machine.Claim reports it, so a caller can tell a claim in a turn from one being compacted,
 	// and the store never writes it.
 	Compacting bool
+	// ProcessGone is whether the runtime's last report of the process this claim still records
+	// found it gone (judge): false for a claim whose last report found that process running, for
+	// one the runtime has reported nothing of yet, and for a claim that records no process at
+	// all. A claim is left recording a process the runtime has given up on wherever the launch
+	// that replaces it did not run — a relaunch the tree lifecycle refused at its parked turn,
+	// and a take-back the store would not write (runWake, relaunchRefused) — and the claim
+	// stays stored working over it, which is how a reader tells such a claim from one in a turn
+	// (api's refuseState, freshSession). It is memory only, as Compacting is: Machine.Claim
+	// reports it, and the store never writes it.
+	ProcessGone bool
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
 	// registration records Session/SessionFile/CapabilityHash (register, reregister).
@@ -826,6 +836,17 @@ type Machine struct {
 	// restarts mid-compaction leaves a claim stored working, whose agent's own get_state answer
 	// then ends it (askTurnOver).
 	compacting *compacting
+	// processGone is what the runtime's last report of the process the claim records found
+	// (reportedProcess, Claim.ProcessGone), and false until a report has found that process
+	// gone. Every report the machine judges writes it — a gone verdict sets it and a verdict
+	// that found the process running clears it — and letGo clears it with the process it is
+	// about, so it is never read of a process the claim no longer records. A report that is no
+	// answer leaves what the last answer said (judge's uncertain verdict).
+	//
+	// It is memory only, as compacting is: a restart has had no report of any claim's process
+	// and reads one stored working as a claim whose agent it asks where it is (askFirst,
+	// askTurnOver), which ends such a turn without it.
+	processGone bool
 	// previous is the incarnation the claim last ran and no longer records — stopped by a
 	// suspension, retired, failed on, or found dead — which every launch of the same session hands
 	// the runtime to wait out until one starts. letGo is the one way a process gets here. It is
@@ -1270,6 +1291,7 @@ func (m *Machine) current() Claim {
 		c.SuspensionHeld, c.SuspensionHeldBy = true, m.held.By
 	}
 	c.Compacting = m.compacting != nil
+	c.ProcessGone = m.processGone
 	return c
 }
 
@@ -1955,7 +1977,9 @@ func (m *Machine) retire(ctx context.Context) error {
 // next launch of the same session waits it out. The identity of the turn that process was
 // running goes with it (turnsDelivery): a turn whose process is gone ends by a line of its own
 // rather than by turnEnded, so nothing is left to read it, and a later turn must never end
-// naming the delivery of a turn that died with its process.
+// naming the delivery of a turn that died with its process. What the runtime last reported of
+// that process goes with it too (processGone): the claim records no process for a report to be
+// about, and the one the next launch starts has been reported nothing.
 func (m *Machine) letGo() {
 	m.disarmAll()
 	m.relaunch = nil
@@ -1966,6 +1990,7 @@ func (m *Machine) letGo() {
 	m.unseenTurn = false
 	m.turnsDelivery = ""
 	m.compacting = nil
+	m.processGone = false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
@@ -1996,6 +2021,10 @@ func (m *Machine) letGo() {
 // covers every path, one report here and four in probe. The guard stays in the judgement rather
 // than in the fence because it answers every verdict the sweep can carry — gone, stale,
 // displaced, uncertain, alive — where each of them is acted on.
+//
+// A verdict this does act on is recorded as what the runtime last reported of the process the
+// claim records (reportedProcess), before it is acted on: the record is the verdict itself, and
+// the claim can be left over that process by a launch that never ran.
 func (m *Machine) judge(ctx context.Context, observation runtime.Observation, alive func(context.Context) error, again TimerKind, after time.Duration) error {
 	if m.launchWaits() {
 		m.log.Info("supervise: an observation of the process a waiting launch replaces decides nothing; its turn replaces that process",
@@ -2003,6 +2032,7 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 			"detail", observation.Detail, "due", m.wake.at)
 		return nil
 	}
+	m.reportedProcess(observation.Kind)
 	switch observation.Kind {
 	case runtime.Alive:
 		if m.claim.UncertainStreak > 0 {
@@ -2032,6 +2062,29 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		return m.persist(ctx)
 	}
 	return fmt.Errorf("supervise: an observation of kind %q", observation.Kind)
+}
+
+// reportedProcess records what this report found of the process the claim records
+// (processGone), which is read of a claim the launch that was to replace that process never
+// started: left stored working over a process the runtime has given up on, it is told from a
+// claim in a turn by this and by nothing else (Claim.ProcessGone, api's refuseState and
+// freshSession). It runs for every verdict judge acts on, so one report is never read against a
+// process an older one was about: the fence drops an observation of any other process
+// (Machine.fence), and letGo clears this with the process the claim lets go.
+//
+// A verdict that found the process running clears it, the stale address among them: that
+// process is alive, holding an address a process launched now is not handed (repoint), and the
+// relaunch it raises can be refused at its turn exactly as a death's can — read as gone, such a
+// claim would be refused "its process is gone" while its live process ran a turn of its own.
+// A runtime that could not answer says nothing either way, so an uncertain verdict leaves what
+// the last answer found standing until one comes (judge's uncertain verdict, probe).
+func (m *Machine) reportedProcess(kind runtime.ObservationKind) {
+	switch kind {
+	case runtime.Gone, runtime.NotRecordedProcess:
+		m.processGone = true
+	case runtime.Alive, runtime.StaleAddress:
+		m.processGone = false
+	}
 }
 
 // probe asks the runtime about the claim's process now and judges the answer. A claim can reach

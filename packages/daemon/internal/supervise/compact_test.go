@@ -490,14 +490,19 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 // relaunchRefused). The next report of that process raises a relaunch again, and until one
 // does the claim stands stored working over a process that is gone.
 //
-// This case is here for what the claim does not record. State, the compaction in flight, the
-// suspension held and the wake waiting are the whole of what either recovery door reads of a
-// working claim (api's refuseState, freshSession), and a claim genuinely in a turn reads the
-// same in all four, so both doors answer such a claim "is in a turn, ask again after the turn
-// ends". No fact of this claim tells the two apart. One would have to be written where the
-// refusal leaves the claim (relaunchRefused), and this test is what a round that writes it
-// changes.
-func TestAParkedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn(t *testing.T) {
+// What that claim records of its process is the verdict that raised the relaunch, kept where
+// every verdict is judged and read by both recovery doors (Claim.ProcessGone,
+// reportedProcess): state, the compaction in flight, the suspension held and the wake waiting
+// are the rest of what either door reads of a working claim (api's refuseState, freshSession),
+// and a claim genuinely in a turn reads the same in all four, so the fifth is the whole of
+// what tells the two apart. Without it both doors answer such a claim "is in a turn, ask again
+// after the turn ends", which is the wait that never comes — the turn is over, its process
+// gone, and what raises the next relaunch is the next report of that process.
+//
+// This case was TestAParkedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn, which
+// held that nothing of the claim told the two apart: that is the gap this round closes, so the
+// case is rewritten to read the fact that closes it rather than kept beside it.
+func TestAParkedRelaunchRefusedAtItsTurnRecordsThatItsProcessIsGone(t *testing.T) {
 	notices := 0
 	h := ladderStuck(t, &notices, pacedDeps(wakeRate))
 	dead := h.locator()
@@ -526,6 +531,9 @@ func TestAParkedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn(t *te
 	}
 	if view.Compacting || view.SuspensionHeld {
 		t.Fatalf("the claim reports Compacting %v and a suspension held %v, want neither", view.Compacting, view.SuspensionHeld)
+	}
+	if !view.ProcessGone {
+		t.Fatal("the claim reports nothing of its process, want the gone verdict that raised the refused relaunch")
 	}
 	if got := view.Locator; got == nil || *got != dead {
 		t.Fatalf("the claim records %+v, want the dead process the refusal kept, %+v", got, dead)

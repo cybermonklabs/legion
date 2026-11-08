@@ -1358,6 +1358,123 @@ func TestALaunchRefusedAtItsTurnBindsTheTurnItsAcknowledgedPromptAwaits(t *testi
 	}
 }
 
+// workingOverTheProcessItsRefusedRelaunchKept is the claim both tests below read: one working
+// for a turn whose process the runtime found gone, whose relaunch the pacing parked, and whose
+// turn the store could not answer the lifecycle recheck of (unansweredCheckLaunchStore). The
+// refusal keeps the dead process and the wake is spent, so the claim stands stored working
+// over a process nothing is replacing, and what the runtime last reported of that process is
+// the one fact that tells it from a claim in a turn (Claim.ProcessGone, reportedProcess).
+//
+// The store answers again before it returns, so what each path below does to that fact is the
+// path's own and not a second refusal's.
+func workingOverTheProcessItsRefusedRelaunchKept(t *testing.T) (*harness, runtime.Locator) {
+	t.Helper()
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store}
+	h.m.deps.Store = store
+
+	h.observe(runtime.Gone)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	store.failing = true
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	store.failing = false
+
+	h.wantState(StateWorking)
+	if held := h.m.View().WakeWaiting; held != nil {
+		t.Fatalf("the claim names wake %+v, want none: the turn ran and its launch was refused", held)
+	}
+	if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+		t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+			got.Locator, got.ProcessGone, dead)
+	}
+	return h, dead
+}
+
+// The claim a refused relaunch leaves working over a dead process is told from a claim in a
+// turn by what the runtime last reported of the process it records, and by nothing else: its
+// state, the compaction it is not in, the suspension nothing holds over it and the wake it no
+// longer has all read as a claim in a turn reads (api's refuseState, freshSession). The record
+// is the verdict that raised the relaunch, kept where every verdict is judged
+// (reportedProcess), so the refusal writes nothing for it.
+//
+// The negative control is the record reverted (reportedProcess's gone verdict dropped): both
+// recovery doors then answer such a claim "is in a turn, ask again after the turn ends", which
+// is a wait that never comes for it, in the one window those recoveries exist for.
+func TestARelaunchRefusedAtItsTurnLeavesTheClaimRecordingWhatBecameOfItsProcess(t *testing.T) {
+	h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
+
+	view := h.m.View()
+	if !view.ProcessGone {
+		t.Fatal("the refused claim reports nothing of its process, want the gone verdict that raised the relaunch")
+	}
+	if view.Compacting || view.SuspensionHeld || view.WakeWaiting != nil || view.State != StateWorking {
+		t.Fatalf("the claim is %s reporting Compacting %v, a suspension held %v and wake %+v; want the four a claim in a turn reads",
+			view.State, view.Compacting, view.SuspensionHeld, view.WakeWaiting)
+	}
+	if got := view.Locator; got == nil || *got != dead {
+		t.Fatalf("the claim records %+v, want the dead process the refusal kept, %+v", got, dead)
+	}
+}
+
+// Every path that changes what the runtime last reported of the process a refused relaunch
+// left the claim over. The record is about one process, so it goes when that process goes
+// (letGo) and it is written again by every report the machine judges of it: a verdict that
+// found the process running clears it, and a runtime that could not answer leaves the last
+// answer standing (judge, reportedProcess). A record that outlived any of them would refuse a
+// claim "its process is gone" over a process that is running, or over one the claim no longer
+// records at all.
+//
+// The negative control is each clearing dropped in turn: the row's claim then reports its
+// process gone while the runtime has just found it alive, at a stale address, or replaced by
+// the launch the row's turn ran.
+func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesIt(t *testing.T) {
+	for _, path := range []struct {
+		name string
+		// run takes the refused claim to the path's end, and want is what the claim reports of
+		// its process there.
+		run  func(t *testing.T, h *harness, dead runtime.Locator)
+		want bool
+	}{
+		{"the relaunch the next report of the process raises", func(t *testing.T, h *harness, _ runtime.Locator) {
+			// The sweep reports the dead process again, which raises the relaunch the refusal
+			// left owing; its turn starts the process that replaces it (letGo, launchNow).
+			h.observe(runtime.Gone)
+			waiting := h.wantWaitingWake(WakeLaunch)
+			h.advance(waiting.At.Sub(h.clock.Now()))
+			h.relaunched()
+		}, false},
+		{"a report that finds the process alive after all", func(t *testing.T, h *harness, _ runtime.Locator) {
+			h.observe(runtime.Alive)
+		}, false},
+		{"a report that finds it at a stale address", func(t *testing.T, h *harness, dead runtime.Locator) {
+			// The process is running, holding an address a process launched now is not handed,
+			// so the claim is relaunched over a live process and that launch waits its turn
+			// (repoint, reserveWake). Nothing let the process go, so the record is the report's
+			// own doing.
+			h.observe(runtime.StaleAddress)
+			h.wantWaitingWake(WakeLaunch)
+			if got := h.claim().Locator; got == nil || *got != dead {
+				t.Fatalf("the claim records %+v, want the process the repoint's launch replaces at its turn, %+v", got, dead)
+			}
+		}, false},
+		{"a runtime that could not answer", func(t *testing.T, h *harness, _ runtime.Locator) {
+			h.observe(runtime.Uncertain)
+		}, true},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
+
+			path.run(t, h, dead)
+
+			if got := h.claim().ProcessGone; got != path.want {
+				t.Fatalf("the claim reports ProcessGone %v, want %v", got, path.want)
+			}
+		})
+	}
+}
+
 // The other side of the same arming: a refusal met where no wake parked anything arms nothing.
 // A timer is deleted as it fires (fence), so the boot interval of a process the runtime then
 // reports gone is gone by the time the death's relaunch is refused (bootInterval, probe, died,

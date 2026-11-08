@@ -32,8 +32,11 @@ const nonEmptyString = z.string().min(1);
  * since there has to be a running Oh My Pi session to ask.
  *
  * The daemon refuses each with the code and the sentence the controller reads. Both give
- * `CLAIM_IN_A_TURN`, since cutting a running turn off would lose the turn that may be the one
- * ending the run of provider errors, and both give `CLAIM_UNSETTLED` for a claim between states:
+ * `CLAIM_IN_A_TURN` for a claim the daemon records as working, since cutting a running turn off
+ * would lose the turn that may be the one ending the run of provider errors; the claim is not
+ * always in a turn, and the sentence says which window it is in — a turn, a suspension held over
+ * it, or a process the last report found gone whose relaunch has not run — and what each waits
+ * for. Both give `CLAIM_UNSETTLED` for a claim between states:
  * one queued, one with a launch in flight, and one left working over a process the daemon is
  * starting again, whose relaunch waits its turn in the wake pacing, the turn that comes by
  * itself. The compaction adds three refusals of its own:

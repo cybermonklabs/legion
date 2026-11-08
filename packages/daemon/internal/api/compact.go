@@ -134,7 +134,7 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //
 // It reaches a claim whose agent is ready or idle and no suspension is held over. The machine
 // is the one judge of which states take a compaction: this route asks for it and reports the
-// refusal the machine answered, written from the state that refusal names (refuseState). Five
+// refusal the machine answered, written from the state that refusal names (refuseState). Six
 // are refused:
 //
 //   - a claim that is suspended, stopped or failed runs no agent at all, so there is no session
@@ -154,6 +154,11 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
 //     flight, and one stored working under a launch the daemon's wake pacing parks, which is
 //     told that the launch's turn comes by itself (claimUnsettled, refuseParkedRelaunch);
+//   - a claim stored working whose process the runtime's last report found gone has no agent to
+//     ask either, and no launch coming for it: the relaunch that was to replace that process
+//     did not run, and the claim was left over it (supervise's relaunchRefused). It is told
+//     what does come for it, the relaunch the next report of that process raises, rather than
+//     the turn's end a claim in a turn is told to wait for (refuseProcessGone);
 //   - a claim whose role runs on the Claude Code backend has no Oh My Pi session to compact at
 //     all, and it is the one refusal this route makes itself, since no state of the claim says
 //     which harness it runs. Which harness a role runs on is the daemon's configuration rather
@@ -280,12 +285,16 @@ func boundReason(text string) string {
 // published it, for the things the state alone does not say: whether a suspension is held over
 // the claim (supervise.Claim.SuspensionHeld, refuseHeldSuspension), whether a working claim is
 // working because its session is being compacted rather than because a turn is
-// (supervise.Claim.Compacting), and whether a launch waits its paced turn over it
-// (relaunchWaits). The hold is read first and without the state, because a hold outlives the
-// state it arrived in: it is held over a launch that has not registered and still stands when
-// that launch reaches shim_connected and registered (supervise's holdSuspendUntilReady), and
-// what such a claim waits for is the hold's end rather than the launch's. It always reports
-// false, so a caller returns it as its own answer.
+// (supervise.Claim.Compacting), whether a launch waits its paced turn over it (relaunchWaits),
+// and whether the runtime's last report of the process a working claim records found it gone
+// (supervise.Claim.ProcessGone, refuseProcessGone). The hold is read first and without the
+// state, because a hold outlives the state it arrived in: it is held over a launch that has
+// not registered and still stands when that launch reaches shim_connected and registered
+// (supervise's holdSuspendUntilReady), and what such a claim waits for is the hold's end
+// rather than the launch's. A working claim whose process is gone is read after the parked
+// launch, as the other door reads it: a claim whose process died under a park reads as both,
+// and the launch is the nearer wait (freshSession). It always reports false, so a caller
+// returns it as its own answer.
 func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
 	case view.SuspensionHeld:
@@ -295,6 +304,8 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 			"%s is being compacted already: wait for that compaction to end", token))
 	case state == supervise.StateWorking && relaunchWaits(view):
 		return refuseParkedRelaunch(w, token, compactOp)
+	case state == supervise.StateWorking && view.ProcessGone:
+		return refuseProcessGone(w, token, compactOp)
 	case state == supervise.StateWorking:
 		return refuseInATurn(w, token, compactOp)
 	case startsAgain(state):
