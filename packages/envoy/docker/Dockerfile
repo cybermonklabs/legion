@@ -56,13 +56,15 @@ COPY docs/site/package.json docs/site/package.json
 # that package under Bun ("not yet supported in Bun", oven-sh/bun#4290), so node-gyp compiles it
 # from source on every install, and the stage then needs python3, make and g++ for a module the
 # image never ships: packages/proof-editor reaches it through proof-sdk, and nothing of it is
-# copied out of this stage. Measured on one runner, cold, both arms in run 42420251932, job
-# 128554124167: this install takes 2.33 s for its 576 packages where main's takes 60.02 s for
-# its 928, and the whole build step 120 s against 175-180 s. The two images that run built
-# compare equal, which is what holds this honest: the same 3628 files, the same sizes and the
-# same six checksums as main's image. A dependency that ever does need its script fails this
-# build where the script would have run, loudly, and that comparison is what says whether what
-# the image ships has moved.
+# copied out of this stage. Measured on one runner, cold, this Dockerfile and main's copy of it
+# built one after the other in run 42433931955, job 128588657023: this install's layer takes
+# 4.2 s for its 576 packages where main's takes 72.5 s for its 928, and the whole build step
+# 99 s against 169 s. The two images that job built hold the same paths once each web asset's
+# content-hash suffix is taken out of the name, the same multiset of file sizes and the same
+# SHA-256 for each of the four binaries and the two notice files; the suffixes themselves move
+# on every build of any tree, which is why the comparison normalises them. A dependency that
+# ever does need its script fails this build where the script would have run, loudly, and that
+# comparison is what says whether what the image ships has moved.
 RUN bun install --frozen-lockfile --ignore-scripts --filter './' --filter './packages/dispatch' --filter './packages/contracts' --filter './packages/proof-editor'
 
 COPY packages/contracts packages/contracts
