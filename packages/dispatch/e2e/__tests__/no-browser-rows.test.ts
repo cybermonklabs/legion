@@ -63,9 +63,10 @@ const crossFileShapeFixture = "__tests__/fixtures/cross-file-row-shape.fixture.t
 const namedCallbackFixture = "__tests__/fixtures/named-callback-fixtures.fixture.ts";
 const shadowedNamesFixture = "__tests__/fixtures/shadowed-names.fixture.ts";
 const rowCalleesFixture = "__tests__/fixtures/row-callees.fixture.ts";
+const calleeSpellingsFixture = "__tests__/fixtures/row-callee-spellings.fixture.ts";
 
-// One scan over all eight, because a scan is a program: read one file at a time it would build
-// eight of them, and each fixture's imports — the callbacks two of them pass by name out of a
+// One scan over all nine, because a scan is a program: read one file at a time it would build
+// nine of them, and each fixture's imports — the callbacks three of them pass by name out of a
 // module beside them — are resolved the same way either way.
 const fixtureRows = rowsOfFiles(e2eDirectory, [
   noBrowserFixture,
@@ -76,6 +77,7 @@ const fixtureRows = rowsOfFiles(e2eDirectory, [
   namedCallbackFixture,
   shadowedNamesFixture,
   rowCalleesFixture,
+  calleeSpellingsFixture,
 ]);
 
 /** The rows one planted control declares, in the order the scan read them. */
@@ -91,6 +93,7 @@ const crossFileShapeFixtureRows = rowsOf(crossFileShapeFixture);
 const namedCallbackFixtureRows = rowsOf(namedCallbackFixture);
 const shadowedNamesFixtureRows = rowsOf(shadowedNamesFixture);
 const rowCalleesFixtureRows = rowsOf(rowCalleesFixture);
+const calleeSpellingsFixtureRows = rowsOf(calleeSpellingsFixture);
 
 // A scan that found nothing would satisfy every rule below without reading a row, so this is
 // asserted once here rather than again in each test that reads `realRows`.
@@ -245,30 +248,34 @@ test("the fixtures of a callback passed by name are read, whatever the row's tit
 });
 
 // The correctness the checker is here for. Each of the first five rows passes a name that a
-// reading matching names against the functions a file declares resolved to `opensAPage`, the one
-// function of the fixture that binds `page`: it reported `fixtures: ["page"]` for a row that
-// drives nothing and the gate passed it. Each name is bound somewhere else - a for-of `const`, a
-// `let` in a describe, a destructured `const`, a parameter, an import beside a nested function
-// of its name - and the scan reads each binding where it stands. Two more pass no name at all,
-// and the last two are the other direction: the file's own `opensAPage` where nothing shadows
-// it, and an import that binds `page` in the module it comes from, both read and both left.
+// reading matching names against the functions a file declares resolved to a function of the
+// fixture that binds `page`: run over this fixture, that reading reports `fixtures: ["page"]`
+// for all five, and the gate passes five rows that drive nothing. Each name is bound somewhere
+// else - a for-of `const`, a `let` in a describe, a destructured `const`, a parameter, an
+// import beside a nested function of its name - and the scan reads each binding where it
+// stands. Two more pass no name at all, and the last two are the other direction: the file's
+// own `opensAPage` where nothing shadows it, and an import that binds `page` in the module it
+// comes from, both read and both left.
 test("a name in a row's callback position is read as what it is bound to", () => {
   expect(shadowedNamesFixtureRows).toEqual([
     {
       file: shadowedNamesFixture,
-      line: 45,
+      line: 50,
       title: '"a planted row whose callback is a for-of const of a declared name"',
       fixtures: [],
     },
+    // The `let` holds a callback that opens a page by the time Playwright would run this row.
+    // It is reported with no fixtures because no `let` can be read, not because nothing opens
+    // a page: the check fails closed and names the row.
     {
       file: shadowedNamesFixture,
-      line: 56,
+      line: 62,
       title: '"a planted row whose callback is a let inside a describe"',
       fixtures: [],
     },
     {
       file: shadowedNamesFixture,
-      line: 63,
+      line: 71,
       title: '"a planted row whose callback is a destructured const"',
       fixtures: [],
     },
@@ -276,87 +283,92 @@ test("a name in a row's callback position is read as what it is bound to", () =>
     // parameter's source text, since no reader of the source can say what a caller passes.
     {
       file: shadowedNamesFixture,
-      line: 69,
+      line: 78,
       title: "title",
       fixtures: [],
     },
     {
       file: shadowedNamesFixture,
-      line: 74,
+      line: 83,
       title: '"a planted row whose callback is an import beside a nested function of that name"',
       fixtures: [],
     },
-    // Neither of these two is a name, so there is no declaration to read. The second binds
+    // Neither of these two is a name, so there is no declaration to read. The first binds
     // `page` all the same, and the check still names its row: fixtures it did not read are not
     // fixtures it saw, and failing closed is what keeps the residual honest.
     {
       file: shadowedNamesFixture,
-      line: 89,
+      line: 98,
       title: '"a planted row whose callback is what a call returns"',
       fixtures: [],
     },
     {
       file: shadowedNamesFixture,
-      line: 91,
+      line: 100,
       title: '"a planted row whose callback is a property of an imported object"',
       fixtures: [],
     },
     {
       file: shadowedNamesFixture,
-      line: 93,
+      line: 102,
       title: '"a planted row whose callback is this file\'s own function"',
       fixtures: ["page"],
     },
     {
       file: shadowedNamesFixture,
-      line: 95,
+      line: 104,
       title: '"a planted row whose callback is imported and opens a page"',
       fixtures: ["page"],
     },
   ]);
 
-  // The seven that drive no browser are named and the two that do are left, which is the whole
-  // of the difference between reading a name and matching it.
+  // The seven whose fixtures the scan did not read are named and the two it read a page out of
+  // are left, which is the whole of the difference between reading a name and matching it. Two
+  // of the seven - the `let` and the call result - do take `page` when Playwright runs them,
+  // and they are named because the check fails closed on a body it could not read, which is
+  // what the rule asks of a residual.
   expect(unexplainedRows(shadowedNamesFixtureRows, exemptions)).toEqual(
     shadowedNamesFixtureRows.slice(0, 7)
   );
 });
 
-// The callee set, which decides whether a call is a row before any of its arguments is read.
+// Which member of a `test` declares a row, which is decided before any argument is read.
 // `test.fail`, `test.skip` and `test.fixme` declare a row in their title-first forms and mark
-// the row they stand in in their condition forms; `test.fail.only` is three parts long and
-// declares a row; `test.describe.only` and `test.step.skip` are three parts long and declare
+// the row they stand in in their condition forms; `test.fail.only` is a member of a member and
+// declares a row; `test.describe.only` and `test.step.skip` are members of a member and declare
 // none. The fixture holds all of them, with a `test.skip(<condition>, <reason>)` whose reason is
 // a `const` - the shape of the four real calls of this suite - and a `test.slow()` beside them.
-test("every callee that declares a row is read as one, and no other callee is", () => {
+// Three of the rows carry a computed title and a `let` body, so the callee is the whole of what
+// says they are rows at all.
+test("every member of a test that declares a row is read as one, and no other member is", () => {
   expect(rowCalleesFixtureRows).toEqual([
     {
       file: rowCalleesFixture,
-      line: 36,
+      line: 58,
       title: '"a planted row declared by test.fail"',
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 38,
-      title: '"a planted row declared by test.skip"',
+      line: 60,
+      title: "skipTitle",
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 40,
-      title: '"a planted row declared by test.fixme"',
+      line: 62,
+      title: "fixmeTitle",
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 42,
-      title: '"a planted row declared by test.fail with details before its body"',
+      line: 64,
+      title: "failTitle",
       fixtures: [],
     },
     {
       file: rowCalleesFixture,
-      line: 48,
+      line: 66,
       title: '"a planted row declared by test.fail.only"',
       fixtures: [],
     },
@@ -365,7 +377,7 @@ test("every callee that declares a row is read as one, and no other callee is", 
     // `test.step.skip(…)` inside this one, or there would be more rows here than six.
     {
       file: rowCalleesFixture,
-      line: 54,
+      line: 72,
       title: '"a planted row inside a describe block"',
       fixtures: ["page"],
     },
@@ -373,6 +385,68 @@ test("every callee that declares a row is read as one, and no other callee is", 
 
   expect(unexplainedRows(rowCalleesFixtureRows, exemptions)).toEqual(
     rowCalleesFixtureRows.slice(0, 5)
+  );
+});
+
+// How a `test` is spelled, which the callee's type answers and its text cannot. Every row below
+// is declared by a `TestType` under another spelling, and a reading that matched the text found
+// none of them: it reported no row for this file at all, so no file-set comparison and no row
+// count could have caught them. `test.extend` is Playwright's documented way to add a fixture,
+// so the first of them is the likely shape of a real row that drives no browser.
+test("a row is read whatever the test that declares it is called", () => {
+  expect(calleeSpellingsFixtureRows).toEqual([
+    {
+      file: calleeSpellingsFixture,
+      line: 36,
+      title: '"a planted row declared by an extended test"',
+      fixtures: ["request"],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 40,
+      title: '"a planted row declared by a const bound to test"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 44,
+      title: '"a planted row declared by an import renamed to it"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 48,
+      title: '"a planted row declared through a namespace import"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 53,
+      title: '"a planted row declared by element access"',
+      fixtures: [],
+    },
+    {
+      file: calleeSpellingsFixture,
+      line: 58,
+      title: '"a planted row declared by a parenthesized test"',
+      fixtures: [],
+    },
+    // Inside the `apiTest.describe` block, which declares no row of its own, and neither do the
+    // `alias.slow()` and the `apiTest.skip(<condition>, <reason>)` in this row's body: a member
+    // of a `TestType` is the member it is whatever the `TestType` is called. Its callback
+    // declares a `this` parameter, which binds no fixture: `page` is read from the parameter
+    // after it, and a reading that took the first would name a row that opens a page.
+    {
+      file: calleeSpellingsFixture,
+      line: 67,
+      title: '"a planted row inside an extended describe"',
+      fixtures: ["page"],
+    },
+  ]);
+
+  // Playwright's `request` is no browser, so the extended row is named with the other five.
+  expect(unexplainedRows(calleeSpellingsFixtureRows, exemptions)).toEqual(
+    calleeSpellingsFixtureRows.slice(0, 6)
   );
 });
 

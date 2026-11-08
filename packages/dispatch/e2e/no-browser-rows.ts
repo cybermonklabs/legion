@@ -16,6 +16,14 @@
  * there are projects that run the file. The set of files is the one thing the two agree on
  * exactly.
  *
+ * Which calls are rows is TypeScript's answer too: a callee is a row callee when its type is
+ * @playwright/test's `TestType`, or, for the `only`, `skip`, `fixme`, `fail` and `fail.only`
+ * members that carry a title-first form, when the object before that member has it. So every
+ * spelling of a `test` declares its rows — `test`, an import renamed to `it`, `pw.test` through
+ * a namespace, a `const` bound to one, `test["skip"]`, `(test)(…)`, and the `test.extend(…)`
+ * Playwright documents for adding a fixture — while `test.describe`, `test.step`, `test.use`
+ * and `test.slow` declare none of them.
+ *
  * What a name in a row's callback position stands for is TypeScript's own answer, not this
  * module's: `rowsOfFiles` builds one `ts.Program` over the files it scans and asks
  * `checker.getSymbolAtLocation` what each name is bound to. So a name bound by a `for`-of
@@ -36,7 +44,7 @@
  */
 
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as ts from "typescript";
 
 /** One `test(` call of one spec file. */
@@ -101,46 +109,117 @@ export type StaleExemption = {
  */
 export const exemptions: readonly Exemption[] = [];
 
-/** The callees that declare a row, by the forms @playwright/test 1.64.1 (`types/test.d.ts`)
- *  declares. `test` and its `only` take `(title, body)` and `(title, details, body)` and nothing
- *  else, and so does `fail.only`, the one modifier with an `only` of its own. `skip`, `fixme` and
- *  `fail` take those two title forms as well as three that declare no row — `()`,
- *  `(condition, description?)` and `(callback, description?)` — which mark the row the call
- *  stands in; `conditionCallees` is how those are told apart.
- *
- * No chain of `test.describe` or `test.step` is here, however it is spelled: `describe` and its
- * `only`, `skip`, `fixme`, `serial` and `parallel` take a `() => void` block, which declares rows
- * rather than being one, and `step` and its `skip` take a step body inside a row already running.
- * Neither is `test.use`, which takes a fixture object, nor `test.slow`, whose three forms all
- * mark a row already declared. */
-const rowCallees = new Set([
-  "test",
-  "test.only",
-  "test.skip",
-  "test.fixme",
-  "test.fail",
-  "test.fail.only",
-]);
-
-/** The row callees that also carry the forms marking the row the call stands in. A call of one
- *  of these with three or more arguments is a row whatever its arguments say, since
- *  `(condition, description?)` and `(callback, description?)` take two; of a two-argument call,
- *  a row is the one whose second argument can be a body at all. */
-const conditionCallees = new Set(["test.skip", "test.fixme", "test.fail"]);
-
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */
 const browserFixtures = new Set(["browser", "context", "page"]);
 
-/** `test`, `test.skip` or `test.fail.only` for a callee written as a chain of identifiers, and
- *  nothing for any other expression, which is no callee of `rowCallees` whatever it computes. */
-function calleeName(expression: ts.Expression): string | undefined {
-  if (ts.isIdentifier(expression)) return expression.text;
-  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
-    const qualifier = calleeName(expression.expression);
-    return qualifier === undefined ? undefined : `${qualifier}.${expression.name.text}`;
+/** What a callee of a call declares, by the forms @playwright/test 1.64.1 (`types/test.d.ts`)
+ *  gives `TestType`. */
+type RowCallee =
+  /** `test` itself, its `only` and its `fail.only` — the one modifier with an `only` of its own.
+   *  Each takes `(title, body)` and `(title, details, body)` and nothing else, so a call of one
+   *  of them with a title and an argument after it declares a row. */
+  | "row"
+  /** `skip`, `fixme` and `fail`, which take those two title forms as well as three that declare
+   *  no row — `()`, `(condition, description?)` and `(callback, description?)` — and mark the
+   *  row the call stands in instead. A call of one of these with three arguments or more is a
+   *  row whatever its arguments say, since the three marking forms take two at most; of a
+   *  two-argument call, a row is the one whose second argument can be a body at all. */
+  | "conditional";
+
+/** The symbol of @playwright/test's `TestType`, the interface it gives `test` and everything
+ *  `test.extend` returns, resolved out of the module a spec of `directory` imports.
+ *
+ * This is what a row callee is recognised by, rather than the text of the call: `test` under
+ * another name declares its rows as plainly as `test` does, and a reading that matched the text
+ * saw none of them. A scan that could not find the interface would read no row of any file and
+ * so pass every rule, which is an error rather than an empty result. */
+function testTypeSymbol(program: ts.Program, directory: string): ts.Symbol {
+  const checker = program.getTypeChecker();
+  // Only the directory of the containing path is read, so this names no file that must exist.
+  const resolved = ts.resolveModuleName(
+    "@playwright/test",
+    join(directory, "index.ts"),
+    program.getCompilerOptions(),
+    ts.sys
+  );
+  const path = resolved.resolvedModule?.resolvedFileName;
+  const moduleFile = path === undefined ? undefined : program.getSourceFile(path);
+  const moduleSymbol =
+    moduleFile === undefined ? undefined : checker.getSymbolAtLocation(moduleFile);
+  const exported =
+    moduleSymbol === undefined
+      ? undefined
+      : checker.getExportsOfModule(moduleSymbol).find((symbol) => symbol.name === "TestType");
+  if (exported === undefined) {
+    throw new Error(
+      "@playwright/test's TestType is no type of this scan's program, so no row could be read"
+    );
+  }
+  return (exported.flags & ts.SymbolFlags.Alias) !== 0
+    ? checker.getAliasedSymbol(exported)
+    : exported;
+}
+
+/** What one scan reads its rows with: the program's checker, and the `TestType` symbol every
+ *  row callee of that program is recognised by. */
+type Scan = { checker: ts.TypeChecker; testType: ts.Symbol };
+
+/** Whether a type is `TestType`. A union or an intersection holding it is one as well, since a
+ *  value of that type carries `TestType`'s call signatures and its members. */
+function holdsTestType(type: ts.Type, testType: ts.Symbol): boolean {
+  if (type.getSymbol() === testType) return true;
+  return type.isUnionOrIntersection() && type.types.some((part) => holdsTestType(part, testType));
+}
+
+/** Whether `expression` is a `test`: a `TestType` however it is spelled and wherever it came
+ *  from — `test`, an import renamed to `it`, `pw.test`, a `const` bound to one, or what
+ *  `test.extend` returned. */
+function isTestType(expression: ts.Expression, scan: Scan): boolean {
+  return holdsTestType(scan.checker.getTypeAtLocation(expression), scan.testType);
+}
+
+/** The object a member expression reads and the name it reads from it, for the two spellings of
+ *  one member — `test.skip` and `test["skip"]` — and nothing for an expression that reads no
+ *  named member. Parentheses are taken off first: `(test).skip` and `test.skip` are the same
+ *  member of the same object. */
+function memberAccess(
+  expression: ts.Expression
+): { object: ts.Expression; name: string } | undefined {
+  let inner = expression;
+  while (ts.isParenthesizedExpression(inner)) inner = inner.expression;
+  if (ts.isPropertyAccessExpression(inner) && ts.isIdentifier(inner.name)) {
+    return { object: inner.expression, name: inner.name.text };
+  }
+  if (ts.isElementAccessExpression(inner) && ts.isStringLiteralLike(inner.argumentExpression)) {
+    return { object: inner.expression, name: inner.argumentExpression.text };
   }
   return undefined;
+}
+
+/** What `expression`, standing in a call's callee position, declares: a row where it is a `test`
+ *  itself, and a row or a marker where it is one of the five members of a `test` that carry a
+ *  title-first form. Nothing for every other callee, whatever it computes.
+ *
+ * No chain of `describe` or `step` is a row callee, however it is spelled: `describe` and its
+ * `only`, `skip`, `fixme`, `serial` and `parallel` take a `() => void` block, which declares
+ * rows rather than being one, and `step` and its `skip` take a step body inside a row already
+ * running. Neither is `use`, which takes a fixture object, nor `slow`, whose three forms all
+ * mark a row already declared, nor `extend`, which returns the `test` whose calls are the rows.
+ * Each of those is read here as the member of a `TestType` it is and left. */
+function rowCallee(expression: ts.Expression, scan: Scan): RowCallee | undefined {
+  if (isTestType(expression, scan)) return "row";
+  const member = memberAccess(expression);
+  if (member === undefined) return undefined;
+  if (member.name === "skip" || member.name === "fixme" || member.name === "fail") {
+    return isTestType(member.object, scan) ? "conditional" : undefined;
+  }
+  if (member.name !== "only") return undefined;
+  // `fail.only` is the one row callee two members deep; `describe.only` and every other `only`
+  // below a member is none, because the object before the suffix is no `test`.
+  const under = memberAccess(member.object);
+  const test = under?.name === "fail" ? under.object : member.object;
+  return isTestType(test, scan) ? "row" : undefined;
 }
 
 /** A function this module reads a row's fixtures from: one written in the call, or one a name in
@@ -220,7 +299,13 @@ function rowArgument(expression: ts.Expression, checker: ts.TypeChecker): RowArg
 
 /** The fixture names a callback's first parameter binds. */
 function fixturesOfCallback(callback: RowCallback): string[] {
-  const [parameter] = callback.parameters;
+  const [first, second] = callback.parameters;
+  // A `this` parameter is a type annotation standing in the parameter list and no argument at
+  // all: `function (this: void, { page })` binds its fixtures in the parameter after it.
+  const parameter =
+    first !== undefined && ts.isIdentifier(first.name) && first.name.text === "this"
+      ? second
+      : first;
   if (parameter === undefined || !ts.isObjectBindingPattern(parameter.name)) return [];
   const fixtures: string[] = [];
   for (const element of parameter.name.elements) {
@@ -243,10 +328,10 @@ function fixturesOfCallback(callback: RowCallback): string[] {
  * `test.skip(({ browserName }) => browserName === "webkit", "reason")` inside a row body declares
  * no row.
  *
- * That is also what leaves out the calls of `conditionCallees` that mark the row they stand in:
- * `test.skip(<condition>, "<reason>")` and the four of this suite whose reason is the imported
- * `plainHttpSkipReason` of `e2e/plain-http-origin.ts` carry two arguments of which the second is a
- * string, and a string is no body.
+ * That is also what leaves out the calls of `skip`, `fixme` and `fail` that mark the row they
+ * stand in: `test.skip(<condition>, "<reason>")` and the four of this suite whose reason is the
+ * imported `plainHttpSkipReason` of `e2e/plain-http-origin.ts` carry two arguments of which the
+ * second is a string, and a string is no body.
  *
  * A row whose body this module could not read is reported with no fixtures rather than skipped,
  * because a gate a row can get past is a gap in the gate. */
@@ -254,18 +339,20 @@ function rowOfCall(
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
   file: string,
-  checker: ts.TypeChecker
+  scan: Scan
 ): SuiteRow | undefined {
-  const callee = calleeName(call.expression);
-  if (callee === undefined || !rowCallees.has(callee)) return undefined;
-  const [title, ...rest] = call.arguments;
   // Every form that declares a row gives it a title and a body, so a call of one argument or
-  // none — `test.skip()`, `test.skip(<condition>)` — marks the row it stands in.
-  if (title === undefined || rest.length === 0) return undefined;
+  // none — `test.skip()`, `test.skip(<condition>)` — marks the row it stands in. Arity is read
+  // before the callee because the callee costs a type and this costs a length: of the 44,242
+  // calls this suite writes, 33,955 carry fewer than two arguments and ask the checker nothing.
+  if (call.arguments.length < 2) return undefined;
+  const callee = rowCallee(call.expression, scan);
+  if (callee === undefined) return undefined;
+  const [title, ...rest] = call.arguments;
   const body = rest
-    .map((argument) => rowArgument(argument, checker))
+    .map((argument) => rowArgument(argument, scan.checker))
     .find((argument) => argument.kind !== "value");
-  if (conditionCallees.has(callee) && rest.length === 1 && body === undefined) return undefined;
+  if (callee === "conditional" && rest.length === 1 && body === undefined) return undefined;
   return {
     file,
     line: sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line + 1,
@@ -274,20 +361,34 @@ function rowOfCall(
   };
 }
 
-/** The compiler options the scan's program is built with: the package's own `tsconfig.json` less
- *  what reading a name does not need. `types` is empty because no global of `bun` or
- *  `vite/client` is a row's callback, and `skipLibCheck` and `noEmit` are there for the same
- *  reason no diagnostic of this program is read — it is built to bind names, not to type-check
- *  the suite, which `bunx tsc --noEmit` does from the package's own configuration. */
-const scanOptions: ts.CompilerOptions = {
-  lib: ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"],
-  module: ts.ModuleKind.ESNext,
-  moduleResolution: ts.ModuleResolutionKind.Bundler,
-  noEmit: true,
-  skipLibCheck: true,
-  target: ts.ScriptTarget.ES2022,
-  types: [],
-};
+/** The compiler options the scan's program is built with: the package's own `tsconfig.json`,
+ *  read from the nearest one above `directory` and parsed as `tsc` parses it, so this program
+ *  resolves what the package resolves.
+ *
+ * They are taken whole rather than picked, because an option left out is read here as a type
+ * this module could not work out. Without `jsx` a `.tsx` import does not resolve (TS6142), and
+ * `inbox-dismiss.e2e.ts` and `inbox-mark-all.e2e.ts` import one today, so a body declared in
+ * such a module would be refused on valid source; without `bun` among `types`, `process` is
+ * `any`, so `test.skip(!process.env.CI, process.env.SKIP_REASON)` reads as a title and a body
+ * and is reported as a row. Each of those costs a real row its fixtures or makes a marking call
+ * a row, which is noise on correct code. The program is built to bind names rather than to
+ * type-check the suite — no diagnostic of it is read, and `bunx tsc --noEmit` does the checking
+ * from this same configuration. */
+function scanOptions(directory: string): ts.CompilerOptions {
+  const path = ts.findConfigFile(directory, ts.sys.fileExists);
+  if (path === undefined) throw new Error(`no tsconfig.json stands above ${directory}`);
+  const unusable = (failure: ts.Diagnostic): Error =>
+    new Error(
+      `${path} is no configuration this scan can be built from: ` +
+        ts.flattenDiagnosticMessageText(failure.messageText, " ")
+    );
+  const read = ts.readConfigFile(path, ts.sys.readFile);
+  if (read.error !== undefined) throw unusable(read.error);
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(path));
+  const [failed] = parsed.errors;
+  if (failed !== undefined) throw unusable(failed);
+  return parsed.options;
+}
 
 /** Every row the given files declare, each reported under the path it was named by: `specFiles`'
  *  path relative to `directory`.
@@ -302,9 +403,12 @@ const scanOptions: ts.CompilerOptions = {
 export function rowsOfFiles(directory: string, files: readonly string[]): SuiteRow[] {
   const program = ts.createProgram({
     rootNames: files.map((file) => join(directory, file)),
-    options: scanOptions,
+    options: scanOptions(directory),
   });
-  const checker = program.getTypeChecker();
+  const scan: Scan = {
+    checker: program.getTypeChecker(),
+    testType: testTypeSymbol(program, directory),
+  };
   const rows: SuiteRow[] = [];
   for (const file of files) {
     const path = join(directory, file);
@@ -314,7 +418,7 @@ export function rowsOfFiles(directory: string, files: readonly string[]): SuiteR
     if (sourceFile === undefined) throw new Error(`${path} is no file of this scan's program`);
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node)) {
-        const row = rowOfCall(node, sourceFile, file, checker);
+        const row = rowOfCall(node, sourceFile, file, scan);
         if (row !== undefined) rows.push(row);
       }
       ts.forEachChild(node, visit);
