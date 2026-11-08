@@ -36,8 +36,9 @@ const (
 )
 
 // AnswerQuestion is one question the answer loop holds (answer_questions): its id; the Legion
-// project token; its identity (dispatch:<message or comment id>, or an Envoy dedupe key); the
-// conversation that answers it (its session, role token, issue and role); where it came from
+// project token; its identity (dispatch:<message or comment id>, or an Envoy dedupe key), which
+// with the project and the agent's role token is what makes a later hand-off the same question;
+// the conversation that answers it (its session, role token, issue and role); where it came from
 // (Kind: message, mention, ask_reply, envoy); whether the agent may reply that it asks nothing;
 // the hand-off as received; its state; the reply decided for it (its kind, its text, why it is
 // passed on); whether a forward reached the running agent; how many hand-offs carried it; and when
@@ -72,14 +73,15 @@ const questionColumns = `id, project, identity, session, token, issue, role, kin
 var ErrQuestionMoved = errors.New("the question is no longer in the state the update expects")
 
 // ReceiveQuestion records q, received at q.ReceivedAt, and returns the row and whether this call
-// recorded it. A question whose project, identity and session are recorded already is the same
-// question handed off again: its deliveries and last_seen_at are bumped and the row is otherwise
-// left as it is.
+// recorded it. A question whose project, identity and token are recorded already is the same
+// message to the same agent handed off again: its deliveries and last_seen_at are bumped and the
+// row is otherwise left as it is, the conversation it was first recorded for included, so a
+// newer conversation of that agent does not make a second question of one message.
 func (s *Store) ReceiveQuestion(ctx context.Context, q AnswerQuestion) (AnswerQuestion, bool, error) {
 	rows, err := s.pool.Query(ctx, `insert into answer_questions (id, project, identity, session, token, issue, role, kind,
 			may_ask_nothing, handoff, state, received_at, last_seen_at, updated_at)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'received', $11, $11, $11)
-		on conflict (project, identity, session) do update set deliveries = answer_questions.deliveries + 1,
+		on conflict (project, identity, token) do update set deliveries = answer_questions.deliveries + 1,
 			last_seen_at = excluded.last_seen_at
 		returning `+questionColumns+`, xmax = 0`,
 		q.ID, q.Project, q.Identity, q.Session, string(q.Token), q.Issue, string(q.Role), q.Kind, q.MayAskNothing, []byte(q.Handoff), q.ReceivedAt)

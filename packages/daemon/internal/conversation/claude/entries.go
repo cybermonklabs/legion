@@ -82,6 +82,8 @@ type entry struct {
 	// content-replacement: a subagent's (agentId) or the main session's
 	AgentID      string            `json:"agentId"`
 	Replacements []json.RawMessage `json:"replacements"`
+	// legion-answer: the question the daemon's append answered
+	QuestionID string `json:"questionId"`
 }
 
 // parent is the entry's parentUuid, "" for none.
@@ -153,8 +155,9 @@ type attachment struct {
 const queuedCommand = "queued_command"
 
 // parseLines reads content as Claude Code's transcript loader does: one JSON object per line, a
-// blank line or one that is not a JSON object (a torn last line) skipped. Unlike the loader, a
-// well-formed line of a type the pinned Claude Code does not write refuses the transcript.
+// blank line or one that is not a JSON object (a torn last line) skipped. The daemon's own
+// legion-answer marker (AnswerLineType) is kept. Unlike the loader, a well-formed line of any
+// other type the pinned Claude Code does not write refuses the transcript.
 func parseLines(content []byte) ([]*entry, error) {
 	var entries []*entry
 	for line := range bytes.SplitSeq(content, []byte("\n")) {
@@ -171,7 +174,7 @@ func parseLines(content []byte) ([]*entry, error) {
 			if e.UUID == "" {
 				return nil, conversation.Unknown("a %s line with no uuid", e.Type)
 			}
-		case metadataTypes[e.Type]:
+		case metadataTypes[e.Type] || e.Type == AnswerLineType:
 		default:
 			return nil, conversation.Unknown("a transcript line of type %q", e.Type)
 		}

@@ -17,8 +17,9 @@ func testerQuestion(id, identity, session string, received time.Time) AnswerQues
 }
 
 // A question handed off again — across a restart too, since the row is the record — is the same
-// question: its deliveries count up and nothing else changes, so it is answered once. The same
-// identity for another conversation is a question of its own.
+// question: its deliveries count up and nothing else changes, so it is answered once. A newer
+// conversation of the same agent is still that question; the same identity for another agent is a
+// question of its own.
 func TestAQuestionHandedOffAgainIsRecordedOnce(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -38,7 +39,14 @@ func TestAQuestionHandedOffAgainIsRecordedOnce(t *testing.T) {
 	if again.ID != "q1" || again.State != QuestionAppended || again.ReplyText != "Plum." || again.Deliveries != 2 || !again.LastSeenAt.Equal(at(3)) {
 		t.Fatalf("second hand-off = %+v, want q1 as it was with two deliveries, last seen at 3", again)
 	}
-	if _, inserted, err := s.ReceiveQuestion(ctx, testerQuestion("q2", "dispatch:m1", "ses_reviewer", at(4))); err != nil || !inserted {
+	newer := testerQuestion("q1-newer", "dispatch:m1", "ses_tester_2", at(4))
+	same, inserted, err := s.ReceiveQuestion(ctx, newer)
+	if err != nil || inserted || same.ID != "q1" || same.Session != "ses_tester" {
+		t.Fatalf("the message handed off for a newer conversation of the agent = %+v, %t, %v; want q1 as recorded", same, inserted, err)
+	}
+	other := testerQuestion("q2", "dispatch:m1", "ses_reviewer", at(5))
+	other.Token, other.Role = "legion-legion-legion-209-reviewer", claim.RoleReviewer
+	if _, inserted, err := s.ReceiveQuestion(ctx, other); err != nil || !inserted {
 		t.Fatalf("the same comment to another agent inserted = %t, %v; want a question of its own", inserted, err)
 	}
 }

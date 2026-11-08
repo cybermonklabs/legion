@@ -5,7 +5,9 @@
 // A transcript is Claude Code's JSONL under <CLAUDE_CONFIG_DIR>/projects/<cwd>/<session>.jsonl:
 // one record per line, the conversation's lines (user, assistant, attachment, system) each naming
 // its parent by uuid, beside metadata lines (titles, the last-prompt leaf checkpoint, file
-// history, request records). The reader loads it as Claude Code's transcript loader does (progress
+// history, request records) and, after an append of this package's, its legion-answer marker
+// (AnswerLineType), which names the question the append answered and which Claude Code neither
+// writes nor keeps. The reader loads it as Claude Code's transcript loader does (progress
 // lines re-parented away, sidechain lines left out, the last compaction boundary's preserved
 // messages re-linked after its summary and everything before it dropped), picks the leaf a resume
 // continues from, builds the chain from the root to it (the branches parallel tool calls leave
@@ -61,7 +63,15 @@ type Session struct {
 	// Torn is whether the content does not end in a newline (a line cut off as it was written): an
 	// append then starts with one, leaving the torn line a malformed one Claude Code skips.
 	Torn bool
+	// answered are the questions the transcript already holds the answer to, by the legion-answer
+	// line each append writes.
+	answered map[string]bool
 }
+
+// Answered is whether the transcript already holds the answer to questionID: an append naming it
+// wrote its legion-answer line (AnswerLineType). A caller whose append may or may not have
+// landed reads it rather than appending the exchange a second time.
+func (s *Session) Answered(questionID string) bool { return s.answered[questionID] }
 
 // Read reads a transcript's content.
 func Read(content []byte) (*Session, error) {
@@ -76,6 +86,7 @@ func Read(content []byte) (*Session, error) {
 	s := &Session{
 		Title: l.title, Size: int64(len(content)), Torn: len(content) > 0 && content[len(content)-1] != '\n',
 		Conversation: conversation.Conversation{API: anthropicMessages, ThinkingLevel: l.effort},
+		answered:     map[string]bool{},
 	}
 	if l.model != "" {
 		s.Model = "anthropic/" + l.model
@@ -83,6 +94,9 @@ func Read(content []byte) (*Session, error) {
 	for _, e := range entries {
 		if transcriptTypes[e.Type] && !e.IsSidechain {
 			s.ID, s.Cwd, s.Version, s.GitBranch = e.SessionID, e.Cwd, e.Version, e.GitBranch
+		}
+		if e.Type == AnswerLineType && e.QuestionID != "" {
+			s.answered[e.QuestionID] = true
 		}
 	}
 	leaf, err := l.leaf(l.relink())

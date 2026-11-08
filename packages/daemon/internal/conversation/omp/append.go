@@ -23,6 +23,21 @@ import (
 // reader finds and the model never sees.
 const AnswerEntryType = "legion-answer"
 
+// answeredQuestion is the question id a legion-answer entry names: an append of that question
+// landed in the session. Any other entry, and one whose data names no question, is false.
+func answeredQuestion(e *entry) (string, bool) {
+	if e.Type != "custom" || e.CustomType != AnswerEntryType {
+		return "", false
+	}
+	var data struct {
+		QuestionID string `json:"questionId"`
+	}
+	if err := json.Unmarshal(e.Data, &data); err != nil || data.QuestionID == "" {
+		return "", false
+	}
+	return data.QuestionID, true
+}
+
 // Encode is what an append of a after the session writes: one message entry for the question, one
 // for each model turn and one for each tool result, as Oh My Pi writes them, then the
 // legion-answer custom entry; each with a fresh 8-hex id and the previous entry, the session's leaf

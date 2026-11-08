@@ -14,16 +14,21 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
+// AnswerLineType is the type of the line an append writes after the exchange, naming the question
+// it answered. Claude Code writes no line of this type and keeps none in its message map, so it
+// is a marker the next reader finds (Session.Answered) and the model never sees.
+const AnswerLineType = "legion-answer"
+
 // Encode is what an append of a after the transcript writes, line for line as Claude Code writes
 // a turn: a user line with the question; for each model turn one assistant line per content block,
-// the lines of a turn sharing one message id, then one user line per tool result; and the
-// last-prompt line naming the last of them, the checkpoint Claude Code resumes from (without it,
-// a transcript whose checkpoint is not the chain's last line resumes from the checkpoint and
-// leaves the append off). Each conversation line has a fresh uuid and the line before it, the
-// session's leaf first, as its parent, and the session's id, working directory, release and git
-// branch; an assistant line records the session's effort (its thinking level) as Claude Code
-// records the effort it ran at. When the transcript does not end in a newline the bytes start with
-// one. now stamps every line.
+// the lines of a turn sharing one message id, then one user line per tool result; the
+// legion-answer line naming the question answered; and the last-prompt line naming the last
+// conversation line, the checkpoint Claude Code resumes from (without it, a transcript whose
+// checkpoint is not the chain's last line resumes from the checkpoint and leaves the append off).
+// Each conversation line has a fresh uuid and the line before it, the session's leaf first, as
+// its parent, and the session's id, working directory, release and git branch; an assistant line
+// records the session's effort (its thinking level) as Claude Code records the effort it ran at.
+// When the transcript does not end in a newline the bytes start with one. now stamps every line.
 func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 	if err := a.Validate(); err != nil {
 		return nil, err
@@ -83,6 +88,9 @@ func (s *Session) Encode(a conversation.Append, now time.Time) ([]byte, error) {
 				return nil, err
 			}
 		}
+	}
+	if err := w.write(answerLineOut{Type: AnswerLineType, QuestionID: a.QuestionID, SessionID: s.ID, Timestamp: w.at}); err != nil {
+		return nil, err
 	}
 	if err := w.write(lastPromptOut{Type: "last-prompt", LastPrompt: a.Question, LeafUUID: w.parent, SessionID: s.ID}); err != nil {
 		return nil, err
@@ -298,6 +306,14 @@ type (
 		LastPrompt string `json:"lastPrompt"`
 		LeafUUID   string `json:"leafUuid"`
 		SessionID  string `json:"sessionId"`
+	}
+	// answerLineOut is the daemon's own marker, not a shape Claude Code writes: the question an
+	// append answered, so a reader knows the append landed.
+	answerLineOut struct {
+		Type       string `json:"type"`
+		QuestionID string `json:"questionId"`
+		SessionID  string `json:"sessionId"`
+		Timestamp  string `json:"timestamp"`
 	}
 	textOut struct {
 		Type string `json:"type"`

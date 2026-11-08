@@ -21,11 +21,13 @@ type Conversations interface {
 	Open(ctx context.Context, c store.AgentConversation) (Session, error)
 }
 
-// Session is one conversation as read: what the model is resumed on, and the append of an
-// exchange after exactly what was read (conversation.ErrMoved otherwise). Close releases what the
-// read holds.
+// Session is one conversation as read: what the model is resumed on, whether it already holds the
+// answer to a question (Answered, the marker an append of that question wrote: the append landed,
+// so it is neither answered nor appended again), and the append of an exchange after exactly what
+// was read (conversation.ErrMoved otherwise). Close releases what the read holds.
 type Session interface {
 	Conversation() conversation.Conversation
+	Answered(questionID string) bool
 	Append(ctx context.Context, a conversation.Append, now time.Time) error
 	Close()
 }
@@ -87,6 +89,7 @@ type ompFileSession struct {
 }
 
 func (o ompFileSession) Conversation() conversation.Conversation { return o.s.Conversation }
+func (o ompFileSession) Answered(questionID string) bool         { return o.s.Answered(questionID) }
 func (o ompFileSession) Append(_ context.Context, a conversation.Append, now time.Time) error {
 	return omp.AppendFile(o.path, o.s, a, now)
 }
@@ -100,6 +103,7 @@ type ompSQLSession struct {
 }
 
 func (o ompSQLSession) Conversation() conversation.Conversation { return o.s.Conversation }
+func (o ompSQLSession) Answered(questionID string) bool         { return o.s.Answered(questionID) }
 func (o ompSQLSession) Append(ctx context.Context, a conversation.Append, now time.Time) error {
 	return omp.AppendSQL(ctx, o.conn, o.path, o.s, a, now)
 }
@@ -111,6 +115,7 @@ type claudeSession struct {
 }
 
 func (c claudeSession) Conversation() conversation.Conversation { return c.s.Conversation }
+func (c claudeSession) Answered(questionID string) bool         { return c.s.Answered(questionID) }
 func (c claudeSession) Append(_ context.Context, a conversation.Append, now time.Time) error {
 	return claude.AppendFile(c.path, c.s, a, now)
 }

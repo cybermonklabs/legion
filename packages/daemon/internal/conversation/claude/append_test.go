@@ -50,7 +50,8 @@ func baseTranscript() *fixture {
 // of its own; its lines are Claude Code's: the question as a prompt line, one assistant line per
 // block of a turn sharing a message id, a user line per tool result naming the line of its call,
 // the answer, each with a fresh uuid chained from the session's leaf and the session's id,
-// working directory, release and branch; then the last-prompt checkpoint naming the last of them.
+// working directory, release and branch; then the legion-answer marker naming the question and
+// the last-prompt checkpoint naming the last conversation line.
 // Read back, the session's conversation ends in the question, the turn, its result and the
 // answer.
 func TestEncodeAppendsAfterATornTailAsClaudeCodeWritesLines(t *testing.T) {
@@ -67,9 +68,9 @@ func TestEncodeAppendsAfterATornTailAsClaudeCodeWritesLines(t *testing.T) {
 	}
 	appended := append(append([]byte{}, content...), data...)
 	lines := strings.Split(strings.TrimSuffix(string(appended), "\n"), "\n")
-	added := lines[len(lines)-8:]
-	if lines[len(lines)-9] != torn {
-		t.Errorf("the torn line is %q, want it unchanged on its own line", lines[len(lines)-9])
+	added := lines[len(lines)-9:]
+	if lines[len(lines)-10] != torn {
+		t.Errorf("the torn line is %q, want it unchanged on its own line", lines[len(lines)-10])
 	}
 
 	var records []map[string]any
@@ -89,7 +90,7 @@ func TestEncodeAppendsAfterATornTailAsClaudeCodeWritesLines(t *testing.T) {
 		}
 		parent = record["uuid"].(string)
 	}
-	types := []string{"user", "assistant", "assistant", "assistant", "user", "assistant", "assistant", "last-prompt"}
+	types := []string{"user", "assistant", "assistant", "assistant", "user", "assistant", "assistant", "legion-answer", "last-prompt"}
 	for i, record := range records {
 		if record["type"] != types[i] {
 			t.Errorf("line %d is a %v line, want %s", i, record["type"], types[i])
@@ -118,7 +119,10 @@ func TestEncodeAppendsAfterATornTailAsClaudeCodeWritesLines(t *testing.T) {
 		records[4]["sourceToolAssistantUUID"] != records[3]["uuid"] || records[4]["toolUseResult"] != "plum" || records[4]["promptId"] != records[0]["promptId"] {
 		t.Errorf("the tool result line %v", records[4])
 	}
-	if last := records[7]; last["leafUuid"] != records[6]["uuid"] || last["sessionId"] != "s-1" || last["lastPrompt"] != "What does the note say?" {
+	if marker := records[7]; marker["questionId"] != "q-7" || marker["sessionId"] != "s-1" || marker["timestamp"] != "2026-10-26T12:00:00.000Z" {
+		t.Errorf("the legion-answer line %v, want it to name the question answered", marker)
+	}
+	if last := records[8]; last["leafUuid"] != records[6]["uuid"] || last["sessionId"] != "s-1" || last["lastPrompt"] != "What does the note say?" {
 		t.Errorf("the last-prompt line %v, want it to name the answer's last line", last)
 	}
 

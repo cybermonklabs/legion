@@ -83,9 +83,10 @@ type AskReader interface {
 }
 
 // QuestionID is a question's own id: 32 hex digits of a hash of the project, its identity and the
-// session answering it, the same however often it is handed off.
-func QuestionID(project, identity, session string) string {
-	sum := sha256.Sum256([]byte(project + "\x00" + identity + "\x00" + session))
+// role token of the agent it was handed to, the same however often it is handed off and whichever
+// conversation of that agent answers it.
+func QuestionID(project, identity, token string) string {
+	sum := sha256.Sum256([]byte(project + "\x00" + identity + "\x00" + token))
 	return hex.EncodeToString(sum[:16])
 }
 

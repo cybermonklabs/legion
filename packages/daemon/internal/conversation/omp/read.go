@@ -48,7 +48,15 @@ type Session struct {
 	// an append then starts with one, leaving the torn record a malformed line Oh My Pi skips.
 	Torn bool
 	ids  map[string]bool
+	// answered are the questions the session already holds the answer to, by the legion-answer
+	// entry each append ends with.
+	answered map[string]bool
 }
+
+// Answered is whether the session already holds the answer to questionID: an append naming it
+// ended with its legion-answer entry (AnswerEntryType). A caller whose append may or may not
+// have landed reads it rather than appending the exchange a second time.
+func (s *Session) Answered(questionID string) bool { return s.answered[questionID] }
 
 // Options is what the reader must know that the session does not say: how the endpoint the
 // conversation's model is called through treats replayed thinking, which Oh My Pi takes from its
@@ -77,10 +85,13 @@ func Read(content []byte, opts Options) (*Session, error) {
 	s := &Session{
 		ID: p.header.ID, Timestamp: p.header.Timestamp, Cwd: p.header.Cwd, ParentSession: p.header.ParentSession,
 		Size: int64(len(content)), Torn: len(content) > 0 && content[len(content)-1] != '\n',
-		ids: make(map[string]bool, len(p.entries)),
+		ids: make(map[string]bool, len(p.entries)), answered: map[string]bool{},
 	}
 	for _, e := range p.entries {
 		s.ids[e.ID] = true
+		if question, ok := answeredQuestion(e); ok {
+			s.answered[question] = true
+		}
 	}
 	if len(p.entries) > 0 {
 		s.Leaf = p.entries[len(p.entries)-1].ID

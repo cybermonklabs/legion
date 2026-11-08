@@ -3,10 +3,13 @@
 --
 -- answer_questions: one row per question and the conversation answering it. identity is what makes
 -- a later hand-off the same question: dispatch:<message id> or dispatch:<comment id> for a Dispatch
--- origin, the envelope's dedupe key for an Envoy one; a second hand-off of it bumps deliveries and
--- last_seen_at and is not answered again. id is the question's own id (named by the gh tool's
--- answer_tool_calls rows, its footer, its legion-answer marker and the conversation's legion-answer
--- entry). session, token, issue and role are the conversation answering it; kind where it came from
+-- origin, the envelope's dedupe key for an Envoy one; with project and token (the agent the message
+-- was handed to, not the conversation it resolved to) it is the question's key, so one message to
+-- one agent is one question however often it is handed off and whichever conversation of that agent
+-- answers it; a second hand-off of it bumps deliveries and last_seen_at and is not answered again.
+-- id is the question's own id (named by the gh tool's answer_tool_calls rows, its footer, its
+-- legion-answer marker and the conversation's legion-answer entry). session, token, issue and role
+-- are the conversation answering it; kind where it came from
 -- (a targeted Dispatch message, a mention, a reply on the agent's ask, an agent's Envoy message);
 -- handoff the hand-off as received. state is received -> generating -> appended -> posted, or
 -- passed_on once a reply the controller must hear of was posted, forwarded to the agent that runs
@@ -33,7 +36,7 @@ create table answer_questions (
   received_at timestamptz not null,
   last_seen_at timestamptz not null,
   updated_at timestamptz not null,
-  unique (project, identity, session)
+  unique (project, identity, token)
 );
 
 create index answer_questions_open on answer_questions (project, received_at)

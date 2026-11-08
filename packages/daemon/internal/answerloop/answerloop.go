@@ -4,13 +4,16 @@
 // the agent's own conversation (internal/answer), adds the exchange to that conversation in its
 // harness's format, and posts the reply in the agent's name where it was asked.
 //
-// A question is recorded once (answer_questions), by an identity stable across retries and
-// restarts, and moves received -> generating -> appended -> posted, or passed_on when the
+// A question is recorded once (answer_questions), by the message's identity and the agent it was
+// handed to, which are stable across retries, restarts and a newer conversation of that agent,
+// and moves received -> generating -> appended -> posted, or passed_on when the
 // controller must hear of it (PassOn), forwarded when the agent runs its conversation, or dropped.
-// Recovery follows the state: a question not yet appended is answered again, the model handed the
-// gh calls the earlier run made (a comment or review call of unknown outcome looked up on GitHub
-// first, ghtool.Lookup); one appended is posted without answering again, since its answer is in
-// the conversation already.
+// Recovery follows the state and the conversation: a question not yet appended is answered again,
+// the model handed the gh calls the earlier run made (a comment or review call of unknown outcome
+// looked up on GitHub first, ghtool.Lookup), unless the conversation already holds the exchange
+// an earlier pass wrote, which its legion-answer marker names: that reply, recorded before the
+// append, is posted and the model is not called again. One appended is posted without answering
+// again, since its answer is in the conversation already.
 //
 // One writer: the questions to one conversation run one after another, at most
 // answers.bounds.concurrent conversations at once. A conversation its claim runs, or is starting,
@@ -347,7 +350,7 @@ func (l *Loop) Receive(ctx context.Context, h intake.Handoff, raw []byte) error 
 	origin := verdict.Question
 	now := l.cfg.Now().UTC()
 	q, inserted, err := l.cfg.Store.ReceiveQuestion(ctx, store.AnswerQuestion{
-		ID: QuestionID(l.cfg.Project, origin.Identity, conv.Session), Project: l.cfg.Project, Identity: origin.Identity,
+		ID: QuestionID(l.cfg.Project, origin.Identity, string(conv.Token)), Project: l.cfg.Project, Identity: origin.Identity,
 		Session: conv.Session, Token: conv.Token, Issue: conv.Issue, Role: conv.Role, Kind: string(origin.Kind),
 		MayAskNothing: origin.MayAskNothing, Handoff: raw, ReceivedAt: now,
 	})

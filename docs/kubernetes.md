@@ -1274,8 +1274,9 @@ answered.
   `<!-- legion-answer:<id> -->` marker every reply it posts carries, or a Legion footer with an
   `answer` key), so the loop never answers itself.
 - **Once.** A question's identity holds across retries and restarts: the Dispatch message's or
-  comment's id, or the Envoy envelope's `dedupe_key`. A second hand-off of the same question is
-  recorded and not answered again.
+  comment's id, or the Envoy envelope's `dedupe_key`, together with the agent it was handed to. A
+  second hand-off of the same question is recorded and not answered again, and a newer conversation
+  of that agent recorded between two hand-offs makes no second question of it.
 - **Which conversation.** A message to a session is answered from that session's conversation, an
   older session of a role a newer one replaced included; a message to a role, from the role's
   newest conversation.
@@ -1312,8 +1313,11 @@ answered.
   message to its sender in reply to it.
 - **After a restart** a question resumes where it stood: one not yet appended is answered again, the
   model given the `gh` calls the earlier run made (a comment or review call whose outcome was never
-  recorded is looked up on GitHub by its footer first, so it is posted once); one appended is posted
-  without being answered again, since its answer is already in the conversation.
+  recorded is looked up on GitHub by its footer first, so it is posted once), unless its
+  conversation already holds the exchange an earlier run wrote there, which the `legion-answer`
+  entry naming the question says: the reply recorded before that write is then posted and no model
+  is called. One appended is posted without being answered again, since its answer is already in
+  the conversation.
 
 ### Cost and logs
 

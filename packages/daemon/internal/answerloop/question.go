@@ -17,8 +17,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
-// process takes q one step on from where it stands: a question not yet appended is answered (again,
-// after a restart), an appended one posted, a held forward offered to its agent again.
+// process takes q one step on from where it stands: a question not yet appended is answered (its
+// conversation is read first, and an answer an earlier pass left there is posted rather than
+// answered again), an appended one posted, a held forward offered to its agent again.
 func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 	h, err := intake.DecodeHandoff(q.Handoff)
 	if err != nil {
@@ -39,8 +40,10 @@ func (l *Loop) process(ctx context.Context, q store.AnswerQuestion) error {
 	return nil
 }
 
-// generate answers q from its conversation, unless its claim runs the conversation (forwarded) or
-// the day's spend is over the limit (the daemon's reply), adds the exchange to the conversation,
+// generate answers q from its conversation, unless the conversation already holds the answer (an
+// earlier pass appended it and stopped before the question was marked appended: it is posted,
+// never answered again), its claim runs the conversation (forwarded) or the day's spend is over
+// the limit (the daemon's reply). It records the reply, adds the exchange to the conversation,
 // then posts the reply.
 func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
 	conv, ok, err := l.cfg.Store.AgentConversation(ctx, q.Session)
@@ -52,6 +55,25 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	}
 	if l.cfg.Gate.Running(conv.Token, conv.Session) {
 		return l.forward(ctx, q, origin)
+	}
+	// The conversation is read before the day's spend is checked, so a question whose answer is
+	// in it already is posted whatever the day has cost.
+	session, err := l.cfg.Conversations.Open(ctx, conv)
+	switch {
+	case errors.Is(err, conversation.ErrUnknownFormat):
+		l.cfg.Log.Warn("answers: the conversation's format is not one the daemon reads", "question", q.ID, "session", q.Session, "error", err)
+		return l.decideFault(ctx, q, origin, ReasonUnknownFormat)
+	case errors.Is(err, conversationMissing):
+		l.cfg.Log.Warn("answers: the conversation is no longer kept", "question", q.ID, "session", q.Session, "error", err)
+		return l.decideFault(ctx, q, origin, ReasonNoConversation)
+	case err != nil:
+		return err
+	}
+	defer session.Close()
+	if session.Answered(q.ID) {
+		l.cfg.Log.Info("answers: the agent's conversation already holds this answer; it is posted, not answered again",
+			"question", q.ID, "session", q.Session, "state", q.State)
+		return l.appended(ctx, q, origin)
 	}
 	now := l.cfg.Now()
 	spent, err := l.cfg.Store.AnswerSpend(ctx, l.cfg.Project, now)
@@ -66,18 +88,6 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 			return err
 		}
 	}
-	session, err := l.cfg.Conversations.Open(ctx, conv)
-	switch {
-	case errors.Is(err, conversation.ErrUnknownFormat):
-		l.cfg.Log.Warn("answers: the conversation's format is not one the daemon reads", "question", q.ID, "session", q.Session, "error", err)
-		return l.decideFault(ctx, q, origin, ReasonUnknownFormat)
-	case errors.Is(err, conversationMissing):
-		l.cfg.Log.Warn("answers: the conversation is no longer kept", "question", q.ID, "session", q.Session, "error", err)
-		return l.decideFault(ctx, q, origin, ReasonNoConversation)
-	case err != nil:
-		return err
-	}
-	defer session.Close()
 	facts, err := l.cfg.Issues.Facts(ctx, conv.Issue)
 	if err != nil {
 		return fmt.Errorf("read what changed on %s: %w", conv.Issue, err)
@@ -119,6 +129,19 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	if reply.Fault != "" {
 		return l.decideFault(ctx, q, origin, Reason(reply.Fault))
 	}
+	// The reply is recorded before the exchange is written into the conversation: a pass that
+	// stops between the two, killed or refused by the store, finds the exchange by the question's
+	// marker on its next try and posts this reply rather than answering again.
+	q.ReplyKind, q.ReplyText, q.PassReason = string(reply.Kind), reply.Text, ""
+	switch reply.Kind {
+	case answer.NotAnswered:
+		q.PassReason = string(ReasonNotAnswered)
+	case answer.NeedsWork:
+		q.PassReason = string(ReasonNeedsWork)
+	}
+	if err := l.move(ctx, &q, store.QuestionGenerating, store.QuestionGenerating); err != nil {
+		return err
+	}
 	ran, err := l.cfg.Gate.Append(conv.Token, conv.Session, func() error {
 		return session.Append(ctx, reply.Append, l.cfg.Now())
 	})
@@ -126,23 +149,28 @@ func (l *Loop) generate(ctx context.Context, q store.AnswerQuestion, origin Orig
 	case !ran || errors.Is(err, conversation.ErrMoved):
 		l.cfg.Log.Info("answers: the agent's conversation is running or moved; the answer is dropped and the question forwarded",
 			"question", q.ID, "session", q.Session, "started", !ran, "error", err)
+		q.ReplyKind, q.ReplyText, q.PassReason = "", "", ""
 		return l.forward(ctx, q, origin)
 	case err != nil:
 		l.cfg.Log.Error("answers: the answer could not be added to the conversation", "question", q.ID, "session", q.Session, "error", err)
 		return l.decideFault(ctx, q, origin, ReasonUnknownFormat)
 	}
-	q.ReplyKind = string(reply.Kind)
-	switch reply.Kind {
-	case answer.None:
+	return l.appended(ctx, q, origin)
+}
+
+// appended takes a question whose exchange is in the agent's conversation on from the reply
+// recorded for it: a message that asked the agent nothing ends with nothing posted, and any other
+// is marked appended and posted. A pass that finds the conversation holding the answer already
+// (generate) ends here too, so one question is appended, billed and posted once however often the
+// loop stops between the two writes.
+func (l *Loop) appended(ctx context.Context, q store.AnswerQuestion, origin Origin) error {
+	if q.ReplyKind == string(answer.None) {
 		return l.drop(ctx, &q, "the message asks the agent nothing; its exchange is in the conversation")
-	case answer.NotAnswered:
-		q.PassReason = string(ReasonNotAnswered)
-	case answer.NeedsWork:
-		q.PassReason = string(ReasonNeedsWork)
 	}
-	q.ReplyText = reply.Text
-	if err := l.move(ctx, &q, store.QuestionAppended, store.QuestionGenerating); err != nil {
-		return err
+	if q.State != store.QuestionAppended {
+		if err := l.move(ctx, &q, store.QuestionAppended, q.State); err != nil {
+			return err
+		}
 	}
 	return l.post(ctx, q, origin)
 }
