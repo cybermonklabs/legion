@@ -65,7 +65,9 @@ func Open(ctx context.Context, databaseURL string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open Postgres pool: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+	// The process's first connection, dialled before anything is served: it waits under
+	// coldDialBound, not the request pool's own bound (forColdDial).
+	if err := pool.Ping(forColdDial(ctx)); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("ping Postgres: %w", err)
 	}

@@ -76,17 +76,29 @@ func newIntake(natsClient *bus.Client, pool *store.Pool, leases duty.Leases, git
 // delivering (StopDelivering) under intakeStopBudget from ctx's end before it returns. Idle until
 // the settings cache holds settings.
 //
-// The durable carries one filter subject, githubIntakeSubject, which no setting changes, so it is
-// bound once and never rebound. Each message is routed by the settings the cache holds when its
+// The durable carries one filter subject, githubIntakeSubject, which no setting changes, so no
+// settings change rebinds it. Each message is routed by the settings the cache holds when its
 // handler runs, so a settings change -- a different deploy repository or workflow path -- takes
 // effect as soon as the cache has read it, with no restart and no rebind. route does all the
 // filtering, from those settings.
 //
-// Two things wake an unbound intake: the cache storing settings, since an intake with none has
-// nothing to route by, and, once it has settings, durableBindInterval's ticker. The durable admits
-// one subscriber, so a second envoy-dispatch process stands by on that ticker -- for the life of
-// the process, with no deadline -- and takes the durable over within seconds of the process
-// holding it going away. The bind poll stops once this process is bound.
+// Three things wake an unbound intake: the cache storing settings, since an intake with none has
+// nothing to route by, a connection event on its client, since a bind with no connection is a
+// ConsumerInfo that blocks for the client's whole JetStream request timeout (10 s) and is then
+// logged at ERROR, every durableBindInterval, and, once it has both, durableBindInterval's
+// ticker. The durable admits one subscriber, so a second envoy-dispatch process stands by on that
+// ticker -- for the life of the process, with no deadline -- and takes the durable over within
+// seconds of the process holding it going away.
+//
+// A bound intake waits on ctx and on the next connection event, which is what takes the durable
+// away from this process: nats.go re-sends a subscription inside its own reconnect, and the
+// client binds its registration again on a connection it dialled to replace a closed one
+// (internal/bus/recovery.go), neither of them asking whether the durable is still this process's
+// to deliver. A process back from an outage would then deliver every message of it beside the
+// process that took the durable over while it was away (INFRA-1551). So the subscription is given
+// up at the event (giveUpOnConnectionChange) -- at the disconnect, the first connection event of
+// an outage, before nats.go can re-send it -- and the intake goes back to the bind poll, which
+// takes the durable again only while it is free.
 //
 // The PR-checks workflow path is live-reachable only for a fork-originated pull request: Envoy's
 // own webhook normalizer (internal/contracts/normalize.go, untouched by this package) drops a
@@ -102,14 +114,31 @@ func (in *Intake) Run(ctx context.Context) {
 	defer release()
 	binds := time.NewTicker(durableBindInterval)
 	defer binds.Stop()
-	// changed is taken before each Load, so settings stored after that Load wake the loop.
-	for changed := in.settings.Changed(); ; {
-		// poll stays nil, and so never ready, while the cache holds no settings: a tick then has
-		// nothing to bind by, and the cache's Changed signal wakes the first bind.
+	for {
+		// Both signals are taken before the state they report is read, as ConnectionChanged's own
+		// contract asks, so settings stored or a connection installed during the bind wake the
+		// loop rather than being missed by it.
+		changed, connection := in.settings.Changed(), in.nats.ConnectionChanged()
+		// poll stays nil, and so never ready, while the cache holds no settings or the client has
+		// no connection: a tick then has nothing to route by or nothing to ask the server over,
+		// and what the loop waits on instead is the signal that ends that.
 		var poll <-chan time.Time
-		if in.settings.Load() != nil {
+		if in.settings.Load() != nil && in.nats.Connected() {
 			if in.bind(ctx, stopping) == bindBound {
-				break
+				// Nothing polls while this process holds the durable, so the ticker stops here
+				// rather than waking every two seconds; a give-up starts it again, a full
+				// durableBindInterval from the Reset, since a tick prepared before a Stop or a
+				// Reset is never received after it (Go 1.23's timer channels).
+				binds.Stop()
+				select {
+				case <-ctx.Done():
+					in.StopDelivering(stopping)
+					return
+				case <-connection:
+					in.giveUpOnConnectionChange(ctx)
+					binds.Reset(durableBindInterval)
+					continue
+				}
 			}
 			poll = binds.C
 		}
@@ -117,14 +146,30 @@ func (in *Intake) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-changed:
-			changed = in.settings.Changed()
+		case <-connection:
 		case <-poll:
 		}
 	}
-	// Nothing rebinds a bound intake, so the poll stops here rather than waking every two seconds
-	// for the life of the process.
-	binds.Stop()
-	<-ctx.Done()
+}
+
+// giveUpOnConnectionChange gives this process's delivery subscription up because its client's
+// connection changed under it, which for an outage is the disconnect: the stop drains the
+// subscription and gives up the registration the client kept of it, and while the link is down
+// that is an unsubscribe, so nats.go's own reconnect finds nothing left to re-send
+// (bus.Client.DrainSubscription). What the intake had in flight is handed back to the process
+// that keeps the durable, and the bind poll it returns to takes the durable again only while it
+// is free.
+//
+// The stop runs under a budget of its own -- intakeStopBudget from the event, on a context Run's
+// ctx ending does not cut short -- rather than under Run's stop deadline: one handler that will
+// not return must not keep the intake out of its poll for the life of the process, and a ctx that
+// ends in the middle of the give-up must not cut the hand-back shorter than the budget that
+// bounds it. A handler still running at the bound is given up as a stop gives it up, its message
+// handed back with the rest (StopDelivering).
+func (in *Intake) giveUpOnConnectionChange(ctx context.Context) {
+	slog.Info(intakeConnectionChangedMessage, "name", bus.DispatchDeliveryDurable)
+	stopping, cancel := context.WithTimeout(context.WithoutCancel(ctx), intakeStopBudget)
+	defer cancel()
 	in.StopDelivering(stopping)
 }
 
@@ -331,6 +376,14 @@ const standbyConsumerMissingMessage = "dispatch delivery: NATS consumer not crea
 // rather than one, at twice the INFO rate the throttle is for.
 const standbyLeaseHeldMessage = "dispatch delivery: NATS consumer lease held by another process; standing by"
 
+// intakeConnectionChangedMessage is what either intake says when a connection event takes its
+// subscription away from it: it gave its durable up and is back in its bind poll, so a process
+// that took that durable over while this one was away keeps it. Both log it with the durable's
+// name, which is what tells the delivery intake's line from the job intake's. Declared here with
+// the three standby messages, and in one place, because one sentence serving both intakes is one
+// sentence rather than two copies that drift from each other by a character.
+const intakeConnectionChangedMessage = "dispatch delivery: NATS connection changed; durable given up; standing by"
+
 // consumerBindConfirmTimeout is how long a bind waits, still holding the durable's consumer
 // lease, for the server to report the durable push-bound after its own subscribe returned. That
 // wait is what makes PushBound truthful before the lease is given back, so the lease -- and not
@@ -533,9 +586,12 @@ func (in *Intake) bind(ctx, stopping context.Context) bindOutcome {
 // to one the server already reports bound. What excludes the second subscriber is this durable's
 // own consumer lease (consumerLease), which pg_try_advisory_lock makes exclusive, and not NATS.
 // It holds among processes of this release: a process of an earlier release running beside it
-// during a rolling deploy still subscribes outside the lease, and a holder whose NATS connection
-// drops and comes back is subscribed again by nats.go itself (internal/bus/recovery.go), outside
-// this function.
+// during a rolling deploy still subscribes outside the lease. A holder whose NATS connection drops
+// would come back subscribed outside this function -- by nats.go re-sending the subscription
+// inside its own reconnect, or by the client binding its registration again on a replacement
+// connection (internal/bus/recovery.go) -- so it gives that subscription up at the connection
+// event instead (Intake.Run, giveUpOnConnectionChange) and takes the durable again only through
+// this function, under the lease, or not at all.
 // The "consumer is already bound" refusal (consumerHeldElsewhere) is the client's own, made only
 // once ConsumerInfo reports PushBound, and the server sets PushBound a goroutine hop after the
 // first subscriber's SUB lands: a bind that gave the lease back before it subscribed left that hop
@@ -861,29 +917,40 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 }
 
 // deliver handles one message on its key's goroutine: it routes the envelope's payload by the
-// settings the cache holds under intakeMessageTimeout, and acks: a malformed envelope has nothing
-// to retry, and a route error (a failed GitHub call, or that deadline passing) is caught up by the
-// next reconcile pass rather than by NATS redelivery -- see the package doc comment. The deadline
-// is what makes intakeAckWait a bound rather than a hope: without it one stuck GitHub call could
-// hold an in-flight slot past the ack wait and have the message redelivered underneath it. An
-// envelope route does not handle (an empty payload, or a kind route sends to no handler) is
-// acknowledged and nothing else: no log line and no freshness write. One it handles records the
-// event's time, whatever its handler decided.
+// settings the cache holds under intakeMessageTimeout, and answers it through the delivery, which
+// acknowledges it and holds that acknowledgement for the stop only where the bus refused it
+// (acknowledgeOrHold): a malformed envelope has nothing to retry, and a route error (a failed
+// GitHub call, or that deadline passing) is caught up by the next reconcile pass rather than by
+// NATS redelivery -- see the package doc comment. The deadline is what makes intakeAckWait a
+// bound rather than a hope: without it one stuck GitHub call could hold an in-flight slot past
+// the ack wait and have the message redelivered underneath it. An envelope route does not handle
+// (an empty payload, or a kind route sends to no handler) is acknowledged and nothing else: no
+// log line and no freshness write. One it handles records the event's time, whatever its handler
+// decided.
 //
-// The one message it does not ack is one whose handling the stop gave up (handling cancelled,
-// StopDelivering): that is negatively acknowledged, so the next holder of the durable redoes it at
-// once rather than this event waiting five minutes for the reconcile. Its writes are the upserts
-// reconcile makes too, so redoing what had in fact finished just before the stop gave it up
-// writes the same facts again.
-func (in *Intake) deliver(handling context.Context, message intakeMessage) {
-	msg := message.msg
+// The one message it does not acknowledge is one whose handling the stop gave up (handling
+// cancelled, StopDelivering): that is handed back through the delivery (giveBack), so the next
+// holder of the durable redoes it at once rather than this event waiting five minutes for the
+// reconcile. Its writes are the upserts reconcile makes too, so redoing what had in fact
+// finished just before the stop gave it up writes the same facts again.
+//
+// Both answers go through the delivery rather than straight to NATS, and for one reason: the
+// stop a connection event runs begins with the link down, where the bus refuses a publish. A
+// hand-back the delivery holds until the stop has a live connection and makes it then
+// (giveBack); an acknowledgement is made at once and held only where the bus refused it
+// (acknowledgeOrHold), since a message whose handling is done holds one of the next holder's
+// in-flight slots for the whole ack wait while it is neither acknowledged nor held, and holding
+// one the bus took protects nothing. handling is read from the delivery too, and nothing else
+// calls deliver.
+func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
+	msg, handling := message.msg, d.handling
 	defer func() {
 		if handling.Err() != nil {
 			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
-			negativelyAcknowledge(msg)
+			d.giveBack(msg)
 			return
 		}
-		acknowledge(msg)
+		d.acknowledgeOrHold(msg)
 	}()
 	ctx, cancel := context.WithTimeout(handling, intakeMessageTimeout)
 	defer cancel()

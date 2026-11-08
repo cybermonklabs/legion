@@ -88,6 +88,15 @@ const (
 	// redials on its own backoff (pglisten.Listener) instead of waiting out the two-minute
 	// connect timeout pgxpool floors a dial at.
 	listenAcquireBound = 10 * time.Second
+	// coldDialBound is the bound of the one acquire that must dial where every other acquire of
+	// the request pool waits on a connection already dialled: the boot's reachability ping
+	// (Open, forColdDial). A client waits on none of it, since the process serves nothing yet,
+	// and requestAcquireBound would end the boot at a database whose first dial takes longer
+	// than three seconds - before the probe that is bounded for exactly that ever runs
+	// (Pool.HealthyWithin, cmd/dispatch's bootProbeTimeout). Thirty seconds is that probe's
+	// bound, for the same reason it is: it leaves a boot that cannot reach its database time to
+	// say so before the deploy clock rolls the image back.
+	coldDialBound = 30 * time.Second
 )
 
 // defaultAcquireBound is pool name's acquire bound; zero is none. The health probe bounds its own
@@ -211,6 +220,26 @@ var errAcquireBound = errors.New("acquire bound reached")
 
 type acquireKey struct{}
 
+// coldDialKey marks the context of the acquire that dials where the pool holds nothing yet.
+type coldDialKey struct{}
+
+// forColdDial is ctx for the boot's reachability ping (Open): the one acquire of the request
+// pool made before the process serves anything, which always pays a fresh dial. It waits under
+// coldDialBound rather than the pool's own, and nothing else uses it - every later acquire of
+// that pool is a request's, and a request waits under requestAcquireBound.
+func forColdDial(ctx context.Context) context.Context {
+	return context.WithValue(ctx, coldDialKey{}, struct{}{})
+}
+
+// boundFor is the bound this acquire waits under: coldDialBound for the boot's one dial, and the
+// pool's own for every other caller.
+func (t *acquireTracer) boundFor(ctx context.Context) time.Duration {
+	if ctx.Value(coldDialKey{}) != nil {
+		return coldDialBound
+	}
+	return t.bound
+}
+
 // acquireSpan is one acquire's state from start to end.
 type acquireSpan struct {
 	started time.Time
@@ -220,11 +249,12 @@ type acquireSpan struct {
 func (t *acquireTracer) TraceAcquireStart(ctx context.Context, _ *pgxpool.Pool, _ pgxpool.TraceAcquireStartData) context.Context {
 	t.waiting.Add(1)
 	span := &acquireSpan{started: time.Now()}
-	if t.bound > 0 {
+	bound := t.boundFor(ctx)
+	if bound > 0 {
 		// A caller whose own deadline comes first keeps it, so its acquire ends with its own
 		// error and never with ErrPoolBusy.
-		if deadline, ok := ctx.Deadline(); !ok || deadline.Sub(span.started) > t.bound {
-			ctx, span.cancel = context.WithTimeoutCause(ctx, t.bound, errAcquireBound)
+		if deadline, ok := ctx.Deadline(); !ok || deadline.Sub(span.started) > bound {
+			ctx, span.cancel = context.WithTimeoutCause(ctx, bound, errAcquireBound)
 		}
 	}
 	return context.WithValue(ctx, acquireKey{}, span)

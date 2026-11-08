@@ -547,16 +547,17 @@ func (s *server) readCommentRoutes(ctx context.Context, owner owner, askID *stri
 // gatedCommentWrite takes the writer gates of the documents the comment writes - the one its
 // anchor marks, and the one its reply's thread root is anchored to (newCommentDocuments) - with
 // no transaction open, then opens the comment's transaction under them (beginCommentWrite). The
-// listener resolution ran before, so no document waits on the listener.
+// listener resolution ran before, so no document waits on the listener. closed says what a closed
+// issue does with this comment, which the owner's lock applies (refuseClosed).
 func (s *server) gatedCommentWrite(
-	ctx context.Context, owner owner, input commentInput, resolved commentResolution,
+	ctx context.Context, owner owner, input commentInput, resolved commentResolution, closed closedWrite,
 ) (commentWrite, error) {
 	write, gatedCtx, release, err := gatedWrite(ctx, s.deps.Docs,
 		func(ctx context.Context) ([]string, error) {
 			return newCommentDocuments(ctx, s.documentQueryer(), owner, input)
 		},
 		func(ctx context.Context, gated []string) (commentWrite, error) {
-			return s.beginCommentWrite(ctx, owner, input, resolved, gated)
+			return s.beginCommentWrite(ctx, owner, input, resolved, gated, closed)
 		})
 	if err != nil {
 		return commentWrite{}, err
@@ -572,6 +573,7 @@ func (s *server) gatedCommentWrite(
 // session's fan-out; documents that moved are gated once more (gatedWrite).
 func (s *server) beginCommentWrite(
 	ctx context.Context, owner owner, input commentInput, resolved commentResolution, gated []string,
+	write closedWrite,
 ) (commentWrite, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -579,7 +581,7 @@ func (s *server) beginCommentWrite(
 	}
 	// The transaction is the caller's on success only, so every refusal unwinds here: a later
 	// check that forgot its own rollback would hold a pooled connection for the process's life.
-	status, err := s.lockCommentOwner(ctx, tx, owner, resolved.route)
+	status, err := s.lockCommentOwner(ctx, tx, owner, resolved.route, write)
 	if err == nil {
 		var named []string
 		if named, err = newCommentDocuments(ctx, tx, owner, input); err == nil && !sameDocuments(gated, named) {
@@ -595,10 +597,16 @@ func (s *server) beginCommentWrite(
 
 // lockCommentOwner takes the owner's lock inside an open comment transaction and returns its
 // lifecycle status, refusing with errStaleResolution when the locked issue no longer carries the
-// route the resolution was taken for.
-func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, owner owner, route commentRoute) (*string, error) {
-	status, err := s.requireOpenOwnerStatus(ctx, tx, owner)
+// route the resolution was taken for. A closed issue still takes a comment - issue-level, a
+// reply, a reply on an ask, one anchored to a document's quote - but not a suggestion: that is
+// a proposed document edit, and accepting it, its only outcome, is refused on a closed issue,
+// which is what write says (refuseClosed).
+func (s *server) lockCommentOwner(ctx context.Context, tx pgx.Tx, owner owner, route commentRoute, write closedWrite) (*string, error) {
+	status, open, err := ownerStatus(ctx, tx, owner, ownerRowLock)
 	if err != nil {
+		return nil, err
+	}
+	if err := refuseClosed(open, write); err != nil {
 		return nil, err
 	}
 	if !route.checked {
@@ -669,10 +677,17 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	// Every Envoy listener lookup this comment needs happens here, with no transaction and no
 	// pooled connection held (resolveCommentDeliveries). beginCommentWrite re-reads the issue's
 	// route under the owner's lock and refuses a resolution the locked row no longer agrees with -
-	// and refuses, under that same lock, an owner this pooled read already found missing or
-	// closed, which is why a comment the write cannot accept pays for no lookup here.
+	// and refuses, under that same lock, an owner this pooled read already found missing (or, for
+	// a suggestion, closed), which is why a comment the write cannot accept pays for no lookup
+	// here.
+	isSuggestion := input.Suggestion != nil
+	// A suggestion is the one comment write a closed issue refuses (refuseClosed).
+	write := takenWhenClosed
+	if isSuggestion {
+		write = refusedWhenClosed
+	}
 	if len(mentionTargets) > 0 {
-		if err := s.refuseClosedOwnerBeforeResolving(r.Context(), owner); err != nil {
+		if err := s.refuseOwnerBeforeResolving(r.Context(), owner, write); err != nil {
 			s.writeHandlerError(w, r, err)
 			return
 		}
@@ -682,7 +697,7 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			return s.resolveCommentDeliveries(ctx, owner, input, mentionTargets, delivery)
 		},
 		func(ctx context.Context, resolved commentResolution) (commentWrite, error) {
-			return s.gatedCommentWrite(ctx, owner, input, resolved)
+			return s.gatedCommentWrite(ctx, owner, input, resolved, write)
 		},
 		errorf(http.StatusConflict, "ROUTE_CHANGED",
 			"the issue's delivery route changed while this comment was being written; post it again"),
@@ -710,6 +725,12 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 	defer tx.Rollback(r.Context())
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
+	// The owner lock above decided this comment is written, a closed issue's included, so its
+	// anchor's document writes are comment marks (docs.WithCommentMarks); a suggestion's are not,
+	// and the document service still refuses them on a closed issue.
+	if !isSuggestion {
+		documentCtx = docs.WithCommentMarks(documentCtx)
+	}
 	threadTarget, err := s.normalizeCommentThreadTarget(r.Context(), tx, owner, input)
 	if err != nil {
 		s.writeHandlerError(w, r, err)

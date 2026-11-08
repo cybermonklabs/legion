@@ -126,15 +126,9 @@ type roomState struct {
 	// the issue recorded here began, or when a close or reopen of the issue was recorded
 	// (setRoomIssueOpen). A read that began earlier than the one recorded never replaces it
 	// (recordIssueLocked), so the record is at least as fresh as any read a holder made before it.
-	// A zero closedRead is no record, and closed then says nothing. closedForIssue is whether the
-	// room standing now has been closed for a closed record: setRoomIssueOpen sets it when its
-	// close of the room goes through, and the load of the room that stands in its place clears it
-	// (onLoadDocument), whose own read of the issue can be the one that records the close. It is
-	// what a notification or a recheck of a closed issue decides by, so a load that recorded the
-	// close itself does not read a matching record as that close already made (INFRA-592).
-	closed         bool
-	closedRead     time.Time
-	closedForIssue bool
+	// A zero closedRead is no record, and closed then says nothing.
+	closed     bool
+	closedRead time.Time
 	// admitting counts the document sockets whose admission holds this record (holdForAdmission):
 	// from the moment it records its read of the issue here until the socket ends. A cold room's
 	// load takes that read instead of reading the issue again (admittedIssueRead), and a close of

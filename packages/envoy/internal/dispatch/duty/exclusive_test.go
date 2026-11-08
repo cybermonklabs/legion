@@ -1,6 +1,7 @@
 package duty
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -28,6 +29,57 @@ func leasesOf(t *testing.T, database *store.Store) *store.RawPool {
 		t.Fatalf("open the leases pool: %v", err)
 	}
 	return leases
+}
+
+// Both lines a tick writes name the tick's own due and the aligned period it fell in. The period
+// is periodBoundary of that due, so it already tells a tick of one period from a tick of the
+// next; what the due adds is where inside the period the tick fell. Two processes ticking minutes
+// apart inside one period write the same period, and neither line is written at the moment its
+// tick was due - the skip after the lease and the period read, the ran line after the whole pass
+// - so the moment a line carries does not give that stagger either. Reading dispatch's
+// multiprocess rows cost a day for want of exactly this (INFRA-1492). A pass with no period is
+// also a pass with no due, and names neither.
+func TestTheLinesAboutATickNameItsDueAndItsPeriod(t *testing.T) {
+	database := storetest.Open(t)
+	leases := leasesOf(t, database)
+	var logs bytes.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
+	ctx := context.Background()
+	const name, period = "search-term-stats", time.Hour
+	due := time.Date(2026, 11, 7, 12, 37, 19, 0, time.UTC)
+
+	if !Exclusive(ctx, leases, name, due, period, func(context.Context) {}) {
+		t.Fatalf("the first tick did not run its pass:\n%s", logs.String())
+	}
+	ran := `msg="dispatch duty: leased pass ran" lease=` + name +
+		` due=2026-11-07T12:37:19Z period=2026-11-07T12:00:00Z`
+	if !strings.Contains(logs.String(), ran) {
+		t.Errorf("the line a tick that ran wrote does not read %q:\n%s", ran, logs.String())
+	}
+
+	// A later tick of the same period, which reads that period served and skips.
+	logs.Reset()
+	if Exclusive(ctx, leases, name, due.Add(20*time.Minute), period, func(context.Context) {
+		t.Error("a tick whose period another pass served ran a pass of its own")
+	}) {
+		t.Errorf("the tick whose period was served reported running:\n%s", logs.String())
+	}
+	skipped := `msg="dispatch duty: leased pass skipped" lease=` + name +
+		` due=2026-11-07T12:57:19Z period=2026-11-07T12:00:00Z`
+	if !strings.Contains(logs.String(), skipped) {
+		t.Errorf("the line a tick that found its period served wrote does not read %q:\n%s", skipped, logs.String())
+	}
+
+	// A pass with no period is called with the zero time for due, as every periodless caller
+	// calls it (duty.WokenLoop.attempt, delivery's consumer bind), and names neither attribute:
+	// a line reading due=0001-01-01T00:00:00Z would say the tick was due at the zero instant.
+	logs.Reset()
+	if !Exclusive(ctx, leases, "delivery-consumer-delivery-jobs", time.Time{}, 0, func(context.Context) {}) {
+		t.Fatalf("the periodless tick did not run its pass:\n%s", logs.String())
+	}
+	if strings.Contains(logs.String(), "due=") || strings.Contains(logs.String(), "period=") {
+		t.Errorf("the line a periodless pass wrote names a due or a period:\n%s", logs.String())
+	}
 }
 
 // Two processes on one database are two callers here, and the second must skip rather than queue:

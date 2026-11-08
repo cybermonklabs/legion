@@ -323,9 +323,9 @@ document holds, a block of an issue in another tree, a `needs` naming a block ou
 — and a `when` the schema does not know, each `400 INVALID_MARKDOWN` naming the pointer or the
 attribute; a requirement's id through a `move`; `dispatch result` and `dispatch results`, with a
 check id no Verification document in reach holds refused `400 UNKNOWN_CHECK` and a pass counting a
-skipped case refused `400 RESULT_CONTRADICTS`; the one write a closed issue takes, a result for an
-`after_merge` check, beside the result for a `before_merge` check and the document write it still
-refuses `409 ISSUE_CLOSED`; the coverage flags `dispatch read --issue` prints after `Coverage: `,
+skipped case refused `400 RESULT_CONTRADICTS`; a closed issue's result for an `after_merge` check,
+which it takes beside a comment and a message, and the result for a `before_merge` check and the
+document write it still refuses `409 ISSUE_CLOSED`; the coverage flags `dispatch read --issue` prints after `Coverage: `,
 cleared by a check of the issue and by a check of a child, back when that check is deleted, with
 the missing plan task named only once the issue has a plan document; the gap an approval request's
 answer names and the covered spec that earns none; `dispatch plan-approve`, refused `409
@@ -458,10 +458,9 @@ upstream once a page has closed. `chromium-plain-http-sign-out` runs the sign-ou
 tab holds the person's writes for another tab's sign-out on a renewed lease rather than on that
 tab's lock.
 The last three projects run the rows whose claim is a wall-clock time, with the machine to
-themselves: `chromium-alone` runs `e2e/heavy-document-writes.e2e.ts` (a document write answers in
-under a second), `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts` (a card draws without
-holding the main thread for a second), and `firefox-alone` and `webkit-alone` run
-`e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
+themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-directive.e2e.ts`
+(a card draws without holding the main thread for a second), and `firefox-alone` and
+`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines. Each names every project before it in
 `dependencies` and caps its own workers at one, so Playwright starts them only after the rest of
 the run and takes one row at a time: four lanes on one machine make a second of wall clock
 unmeasurable. A project whose dependency has a failing row does not run at all.
