@@ -87,9 +87,12 @@ func queuedNotices(t *testing.T, pool *pgxpool.Pool) []string {
 // again, counted as one re-send and published under the key of the row it copies, so a session that
 // did get the forward recognises the copy. Every report is queued, a late receipt from the claim's
 // own session too: a Go relaunch resumes the session id, so that report may come from the stopped
-// process. The first copy is due at once when the architect's agent has taken its role, whichever
-// session the forward went to, since that ready will not come again to release it; otherwise it
-// waits the first re-send delay.
+// process. The copy is written due at the moment the re-hold decides, and the row runs then: at
+// once for an architect whose agent has taken its role, and otherwise after the first re-send
+// delay. Which claim and which report make which moment is
+// TestWhatAFailedForwardLeavesItsNotice's and TestWhenACopyIsDueAtOnce's; the two rows here are
+// the two moments, each carried from the decision to the row Postgres holds and on to the
+// delivery.
 func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 	t.Parallel()
 	pool, reset := tableDatabase(t)
@@ -100,14 +103,7 @@ func TestANoticeTheListenerCouldNotForwardIsQueuedAgain(t *testing.T) {
 		due                time.Duration
 	}{
 		{"a failed forward to the live session", "delivery_failed", supervise.StateWorking, "ses_live", "ses_live", 0},
-		{"a late receipt from the live session", "receipt_timeout", supervise.StateIdle, "ses_live", "ses_live", 0},
-		{"a holder that lapsed, the role taken since", "no_holder", supervise.StateWorking, "ses_live", "", 0},
 		{"a holder that lapsed, the claim relaunching", "no_holder", supervise.StateLaunching, "", "", noticeReholdDelays[0]},
-		{"a late receipt while the claim relaunches", "receipt_timeout", supervise.StateLaunching, "", "ses_stopped", noticeReholdDelays[0]},
-		{"a late receipt from the stopped session after the new one registered", "receipt_timeout", supervise.StateRegistered, "ses_new", "ses_stopped", noticeReholdDelays[0]},
-		{"a late receipt from the stopped session after the new one is ready", "receipt_timeout", supervise.StateReady, "ses_new", "ses_stopped", 0},
-		{"a late receipt from a resumed session before it takes its role", "receipt_timeout", supervise.StateRegistered, "ses_arch", "ses_arch", noticeReholdDelays[0]},
-		{"a late receipt from a resumed session that took its role inside the receipt window", "receipt_timeout", supervise.StateReady, "ses_arch", "ses_arch", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			reset(t)
@@ -293,48 +289,34 @@ func TestAReportThatIsNotAFailedNoticeForwardChangesNothing(t *testing.T) {
 // this is routine rather than exceptional: the row was answered 404 and is still held, retrying on
 // its own backoff, so the report queues no copy — which would send the notice twice — and raises no
 // error, since calling a well-formed report malformed would log one ERROR per refusal on the lane
-// an operator watches for real re-hold failures. Every other reason is still refused.
+// an operator watches for real re-hold failures. Which reasons are the listener's refusal and
+// which are refused as malformed is TestWhatAListenersReasonSaysOfItsPublish's; what one such
+// report leaves behind is here.
 func TestAReportOfAPublishTheListenerRefusedQueuesNothingAndIsNoError(t *testing.T) {
 	t.Parallel()
 	notice := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts"}
 	topic := "notifications.role.legion-legion-legion-1-architect"
-	pool, reset := tableDatabase(t)
-	for _, tc := range []struct {
-		name, reason, recipient string
-		refused                 bool
-	}{
-		{"a role nothing claims", "unclaimed", "", true},
-		{"a claim whose holder is no longer live", "holder_lapsed", "ses_lapsed", true},
-		{"a reason this daemon does not know", "some_new_reason", "ses_live", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
-			records := record.NewStore()
-			noticeTree(t, pool, records, false)
-			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
-			var logged bytes.Buffer
-			runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
-				supervisor: sup, project: "legion", now: time.Now}
-			report := laneReport{"evt-refused", tc.reason, topic, "pr-blocked on LEGION-2", notice, "legion-outbox:7", tc.recipient}
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	noticeTree(t, pool, records, false)
+	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	architectClaimOn(t, sup, "LEGION-1", supervise.StateWorking, "ses_live")
+	var logged bytes.Buffer
+	runner := &outbox{log: slog.New(slog.NewTextHandler(&logged, nil)), pool: pool, dispatchProject: "LEGION", records: records,
+		supervisor: sup, project: "legion", now: time.Now}
+	report := laneReport{"evt-refused", "unclaimed", topic, "pr-blocked on LEGION-2", notice, "legion-outbox:7", ""}
 
-			err := runner.rehold(context.Background(), report.envelope(t))
-			if tc.refused && err != nil {
-				t.Fatalf("rehold a %s report = %v, want no error", tc.reason, err)
-			}
-			if !tc.refused && err == nil {
-				t.Fatalf("rehold a %s report = nil, want it refused as malformed", tc.reason)
-			}
-			if got := queuedNotices(t, pool); len(got) != 0 {
-				t.Fatalf("queued %v after a %s report, want nothing: its row retries on its own", got, tc.reason)
-			}
-			// The handler is at slog's default Info level, so the quiet branch's debug line is the only
-			// thing it may say: any louder line, a WARN included, is one every few hundred
-			// milliseconds at hundreds of unheld roles, about a state the executor already handles.
-			if tc.refused && logged.Len() != 0 {
-				t.Fatalf("a %s report logged at Info or above, want nothing:\n%s", tc.reason, logged.String())
-			}
-		})
+	if err := runner.rehold(context.Background(), report.envelope(t)); err != nil {
+		t.Fatalf("rehold an unclaimed report = %v, want no error", err)
+	}
+	if got := queuedNotices(t, pool); len(got) != 0 {
+		t.Fatalf("queued %v after an unclaimed report, want nothing: its row retries on its own", got)
+	}
+	// The handler is at slog's default Info level, so the quiet branch's debug line is the only
+	// thing it may say: any louder line, a WARN included, is one every few hundred
+	// milliseconds at hundreds of unheld roles, about a state the executor already handles.
+	if logged.Len() != 0 {
+		t.Fatalf("an unclaimed report logged at Info or above, want nothing:\n%s", logged.String())
 	}
 }
 
@@ -1062,46 +1044,6 @@ func TestANoticeToALiveClaimThatHearsNothingKeepsItsSchedule(t *testing.T) {
 	}
 }
 
-// A later copy whose report names a session other than the one the claim is ready on went to a
-// session the role has since left, so it is due at once, as the first copy is: waiting its delay
-// would hold the live architect's later notices behind it. A later copy that failed on the claim's
-// own ready session keeps its delay, since that session may be the one hearing nothing, and so
-// does one whose report names no session: the listener names none when the role had no holder or
-// it could not read the holder, which says nothing about where the role went.
-func TestALaterCopyToAnArchitectBackOnAnotherSessionIsDueAtOnce(t *testing.T) {
-	t.Parallel()
-	pool, reset := tableDatabase(t)
-	for _, tc := range []struct {
-		name, reason, recipient string
-		due                     time.Duration
-	}{
-		{"the report names the session the role left", "receipt_timeout", "ses_stopped", 0},
-		{"the report names the claim's own ready session", "receipt_timeout", "ses_new", noticeReholdDelays[1]},
-		{"a lapsed holder, naming no session", "no_holder", "", noticeReholdDelays[1]},
-		{"a failed holder read, naming no session", "delivery_failed", "", noticeReholdDelays[1]},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
-			sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
-			architectClaimOn(t, sup, "LEGION-1", supervise.StateReady, "ses_new")
-			clock := time.Now()
-			runner := &outbox{log: quietLogger(), pool: pool, dispatchProject: "LEGION", records: record.NewStore(), supervisor: sup, project: "legion", now: func() time.Time { return clock }}
-			copied := record.Notice{Kind: "pr-blocked", Role: claim.RoleArchitect, Reason: "max_fix_attempts", Resends: 1}
-			report := laneReport{"evt-exception", tc.reason, architectTopic(t, "LEGION-1"), "pr-blocked on LEGION-2", copied, "legion-outbox:7", tc.recipient}
-			if err := runner.rehold(context.Background(), report.envelope(t)); err != nil {
-				t.Fatalf("rehold: %v", err)
-			}
-			var nextAt time.Time
-			if err := pool.QueryRow(context.Background(), "select next_at from outbox where kind = 'notice'").Scan(&nextAt); err != nil {
-				t.Fatalf("read the re-held row: %v", err)
-			}
-			if !nextAt.Equal(clock.Add(tc.due).Truncate(time.Microsecond)) {
-				t.Fatalf("the second copy is due %s; want %s", nextAt, clock.Add(tc.due))
-			}
-		})
-	}
-}
-
 // A copy is due at once only while the architect's agent holds its role, and then only the first
 // copy, or a later one whose report names a session other than the one the claim is ready on. A
 // later copy that failed on the claim's own session, or whose report names no session, waits.
@@ -1133,6 +1075,90 @@ func TestWhenACopyIsDueAtOnce(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := copyDueAtOnce(tc.held, tc.resends, tc.recipient); got != tc.want {
 				t.Fatalf("copyDueAtOnce(%s on %q, %d copies, report from %q) = %t, want %t", tc.held.State, tc.held.Session, tc.resends, tc.recipient, got, tc.want)
+			}
+		})
+	}
+}
+
+// What a failed forward leaves its notice, over the three verdicts and the copy's moment: an
+// architect that stopped with its finished tree is told nothing more and the decision is parked;
+// a notice already queued again the most times a notice is spends its last copy; and anything
+// else is copied, due at once while the architect's agent has taken its role (copyDueAtOnce) and
+// after the next of noticeReholdDelays otherwise. A lingering tree decides nothing while its
+// architect still holds its role, which is why reholdNotice reads the tree only when it does
+// not.
+func TestWhatAFailedForwardLeavesItsNotice(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC)
+	view := func(state supervise.ClaimState, stopping bool) supervise.ClaimView {
+		return supervise.ClaimView{Claim: supervise.Claim{State: state, Session: "ses_arch"}, Stopping: stopping}
+	}
+	for _, tc := range []struct {
+		name      string
+		held      supervise.ClaimView
+		lingers   bool
+		resends   int
+		recipient string
+		want      reholdVerdict
+		due       time.Duration
+	}{
+		{name: "a working architect, the first copy from another session", held: view(supervise.StateWorking, false), recipient: "ses_old", want: reholdCopy},
+		{name: "a relaunching architect", held: view(supervise.StateLaunching, false), recipient: "", want: reholdCopy, due: noticeReholdDelays[0]},
+		{name: "a later copy on the claim's own session", held: view(supervise.StateReady, false), resends: 1, recipient: "ses_arch", want: reholdCopy, due: noticeReholdDelays[1]},
+		{name: "the last copy", held: view(supervise.StateLaunching, false), resends: 2, recipient: "", want: reholdCopy, due: noticeReholdDelays[2]},
+		{name: "a notice queued again the most times", held: view(supervise.StateWorking, false), resends: len(noticeReholdDelays), recipient: "ses_arch", want: reholdSpent},
+		{name: "a suspended architect whose tree lingers", held: view(supervise.StateSuspended, false), lingers: true, want: reholdParked},
+		{name: "a retired architect whose tree lingers", held: view(supervise.StateRetired, false), lingers: true, want: reholdParked},
+		{name: "an architect being stopped as its tree lingers", held: view(supervise.StateWorking, true), lingers: true, want: reholdParked},
+		{name: "a lingering tree whose architect still holds its role", held: view(supervise.StateWorking, false), lingers: true, recipient: "ses_old", want: reholdCopy},
+		{name: "a suspended architect whose tree does not linger", held: view(supervise.StateSuspended, false), recipient: "", want: reholdCopy, due: noticeReholdDelays[0]},
+		{name: "the last copy to an architect stopped with its tree", held: view(supervise.StateRetired, false), lingers: true, resends: len(noticeReholdDelays), want: reholdParked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict, due := reholdTarget(tc.held, tc.lingers, tc.resends, tc.recipient, now)
+			if verdict != tc.want {
+				t.Fatalf("reholdTarget(%s lingers=%t, %d copies, report from %q) = verdict %d, want %d",
+					tc.held.State, tc.lingers, tc.resends, tc.recipient, verdict, tc.want)
+			}
+			if tc.want != reholdCopy {
+				return
+			}
+			if !due.Equal(now.Add(tc.due)) {
+				t.Fatalf("the copy is due %s, want %s", due, now.Add(tc.due))
+			}
+		})
+	}
+}
+
+// What the reason of a listener's report says became of the publish it names: the three the
+// listener uses for a forward it took and could not complete are re-held; the reasons it refuses
+// a publish with, before forwarding anything, queue nothing, since the row it answered 404 is
+// still held and retries on its own; and any other reason is refused as malformed.
+func TestWhatAListenersReasonSaysOfItsPublish(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		reason    string
+		refused   bool
+		malformed bool
+	}{
+		{reason: "delivery_failed"},
+		{reason: "no_holder"},
+		{reason: "receipt_timeout"},
+		{reason: "unclaimed", refused: true},
+		{reason: "holder_lapsed", refused: true},
+		{reason: "some_new_reason", malformed: true},
+		{reason: "", malformed: true},
+	} {
+		t.Run(tc.reason, func(t *testing.T) {
+			refused, err := refusedPublish(tc.reason)
+			if tc.malformed {
+				if !errors.Is(err, errNoticeException) {
+					t.Fatalf("refusedPublish(%q) = %v, want it refused as malformed", tc.reason, err)
+				}
+				return
+			}
+			if err != nil || refused != tc.refused {
+				t.Fatalf("refusedPublish(%q) = %t, %v; want %t and no error", tc.reason, refused, err, tc.refused)
 			}
 		})
 	}

@@ -1011,6 +1011,43 @@ func TestARootWaitingOnItsGateAtDeployReturnsItsSlot(t *testing.T) {
 	}
 }
 
+// What a boot's read of a gate's document applies for the root: Dispatch showing an approval
+// request open gives the fact that mirrors it, at the sequence the boot read before it, and the
+// request is the person's to answer unless Dispatch shows it waiting on the agent, which is what
+// decides whether the root hands its slot back. Dispatch showing no open request is nothing to
+// apply. The id the fact is applied under names the root's generation, the ask and that
+// sequence, so the same read is one fact and a re-admission's read of it another.
+func TestWhatAGatesApprovalAppliesAtABoot(t *testing.T) {
+	t.Parallel()
+	root := record.Issue{Key: "CAPTURE-100", Tree: "CAPTURE-100", Generation: 2}
+	for _, tc := range []struct {
+		name     string
+		approval dispatch.Approval
+		want     intake.GateRequestFound
+		id       string
+	}{
+		{name: "a request with the person",
+			approval: dispatch.Approval{State: "awaiting", LatestVersion: 3, AskID: "ask-approval", WaitingOn: "human"},
+			want:     intake.GateRequestFound{Issue: "CAPTURE-100", Generation: 2, ArtifactID: "artifact-root", RequestAsk: "ask-approval", Since: 9},
+			id:       "gate-request:CAPTURE-100:2:ask-approval:9"},
+		{name: "a request with the agent",
+			approval: dispatch.Approval{State: "awaiting", LatestVersion: 3, AskID: "ask-approval", WaitingOn: "agent"},
+			want:     intake.GateRequestFound{Issue: "CAPTURE-100", Generation: 2, ArtifactID: "artifact-root", RequestAsk: "ask-approval", WaitsOnAgent: true, Since: 9},
+			id:       "gate-request:CAPTURE-100:2:ask-approval:9"},
+		{name: "a document nobody has asked to approve", approval: dispatch.Approval{State: "draft", LatestVersion: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fact, id, found := gateRequestFact(root, "artifact-root", tc.approval, 9)
+			if found != (tc.id != "") {
+				t.Fatalf("gateRequestFact found a request = %t, want %t", found, tc.id != "")
+			}
+			if found && (fact != tc.want || id != tc.id) {
+				t.Fatalf("gateRequestFact = %+v under %q, want %+v under %q", fact, id, tc.want, tc.id)
+			}
+		})
+	}
+}
+
 // slotHeld says whether key holds a slot.
 func slotHeld(t *testing.T, pool *pgxpool.Pool, key string) bool {
 	t.Helper()

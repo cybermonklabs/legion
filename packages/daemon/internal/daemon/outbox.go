@@ -500,16 +500,37 @@ func statusWriteRefused(issue string, payload record.StatusWrite, cause error, w
 // again then rather than climbing its backoff for days. A named moment already past is the backoff's.
 func (r *outbox) retry(ctx context.Context, row record.OutboxRow, cause error) error {
 	now := r.now().UTC()
-	delay := retryBackoff(row.Attempts)
-	if after, _ := githubrest.RetryAfter(cause); after > delay {
-		delay = after
-	}
-	nextAt := now.Add(delay)
-	if at, ok := wait.UntilAt(cause); ok && at.After(now) {
-		nextAt = at.UTC()
+	nextAt := now.Add(retryDelay(row.Attempts, cause))
+	if at, waits := answersTheWait(cause, now); waits {
+		nextAt = at
 		r.log.Debug("outbox row waits until", "row", row.ID, "kind", row.Kind, "issue", row.Issue, "until", nextAt)
 	}
 	return r.retryAt(ctx, row, nextAt, cause)
+}
+
+// retryDelay is how long a row that failed attempts times waits before it runs again: its own
+// backoff (retryBackoff), or the wait GitHub asks for when cause carries a rate limit and asks
+// for longer than that. It is a function of the two so that what a row waits can be read off the
+// failure alone, without a row to retry or a database to retry it in.
+func retryDelay(attempts int, cause error) time.Duration {
+	delay := retryBackoff(attempts)
+	if after, _ := githubrest.RetryAfter(cause); after > delay {
+		delay = after
+	}
+	return delay
+}
+
+// answersTheWait is the moment cause names for the row to run again, and whether it names one at
+// all: a failure that is a wait knowing when it ends (wait.Until) — a lingering tree's close
+// waiting for a member's production check names the check's bound — runs the row then rather
+// than climbing its backoff for days. A moment already past at now names nothing, and the row
+// takes its backoff (retryDelay), since a bound that has passed is no longer a wait.
+func answersTheWait(cause error, now time.Time) (time.Time, bool) {
+	at, ok := wait.UntilAt(cause)
+	if !ok || !at.After(now) {
+		return time.Time{}, false
+	}
+	return at.UTC(), true
 }
 
 // retryAt returns row to the outbox, due again at nextAt, with cause as its last error.
@@ -792,13 +813,30 @@ func (r *outbox) handOverHolds(ctx context.Context, row record.OutboxRow, payloa
 	}); err != nil {
 		return false, fmt.Errorf("read hand-over of %s: %w", row.Issue, err)
 	}
-	if issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree && handover.Tree == payload.HandOverTree &&
-		handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation) {
+	if handOverWrite(issue, root, handover, payload) {
 		return true, nil
 	}
 	r.log.Info("outbox hand-over no longer holds; finished without writing", "row", row.ID, "issue", row.Issue,
 		"tree", payload.HandOverTree, "linger", payload.HandOverLinger)
 	return false, nil
+}
+
+// handOverWrite says whether a hand-over row's write still stands, given the child's record
+// (issue), the record of the tree the hand-over names (root), the persistent hand-over the child
+// carries (handover, nil for none) and the row's own payload. Every term must hold: the child and
+// the root are both recorded, the hand-over is not cancelled, the child is still in the tree the
+// hand-over names, that tree and its generation are the ones the row was written for, and the
+// root still lingers at that generation. A root a person set todo again, re-admitted at its next
+// generation, and a child that is no longer the tree's each fail one term, and the row finishes
+// without writing.
+//
+// It is separate from handOverHolds because the method's work is the one transaction that reads
+// the three records and drops a cancelled hand-over's fence, while this is the conjunction those
+// reads are made for: it holds for the same reasons whether the records come from Postgres or
+// from a test's own values.
+func handOverWrite(issue, root *record.Issue, handover *record.Handover, payload record.StatusWrite) bool {
+	return issue != nil && handover != nil && !handover.Cancelled && root != nil && issue.Tree == handover.Tree &&
+		handover.Tree == payload.HandOverTree && handover.Generation == payload.HandOverLinger && root.LingersAt(handover.Generation)
 }
 
 // dropHandover deletes the fence of a hand-over a person's move superseded, but only this row's
@@ -1075,7 +1113,7 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 	}
 	message := payload.Message(row.Issue)
 	published := r.notices.Publish(ctx, notify.RoleTopicPrefix+string(token), message, message, record.OutboxKey(row.ID))
-	if errors.Is(published, notify.ErrNoHolder) {
+	if phaseEndedMessage(published) {
 		r.log.Info("outbox phase-ended message finished undelivered: no live session holds the role",
 			"row", row.ID, "issue", row.Issue, "role", payload.Role, "from", payload.From, "to", payload.To)
 		return nil
@@ -1084,6 +1122,19 @@ func (r *outbox) phaseEnded(ctx context.Context, row record.OutboxRow, payload r
 		return fmt.Errorf("publish the end of %s's %s phase to its %s: %w", row.Issue, payload.From, payload.Role, published)
 	}
 	return nil
+}
+
+// phaseEndedMessage says whether the answer to a phase-ended publish finishes its row
+// undelivered rather than keeping it: only a role topic no live session holds
+// (notify.ErrNoHolder) does, since the role's next task from the daemon names its phase anyway
+// and a role that never claims its topic would hold the row for ever. The three answers of the
+// confirmed publish route are failures the next attempt may not meet, so each keeps the row.
+//
+// It is separate from phaseEnded because that method's work is the token, the wake of a released
+// pod and the publish itself, while which answers end a row is a judgement about the answers
+// alone.
+func phaseEndedMessage(published error) bool {
+	return errors.Is(published, notify.ErrNoHolder)
 }
 
 // controllerNotice publishes a controller notice row to the controller topic of the daemon's own
@@ -1097,6 +1148,38 @@ func (r *outbox) controllerNotice(ctx context.Context, row record.OutboxRow, pay
 		return fmt.Errorf("publish controller notice for %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// superviseFence is why a supervise row acts on nothing, or that it still acts.
+type superviseFence int
+
+const (
+	// superviseRuns: the row serves the issue as it stands, and the supervisor acts on it.
+	superviseRuns superviseFence = iota
+	// superviseGenerationPast: the row was written for a generation the issue has left, so a
+	// re-admission's own rows carry what it would have done.
+	superviseGenerationPast
+	// supervisePhaseLeft: the row starts a role in a phase the issue has left, which would have
+	// that role push to a pull request another phase's role now owns.
+	supervisePhaseLeft
+)
+
+// superviseFenced is the fence every supervise row but a check start passes: the row must serve
+// the issue's own generation, and a row that names a phase must name the one the issue stands
+// in. A check start is fenced on its check and its look instead (checkLookHolds), because its
+// issue holds no phase and its generation may be a later run's.
+//
+// It is a function of the row's payload and the issue because that is all the fence reads: the
+// supervisor, the claim and the row's other work decide nothing here, and the two ways a row can
+// be out of date are worth stating without a database to state them over.
+func superviseFenced(payload record.SuperviseRequest, issue record.Issue) superviseFence {
+	switch {
+	case payload.Generation != issue.Generation:
+		return superviseGenerationPast
+	case payload.Phase != "" && payload.Phase != issue.Phase:
+		return supervisePhaseLeft
+	}
+	return superviseRuns
 }
 
 func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) error {
@@ -1123,12 +1206,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return err
 		}
 	} else {
-		if payload.Generation != issue.Generation {
+		switch superviseFenced(payload, issue) {
+		case superviseGenerationPast:
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
 				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
 			return nil
-		}
-		if payload.Phase != "" && payload.Phase != issue.Phase {
+		case supervisePhaseLeft:
 			r.log.Info("outbox start serves a phase the issue has left; finished without acting", "row", row.ID, "issue", issue.Key,
 				"phase", payload.Phase, "current", issue.Phase, "role", payload.Role)
 			return nil
@@ -1978,16 +2061,11 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 	if err != nil {
 		return nil, err
 	}
-	var why string
+	why := checkRowStale(check, payload.CheckOpenedAt)
 	switch {
-	case check == nil:
-		why = "the issue has no production check"
-	case record.InWorkflow(issue):
+	case check != nil && record.InWorkflow(issue):
 		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
-	case !check.Open():
-		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.CheckOpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
+	case why != "":
 	case check.Looks != payload.CheckLook:
 		why = fmt.Sprintf("the check is at look %d", check.Looks)
 	case !check.LookOpen:
@@ -1997,6 +2075,28 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 	}
 	r.log.Info("production check start finishes without acting", "row", row.ID, "issue", row.Issue, "look", payload.CheckLook, "why", why)
 	return nil, nil
+}
+
+// checkRowStale is why the production check a row names is not the issue's open one, and "" when
+// it is: no check is recorded for the issue, the check closed since (a report, its last look), or
+// a later merge replaced the one the row names (record.ProductionCheck.NamedBy, read against the
+// moment the row's payload carries). Both readers of a check row ask it first — the look's bound
+// (checkLook) and the check start (checkLookHolds), which then asks after its own look — and
+// each finishes without acting on the answer, logged with the reason this gives.
+//
+// It is a function of the check and the moment the row names because the reason is a reading of
+// the two: the row that carries that moment and the database the check came from decide nothing
+// about it.
+func checkRowStale(check *record.ProductionCheck, openedAt time.Time) string {
+	switch {
+	case check == nil:
+		return "the issue has no production check"
+	case !check.Open():
+		return fmt.Sprintf("the check closed as %s", check.Outcome)
+	case !check.NamedBy(openedAt):
+		return fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
+	}
+	return ""
 }
 
 // checkLookHeld is a check start that met an operator's suspension of the check's own role
@@ -2028,15 +2128,7 @@ func (r *outbox) checkLook(ctx context.Context, row record.OutboxRow, payload re
 	if err != nil {
 		return err
 	}
-	var why string
-	switch {
-	case check == nil:
-		why = "the issue has no production check"
-	case !check.Open():
-		why = fmt.Sprintf("the check closed as %s", check.Outcome)
-	case !check.NamedBy(payload.OpenedAt):
-		why = fmt.Sprintf("the check it names was replaced by the one opened %s", check.OpenedAt.UTC().Format(time.RFC3339))
-	}
+	why := checkRowStale(check, payload.OpenedAt)
 	if why != "" {
 		r.log.Info("outbox check look bound finished without acting", "row", row.ID, "issue", row.Issue, "look", payload.Look, "why", why)
 		return nil

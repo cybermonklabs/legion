@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -264,6 +265,47 @@ func TestAHandOverWritesTheStatusAndTheLabelTogether(t *testing.T) {
 			}
 			if !slices.Equal(client.statuses, tc.statuses) || !slices.Equal(client.handOvers, tc.handOvers) {
 				t.Fatalf("status writes %v and hand-overs %v, want %v and %v", client.statuses, client.handOvers, tc.statuses, tc.handOvers)
+			}
+		})
+	}
+}
+
+// Whether a hand-over row's write still stands, read off the three records it is fenced on.
+// Every term must hold: the child and the root are recorded, the hand-over is not cancelled, the
+// child is still in the tree the hand-over names, that tree and its linger generation are the
+// ones the row was written for, and the root still lingers at that generation. A root a person
+// set todo again, re-admitted at its next generation, and a child carried into a tree of its own
+// each fail one term, and the row finishes without writing.
+func TestWhenAHandOversWriteStillStands(t *testing.T) {
+	t.Parallel()
+	const root, child = "LEGION-207", "LEGION-208"
+	until := time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC)
+	lingering := record.Issue{Key: root, Tree: root, Generation: 3, LingerUntil: &until}
+	reopened := record.Issue{Key: root, Tree: root, Generation: 4}
+	member := record.Issue{Key: child, Tree: root, Generation: 1}
+	orphaned := record.Issue{Key: child, Tree: child, Generation: 1}
+	payload := record.StatusWrite{ObservedStatus: "in_progress", Status: "todo", HandOver: true, HandOverTree: root, HandOverLinger: 3}
+	held := &record.Handover{Issue: child, Tree: root, Generation: 3}
+	cancelled := &record.Handover{Issue: child, Tree: root, Generation: 3, Cancelled: true}
+	laterLinger := &record.Handover{Issue: child, Tree: root, Generation: 4}
+	for _, tc := range []struct {
+		name        string
+		issue, root *record.Issue
+		handover    *record.Handover
+		want        bool
+	}{
+		{name: "the child, the root and the hand-over as the row was written", issue: &member, root: &lingering, handover: held, want: true},
+		{name: "a child the record does not hold", root: &lingering, handover: held},
+		{name: "no hand-over on the child", issue: &member, root: &lingering},
+		{name: "a hand-over a re-admission cancelled", issue: &member, root: &lingering, handover: cancelled},
+		{name: "a tree the record does not hold", issue: &member, handover: held},
+		{name: "a root reopened at its next generation", issue: &member, root: &reopened, handover: held},
+		{name: "a child no longer the tree's", issue: &orphaned, root: &lingering, handover: held},
+		{name: "a hand-over of a later linger than the row's", issue: &member, root: &lingering, handover: laterLinger},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := handOverWrite(tc.issue, tc.root, tc.handover, payload); got != tc.want {
+				t.Fatalf("handOverWrite(issue %+v, root %+v, hand-over %+v) = %t, want %t", tc.issue, tc.root, tc.handover, got, tc.want)
 			}
 		})
 	}
@@ -2978,5 +3020,62 @@ func TestAStartThatFindsTheRootArchitectRunningTellsItItsTree(t *testing.T) {
 	}
 	if told := catchUpReasons(); len(told) != 0 {
 		t.Fatalf("the retried start queued catch-ups %q; want none, the row having told the architect already", told)
+	}
+}
+
+// The fence every supervise row but a check start passes: a row serves the issue's own
+// generation, and a row that names a phase serves the phase the issue stands in. A row of an
+// earlier generation is finished whatever phase it names, since a re-admission's own rows carry
+// what it would have done, and a row that names no phase — a close, a stop, a removal — passes
+// on its generation alone.
+func TestWhenASuperviseRowIsFenced(t *testing.T) {
+	t.Parallel()
+	issue := record.Issue{Key: "LEGION-208", Tree: "LEGION-208", Generation: 2, Phase: phase.Testing}
+	for _, tc := range []struct {
+		name    string
+		payload record.SuperviseRequest
+		want    superviseFence
+	}{
+		{name: "a start of this generation's own phase", payload: record.SuperviseRequest{Op: "start", Generation: 2, Phase: phase.Testing}, want: superviseRuns},
+		{name: "a row naming no phase", payload: record.SuperviseRequest{Op: "tree_close", Generation: 2}, want: superviseRuns},
+		{name: "a start of a phase the issue has left", payload: record.SuperviseRequest{Op: "start", Generation: 2, Phase: phase.Implementing}, want: supervisePhaseLeft},
+		{name: "a row of an earlier generation", payload: record.SuperviseRequest{Op: "start", Generation: 1, Phase: phase.Testing}, want: superviseGenerationPast},
+		{name: "a row of a later generation", payload: record.SuperviseRequest{Op: "stop", Generation: 3}, want: superviseGenerationPast},
+		{name: "a row wrong on both", payload: record.SuperviseRequest{Op: "start", Generation: 1, Phase: phase.Implementing}, want: superviseGenerationPast},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := superviseFenced(tc.payload, issue); got != tc.want {
+				t.Fatalf("superviseFenced(generation %d, phase %q) = %d, want %d", tc.payload.Generation, tc.payload.Phase, got, tc.want)
+			}
+		})
+	}
+}
+
+// How long a row that failed waits before it runs again: its own backoff, which climbs with the
+// attempts it has made, unless GitHub's rate limit asks for longer than that, in which case the
+// row waits as long as GitHub asks. A limit asking for less than the backoff changes nothing,
+// and a failure that is no rate limit leaves the backoff alone.
+func TestHowLongARetriedRowWaits(t *testing.T) {
+	t.Parallel()
+	limit := func(after time.Duration) error {
+		return fmt.Errorf("merge READY: %w", &githubrest.Answer{Method: "POST", Path: "/graphql", Status: 429, RateLimited: true, RetryAfter: after, Budget: githubrest.BudgetSecondary})
+	}
+	for _, tc := range []struct {
+		name     string
+		attempts int
+		cause    error
+		want     time.Duration
+	}{
+		{name: "a first failure", cause: errors.New("Dispatch is unreachable"), want: retryBackoff(0)},
+		{name: "a sixth failure", attempts: 6, cause: errors.New("Dispatch is unreachable"), want: retryBackoff(6)},
+		{name: "a rate limit asking for longer than the backoff", cause: limit(3 * time.Minute), want: 3 * time.Minute},
+		{name: "a rate limit asking for less than the backoff", attempts: 6, cause: limit(time.Second), want: retryBackoff(6)},
+		{name: "a rate limit asking for nothing", cause: limit(0), want: retryBackoff(0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := retryDelay(tc.attempts, tc.cause); got != tc.want {
+				t.Fatalf("retryDelay(%d attempts, %v) = %s, want %s", tc.attempts, tc.cause, got, tc.want)
+			}
+		})
 	}
 }

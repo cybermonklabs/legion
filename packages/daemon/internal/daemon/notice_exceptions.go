@@ -131,30 +131,50 @@ func (r *outbox) rehold(ctx context.Context, data []byte) error {
 	if !ok {
 		return nil
 	}
-	if roleholder.IsNoHolderReason(exception.Reason) {
+	refused, err := refusedPublish(exception.Reason)
+	if err != nil {
+		return fmt.Errorf("%w: exception %s names reason %q", errNoticeException, envelope.EventID, exception.Reason)
+	}
+	if refused {
 		// The listener refused this publish itself, before forwarding anything, because no live
 		// session held the role, and answered it 404 (notify.ErrNoHolder). The executor that sent it
 		// still holds the row and retries it on its own backoff (errNoticeWaits), or finishes it once
 		// the architect will not hold its role again, so a copy queued here would send the notice
-		// twice. These reasons are never a re-hold, and they are not malformed: a positive match on
-		// the shared list the listener and notify.Publish both read (roleholder), so the switch below
-		// still refuses every other reason. It logs at debug alone: at hundreds of unheld roles,
-		// anything louder is a line every few hundred milliseconds about a state the executor
-		// already handles.
+		// twice. It logs at debug alone: at hundreds of unheld roles, anything louder is a line
+		// every few hundred milliseconds about a state the executor already handles.
 		r.log.Debug("outbox notice not re-held: the listener refused its publish, and its row retries on its own",
 			"issue", reported.issue, "kind", reported.notice.Kind, "topic", exception.OriginalTopic,
 			"key", exception.DedupeKey, "reason", exception.Reason)
 		return nil
 	}
-	switch exception.Reason {
-	case "delivery_failed", "no_holder", "receipt_timeout":
-	default:
-		return fmt.Errorf("%w: exception %s names reason %q", errNoticeException, envelope.EventID, exception.Reason)
-	}
 	if err := r.reholdNotice(ctx, reported, exception.Reason, exception.RecipientSession); err != nil {
 		return fmt.Errorf("re-hold the notice of exception %s: %w", envelope.EventID, err)
 	}
 	return nil
+}
+
+// refusedPublish reads what a listener's report of one role-lane publish says happened to it:
+// refused is a publish the listener turned away before forwarding anything, because no live
+// session held the role (roleholder.IsNoHolderReason, the shared list the listener and
+// notify.Publish both read), which queues no copy; false with no error is a forward the listener
+// took and could not complete, which is re-held; and any other reason refuses the report as
+// malformed, since a reason this daemon does not know says nothing about what became of the
+// publish.
+//
+// It is a function of the reason alone so that the three answers can be read without a listener,
+// a database or a notice to report on. rehold reads it only after exceptionNotice has said the
+// report is about a notice of this daemon's own, which is why the malformed refusal is returned
+// rather than raised here: a report about another daemon's publish changes nothing whatever
+// reason it names.
+func refusedPublish(reason string) (bool, error) {
+	if roleholder.IsNoHolderReason(reason) {
+		return true, nil
+	}
+	switch reason {
+	case "delivery_failed", "no_holder", "receipt_timeout":
+		return false, nil
+	}
+	return false, fmt.Errorf("%w: reason %q", errNoticeException, reason)
 }
 
 // noticeAnswered is what the listener's answer to one notice publish decides for its row:
@@ -287,21 +307,26 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 	issue, notice := reported.issue, reported.notice
 	topic := notify.RoleTopicPrefix + string(reported.architect)
 	held := r.supervisedClaim(reported.architect)
+	// The tree is read only for an architect that holds its role no longer, which is the one case
+	// its lingering can decide anything (stoppedWithTree), so a re-hold to a running architect
+	// costs no read.
+	root, lingers := "", false
 	if !holdsRole(held) {
-		root, lingers, err := r.issueTree(ctx, issue)
-		if err != nil {
+		var err error
+		if root, lingers, err = r.issueTree(ctx, issue); err != nil {
 			return err
 		}
-		if stoppedWithTree(lingers, held) {
-			if err := r.parkDecision(ctx, issue, root, notice, key, reported.row); err != nil {
-				return err
-			}
-			r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",
-				"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "state", held.State, "stopping", held.Stopping)
-			return nil
-		}
 	}
-	if notice.Resends >= len(noticeReholdDelays) {
+	verdict, due := reholdTarget(held, lingers, notice.Resends, recipient, r.now())
+	switch verdict {
+	case reholdParked:
+		if err := r.parkDecision(ctx, issue, root, notice, key, reported.row); err != nil {
+			return err
+		}
+		r.log.Info("outbox notice not re-held: its architect stopped with its finished tree",
+			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "state", held.State, "stopping", held.Stopping)
+		return nil
+	case reholdSpent:
 		r.log.Warn("outbox notice not re-held again: it was queued again the most times a notice is",
 			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason, "resends", notice.Resends)
 		// No copy carries a catch-up's claims on now, so what it named is handed over rather than
@@ -313,10 +338,6 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			return r.spentKept(ctx, issue, reported.claims, key)
 		}
 		return nil
-	}
-	due := r.now().Add(noticeReholdDelays[notice.Resends])
-	if copyDueAtOnce(held.Claim, notice.Resends, recipient) {
-		due = r.now()
 	}
 	mark := fmt.Sprintf("%s#%d", key, notice.Resends)
 	notice.Resends++
@@ -381,6 +402,44 @@ func (r *outbox) reholdNotice(ctx context.Context, reported reportedNotice, reas
 			"issue", issue, "kind", notice.Kind, "topic", topic, "key", key, "reason", reason)
 	}
 	return nil
+}
+
+// reholdVerdict is what becomes of a notice whose publish its architect's session did not take.
+type reholdVerdict int
+
+const (
+	// reholdCopy queues one more copy of the notice, due at the moment reholdTarget gives.
+	reholdCopy reholdVerdict = iota
+	// reholdParked writes nothing to the architect: it stopped with its finished tree, so a
+	// person's decision the notice reports goes to the controller instead (parkDecision).
+	reholdParked
+	// reholdSpent writes nothing either: the notice has been queued again the most times a notice
+	// is, and the report of its last copy is logged and queues nothing.
+	reholdSpent
+)
+
+// reholdTarget decides what a failed forward leaves its notice: held is the architect's claim as
+// this daemon supervises it, lingers whether the issue's tree lingers or has closed (read only
+// when the claim holds its role no longer, and false otherwise, which is the one state in which
+// it decides anything), resends the copies already sent, recipient the session the report names
+// ("" when it names none) and now the clock the copy is dated from. The moment it answers is the
+// copy's, and is meaningless for the other two verdicts.
+//
+// It is separate from reholdNotice because the method's remaining work is all writing — the park,
+// the hand-over of a spent catch-up's claims, the copy's own transaction — while this is the
+// whole of the judgement, and a judgement read from a claim, a flag, a count and a clock needs
+// neither a database nor a supervisor to state it.
+func reholdTarget(held supervise.ClaimView, lingers bool, resends int, recipient string, now time.Time) (reholdVerdict, time.Time) {
+	if stoppedWithTree(lingers, held) {
+		return reholdParked, time.Time{}
+	}
+	if resends >= len(noticeReholdDelays) {
+		return reholdSpent, time.Time{}
+	}
+	if copyDueAtOnce(held.Claim, resends, recipient) {
+		return reholdCopy, now
+	}
+	return reholdCopy, now.Add(noticeReholdDelays[resends])
 }
 
 // issueTree is the root of the tree of issue, as recorded, and whether that tree lingers or has

@@ -146,55 +146,78 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 
 // GitHub answers 401 for a review App token it has not yet accepted (a token minted moments
 // before) as for one whose installation was removed since. Neither says anything about the
-// author, so a 401 decides nothing and keeps nothing, and GitHub's rate limit is not held for it.
-// A token older than the acceptance window is dropped and the delivery retried with a fresh mint,
-// which either reads the permission or, for a removed App, is refused as not installed; a younger
-// one is kept and tried again once it is that old.
+// author, so a 401 decides nothing and keeps nothing, and GitHub's rate limit is not held for it:
+// the token is dropped and the delivery retried with a fresh mint, which either reads the
+// permission or, for a removed App, is refused as not installed. Which age of token is dropped
+// and which is kept and tried again as it is, with the wait each takes, is
+// TestWhatA401ForTheReviewAppsTokenLeavesTheDelivery's.
 func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
 	t.Parallel()
-	tablePool, reset := tableDatabase(t)
+	pool := reviewPermissionPool(t)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls == 1 {
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return
+		}
+		fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer"}}`)
+	}))
+	defer server.Close()
+	w := reviewPermissionRuntime(pool, server.URL, quietLogger())
+	tokens := &forgettingTokens{minted: time.Now().Add(-time.Hour)}
+	w.tokens, w.forget = tokens, tokens
+	review := intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: "a-writer"}
+	_, err := w.reviewerCanWrite(context.Background(), review)
+	var later *intake.RetryLater
+	if !errors.As(err, &later) || later.After != tokenRefusedWait {
+		t.Fatalf("a 401 = %v, want a retry after %s", err, tokenRefusedWait)
+	}
+	if tokens.forgot != "review acme" {
+		t.Fatalf("forgot %q, want the review App's token for acme", tokens.forgot)
+	}
+	if left := w.rateLimitLeft(); left > 0 {
+		t.Fatalf("a 401 held GitHub's rate limit for %s, want no hold", left)
+	}
+	if canWrite, err := w.reviewerCanWrite(context.Background(), review); err != nil || !canWrite {
+		t.Fatalf("the retried review = %v, %v; want the writer's write access read again", canWrite, err)
+	}
+	if calls != 2 {
+		t.Fatalf("GitHub was asked %d times, want twice: the 401 kept no answer", calls)
+	}
+}
+
+// What a 401 for the review App's token leaves the delivery: a token younger than
+// tokenAcceptWindow is one GitHub has not accepted yet, so it is kept and tried again the moment
+// it is that old; an older one GitHub means to refuse, so it is dropped and minted afresh after
+// tokenRefusedWait. Either way the delivery is retried rather than decided, and the refusal
+// GitHub gave is carried in what the retry says.
+func TestWhatA401ForTheReviewAppsTokenLeavesTheDelivery(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC)
+	cause := errors.New("GET /repos/acme/widgets/collaborators/a-writer/permission: status 401: Bad credentials")
 	for _, tc := range []struct {
-		name     string
-		minted   time.Duration
-		wantWait time.Duration
-		forgot   string
+		name       string
+		age        time.Duration
+		wait       time.Duration
+		mintAgain  bool
+		saysMinted bool
 	}{
-		{"a token older than the window is minted again", -time.Hour, tokenRefusedWait, "review acme"},
-		{"a token moments old is tried again as it is", -time.Second, tokenAcceptWindow - time.Second, ""},
+		{name: "a token minted moments ago", age: time.Second, wait: tokenAcceptWindow - time.Second, saysMinted: true},
+		{name: "a token just inside the window", age: tokenAcceptWindow - time.Millisecond, wait: time.Millisecond, saysMinted: true},
+		{name: "a token at the window", age: tokenAcceptWindow, wait: tokenRefusedWait, mintAgain: true},
+		{name: "a token an hour old", age: time.Hour, wait: tokenRefusedWait, mintAgain: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
-			pool := reviewPermissionPoolOn(t, tablePool)
-			calls := 0
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls++
-				if calls == 1 {
-					http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-					return
-				}
-				fmt.Fprint(w, `{"permission":"write","user":{"login":"a-writer"}}`)
-			}))
-			defer server.Close()
-			w := reviewPermissionRuntime(pool, server.URL, quietLogger())
-			tokens := &forgettingTokens{minted: time.Now().Add(tc.minted)}
-			w.tokens, w.forget = tokens, tokens
-			review := intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: "a-writer"}
-			_, err := w.reviewerCanWrite(context.Background(), review)
-			var later *intake.RetryLater
-			if !errors.As(err, &later) || later.After > tc.wantWait || later.After < tc.wantWait-time.Second {
-				t.Fatalf("a 401 = %v, want a retry after about %s", err, tc.wantWait)
+			retry, mintAgain := tokenRefusedRetry(now.Add(-tc.age), now, cause)
+			if retry.After != tc.wait || mintAgain != tc.mintAgain {
+				t.Fatalf("tokenRefusedRetry at %s old = retry after %s, mint again %t; want %s and %t", tc.age, retry.After, mintAgain, tc.wait, tc.mintAgain)
 			}
-			if tokens.forgot != tc.forgot {
-				t.Fatalf("forgot %q, want %q", tokens.forgot, tc.forgot)
+			if !errors.Is(retry, cause) {
+				t.Fatalf("the retry says %v, want it to carry GitHub's own refusal", retry)
 			}
-			if left := w.rateLimitLeft(); left > 0 {
-				t.Fatalf("a 401 held GitHub's rate limit for %s, want no hold", left)
-			}
-			if canWrite, err := w.reviewerCanWrite(context.Background(), review); err != nil || !canWrite {
-				t.Fatalf("the retried review = %v, %v; want the writer's write access read again", canWrite, err)
-			}
-			if calls != 2 {
-				t.Fatalf("GitHub was asked %d times, want twice: the 401 kept no answer", calls)
+			if strings.Contains(retry.Error(), "has not yet accepted") != tc.saysMinted {
+				t.Fatalf("the retry says %q, want it to name the token's age = %t", retry, tc.saysMinted)
 			}
 		})
 	}
@@ -413,13 +436,7 @@ func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRol
 // request.
 func reviewPermissionPool(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	return reviewPermissionPoolOn(t, isolatedOutboxPool(t))
-}
-
-// reviewPermissionPoolOn is reviewPermissionPool on a database the caller already holds, for a
-// table-driven test whose rows share one clone and empty it between them (tableDatabase).
-func reviewPermissionPoolOn(t *testing.T, pool *pgxpool.Pool) *pgxpool.Pool {
-	t.Helper()
+	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

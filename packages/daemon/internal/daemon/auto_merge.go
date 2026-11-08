@@ -169,15 +169,7 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 // writes nothing then, and the notice rolls back with it.
 func (r *outbox) rememberWait(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge, arm bool, cause error) error {
 	now := r.now().UTC()
-	// A row a daemon before record.ReadyMerge.Queued enqueued carries no queue time: its created_at
-	// is what its wait was measured from then, and reading the zero time as an infinite wait would
-	// warn on the row's first run after the upgrade.
-	queued := payload.Queued
-	if queued.IsZero() {
-		queued = row.CreatedAt
-	}
-	waited := now.Sub(queued)
-	warn := !payload.Warned && waited > mergeWaitWarn && waitingOnGitHub(cause)
+	waited, warn := readyMergeStale(payload, row.CreatedAt, now, cause)
 	if !arm && !warn {
 		return nil
 	}
@@ -209,6 +201,29 @@ func (r *outbox) rememberWait(ctx context.Context, row record.OutboxRow, payload
 			"number", payload.Number, "head", payload.Head, "waited", waited.Round(time.Minute), "error", cause)
 	}
 	return nil
+}
+
+// readyMergeStale is how long a READY merge row has waited at now and whether that wait has gone
+// on long enough to tell its architect once: longer than mergeWaitWarn, with nobody told yet
+// (record.ReadyMerge.Warned), and with a cause that is GitHub not having completed the merge
+// (waitingOnGitHub) rather than GitHub and the record disagreeing, which finishRefused tells
+// instead. The wait is measured from the moment the row was queued; a row a daemon before
+// record.ReadyMerge.Queued enqueued carries none, and created is what its wait was measured from
+// then, since reading the zero time as an infinite wait would warn on the row's first run after
+// the upgrade.
+//
+// It is separate from rememberWait because the method's work is the one transaction that records
+// the arm and the telling together with the notice, while whether a wait has stood too long is a
+// reading of the payload, the clock and GitHub's last answer alone. The bound that ends such a
+// row rather than warning about it is GitHub's own clock, decided in ghautomerge
+// (Lagging.Stalled) and read here through permanentRefusal, which passes it now.
+func readyMergeStale(payload record.ReadyMerge, created, now time.Time, cause error) (time.Duration, bool) {
+	queued := payload.Queued
+	if queued.IsZero() {
+		queued = created
+	}
+	waited := now.Sub(queued)
+	return waited, !payload.Warned && waited > mergeWaitWarn && waitingOnGitHub(cause)
 }
 
 // waitingOnGitHub says whether cause is GitHub not having completed the merge it was asked for —

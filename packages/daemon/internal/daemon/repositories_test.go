@@ -729,6 +729,84 @@ func TestTheMappingsViewCarriesTheRepositoryCaches(t *testing.T) {
 	}
 }
 
+// What the settings page shows, composed from the four readings the mapping holds and the
+// runtime's caches: the owners minted for, each mapped repository in the mapping's own spelling
+// with its cache on it, each repository refused with why, each served repository Dispatch's own
+// GitHub App is missing on, and the caches of repositories the mapping no longer names, apart.
+func TestWhatTheSettingsViewShows(t *testing.T) {
+	t.Parallel()
+	fetched := time.Date(2026, 10, 16, 19, 20, 30, 0, time.UTC)
+	cache := sandbox.CacheStatus{Repo: ghrepo.MustParse("acme/widgets"), Sandbox: "legion-legion-cache-acme-widgets-d782c874", State: "ready", Ready: true,
+		Health: &repocache.Health{Ready: true, Repo: "acme/widgets", Head: "34a7ac80", LastFetchAt: fetched}}
+	retired := sandbox.CacheStatus{Repo: ghrepo.MustParse("acme/legacy"), Sandbox: "legion-legion-cache-acme-legacy-0a1b2c3d", State: "failing"}
+	got := settingsView(
+		[]string{"acme", "zeta"},
+		[]mappedRepository{{Repo: ghrepo.MustParse("Acme/Widgets"), Default: true}, {Repo: ghrepo.MustParse("zeta/tools")}},
+		[]refusedRepository{{Repo: "orbit/gadgets", Reason: "the review App is not installed on orbit/gadgets"}},
+		[]webhookAppGap{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools"}},
+		[]sandbox.CacheStatus{retired, cache},
+	)
+	want := api.RepositoriesView{
+		Owners: []string{"acme", "zeta"},
+		Mapped: []api.MappedRepositoryView{
+			{Repo: "Acme/Widgets", Default: true, Cache: &api.CacheView{Repo: "acme/widgets", Sandbox: cache.Sandbox, State: "ready", Ready: true,
+				Head: "34a7ac80", LastFetchAt: fetched}},
+			{Repo: "zeta/tools"},
+		},
+		Refused:           []api.RefusedRepositoryView{{Repo: "orbit/gadgets", Reason: "the review App is not installed on orbit/gadgets"}},
+		WithoutWebhookApp: []api.WebhookAppGapView{{Repo: "zeta/tools", Reason: "Dispatch's GitHub App is not installed on zeta/tools"}},
+		Caches:            []api.CacheView{{Repo: "acme/legacy", Sandbox: retired.Sandbox, State: "failing"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("settingsView = %+v\nwant %+v", got, want)
+	}
+}
+
+// What GitHub intake hears: every served repository, every repository a record names, and the
+// other name of every configured pair one of those two names, once each and sorted without
+// case. The spelling GitHub itself gave wins over any other — a served repository's over a
+// record's, and either over the pair's, which NATS would match against no published subject —
+// and a pair whose sides are both heard already adds nothing, as does one neither side names.
+func TestWhatGitHubIntakeHears(t *testing.T) {
+	t.Parallel()
+	renames := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"), ghrepo.MustRename("orbit/old", "orbit/new"))
+	for _, tc := range []struct {
+		name     string
+		served   []ghrepo.Repository
+		recorded []record.Issue
+		want     []string
+	}{
+		{name: "nothing served and nothing recorded"},
+		{name: "a served repository and a record of its own",
+			served:   []ghrepo.Repository{ghrepo.MustParse("Acme/Widgets")},
+			recorded: []record.Issue{{Key: "LEGION-1", GitHubRepo: "acme/widgets"}},
+			want:     []string{"Acme/Widgets"}},
+		{name: "a record of a repository the mapping no longer names",
+			served:   []ghrepo.Repository{ghrepo.MustParse("acme/widgets")},
+			recorded: []record.Issue{{Key: "LEGION-1", GitHubRepo: "orbit/gadgets"}},
+			want:     []string{"acme/widgets", "orbit/gadgets"}},
+		{name: "a served repository a pair names",
+			served: []ghrepo.Repository{ghrepo.MustParse("cybermonklabs/legion")},
+			want:   []string{"cybermonklabs/legion", "sjawhar/legion"}},
+		{name: "a record on the name a pair moved away from",
+			recorded: []record.Issue{{Key: "LEGION-1", GitHubRepo: "sjawhar/legion"}},
+			want:     []string{"cybermonklabs/legion", "sjawhar/legion"}},
+		{name: "a pair whose both sides are served in GitHub's own spelling",
+			served: []ghrepo.Repository{ghrepo.MustParse("Orbit/New"), ghrepo.MustParse("Orbit/Old")},
+			want:   []string{"Orbit/New", "Orbit/Old"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			heard, err := heardRepositorySet(tc.served, tc.recorded, renames)
+			if err != nil {
+				t.Fatalf("heardRepositorySet: %v", err)
+			}
+			if got := repositoryNames(heard); !slices.Equal(got, tc.want) {
+				t.Fatalf("heard %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // An issue the workflow does not record, such as an operator's claim, works the project's default
 // repository, as Dispatch resolves an issue that names none, at its default branch as GitHub names
 // it: a pod provisions its workspace from it, and the claim's commit identity is minted for its

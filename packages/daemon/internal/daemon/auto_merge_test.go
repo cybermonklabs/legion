@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghautomerge"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -353,6 +355,51 @@ func TestAWaitingREADYMergeWarnsOnlyWhenItWaitsOnSomeone(t *testing.T) {
 			}
 			if len(levels) != 1 || levels[0] != level {
 				t.Fatalf("the waiting row logged at %v, want one line at %s", levels, level)
+			}
+		})
+	}
+}
+
+// How long a READY merge has waited and whether the architect is told of it once: the wait runs
+// from the moment the row was queued, or from the row's own creation for a row a daemon before
+// record.ReadyMerge.Queued enqueued, which carries none and whose zero time would otherwise read
+// as an infinite wait. The architect is told only past mergeWaitWarn, only once
+// (record.ReadyMerge.Warned), and only where GitHub has yet to complete the merge Legion asked
+// for: a disagreement between GitHub and the record is a wait too, but its one telling is
+// finishRefused's, and the daemon's own trouble is no wait of GitHub's at all.
+func TestWhenAWaitingREADYMergeTellsItsArchitect(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC)
+	queued := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now.Add(-2 * mergeWaitWarn)}
+	fresh := record.ReadyMerge{Number: 42, Head: "ready-head", Queued: now.Add(-time.Minute)}
+	for _, tc := range []struct {
+		name    string
+		payload record.ReadyMerge
+		created time.Time
+		cause   error
+		waited  time.Duration
+		warn    bool
+	}{
+		{name: "a long wait on GitHub's merge", payload: queued, created: now.Add(-3 * mergeWaitWarn),
+			cause: &ghautomerge.Armed{}, waited: 2 * mergeWaitWarn, warn: true},
+		{name: "a long wait on a pull request GitHub does not report mergeable", payload: queued, created: now,
+			cause: &ghautomerge.Unmergeable{}, waited: 2 * mergeWaitWarn, warn: true},
+		{name: "a long wait on the queue's own merge", payload: queued, created: now,
+			cause: &ghautomerge.Merging{}, waited: 2 * mergeWaitWarn, warn: true},
+		{name: "a short wait", payload: fresh, created: now, cause: &ghautomerge.Armed{}, waited: time.Minute},
+		{name: "an architect told already", payload: record.ReadyMerge{Queued: queued.Queued, Warned: true}, created: now,
+			cause: &ghautomerge.Armed{}, waited: 2 * mergeWaitWarn},
+		{name: "a disagreement with the record", payload: queued, created: now,
+			cause: &ghautomerge.Lagging{}, waited: 2 * mergeWaitWarn},
+		{name: "the daemon's own trouble", payload: queued, created: now,
+			cause: errors.New("read the record of LEGION-208: the pool is closed"), waited: 2 * mergeWaitWarn},
+		{name: "a row queued before the queue time was recorded", payload: record.ReadyMerge{Number: 42, Head: "ready-head"},
+			created: now.Add(-2 * mergeWaitWarn), cause: &ghautomerge.Armed{}, waited: 2 * mergeWaitWarn, warn: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			waited, warn := readyMergeStale(tc.payload, tc.created, now, tc.cause)
+			if waited != tc.waited || warn != tc.warn {
+				t.Fatalf("readyMergeStale = %s waited, warn %t; want %s and %t", waited, warn, tc.waited, tc.warn)
 			}
 		})
 	}

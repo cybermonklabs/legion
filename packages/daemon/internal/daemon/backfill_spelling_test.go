@@ -118,6 +118,54 @@ func TestTheBackfillRefusesTwoClonesOfOneRepository(t *testing.T) {
 	}
 }
 
+// Which spelling a record takes for the repository Dispatch resolves it to, and the two
+// refusals that leave it none: a shared clone that spells the repository gives its spelling, so
+// the issue keeps working in the workspace that spelling named; with no clone the record takes
+// GitHub's own name; two clones that spell one repository refuse, naming both; and a clone whose
+// name and GitHub's are two repositories rather than one refuses, naming the fix. A rename the
+// deployment configures makes the two names one repository, and refuses nothing.
+func TestWhichSpellingTheBackfillKeeps(t *testing.T) {
+	t.Parallel()
+	clone := func(repo string) workspace.Workspace {
+		return workspace.Workspace{Clone: "/state/clones/" + repo, Repo: ghrepo.MustParse(repo)}
+	}
+	pair := ghrepo.MustRenames(ghrepo.MustRename("sjawhar/legion", "cybermonklabs/legion"))
+	for _, tc := range []struct {
+		name             string
+		resolved, github string
+		clones           []workspace.Workspace
+		renames          ghrepo.Renames
+		want, refusal    string
+	}{
+		{name: "a clone that spells it", resolved: "acme/widgets", github: "Acme/Widgets",
+			clones: []workspace.Workspace{clone("acme/widgets")}, want: "acme/widgets"},
+		{name: "no clone at all", resolved: "acme/widgets", github: "Acme/Widgets", want: "Acme/Widgets"},
+		{name: "a clone of another repository", resolved: "acme/widgets", github: "Acme/Widgets",
+			clones: []workspace.Workspace{clone("zeta/tools")}, want: "Acme/Widgets"},
+		{name: "two clones that spell it", resolved: "acme/widgets", github: "Acme/Widgets",
+			clones:  []workspace.Workspace{clone("acme/widgets"), clone("Acme/Widgets")},
+			refusal: "fill the repository of LEGION-301: two shared clones spell acme/widgets (/state/clones/acme/widgets, /state/clones/Acme/Widgets); remove the one no issue works in and restart"},
+		{name: "a clone under the name GitHub renamed away from", resolved: "acme/old", github: "acme/new",
+			clones:  []workspace.Workspace{clone("acme/old")},
+			refusal: "fill the repository of LEGION-301: GitHub renamed acme/old to acme/new, and the shared clone /state/clones/acme/old still has the old name: map acme/new in Dispatch (Settings → Repositories → Projects), or remove that clone if no issue works in it, and restart"},
+		{name: "a rename the deployment configures", resolved: "sjawhar/legion", github: "cybermonklabs/legion",
+			clones: []workspace.Workspace{clone("sjawhar/legion")}, renames: pair, want: "sjawhar/legion"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			spelling, err := twoClonesRefusal("LEGION-301", ghrepo.MustParse(tc.resolved), ghrepo.MustParse(tc.github), tc.clones, tc.renames)
+			if tc.refusal != "" {
+				if err == nil || err.Error() != tc.refusal {
+					t.Fatalf("twoClonesRefusal = %v, want %q", err, tc.refusal)
+				}
+				return
+			}
+			if err != nil || spelling != tc.want {
+				t.Fatalf("twoClonesRefusal = %q, %v; want %q", spelling, err, tc.want)
+			}
+		})
+	}
+}
+
 // A record written before the record carried its repository may already have a pull request,
 // which names the repository the issue worked in. The fill takes Dispatch's resolution only when
 // that pull request is on it, in any case: one on another repository (the issue's own repository

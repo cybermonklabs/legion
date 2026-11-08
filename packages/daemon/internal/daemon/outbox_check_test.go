@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -326,50 +327,28 @@ func TestCheckLookAndCheckBoundRowsApplyTheirFacts(t *testing.T) {
 	}
 }
 
-// A check_look row of no open check — none recorded, or one closed since — and one of a check a
-// later merge replaced (its OpenedAt another than the issue's check's) each finish without acting:
-// the look they would end is not the issue's check's.
-func TestACheckLookRowOfNoCheckOrAReplacedOneAppliesNothing(t *testing.T) {
+// A check_look row whose check is not the issue's open one finishes without acting: the look it
+// would end is not that check's. Which readings leave a row nothing to end — no check recorded,
+// one closed since, one a later merge replaced — is TestWhyACheckRowFindsNoCheckToActOn's; that
+// such a row applies no fact is here, on the replaced check, the one reading a row can meet with
+// an open check in front of it.
+func TestACheckLookRowOfAReplacedCheckAppliesNothing(t *testing.T) {
 	t.Parallel()
-	pool, reset := tableDatabase(t)
-	for _, tc := range []struct {
-		name     string
-		recorded bool
-		closed   bool
-		replaced bool
-	}{
-		{name: "no check"},
-		{name: "a closed check", recorded: true, closed: true},
-		{name: "a replaced check", recorded: true, replaced: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			reset(t)
-			records := record.NewStore()
-			root := checkRoot()
-			putOutboxIssue(t, pool, records, root)
-			check := openCheck(root, "a1b2c3d4")
-			if tc.closed {
-				closed := time.Now().UTC().Truncate(time.Microsecond)
-				check.LookOpen, check.ClosedAt, check.Outcome = false, &closed, record.CheckRecorded
-			}
-			if tc.recorded {
-				putProductionCheck(t, pool, records, check)
-			}
-			named := check.OpenedAt
-			if tc.replaced {
-				named = named.Add(-24 * time.Hour)
-			}
-			facts := &outboxFactHandler{}
-			runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
-			row := mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: named}, time.Now())
-			row.ID = 61
-			if err := runner.execute(context.Background(), row); err != nil {
-				t.Fatalf("check_look row = %v, want finished without acting", err)
-			}
-			if got := facts.facts(); len(got) != 0 {
-				t.Fatalf("facts applied = %+v, want none", got)
-			}
-		})
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	root := checkRoot()
+	putOutboxIssue(t, pool, records, root)
+	check := openCheck(root, "a1b2c3d4")
+	putProductionCheck(t, pool, records, check)
+	facts := &outboxFactHandler{}
+	runner := &outbox{pool: pool, dispatchProject: "LEGION", records: records, handlers: []intake.Handler{facts}, log: quietLogger(), now: time.Now}
+	row := mustOutboxRow(t, root.Key, record.CheckLook{Look: 1, OpenedAt: check.OpenedAt.Add(-24 * time.Hour)}, time.Now())
+	row.ID = 61
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("check_look row = %v, want finished without acting", err)
+	}
+	if got := facts.facts(); len(got) != 0 {
+		t.Fatalf("facts applied = %+v, want none", got)
 	}
 }
 
@@ -452,6 +431,68 @@ func TestSettleRunsARowAgainAtTheMomentItsWaitNames(t *testing.T) {
 			}
 			if attempts != 1 || !nextAt.Equal(tc.want) || !strings.Contains(lastError, "production check is open") {
 				t.Fatalf("retry = attempts=%d next_at=%s error=%q, want one attempt due at %s", attempts, nextAt, lastError, tc.want)
+			}
+		})
+	}
+}
+
+// The moment a failure names for its row to run again: a wait that knows when it ends
+// (wait.Until) names its own, in UTC, while that moment is still ahead; one already past names
+// nothing, so the row takes its backoff; and a failure that is no such wait names nothing
+// either, however long it has waited.
+func TestTheMomentAFailureNamesForItsRowToRunAgain(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 8, 9, 30, 0, 0, time.UTC)
+	bound := now.Add(3 * time.Hour).In(time.FixedZone("CET", 3600))
+	for _, tc := range []struct {
+		name  string
+		cause error
+		want  time.Time
+	}{
+		{name: "a moment ahead", cause: wait.Until(now.Add(3*time.Hour), "member LEGION-209's production check is open"), want: now.Add(3 * time.Hour)},
+		{name: "a moment ahead in another zone", cause: wait.Until(bound, "member LEGION-209's production check is open"), want: now.Add(3 * time.Hour)},
+		{name: "a moment just past", cause: wait.Until(now.Add(-time.Minute), "member LEGION-209's production check is open")},
+		{name: "the moment now", cause: wait.Until(now, "member LEGION-209's production check is open")},
+		{name: "a wait that names no moment", cause: wait.Errorf("the architect's pod is coming back")},
+		{name: "an ordinary failure", cause: errors.New("Dispatch is unreachable")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at, waits := answersTheWait(tc.cause, now)
+			if waits != !tc.want.IsZero() {
+				t.Fatalf("answersTheWait(%v) names a moment = %t, want %t", tc.cause, waits, !tc.want.IsZero())
+			}
+			if waits && (!at.Equal(tc.want) || at.Location() != time.UTC) {
+				t.Fatalf("the row runs again at %s, want %s in UTC", at, tc.want)
+			}
+		})
+	}
+}
+
+// Why a row of a production check finds no check to act on, which both the look's bound row and
+// the check start read first: no check is recorded for the issue, the check closed since, or the
+// one the row names was replaced by a later merge's. A check open at the moment the row names is
+// the issue's own, and the row goes on.
+func TestWhyACheckRowFindsNoCheckToActOn(t *testing.T) {
+	t.Parallel()
+	check := openCheck(checkRoot(), "a1b2c3d4")
+	closed := check
+	ended := check.OpenedAt.Add(time.Hour)
+	closed.LookOpen, closed.ClosedAt, closed.Outcome = false, &ended, record.CheckRecorded
+	for _, tc := range []struct {
+		name     string
+		check    *record.ProductionCheck
+		openedAt time.Time
+		want     string
+	}{
+		{name: "no check recorded", openedAt: check.OpenedAt, want: "the issue has no production check"},
+		{name: "a check closed since", check: &closed, openedAt: check.OpenedAt, want: "the check closed as " + string(record.CheckRecorded)},
+		{name: "a check a later merge replaced", check: &check, openedAt: check.OpenedAt.Add(-24 * time.Hour),
+			want: "the check it names was replaced by the one opened " + check.OpenedAt.UTC().Format(time.RFC3339)},
+		{name: "the issue's own open check", check: &check, openedAt: check.OpenedAt},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := checkRowStale(tc.check, tc.openedAt); got != tc.want {
+				t.Fatalf("checkRowStale = %q, want %q", got, tc.want)
 			}
 		})
 	}

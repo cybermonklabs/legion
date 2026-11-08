@@ -431,16 +431,37 @@ func (w *workflowRuntime) bindGateRequest(ctx context.Context, root catchUpRoot,
 		if err != nil {
 			return fmt.Errorf("read the approval of %s for %s: %w", gate.ArtifactID, root.issue.Key, err)
 		}
-		if approval.AskID == "" {
+		fact, id, found := gateRequestFact(root.issue, gate.ArtifactID, approval, since)
+		if !found {
 			continue
 		}
-		fact := intake.GateRequestFound{Issue: root.issue.Key, Generation: root.issue.Generation, ArtifactID: gate.ArtifactID,
-			RequestAsk: approval.AskID, WaitsOnAgent: approval.WaitingOn == "agent", Since: since}
-		if err := w.applyCatchUp(ctx, fmt.Sprintf("gate-request:%s:%d:%s:%d", root.issue.Key, root.issue.Generation, approval.AskID, since), fact); err != nil {
+		if err := w.applyCatchUp(ctx, id, fact); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// gateRequestFact is the fact a boot applies for one gate of a root whose document the asks'
+// mirror holds no approval request of, and the id it is applied under, read from Dispatch's
+// approval of that document at since, the issue's sequence read before it. Dispatch showing no
+// open request (an empty AskID) is nothing to apply, and found is false. The request is the
+// person's to answer unless Dispatch shows it waiting on the agent, which is what decides
+// whether the root hands its slot back.
+//
+// The id names the root's generation, the ask and the sequence, so the same request read again
+// at the same sequence is one fact, while a re-admission's read of it is another.
+//
+// It is separate from bindGateRequest because the method's work is the loop and the read of
+// Dispatch, while what one answer means for the root is decided by the answer, the gate's
+// document and the sequence alone.
+func gateRequestFact(issue record.Issue, artifactID string, approval dispatch.Approval, since int64) (intake.GateRequestFound, string, bool) {
+	if approval.AskID == "" {
+		return intake.GateRequestFound{}, "", false
+	}
+	fact := intake.GateRequestFound{Issue: issue.Key, Generation: issue.Generation, ArtifactID: artifactID,
+		RequestAsk: approval.AskID, WaitsOnAgent: approval.WaitingOn == "agent", Since: since}
+	return fact, fmt.Sprintf("gate-request:%s:%d:%s:%d", issue.Key, issue.Generation, approval.AskID, since), true
 }
 
 // catchUpWindow applies every ask event (an ask.edited one when it moved an approval request),

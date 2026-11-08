@@ -136,13 +136,29 @@ func rateLimitRefusal(left time.Duration, what string) *intake.RetryLater {
 // delivery retried after tokenRefusedWait with a fresh mint, which either reads it or, for a
 // removed App, is refused as not installed (appauth.ErrNotInstalled).
 func (w *workflowRuntime) tokenRefused(repository ghrepo.Repository, lease appauth.Lease, err error) error {
-	if age := time.Since(lease.Minted); age < tokenAcceptWindow {
-		return &intake.RetryLater{After: tokenAcceptWindow - age,
-			Err: fmt.Errorf("GitHub has not yet accepted the review App's token minted %s ago, tried again once it is %s old: %w", age.Round(time.Millisecond), tokenAcceptWindow, err)}
+	retry, mintAgain := tokenRefusedRetry(lease.Minted, time.Now(), err)
+	if mintAgain {
+		w.forget.Forget(appauth.Review, repository.Owner())
 	}
-	w.forget.Forget(appauth.Review, repository.Owner())
+	return retry
+}
+
+// tokenRefusedRetry is what a 401 for a review App token minted at minted leaves the delivery at
+// now: the wait before it is tried again, and whether the token is dropped and minted afresh. A
+// token younger than tokenAcceptWindow is one GitHub has not accepted yet, so it is kept and
+// tried again once it is that old, as Octokit's auth-app does; an older one GitHub means to
+// refuse, so it is dropped and the delivery retried after tokenRefusedWait with a fresh mint.
+//
+// It takes the mint's moment and the clock rather than the lease and time.Now so that both
+// answers can be read at any age of token, which is the whole of what this decides; the drop
+// itself stays with tokenRefused, the one caller that holds the forgetter.
+func tokenRefusedRetry(minted, now time.Time, cause error) (*intake.RetryLater, bool) {
+	if age := now.Sub(minted); age < tokenAcceptWindow {
+		return &intake.RetryLater{After: tokenAcceptWindow - age,
+			Err: fmt.Errorf("GitHub has not yet accepted the review App's token minted %s ago, tried again once it is %s old: %w", age.Round(time.Millisecond), tokenAcceptWindow, cause)}, false
+	}
 	return &intake.RetryLater{After: tokenRefusedWait,
-		Err: fmt.Errorf("GitHub refused the review App's token, which is minted again: %w", err)}
+		Err: fmt.Errorf("GitHub refused the review App's token, which is minted again: %w", cause)}, true
 }
 
 // tokenAcceptWindow is how old an installation token must be before GitHub's refusal of it is

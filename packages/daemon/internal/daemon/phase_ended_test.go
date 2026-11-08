@@ -186,6 +186,34 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 	}
 }
 
+// Which answer to a phase-ended publish finishes its row undelivered: only a role topic no live
+// session holds, since the role's next task from the daemon names its phase anyway and a role
+// that never claims its topic would hold the row for ever. The three answers of the confirmed
+// publish route are failures the next attempt may not meet, so each keeps the row, and so does
+// any other failure.
+func TestWhenAPhaseEndedMessageFinishesUndelivered(t *testing.T) {
+	t.Parallel()
+	const denial = `envoy: the message bus denied the publish under this listener's own permissions`
+	for _, tc := range []struct {
+		name     string
+		answer   error
+		finished bool
+	}{
+		{name: "the publish was taken", answer: nil},
+		{name: "no live session holds the role", answer: fmt.Errorf("publish notice to the tester's topic: %w: no holder", notify.ErrNoHolder), finished: true},
+		{name: "a holder that did not confirm it", answer: fmt.Errorf("publish notice: %w", notify.ErrNotDelivered{Reason: notify.ReasonReceiptTimeout, Holder: "ses_t"})},
+		{name: "a holder that does not advertise the delivery mode", answer: fmt.Errorf("publish notice: %w", notify.ErrRefusedByHolder{Holder: "ses_t"})},
+		{name: "a forward the listener's grant denies", answer: fmt.Errorf("publish notice: %w", notify.ErrPublishDenied{Message: denial})},
+		{name: "the bus being unreachable", answer: errors.New("nats: no servers available for connection")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := phaseEndedMessage(tc.answer); got != tc.finished {
+				t.Fatalf("phaseEndedMessage(%v) = %t, want %t", tc.answer, got, tc.finished)
+			}
+		})
+	}
+}
+
 // redRunner is an outbox runner over an isolated database holding LEGION-208 in from, with the
 // pull request a red is about to settle on and the phase rows of the roles that worked it, wired to
 // the workflow engine as production wires it: a fact applied against the pool queues its rows, and

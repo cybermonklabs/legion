@@ -33,6 +33,14 @@ func (w *workflowRuntime) applyControllerTick(ctx context.Context, at time.Time)
 // the fan-out a waiting set can ask for is bounded on both sides of the choice.
 const blockerReadFanout = 25
 
+// readsAsListing says whether a turn re-reads its blockers by listing the whole project rather
+// than one read each: it does above blockerReadFanout keys, where the single reads would
+// outnumber the one request a listing costs. The bound is read as a function of the count alone
+// because that is all that decides it; what each shape then reads is readObserved's.
+func readsAsListing(keys int) bool {
+	return keys > blockerReadFanout
+}
+
 // observeWaitedOn is what Dispatch says now about the issues this daemon is holding something
 // back for. It is empty on almost every turn — nothing waiting means nothing read from Dispatch
 // at all — and empty is the tick exactly as it has always been.
@@ -114,7 +122,7 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
 // is no error at all: the rest of the turn goes on with what was read, and the row of a key left
 // out keeps the last thing Dispatch said about it.
 func (w *workflowRuntime) readObserved(ctx context.Context, keys []string) []intake.IssueStatus {
-	if len(keys) > blockerReadFanout {
+	if readsAsListing(len(keys)) {
 		summaries, err := w.dispatch.ListIssues(ctx, w.dispatchProject, nil)
 		if err != nil {
 			w.log.Warn("the controller tick's re-read of the project's issues failed", "blockers", len(keys), "error", err)

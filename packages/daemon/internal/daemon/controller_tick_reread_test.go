@@ -177,6 +177,20 @@ func TestThePeriodicTurnListsTheProjectOnceAboveTheSingleReadBound(t *testing.T)
 	})
 }
 
+// The bound between the turn's two shapes of re-read: up to blockerReadFanout keys are read one
+// at a time, and above it the project is listed once instead, so the fan-out a waiting set can
+// ask for is bounded on both sides of the choice. A turn with nothing waiting reads neither.
+func TestWhenTheTurnListsTheProjectRatherThanReadingEachBlocker(t *testing.T) {
+	t.Parallel()
+	for _, keys := range []int{0, 1, blockerReadFanout - 1, blockerReadFanout, blockerReadFanout + 1, 500} {
+		t.Run(fmt.Sprintf("%d blockers", keys), func(t *testing.T) {
+			if got := readsAsListing(keys); got != (keys > blockerReadFanout) {
+				t.Fatalf("readsAsListing(%d) = %t, want %t: the bound is %d", keys, got, keys > blockerReadFanout, blockerReadFanout)
+			}
+		})
+	}
+}
+
 // The turn's re-read carries the claim Dispatch shows on each issue it reads, by a single read
 // and by the listing alike, and the mirror writes it.
 func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
