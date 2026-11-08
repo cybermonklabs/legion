@@ -833,6 +833,10 @@ func TestACompactionThatEndsInATurnUnderAHeldSuspensionSaysTheClaimWasNotGivenBa
 // would hand the claim to that hold rather than back to its agent. The claim is left exactly
 // where the request found it, which here is ready with the operator's hold intact — a
 // ready-time stop the runtime refused, waiting on its retry at the probe interval.
+//
+// It is refused in that state, as every other action refuses a held claim, so the api door
+// answers the hold once for both recoveries rather than writing a second sentence of its own
+// (RefusedError, api's refuseState and refuseHeldSuspension).
 func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
 	h := newHarness(t)
 	suspendedBy(h, SuspendedByDaemon)
@@ -853,8 +857,16 @@ func TestACompactionOfAClaimASuspensionIsHeldOverIsNotTaken(t *testing.T) {
 
 	err := h.m.Compact(h.ctx, testCompactInstructions)
 
-	if !errors.Is(err, ErrCompactNotTaken) {
-		t.Fatalf("a compaction of a claim a suspension is held over answered %v, want ErrCompactNotTaken", err)
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("a compaction of a claim a suspension is held over answered %v, want a *RefusedError", err)
+	}
+	if refused.State != StateReady {
+		t.Fatalf("the refusal names state %s, want %s: the state the hold found the claim in",
+			refused.State, StateReady)
+	}
+	if errors.Is(err, ErrCompactNotTaken) {
+		t.Fatalf("the refusal answers %v, want no ErrCompactNotTaken: a held claim is refused in its state", err)
 	}
 	h.m.Wait()
 	if asked := h.conn.Compactions(); len(asked) != 0 {

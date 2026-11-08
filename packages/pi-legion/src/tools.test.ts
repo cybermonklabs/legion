@@ -175,15 +175,28 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "The answer is empty when the claim came back and nothing else is to be said, and names why nothing restarted the " +
   "phase (phaseNotRestarted) when the claim came back owing no task and the workflow refused that restart: the claim is " +
   "running, and no work was handed to it. " +
-  "The daemon refuses it for a claim in a turn (CLAIM_IN_A_TURN: ask again after the turn ends), for a claim whose " +
-  "launch is in flight (CLAIM_UNSETTLED) and for role controller. " +
+  "The daemon refuses it for a claim in a turn (CLAIM_IN_A_TURN: ask again after the turn " +
+  "ends), for a claim left working over a process the daemon's last report of it found " +
+  "gone (CLAIM_IN_A_TURN as well: no turn is running, so ask again once the relaunch the " +
+  "next report of that process raises has the claim running), for a claim a suspension is " +
+  "held over, in whatever state the hold found it (CLAIM_IN_A_TURN where the claim is " +
+  "working, CLAIM_UNSETTLED where it is not: the hold ends by itself, so ask again after " +
+  "it has), for a claim between states — one queued, one whose launch is in flight, and " +
+  "one left working under a relaunch the wake pacing parked, whose turn comes by itself " +
+  "(CLAIM_UNSETTLED) — and for role controller. " +
   "compact (issue, role) shortens one claim's session instead: the daemon has Oh My Pi write a text summary of the " +
   "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
   "whatever task it owes again. Try compact before fresh_session for a claim that stays stuck. The answer says " +
   "whether the session was compacted and, when it was not, why; the claim is back either way. The daemon refuses " +
-  "it for a claim that is suspended, stopped or failed (CLAIM_NOT_RUNNING: fresh_session reaches that one), for a claim " +
-  "in a turn (CLAIM_IN_A_TURN), for a claim whose launch is in flight (CLAIM_UNSETTLED), for a claim whose role runs on " +
-  "Claude Code (CLAIM_NOT_ON_OMP) and for role controller. " +
+  "it for a claim that is suspended, stopped or failed (CLAIM_NOT_RUNNING: fresh_session " +
+  "reaches that one), for a claim in a turn (CLAIM_IN_A_TURN), for a claim left working " +
+  "over a process the daemon's last report of it found gone (CLAIM_IN_A_TURN: ask again " +
+  "once the relaunch the next report of that process raises has the claim running), for a " +
+  "claim a suspension is held over (CLAIM_IN_A_TURN where the claim is working, " +
+  "CLAIM_UNSETTLED where it is not), for a claim between states — one queued, one whose " +
+  "launch is in flight, and one left working under a relaunch the wake pacing parked " +
+  "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) and " +
+  "for role controller. " +
   "What a later phase needs goes in your handoff; a question for another live role goes to its role topic with envoy_publish.";
 
 /** Every session kind the tool answers for: a root architect, a sub-architect, each phase worker,

@@ -243,14 +243,11 @@ func roleList() string {
 // door cannot name it at all, since `controller` is no role a claim token is built from
 // (claimFreshSession).
 //
-// A claim stored working whose process the runtime's last report found gone is the one claim
-// stored working that is in no turn and has no launch coming for it: the relaunch that was to
-// replace that process did not run, and the claim was left over it (supervise's runWake,
-// relaunchRefused). It is refused as the claim in a turn is, because the fresh session's own
-// suspend would be held for a turn that is not running, and told what does come for it — the
-// relaunch the next report of that process raises (refuseProcessGone). It is read after the
-// parked launch, because a claim whose process died under a park reads as both and the launch
-// is the nearer wait.
+// A claim stored working is in a turn, under a launch the wake pacing parks, or over a process
+// the runtime's last report of it found gone, and one order answers all three at both doors
+// (refuseWorkingClaim). The last of them is the claim no launch is coming for, so the fresh
+// session's own suspend would be held for a turn that is not running
+// (supervise.Claim.ProcessGone, refuseProcessGone).
 func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token) (status int, notRestarted string, ok bool) {
 	c := m.Claim()
 	if c.Role == claim.RoleController {
@@ -265,12 +262,8 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	switch {
 	case view.SuspensionHeld:
 		return 0, "", refuseHeldSuspension(w, token, c.State, freshSessionOp)
-	case c.State == supervise.StateWorking && relaunchWaits(view):
-		return 0, "", refuseParkedRelaunch(w, token, freshSessionOp)
-	case c.State == supervise.StateWorking && view.ProcessGone:
-		return 0, "", refuseProcessGone(w, token, freshSessionOp)
 	case c.State == supervise.StateWorking:
-		return 0, "", refuseInATurn(w, token, freshSessionOp)
+		return 0, "", refuseWorkingClaim(w, token, view, freshSessionOp)
 	case startsAgain(c.State):
 	case agentRunning(c.State):
 		if !s.suspendForFreshSession(w, r, m, token) {
@@ -324,6 +317,25 @@ func refuseInATurn(w http.ResponseWriter, token claim.Token, op controllerOp) bo
 	return false
 }
 
+// refuseWorkingClaim is the refusal of a claim stored working, in the one order both
+// recoveries read such a claim in (refuseState, freshSession). A launch the wake pacing parks
+// is read first, because a claim whose process died under a park reads as that and as a
+// process gone, and the launch is the nearer wait: its turn comes by itself (relaunchWaits).
+// A process the runtime's last report of it found gone is read next, because such a claim is
+// in no turn and nothing will end one (supervise.Claim.ProcessGone). What is left is a turn
+// that is running, whose own end comes. It always reports false, so a caller returns it as
+// its own answer.
+func refuseWorkingClaim(w http.ResponseWriter, token claim.Token, view supervise.ClaimView, op controllerOp) bool {
+	switch {
+	case relaunchWaits(view):
+		return refuseParkedRelaunch(w, token, op)
+	case view.ProcessGone:
+		return refuseProcessGone(w, token, op)
+	default:
+		return refuseInATurn(w, token, op)
+	}
+}
+
 // refuseParkedRelaunch is the refusal of a claim stored working while a launch the daemon's
 // wake pacing holds waits over it (relaunchWaits), which both recoveries give: such a claim is
 // a claim between states with a launch in flight, which is what claimUnsettled says, and the
@@ -341,26 +353,26 @@ func refuseParkedRelaunch(w http.ResponseWriter, token claim.Token, op controlle
 }
 
 // refuseProcessGone is the refusal of a claim stored working over a process the runtime's last
-// report of it found gone, with no launch waiting to replace it (supervise.Claim.ProcessGone),
-// which both recoveries give. It is the claim a relaunch the tree lifecycle refused at its
-// parked turn leaves behind, and the claim a take-back the store would not write leaves at that
-// same turn (supervise's runWake, relaunchRefused): the wake is spent, the dead process is kept,
-// and nothing of the claim is written for either.
+// report of it found gone, with no launch waiting to replace it, which both recoveries give.
+// What leaves a claim there is written once, with the field the refusal turns on
+// (supervise.Claim.ProcessGone).
 //
 // Such a claim is in no turn, whatever its session was doing when the process went, so the
 // refusal of a claim in a turn would send a controller back for an end that never comes — in
 // the one window these recoveries exist for. What does come is the runtime's next report of
-// that process, which raises the relaunch again (supervise's judge, died, relaunchAfterFailure),
-// so the wait the refusal names is that relaunch rather than a turn's end, and the operation
-// names itself as the one that reaches the claim once it is running (controllerOp).
+// that process, and the refusal names both of the things that report brings: the relaunch
+// raised again, and, where that report is the death the claim's budget runs out on, the claim
+// failed instead (supervise's judge, died, chargeDeath, relaunchAfterFailure). A failed claim
+// is one an operator's retry reaches rather than either recovery, so a caller told only of
+// the relaunch would wait for a running claim that never comes back.
 //
-// The code is the one such a claim is refused with today, which is the turn's: it is stored
-// working, as a claim in a turn is, and what differs is the wait (claimInATurn, refuseInATurn).
-// It always reports false, so a caller returns it as its own answer.
+// The code is the turn's: the claim is stored working, as a claim in a turn is, and what
+// differs is the wait (claimInATurn, refuseInATurn). It always reports false, so a caller
+// returns it as its own answer.
 func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp) bool {
 	writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
-		"%s is stored working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of %s is running and waiting for one to end waits for nothing. The daemon raises that relaunch again at the next report of the process, which its runtime sweep makes by itself; ask again once %s is running, which is when %s reaches it",
-		token, token, token, op.name))
+		"%s is stored working over a process the daemon's last report of it found gone: the relaunch that replaces that process has not run, so no turn of %s is running and waiting for one to end waits for nothing. The daemon reads that process again at its runtime sweep, which it makes by itself, and raises the relaunch again — or fails %s, where that report is the death its budget runs out on. Ask again once %s is running, which is when %s reaches it",
+		token, token, token, token, op.name))
 	return false
 }
 

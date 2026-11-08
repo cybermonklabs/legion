@@ -4,11 +4,18 @@ body: |-
   a controller grant, an issue and a role. The claim on that role of that issue leaves the session
   it recorded behind and starts again in a new one, which is the effect
   `legion claims retry --fresh-session` runs for an operator. It reaches every claim of the project
-  that is not in a turn and whose launch is not in flight: one idle between the provider-error
-  ladder's sends, a suspended one, one an operator stopped, a failed one, and a root architect.
-  The daemon refuses a claim in a turn (`CLAIM_IN_A_TURN`), a claim whose launch is in flight
-  (`CLAIM_UNSETTLED`) and the project's own controller, which is no role the request may name
-  (`INVALID_ROLE`).
+  that is in no turn, has no launch and no parked relaunch in flight, has no suspension held over
+  it, and is not left working over a process the daemon's last report of it found gone: one idle
+  between the provider-error ladder's sends, a suspended one, one an operator stopped, a failed
+  one, and a root architect.
+  The daemon refuses a claim in a turn, and one left working over a process the daemon's last
+  report of it found gone, which waits for the relaunch the next report of that process raises
+  (`CLAIM_IN_A_TURN`); a claim between states — one queued, one whose launch is in flight, and one
+  left working under a relaunch the wake pacing parked, whose turn comes by itself
+  (`CLAIM_UNSETTLED`); a claim a suspension is held over, which waits for that hold's end and
+  takes the first of those two codes where the daemon records it working and the second where it
+  does not; and the project's own controller, which is no role the request
+  may name (`INVALID_ROLE`).
   `LegionFreshSessionResponse`, that route's answer, carries the same word for the controller:
   it is empty wherever the claim came back and its start ran, and holds `phaseNotRestarted`
   where the claim came back owing no task and the workflow refused the restart of its phase that

@@ -196,14 +196,28 @@ type Claim struct {
 	// and the store never writes it.
 	Compacting bool
 	// ProcessGone is whether the runtime's last report of the process this claim still records
-	// found it gone (judge): false for a claim whose last report found that process running, for
-	// one the runtime has reported nothing of yet, and for a claim that records no process at
-	// all. A claim is left recording a process the runtime has given up on wherever the launch
-	// that replaces it did not run — a relaunch the tree lifecycle refused at its parked turn,
-	// and a take-back the store would not write (runWake, relaunchRefused) — and the claim
-	// stays stored working over it, which is how a reader tells such a claim from one in a turn
-	// (api's refuseState, freshSession). It is memory only, as Compacting is: Machine.Claim
-	// reports it, and the store never writes it.
+	// found it gone (judge, reportedProcess): false for a claim whose last report found that
+	// process running, for one the runtime has reported nothing of yet, and for a claim that
+	// records no process at all. It is memory only, as Compacting is: Machine.Claim reports it,
+	// and the store never writes it.
+	//
+	// This is the one statement of what it is for, which every other reader of it points to. A
+	// claim stored working is in a turn, or it is one the launch that was to replace the
+	// process it records never started, and this is the one fact that tells the two apart
+	// (api's refuseState, freshSession). Two windows leave such a claim, each of them a verdict
+	// of gone and then a step that wrote nothing of the claim:
+	//
+	//   - the take-back of the turn the dead process was running, which the store would not
+	//     write: after a death (died) and after a displacement (displaced, replaceProcess),
+	//     each of which takes the task back before it relaunches anything;
+	//   - the tree lifecycle's refusal of the relaunch that verdict raised, which keeps the
+	//     claim exactly as it stands (relaunchRefused). One refusal serves every launch, so it
+	//     is met before the wake pacing (relaunchAfterFailure, launchAfter) and at a parked
+	//     relaunch's own turn, where the wake is spent with it (runWake).
+	//
+	// A launch that does run clears it with the process it lets go (launchNow, letGo), and
+	// while one waits its paced turn both doors read that launch first, so a claim whose
+	// process died under a park is answered by the launch rather than by this (relaunchWaits).
 	ProcessGone bool
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
@@ -2022,17 +2036,23 @@ func (m *Machine) letGo() {
 // than in the fence because it answers every verdict the sweep can carry — gone, stale,
 // displaced, uncertain, alive — where each of them is acted on.
 //
-// A verdict this does act on is recorded as what the runtime last reported of the process the
-// claim records (reportedProcess), before it is acted on: the record is the verdict itself, and
-// the claim can be left over that process by a launch that never ran.
+// Every report is recorded as what the runtime last reported of the process the claim records
+// (reportedProcess), the ones this guard drops included: the guard decides what is acted on,
+// not what the daemon last heard of the process. A park a stale address raised is the window
+// that turns on it — that verdict found the process alive, so it cleared the record, and the
+// process can die under the park — and a claim the refusal at the park's own turn leaves
+// stored working over that dead process is told from one in a turn by this record alone
+// (Claim.ProcessGone). Recording it changes nothing while the launch waits, since both doors
+// read that launch first and a launch that runs clears the record with the process it lets go
+// (api's relaunchWaits, launchNow, letGo).
 func (m *Machine) judge(ctx context.Context, observation runtime.Observation, alive func(context.Context) error, again TimerKind, after time.Duration) error {
+	m.reportedProcess(observation.Kind)
 	if m.launchWaits() {
 		m.log.Info("supervise: an observation of the process a waiting launch replaces decides nothing; its turn replaces that process",
 			"incarnation", observation.Locator.Incarnation, "observed", string(observation.Kind),
 			"detail", observation.Detail, "due", m.wake.at)
 		return nil
 	}
-	m.reportedProcess(observation.Kind)
 	switch observation.Kind {
 	case runtime.Alive:
 		if m.claim.UncertainStreak > 0 {
@@ -2064,13 +2084,12 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 	return fmt.Errorf("supervise: an observation of kind %q", observation.Kind)
 }
 
-// reportedProcess records what this report found of the process the claim records
-// (processGone), which is read of a claim the launch that was to replace that process never
-// started: left stored working over a process the runtime has given up on, it is told from a
-// claim in a turn by this and by nothing else (Claim.ProcessGone, api's refuseState and
-// freshSession). It runs for every verdict judge acts on, so one report is never read against a
-// process an older one was about: the fence drops an observation of any other process
-// (Machine.fence), and letGo clears this with the process the claim lets go.
+// reportedProcess records what this report found of the process the claim records, which is
+// the one fact that tells a claim stored working over a process no launch is replacing from a
+// claim in a turn (processGone, Claim.ProcessGone, which states what that is for). It runs for
+// every report the machine judges, so one report is never read against a process an older one
+// was about: the fence drops an observation of any other process (Machine.fence), and letGo
+// clears this with the process the claim lets go.
 //
 // A verdict that found the process running clears it, the stale address among them: that
 // process is alive, holding an address a process launched now is not handed (repoint), and the

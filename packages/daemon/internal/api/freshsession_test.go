@@ -614,6 +614,39 @@ func TestAFreshSessionIsRefusedForAClaimInATurn(t *testing.T) {
 	}
 }
 
+// A ready claim a suspension is held over is answered in this route's own words rather than
+// started: a fresh session suspends a ready claim as the operator and then resumes it, and
+// the suspension it runs lets the held request go with the process (supervise's letGo), so
+// the operator's own suspend — answered 202 and still waiting on its retry — would be
+// dropped unrun and the worker started again in a new session. The compaction's answer to
+// the same claim is its own route's (compact_test.go), and the fixture both read is shared
+// (recovery_refusals_test.go).
+func TestAFreshSessionOfAReadyClaimUnderAHeldSuspensionIsRefused(t *testing.T) {
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := compactHarness(t, nil)
+			token := suspensionHeldOverAReadyAgent(t, h)
+			launches := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn"))
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+				heldSuspensionRefusal(token, "a fresh session"))
+			m, _ := h.supervisor.Machine(token)
+			if view := m.View(); view.State != supervise.StateReady || !view.SuspensionHeld {
+				t.Errorf("the refused claim is %s holding %v, want the ready claim with the operator's own hold, still waiting on its retry",
+					view.State, view.SuspensionHeld)
+			}
+			if after := h.stored(token); after.Session != "ses_implementer" {
+				t.Errorf("the refused claim records session %q, want the session it had", after.Session)
+			}
+			if got := len(h.runtime.CallsOf("Resume")) + len(h.runtime.CallsOf("Spawn")); got != launches {
+				t.Errorf("the runtime was asked for %d launches, want the %d made before the refusal", got, launches)
+			}
+		})
+	}
+}
+
 // turnStartingStop is a daemon that is not stopping, and the one seam a test has for starting a
 // turn in the instant the fresh session's suspend races: the suspend asks Options.Stopping
 // whether the daemon is stopping (api's stopped) on the statement between freshSession's read of

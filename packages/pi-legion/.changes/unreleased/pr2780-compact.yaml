@@ -11,6 +11,11 @@ body: |-
   came back and whatever task it owes went again either way. It is the same
   daemon operation `legion claims compact` runs for an operator, called through the controller's
   own grant. The daemon refuses a claim that is suspended, stopped or failed
-  (`CLAIM_NOT_RUNNING`), a claim in a turn (`CLAIM_IN_A_TURN`), a claim whose launch is in flight
-  (`CLAIM_UNSETTLED`), a claim whose role runs on Claude Code (`CLAIM_NOT_ON_OMP`) and the role
-  `controller`.
+  (`CLAIM_NOT_RUNNING`); a claim in a turn, and one left working over a process the daemon's last
+  report of it found gone, which waits for the relaunch the next report of that process raises
+  (`CLAIM_IN_A_TURN`); a claim between states — one queued, one whose launch is in flight, and one
+  left working under a relaunch the wake pacing parked, whose turn comes by itself
+  (`CLAIM_UNSETTLED`); a claim a suspension is held over, which waits for that hold's end and
+  takes the first of those two codes where the daemon records it working and the second where it
+  does not; a claim whose role runs on Claude Code (`CLAIM_NOT_ON_OMP`);
+  and the role `controller`.

@@ -22,32 +22,34 @@ const nonEmptyString = z.string().min(1);
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches every
- * claim of the project that is not in a turn and whose launch is not in flight, a root architect
- * included: one idle on the provider-error ladder, one whose agent has registered and is not
- * ready yet, and one that is suspended, stopped or failed.
+ * claim of the project that is in no turn, has no launch and no parked relaunch in flight, has no
+ * suspension held over it, and is not left working over a process the daemon's last report of it
+ * found gone, a root architect included: one idle on the provider-error ladder, one whose agent
+ * has registered and is not ready yet, and one that is suspended, stopped or failed.
  *
  * `compact` shortens the session instead, the effect `legion claims compact` runs for one: the
  * claim keeps its session, its workspace and everything it knows of its issue, and whatever task
- * it owed goes to it again. It reaches a narrower set, a claim whose agent is ready or idle,
- * since there has to be a running Oh My Pi session to ask.
+ * it owed goes to it again. It reaches a narrower set, a claim whose agent is ready or idle and
+ * no suspension is held over, since there has to be a running Oh My Pi session to ask.
  *
  * The daemon refuses each with the code and the sentence the controller reads. Both give
  * `CLAIM_IN_A_TURN` for a claim the daemon records as working, since cutting a running turn off
  * would lose the turn that may be the one ending the run of provider errors; the claim is not
  * always in a turn, and the sentence says which window it is in — a turn, a suspension held over
  * it, or a process the last report found gone whose relaunch has not run — and what each waits
- * for. Both give `CLAIM_UNSETTLED` for a claim between states:
- * one queued, one with a launch in flight, and one left working over a process the daemon is
- * starting again, whose relaunch waits its turn in the wake pacing, the turn that comes by
- * itself. The compaction adds three refusals of its own:
+ * for. Both give `CLAIM_UNSETTLED` for a claim with no settled agent to act on: one queued, one
+ * with a launch in flight, one a suspension is held over in any state but working, which waits
+ * for that hold's end as the working one does, and the one working claim that takes this code
+ * rather than the turn's, left working over a process the daemon is starting again, whose
+ * relaunch waits its turn in the wake pacing, the turn that comes by itself. The compaction adds
+ * three refusals of its own:
  * `CLAIM_NOT_RUNNING` for a suspended, stopped or failed claim, which runs no session at all and
  * which `fresh_session` reaches; `CLAIM_NOT_ON_OMP` for a role running on Claude Code, which has
  * no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end the daemon
  * could not write, a claim that lost its process while its session was being compacted, and an
  * end a suspension held over the claim took, which suspends the claim instead. None of those
- * four gave the claim back, so none sent the task it owes. A registered claim is the
- * compaction's `CLAIM_UNSETTLED` and no
- * refusal at all for `fresh_session`. */
+ * four gave the claim back, so none sent the task it owes. A registered claim no suspension is
+ * held over is the compaction's `CLAIM_UNSETTLED` and no refusal at all for `fresh_session`. */
 export const LegionClaimRequest = z.strictObject({
   grantId: nonEmptyString,
   issue: nonEmptyString,

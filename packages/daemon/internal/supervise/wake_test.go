@@ -1475,6 +1475,60 @@ func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesI
 	}
 }
 
+// A verdict the sweep gives while a launch waits its turn decides nothing, but it is still
+// what the runtime last reported of the process the claim records: the guard reads the one
+// and not the other (judge, reportedProcess). The window that turns on it is a park a stale
+// address raised — that verdict found the process alive, so it cleared the record — over a
+// process that then dies. If the park's own turn is refused, the claim is left stored working
+// over a dead process, and this record is the whole of what tells it from a claim in a turn
+// (Claim.ProcessGone, api's refuseState and freshSession).
+//
+// The negative control is the record put back behind the guard (judge's launchWaits): the
+// claim then reports its process running after a death the park dropped, and both recovery
+// doors answer it "in a turn, ask again after the turn ends" until the next sweep.
+func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t *testing.T) {
+	h := pacedHarness(t, wakeRate)
+	h.reach(StateWorking)
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store}
+	h.m.deps.Store = store
+
+	// The process is alive at a stale address, so its relaunch is raised over a live process
+	// and parked, and the verdict clears the record (repoint, reportedProcess).
+	h.observe(runtime.StaleAddress)
+	waiting := h.wantWaitingWake(WakeLaunch)
+	if h.claim().ProcessGone {
+		t.Fatal("the claim reports its process gone after a verdict that found it alive at a stale address")
+	}
+
+	// The process dies under the park. Nothing is acted on — the launch's turn replaces that
+	// process either way — and what the claim records of it is this verdict.
+	h.observe(runtime.Gone)
+
+	if !h.claim().ProcessGone {
+		t.Fatal("the claim reports nothing of the process that died under the park, want the gone verdict recorded")
+	}
+	if got := h.m.View().WakeWaiting; got == nil || got.Kind != WakeLaunch {
+		t.Fatalf("the claim's waiting wake is %+v, want the parked relaunch the death did not touch", got)
+	}
+
+	// The park's turn comes and the store cannot answer its lifecycle recheck, so the relaunch
+	// is refused and the claim keeps the dead process with no launch coming for it (runWake,
+	// relaunchRefused).
+	store.failing = true
+	h.advance(waiting.At.Sub(h.clock.Now()))
+	store.failing = false
+
+	h.wantState(StateWorking)
+	if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
+		t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
+			got.Locator, got.ProcessGone, dead)
+	}
+	if got := h.m.View().WakeWaiting; got != nil {
+		t.Fatalf("the claim names wake %+v, want none: the turn ran and its launch was refused", got)
+	}
+}
+
 // The other side of the same arming: a refusal met where no wake parked anything arms nothing.
 // A timer is deleted as it fires (fence), so the boot interval of a process the runtime then
 // reports gone is gone by the time the death's relaunch is refused (bootInterval, probe, died,

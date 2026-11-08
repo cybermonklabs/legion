@@ -146,19 +146,20 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     fresh session instead (refuseInATurn). A claim already being compacted is in no turn, so
 //     it is told so in its own words: the compaction in flight is what it waits for;
 //   - a claim a suspension is held over waits for that hold's end rather than for anything the
-//     compaction could do, and it is refused in whatever state the hold found it: working, or
-//     still coming up under a hold held for its launch (refuseHeldSuspension,
-//     supervise's holdSuspendUntilReady). A hold over the ready or idle claim the take does
-//     reach — a stop the runtime refused, waiting on its retry — is the machine's own refusal
-//     rather than this one, given as a take that did not happen (supervise's compactStart);
+//     compaction could do, and it is refused in whatever state the hold found it: working,
+//     still coming up under a hold held for its launch, and ready or idle under a stop the
+//     runtime refused, which is the one such claim the machine's own take reaches
+//     (refuseHeldSuspension, supervise's holdSuspendUntilReady, suspendHeld). The machine
+//     refuses that last one in its state as it refuses every other held claim, so one sentence
+//     answers the hold at both doors (supervise's compactStart);
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
 //     flight, and one stored working under a launch the daemon's wake pacing parks, which is
 //     told that the launch's turn comes by itself (claimUnsettled, refuseParkedRelaunch);
 //   - a claim stored working whose process the runtime's last report found gone has no agent to
 //     ask either, and no launch coming for it: the relaunch that was to replace that process
-//     did not run, and the claim was left over it (supervise's relaunchRefused). It is told
-//     what does come for it, the relaunch the next report of that process raises, rather than
-//     the turn's end a claim in a turn is told to wait for (refuseProcessGone);
+//     did not run, and the claim was left over it (supervise.Claim.ProcessGone, which states
+//     the windows that leave one). It is told what does come for it rather than the turn's end
+//     a claim in a turn is told to wait for (refuseProcessGone);
 //   - a claim whose role runs on the Claude Code backend has no Oh My Pi session to compact at
 //     all, and it is the one refusal this route makes itself, since no state of the claim says
 //     which harness it runs. Which harness a role runs on is the daemon's configuration rather
@@ -236,12 +237,13 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// hold ran there and left the claim suspended, or the claim is working for a turn Oh
 		// My Pi started under the compaction and the hold runs at that turn's end. The claim
 		// was given back to neither its agent nor its task, so the caller is told that rather
-		// than a recovery that landed. Who starts such a claim again is whoever the hold is
-		// for: an operator's resume for an operator's hold, a wake or a workflow start for the
-		// daemon's own.
+		// than a recovery that landed. What becomes of the owed task is the hold's own: an
+		// operator's suspension keeps the claim's phase and the task with it, and the
+		// daemon's ends that phase, which retires the task queued for it (supervise's
+		// settle, SuspendSource.RetiresPhaseTask, ErrCompactSuspended).
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes goes when its agent runs again", token))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. An operator's suspension keeps that task, and it goes when %s runs again; a suspension of the daemon's own ends the claim's phase, and the task queued for that phase is retired with it", token, token))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError
@@ -285,15 +287,11 @@ func boundReason(text string) string {
 // published it, for the things the state alone does not say: whether a suspension is held over
 // the claim (supervise.Claim.SuspensionHeld, refuseHeldSuspension), whether a working claim is
 // working because its session is being compacted rather than because a turn is
-// (supervise.Claim.Compacting), whether a launch waits its paced turn over it (relaunchWaits),
-// and whether the runtime's last report of the process a working claim records found it gone
-// (supervise.Claim.ProcessGone, refuseProcessGone). The hold is read first and without the
-// state, because a hold outlives the state it arrived in: it is held over a launch that has
-// not registered and still stands when that launch reaches shim_connected and registered
-// (supervise's holdSuspendUntilReady), and what such a claim waits for is the hold's end
-// rather than the launch's. A working claim whose process is gone is read after the parked
-// launch, as the other door reads it: a claim whose process died under a park reads as both,
-// and the launch is the nearer wait (freshSession). It always reports false, so a caller
+// (supervise.Claim.Compacting), and what else a working claim can be (refuseWorkingClaim). The
+// hold is read first and without the state, because a hold outlives the state it arrived in:
+// it is held over a launch that has not registered and still stands when that launch reaches
+// shim_connected and registered (supervise's holdSuspendUntilReady), and what such a claim
+// waits for is the hold's end rather than the launch's. It always reports false, so a caller
 // returns it as its own answer.
 func refuseState(w http.ResponseWriter, token claim.Token, state supervise.ClaimState, view supervise.ClaimView) bool {
 	switch {
@@ -302,12 +300,8 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 	case state == supervise.StateWorking && view.Compacting:
 		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
 			"%s is being compacted already: wait for that compaction to end", token))
-	case state == supervise.StateWorking && relaunchWaits(view):
-		return refuseParkedRelaunch(w, token, compactOp)
-	case state == supervise.StateWorking && view.ProcessGone:
-		return refuseProcessGone(w, token, compactOp)
 	case state == supervise.StateWorking:
-		return refuseInATurn(w, token, compactOp)
+		return refuseWorkingClaim(w, token, view, compactOp)
 	case startsAgain(state):
 		writeFailure(w, http.StatusConflict, claimNotRunning, fmt.Sprintf(
 			"%s is %s, so it runs no Oh My Pi session to compact; %s starts it again instead",

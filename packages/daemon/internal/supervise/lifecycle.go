@@ -54,14 +54,11 @@ func (m *Machine) checkLaunch(ctx context.Context) error {
 // goes back to whoever asked for it, and this writes nothing, arms nothing and starts nothing.
 //
 // A claim that records its process is left stored working over it where a death or a
-// displacement raised the relaunch, and nothing of the claim is written to say so. What tells
-// such a claim from one in a turn is the verdict that raised the relaunch, kept as what the
-// runtime last reported of the process the claim records (Claim.ProcessGone, reportedProcess):
-// both recovery doors read it, and answer that the relaunch has not run and that the next
-// report of the process raises another, rather than sending their caller back for a turn's end
-// that never comes (api's refuseState, freshSession). It is no record this refusal makes: the
-// report made it, and the next report of that process — the one that raises the relaunch again
-// — is what changes it.
+// displacement raised the relaunch, and nothing of the claim is written to say so: this
+// refusal is one of the windows Claim.ProcessGone is read for, and what that field is and
+// what reads it is written there. It is no record this refusal makes, and none it clears —
+// the report that raised the relaunch made it, and the next report of the same process, the
+// one that raises the relaunch again, is what changes it.
 //
 // What one refused relaunch leaves behind is put right by the caller that left it, never here.
 // The one such thing is the watch a park took off the process the relaunch was to replace, and
