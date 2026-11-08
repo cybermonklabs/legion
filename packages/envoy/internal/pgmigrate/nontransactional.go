@@ -85,11 +85,6 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	if err != nil {
 		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	table := pgx.Identifier{index.Relation.Relname}
-	if index.Relation.Schemaname != "" {
-		table = pgx.Identifier{index.Relation.Schemaname, index.Relation.Relname}
-	}
-	target := table.Sanitize()
 	// The settings are set before the leftover check so the drop below is bounded by
 	// LockTimeout for every caller, whatever bound the caller's session carries (the server's
 	// default is none at all).
@@ -107,7 +102,7 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 			err = errors.Join(err, fmt.Errorf("migration %s: restore lock_timeout: %w", migration.Name, restore))
 		}
 	}()
-	if err := dropOwnLeftover(ctx, conn, migration, index, target, signIn); err != nil {
+	if err := dropOwnLeftover(ctx, conn, migration, index, signIn); err != nil {
 		return err
 	}
 	return execWatched(ctx, conn, migration, signIn)
@@ -120,7 +115,12 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 // IF NOT EXISTS skips over it. Any other relation of that name is one the runner did not build,
 // and it is refused. An index of another name is neither dropped nor refused.
 // The caller must have bounded the session's lock_timeout already: the drop takes locks too.
-func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, target string, signIn func(context.Context, *pgx.ConnConfig) error) error {
+func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, signIn func(context.Context, *pgx.ConnConfig) error) error {
+	table := pgx.Identifier{index.Relation.Relname}
+	if index.Relation.Schemaname != "" {
+		table = pgx.Identifier{index.Relation.Schemaname, index.Relation.Relname}
+	}
+	target := table.Sanitize()
 	// At most one relation of the index's name exists in the target table's schema, since
 	// Postgres keeps relation names distinct within a schema. A relation that is no index has
 	// no pg_index row, so coalesce reads its indisvalid and its table as false.
