@@ -1022,6 +1022,7 @@ func TestAMergeFailureAlreadyAppliedIsNotLoggedAsSendingTheIssueBack(t *testing.
 // run again at the same head — reads no log a second time for a decision already made, and
 // tells nobody twice.
 func TestAMergeTheQueueFailedHasItsJobLogsReadOnceForOneDecision(t *testing.T) {
+	t.Parallel()
 	github := newQueueGitHub(t, "CLEAN")
 	github.set(func(g *armableGitHub) { g.jobLogs = map[int64]string{failedMergeGroupJob: failedMergeGroupLog} })
 	pool := isolatedOutboxPool(t)
@@ -1111,6 +1112,7 @@ func TestAMergeTheQueueFailedHasItsJobLogsReadOnceForOneDecision(t *testing.T) {
 // own below (TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone); which states those are is read
 // off the entry alone, in ghautomerge, since each is this one branch of the row.
 func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                  string
 		queueState, queueBase string
@@ -1238,6 +1240,7 @@ func TestAnUnmergeableEntryOnItsBaseBranchesTipSendsTheIssueBackToImplementing(t
 // (ghautomerge's TestAnUnmergeableEntryOnItsBaseBranchesTipIsTheHeadsOwnConflict); what stands
 // here is the one branch of the row on the database (INFRA-1442).
 func TestTheMergeRowLeavesAnEntryItHasNotDecidedAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name                  string
 		queueState, queueBase string
@@ -1376,6 +1379,7 @@ func TestARemovalByAPersonEndsTheREADYMergeAndTellsTheArchitect(t *testing.T) {
 // no removal and no refusal: nothing is told, nothing is marked, and the row reads the same
 // removal from GitHub when the daemon comes back (INFRA-1442).
 func TestARemovalWhoseLogReadsADaemonStopCutShortTellsNobody(t *testing.T) {
+	t.Parallel()
 	github := newQueueGitHub(t, "CLEAN")
 	arrived := make(chan struct{})
 	github.set(func(g *armableGitHub) {
@@ -1429,6 +1433,7 @@ func TestARemovalWhoseLogReadsADaemonStopCutShortTellsNobody(t *testing.T) {
 // passed from the first such read. The issue stays in awaiting_merge at its recorded head on
 // every path, with no round counted against anyone.
 func TestAMergeTheQueueTookOutForAConflictIsSubmittedOnceMoreOrEnded(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// mergeState is what GitHub answers for the pull request once its entry is gone, and gap
