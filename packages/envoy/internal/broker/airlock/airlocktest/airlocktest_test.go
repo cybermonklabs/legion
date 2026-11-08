@@ -2,20 +2,26 @@
 //
 // Each stand-in does what it says it does, against the real thing wherever there is one: the
 // GitHub and Google stand-ins are driven through the broker's own minters, the AWS one through
-// the AWS SDK's own signer, and the Microsoft one through the form az sends. A stand-in that
-// quietly stopped answering as the service it stands in for would leave every check that uses
-// it passing against nothing, which is what these rows are here to catch.
+// the AWS SDK's own signer, the Microsoft one through the form az sends, the model one through
+// agentloop, the Dispatch one through the judge's own reader, and the metadata one through
+// internal/googleidentity. A stand-in that quietly stopped answering as the service it stands
+// in for would leave every check that uses it passing against nothing, which is what these rows
+// are here to catch.
 package airlocktest
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -23,8 +29,11 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 
+	"github.com/sjawhar/envoy/agentloop"
+	"github.com/sjawhar/envoy/internal/broker/judge"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/googleidentity"
 )
 
 // The key pair the AWS rows sign with: the one the stand-in holds, in the shape AWS mints them,
@@ -324,5 +333,149 @@ func TestTheMicrosoftStandRecordsTheAssertionItWasGiven(t *testing.T) {
 	}
 	if status, body := answerOf(t, client, request); status != http.StatusOK || strings.TrimSpace(body) != "the API answered" {
 		t.Fatalf("a call that is no exchange answered %d %q; want the service's own body", status, body)
+	}
+}
+
+// verdictSchema is the form of reply the model rows ask for: the one the broker's model judge
+// asks for, written here because what the row is about is that a reply of this shape survives
+// the wire the stand-in writes it on.
+const verdictSchema = `{"type":"object","properties":{"verdict":{"type":"string","enum":["approve","refer"]},` +
+	`"reason":{"type":"string"}},"required":["verdict","reason"],"additionalProperties":false}`
+
+// TestTheModelStandAnswersEachCaseARunCanMeet drives agentloop, the reader the broker's judge
+// asks its model through, against the stand-in on the protocol the local stack configures: the
+// three answers a check sets one after another - a structured reply, a reply that is no such
+// object, and an answer held back past the caller's own bound - each read back as what that
+// reader makes of it.
+func TestTheModelStandAnswersEachCaseARunCanMeet(t *testing.T) {
+	service := newService(t, ServiceOptions{Plain: true})
+	stand := NewModelStand(ModelOptions{Answer: ModelAnswer{Text: `{"verdict":"approve","reason":"the reason names the issue"}`}})
+	service.AnswerWith(stand.Answer)
+	ask := func(t *testing.T, bound time.Duration) agentloop.Result {
+		t.Helper()
+		result, err := agentloop.Run(t.Context(), agentloop.Request{
+			Model: agentloop.Model{ID: "the-judge-model", Endpoint: agentloop.Endpoint{
+				Kind: agentloop.AnthropicMessages, BaseURL: service.URL(),
+				Token: func(context.Context) (string, error) { return "the-stand-in-identity-token", nil },
+			}},
+			Input: []agentloop.Message{{Role: agentloop.User, Blocks: []agentloop.Block{
+				{Kind: agentloop.TextBlock, Text: "decide this request"},
+			}}},
+			Bounds: agentloop.Bounds{Time: bound, Calls: 1, OutputTokens: 1024},
+			Final:  json.RawMessage(verdictSchema),
+		})
+		if err != nil {
+			t.Fatalf("the run against the stand-in: %v", err)
+		}
+		return result
+	}
+
+	result := ask(t, 30*time.Second)
+	var answer struct{ Verdict, Reason string }
+	if result.Fault != "" {
+		t.Fatalf("the run ended in %s: %s", result.Fault, result.Detail)
+	}
+	if err := json.Unmarshal(result.Value, &answer); err != nil || answer.Verdict != "approve" {
+		t.Fatalf("the value is %s, %v; want the approving object the stand-in was set to", result.Value, err)
+	}
+
+	stand.Answers(ModelAnswer{Text: "I have thought about it and I would rather not say."})
+	if result := ask(t, 30*time.Second); result.Fault != agentloop.FaultMalformed {
+		t.Errorf("a reply that is no object ended in %q; want %q", result.Fault, agentloop.FaultMalformed)
+	}
+
+	stand.Answers(ModelAnswer{Text: `{"verdict":"refer","reason":"too late"}`, Delay: 5 * time.Second})
+	if result := ask(t, 300*time.Millisecond); result.Fault != agentloop.FaultTime {
+		t.Errorf("an answer held past the bound ended in %q; want %q", result.Fault, agentloop.FaultTime)
+	}
+
+	seen := service.Requests()
+	if len(seen) != 3 {
+		t.Fatalf("the stand-in was called %d times; want the three runs", len(seen))
+	}
+	if seen[0].Method != http.MethodPost || !strings.Contains(seen[0].Body, "decide this request") {
+		t.Errorf("the stand-in recorded %s %s %q; want the call as the run sent it", seen[0].Method, seen[0].Path, seen[0].Body)
+	}
+}
+
+// TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes drives judge.Dispatch, the broker's own
+// reader of those two routes, against the stand-in: the issue it holds with its spec, the issue
+// it holds without one, a key it holds no issue for, and a read presenting no token at all.
+func TestTheDispatchStandAnswersTheIssueReadsItsReaderMakes(t *testing.T) {
+	service := newService(t, ServiceOptions{Plain: true})
+	service.AnswerWith(NewDispatchStand(DispatchOptions{Issues: []DispatchIssue{
+		{Key: "INFRA-1353", Title: "The broker's model judge", Status: "in_progress", Spec: "## Summary\n\nOne model decides."},
+		{Key: "INFRA-1200", Title: "The local stack", Status: "done"},
+	}}).Answer)
+	tokenFile := filepath.Join(t.TempDir(), "dispatch-token")
+	if err := os.WriteFile(tokenFile, []byte("the-stand-in-dispatch-token\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader := judge.Dispatch{BaseURL: service.URL(), TokenFile: tokenFile}
+
+	issue, err := reader.Issue(t.Context(), "INFRA-1353")
+	if err != nil {
+		t.Fatalf("read the open issue: %v", err)
+	}
+	if issue.Key != "INFRA-1353" || issue.Title != "The broker's model judge" || issue.Status != "in_progress" {
+		t.Errorf("the issue read is %+v; want the fixture's own key, title and status", issue)
+	}
+	if !issue.HasSpec || !strings.Contains(issue.Spec, "One model decides.") {
+		t.Errorf("the spec read is %q (held: %v); want the fixture's markdown", issue.Spec, issue.HasSpec)
+	}
+
+	done, err := reader.Issue(t.Context(), "INFRA-1200")
+	if err != nil {
+		t.Fatalf("read the done issue: %v", err)
+	}
+	if done.Status != "done" || done.HasSpec {
+		t.Errorf("the done issue read is %+v; want it done and holding no spec", done)
+	}
+
+	if _, err := reader.Issue(t.Context(), "INFRA-9999"); !errors.Is(err, judge.ErrNoIssue) {
+		t.Errorf("a key no issue carries answered %v; want %v", err, judge.ErrNoIssue)
+	}
+
+	// The 401 the real API answers a request with no credential, which a fixture of answers
+	// alone would quietly drop: a caller that presented nothing must read the refusal.
+	request, err := http.NewRequest(http.MethodGet, service.URL()+"/api/v1/issues/INFRA-1353", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, body := answerOf(t, clientOf(service), request); status != http.StatusUnauthorized {
+		t.Errorf("a read with no bearer answered %d %q; want 401", status, body)
+	}
+}
+
+// TestTheMetadataStandAnswersTheIdentityTokenItsReaderAsksFor drives internal/googleidentity,
+// which is the whole of what the broker asks a metadata server, against the stand-in: the token
+// comes back for the audience asked, and a reader that presented no Metadata-Flavor header - as
+// nothing in the broker does, and as a stray client would - is refused.
+func TestTheMetadataStandAnswersTheIdentityTokenItsReaderAsksFor(t *testing.T) {
+	service := newService(t, ServiceOptions{Plain: true})
+	service.AnswerWith(NewMetadataStand(MetadataOptions{Token: "the-identity-token"}).Answer)
+	t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(service.URL(), "http://"))
+
+	token, err := googleidentity.Token(t.Context(), "https://model.example")
+	if err != nil {
+		t.Fatalf("read the machine's identity token: %v", err)
+	}
+	if token != "the-identity-token" {
+		t.Errorf("the token is %q; want the stand-in's own", token)
+	}
+	seen := service.Requests()
+	if len(seen) != 1 {
+		t.Fatalf("the stand-in was asked %d times; want the one read", len(seen))
+	}
+	if got, err := url.ParseQuery(seen[0].Query); err != nil || got.Get("audience") != "https://model.example" || got.Get("format") != "full" {
+		t.Errorf("the stand-in was asked %q; want the audience and format=full", seen[0].Query)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, service.URL()+seen[0].Path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, body := answerOf(t, clientOf(service), request); status != http.StatusForbidden {
+		t.Errorf("an ask with no Metadata-Flavor header answered %d %q; want 403", status, body)
 	}
 }

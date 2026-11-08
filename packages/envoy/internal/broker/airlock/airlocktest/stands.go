@@ -1,10 +1,12 @@
 // packages/envoy/internal/broker/airlock/airlocktest/stands.go
-// The five stand-ins a Service answers as: GitHub's App endpoints, Google's token endpoint,
-// Microsoft's authority, an AWS service that checks the signature it was sent, and the
-// WebSocket upgrade a bound host answers. Each is a value holding what it answers and what it
-// was asked, and each installs its Answer on a Service (Service.AnswerWith), so one of them
-// may play a host of its own in the command and the same one may play the bound host of a row
-// that already has a service.
+// The eight stand-ins a Service answers as: GitHub's App endpoints, Google's token endpoint,
+// Microsoft's authority, an AWS service that checks the signature it was sent, the WebSocket
+// upgrade a bound host answers, and the three the broker's model judge calls — a model
+// endpoint, Dispatch's two issue reads, and the Compute Engine metadata server a machine reads
+// its own identity token from. Each is a value holding what it answers and what it was asked,
+// and each installs its Answer on a Service (Service.AnswerWith), so one of them may play a
+// host of its own in the command and the same one may play the bound host of a row that
+// already has a service.
 package airlocktest
 
 import (
@@ -13,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"slices"
@@ -694,5 +697,255 @@ func (u *UpgradeStand) Answer(w http.ResponseWriter, r *http.Request, seen Reque
 		return true
 	}
 	_ = buffered.Flush()
+	return true
+}
+
+// ModelAnswer is one reply a ModelStand gives: the whole of the assistant's text, and how long
+// the answer is held back before any of it is written.
+//
+// Text is the reply itself and no verdict of any kind: this package knows the Messages API's
+// wire shape and nothing about what a caller asks a model for, so a structured reply is that
+// JSON object as the reply's own text, which is how the protocol carries one and how agentloop
+// reads a Run's Final value back out of it.
+//
+// Delay holds the whole answer back, the call's own context ending the wait: it is how a check
+// spends a caller's time bound, since a delay past that bound is an answer the caller never
+// sees at all.
+type ModelAnswer struct {
+	Text  string
+	Delay time.Duration
+}
+
+// ModelOptions is what a ModelStand answers with.
+type ModelOptions struct {
+	// Answer is what it answers until Answers replaces it.
+	Answer ModelAnswer
+}
+
+// ModelStand is a model endpoint speaking the Messages API, which is agentloop's
+// anthropic-messages: it answers every call with one event stream carrying the answer it holds
+// — a message of one text block that stopped at its end — and records each call on the Service,
+// so a check reads back what was sent as well as what was answered.
+//
+// What it answers is set while it runs (Answers), because the cases a check drives against one
+// model are its answers and not its calls: a structured reply the caller can read, one it
+// cannot, and an answer that never comes.
+type ModelStand struct {
+	mu     sync.Mutex
+	answer ModelAnswer
+}
+
+// NewModelStand builds one. Install it with Service.AnswerWith(stand.Answer).
+func NewModelStand(o ModelOptions) *ModelStand { return &ModelStand{answer: o.Answer} }
+
+// Answers replaces what every call from here on is answered with, which is how one run of a
+// stack drives one case after another against a model that is already listening.
+func (m *ModelStand) Answers(answer ModelAnswer) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.answer = answer
+}
+
+// standInModelID is the model this stand's own answer says wrote it. The caller's own model id
+// rides in the call, which the Service records; nothing reads this one but a reader of the
+// stream.
+const standInModelID = "the-stand-in-model"
+
+// standInModelUsage is the token count every answer reports. It is a plausible count and not a
+// measured one — nothing here runs a tokenizer — so that a caller which records what a call
+// spent has something of that shape to record.
+var standInModelUsage = map[string]any{
+	"input_tokens": 1200, "output_tokens": 48,
+	"cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
+}
+
+// Answer is one model call: the event stream the Messages API sends for a reply of one text
+// block, written once the answer's delay has passed. A caller that walked away during that wait
+// is answered nothing at all, which is the whole of what a stalled model is.
+func (m *ModelStand) Answer(w http.ResponseWriter, r *http.Request, seen Request) bool {
+	if seen.Method != http.MethodPost {
+		http.Error(w, "the stand-in model endpoint takes POST, not "+seen.Method, http.StatusMethodNotAllowed)
+		return true
+	}
+	m.mu.Lock()
+	answer := m.answer
+	m.mu.Unlock()
+	if answer.Delay > 0 {
+		select {
+		case <-time.After(answer.Delay):
+		case <-r.Context().Done():
+			return true
+		}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	event := func(name string, body map[string]any) {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", name, encoded)
+	}
+	event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+		"id": "msg_standin", "type": "message", "role": "assistant", "model": standInModelID,
+		"content": []any{}, "stop_reason": nil, "stop_sequence": nil, "usage": standInModelUsage,
+	}})
+	event("content_block_start", map[string]any{"type": "content_block_start", "index": 0,
+		"content_block": map[string]any{"type": "text", "text": ""}})
+	event("content_block_delta", map[string]any{"type": "content_block_delta", "index": 0,
+		"delta": map[string]any{"type": "text_delta", "text": answer.Text}})
+	event("content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+	event("message_delta", map[string]any{"type": "message_delta",
+		"delta": map[string]any{"stop_reason": "end_turn", "stop_sequence": nil}, "usage": standInModelUsage})
+	event("message_stop", map[string]any{"type": "message_stop"})
+	return true
+}
+
+// DispatchIssue is one issue a DispatchStand holds.
+type DispatchIssue struct {
+	// Key is the issue's own key, the {key} both routes name it by.
+	Key string
+	// Title and Status are the other two fields the issue read answers of it. A reader of
+	// these two routes treats the status done as work that is over, so a fixture holding one
+	// such issue is how a check drives that case.
+	Title, Status string
+	// Spec is the markdown of the issue's spec document, and "" is an issue holding no such
+	// document: the text route answers 404 for it, as Dispatch answers an issue with no spec.
+	Spec string
+}
+
+// DispatchOptions is the fixture a DispatchStand answers from.
+type DispatchOptions struct {
+	// Issues are the issues it holds. A key none of them carries is 404 on both routes.
+	Issues []DispatchIssue
+}
+
+// DispatchStand is the two reads the broker's model judge makes of Dispatch: GET
+// /api/v1/issues/{key}, which answers the issue, and GET
+// /api/v1/issues/{key}/artifacts/spec/text, which answers that issue's spec document. It
+// answers both from a fixture, since a Dispatch of its own would want Postgres and a sign-in,
+// and it keeps the one thing of the real API a fixture could quietly lose: a request carrying
+// no bearer is refused 401 before either route is read (api.requireAuthenticated), so a caller
+// that presented no token reads that refusal rather than an issue.
+//
+// Each answer carries the fields of the real one that a reader of these two routes reads —
+// key, title and status of api.getIssue's issue, and the markdown of api.getArtifactText's
+// document — and none of the artifacts, children, open asks and progress the issue read also
+// answers: a caller that needs one of those is reading a route this stand does not stand in
+// for.
+type DispatchStand struct {
+	issues map[string]DispatchIssue
+}
+
+// NewDispatchStand builds one. Install it with Service.AnswerWith(stand.Answer).
+func NewDispatchStand(o DispatchOptions) *DispatchStand {
+	issues := make(map[string]DispatchIssue, len(o.Issues))
+	for _, issue := range o.Issues {
+		issues[issue.Key] = issue
+	}
+	return &DispatchStand{issues: issues}
+}
+
+// Answer is Dispatch's answer to the two reads, and false for every other request, which leaves
+// the service its own body: a caller that asked for a route this stand does not serve has not
+// asked Dispatch anything.
+func (d *DispatchStand) Answer(w http.ResponseWriter, _ *http.Request, seen Request) bool {
+	key, spec, ok := dispatchRoute(seen)
+	if !ok {
+		return false
+	}
+	token, bearer := strings.CutPrefix(seen.Header.Get("Authorization"), "Bearer ")
+	if !bearer || token == "" {
+		dispatchError(w, http.StatusUnauthorized, "UNAUTHENTICATED", "the stand-in Dispatch takes a bearer token")
+		return true
+	}
+	issue, held := d.issues[key]
+	switch {
+	case !held:
+		dispatchError(w, http.StatusNotFound, "NOT_FOUND", "the stand-in Dispatch holds no issue "+key)
+	case spec && issue.Spec == "":
+		dispatchError(w, http.StatusNotFound, "ARTIFACT_NOT_FOUND", "issue "+key+" holds no spec document")
+	case spec:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"markdown": issue.Spec, "version": 1, "token": "sha256:the-stand-in-document-token",
+		})
+	default:
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"key": issue.Key, "title": issue.Title, "status": issue.Status,
+		})
+	}
+	return true
+}
+
+// dispatchRoute reads which of the two routes a request is and the issue key it names: the
+// issue read itself, and the text of that issue's spec document. Both are GETs, and every other
+// request is no route of this stand's.
+func dispatchRoute(seen Request) (key string, spec, ok bool) {
+	if seen.Method != http.MethodGet {
+		return "", false, false
+	}
+	rest, found := strings.CutPrefix(seen.Path, "/api/v1/issues/")
+	if !found {
+		return "", false, false
+	}
+	if key, found := strings.CutSuffix(rest, "/artifacts/spec/text"); found {
+		return key, true, key != "" && !strings.Contains(key, "/")
+	}
+	return rest, false, rest != "" && !strings.Contains(rest, "/")
+}
+
+// dispatchError is a refusal in the shape the API writes one (api.writeError), so a caller that
+// reads the code out of a refusal reads the same field here.
+func dispatchError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message, "code": code})
+}
+
+// MetadataOptions is what a MetadataStand answers with.
+type MetadataOptions struct {
+	// Token is the identity token every ask is answered with, and "" is a stand-in token of
+	// its own.
+	Token string
+}
+
+// MetadataStand is the Compute Engine metadata server a machine reads its own Google identity
+// token from (internal/googleidentity): GET
+// /computeMetadata/v1/instance/service-accounts/default/identity, answered with the token as
+// the whole of the body, and answered only for a request carrying Metadata-Flavor: Google,
+// which the real server refuses a request without. The audience asked for rides in the query,
+// which the Service records, so a check reads back which audience a caller minted for.
+//
+// That is the whole of what that reader asks of a metadata server, so pointing GCE_METADATA_HOST
+// at one of these is what lets a local stack run the production credential path itself rather
+// than a test-only setting standing beside it.
+type MetadataStand struct {
+	options MetadataOptions
+}
+
+// NewMetadataStand builds one. Install it with Service.AnswerWith(stand.Answer).
+func NewMetadataStand(o MetadataOptions) *MetadataStand { return &MetadataStand{options: o} }
+
+// metadataIdentityPath is where the instance's default service account's identity token is
+// minted, the path internal/googleidentity asks for.
+const metadataIdentityPath = "/computeMetadata/v1/instance/service-accounts/default/identity"
+
+// Answer is the metadata server's answer to one identity token, and false for every other
+// request, which leaves the service its own body.
+func (m *MetadataStand) Answer(w http.ResponseWriter, _ *http.Request, seen Request) bool {
+	if seen.Path != metadataIdentityPath {
+		return false
+	}
+	if seen.Header.Get("Metadata-Flavor") != "Google" {
+		http.Error(w, "the stand-in metadata server takes the header Metadata-Flavor: Google", http.StatusForbidden)
+		return true
+	}
+	token := m.options.Token
+	if token == "" {
+		token = "the-stand-in-google-identity-token"
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, token)
 	return true
 }
