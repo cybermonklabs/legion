@@ -12,11 +12,17 @@ import (
 )
 
 // checkPage is one page of a merge queue commit's checks as removals and moreChecks read it: whether
-// GitHub lists more after it, and each check run, with its workflow run, and commit status.
+// GitHub lists more after it, and each check run, with its workflow run, its Actions job id and
+// commit status. A check run's databaseId is the id of the Actions job that ran it, which is what
+// its log is read by (githubrest.Client.JobLog): measured on run 42397923554 of
+// cybermonklabs/legion, whose failing dispatch check run answers databaseId 128479266994, the id
+// that job has in the jobs API. detailsUrl is no substitute, since its shape is not one shape: the
+// same run answers https://github.com/cybermonklabs/legion/runs/128483804195 for one check run and
+// https://github.com/cybermonklabs/legion/actions/runs/42397923554/job/128483822023 for another.
 const checkPage = `pageInfo { hasNextPage endCursor }
                   nodes {
                     __typename
-                    ... on CheckRun { name status conclusion detailsUrl checkSuite { workflowRun { url } } }
+                    ... on CheckRun { name status conclusion detailsUrl databaseId checkSuite { workflowRun { url } } }
                     ... on StatusContext { context state targetUrl }
                   }`
 
@@ -79,9 +85,18 @@ const moreChecks = `query MergeGroupContexts($owner: String!, $name: String!, $o
 // again (timelineItem.restarts): the daemon's own disarm landing late, and auto-merge a close turned
 // off, which the pull request's reopen at READY's head undid. Any other is Removed, the latest of
 // them: GitHub's own (Removed.ByGitHub) when it names the account the token acts as, whose own
-// disarm leaves no other reason. A timeline that shows no removal since the last arm is behind the
+// disarm leaves no other reason; a queue removal for merge_conflict is that same removal carried as
+// a ConflictRemoval instead, with mergeState, the merge state the read that found nothing armed
+// answered for the pull request, since what the daemon does with it is decided by that state and
+// not by the removal alone. A timeline that shows no removal since the last arm is behind the
 // read of the pull request (Disappeared).
-func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head string) error {
+//
+// github is the one client removal calls, GitHub's GraphQL route: no log of a failing job is
+// read here. Each failing run a removal names carries the Actions job it ran as instead
+// (FailingRun.JobID), for the caller to read once the removal is decided and only where it tells
+// of it (ReadFailingTests, the daemon's readyMerge), since a read of a 54 MB log cannot finish
+// inside a merge row's own budget and a judgment of a removal must wait on none.
+func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Repository, number int, head, mergeState string) error {
 	var answer struct {
 		Viewer struct {
 			Login string `json:"login"`
@@ -115,7 +130,7 @@ func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Reposito
 	}
 	self := strings.TrimSuffix(answer.Viewer.Login, "[bot]")
 	var failed, other *timelineItem
-	var runs []string
+	var runs []FailingRun
 	for i := range removed {
 		item := &removed[i]
 		if item.judgedByChecks() {
@@ -141,8 +156,18 @@ func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Reposito
 		return &MergeFailed{Number: number, Head: head, Reason: failed.Reason, Commit: commit,
 			Runs: runs, Event: failed.ID, At: failed.CreatedAt}
 	case other != nil:
-		return &Removed{Number: number, Head: head, Actor: other.actor(), Reason: other.removalReason(), Detail: other.detail(),
-			Queue: other.Type == "RemovedFromMergeQueueEvent", ByGitHub: self != "" && other.actor() == self, At: other.CreatedAt}
+		// The removal GitHub explains by itself names the runs that failed on the page of the
+		// commit's checks the timeline's own answer carried, the first hundred of them: a page
+		// further would cost a request for a removal nothing here judges, where this page is in
+		// hand. A judged removal that reaches here failed no run on any page, so its page names
+		// none either.
+		removed := &Removed{Number: number, Head: head, Actor: other.actor(), Reason: other.removalReason(), Detail: other.detail(),
+			Queue: other.Type == "RemovedFromMergeQueueEvent", ByGitHub: self != "" && other.actor() == self, At: other.CreatedAt,
+			Runs: failingRuns(other.BeforeCommit.page())}
+		if removed.Queue && other.Reason == "merge_conflict" {
+			return &ConflictRemoval{Removal: *removed, MergeState: mergeState}
+		}
+		return removed
 	case since == len(items):
 		return &Disappeared{Number: number, Repo: repo, Head: head}
 	default:
@@ -154,8 +179,10 @@ func removal(ctx context.Context, github githubrest.Client, repo ghrepo.Reposito
 // the commit the queue built: failed_checks, whose failing runs the issue goes back to implementing
 // on, and a reason GitHub gives no other meaning, a failed merge only with a run that failed there.
 // The merge itself (merged), a person's dequeue (manual) and a conflict (merge_conflict) mean what
-// they say, so none of their checks is read: a person's dequeue cancels the merge group's runs in
-// flight, which is no failed merge.
+// they say, so no page of their checks is read past the one the timeline's answer carried: a
+// person's dequeue cancels the merge group's runs in flight, which is no failed merge. What that
+// one page names as failed is still told (removal), since a removal says what failed whether or
+// not the failure is why GitHub made it.
 func (t *timelineItem) judgedByChecks() bool {
 	if t.Type != "RemovedFromMergeQueueEvent" {
 		return false
@@ -225,12 +252,18 @@ func (t *timelineItem) detail() string {
 }
 
 // failingRuns is each of checks, every check on the commit the merge queue built for a queue
-// removal (mergeGroupCommit.checks), that failed there, named with how it ended and its run: a check
-// run that ended in a result Legion's rule for a check run counts as failed (classify.RunResult:
-// failure, timed out, failed to start, action required, stale), and a commit status in failure or
-// error. A cancelled run is no failure here: a person's dequeue cancels every run in flight.
-func failingRuns(checks []checkContext) []string {
-	var runs []string
+// removal (mergeGroupCommit.checks), that failed there, named with how it ended, the run it
+// failed in and the Actions job it ran as (checkContext.run): a check run that ended in a result
+// Legion's rule for a check run counts as failed (classify.RunResult: failure, timed out, failed
+// to start, action required, stale), and a commit status in failure or error. A cancelled run is
+// no failure here: a person's dequeue cancels every run in flight. A commit status is no Actions
+// job and has no log of its own, so it names none.
+//
+// No log is read here: judging a removal is this package's own work and costs GitHub nothing
+// beyond the pull request, and what each named job's log says is read afterwards by the caller
+// that tells of the removal (ReadFailingTests).
+func failingRuns(checks []checkContext) []FailingRun {
+	var runs []FailingRun
 	for _, check := range checks {
 		switch check.Type {
 		case "CheckRun":
@@ -238,14 +271,11 @@ func failingRuns(checks []checkContext) []string {
 			if result == classify.Pending || result == classify.Success || result == classify.Cancelled {
 				continue
 			}
-			url := check.DetailsURL
-			if check.CheckSuite != nil && check.CheckSuite.WorkflowRun != nil && check.CheckSuite.WorkflowRun.URL != "" {
-				url = check.CheckSuite.WorkflowRun.URL
-			}
-			runs = append(runs, fmt.Sprintf("%s (%s, %s)", check.Name, result, url))
+			link, job := check.run()
+			runs = append(runs, FailingRun{Name: check.Name, Result: result, URL: link, JobID: job})
 		case "StatusContext":
 			if check.State == "FAILURE" || check.State == "ERROR" {
-				runs = append(runs, fmt.Sprintf("%s (%s, %s)", check.Context, strings.ToLower(check.State), check.TargetURL))
+				runs = append(runs, FailingRun{Name: check.Context, Result: strings.ToLower(check.State), URL: check.TargetURL})
 			}
 		}
 	}
@@ -270,6 +300,16 @@ type checkContexts struct {
 	Nodes []checkContext `json:"nodes"`
 }
 
+// page is the checks GitHub listed on the commit in the answer that carried it, the first hundred
+// of them: what a removal whose reason GitHub explains by itself names its failing runs from,
+// where a page further would cost a request. A nil commit, or one with no checks, has none.
+func (c *mergeGroupCommit) page() []checkContext {
+	if c == nil || c.StatusCheckRollup == nil {
+		return nil
+	}
+	return c.StatusCheckRollup.Contexts.Nodes
+}
+
 // checks is every check GitHub lists on the commit: the first page, as the timeline's read carried
 // it, then each later page, read one by one (moreChecks), so a judgment of them misses no failure
 // past the first. A nil commit, or one with no checks, has none.
@@ -277,7 +317,7 @@ func (c *mergeGroupCommit) checks(ctx context.Context, github githubrest.Client,
 	if c == nil || c.StatusCheckRollup == nil {
 		return nil, nil
 	}
-	checks, page := c.StatusCheckRollup.Contexts.Nodes, c.StatusCheckRollup.Contexts.PageInfo
+	checks, page := c.page(), c.StatusCheckRollup.Contexts.PageInfo
 	for page.HasNextPage {
 		var answer struct {
 			Repository struct {
@@ -297,13 +337,17 @@ func (c *mergeGroupCommit) checks(ctx context.Context, github githubrest.Client,
 	return checks, nil
 }
 
-// checkContext is one check run or commit status on a merge queue's commit.
+// checkContext is one check run or commit status on a merge queue's commit. JobID is GitHub's
+// databaseId for a check run, which is the Actions job it ran as where an Actions workflow run
+// is what made it (checkContext.run), and zero for a check run GitHub gives none and for a
+// commit status, neither of which has an Actions log to read.
 type checkContext struct {
 	Type       string `json:"__typename"`
 	Name       string `json:"name"`
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
 	DetailsURL string `json:"detailsUrl"`
+	JobID      int64  `json:"databaseId"`
 	CheckSuite *struct {
 		WorkflowRun *struct {
 			URL string `json:"url"`
@@ -312,4 +356,20 @@ type checkContext struct {
 	Context   string `json:"context"`
 	State     string `json:"state"`
 	TargetURL string `json:"targetUrl"`
+}
+
+// run is the run a failing check names, and the Actions job whose log says what failed in it: a
+// check run GitHub names a workflow run for is a job of that run, read by the databaseId GitHub
+// answers for it, and the run's own URL is the link. A check run with no workflow run is a
+// third-party App's, which is no Actions job however GitHub numbers it — its log route answers
+// 404 — so it is named by its details URL and read for nothing. A workflow run GitHub gives no
+// URL leaves the check's own details URL as the link, the job still being its job.
+func (c *checkContext) run() (string, int64) {
+	if c.CheckSuite == nil || c.CheckSuite.WorkflowRun == nil {
+		return c.DetailsURL, 0
+	}
+	if c.CheckSuite.WorkflowRun.URL == "" {
+		return c.DetailsURL, c.JobID
+	}
+	return c.CheckSuite.WorkflowRun.URL, c.JobID
 }

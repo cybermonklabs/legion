@@ -108,6 +108,10 @@ export function IssueHeader({
           run: () => drafts.requestStatusSubmit("done"),
           text: pendingStatus === "done" ? CONTROL_LABELS.saving_close : CONTROL_LABELS.close_issue,
         },
+    // The name is the words on the control, so a voice user who says what the control reads can
+    // press it (WCAG 2.5.3, axe's `label-content-name-mismatch`). The rail's old button said
+    // "None" under the name "Set parent issue" and had to spell the mismatch away as
+    // "None, set parent issue"; here the control says "Set parent issue" itself.
     {
       disabled: isClosed,
       name: issue.parent === null ? CONTROL_LABELS.set_parent : CONTROL_LABELS.edit_parent,

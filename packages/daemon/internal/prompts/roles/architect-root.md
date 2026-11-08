@@ -59,6 +59,12 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
+While that resume waits for an admission slot, you get one `waiting-for-slot` notice saying what
+answered the wait, where your root stands in the admission line then and that the daemon starts
+you again by itself at the next free slot; your record's `waitingLine` gives the live place and
+the line's length. You get the notice only while this session holds its Envoy role: a session
+whose pod the daemon released while the root waited is told nothing, and its resume task says
+what answered the wait. Act on neither.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
 Approval is pinned to the spec version: any new version closes the gate until it is approved,
@@ -166,8 +172,9 @@ The gate is the `before_merge` checks of the issue's own Verification document, 
 issue's own head: a result a child recorded against one of the root's checks proves nothing for
 the root, and a child that carries part of a root requirement proves that part with a check on
 the child's own Verification document whose `serves` names the requirement, which clears the
-root's coverage flag for it. The root's own checks are proven at the root's own head, or on the
-default branch for an `after_merge` check, in the root's last round.
+root's coverage flag for it. The root's own checks are proven at the root's own head, or, for an
+`after_merge` check, on the branch the root's pull request merged into or on the repository's
+default branch, in the root's last round.
 An issue with no Verification document, or with one that holds no `before_merge` check, is a gap
 the tester and the reviewer name and neither refuses, so your acceptance is the only gate on it:
 name that gap in your acceptance comment and decide there how each delivered item is proven at

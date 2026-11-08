@@ -382,12 +382,11 @@ test("a reply in a session-authored comment thread pre-fills a deletable agent m
 test("an agent's answer on a failed attempt is accepted and shown as the answer", async ({
   browser,
 }) => {
-  // None of the three reads another; only the issue waits on its project.
-  await Promise.all([
-    setLiveSessions([planner]),
-    setSessionSendStatus("s1", 404),
-    createProject({ key: "CORE", name: "Core" }),
-  ]);
+  // `setSessionSendStatus` patches the session `setLiveSessions` writes - `planner` is `s1` - so
+  // it cannot share their round: a PATCH that arrives first answers
+  // `404 unknown fixture session s1` and fails the row. Only the project is independent.
+  await Promise.all([setLiveSessions([planner]), createProject({ key: "CORE", name: "Core" })]);
+  await setSessionSendStatus("s1", 404);
   const issue = await createIssue({ project: "CORE", title: "Failed receipt" });
   const question = "Did you get this?";
   const message = await createMessage(issue.key, {
@@ -599,11 +598,12 @@ test("Conversation marks unread conversations, sends with Ctrl+Enter, and jumps 
     const page = await alice.newPage();
     await page.goto(`/issues/${issue.key}/conversation`);
 
-    // The Conversation has no dividers of any kind - they belong to the Activity tab - and
-    // nothing is unread, so no card carries the New mark.
+    // The Conversation has no dividers of any kind - they belong to the Activity tab, where
+    // each is a labelled list item (`e2e/activity.e2e.ts`) - and nothing is unread, so no card
+    // carries the New mark.
     const turns = page.getByRole("list", { name: "Conversation turns" });
     await expect(turn(page, "Overflow turn 29")).toBeVisible();
-    await expect(turns.getByRole("separator")).toHaveCount(0);
+    await expect(turns.locator("li[aria-label]")).toHaveCount(0);
     await expect(turns.getByText("New", { exact: true })).toHaveCount(0);
 
     const composer = page.getByRole("form", { name: "Comment composer" });

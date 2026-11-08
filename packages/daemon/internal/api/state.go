@@ -420,6 +420,10 @@ type Issue struct {
 	// asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
+	// WaitingLine is where this issue stands in `admission.waiting` (contract 58). It is present
+	// only for an issue that list names, and absent for a slot holder and for every other issue
+	// the list does not name.
+	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
@@ -444,7 +448,8 @@ type Issue struct {
 // with GateVersion and ArtifactID, the spec version of its registered document a person has not
 // reviewed. Since is Dispatch's time of the hand-back the wait began at,
 // absent when unknown. AnsweredAt and AnsweredBy are absent until a person's act answers the wait;
-// the root then waits at the front of admission's waiting line for its slot.
+// the root then waits in admission's waiting line for its slot, among the issues whose work came
+// back, oldest first.
 type WaitingOnView struct {
 	Kind        string        `json:"kind"`
 	Ask         string        `json:"ask,omitempty"`
@@ -475,7 +480,8 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // process's: a reader compares it with `locator.incarnation` to tell the running process's report
 // from a predecessor's. A socket path never appears in the view. A claim with no process (queued,
 // suspended, failed, retired) has no locator; a claim whose session has not reported, or whose
-// role never reports (the controller), has no capabilities.
+// role never reports (the controller), has no capabilities. A claim whose agent has stepped —
+// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView).
 type ClaimView struct {
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
@@ -493,6 +499,50 @@ type ClaimView struct {
 	// before its first push). It is the worker's word, which nothing verifies.
 	UpdateRound string `json:"updateRound,omitempty"`
 	UpdateHead  string `json:"updateHead,omitempty"`
+	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
+	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
+	Step *StepView `json:"step,omitempty"`
+}
+
+// StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the
+// daemon last saw the claim's agent step, when the turn that step belongs to began, and the call
+// the agent is in. It is what says a worker mid-turn is still moving, so the stall backstop and
+// an operator read the same record.
+//
+// The call's arguments are never here: their length and an eight-byte fingerprint of them stand
+// for them, because a shell command routinely holds a credential and this record reaches every
+// surface an operator reads (supervise.StepRecord). Every field is absent where the record holds
+// nothing for it: a claim whose turn has begun and whose agent has called nothing carries
+// `turnStartedAt` alone; a call still open carries `startedAt` and no `endedAt`, which is the
+// shape a stalled turn leaves behind; `argsBytes` and `argsHash` are absent for a call the
+// daemon saw no arguments of.
+type StepView struct {
+	At            *time.Time `json:"at,omitempty"`
+	TurnStartedAt *time.Time `json:"turnStartedAt,omitempty"`
+	Tool          string     `json:"tool,omitempty"`
+	CallID        string     `json:"callId,omitempty"`
+	ArgsBytes     int        `json:"argsBytes,omitempty"`
+	ArgsHash      string     `json:"argsHash,omitempty"`
+	StartedAt     *time.Time `json:"startedAt,omitempty"`
+	EndedAt       *time.Time `json:"endedAt,omitempty"`
+}
+
+// StepViewOf is step as a claim view shows it, and nil for the zero record — a claim whose agent
+// has neither begun a turn nor made a call the daemon saw — so no such claim carries the key.
+func StepViewOf(step supervise.StepRecord) *StepView {
+	if step == (supervise.StepRecord{}) {
+		return nil
+	}
+	return &StepView{
+		At:            instant(step.At),
+		TurnStartedAt: instant(step.TurnStartedAt),
+		Tool:          step.Tool,
+		CallID:        step.CallID,
+		ArgsBytes:     step.ArgsBytes,
+		ArgsHash:      step.ArgsHash,
+		StartedAt:     instant(step.StartedAt),
+		EndedAt:       instant(step.EndedAt),
+	}
 }
 
 // CapabilityReportView is one session's capability report as the state shows it: when the session
@@ -650,6 +700,18 @@ func GatedStepViewsOf(steps []record.DesignStep, gates map[record.DesignStep]rec
 type SlotView struct {
 	Index      int       `json:"index"`
 	AdmittedAt time.Time `json:"admittedAt"`
+}
+
+// WaitingLineField is the name `waitingLine` carries on the wire, read from here by a test that
+// looks for the field rather than repeating the string.
+const WaitingLineField = "waitingLine"
+
+// WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
+// and the length of that list at this read. It says where the issue stands, not what holds it:
+// `admission.blocked` names what holds it.
+type WaitingLineView struct {
+	Place  int `json:"place"`
+	Length int `json:"length"`
 }
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull

@@ -1,0 +1,23 @@
+-- 20261107212756_conflict_rounds.up.sql — the rounds a conflict with the base caused, which
+-- review_round_cap does not count (INFRA-1442).
+--
+-- phases.conflict_rounds is record.PhaseRow.ConflictRounds: how many of the implementer's rounds
+-- were opened while the daemon's record held the pull request's own head as conflicting with its
+-- base. Every backward move still raises rounds, because the api/handoff.go handoff key is built
+-- from that number and two completions of one issue must not collide; the cap compares
+-- rounds - conflict_rounds with review_round_cap, so a round the daemon itself opened because the
+-- head no longer merges costs the implementer nothing (workflow's recordRound). Zero on every
+-- existing row, which counted no such round apart, and a new generation resets it with rounds
+-- (record's clearGeneration).
+--
+-- pull_requests.conflicting_head is record.PullRequest.ConflictingHead: the head the daemon last
+-- judged conflicting with its base, written by whichever read judged it — the two-minute
+-- required-checks pass reading GitHub's CONFLICTING (workflow's mergeability) or the merge queue
+-- reporting its entry unmergeable on the base branch's own tip (workflow's mergeQueueConflict) —
+-- and cleared by a read that finds that same head mergeable again. It cannot be read off
+-- mergeability beside it: that column is rewritten from GitHub's answer on every pass, and
+-- GitHub answers UNKNOWN for a head sitting in the merge queue, so a move two minutes after the
+-- judgement would read as no conflict at all. '' on every existing row, which is no judgement,
+-- so nothing recorded before this migration excuses a round.
+alter table phases add column conflict_rounds integer not null default 0;
+alter table pull_requests add column conflicting_head text not null default '';
