@@ -13,7 +13,7 @@ import { type AccessibilityExclusion, accessibilityExclusions } from "./accessib
 import { scannedRoutes } from "./review-routes";
 import { seedReviewRoutes } from "./review-seed";
 import { resetDatabase } from "./seed";
-import { asUser } from "./users";
+import { withAlice } from "./users";
 
 /** WCAG 2.0 and 2.1, levels A and AA: the tags the plan names, and the ones a reviewer of this
  *  dashboard is held to. Axe's best-practice rules are not in it, since a best practice is not a
@@ -45,10 +45,21 @@ type Impact = "critical" | "serious" | "moderate" | "minor";
 const scannedHere = new Set<string>();
 const matchedHere = new Set<string>();
 
-/** The key a finding and an entry meet on: the axe rule, the route, and the node's selector. */
-function keyOf(finding: AccessibilityExclusion): string {
-  return `${finding.rule} ${finding.route} ${finding.selector}`;
+/** The key a finding and an entry meet on: the axe rule, the route, and the node's selector.
+ *  One spelling of it, because the stale check below reads the joined string as the entry's
+ *  identity and a finding that matched has to have written that same string. */
+function keyOf(rule: string, route: string, selector: string): string {
+  return `${rule} ${route} ${selector}`;
 }
+
+/** An entry's own key, which is what `matchedHere` holds and what the stale check looks for. */
+function exclusionKey(exclusion: AccessibilityExclusion): string {
+  return keyOf(exclusion.rule, exclusion.route, exclusion.selector);
+}
+
+/** Every entry's key, built once: a serious or critical finding is excluded exactly when its
+ *  own key is in here. */
+const excludedKeys = new Set(accessibilityExclusions.map(exclusionKey));
 
 for (const route of scannedRoutes) {
   // SLOW(>=2s): a database reset, the review corpus, a sign-in and two axe scans of a drawn page.
@@ -57,9 +68,7 @@ for (const route of scannedRoutes) {
   }, testInfo) => {
     await resetDatabase();
     const seed = await seedReviewRoutes();
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
+    await withAlice(browser, async (page) => {
       await page.goto(route.path(seed));
       const failures: string[] = [];
       for (const colorScheme of SCHEMES) {
@@ -91,18 +100,13 @@ for (const route of scannedRoutes) {
             const selector = node.target
               .map((part) => (Array.isArray(part) ? part.join(" ") : String(part)))
               .join(" ");
-            const excluded = accessibilityExclusions.find(
-              (exclusion) =>
-                exclusion.rule === violation.id &&
-                exclusion.route === route.name &&
-                exclusion.selector === selector
-            );
-            if (excluded === undefined) {
+            const key = keyOf(violation.id, route.name, selector);
+            if (excludedKeys.has(key)) {
+              matchedHere.add(key);
+            } else {
               failures.push(
                 `${violation.id} (${impact}) on ${route.name} in ${colorScheme} at ${selector}`
               );
-            } else {
-              matchedHere.add(keyOf(excluded));
             }
           }
         }
@@ -118,16 +122,16 @@ for (const route of scannedRoutes) {
         failures,
         "serious or critical axe violations no entry of e2e/accessibility-exclusions.ts covers"
       ).toEqual([]);
-    } finally {
-      await alice.close();
-    }
+    });
   });
 }
 
 test.afterAll(() => {
   const stale = accessibilityExclusions
-    .filter((exclusion) => scannedHere.has(exclusion.route) && !matchedHere.has(keyOf(exclusion)))
-    .map(keyOf);
+    .filter(
+      (exclusion) => scannedHere.has(exclusion.route) && !matchedHere.has(exclusionKey(exclusion))
+    )
+    .map(exclusionKey);
   expect(
     stale,
     "entries of e2e/accessibility-exclusions.ts whose route was scanned and which matched nothing"

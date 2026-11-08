@@ -74,9 +74,10 @@ images:
   # (.github/workflows/dispatch-browser.yaml's visual job, packages/dispatch/e2e/visual-run.sh).
   # A baseline is a rendering, so the fonts, the freetype and the browser build that made it
   # decide every pixel of it: the container is what makes one taken by a person and one taken by
-  # CI the same image. Microsoft publishes it and nobody else does, so this is the one row whose
-  # upstream is not Docker Hub. Its tag is the Playwright release bun.lock resolves, and
-  # .github/scripts/check-playwright-image.sh fails the build when the two disagree.
+  # CI the same image. Microsoft publishes it and nobody else does, so this is this repository's
+  # one row whose upstream is not Docker Hub. Its tag names Playwright v1.64.1, the release
+  # bun.lock resolves, and the gate that holds the two together is
+  # .github/scripts/check-playwright-version.sh, which pull request #2938 brings.
   - upstream: mcr.microsoft.com/playwright:v1.64.1-noble
     tag: playwright-v1.64.1-noble-2f05f8a7
     digest: sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f

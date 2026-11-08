@@ -42,6 +42,39 @@ package=$(CDPATH='' cd -- "$here/.." && pwd)
 root=$(CDPATH='' cd -- "$package/../.." && pwd)
 cd "$package"
 
+# ONE LANE, AND THIS IS WHAT HOLDS THE RUN TO IT. The seed below runs on the host, outside any
+# Playwright worker, so `TEST_PARALLEL_INDEX` is unset and `e2e/visual-seed.ts` writes the
+# corpus into LANE 0's database alone (e2e/harness-ports.ts). The sweep further down forwards
+# every DISPATCH_E2E_* name the host has, DISPATCH_E2E_WORKERS and DISPATCH_E2E_LANES among
+# them, and the config inside the container runs one worker per lane
+# (e2e/playwright.config.ts). The `visual` and `visual-phone` projects declare no
+# `dependencies`, so a run of more than one lane starts them at once on worker indices 0 and 1,
+# and worker 1 resolves lane 1, whose database nothing seeded. Nothing would fail: a readiness
+# locator such as the Inbox's heading is drawn by an empty page too, so the run would compare -
+# or with `--update-snapshots` WRITE - a baseline of an empty corpus. So it is refused here,
+# before the seed and before the container.
+#
+# `--workers=1` on the Playwright command line is NOT the fix: the config refuses a `--workers`
+# that disagrees with the lane count, because `e2e/run.ts` has already started one harness per
+# lane and a worker resolves the lane of its own index (e2e/playwright.config.ts, "This run has
+# N lanes"). The run has to ask for one lane, which is what the message below names.
+#
+# The lane count is read as `laneCount()` reads it (e2e/harness-ports.ts): DISPATCH_E2E_LANES,
+# which `e2e/run.ts` exports for the command it runs, else the DISPATCH_E2E_WORKERS this run
+# asks for, else one. An empty value is an unset one there, and is here.
+lanes=${DISPATCH_E2E_LANES:-}
+[ -n "$lanes" ] || lanes=${DISPATCH_E2E_WORKERS:-}
+[ -n "$lanes" ] || lanes=1
+if [ "$lanes" != 1 ]; then
+  printf '%s\n' \
+    "e2e/visual-run.sh: this run has $lanes lanes and the visual review takes one." \
+    "e2e/visual-seed.ts runs on the host, outside any Playwright worker, so it seeds lane 0" \
+    "alone; the rows of a second lane would open a database nothing seeded and compare - or" \
+    "with --update-snapshots write - a baseline of an empty corpus." \
+    "Run it with DISPATCH_E2E_WORKERS=1." >&2
+  exit 1
+fi
+
 # The host's copy of the seed, under this run's temporary directory, and the path the container
 # sees it at: /tmp is the container's own and is writable there whatever the host's layout is.
 seed_json="${TMPDIR:-/tmp}/dispatch-visual-seed.$$.json"

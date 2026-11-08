@@ -16,8 +16,8 @@ import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
-import { phoneShotNames, type ReviewSeed, shotRoutes } from "./review-routes";
-import { asUser } from "./users";
+import { phoneShotNames, type ReviewedRoute, type ReviewSeed, shotRoutes } from "./review-routes";
+import { withAlice } from "./users";
 import { workspaceSessions } from "./workspace";
 
 const SCHEMES = ["light", "dark"] as const;
@@ -42,7 +42,9 @@ test.beforeAll(async () => {
 
 /** The desktop rows this file shoots again on a phone, by name: `e2e/review-routes.ts` holds
  *  which pages those are and why, so the subset is taken from it rather than written twice. */
-const phoneRoutes = shotRoutes.filter((route) => phoneShotNames.includes(route.name));
+const phoneRoutes: readonly ReviewedRoute[] = shotRoutes.filter((route) =>
+  phoneShotNames.includes(route.name)
+);
 
 for (const route of phoneRoutes) {
   // SLOW(>=2s): a sign-in, a navigation, and a screenshot comparison in each of two schemes.
@@ -52,9 +54,7 @@ for (const route of phoneRoutes) {
       return;
     }
     const seed = JSON.parse(readFileSync(seedPath, "utf8")) as ReviewSeed;
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
+    await withAlice(browser, async (page) => {
       await page.goto(route.path(seed));
       for (const colorScheme of SCHEMES) {
         await page.emulateMedia({ colorScheme });
@@ -72,8 +72,6 @@ for (const route of phoneRoutes) {
           maxDiffPixelRatio: 0,
         });
       }
-    } finally {
-      await alice.close();
-    }
+    });
   });
 }

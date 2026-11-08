@@ -4,14 +4,13 @@ import {
   FIXTURE_WINDOW as MEASURES_WINDOW,
   seedDeliveryFixture,
   seedMeasuresFixture,
+  TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { pressFinger } from "./touch";
 import { asUser } from "./users";
-
-const FIXTURE_WINDOW = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
 /** Where the chart draws a run's shape: its series' name, its column on the x axis (the deploys
  *  at 0.15 and the failures at 0.85 of the Deploys/fails column, `Timeline.tsx`'s
@@ -70,7 +69,7 @@ async function shapePosition(
 /** Opens the seeded timeline and waits for its chart to paint run 500's deploy. On a phone the
  *  facets sit above the chart, so the chart is scrolled into view before anything points at it. */
 async function openTimeline(page: Page, query = ""): Promise<void> {
-  await page.goto(`/delivery?${FIXTURE_WINDOW}${query}`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}${query}`);
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await page.getByTestId("delivery-chart").scrollIntoViewIfNeeded();
   await expect.poll(() => shapePosition(page, DEPLOY_500)).not.toBeNull();
@@ -318,7 +317,7 @@ test("the list reaches a deploy's drill-down by keyboard, and Escape hands focus
   await seedDeliveryFixture();
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
-  await page.goto(`/delivery?${FIXTURE_WINDOW}&mode=list`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}&mode=list`);
 
   // The rows are one tab stop: the first row takes focus, the arrow key moves to the next.
   const rows = page.locator("tbody tr[aria-rowindex]");
@@ -372,7 +371,7 @@ test("the freshness row shows a named reconcile failure, distinct from mere stal
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${FIXTURE_WINDOW}`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
 
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await expect(
@@ -397,7 +396,7 @@ test("an unfetchable pull request shows on the freshness row by count", async ({
   const context = await asUser(browser, "alice");
   const page = await context.newPage();
 
-  await page.goto(`/delivery?${FIXTURE_WINDOW}`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
 
   await expect(page.getByRole("heading", { name: "Delivery timeline" })).toBeVisible();
   await expect(
@@ -418,7 +417,7 @@ test("an unconfigured Delivery page sets itself up from its form and then shows 
   const page = await context.newPage();
 
   try {
-    await page.goto(`/delivery?${FIXTURE_WINDOW}`);
+    await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
     await expect(page.getByRole("heading", { name: "Set up the delivery timeline" })).toBeVisible();
     await expect(page.getByLabel("Deploy repository")).toHaveValue("");
     await expect(page.getByLabel("Deploy repository")).toHaveAttribute("placeholder", "owner/repo");

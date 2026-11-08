@@ -7,15 +7,15 @@
  *  the issue tree, and the delivery fixtures fill `/delivery` and `/pipeline`. What it adds is
  *  the four documents the issue tabs need. */
 import { createIssueArtifact, createPlanReview, getIssue, getProjectArtifact } from "./api";
-import { PIPELINE_AT, seedDeliveryFixture, seedPipelineRows } from "./delivery-seed";
+import {
+  PIPELINE_AT,
+  seedDeliveryFixture,
+  seedPipelineRows,
+  TIMELINE_FIXTURE_QUERY,
+} from "./delivery-seed";
 import { blockId } from "./editor";
 import type { ReviewSeed } from "./review-routes";
 import { seedWorkspace } from "./workspace";
-
-/** The window `/delivery` is opened on, the literal `e2e/delivery.e2e.ts`'s own `FIXTURE_WINDOW`
- *  uses: it spans the day `seedDeliveryFixture()` writes its pull requests and runs in. That
- *  module keeps the string to itself, so the one place it is written twice is here. */
-const DELIVERY_QUERY = "from=2024-06-01T00%3A00%3A00Z&to=2024-06-02T00%3A00%3A00Z";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
  *  and the Spec tab draws beside the block it shaped. */
@@ -106,8 +106,7 @@ Each page is read once it is drawn.
 
   return {
     broadcast: workspace.broadcast.id,
-    childIssue: workspace.issues.child,
-    deliveryQuery: DELIVERY_QUERY,
+    deliveryQuery: TIMELINE_FIXTURE_QUERY,
     issue,
     issueArtifactSlug: requirements.artifact.slug,
     pipelineAt: PIPELINE_AT,

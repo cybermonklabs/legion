@@ -14,7 +14,8 @@
  *  `./delivery-seed`. The image carries no `psql` binary. `e2e/visual-seed.ts` runs on the host
  *  before the container starts, writes the corpus and saves its ids as JSON, and
  *  `DISPATCH_E2E_VISUAL_SEED` names that file here. `./review-routes` imports Playwright's types
- *  alone and `./users` reaches no further than `./api` and the harness ports, so both are safe.
+ *  and `./two-builds-routes`'s route paths, which is a module of data that imports nothing, and
+ *  `./users` reaches no further than `./api` and the harness ports, so both are safe.
  *
  *  ONE SEED FOR THE WHOLE FILE. No row resets the database and no row seeds it: the corpus every
  *  baseline was taken against is the one the host wrote once. What that costs is that a row
@@ -57,7 +58,7 @@ import { expect, test } from "@playwright/test";
 
 import { setLiveSessions } from "./agents";
 import { type ReviewSeed, shotRoutes } from "./review-routes";
-import { asUser } from "./users";
+import { withAlice } from "./users";
 import { workspaceSessions } from "./workspace";
 
 /** Both schemes in one row, as `e2e/accessibility.e2e.ts` reads them: a sign-in and a navigation
@@ -93,9 +94,7 @@ for (const route of shotRoutes) {
       return;
     }
     const seed = JSON.parse(readFileSync(seedPath, "utf8")) as ReviewSeed;
-    const alice = await asUser(browser, "alice");
-    try {
-      const page = await alice.newPage();
+    await withAlice(browser, async (page) => {
       await page.goto(route.path(seed));
       for (const colorScheme of SCHEMES) {
         await page.emulateMedia({ colorScheme });
@@ -119,8 +118,6 @@ for (const route of shotRoutes) {
           maxDiffPixelRatio: 0,
         });
       }
-    } finally {
-      await alice.close();
-    }
+    });
   });
 }

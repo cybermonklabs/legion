@@ -7,14 +7,16 @@
  *  reason, never silently unreviewed.
  *
  *  This module holds data and locators only. The visual review runs in a container that carries
- *  no `psql` binary, so nothing here may reach `./psql`, `./seed` or `./delivery-seed`, and its
- *  one import is Playwright's types. */
+ *  no `psql` binary, so nothing here may reach `./psql`, `./seed` or `./delivery-seed`: its only
+ *  imports are Playwright's types and `./two-builds-routes`'s route paths, and that module
+ *  imports nothing at all. */
 import type { Locator, Page } from "@playwright/test";
+
+import type { WalkRoutePath } from "./two-builds-routes";
 
 /** The ids the review layers' seed makes, which a route's path is built from. */
 export interface ReviewSeed {
   readonly issue: string;
-  readonly childIssue: string;
   readonly project: string;
   readonly broadcast: string;
   readonly projectDocumentSlug: string;
@@ -32,8 +34,11 @@ export type ReviewRoute =
       readonly kind: "reviewed";
       /** The entry's own name, which a row's title and a snapshot's file name are built from. */
       readonly name: string;
-      /** The router path this entry stands for, exactly as `e2e/two-builds-routes.ts` writes it. */
-      readonly pattern: string;
+      /** The router path this entry stands for, exactly as `e2e/two-builds-routes.ts` writes
+       *  it: typed as that list's own paths, so a pattern no router route has is a compile
+       *  error and `e2e/__tests__/review-routes.test.ts` is left the direction no type can
+       *  express - that every router route is covered. */
+      readonly pattern: WalkRoutePath;
       readonly path: (seed: ReviewSeed) => string;
       /** Resolves once the page is drawn, so neither layer reads a loading skeleton. */
       readonly ready: (page: Page) => Locator;
@@ -42,7 +47,7 @@ export type ReviewRoute =
   | {
       readonly kind: "excluded";
       readonly name: string;
-      readonly pattern: string;
+      readonly pattern: WalkRoutePath;
       readonly reason: string;
     };
 
@@ -290,16 +295,20 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
 ];
 
-const reviewed: readonly Extract<ReviewRoute, { kind: "reviewed" }>[] = reviewRoutes.filter(
-  (route): route is Extract<ReviewRoute, { kind: "reviewed" }> => route.kind === "reviewed"
+/** A row of `reviewRoutes` that is reviewed rather than excluded, which is what every list
+ *  below holds and what the two layers' rows are built from. */
+export type ReviewedRoute = Extract<ReviewRoute, { kind: "reviewed" }>;
+
+const reviewed: readonly ReviewedRoute[] = reviewRoutes.filter(
+  (route): route is ReviewedRoute => route.kind === "reviewed"
 );
 
-export const scannedRoutes: readonly Extract<ReviewRoute, { kind: "reviewed" }>[] = reviewed.filter(
-  (route) => route.layers.includes("scan")
+export const scannedRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
+  route.layers.includes("scan")
 );
 
-export const shotRoutes: readonly Extract<ReviewRoute, { kind: "reviewed" }>[] = reviewed.filter(
-  (route) => route.layers.includes("shoot")
+export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
+  route.layers.includes("shoot")
 );
 
 /** The desktop routes a phone viewport draws differently, a subset of `shotRoutes` by name.
