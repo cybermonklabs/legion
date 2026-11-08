@@ -1581,6 +1581,195 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# A heredoc body belongs to the command consuming it. A shell runs what it reads on its standard
+# input, so the calls a `bash <<EOF` body writes are the step's own and their attempts are the
+# step's cost; `cat`, a redirect into a file and a `python3 <<'PY'` take their body as data,
+# where a path is a path something prints rather than runs. The baseline's ci-ok-reconcile.sh is
+# 900 s of its own, which is the figure every case below turns on.
+echo "case: a script called inside a bash heredoc is the step's own arithmetic"
+root=$(fixture heredoc-bash)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks the queue left
+        timeout-minutes: 15
+        run: |
+          bash <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the call the body makes" "$(contains "$out" 'retries take 900 s to exhaust')"
+check "names the script that body runs" \
+  "$(contains "$out" 'that of .github/scripts/ci-ok-reconcile.sh, which it runs')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 16')"
+
+echo "case: the same body under a budget above the call it makes passes"
+root=$(fixture heredoc-bash-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks the queue left
+        timeout-minutes: 16
+        run: |
+          bash <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: the same call inside a cat heredoc is data and costs the step nothing"
+root=$(fixture heredoc-cat)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write the note that names the script a reader runs
+        run: |
+          cat > note.txt <<'EOF'
+          Run .github/scripts/ci-ok-reconcile.sh once the queue has settled.
+          EOF
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the step holding no call is asked for no budget" \
+  "$(is "$(contains "$out" '900 s')" false)"
+
+echo "case: the same call inside a python3 heredoc is data and costs the step nothing"
+root=$(fixture heredoc-python)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Print the script a reader runs
+        run: |
+          python3 <<'PY'
+          print("run .github/scripts/ci-ok-reconcile.sh once the queue has settled")
+          PY
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the step holding no call is asked for no budget" \
+  "$(is "$(contains "$out" '900 s')" false)"
+
+# However the shell is written, the body is the commands it runs: a bare word, an absolute path,
+# options of its own, a `-s` that says the script is standard input, and a `-` written for the
+# script argument, which is standard input spelled out.
+echo "case: every spelling of a shell reads its body as the step's commands"
+root=$(fixture heredoc-interpreters)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A shell written as an absolute path
+        timeout-minutes: 15
+        run: |
+          /bin/bash <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A shell carrying options of its own
+        timeout-minutes: 15
+        run: |
+          sudo bash -euo pipefail <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A shell told to read its script from standard input
+        timeout-minutes: 15
+        run: |
+          bash -s stage1 <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A dash written for the script argument
+        timeout-minutes: 15
+        run: |
+          sh - <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "the absolute path runs its body" \
+  "$(contains "$out" "step .A shell written as an absolute path. carries .timeout-minutes: 15")"
+check "the shell carrying options runs its body" \
+  "$(contains "$out" "step .A shell carrying options of its own. carries .timeout-minutes: 15")"
+check "the shell reading standard input runs its body" \
+  "$(contains "$out" "step .A shell told to read its script from standard input. carries")"
+check "the dash for the script argument runs its body" \
+  "$(contains "$out" "step .A dash written for the script argument. carries")"
+check "each of the four is one refusal" \
+  "$(contains "$out" '4 download(s) outside the one retry rule')"
+
+# An interpreter whose script is somewhere else reads its body as that script's input, which is
+# the shell's own rule: the word behind `-c` is the script, and so is a file named on the line.
+echo "case: an interpreter whose body is another script's input is data"
+root=$(fixture heredoc-interpreter-input)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A script behind -c, whose body is that script's input
+        run: |
+          bash -c 'cat > note.txt' <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A script file, whose body is that file's input
+        run: |
+          bash tools/note.sh <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "neither step is asked for a budget" "$(is "$(contains "$out" '900 s')" false)"
+
+echo "case: a data heredoc inside a shell's heredoc is still data"
+root=$(fixture heredoc-nested)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks and leave a note naming the other script
+        timeout-minutes: 15
+        run: |
+          bash <<'OUTER'
+          cat > note.txt <<'INNER'
+          Read .github/scripts/check-pr-text.sh for the page this reconcile skipped.
+          INNER
+          .github/scripts/ci-ok-reconcile.sh
+          OUTER
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "the outer body is commands and the inner one is not" \
+  "$(contains "$out" 'retries take 900 s to exhaust')"
+check "the script the inner body names is no call of this step" \
+  "$(is "$(contains "$out" 'check-pr-text.sh')" false)"
+
 # A declaration writes one number, so it answers for one loop. A second loop of the same file,
 # step and verb would take that number without anybody writing it one, which is the undercount
 # the declaration exists to stop.

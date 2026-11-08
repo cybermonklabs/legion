@@ -48,7 +48,9 @@
 # Dockerfiles a CI job builds (DOCKERFILES below; a missing one fails this check, so a rename is
 # seen). Files are discovered by walking the tree, not by asking git, so an unsnapshotted change
 # cannot read green locally. Workflows and actions are parsed as YAML, never grepped, and only a
-# step's `run:` is read. This check reads its own file like any other script.
+# step's `run:` is read. This check reads its own file like any other script, which is why the
+# comments here write no heredoc operator of their own: an operator no line of this file closes
+# would blank every line after it for this file's own reading.
 #
 # Rule 8 reads one step across more than one of those files: a step that runs a script under
 # .github/scripts/ carries that script's own retried calls, and those of every script it calls
@@ -65,10 +67,17 @@
 # that does not write the script's path — one that builds the path as it runs, or runs a
 # variable holding the whole command — is a call SCRIPT_CALL does not find: the script is still
 # read as a file of its own, so rules 1 to 6 hold it, but its arithmetic reaches no step's
-# budget. A call written inside a heredoc is another: a heredoc body is data to the shell, and
-# scripts_called reads the text with every body blanked, because the paths the bodies of this
-# tree hold are paths some Python prints rather than runs, and counting them as calls handed the
-# lint step that runs this check 15000 s of other scripts' arithmetic. And a script outside
+# budget. A call inside a heredoc whose consumer this check cannot name is another: a body
+# belongs to the command it is fed to, and runs_heredoc reads that command off the line the
+# operator sits on, so the body of a `bash` heredoc is shell the step runs and the calls in it
+# are the step's own, while `cat`, a redirect into a file, `jq` and a `python3` heredoc take
+# their body as data, where a path is a path something prints rather than runs. What the command
+# word does not say, this check does not read: a consumer written as a variable (a heredoc fed
+# to `"$shell"`), a shell behind a program reduce_words does not strip (an `ssh host bash`, and
+# a wrapper written as a path, where a bare `env bash` is read as the shell it runs and
+# `/usr/bin/env bash` is not), and an interpreter whose script argument hides behind a long
+# option taking a value all read as data, so a call written in one of those bodies reaches no
+# step's budget. And a script outside
 # .github/scripts/ is not read at all, since that one directory is
 # the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
 # packages/<package>/scripts/<name>.sh — ci.yaml and the release workflows each hold such calls
@@ -570,7 +579,9 @@ UNCOUNTABLE_WORD = re.compile(r"\$\(|`|\[[@*]\]|[*?]")
 # Transparent in command position, taking no argument of their own.
 PASSTHROUGH = {"sudo", "exec", "command", "builtin", "nice", "ionice", "nohup", "time", "env",
                "stdbuf", "setsid", "doas", "xvfb-run"}
-# Transparent, but the command they run is inside the script string behind `-c`.
+# Transparent, but the command they run is inside the script string behind `-c`. These are also
+# the shells runs_heredoc reads a heredoc body as commands for, since a shell runs what it reads
+# on its standard input.
 INTERPRETERS = {"bash", "sh", "dash", "zsh"}
 # Transparent, and the verb is what they run: a package runner resolves a binary the workspace's
 # own install already provides.
@@ -632,10 +643,53 @@ def problem(path: str, line: int, message: str) -> None:
 # ---------------------------------------------------------------- reading the shell
 
 
+def runs_heredoc(before: str) -> bool:
+    """Whether the command a heredoc is fed to runs its body as shell. `before` is the line in
+    front of the operator, where that command word sits: the last simple command of it, read with
+    the Scanner below and stripped of the wrappers reduce_words strips, so a `sudo bash`, a
+    `timeout 60 /bin/bash` and a bare `sh` are one answer. A shell of INTERPRETERS runs what it
+    reads on its standard input, so a body of one is the commands the step itself runs; every
+    other consumer — `cat`, a redirect into a file, `jq`, a `read`, the `python3 <<'PY'` rule 6
+    reads as Python — takes its body as data.
+
+    Two shapes of an interpreter take it as data as well, and both are the shell's own rule: a
+    `-c <script>` runs the word behind the option and leaves the body on that script's standard
+    input, and a script file argument does the same. `-s` is what overrides the second, since
+    `bash -s a b` reads the script from standard input and hands the words after it to it as
+    arguments, and a `-` written for that argument is standard input spelled out."""
+    commands = Scanner(1).scan(before)
+    words = reduce_words(commands[-1].words)[0] if commands else []
+    if not words or PROGRAM.sub("", words[0]).rsplit("/", 1)[-1] not in INTERPRETERS:
+        return False
+    stdin = False
+    rest = words[1:]
+    while rest:
+        word = rest.pop(0)
+        if word == "--":
+            # Past the separator the next word is the script argument, if the command writes one.
+            return stdin or not rest or rest[0] == "-"
+        if not word or word[0] not in "-+" or word == "-":
+            return stdin or word == "-"
+        flags = word[1:] if word[1:2] != "-" else ""
+        if "c" in flags:
+            return False
+        if "s" in flags:
+            stdin = True
+        if flags[-1:] == "o" and rest:
+            # `-o pipefail`, `+o posix`, `-euo pipefail`: the word after is that option's value
+            # and no script of its own.
+            rest.pop(0)
+    return True
+
+
 def without_heredocs(text: str) -> tuple[str, list[tuple[int, str]]]:
-    """The text with every heredoc body blanked, and those bodies as (line, text) pairs. A body is
-    data to the shell, not commands, so the shell rules never read one; the Python a `python3
-    <<'PY'` runs is read by rule 6 instead, off the bodies this returns."""
+    """The text with every heredoc body its consumer reads as data blanked, and those bodies as
+    (line, text) pairs. A body belongs to the command it is fed to: a shell runs what it reads on
+    its standard input, so such a body stays in the text as the commands it is and the shell rules
+    read it where it is written; every other consumer takes it as data, so the shell rules never
+    read one, and the Python a `python3 <<'PY'` runs is read by rule 6 instead, off the bodies
+    this returns. A heredoc inside a body a shell runs is read the same way, which is what the
+    recursion below is for: a `cat <<'INNER'` written inside a `bash <<'OUTER'` is still data."""
     out: list[str] = []
     bodies: list[tuple[int, str]] = []
     lines = text.split("\n")
@@ -646,10 +700,19 @@ def without_heredocs(text: str) -> tuple[str, list[tuple[int, str]]]:
         index += 1
         for match in re.finditer(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", line):
             terminator = match.group(2)
+            first = index + 1
+            body: list[str] = []
             while index < len(lines) and lines[index].strip() != terminator:
-                bodies.append((index + 1, lines[index]))
-                out.append("")
+                body.append(lines[index])
                 index += 1
+            if body and runs_heredoc(line[:match.start()]):
+                inner, nested = without_heredocs("\n".join(body))
+                out.extend(inner.split("\n"))
+                bodies.extend((first + number - 1, body_line) for number, body_line in nested)
+            else:
+                out.extend("" for _ in body)
+                bodies.extend((first + offset, body_line)
+                              for offset, body_line in enumerate(body))
             if index < len(lines):
                 out.append(lines[index])
                 index += 1
@@ -1497,16 +1560,15 @@ def scripts_called(text: str, first_line: int = 1) -> dict[str, list[int]]:
     behind a `source` or `.`, and the path is the one thing all of those write. A name SCRIPTS
     does not hold is nothing this check reads.
 
-    A heredoc body is left out with the comments, for the reason without_heredocs gives: it is
-    data to the shell and not commands, and every path one holds in this tree is a path some
-    Python prints rather than runs — check-ci-images.sh's `MIRROR_SCRIPT`, which names the
+    A heredoc body a shell runs is read here with the rest of the text, and one its consumer
+    takes as data is left out with the comments, which is the reading without_heredocs makes:
+    a `bash <<EOF` body is the step's own commands, so a script it calls is a script the step
+    waits for, and the paths a `cat`, a `jq` or a `python3 <<'PY'` body spells are paths
+    something prints rather than runs — check-ci-images.sh's `MIRROR_SCRIPT`, which names the
     script a reader is told to run, and this file's own EXEMPTIONS and DECLARED_LOOPS, which
     name the files their entries cover. Counting those as calls gave the lint step that runs
     this check 15000 s of other scripts' arithmetic, and the ci-images job's two check steps
-    mirror-ci-images.sh's 3000 s, none of which those steps wait for. A heredoc that does run
-    a script — a `python3` body calling one through subprocess — is a shape no file here
-    writes, and the day one does is the day to read a heredoc by what it runs rather than by
-    the paths it spells."""
+    mirror-ci-images.sh's 3000 s, none of which those steps wait for."""
     found: dict[str, list[int]] = {}
     lines = without_heredocs(text)[0].split("\n")
     index = 0
