@@ -2495,11 +2495,25 @@ for budget in budgets:
         # found, because the scripts are read after the steps that run them. The two take
         # different advice, because a declaration names a site by the verb it retries and a
         # script call writes a path where that verb would be.
+        #
+        # That read of a script answers None in its turn when the script holds an uncounted
+        # loop of its own, and then there is no figure to print: a number written there would
+        # be this check stating a cost it did not compute, which is the defect rule 8 exists to
+        # refuse, one layer in and in its own voice. So the sentence says what is true instead,
+        # that the script's own loop is uncounted too, and names the site that stopped it.
         script_call = blocking[0].one is None
-        one = (script_arithmetic(blocking[0].what, set()) or 0 if script_call
+        one = (script_arithmetic(blocking[0].what, set()) if script_call
                else blocking[0].one)
-        waiting = ("One run of that script takes" if script_call
-                   else "One call there takes")
+        if one is None:
+            cost_read = (f"`{blocking[0].what}` holds a loop of its own whose passes this "
+                         "check cannot read either, so what one run of it takes is a figure "
+                         "this check cannot make, and the step waits for that once per pass of "
+                         "the loop above it")
+        else:
+            waiting = ("One run of that script takes" if script_call
+                       else "One call there takes")
+            cost_read = (f"{waiting} {one} s to exhaust its attempts and the step waits for "
+                         "that once per pass")
         instead = (
             "take the call out of the loop, or write the loop inside that script, where the "
             "call it retries is a site a declaration can name. No entry of DECLARED_LOOPS "
@@ -2515,9 +2529,8 @@ for budget in budgets:
         problem(budget.path, budget.line,
                 f"step '{budget.step}' {carries} and this "
                 "check can put no figure on it: it runs a retried call inside a loop whose "
-                f"passes it cannot read — {named}. {waiting} "
-                f"{one} s to exhaust its attempts and the step waits for "
-                "that once per pass, so a budget written for one pass is a step the runner "
+                f"passes it cannot read — {named}. {cost_read}, so a budget written for one "
+                "pass is a step the runner "
                 "cuts in the middle of the retry it exists to allow. Write the count where "
                 "this check reads it — a `for x in 1 2 3 4 5 6 7`, a `for x in "
                 f"$(seq 1 7)`, or a `for ((i = 0; i < 7; i++))` — or {instead}")

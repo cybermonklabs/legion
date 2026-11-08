@@ -1156,6 +1156,49 @@ check "says where a count can be written or declared" "$(contains "$out" 'DECLAR
 check "does not judge the budget against a figure it is missing" \
   "$(is "$(contains "$out" 'does not strictly exceed')" false)"
 
+# Two uncounted loops, one inside the other's script: the step's loop cannot be counted, and
+# neither can the loop inside the script it runs, so the figure for one run of that script is
+# one this check cannot make either. It printed `0 s` here until the read's None was taken for
+# a zero, which is the gate stating a cost it never computed - rule 8's own defect, one layer
+# in (dispatch://INFRA-1545, round 4).
+echo "case: a script whose own loop is uncounted is refused with no figure at all"
+root=$(fixture script-loop-unreadable)
+cat > "$root/.github/scripts/c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id; do
+  retry_fetch "the run $id" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            .github/scripts/c.sh "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the call it cannot count" \
+  "$(contains "$out" "step .Read every run the decision named. carries .timeout-minutes: 30. and this check can put no figure on it")"
+check "names the script call and the loop around it" \
+  "$(contains "$out" '..github/scripts/c.sh. at .github/workflows/case.yaml:10, inside the loop at line 9')"
+check "says the script's own loop is uncounted too" \
+  "$(contains "$out" 'holds a loop of its own whose passes this check cannot read either')"
+check "prints no figure for a cost it cannot compute" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+check "still says what to do instead" \
+  "$(contains "$out" 'take the call out of the loop')"
+
 # A step with no budget of its own is no longer a step nothing judges: rule 8 asks a budget of
 # every step holding a retried call, so the loop this check cannot read is refused here too,
 # and the refusal names the loop rather than the missing budget — a reader cannot write the
