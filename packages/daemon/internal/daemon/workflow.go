@@ -781,12 +781,81 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 			if err := w.holdForCatchUp(scoped, tx); err != nil {
 				return err
 			}
+			if err := w.releaseParkedClaims(scoped, tx, scope); err != nil {
+				return err
+			}
 		}
 		return w.admission.Reconcile(scoped, tx, listed, target, position)
 	}); err != nil {
 		return fmt.Errorf("reconcile admission: %w", err)
 	}
 	committed()
+	return nil
+}
+
+// releaseParkedClaims queues one Dispatch claim release (record.ClaimRelease) for each issue of
+// the boot's listing that still carries a claim while the daemon's own record says it stopped.
+// Dispatch releases a claim at a close alone (its issue PATCH), so a park leaves the claim of the
+// session the daemon stopped standing on the board.
+//
+// It is the boot's pass and not a periodic sweep because every park the daemon sees queues its
+// own row (workflow.Engine.leave), so the only claims left for this to find are the ones parked
+// before that row existed and any row lost with a restore of the database. The recovery caller
+// passes boot false (recoverRepositories) and starts no pass.
+//
+// A summary carrying no claim is passed over before anything is read, which is the whole of the
+// pass's cost: of the 1,585 issues of the live board, 1,426 carry none. Whether the issue stopped
+// is the record's to say and never the listing's, because an unslotted root and a lingering root
+// both keep an active Dispatch status (workflow.Engine.LeaveUnslotted leaves the root at the
+// status it stood at). An issue the daemon does not record is left alone with nothing logged: it
+// could attribute no claim of it. So is a tree the operator holds, on the predicate a park of
+// such a root reads (workflow.Engine.operatorHoldsTree): the operator's tree shares the root's
+// key and tokens, and its claims are the operator's.
+//
+// The pass attributes no claim itself. The row's executor re-reads both Dispatch and the record
+// when it runs (outbox.releaseClaim), so a person's claim, a session of another tree, a holder no
+// claims row accounts for and an issue running again all end the row there, on the reading that
+// is current when the DELETE would be sent. The rows are drained by the outbox's own sweep rather
+// than by a commit wake: attach stores the outbox the records' wake reaches (wakeOutbox) after
+// the reconcile probe has run (daemon.go's boot stages).
+func (w *workflowRuntime) releaseParkedClaims(ctx context.Context, tx pgx.Tx, scope []dispatch.IssueSummary) error {
+	for _, summary := range scope {
+		if summary.ClaimedBy == "" && !summary.ClaimUnread {
+			continue
+		}
+		if summary.Status == record.DoneStatus {
+			continue
+		}
+		issue, err := w.records.Issue(ctx, tx, summary.Key)
+		if err != nil {
+			return fmt.Errorf("read the record of %s before its claim release: %w", summary.Key, err)
+		}
+		if issue == nil || (record.InWorkflow(*issue) && !issue.Lingers()) {
+			continue
+		}
+		project, err := claim.ProjectToken(issue.Project)
+		if err != nil {
+			return err
+		}
+		lifecycle, found, err := w.records.TreeLifecycle(ctx, tx, project, issue.Tree)
+		if err != nil {
+			return fmt.Errorf("read the tree lifecycle of %s before its claim release: %w", summary.Key, err)
+		}
+		if found && lifecycle.HeldByOperator() {
+			continue
+		}
+		row, err := record.NewOutboxRow(summary.Key, record.ClaimRelease{}, time.Now().UTC())
+		if err != nil {
+			return err
+		}
+		if err := w.records.Enqueue(ctx, tx, row); err != nil {
+			return fmt.Errorf("queue the Dispatch claim release of %s: %w", summary.Key, err)
+		}
+		intake.OnCommit(ctx, func() {
+			w.log.Info("workflow: boot queues a Dispatch claim release for an issue out of the workflow",
+				"issue", issue.Key, "tree", issue.Tree, "status", issue.Status)
+		})
+	}
 	return nil
 }
 
