@@ -37,10 +37,14 @@ listener_post() {
 # old_register SESSION INSTANCE: one registration sent by curl rather than by a client process.
 # An empty INSTANCE sends no client_instance_id at all, which is what every client sent before a
 # registration named its process; self_subscribed is what makes the listener write the session
-# record the role lookup reads a holder's liveness from.
+# record the role lookup reads a holder's liveness from. The delivery field asks for the
+# session's own consumer, which every registration this release answers asks for: a registration
+# that asks for no delivery is refused `409 not_requested`, since no session receives from a
+# plain NATS subscription any more (INFRA-771). What each row drives here is a client that names
+# no process, not one that reads from a path this release no longer has.
 old_register() {
   listener_post /v1/interests/subscribe "$(jq -nc --arg s "$1" --arg i "$2" \
-    '{session_id: $s, self_subscribed: true, topics: []}
+    '{session_id: $s, self_subscribed: true, topics: [], delivery: {consumer: true, epoch: "smoke"}}
      + (if $i == "" then {} else {client_instance_id: $i} end)')"
 }
 
