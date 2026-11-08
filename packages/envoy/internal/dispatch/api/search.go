@@ -118,13 +118,19 @@ const (
 // key (q.own_keys, searchOwnIssueKeys). A key is indexed with its project ('infra' <-> '-1042'),
 // so the number alone, or a space where the hyphen is, matches no issue's vector, and the issue
 // a person asked for would be absent from the answer rather than first in it - but the two are
-// different access paths, and one predicate ORing them together is a join filter rather than an
-// index condition, which is what left issues_search unread while every other arm's index was
-// read (INFRA-1042). The cost of that was the whole table detoasted on every search once an
-// issue's own spec went into issues.search (migration 20261105145242_issues_search_spec): 8.5 kB
-// a row against 190 bytes, 36 MB of out-of-line values the planner prices at nothing, ~33 ms on
-// every query. Split, the vector match is `i.search @@ q.tsq` alone, the shape the comment, ask,
-// message and document arms already take, and the planner reads issues_search for it.
+// different access paths, and one predicate ORing them together is never an index condition on
+// issues_search: it is a join filter over a sequential scan of issues, or at best the recheck
+// of a BitmapOr that re-tests the vector of every candidate row on the heap. Either way the arm
+// pays for the whole row, which an issue's own spec in issues.search made expensive (migration
+// 20261105145242_issues_search_spec): 8.5 kB a row against 190 bytes, 36 MB of out-of-line
+// values the planner prices at nothing (INFRA-1042). Split, the vector match is
+// `i.search @@ q.tsq` alone, the shape the comment, ask, message and document arms already take,
+// and the planner reads issues_search for it. Measured on a fixture of production's size with
+// the parameters bound as the route binds them (explain (analyze, buffers) of a generic plan):
+// the OR takes a BitmapOr of issues_search and issues_pkey whose recheck is the OR itself, 2.4
+// and 6.0 ms over 32 and 147 buffers for two queries; the two arms take one bitmap index scan
+// of issues_search whose condition is the match alone, 0.2 and 1.1 ms over 10 and 40 buffers,
+// with the key arm never executed for a query that names no issue.
 //
 // The two arms are disjoint, so the union is `union all` and no issue is listed twice: the
 // vector arm leaves out every issue the key arm answers (`not (i.key = any(q.own_keys))`), and
