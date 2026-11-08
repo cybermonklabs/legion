@@ -1009,6 +1009,157 @@ jobs:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
+  # The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
+  # set compared against a committed baseline, in light and in dark, at a desktop width and two
+  # of them again at a phone width. Eighteen pages and two, so forty comparisons, which is the
+  # number of PNGs under packages/dispatch/e2e/__screenshots__.
+  #
+  # The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
+  # or a layout regression is refused at the merge rather than found the next morning, and the
+  # nightly tells nobody but the default branch's last committer (that workflow's own head says
+  # so). The cost is that a flaky comparison would hold the queue too, which is why the tolerance
+  # is measured from zero rather than defaulted (packages/dispatch/e2e/visual.e2e.ts).
+  #
+  # Why a `docker run` inside a step and not a job-level `container:`. A `container:` on any job
+  # of this file drops every `go build` the suite starts out of check-ci-filters.sh's reduction
+  # (ci_filter_coverage.py's `shell_reason`, "the job runs in a container:"), which then counts
+  # each as reading every Go file of the repository. The shard and alone jobs below do take one,
+  # since the browsers they run are in it, and the `dispatch_browser` gate answers for them by
+  # listing no script Run at all and pinning the binaries job's build whole instead
+  # (.github/scripts/ci_job_reads.py's gate says why). This job needs no container of its own:
+  # the seed its run starts has to stay on the host, where `psql` is, and a page in a
+  # bridge-networked container would reach the harness's 127.0.0.1 listeners over another
+  # address and so be no secure context, so only the Playwright command goes into the image
+  # (packages/dispatch/e2e/visual-run.sh's head says both). Every variable this job's run needs
+  # is exported on the command line rather than set in an `env:`, which keeps it to the same
+  # shape as the shard job's browser step.
+  #
+  # It writes no blob report. The merge job's row accounting reads legs out of the job names with
+  # a capture that knows `shard (N)` and `alone (P)` alone, and it fails the run when the merged
+  # report holds rows no leg printed; the multiprocess job writes none for the same reason. This
+  # job joins `merge`'s `needs:` and the verdict step's pair list instead, which is what makes a
+  # red visual job fail the workflow.
+  #
+  # The budgets below are measured, from these runs of this job, in seconds. Later runs do not
+  # make this list stale: it names what the numbers were derived from, and a run that outran a
+  # budget fails the step by name, which is the signal to derive them again.
+  #
+  #   step                              job 128655164325  128661965627  128664453706  128713801668  128720753224
+  #   checkout                                         8             7             -             7             7
+  #   setup-go                                         7             9             -             6             9
+  #   the go cache restore                             1             2             -             2             2
+  #   setup-bun                                        2             1             -           218           131
+  #   bun install                                      5             7             -             3             -
+  #   the contracts build                              0             0             -             0             -
+  #   the dashboard build                             33            37             -            23             -
+  #   the image pull                                  33            26            32            32             -
+  #   the browser step                                90           106            78             -             -
+  #   the upload                                       1             1             -             2             1
+  #   the whole job                                  180           201           163           318           272
+  #
+  # The rule is in this file's head. The browser step's maximum is 106 s, so 106 x 1.15 = 122 s
+  # -> 3 min. The job budget is that step's 180 s plus the measured maximum of every step
+  # without one, which is 314 s of the five columns together: 494 s -> 9 min.
+  #
+  # The first of those runs was the only one this job had when these budgets were first written,
+  # and one run proved too thin a sample: 90 s gave a 2-minute bound by the rule's own floor, and
+  # the next run came in at 106 s, 14 s inside it. A third run then read 78 s, so the spread of
+  # the browser step is 78-106 s over three runs and the 15 per cent the rule adds carries the
+  # rest.
+  #
+  # The job budget was 5 min on the first three columns, where setup-bun read 1-2 s because the
+  # runner image carried the pinned Bun. The last two columns are runs during a GitHub release
+  # CDN outage on 2026-11-08, where that same step downloaded Bun in 218 s and 131 s, and the
+  # 5-minute job budget cancelled both jobs - one in `setup-bun`, one in the dashboard build -
+  # before any step budget could fire. That inverts this file's rule, which says the job budget
+  # is the backstop that never fires first, so it is re-derived above from the maximum those
+  # runs measured. A download this job does not control may not decide a required check.
+  visual:
+    if: inputs.lane == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 9
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only: this job's run-server.sh builds the Dispatch server, not the
+      # listener and natsd the family's saving jobs build, so it saves none.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the visual specs import read some of contracts' values from its built
+        # dist/, through the Node resolution the shard job's step of this name describes. This
+        # job's Playwright runs under node in the container, which resolves it the same way.
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      # No Playwright install and neither browser cache: the image below carries all three
+      # engines at the Playwright version bun.lock pins, which is what makes its shots the ones
+      # a person's `--update-snapshots` takes.
+      - name: Pull the pinned Playwright copy
+        # The copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml), named by the one
+        # digest packages/dispatch/e2e/visual-run.sh runs, pulled here so the run below does not
+        # pay for it inside the browser step's own budget. A failed pull is a fault of this
+        # repository's own package, so it fails here and says so.
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      - name: Browser-test dispatch dashboard against its baselines
+        timeout-minutes: 3
+        run: |
+          # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts among
+          # it. TMPDIR, the lane's image and the worker count are exported on the command line,
+          # not in this step's `env:`, for the reason the job's head gives.
+          export TMPDIR="$RUNNER_TEMP"
+          # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml),
+          # started per lane by e2e/harness-postgres.ts. The shard and alone jobs take their
+          # lanes' PostgreSQL out of the image they run in (DISPATCH_E2E_PG_BIN) instead, which
+          # is no route here: this job runs on the runner and only its Playwright command is in
+          # a container.
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          # One lane. Each project of the two runs one worker (e2e/playwright.config.ts), since
+          # two comparisons drawing at once on one machine is the contention that makes one read
+          # a half-drawn frame, so a second lane would stand idle.
+          export DISPATCH_E2E_WORKERS=1
+          bun e2e/run.ts -- e2e/visual-run.sh
+        working-directory: packages/dispatch
+      # Always, not on failure alone: a reader of a green run wants the report too, and a run
+      # that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
+      # which is how that file reaches the pull request from a machine with no container.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-visual-${{ github.run_attempt }}
+          # The third pattern matches no file in THIS job and is not dead: it is what fixes the
+          # archive's layout. This job runs one lane, and for one lane e2e/run.ts leaves
+          # `logDir` unset, so the harness writes to stderr and no `lane-*/log/*.log` is ever
+          # created. upload-artifact takes the archive root from the least common ancestor of
+          # its patterns' search paths, so this `${{ runner.temp }}` pattern is what keeps that
+          # root at the runner's work directory and the repository path inside the archive -
+          # which is what packages/dispatch/AGENTS.md's step 3 tells a reader to look for when
+          # it takes a changed baseline out of this artifact. Delete it as unused and
+          # `test-results` moves to the top of the archive and that step goes wrong.
+          path: |
+            packages/dispatch/e2e/test-results
+            packages/dispatch/e2e/__screenshots__
+            ${{ runner.temp }}/dispatch-e2e-run-*/lane-*/log/*.log
+          if-no-files-found: ignore
+
   # What the legs together ran. It joins every shard's and every alone leg's blob report into one
   # report, publishes three readings of it - the rows, the flake rate and the legs that did not
   # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
@@ -1031,7 +1182,7 @@ jobs:
     # shard and alone jobs skipped and no blob report anywhere, and without it in this list the
     # run would be reported as legs that uploaded nothing rather than as the build that never
     # handed them anything. The verdict step below names it as it names the rest.
-    needs: [binaries, shard, alone, multiprocess]
+    needs: [binaries, shard, alone, multiprocess, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The budget is measured. This job ran 27 s on one head's pull-request lane (42334424798)
@@ -1130,8 +1281,9 @@ jobs:
           export GH_TOKEN="${{ github.token }}"
           # This run's jobs, the newest attempt of each, fetched once here and read again by
           # reading three below. The jobs API lists the caller's jobs too, so the name is held to
-          # this workflow's five; a called workflow's job is named `<the caller's job> / <this
-          # job>`, with a matrix leg in brackets after it.
+          # this workflow's six - binaries, shard, alone, multiprocess, visual and merge; a
+          # called workflow's job is named `<the caller's job> / <this job>`, with a matrix leg
+          # in brackets after it.
           #
           # `filter=all` lists every attempt's jobs, so the newest attempt of each name is taken
           # here, as the blob selection above takes each leg's newest artifact and as
@@ -1164,9 +1316,13 @@ jobs:
           # then had to land in both copies.
           #
           # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`,
-          # after either caller's prefix. `binaries`, `merge` and `multiprocess` are this
-          # workflow's other three jobs: they pass the name filter below and get a null leg, so
-          # reading one passes them over and reading three names them as holding no row.
+          # after either caller's prefix. `binaries`, `merge`, `multiprocess` and `visual` are
+          # this workflow's other four jobs: they pass the name filter below and get a null leg,
+          # so reading one passes them over and reading three names them as holding no row. The
+          # visual job is in that filter because a run whose only red job is that one must not
+          # read "every leg of this workflow concluded success": the verdict loop below fails
+          # `ci-ok` either way, so the gate held, but the summary a person reads was wrong.
+          #
           # ci.yaml's jobs do not get a null leg - that filter drops them before this expression
           # sees them, which is what keeps them out of reading three, since reading three
           # selects on conclusion alone. The two that come nearest are ci.yaml's own
@@ -1187,7 +1343,7 @@ jobs:
           # second matrix dimension would leave a leg's derived name and its blob's name apart
           # and reading one would call it MISSING. Nothing of that is reachable from today's
           # matrix, and whoever widens it reads the alone job's own steps, not this line.
-          jq '[.[].jobs[] | select(.name | test("(^| )(binaries|shard|alone|multiprocess|merge)( \\(|$)"))]
+          jq '[.[].jobs[] | select(.name | test("(^| )(binaries|shard|alone|multiprocess|visual|merge)( \\(|$)"))]
             | group_by(.name) | map(max_by(.run_attempt) | {id, name, conclusion,
                 leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
                   // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")
@@ -1376,7 +1532,8 @@ jobs:
         run: |
           failed=0
           for pair in "binaries:${{ needs.binaries.result }}" "shard:${{ needs.shard.result }}" \
-            "alone:${{ needs.alone.result }}" "multiprocess:${{ needs.multiprocess.result }}"; do
+            "alone:${{ needs.alone.result }}" "multiprocess:${{ needs.multiprocess.result }}" \
+            "visual:${{ needs.visual.result }}"; do
             case "${pair#*:}" in
               success | skipped) ;;
               *)

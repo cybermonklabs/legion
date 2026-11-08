@@ -178,6 +178,7 @@ def at_docs(step):
 BROWSER_JOB = "dispatch-browser"
 BROWSER_BINARIES, BROWSER_SHARD = "binaries", "shard"
 BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "alone", "multiprocess", "merge"
+BROWSER_VISUAL = "visual"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
 
@@ -751,16 +752,23 @@ BROWSER_SHARD_SPECS = "Browser-test dispatch dashboard (shard ${{ matrix.shard }
 BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
-# The four steps that run the browser suite, named together wherever a Run or a read cites the
-# whole suite: one list, so a step renamed above reaches every citation of it.
-BROWSER_SUITE_STEPS = (
-    f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
-    f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)}"
-)
 BROWSER_MP_BUILD = "Build the Dispatch server"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
+# The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
+# e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
+# in the pinned container. That build compiles ./cmd/dispatch, which the multiprocess job's
+# pinned build step in the gate below names already, so this job adds no command of its own.
+BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
+# The five steps that run the browser suite, named together wherever a Run or a read cites the
+# whole suite: one list, so a step renamed above reaches every citation of it. It is declared
+# here, below the five names, rather than beside the first of them.
+BROWSER_SUITE_STEPS = (
+    f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
+    f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} and "
+    f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)}"
+)
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
@@ -1032,8 +1040,9 @@ GATES = [
     ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF),
 
     # The browser suite, every row of it: the binaries job, the shard legs, the three `-alone`
-    # projects, the two-process job and the merge job, all in dispatch-browser.yaml, which
-    # ci.yaml's dispatch-browser job and the nightly both call (at_browser cites their steps).
+    # projects, the two-process job, the visual job and the merge job, all in
+    # dispatch-browser.yaml, which ci.yaml's dispatch-browser job and the nightly both call
+    # (at_browser cites their steps).
     #
     # ci_filter_coverage.py's check_table reads a gate whose ci.yaml job calls a local workflow
     # over the jobs of that workflow, so dispatch-browser.yaml's go commands, `env:` blocks and
@@ -1048,10 +1057,11 @@ GATES = [
     # container (dispatch://INFRA-1443), which shell_reason counts as exactly such a thing, so a
     # script Run here would fall to reading every Go file of the repository. It costs this
     # filter nothing. Those two jobs run no go command at all - run-server.sh and run-broker.sh
-    # execute the binaries the first entry below builds - and the two scripts the multiprocess
-    # job still starts compile closures this filter already carries: run-server.sh builds
-    # ./cmd/dispatch, which that job's own pinned build step below names, and
-    # run-signin-issuer.sh builds ./cmd/dev-oidc-issuer, which that first entry names.
+    # execute the binaries the first entry below builds - and the scripts the multiprocess job
+    # and the visual job still start compile closures this filter already carries:
+    # run-server.sh, which both of them start, builds ./cmd/dispatch, which the multiprocess
+    # job's own pinned build step below names, and run-signin-issuer.sh builds
+    # ./cmd/dev-oidc-issuer, which that first entry names.
     gate("dispatch_browser", BROWSER_JOB, exact=[
         # The four commands the shard and alone jobs' scripts built before those jobs moved
         # into a container, built once in the binaries job and downloaded by both: this is the

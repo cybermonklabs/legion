@@ -669,6 +669,12 @@ Each item below names a task and where its code is, then notes on it.
   A job holding a credential runs no script of this repository, so it reads the value from the output of an upstream job that does (`release-envoy-listener.yaml`'s `targets`, `worker-image.yaml`'s `build`), or from a `workflow_call` input when that job was skipped (`worker-image.yaml`'s `image`, which `release.yaml` passes).
   `docs/site/repo-paths.ts` is the docs build's adapter over the same script
 
+- **A change that touches the daemon API contract declares a number above its base's**
+  — `const DaemonAPIVersion` in `packages/daemon/internal/api/version.go` is the number a daemon and the Legion plugin in its pods must agree on, so two changes cannot both declare one, and the one that lands second is renumbered after its review has already run.
+  `.github/scripts/check-daemon-api-contract.sh` refuses a change that touches that file and declares a number no higher than its base carries — the tip of the base branch on a pull request, the commit the queue built the group on in the merge queue — and the refusal names a free number, the lowest above the base's that no open pull request declares, and the four files that hold the number (that file, `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and `packages/claude-envoy/package.json`).
+  A change that leaves that file alone passes whatever its base carries, and two entries of one merge group that both picked the same next number pass together, since the group's tree carries both changes at that number.
+  `ci.yaml`'s `lint` job runs the check on a pull request and on a merge group, and its `test` job runs `.github/scripts/check-daemon-api-contract.test.sh`
+
 - **Changelog entries are fragment files**
   — a change that earns a changelog line adds a fragment to each package it changes that has a `.changie.yaml`:
   the six packages `.github/changelog-packages` lists (`pi-legion`, `pi-envoy`, `envoy`, `claude-envoy`, `contracts`, `envoy-client`), the one list the check below reads.
@@ -789,7 +795,7 @@ A parent with children puts the work into them, and its own pull request joins a
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`), where no worker runs:
 the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with its latest result (`dispatch results`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
-refused too while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round.
+refused too while an issue beneath it is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there returns the issue to `implementing`.
 The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
 
@@ -1056,10 +1062,19 @@ Otherwise, on acceptance the daemon queues a `ready_merge` outbox row for READY'
 a merge queue enqueues it once GitHub reports it mergeable, a pull request GitHub reports mergeable merges at once, a repository that allows auto-merge arms it, and in one that allows neither the row waits until GitHub reports the pull request mergeable and then merges it.
 On a merge-queue base the row never arms auto-merge:
 GitHub's enable arms a pull request it does not report mergeable rather than enqueueing it, and a required check may judge the arm, so the row waits, logged at debug, while a required check still runs.
-An arm or queue entry is not the end: the row keeps reading GitHub until it reports the pull request merged at READY's head, and once it has seen the arm or entry it never submits again after a removal it did not make.
-The merge queue taking the pull request out because the merge failed (GitHub's reason `failed_checks`, or an unexplained reason with a check that failed, timed out, failed to start, needed action or went stale on the commit the queue built for its `merge_group` CI, every page of its checks read) sends the issue from `awaiting_merge` back to `implementing`, its implementer told the failing run, as a red head does;
+An arm or queue entry is not the end: the row keeps reading GitHub until it reports the pull request merged at READY's head, and once it has seen the arm or entry it never submits again after a removal it did not make, except the merge queue's own for a conflict with an entry ahead of the head in the queue.
+The merge queue taking the pull request out because the merge failed (GitHub's reason `failed_checks`, or an unexplained reason with a check that failed, timed out, failed to start, needed action or went stale on the commit the queue built for its `merge_group` CI, every page of its checks read) sends the issue from `awaiting_merge` back to `implementing`, its implementer told each failing run, as a red head does;
+the queue's own removal for a conflict (`merge_conflict`) is decided by the pull request's merge state, which GitHub computes once the entry is no longer queued:
+a head GitHub still merges (every state but `DIRTY` and `UNKNOWN`) conflicted with an entry ahead of it in the queue rather than with the base, so the row submits that head once more, marks that submission spent on the row and posts what it did on the Dispatch issue, leaving the issue in `awaiting_merge` with nothing told to the architect;
+`DIRTY` is the head conflicting with the base itself, which ends the row and tells the architect;
+`UNKNOWN` is asked again on the row's own backoff for up to five minutes and then ends it the same way;
+and a second `merge_conflict` removal of the same head, its one further submission already spent, ends it too;
 any other removal (a person dequeuing it, whose cancelled runs are no failure, or a person or GitHub turning auto-merge off) ends the row and tells the architect once (`merge-removed`).
-Two removals are submitted again: the implement App's own disarm sent before READY that GitHub applied late (auto-merge `manually_disabled`, or a `manual` dequeue, by that App), and auto-merge a close turned off (`closed`), which the reopen at READY's head undid.
+Three removals are submitted again: the implement App's own disarm sent before READY that GitHub applied late (auto-merge `manually_disabled`, or a `manual` dequeue, by that App), auto-merge a close turned off (`closed`), which the reopen at READY's head undid, and the merge queue's `merge_conflict` removal of a head GitHub still merges, which is submitted once more and no further.
+Every removal the daemon tells names, for each failing job, the tests that job's Actions log states failed, read from the last 64 MiB of it, and the first line stating one (Go's `--- FAIL:` lines, a browser runner's end-of-log summary block), or says why it could not read them:
+the log states no test name, its body passed 160 MiB, the read passed a minute, the one 3-minute deadline every read of that removal shares ran out, the fetch failed, or GitHub refused the read because the deployment's App was never granted GitHub's optional Actions read.
+Every string of GitHub's in such a line is cut to 200 runes, the reason a read it could not make gives among them, since the line is rendered into one block of a Dispatch post.
+A read the daemon's own stop ended is none of those: the row is retried when the daemon comes back and reads the same removal from GitHub again, and nobody is told anything of that run.
 The repository's required reviews and checks decide when it merges; Legion bypasses none, and a review only a person can give is waited for.
 READY reads no check of the head at all: whether the merge happens is GitHub's to decide, under the base branch's own rules.
 The row reads GitHub, then the record, and submits nothing once the record shows the issue has left that READY or applied a close;
@@ -1075,7 +1090,7 @@ GitHub checks the expected head only when auto-merge is enabled, and arming is r
 The row reads GitHub, then the record: it keeps the arm only while the issue awaits its merge, its READY is not by hand, and the pull request's head is the merger's READY commit, and otherwise disables auto-merge and removes the merge-queue entry, as the implement App;
 READY is refused (`READY_HEAD_MOVED`) when the head moved past its commit.
 An issue leaving the workflow for any status but `done` queues a `claim_release` outbox row beside the disable, which releases the issue's Dispatch claim.
-When a push or reopen moves the head past the one READY named, the head's own CI turns red before the merge, the head starts conflicting with its base (GitHub computes no merge ref for a conflicting head and runs no checks on it at all), or the merge queue fails its merge, the daemon sends the issue back to `implementing`, disarms the pull request, posts the READY's withdrawal on the Dispatch issue, and publishes it to that role.
+When a push or reopen moves the head past the one READY named, the head's own CI turns red before the merge, the head starts conflicting with its base (GitHub computes no merge ref for a conflicting head and runs no checks on it at all), GitHub's merge queue reports its entry for READY's head unmergeable while it has built that entry on the tip of the pull request's own base branch, read twice at least ten minutes apart at the same base commit (nothing ahead of such an entry in the queue can be the cause, and no entry is ever taken out of the queue to ask GitHub about it), or the merge queue fails its merge, the daemon sends the issue back to `implementing`, disarms the pull request, posts the READY's withdrawal on the Dispatch issue, and publishes it to that role.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.
 No lifecycle labels exist; GitHub issues are never read or written by Legion.
 

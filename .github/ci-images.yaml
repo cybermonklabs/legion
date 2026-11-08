@@ -7,11 +7,13 @@
 # holds exactly one of those two keys, because each of them says where the row's bytes came
 # from, and it holds `tag:` and `digest:` besides:
 #
-#   upstream  where the image comes from: the image's own Docker Hub reference.
+#   upstream  where the image comes from: the image's own reference at its own registry. Every
+#             row that carries one but the playwright row below names Docker Hub, which is why
+#             the rest of this file says Docker Hub where it means the upstream registry.
 #             .github/scripts/mirror-ci-images.sh copies the repository of this reference at the
 #             row's digest, and never the tag it names, so the bytes it lands are this row's
 #             bytes whatever upstream did since. That script copies only a row the package does
-#             not hold, so this repository reads Docker Hub a few times a year.
+#             not hold, so this repository reads an upstream registry a few times a year.
 #   built     the Dockerfile this repository builds the image from, where a copied row names an
 #             upstream: .github/docker/browser.Dockerfile is one.
 #             .github/workflows/browser-image.yaml builds that file and pushes the image into
@@ -134,8 +136,13 @@ images:
     tag: postgres-979bccfd
     digest: sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4
 
-  # Playwright's own published browser image, the base of .github/docker/browser.Dockerfile.
-  # Its upstream tag carries the Playwright release bun.lock resolves, and
+  # Playwright's own published browser image, with two readers. It is the base of
+  # .github/docker/browser.Dockerfile, which the row below builds, and it is the container the
+  # Dispatch browser suite's visual job compares its snapshots in
+  # (.github/workflows/dispatch-browser.yaml's visual job, packages/dispatch/e2e/visual-run.sh).
+  # A baseline is a rendering, so the fonts, the freetype and the browser build that made it
+  # decide every pixel of it: the container is what makes one taken by a person and one taken by
+  # CI the same image. Its upstream tag carries the Playwright release bun.lock resolves, and
   # .github/scripts/check-playwright-version.sh refuses a head where the two disagree. It is the
   # one row whose upstream is not Docker Hub: Microsoft publishes this image on its own registry
   # alone, and the copy below is what every build and every CI job reads.
