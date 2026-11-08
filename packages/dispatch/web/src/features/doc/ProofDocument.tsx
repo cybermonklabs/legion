@@ -97,6 +97,19 @@ import { VersionView } from "./VersionView";
  *  text holds one holds a card the reader answers, which reads the document's asks. */
 const ASK_BLOCK_OPENER = ":::ask";
 
+/**
+ * The mark the drawn document carries once its editor has built every one of its blocks, which
+ * the `<article>` below stamps.
+ *
+ * The build draws the document a batch of blocks at a time
+ * (`@legion/proof-editor`'s `progressive-build.ts`), so a document already holding blocks says
+ * nothing about a block it has not reached yet. A reader of the drawn document that has to tell
+ * a block this document does not hold from one the build is still on its way to - the Inbox's
+ * column, which falls back where the block it was opened at is not there
+ * (`inbox/PaneDocument.tsx`) - waits for this mark before it decides.
+ */
+export const DOCUMENT_DRAWN_ATTRIBUTE = "data-document-drawn";
+
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
  *  or more do (`uniquePrefixMatch`). The editor's own rendered blocks are the answer, the same
  *  `[data-block-id]` elements `focusBlock` looks a whole id up in, so a block link written short
@@ -1368,6 +1381,9 @@ export function ProofDocument({
       <article
         aria-label="Document"
         className="dispatch-doc relative"
+        // `DOCUMENT_DRAWN_ATTRIBUTE`, written out because a JSX attribute cannot be named by a
+        // constant: the document holds every one of its blocks from here, and not before.
+        data-document-drawn={editorDrawn || undefined}
         data-read-only={isClosed || schemaReadOnly}
         hidden={version !== undefined || repairError !== undefined || rebuildError !== undefined}
         onClick={followReference}

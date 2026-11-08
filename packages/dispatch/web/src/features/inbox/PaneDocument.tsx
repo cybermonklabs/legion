@@ -17,7 +17,11 @@ import type { Artifact, AuthenticatedUser } from "../../api/types";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { focusVisibleRing, quoteAccentBorder } from "../../theme/classes";
 import { liveTextQueryOptions } from "../doc/live-text";
-import { ProofDocument, type ProofDocumentProps } from "../doc/ProofDocument";
+import {
+  DOCUMENT_DRAWN_ATTRIBUTE,
+  ProofDocument,
+  type ProofDocumentProps,
+} from "../doc/ProofDocument";
 import { BLOCK_ID_ATTRIBUTE, scrollBlockToTop } from "../doc/scroll-block";
 import { holdSection, type SectionHold } from "./pane-placement";
 
@@ -170,8 +174,9 @@ export function PaneFrame({
 interface DocumentAtBlock {
   /** The document, once the read lands. */
   readonly artifact: Artifact | undefined;
-  /** Whether the editor has drawn the block the column is opened at; undefined while it has
-   *  drawn no block at all, and false once it has drawn a document holding no such block. */
+  /** Whether the editor has drawn the block the column is opened at; undefined until the editor
+   *  has drawn the whole document, and false once a whole document holding no such block is
+   *  drawn. */
   readonly blockFound: boolean | undefined;
   readonly content: RefObject<HTMLDivElement | null>;
   /** The document cannot be opened beside the list: the read failed, or its own admission did. */
@@ -212,9 +217,9 @@ function useDocumentAtBlock({
   const content = useRef<HTMLDivElement>(null);
   const [sectionBar, setSectionBar] = useState<SectionBar | undefined>(undefined);
   const [sectionBlockId, setSectionBlockId] = useState<string | undefined>(undefined);
-  // Whether the editor has drawn the block the column is opened at; undefined while it has drawn
-  // no blocks at all. A document that holds no such block is an anchor the column cannot place,
-  // which is what its host falls back from.
+  // Whether the editor has drawn the block the column is opened at; undefined until the whole
+  // document is drawn. A document that holds no such block is an anchor the column cannot
+  // place, which is what its host falls back from.
   const [blockFound, setBlockFound] = useState<boolean | undefined>(undefined);
   // This column's hold on its own placement, while one is on: the effect below takes it, and
   // "Skip to the answer" - a placement of the reader's own, pressed in the head rather than in
@@ -267,9 +272,12 @@ function useDocumentAtBlock({
     const place = () => {
       const block = blockElement(drawn, blockId);
       if (block === null) {
-        // Nothing drawn yet says nothing about the block; a drawn document without it does.
+        // A document still being drawn says nothing about the block: the editor builds it a
+        // batch of blocks at a time, from the top, so a block deep in the document is missing
+        // for as long as the build has not reached it. Only the drawn document - every block
+        // of it in the editor - says the block is not there (`DOCUMENT_DRAWN_ATTRIBUTE`).
         setBlockFound((current) =>
-          drawn.querySelector(`[${BLOCK_ID_ATTRIBUTE}]`) === null ? current : false
+          drawn.querySelector(`[${DOCUMENT_DRAWN_ATTRIBUTE}]`) === null ? current : false
         );
         return;
       }

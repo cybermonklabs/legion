@@ -31,14 +31,22 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
 import type { Artifact, IssueCoverage, IssueDetails } from "../../api/types";
+import type * as ArtifactRoutePanelModule from "../artifacts/ArtifactRoutePanel";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import type * as IssuePageModule from "./IssuePage";
+
+/** The `?suspense-test` query is what makes Bun evaluate a second instance of a module it
+ *  already holds. `tsc` resolves a specifier by its text and knows no such file, so each one is
+ *  built from a template literal, which it does not resolve, and typed as the module it is. */
+const FRESH_PAGE = `./IssuePage.tsx?suspense-test`;
+const FRESH_PANEL = `../artifacts/ArtifactRoutePanel.tsx?suspense-test`;
 
 mock.module("../artifacts/ArtifactRoutePanel", async () => {
-  return await import("../artifacts/ArtifactRoutePanel.tsx?suspense-test");
+  return (await import(FRESH_PANEL)) as typeof ArtifactRoutePanelModule;
 });
-const { IssuePage } = await import("./IssuePage.tsx?suspense-test");
+const { IssuePage } = (await import(FRESH_PAGE)) as typeof IssuePageModule;
 
 const specArtifact: Artifact = {
   created_at: "2026-09-09T00:00:00Z",
