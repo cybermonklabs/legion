@@ -140,9 +140,15 @@ type PassOn interface {
 // thread — and AskKind is that ask's kind as the answer's event names it
 // (intake.DispatchPayload.Kind: `question`, or one the daemon does not know, a legacy `action`
 // ask's among them); a reply's event names none, so a reply carries "". The two together say
-// whether the parked-decision relay sends a decision made on a parked tree itself, which is the
-// one decision this loop passes on to nobody (record.RelaysAskAnswer, the daemon's
-// routedDecisions).
+// whether the parked-decision relay sends a decision of that kind at all (record.RelaysAskAnswer).
+//
+// AskIssue is the issue the ask stands on, which the event names and Ref is built from. It is the
+// agent's own issue for an ordinary ask and another issue when the agent opened its ask
+// elsewhere — a phase worker's finding on the controller's report issue
+// (skill://legion-worker/references/findings.md) — and it is the issue the parked-decision relay
+// reads, so it, and not the agent's conversation issue, says whether that relay carries this
+// decision (workflow.RelaysDecision, the daemon's routedDecisions). A decision made where no
+// issue is named carries "".
 type Decision struct {
 	ID           string
 	Asker        string
@@ -150,6 +156,7 @@ type Decision struct {
 	Text         string
 	Answered     bool
 	AskKind      string
+	AskIssue     string
 	Conversation store.AgentConversation
 }
 
@@ -173,6 +180,7 @@ const (
 	ReasonUnknownFormat  Reason = Reason(answer.UnknownFormat)
 	ReasonNoProvider     Reason = Reason(answer.NoProvider)
 	ReasonNoPrice        Reason = Reason(answer.NoPrice)
+	ReasonUnmetered      Reason = Reason(answer.Unmetered)
 	// ReasonPostRefused is a reply Dispatch or the listener refused for good.
 	ReasonPostRefused Reason = "post_refused"
 )

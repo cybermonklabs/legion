@@ -515,6 +515,57 @@ func TestEveryAgentloopFaultIsNoAnswerUnderTheDaemonsOwnName(t *testing.T) {
 	}
 }
 
+// A run no model call of which the provider metered is no answer either: a provider that sends
+// no usage, or a gateway between it and the daemon that strips it, leaves the answer unpriced,
+// so it would cost the project's daily bound nothing however many calls it made (Unmetered).
+// Both readings of a stripped usage object are that run: the Responses stream whose completed
+// response carries none, which agentloop reports as no counts at all (Usage.Metered false), and
+// the Messages stream whose message carries none, which the Anthropic adapter answers with zero
+// counts, so the zeros are what say it. The reply the model gave in the form goes with either:
+// nothing is appended, and the question is the controller's, as an unpriced model's is. The same
+// stream with its usage object answers and is priced, so it is the counts and nothing else that
+// decide.
+func TestARunTheProviderMeteredNothingForIsNoAnswer(t *testing.T) {
+	const form = `{"kind":"answered","text":"PR 7 is green.","needs":""}`
+	for _, c := range []struct {
+		name      string
+		unmetered reply
+		metered   reply
+		openai    bool
+	}{
+		{name: "a Responses stream reporting no counts at all", openai: true,
+			unmetered: openaiUnmetered(openaiMessage("msg_1", form)),
+			metered:   openaiStream(openaiUsage{Input: 2, Output: 3}, "", openaiMessage("msg_1", form))},
+		{name: "a Messages stream whose counts are all zero",
+			unmetered: anthropicUnmetered("end_turn", anthropicText(form)),
+			metered:   anthropicStream("end_turn", anthropicUsage{Input: 2, Output: 3}, anthropicText(form))},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			request := anthropicRequest
+			if c.openai {
+				request = openaiRequest
+			}
+			s := newStandIn(t, c.unmetered)
+			got, err := Answer(context.Background(), request(t, s, &stubGH{}, 2))
+			switch {
+			case err != nil:
+				t.Fatal(err)
+			case got.Fault != Unmetered || got.Kind != NotAnswered || got.Text != "" || len(got.Append.Turns) != 0:
+				t.Fatalf("reply = %+v; want no answer, faulted %s, with nothing to append", got, Unmetered)
+			case got.Calls != 1 || got.CostUSD != 0 || got.Usage != (conversation.Usage{}):
+				t.Fatalf("reply = %+v; want the one call it made, no usage and no cost", got)
+			}
+			metered := newStandIn(t, c.metered)
+			switch priced, err := Answer(context.Background(), request(t, metered, &stubGH{}, 2)); {
+			case err != nil:
+				t.Fatal(err)
+			case priced.Fault != "" || priced.Kind != Answered || priced.Text != "PR 7 is green." || priced.CostUSD <= 0:
+				t.Fatalf("the metered stand-in's reply = %+v; want the answer it gave, priced", priced)
+			}
+		})
+	}
+}
+
 // The last allowed call still calling a tool is no answer past the model_calls bound.
 func TestTheLastCallStillCallingAToolIsPastTheModelCallsBound(t *testing.T) {
 	s := newStandIn(t, anthropicStream("tool_use", anthropicUsage{Output: 1}, anthropicGH("toolu_1", "pr", "view", "7")))

@@ -149,7 +149,8 @@ func TestNoMoreConversationsAreAnsweredAtOnceThanTheBound(t *testing.T) {
 // Each kind of question is answered where it was asked, in the agent's name: a message and a
 // conversation-page message through their delivery attempt, a mention through its own, an ask
 // reply on the ask's thread with the question's marker, an Envoy message back to its sender in
-// reply to its envelope.
+// reply to its envelope, carrying `handoff: false` as every send of the daemon's does, so an
+// answer to a stopped asker is never handed back to this loop to answer.
 func TestEachAnswerIsPostedWhereItWasAskedAsTheAgent(t *testing.T) {
 	r := newRig(t)
 	r.conversation("ses_tester", testerToken, 0)
@@ -186,7 +187,8 @@ func TestEachAnswerIsPostedWhereItWasAskedAsTheAgent(t *testing.T) {
 	}
 	sends := r.listener.posts()
 	wantSend := request{"POST", "/v1/messages/send", map[string]any{"target_session": "ses_asker", "source": "agent", "source_session": "ses_tester",
-		"message": "Plum, from Which?" + marker("agent.ses_tester.k9"), "in_reply_to": "evt-9", "idempotency_key": ids["agent.ses_tester.k9"]}}
+		"message": "Plum, from Which?" + marker("agent.ses_tester.k9"), "in_reply_to": "evt-9", "idempotency_key": ids["agent.ses_tester.k9"],
+		"handoff": false}}
 	if len(sends) != 1 || !reflect.DeepEqual(sends[0], wantSend) {
 		t.Fatalf("listener posts = %s; want %s", describe(sends), describe([]request{wantSend}))
 	}
@@ -467,6 +469,40 @@ func TestAnAnswersCostIsAddedToTheDaysSpend(t *testing.T) {
 	r.drain()
 	if spent, err := r.st.AnswerSpend(r.ctx, project, testNow); err != nil || spent != 0.25 {
 		t.Fatalf("spend = %v, %v; want the answer's 0.25", spent, err)
+	}
+}
+
+// An answer the provider metered nothing for is no answer (answer.Unmetered): it is unpriced, so
+// it would move the day's spend by nothing however many calls it made and `daily_usd` would bound
+// no answer. The daemon replies in the agent's name, the agent's conversation is left as it was,
+// the day's spend stands where it stood, and the question goes to the controller under that
+// reason, as an unpriced model's question does.
+func TestAnAnswerNothingMeteredIsPassedOnAndTheSpendStands(t *testing.T) {
+	r := newRig(t)
+	path := r.conversation("ses_tester", testerToken, 0)
+	before := fileContent(t, path)
+	r.answer = func(answer.Request) (answer.Reply, error) {
+		return answer.Reply{Kind: answer.NotAnswered, Fault: answer.Unmetered, Calls: 2}, nil
+	}
+	r.receive(messageHandoff("ses_tester", "m-1", 1, "Why plum?"))
+	r.drain()
+	q := r.only()
+	posts := r.dispatch.posts()
+	const reply = "My model provider reported no usage for the calls that answered, so my answer cannot be priced " +
+		"and I am not answered on it. I passed your question to the Legion controller."
+	switch {
+	case q.State != store.QuestionPassedOn:
+		t.Fatalf("question = %s; want it passed on", q.State)
+	case len(posts) != 1 || !strings.HasPrefix(posts[0].Body["body"].(string), reply):
+		t.Fatalf("posts = %s; want the daemon's unmetered reply in the agent's name", describe(posts))
+	case fileContent(t, path) != before:
+		t.Fatalf("the agent's conversation changed; want nothing appended to it")
+	}
+	if len(r.rec.passed) != 1 || r.rec.passed[0] != (passed{q.ID, "unmetered", "user:person@example.com", "dispatch://LEGION-9/message/m-1"}) {
+		t.Fatalf("passed on = %+v; want the question passed on as unmetered", r.rec.passed)
+	}
+	if spent, err := r.st.AnswerSpend(r.ctx, project, testNow); err != nil || spent != 0 {
+		t.Fatalf("spend = %v, %v; want the day's spend unmoved", spent, err)
 	}
 }
 

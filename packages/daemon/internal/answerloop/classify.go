@@ -204,11 +204,12 @@ func classifyDispatch(ctx context.Context, h intake.Handoff, conv store.AgentCon
 // back, carries for conv. Its id is the Dispatch event's for an answer (a person who changes their
 // answer makes a new decision, a new event) and the comment's for a reply. An answer carries the
 // ask's kind, which says whether the parked-decision relay sends it (Decision.AskKind); a comment
-// event names none.
+// event names none. The issue the event names is carried as the ask's own (Decision.AskIssue),
+// the issue that relay reads, which is the agent's own only while its ask stands on it.
 func readDecision(event intake.DispatchEvent, conv store.AgentConversation) (*Decision, error) {
 	p := event.Payload
 	issue := eventIssue(event)
-	d := &Decision{Asker: event.Actor.Kind + ":" + event.Actor.ID, Conversation: conv, Text: decisionText(event)}
+	d := &Decision{Asker: event.Actor.Kind + ":" + event.Actor.ID, Conversation: conv, Text: decisionText(event), AskIssue: issue}
 	switch event.Type {
 	case "ask.answered":
 		if event.ID <= 0 || p.ID == "" {

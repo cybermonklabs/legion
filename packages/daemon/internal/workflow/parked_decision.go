@@ -52,14 +52,44 @@ func (e *Engine) relayParkedDecision(ctx context.Context, tx pgx.Tx, key, ask st
 	return nil
 }
 
+// RelaysDecision says whether the relay above carries a person's decision on an ask of key
+// itself: the half of that question the record answers, the tree key stands in and who decided
+// (record.RelayDecisionOutcome, the rule relayParkedDecision follows). An issue Legion does not
+// record, and one whose tree root it does not hold, is relayed nothing — a worker's finding ask
+// on the controller's report issue is such an issue — and so is a decision on a tree that runs,
+// one on a lingering root someone moved back into the workflow, and one no person made. The
+// other half is the ask's kind, which the two paths that call the relay gate on themselves
+// (record.RelaysAskAnswer, dispatchAskClosed, dispatchAskReply).
+//
+// The answer loop asks it of the ask's own issue — the issue the relay reads, which is not the
+// stopped agent's conversation issue when the agent opened its ask elsewhere — and passes on
+// exactly the decisions it answers false for, so a person's decision reaches one of the two and
+// never nobody (the daemon's routedDecisions).
+func RelaysDecision(ctx context.Context, tx pgx.Tx, store record.Store, key, actor string, steps []record.DesignStep) (bool, error) {
+	root, err := treeRootOf(ctx, tx, store, key)
+	if err != nil || root == nil {
+		return false, err
+	}
+	outcome, err := record.RelayDecisionOutcome(ctx, tx, store, *root, root.Lingers(), actor, steps)
+	if err != nil {
+		return false, err
+	}
+	return outcome == record.RelaySent || outcome == record.RelayKept, nil
+}
+
 // treeRoot is the record of the root of key's tree, nil when key is not recorded: key's own row
 // when it is its tree's root, read once.
 func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.Issue, error) {
-	issue, err := e.store.Issue(ctx, tx, key)
+	return treeRootOf(ctx, tx, e.store, key)
+}
+
+// treeRootOf is treeRoot over any record store, for a reader outside the engine (RelaysDecision).
+func treeRootOf(ctx context.Context, tx pgx.Tx, store record.Store, key string) (*record.Issue, error) {
+	issue, err := store.Issue(ctx, tx, key)
 	if err != nil || issue == nil || issue.Tree == key {
 		return issue, err
 	}
-	return e.store.Issue(ctx, tx, issue.Tree)
+	return store.Issue(ctx, tx, issue.Tree)
 }
 
 // ParkedDecisionTask is what root's architect is told at its start when the daemon kept a person's

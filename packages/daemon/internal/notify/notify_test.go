@@ -230,8 +230,10 @@ func TestHTTPPublisherTellsTheConfirmedSendAnswersApart(t *testing.T) {
 
 // A message in an agent's name goes through the listener's direct-message route with the fields
 // its sendHandler reads (packages/envoy/cmd/listener/api.go messageBody plus target_session): the
-// agent as source_session, the envelope it answers as in_reply_to, and the idempotency key the
-// listener scopes its dedupe key by; a refusal names the listener's error.
+// agent as source_session, the envelope it answers as in_reply_to, the idempotency key the
+// listener scopes its dedupe key by, and `handoff: false`, which every send and publish of the
+// daemon's carries (plan 2.2) so the answer loop's own answer to a stopped asker is never handed
+// back to it to answer. A refusal names the listener's error.
 func TestSendPostsADirectMessageInTheAgentsName(t *testing.T) {
 	refuse := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -242,17 +244,17 @@ func TestSendPostsADirectMessageInTheAgentsName(t *testing.T) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages/send" {
 			t.Fatalf("request = %s %s, want POST /v1/messages/send", r.Method, r.URL.Path)
 		}
-		var body map[string]string
+		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatal(err)
 		}
-		want := map[string]string{
+		want := map[string]any{
 			"target_session": "ses_asker", "source": "agent", "source_session": "ses_tester", "message": "Plum.",
-			"in_reply_to": "evt-1", "idempotency_key": "0123456789abcdef0123456789abcdef",
+			"in_reply_to": "evt-1", "idempotency_key": "0123456789abcdef0123456789abcdef", "handoff": false,
 		}
 		for key, value := range want {
 			if body[key] != value {
-				t.Fatalf("send body %s = %q, want %q (body %v)", key, body[key], value, body)
+				t.Fatalf("send body %s = %v, want %v (body %v)", key, body[key], value, body)
 			}
 		}
 		if len(body) != len(want) {

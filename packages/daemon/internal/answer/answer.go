@@ -11,9 +11,10 @@
 // package is its caller: it builds the request (the conversation as agentloop's messages, the
 // system prompt, the reply form as the request's Final schema, the gh tool, the bounds and the
 // endpoint `answers.providers` names, whose key is read again for every call), decides the faults
-// that need no model call (no_provider, no_price, unknown_format), maps agentloop's faults onto
-// the daemon's own reasons, and reads the run back as the agent's reply, the turns to append and
-// what the answer cost.
+// that need no model call (no_provider, no_price, unknown_format), refuses an answer whose calls
+// the provider metered nothing for (unmetered), maps agentloop's faults onto the daemon's own
+// reasons, and reads the run back as the agent's reply, the turns to append and what the answer
+// cost.
 package answer
 
 import (
@@ -82,6 +83,15 @@ const (
 	// (a provider-side compaction, a native item of a kind it does not know); no model call is
 	// made.
 	UnknownFormat Fault = "unknown_format"
+	// Unmetered is a run no model call of which the provider reported usage for: agentloop saw no
+	// counts at all (agentloop.Usage.Metered false), or every call came back with zero input,
+	// output and cache tokens, which is what a gateway that strips usage looks like through a
+	// provider whose counts are never absent, only zero (the Anthropic adapter fills them in).
+	// Either way the answer cannot be priced and would cost the project's daily bound nothing
+	// however many calls it made. An answer nothing meters is no answer: the reply is dropped,
+	// nothing is appended to the agent's conversation, and the question goes to the controller,
+	// as an unpriced model's does (NoPrice).
+	Unmetered Fault = "unmetered"
 )
 
 // faultOf is agentloop's fault under the daemon's own name, which is what the controller reads as
@@ -315,9 +325,33 @@ func answer(ctx context.Context, req Request) (Reply, error) {
 	case result.Fault != "":
 		reply.Fault, reply.Detail = faultOf(result.Fault), result.Detail
 		return reply, nil
+	case unmetered(result):
+		// The run answered and nothing counted it, so its cost is unknown and the day's spend
+		// would not move: the answer is dropped rather than given away (Unmetered).
+		reply.Fault, reply.Detail = Unmetered, fmt.Sprintf("the provider reported no usage for the answer's %d model call(s)", len(result.Steps))
+		return reply, nil
 	}
 	finish(&reply, req, r, result, question)
 	return reply, nil
+}
+
+// unmetered says whether nothing counted the run's model calls (Unmetered). Two things say so,
+// and a run has to meet only one: agentloop reports no counts at all (Usage.Metered false, a
+// provider whose adapter leaves an absent usage object absent), or every call of the run reports
+// zero input, output and cache tokens (a provider whose adapter answers an absent usage object
+// with zeros, Anthropic's among them). A real call always reads its prompt, so a call counting
+// nothing at all counted nothing: the gateway, or the provider, sent no usage.
+func unmetered(result agentloop.Result) bool {
+	if !result.Usage.Metered {
+		return true
+	}
+	for _, step := range result.Steps {
+		u := step.Usage
+		if u.Input+u.Output+u.CacheWrite+u.CacheRead+u.Reasoning > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // firstToolIndex is how many gh calls an earlier run of the question already made, which

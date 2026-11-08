@@ -1258,9 +1258,10 @@ A hand-off arrives on `notifications.legion.<project>.agents.<session>`
 (`packages/contracts/src/legion-handoff.ts`), read by a durable consumer, so one published while the
 daemon was down is read when it returns. The daemon answers only for a session its own record
 holds, of its own project: any other hand-off is logged (`answers: hand-off dropped: the daemon's
-history holds no such conversation`) and dropped. Every notice the daemon publishes itself carries
-`"handoff": false`, so a notice to a stopped architect is held and resent as before, never
-answered.
+history holds no such conversation`) and dropped. Every notice the daemon publishes and every
+message it sends itself carries `"handoff": false`, so a notice to a stopped architect is held and
+resent as before, never answered, and the loop's own answer to a stopped asker is never handed
+back to the loop.
 
 ### What it answers, and what it refuses
 
@@ -1298,10 +1299,14 @@ answered.
   Envoy message or a person's reply on the agent's ask, which posts nothing.
 - **No answer.** A bound passed (`answer_seconds`, `model_calls`, `length` at `output_tokens`), a
   refusal, a reply not in the form (`malformed`), a provider that failed (`provider_error`), the day's
-  spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, and a
-  conversation its store no longer holds (`no_conversation`): the daemon replies in the agent's name,
-  naming the bound or the fault and that it passed the question to the Legion controller, and passes
-  it on. A reply Dispatch or the listener refuses for good is passed on as `post_refused`.
+  spend over `daily_usd` (`over_limit`), `no_provider`, `no_price`, `unknown_format`, a run the
+  provider metered no call of — no counts at all, or zero input, output and cache tokens on every
+  call, which is what a gateway that strips usage leaves (`unmetered`: its answer is unpriced, so
+  it would move the day's spend by nothing and `daily_usd` would bound no answer) — and a
+  conversation its store no longer holds (`no_conversation`): the daemon replies in the agent's
+  name, naming the bound or the fault and that it passed the question to the Legion controller,
+  and passes it on. A reply Dispatch or the listener refuses for good is passed on as
+  `post_refused`.
 - **Passing on.** The controller gets one `agent-question` notice per question on its controller
   topic (`{kind, role, reason, question: {id, issue, session, asker, ref, text}}`, the text cut at
   2,000 characters), and, because that topic is a live wake only, `legion state` lists every

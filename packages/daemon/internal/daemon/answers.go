@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // answering is the daemon's answer loop, with `answers` set: the Legion project token it answers
@@ -214,12 +215,17 @@ const decisionPassedSource = string(record.AgentDecisionNotice)
 // and a restart's, finds the mark and queues nothing more. outbox's records wake the outbox once the
 // transaction commits (projectRecords).
 //
-// A decision the parked-decision relay sends itself is the one this queues nothing for
-// (relayOwns): sjawhar/legion#2163's relay tells the controller in its own parked-decision notice
-// and keeps the decision for the root's next start, and this loop merges second, so it records the
-// decision passed — a redelivery and a restart queue nothing later either — and logs the one line
-// that says whose it is. What the same message asks the agent is still answered: only the decision
-// is the relay's.
+// A decision #2163's relay carries itself is the one this queues nothing for (relayed): that
+// relay tells the controller in its own parked-decision notice and keeps the decision for the
+// root's next start, and this loop merges second, so it records the decision passed — a
+// redelivery and a restart queue nothing later either — and logs the one line that says whose it
+// is. What the same message asks the agent is still answered: only the decision is the relay's.
+//
+// Whether the relay carries it is read of the ask's own issue (Decision.AskIssue), the issue that
+// relay reads, and never of the agent's conversation issue: a phase worker opens its findings as
+// an ask on the controller's report issue (skill://legion-worker/references/findings.md), an
+// issue in no tree the daemon records, and the relay sends nothing for an ask of one. Held back
+// on the agent's parked tree alone, a person's answer to such an ask reached nobody.
 type routedDecisions struct {
 	outbox *outbox
 	now    func() time.Time
@@ -242,13 +248,16 @@ func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decisio
 		if err != nil || !fresh {
 			return err
 		}
-		architect, parked, err := d.decisionRoute(scoped, tx, conv.Issue)
+		relayed, err = d.relayCarries(scoped, tx, decision)
 		if err != nil {
 			return err
 		}
-		if parked && relayOwns(decision) {
-			relayed = true
+		if relayed {
 			return nil
+		}
+		architect, err := d.decisionRoute(scoped, tx, conv.Issue)
+		if err != nil {
+			return err
 		}
 		var payload record.OutboxPayload = record.ControllerNotice(notice)
 		to = "the controller"
@@ -266,8 +275,9 @@ func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decisio
 	committed()
 	switch {
 	case relayed:
-		d.log.Info("answers: decision left to the parked-decision relay of its parked tree", "decision", decision.ID,
-			"issue", conv.Issue, "role", conv.Role, "session", conv.Session, "asker", decision.Asker, "ref", decision.Ref)
+		d.log.Info("answers: decision left to the parked-decision relay of the tree its ask stands in", "decision", decision.ID,
+			"issue", conv.Issue, "ask_issue", decision.AskIssue, "role", conv.Role, "session", conv.Session,
+			"asker", decision.Asker, "ref", decision.Ref)
 	case to != "":
 		d.log.Info("answers: decision passed on", "decision", decision.ID, "to", to, "issue", conv.Issue, "role", conv.Role,
 			"session", conv.Session, "asker", decision.Asker, "ref", decision.Ref)
@@ -275,39 +285,50 @@ func (d routedDecisions) Decide(ctx context.Context, decision answerloop.Decisio
 	return nil
 }
 
-// relayOwns says whether the parked-decision relay sends decision itself once its tree is parked
-// (decisionRoute): every reply on an ask's thread, which the relay sends whatever the ask's kind
-// (workflow's dispatchAskReply), and a person's answer only of an ask kind it answers for
+// relayCarries says whether sjawhar/legion#2163's parked-decision relay carries decision itself,
+// judged by that relay's own rules and on the issue the ask stands on, which is the issue it
+// reads: the ask's kind, which the relay's two paths gate on (relayOwns), and the tree that issue
+// stands in with who decided (workflow.RelaysDecision). Everything else is this loop's to pass on
+// — an ask of an issue the daemon does not record, a tree that runs, a lingering root someone
+// moved back into the workflow, a decision no person made, and an answer of a kind the relay
+// leaves alone — so no decision reaches nobody and none reaches the controller twice.
+func (d routedDecisions) relayCarries(ctx context.Context, tx pgx.Tx, decision answerloop.Decision) (bool, error) {
+	if !relayOwns(decision) || decision.AskIssue == "" {
+		return false, nil
+	}
+	return workflow.RelaysDecision(ctx, tx, d.outbox.records, decision.AskIssue, decision.Asker, d.outbox.gatedSteps)
+}
+
+// relayOwns says whether the parked-decision relay sends a decision of this ask's kind at all:
+// every reply on an ask's thread, which the relay sends whatever the ask's kind (workflow's
+// dispatchAskReply), and a person's answer only of an ask kind it answers for
 // (record.RelaysAskAnswer, workflow's dispatchAskClosed). An answer the relay leaves alone — a
-// legacy `action` ask's, or one whose event names no kind — is this loop's to pass on, as it is
-// on a tree that runs, so no decision reaches nobody.
+// legacy `action` ask's, or one whose event names no kind — is this loop's to pass on wherever
+// its ask stands, so no decision reaches nobody.
 func relayOwns(decision answerloop.Decision) bool {
 	return !decision.Answered || record.RelaysAskAnswer(decision.AskKind)
 }
 
-// decisionRoute is where a decision on the agent's issue key goes, read through tx as the outbox
-// reads a notice's route (readNoticeRoute, owningArchitect): the architect that owns the issue
-// when it holds its role (holdsItsRole) and its tree neither lingers nor has closed, and whether
-// the issue stands in a parked tree, whose decisions are #2163's relay's as far as it relays them
-// (record.ParkedTree, relayOwns). No architect and no parked tree is the controller's: the tree's
-// architect is suspended, being stopped, failed, retired or not supervised, the root lingers on a
-// status someone moved back into the workflow, which the relay sends nothing for
-// (record.RelayNotParked), or the issue is not recorded in a tree the daemon routes notices of.
-func (d routedDecisions) decisionRoute(ctx context.Context, tx pgx.Tx, key string) (claim.Token, bool, error) {
+// decisionRoute is where a decision on the agent's issue key goes once it is this loop's to pass
+// on (relayCarries), read through tx as the outbox reads a notice's route (readNoticeRoute,
+// owningArchitect): the architect that owns the issue when it holds its role (holdsItsRole) and
+// its tree neither lingers nor has closed. No architect is the controller's: the tree's architect
+// is suspended, being stopped, failed, retired or not supervised, its root lingers — parked, or
+// on a status someone moved back into the workflow — or the issue is not recorded in a tree the
+// daemon routes notices of.
+func (d routedDecisions) decisionRoute(ctx context.Context, tx pgx.Tx, key string) (claim.Token, error) {
 	issue, route, err := d.outbox.readNoticeRoute(ctx, tx, key, map[string]noticeRoute{})
 	switch {
 	case errors.Is(err, errNoticeUnroutable):
-		return "", false, nil
+		return "", nil
 	case err != nil:
-		return "", false, err
-	case record.ParkedTree(route.root):
-		return "", true, nil
+		return "", err
 	case route.root.Lingers():
-		return "", false, nil
+		return "", nil
 	}
 	architect, err := owningArchitect(route.project, route.issues, issue, record.AgentDecisionNotice, d.outbox.holdsItsRole)
 	if err != nil || !d.outbox.holdsItsRole(architect) {
-		return "", false, nil
+		return "", nil
 	}
-	return architect, false, nil
+	return architect, nil
 }

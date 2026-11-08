@@ -115,27 +115,16 @@ func RelaysAskAnswer(kind string) bool { return kind == AskQuestion }
 //     Dispatch, who made it, and a spec decision's version and a changes request's reason.
 //
 // Every write is in the caller's transaction, which the caller keys so that a replay writes none of
-// them again.
+// them again. What it makes of a decision before any write is RelayDecisionOutcome, which is the
+// rule itself: a reader that must know whether the relay carries a decision asks that and writes
+// nothing (workflow.RelaysDecision, the answer loop's routedDecisions).
 func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue string, root Issue, nobodyHears bool,
 	decision ParkedDecision, version int, reason string, steps []DesignStep) (RelayOutcome, error) {
-	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
-	if err != nil {
-		return RelayNone, err
+	outcome, err := RelayDecisionOutcome(ctx, tx, store, root, nobodyHears, decision.Actor, steps)
+	if err != nil || (outcome != RelayKept && outcome != RelaySent) {
+		return outcome, err
 	}
-	if !waiting {
-		if !nobodyHears {
-			return RelayNone, nil
-		}
-		if root.Lingers() && !ParkedTree(root) {
-			return RelayNotParked, nil
-		}
-	}
-	if !PersonActor(decision.Actor) {
-		if waiting {
-			return RelayNoPersonWaiting, nil
-		}
-		return RelayNoPerson, nil
-	}
+	waiting := outcome == RelayKept
 	decision.Issue = issue
 	if err := store.AddParkedDecision(ctx, tx, decision); err != nil {
 		return RelayNone, err
@@ -150,6 +139,39 @@ func RelayParkedDecision(ctx context.Context, tx pgx.Tx, store Store, issue stri
 	}
 	if err := store.Enqueue(ctx, tx, row); err != nil {
 		return RelayNone, err
+	}
+	return RelaySent, nil
+}
+
+// RelayDecisionOutcome is what RelayParkedDecision makes of a decision by actor on root, decided
+// before any write and from the record alone: the outcome's first three rules, in their order
+// (WaitsForSlot, nobodyHears, ParkedTree, PersonActor). RelayKept and RelaySent are the two
+// outcomes that carry the decision somewhere — kept for the root's next architect start, and
+// kept and relayed to the controller — so they are what a reader asks for: the answer loop passes
+// a decision on itself exactly when this answers neither, and so no decision reaches nobody and
+// none reaches the controller twice (the daemon's routedDecisions, workflow.RelaysDecision).
+func RelayDecisionOutcome(ctx context.Context, tx pgx.Tx, store Store, root Issue, nobodyHears bool, actor string,
+	steps []DesignStep) (RelayOutcome, error) {
+	waiting, err := WaitsForSlot(ctx, tx, store, root, steps)
+	if err != nil {
+		return RelayNone, err
+	}
+	if !waiting {
+		if !nobodyHears {
+			return RelayNone, nil
+		}
+		if root.Lingers() && !ParkedTree(root) {
+			return RelayNotParked, nil
+		}
+	}
+	if !PersonActor(actor) {
+		if waiting {
+			return RelayNoPersonWaiting, nil
+		}
+		return RelayNoPerson, nil
+	}
+	if waiting {
+		return RelayKept, nil
 	}
 	return RelaySent, nil
 }

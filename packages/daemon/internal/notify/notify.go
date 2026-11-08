@@ -341,6 +341,11 @@ type Message struct {
 // Send posts m through the listener's direct-message route (POST /v1/messages/send, sendHandler in
 // packages/envoy/cmd/listener/api.go) as source `agent`. A 4xx answer, such as the listener's 404
 // for a target with no live session, is ErrRefused: sending it again is refused again.
+//
+// It carries `"handoff": false`, as every publish of the daemon's does: this is how the answer
+// loop answers a stopped agent's Envoy message, in the agent's name, and a send the listener
+// handed back to the loop would have it answer its own answer
+// (packages/envoy/cmd/listener/api.go's optedOutOfHandoff, plan 2.2).
 func (p *HTTPPublisher) Send(ctx context.Context, m Message) error {
 	body, err := json.Marshal(struct {
 		TargetSession  string `json:"target_session"`
@@ -349,7 +354,9 @@ func (p *HTTPPublisher) Send(ctx context.Context, m Message) error {
 		Message        string `json:"message"`
 		InReplyTo      string `json:"in_reply_to,omitempty"`
 		IdempotencyKey string `json:"idempotency_key"`
-	}{TargetSession: m.Target, Source: "agent", SourceSession: m.SourceSession, Message: m.Text, InReplyTo: m.InReplyTo, IdempotencyKey: m.IdempotencyKey})
+		Handoff        bool   `json:"handoff"`
+	}{TargetSession: m.Target, Source: "agent", SourceSession: m.SourceSession, Message: m.Text, InReplyTo: m.InReplyTo,
+		IdempotencyKey: m.IdempotencyKey, Handoff: false})
 	if err != nil {
 		return fmt.Errorf("encode the message to %s: %w", m.Target, err)
 	}

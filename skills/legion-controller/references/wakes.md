@@ -131,8 +131,9 @@ was passed to you. `reason` says why:
   `needs_work` (the question asks for work it cannot do while stopped): the agent's own reply;
 - `answer_seconds`, `model_calls`, `length`, `refusal`, `malformed` or `provider_error`: the
   answer failed;
-- `over_limit` (the project's daily spend), `no_provider`, `no_price`, `unknown_format`,
-  `no_conversation` or `post_refused`: the deployment could not answer it or post the reply.
+- `over_limit` (the project's daily spend), `no_provider`, `no_price`, `unmetered` (no model call
+  of the answer was metered, so it could not be priced), `unknown_format`, `no_conversation` or
+  `post_refused`: the deployment could not answer it or post the reply.
 
 `question.asker` is `user:<login>`, or `session:<id>` with the asking session's title when known.
 `question.ref` is where it was asked: `dispatch://<KEY>/message/<id>`, `dispatch://<KEY>/comment/<id>`,
@@ -155,9 +156,10 @@ Read `read_state` and the issue (`dispatch read`), then take the first of these 
   work needs the issue running again, which a person decides (`todo` with the `legion` label), and
   re-admit nothing for it.
 
-A reason the deployment causes (`over_limit`, `no_provider`, `no_price`, `unknown_format`,
-`no_conversation`, `post_refused`) also goes in the next daily report, because the operator's
-`answers` configuration fixes it. Act on a question once: one you already answered, by your reply
+A reason the deployment causes (`over_limit`, `no_provider`, `no_price`, `unmetered`,
+`unknown_format`, `no_conversation`, `post_refused`) also goes in the next daily report, because
+the operator's `answers` configuration fixes it. Act on a question once: one you already
+answered, by your reply
 on its `ref` thread or your message to the asker, needs nothing, whether it reaches you as this
 wake or in `questionsForController`. An entry of `questionsForController` carries no `text`: read
 the question at its `dispatch://` ref, and for an `envoy:` ref ask the asking session to send it

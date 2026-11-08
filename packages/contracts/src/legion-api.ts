@@ -370,8 +370,8 @@ const legionHeldOutboxRow = z.object({
  * agent's issue, role and session, who asked (`user:<login>`, or `session:<id>` with the asking
  * session's title when known), where (a `dispatch://` reference, or `envoy:<event id>`), why it was
  * passed on (`not_answered`, `needs_work`, a bound or fault, `over_limit`, `unknown_format`,
- * `no_provider`, `no_price`, `no_conversation`, `post_refused`), and when. `asker` and `ref` are
- * empty for a question whose recorded hand-off no longer reads. */
+ * `no_provider`, `no_price`, `unmetered`, `no_conversation`, `post_refused`), and when. `asker`
+ * and `ref` are empty for a question whose recorded hand-off no longer reads. */
 const legionQuestionForController = z.object({
   id: nonEmptyString,
   issue: issueKey,

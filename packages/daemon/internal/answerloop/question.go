@@ -241,6 +241,8 @@ func (l *Loop) faultReply(reason Reason) string {
 		return "No model provider is configured for the model my conversation ran on." + passed
 	case ReasonNoPrice:
 		return "No price is configured for the model my conversation ran on, so I am not answered on it." + passed
+	case ReasonUnmetered:
+		return "My model provider reported no usage for the calls that answered, so my answer cannot be priced and I am not answered on it." + passed
 	case ReasonUnknownFormat:
 		return "My conversation holds a format the daemon cannot read or write, so I cannot answer from it." + passed
 	case ReasonNoConversation:

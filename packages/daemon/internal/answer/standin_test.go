@@ -110,11 +110,29 @@ func (u anthropicUsage) object() map[string]any {
 // anthropicStream is the event stream the Messages API sends for a message of blocks (each a
 // Messages API content block) that stops for stopReason.
 func anthropicStream(stopReason string, usage anthropicUsage, blocks ...map[string]any) reply {
+	return anthropicMessage(stopReason, usage.object(), blocks...)
+}
+
+// anthropicUnmetered is that stream with no usage object at all, neither on the message's start
+// nor on its delta, as a gateway that strips usage sends it: the Messages API's own always
+// carries one. The Anthropic adapter answers an absent usage object with zero counts rather than
+// with none (providers/anthropic's convertAnthropicUsage), so agentloop calls such a run metered
+// and the zero counts are what says nothing counted it (answer's unmetered).
+func anthropicUnmetered(stopReason string, blocks ...map[string]any) reply {
+	return anthropicMessage(stopReason, nil, blocks...)
+}
+
+// anthropicMessage is the stream for blocks whose usage object is usage, left out when it is nil.
+func anthropicMessage(stopReason string, usage map[string]any, blocks ...map[string]any) reply {
 	var w sseWriter
-	w.event("message_start", map[string]any{"type": "message_start", "message": map[string]any{
+	message := map[string]any{
 		"id": "msg_standin", "type": "message", "role": "assistant", "model": "claude-standin", "content": []any{},
-		"stop_reason": nil, "stop_sequence": nil, "usage": usage.object(),
-	}})
+		"stop_reason": nil, "stop_sequence": nil,
+	}
+	if usage != nil {
+		message["usage"] = usage
+	}
+	w.event("message_start", map[string]any{"type": "message_start", "message": message})
 	for i, b := range blocks {
 		switch b["type"] {
 		case "text":
@@ -129,11 +147,15 @@ func anthropicStream(stopReason string, usage anthropicUsage, blocks ...map[stri
 			input, _ := json.Marshal(b["input"])
 			w.event("content_block_delta", map[string]any{"type": "content_block_delta", "index": i, "delta": map[string]any{"type": "input_json_delta", "partial_json": string(input)}})
 		default:
-			panic(fmt.Sprintf("anthropicStream: a %v block", b["type"]))
+			panic(fmt.Sprintf("anthropicMessage: a %v block", b["type"]))
 		}
 		w.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": i})
 	}
-	w.event("message_delta", map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil}, "usage": usage.object()})
+	delta := map[string]any{"type": "message_delta", "delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil}}
+	if usage != nil {
+		delta["usage"] = usage
+	}
+	w.event("message_delta", delta)
 	w.event("message_stop", map[string]any{"type": "message_stop"})
 	return reply{body: w.Bytes()}
 }
@@ -169,6 +191,19 @@ func (u openaiUsage) object() map[string]any {
 // raw JSON as the response.output_item.done event carries it; incomplete, when set, is the reason
 // the response did not complete.
 func openaiStream(usage openaiUsage, incomplete string, items ...string) reply {
+	return openaiResponse(usage.object(), incomplete, items...)
+}
+
+// openaiUnmetered is that stream with no usage object at all on the response that completes it,
+// as a provider — or a gateway between it and the daemon — reporting no counts sends it: the
+// Responses API's own carries one, and a run nothing counts is metered by nothing (agentloop's
+// priced, Usage.Metered).
+func openaiUnmetered(items ...string) reply {
+	return openaiResponse(nil, "", items...)
+}
+
+// openaiResponse is the stream whose completed response carries usage, left out when it is nil.
+func openaiResponse(usage map[string]any, incomplete string, items ...string) reply {
 	seq := 0
 	var w sseWriter
 	event := func(name string, fields map[string]any) {
@@ -177,8 +212,11 @@ func openaiStream(usage openaiUsage, incomplete string, items ...string) reply {
 		seq++
 		w.event(name, fields)
 	}
-	response := func(status string, output []any, usage any) map[string]any {
-		r := map[string]any{"id": "resp_standin", "object": "response", "created_at": 1, "status": status, "model": "gpt-standin", "output": output, "usage": usage}
+	response := func(status string, output []any, usage map[string]any) map[string]any {
+		r := map[string]any{"id": "resp_standin", "object": "response", "created_at": 1, "status": status, "model": "gpt-standin", "output": output}
+		if usage != nil {
+			r["usage"] = usage
+		}
 		if incomplete != "" && status != "in_progress" {
 			r["incomplete_details"] = map[string]any{"reason": incomplete}
 		}
@@ -228,7 +266,7 @@ func openaiStream(usage openaiUsage, incomplete string, items ...string) reply {
 				event("response.reasoning_summary_part.done", map[string]any{"item_id": id, "output_index": i, "summary_index": si, "part": s})
 			}
 		default:
-			panic(fmt.Sprintf("openaiStream: a %v item", item["type"]))
+			panic(fmt.Sprintf("openaiResponse: a %v item", item["type"]))
 		}
 		event("response.output_item.done", map[string]any{"output_index": i, "item": json.RawMessage(raw)})
 	}
@@ -236,7 +274,7 @@ func openaiStream(usage openaiUsage, incomplete string, items ...string) reply {
 	if incomplete != "" {
 		final = "incomplete"
 	}
-	event("response."+final, map[string]any{"response": response(final, output, usage.object())})
+	event("response."+final, map[string]any{"response": response(final, output, usage)})
 	return reply{body: w.Bytes()}
 }
 
