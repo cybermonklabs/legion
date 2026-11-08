@@ -79,9 +79,13 @@ real_timeout=$(type -P timeout) ||
 # stderr of the calls it refuses, the arguments it records.
 #
 # A case asks for call `<n>` to be the bound firing by writing `$work/stub-timeout.<n>`,
-# counting from 0 as the stand-in gh's call log does, so attempt n of the ladder is call n - 1.
-# `fixture` removes those files again, and a call no file was written for runs the real
-# timeout this execs, so that attempt's gh is bounded as the script asked.
+# counting from 0, so `stub-timeout.<n>` names attempt n + 1 of the ladder: this stand-in is
+# called once for every attempt, whether it stands in for that call or execs the real timeout.
+# The stand-in gh's `stderr.<n>` counts from 0 too and counts something else - gh's own calls,
+# which hold no call for an attempt this stand-in answered with 124 itself. So `stderr.<n>`
+# names gh's own n-th call rather than attempt n + 1, and in a case that mixes the two the two
+# numberings drift apart. `fixture` removes those files again, and a call no file was written
+# for runs the real timeout this execs, so that attempt's gh is bounded as the script asked.
 cat > "$work/bin/timeout" <<TIMEOUT
 #!/usr/bin/env bash
 set -euo pipefail
@@ -224,14 +228,15 @@ check "every attempt's gh output still reaches the log" \
 check "and the ladder waited 1 s and then 2 s" "$(at_least "$seconds" 3)"
 
 echo "case: a refusal gh printed no HTTP status for"
-# A resolution failure or a timeout prints no status line, and a line that named one anyway
-# would send a reader looking for a 502 that never happened.
+# A resolution failure prints no status line, and a line that named one anyway would send a
+# reader looking for a 502 that never happened.
 fixture 3 "could not resolve host: api.github.com"
 drive jobs "$work/out.json"
 check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
-check "which says gh printed none" "$(contains "$(error_line)" 'gh printed no HTTP status')"
+check "which names the exit status and says gh printed none" \
+  "$(contains "$(error_line)" 'exited 1, printing no HTTP status')"
 check "and names no status of its own" \
   "$(is "$(contains "$(error_line)" 'HTTP [0-9][0-9][0-9]')" false)"
 check "while gh's own words reach the log" \
@@ -251,10 +256,12 @@ check "fails the step" "$(is "$status" 1)"
 check "writes no out-file" "$(is "$(wrote_out_file)" no)"
 check "tried three times" "$(is "$(calls)" 3)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
-check "does not hand the last attempt a status only an earlier one answered" \
-  "$(is "$(contains "$(error_line)" 'the last attempt answered HTTP 502')" false)"
-check "says gh printed no status for the attempt that decided the failure" \
-  "$(contains "$(error_line)" 'gh printed no HTTP status')"
+check "does not hand the deciding attempt a status only an earlier one answered" \
+  "$(is "$(contains "$(error_line)" 'decided the failure, answered HTTP 502')" false)"
+check "says that attempt exited with no status of its own" \
+  "$(contains "$(error_line)" 'decided the failure, exited 1, printing no HTTP status')"
+check "and names the earlier attempt that was answered one, with its own attempt number" \
+  "$(contains "$(error_line)" 'where attempt 1 answered HTTP 502')"
 check "while every attempt's own words still reach the log" \
   "$(contains "$out" '^gh: Server Error (HTTP 502)$')"
 check "the later attempts' too" \
@@ -289,8 +296,8 @@ check "and the drive waits for none of it" "$(at_most "$seconds" 1)"
 check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
 check "naming the bound that ended the attempt that decided the failure" \
   "$(contains "$(error_line)" 'attempt 3, which decided the failure, stopped at its 30 s bound')"
-check "and not the words a refusal with no status of its own gets" \
-  "$(is "$(contains "$(error_line)" 'gh printed no HTTP status')" false)"
+check "and not the words an exit with no status of its own gets" \
+  "$(is "$(contains "$(error_line)" 'printing no HTTP status')" false)"
 check "and says nothing of the earlier attempts, which ended the same way" \
   "$(is "$(contains "$(error_line)" 'where attempt')" false)"
 
@@ -318,10 +325,13 @@ check "while the two that did stop at it are named, each with its own attempt nu
     'where attempt 1 stopped at its 30 s bound and attempt 2 stopped at its 30 s bound')"
 
 echo "case: the first two attempts answered a status and the bound ended the third"
-# The reverse, and the shape the 2026-11-08 incident had: the jobs API answering 502 while a
-# later attempt is left hanging until the bound ends it. The attempt the bound ended is the
-# one that decided the failure, so the line must not hand it the status the earlier two were
-# answered, and must still say what those two did, since they did something else.
+# The reverse, and a shape the bound exists for rather than one this lane has measured: the
+# jobs API answering 502 while a later attempt is left hanging until the bound ends it. The
+# 2026-11-08 incident was not that shape - its three attempts failed on 502s in 17, 19 and 18
+# seconds, which the script's own comment reads as answered rather than left hanging. The
+# attempt the bound ended is the one that decided the failure, so the line must not hand it the
+# status the earlier two were answered, and must still say what those two did, since they did
+# something else.
 fixture 3 "HTTP 502"
 touch "$work/stub-timeout.2"
 drive jobs "$work/out.json"
