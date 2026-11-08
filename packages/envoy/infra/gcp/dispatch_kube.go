@@ -686,6 +686,19 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			corev1.VolumeProjectionArgs{ServiceAccountToken: &corev1.ServiceAccountTokenProjectionArgs{Audience: pulumi.String(s.agentSecretsAudience), ExpirationSeconds: pulumi.Int(agentSecretsTokenSeconds), Path: pulumi.String("agent-secrets-account-token")}},
 		}}})
 	}
+	if s.oidcAudience != "" {
+		// Dispatch verifies a caller's projected ServiceAccount token itself, which is how the
+		// secrets broker's judge reads Dispatch. The issuer is this cluster's own unless
+		// oidcIssuer names another, so a token minted in this cluster needs the audience alone;
+		// it is an Output there, rendered once the cluster's project, location and name resolve.
+		// Dispatch refuses half the pair at boot (oidc.ConfigFromEnv), so both render together.
+		issuer := cloud.issuer
+		if s.oidcIssuer != "" {
+			issuer = pulumi.String(s.oidcIssuer).ToStringOutput()
+		}
+		appEnv = append(appEnv, corev1.EnvVarArgs{Name: pulumi.String("DISPATCH_OIDC_ISSUER"), Value: issuer},
+			valueEnv("DISPATCH_OIDC_AUDIENCE", s.oidcAudience))
+	}
 	if s.appClientID != "" {
 		// The App key is one key of a Kubernetes Secret this component never creates: it exists at
 		// run time (GKE SecretSync), so the Deployment does not wait on it.

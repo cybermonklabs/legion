@@ -195,6 +195,8 @@ on:
       - 'packages/envoy/internal/store/*'
       - 'packages/envoy/listenfd/*'
       # The docs filter's own:
+      # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+      - 'packages/envoy/agentloop/*'
       - 'packages/envoy/cmd/agent-secrets/*'
       - 'packages/envoy/cmd/agent-secrets-helper/*'
       - 'packages/envoy/cmd/broker/*'
@@ -208,6 +210,7 @@ on:
       - 'packages/envoy/internal/broker/enroll/*'
       - 'packages/envoy/internal/broker/exchange/*'
       - 'packages/envoy/internal/broker/helper/*'
+      - 'packages/envoy/internal/broker/judge/*'
       - 'packages/envoy/internal/broker/leasetime/*'
       - 'packages/envoy/internal/broker/machine/*'
       - 'packages/envoy/internal/broker/oauth/*'

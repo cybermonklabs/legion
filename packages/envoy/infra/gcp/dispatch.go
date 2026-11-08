@@ -185,6 +185,23 @@ type DispatchArgs struct {
 	AgentSecretsUrl      string `pulumi:"agentSecretsUrl,optional"`
 	AgentSecretsAudience string `pulumi:"agentSecretsAudience,optional"`
 
+	// OidcAudience turns on Dispatch's own service-account verifier, the one the secrets
+	// broker's judge reads Dispatch with: DISPATCH_OIDC_AUDIENCE is the audience a projected
+	// ServiceAccount token must carry, and DISPATCH_OIDC_ISSUER the issuer that signed it,
+	// which defaults to this component's cluster (the serviceAccountIssuer output) and which
+	// oidcIssuer replaces for a token another cluster mints. Dispatch reads the two as a pair
+	// (oidc.ConfigFromEnv refuses half of one), so the component renders both or neither, and
+	// an oidcIssuer with no oidcAudience is refused.
+	//
+	// Turning this on opens Dispatch to every workload that can get a token for that audience
+	// under that issuer: such a caller reads Dispatch's authAny routes as a service actor,
+	// and a service actor holds no scope and no subject list, so Dispatch admits whatever
+	// subject the token names (serviceTokenActor, internal/dispatch/api/server.go). Only the
+	// audience bounds it. Pick one no other workload of the cluster asks the kubelet for, and
+	// leave it unset where no caller needs it.
+	OidcAudience string `pulumi:"oidcAudience,optional"`
+	OidcIssuer   string `pulumi:"oidcIssuer,optional"`
+
 	// AppClientId, appId, appPrivateKeySecretName and appPrivateKeySecretKey turn on Dispatch's
 	// GitHub App together: DISPATCH_APP_CLIENT_ID and DISPATCH_APP_ID as plain values, and
 	// DISPATCH_APP_PEM_B64 read from the key AppPrivateKeySecretKey of the Kubernetes Secret
@@ -392,6 +409,8 @@ func dispatchSeededInput(args *DispatchArgs) (string, bool) {
 		{"signInDomain", args.SignInDomain},
 		{"agentSecretsUrl", args.AgentSecretsUrl},
 		{"agentSecretsAudience", args.AgentSecretsAudience},
+		{"oidcAudience", args.OidcAudience},
+		{"oidcIssuer", args.OidcIssuer},
 		{"appClientId", args.AppClientId},
 		{"appId", args.AppId},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName},
@@ -488,6 +507,9 @@ type Dispatch struct {
 // With neither the component is the sandbox: Dispatch is reached in the cluster alone, by readers
 // the app's NetworkPolicy admits, and tailnetDNSName, tags, the tailscale and tools images and
 // signIn are empty, since nothing reads them.
+// oidcIssuer is "" when its input is unset and oidcAudience is set, where the issuer rendered is
+// the cluster's own, which only the cluster half knows (dispatchCluster.issuer) and so is no
+// field here.
 type dispatchSettings struct {
 	clusterOnly                                 bool
 	frontDoor, signInOn                         bool
@@ -498,6 +520,7 @@ type dispatchSettings struct {
 	databaseVersion, databaseTier               string
 	databaseAvailabilityType                    string
 	agentSecretsURL, agentSecretsAudience       string
+	oidcAudience, oidcIssuer                    string
 	appClientID, appID                          string
 	appKeySecretName, appKeySecretKey           string
 	deletionProtection, existingNamespace       bool
@@ -805,6 +828,8 @@ func dispatchClusterOnlyRefusals(args *DispatchArgs) []dispatchInput {
 		{"natsSeedSecret", args.NatsSeedSecret != nil},
 		{"agentSecretsUrl", args.AgentSecretsUrl != ""},
 		{"agentSecretsAudience", args.AgentSecretsAudience != ""},
+		{"oidcAudience", args.OidcAudience != ""},
+		{"oidcIssuer", args.OidcIssuer != ""},
 		{"appClientId", args.AppClientId != ""},
 		{"appId", args.AppId != ""},
 		{"appPrivateKeySecretName", args.AppPrivateKeySecretName != ""},
@@ -1090,6 +1115,14 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 			return dispatchSettings{}, errors.New("agentSecretsUrl must carry no user, password, query or fragment: it is rendered as a plain environment variable (not echoed)")
 		}
 	}
+	// The service-account verifier is one required input and one override, not a group: the
+	// audience turns it on and the issuer defaults to the cluster's own, so an issuer sent
+	// without an audience would configure nothing and is refused rather than dropped. Dispatch
+	// itself refuses half the pair (oidc.ConfigFromEnv), which is why the component renders
+	// DISPATCH_OIDC_ISSUER and DISPATCH_OIDC_AUDIENCE together or not at all.
+	if args.OidcIssuer != "" && args.OidcAudience == "" {
+		return dispatchSettings{}, errors.New("oidcAudience is required when oidcIssuer is set")
+	}
 	var appSet, appMissing []string
 	for _, in := range []struct{ input, value string }{
 		{"appClientId", args.AppClientId},
@@ -1148,6 +1181,8 @@ func newDispatchSettings(args *DispatchArgs) (dispatchSettings, error) {
 	s.signIn.domain = args.SignInDomain
 	s.agentSecretsURL = agentSecretsURL
 	s.agentSecretsAudience = args.AgentSecretsAudience
+	s.oidcAudience = args.OidcAudience
+	s.oidcIssuer = args.OidcIssuer
 	s.appClientID = args.AppClientId
 	s.appID = args.AppId
 	s.appKeySecretName = args.AppPrivateKeySecretName

@@ -836,6 +836,8 @@ jobs:
               # cmd/broker and cmd/agent-secrets at run time (generators/broker-reference.sh:13-14).
               - *legion_command
               - *dispatch_server
+              # agentloop: the model loop cmd/broker's judge runs a model and its tools through.
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/agent-secrets/*'
               - 'packages/envoy/cmd/agent-secrets-helper/*'
               - 'packages/envoy/cmd/broker/*'
@@ -849,6 +851,7 @@ jobs:
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
               - 'packages/envoy/internal/broker/helper/*'
+              - 'packages/envoy/internal/broker/judge/*'
               - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
@@ -1129,6 +1132,7 @@ jobs:
               # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
               # ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
               # Dispatch server's, which e2e/run-broker.sh:95 builds in one go build.
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
@@ -1141,6 +1145,7 @@ jobs:
               - 'packages/envoy/internal/broker/config/*'
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
+              - 'packages/envoy/internal/broker/judge/*'
               - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
@@ -1440,6 +1445,7 @@ jobs:
             broker_multiprocess:
               - '.github/workflows/ci.yaml'
               - *go_workspace
+              - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
               # cmd/broker/main_test.go:220 (sslrootcert).
@@ -1455,6 +1461,7 @@ jobs:
               - 'packages/envoy/internal/broker/enroll/*'
               - 'packages/envoy/internal/broker/exchange/*'
               - 'packages/envoy/internal/broker/helper/*'
+              - 'packages/envoy/internal/broker/judge/*'
               - 'packages/envoy/internal/broker/leasetime/*'
               - 'packages/envoy/internal/broker/machine/*'
               - 'packages/envoy/internal/broker/oauth/*'
@@ -1470,6 +1477,9 @@ jobs:
               - 'packages/envoy/internal/broker/wake/*'
               # agent-secrets trades through the client, whose own tests replay the wire corpus.
               - 'packages/envoy/internal/brokerclient/**'
+              # internal/broker/judge/model.go mints the account token it reads Dispatch with
+              # through brokertoken.
+              - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/buildversion/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
@@ -1533,6 +1543,7 @@ jobs:
               - 'scripts/assemble-third-party-notices.sh'
               - 'packages/envoy/go.mod'
               - 'packages/envoy/go.sum'
+              - 'packages/envoy/agentloop/**'
               - 'packages/envoy/cmd/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
