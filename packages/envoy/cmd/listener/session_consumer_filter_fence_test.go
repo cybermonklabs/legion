@@ -565,6 +565,78 @@ func TestACorrectivePassThatFindsTheConsumerAsTheRowAsksReportsNothingLeftBehind
 	b.awaitPending(t, sessionID, 1)
 }
 
+// A corrective pass that finds the session's record deleted promises no heartbeat: a session
+// the bucket holds no record of has none to make, and the delete that took that record takes
+// its consumer, so the fence's line - which leaves the filter to the next heartbeat - names a
+// repair nothing will do. What the pass reports instead is what it found: a filter of its own
+// write standing on the consumer of a session that is gone (repairRegistered,
+// filterWriteSettled).
+//
+// The order is built rather than waited for. The restore's first pass writes the row it read
+// and creates the consumer the delete took, and the hook below stores a newer row under that
+// write - a role claim's write, which sets no filter - so the fence reads the bucket again. The
+// second hook then deletes the session's record before the corrective pass plans, as a reaper
+// pass or a clean stop deletes it: neither takes this listener's consumer lock, so both reach
+// the bucket while the restore holds it (session.SessionReaper.DeleteConsumer,
+// deleteSessionConsumer).
+func TestACorrectivePassThatFindsTheRecordDeletedPromisesNoHeartbeat(t *testing.T) {
+	rig := newSessionConsumerRig(t)
+	const sessionID = "ses_fence_record_gone"
+	const kept = "notifications.dispatch.issue.FENCERECGONEKEPT.>"
+	const added = "notifications.dispatch.issue.FENCERECGONEADD.>"
+	rig.subscribe(t, consumerRegistration(sessionID, "epoch-1", kept))
+
+	var moved sync.Once
+	rig.deps.consumers.afterRepairPlan = func() {
+		// The row of a write that sets no filter - a role claim's - stored under the restore's
+		// own write, which is what sends the fence round again.
+		moved.Do(func() {
+			if _, err := rig.harness.registry.Upsert(store.Interest{SessionID: sessionID, MachineID: "test-machine"}, []string{added}); err != nil {
+				t.Errorf("store %s on the session's row: %v", added, err)
+			}
+		})
+	}
+	passes := 0
+	rig.deps.consumers.beforeRepairPlan = func() {
+		passes++
+		if passes != 2 {
+			return
+		}
+		// The record delete of a reaper pass or a clean stop, landing between the restore's
+		// write and the corrective pass over the row stored under it.
+		if err := rig.deps.sessions.Delete(context.Background(), sessionID); err != nil {
+			t.Errorf("delete the record of %s under its own repair: %v", sessionID, err)
+		}
+	}
+
+	// The delete the session reaper or a clean stop makes, whose restore gives the consumer back
+	// to a session the bucket still holds a record for (deleteConsumer, repairRegistered).
+	ctx, cancel := context.WithTimeout(context.Background(), consumerFilterFenceWait)
+	defer cancel()
+	if err := rig.deps.consumers.deleteConsumer(ctx, rig.deps, sessionID); err != nil {
+		t.Fatalf("the delete of %s's consumer: %v", sessionID, err)
+	}
+	rig.deps.consumers.beforeRepairPlan, rig.deps.consumers.afterRepairPlan = nil, nil
+
+	if passes != 2 {
+		t.Fatalf("the restore made %d passes, want the write and the corrective pass over the row stored under it", passes)
+	}
+	if _, err := rig.deps.sessions.Refresh(context.Background(), sessionID); !errors.Is(err, nats.ErrKeyNotFound) {
+		t.Fatalf("the bucket answers %v for %s's record, want no record at all: the corrective pass must find it deleted", err, sessionID)
+	}
+	if logs := rig.harness.logs.String(); strings.Contains(logs, fenceExhaustionLine) {
+		t.Errorf("the repair of a session whose record is deleted left the filter to the session's next heartbeat; that session has none, and its consumer is being deleted:\n%s", logs)
+	}
+
+	// What the pass reports instead, and the consumer it reports it of: the restore created it
+	// again before the record was deleted, and it stands filtered on the row that write was
+	// built from, for a session the bucket holds no record of.
+	if wrote := requireRepairRecordGoneLogged(t, rig, sessionID); wrote == 0 {
+		t.Errorf("the line names revision 0 as the one written from, want the revision of the row the restore's own write was built from")
+	}
+	requireFilters(t, rig, sessionID, kept)
+}
+
 // A fence whose read of the bucket after a write answers no row for the session plans no pass
 // from that answer: the filter that write left stands, and the live session goes on receiving
 // the topics it names (rowMovedUnder). A pass planned from no row sets the consumer's filter to
@@ -716,4 +788,33 @@ func requireFenceReadFailureLogged(t *testing.T, rig *sessionConsumerRig, sessio
 	}
 	t.Fatalf("the fence could not read the bucket after %s's write and logged nothing:\n%s", sessionID, logs)
 	return 0, ""
+}
+
+// repairRecordGoneLine is what a repair of a session's consumer logs when a pass of it finds
+// the bucket holding no record of that session and a write of an earlier pass standing on the
+// consumer (repairRegistered).
+const repairRecordGoneLine = "listener left the filter of an older interest row on the consumer of a session the bucket holds no record for; the session is gone, so no heartbeat sets that filter and the consumer goes with the delete that took the record, or with the stream's inactive threshold"
+
+// requireRepairRecordGoneLogged fails the test unless the listener logged that line for
+// sessionID, and answers the revision it names: the row the filter standing was built from.
+func requireRepairRecordGoneLogged(t *testing.T, rig *sessionConsumerRig, sessionID string) uint64 {
+	t.Helper()
+	logs := rig.harness.logs.String()
+	for line := range strings.SplitSeq(logs, "\n") {
+		if !strings.Contains(line, `"msg":"`+repairRecordGoneLine+`"`) {
+			continue
+		}
+		var reported struct {
+			SessionID string `json:"session_id"`
+			Wrote     uint64 `json:"wrote_revision"`
+		}
+		if err := json.Unmarshal([]byte(line), &reported); err != nil {
+			t.Fatalf("decode the listener's line %s: %v", line, err)
+		}
+		if reported.SessionID == sessionID {
+			return reported.Wrote
+		}
+	}
+	t.Fatalf("the repair of %s found the bucket holding no record of it and logged nothing:\n%s", sessionID, logs)
+	return 0
 }

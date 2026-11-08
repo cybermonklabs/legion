@@ -399,19 +399,53 @@ const (
 // consumer's position, so every message published on that topic in the window is skipped for
 // good.
 //
+// A pass that finds the bucket holding no record of the session ends the repair, and the fence
+// with it: the record was deleted by a clean stop or a reaper pass, the same delete takes the
+// consumer (deleteConsumer), and a session with no record has no next heartbeat to register
+// again, so nothing is left to repair and nothing is left to repair it. The fence's own line is
+// wrong there, naming a heartbeat that never comes, so the pass ends it silently
+// (filterWriteSettled) and the one case that leaves something behind - a pass of this repair
+// that wrote a filter before that delete - says so in words of its own below.
+//
 // A failure is logged, not returned: the caller's answer does not change, the record is deleted
 // or not whatever this call did, and the session's next registration repairs the consumer again.
 // The line names the session, which is what an operator reading a pause in its delivery has to go
 // on.
 func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64, after string) {
+	// stands is the revision of the row a pass of this repair wrote the consumer's filter from,
+	// and landed says a pass wrote one, which stands alone cannot: a write built for a session
+	// the bucket holds no row for is fenced on revision 0. The pair is the fence's own
+	// (fenceFilterWrite), kept here because the deleted record's line is right only where a
+	// write of this repair stands on the consumer.
+	var stands uint64
+	landed := false
 	fenceFilterWrite(ctx, m.logger, d.registry, sessionID, func() (uint64, filterWriteOutcome) {
 		if m.beforeRepairPlan != nil {
 			m.beforeRepairPlan()
 		}
-		want, ok := m.registeredTarget(ctx, d, sessionID, ackFloor)
-		if !ok {
-			// Nothing to write: the bucket asks for no consumer, or a read of it failed
-			// (registeredTarget), so this pass puts no filter anywhere.
+		want, found := m.registeredTarget(ctx, d, sessionID, ackFloor)
+		// Only registeredTargetBuilt goes on to the write below; each of the three findings
+		// that build no target leaves the fence something different (registeredFinding).
+		switch found {
+		case registeredRecordGone:
+			// The session is gone and no heartbeat of it will set any filter, so the fence
+			// ends here rather than on a line promising one. What a pass of this repair wrote
+			// before the record was deleted stands on a consumer no session reads, and that
+			// consumer is the delete's to take - or, where this repair created it after that
+			// delete, the stream's inactive threshold's (deleteConsumer, confirmRegistered).
+			if landed {
+				m.logger.Warn("listener left the filter of an older interest row on the consumer of a session the bucket holds no record for; the session is gone, so no heartbeat sets that filter and the consumer goes with the delete that took the record, or with the stream's inactive threshold",
+					slog.String("session_id", sessionID), slog.String("after", after), slog.Uint64("wrote_revision", stands))
+			}
+			return 0, filterWriteSettled
+		case registeredNoConsumerDelivery:
+			// The record asks for no consumer of this session - it is delivered to on the core
+			// path (session.DeliveryConsumer) - so this repair has nothing to write and the
+			// fence nothing to judge: no filter of any row is a window in that delivery.
+			return 0, filterWriteSettled
+		case registeredReadFailed:
+			// What the bucket holds went unread, so this pass plans nothing and puts no filter
+			// anywhere; what stands is what the pass before it left (registeredTarget).
 			return 0, filterWriteNotMade
 		}
 		if m.afterRepairPlan != nil {
@@ -429,7 +463,6 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			if consumerCallAnswered(err) {
 				return 0, filterWriteNotMade
 			}
-			return want.revision, filterWriteLanded
 		case start.Created:
 			m.logger.Warn("listener created the consumer of a session the bucket holds a record for again",
 				slog.String("session_id", sessionID), slog.String("after", after), slog.Any("filter", want.filter),
@@ -444,6 +477,7 @@ func (m *sessionDelivery) repairRegistered(ctx context.Context, d *listenerDeps,
 			// than one that wrote.
 			return 0, filterWriteSettled
 		}
+		stands, landed = want.revision, true
 		return want.revision, filterWriteLanded
 	})
 }
@@ -462,10 +496,44 @@ type registeredConsumer struct {
 	revision uint64
 }
 
+// registeredFinding is what registeredTarget found of a session's record and interest row, which
+// is what a repair's pass answers its fence with (repairRegistered, filterWriteOutcome). The
+// three findings that build no target are three different things to that caller and not one
+// false: a session the bucket holds no record of is gone, and the next heartbeat the fence's
+// line promises is a heartbeat it will not make.
+type registeredFinding int
+
+const (
+	// registeredTargetBuilt is a record that records consumer delivery with the session's
+	// interest row read beside it: the repair writes what the two ask of the consumer.
+	registeredTargetBuilt registeredFinding = iota
+	// registeredRecordGone is a bucket that holds no record of the session
+	// (session.SessionRegistry.Refresh answering nats.ErrKeyNotFound): a clean stop or a reaper
+	// pass deleted it, and that delete takes the session's consumer too. Nothing of this
+	// session is left to repair, and nothing will repair it.
+	registeredRecordGone
+	// registeredNoConsumerDelivery is a record that records no consumer delivery
+	// (session.DeliveryConsumer): the session is delivered to on the core path, and its record
+	// names no consumer to repair.
+	registeredNoConsumerDelivery
+	// registeredReadFailed is a read of the record or of the interest row that did not answer.
+	// What the bucket holds is unknown, so the caller plans nothing and leaves the consumer as
+	// it is.
+	registeredReadFailed
+)
+
 // registeredTarget reads sessionID's record and interest row from the bucket and builds what they
-// ask of its consumer. It reports false where they ask for none - the bucket holds no record, the
-// record records no consumer delivery and so names no consumer to repair, or a read failed - and
-// the caller then leaves the consumer as it is.
+// ask of its consumer. It answers which of the four it found (registeredFinding): the target,
+// built from a record that records consumer delivery and the row read beside it; a bucket that
+// holds no record of the session; a record that records no consumer delivery and so names no
+// consumer to repair; or a read that did not answer, after which the bucket's ask is unknown.
+// The caller leaves the consumer as it is for the three that build no target, and tells them
+// apart in what it leaves the fence driving it (repairRegistered).
+//
+// A record the bucket does not hold is session.SessionRegistry.Refresh's nats.ErrKeyNotFound,
+// which is also its answer for a delete or purge marker, for a record past its TTL and for a
+// value this build cannot decode; every other failure of that read is a read that did not
+// answer, ctx's end among them.
 //
 // Both reads are of the bucket and not of the cache (session.SessionRegistry.Refresh,
 // store.Registry.RefreshAt), since the watch that fills the cache may not have delivered the
@@ -494,32 +562,34 @@ type registeredConsumer struct {
 // naming no start leaves the start to the consumer call, which then creates the consumer at the
 // first message the stream holds for the session (bus.SessionConsumers.Ensure).
 //
-// A read that failed is logged, not returned: the caller's answer does not change, and the
-// session's next registration confirms the consumer again. The line names the session, which is
-// what an operator reading a pause in its delivery has to go on.
-func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, bool) {
+// A read that failed is logged rather than returned: the caller's answer does not change, and
+// the session's next registration confirms the consumer again. The line names the session, which
+// is what an operator reading a pause in its delivery has to go on. A record the bucket does not
+// hold and one that records no consumer delivery are the bucket's answers and no failure, so
+// neither is logged here.
+func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps, sessionID string, ackFloor uint64) (registeredConsumer, registeredFinding) {
 	entry, err := d.sessions.Refresh(ctx, sessionID)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
-		return registeredConsumer{}, false
+		return registeredConsumer{}, registeredRecordGone
 	case err != nil:
 		m.logger.Warn("listener could not read the record of a session whose consumer it is repairing",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return registeredConsumer{}, false
+		return registeredConsumer{}, registeredReadFailed
 	case entry.Delivery != session.DeliveryConsumer:
-		return registeredConsumer{}, false
+		return registeredConsumer{}, registeredNoConsumerDelivery
 	}
 	topics, revision, err := storedTopics(ctx, d.registry, sessionID)
 	if err != nil {
 		m.logger.Warn("listener could not read the topics of a session whose consumer it is repairing",
 			slog.String("session_id", sessionID), slog.String("error", err.Error()))
-		return registeredConsumer{}, false
+		return registeredConsumer{}, registeredReadFailed
 	}
 	start := entry.ConsumerStart
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, true
+	return registeredConsumer{filter: sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
