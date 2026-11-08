@@ -6727,6 +6727,35 @@ describe("the stall watch the plugin's entry arms", () => {
     expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_task"]);
   });
 
+  test("a subagent's run settling closes none of the worker's calls, so its stuck one is still judged", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({ role: "implementer", sessionId: "ses_stall_sub_agent_end" });
+    const subagent: SessionContext = { ...pane.context, agent: { kind: "sub" } };
+    await callStarts(pane);
+
+    // The second road a turn is closed by (`extensions/legion.ts:453-457`): a run that settled,
+    // which is what closes one that ended with no turn end of its own. A subagent's run settles
+    // inside the worker's turn — the `task` call running it is still open — and settling is the
+    // ordinary end of every subagent, so this arrives in every run that delegates at all.
+    await hook(pane.handlers, "agent_end")(
+      { messages: [{ role: "assistant", stopReason: "stop" }] },
+      subagent
+    );
+
+    // The worker's own stuck call is untouched by it: the next sweep tells its owner and steps.
+    // Were that run's end taken for this session's, the call would be closed here and the sweep
+    // would write nothing at all, which is the stall this change exists to end.
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", stuckCall.toolCallId],
+      ["step", stuckCall.toolCallId],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual([stuckCall.toolCallId]);
+  });
+
   test("a subagent's `tool_call` is kept out of the worker's open calls, which the first rung counts", async () => {
     shortLimits();
     const ended: StallCall[] = [];
@@ -6765,6 +6794,13 @@ describe("the stall watch the plugin's entry arms", () => {
       subagent
     );
     expect(openIds()).toEqual([stuckCall.toolCallId]);
+
+    // Those two closing guards are redundant rather than load-bearing, which is why neither has
+    // a case of its own: with `tool_call` and `tool_execution_start` guarded, no subagent's id
+    // is ever among this watch's records, and closing by an id it does not hold does nothing at
+    // all — `close` returns on the failed delete, before even its log line
+    // (`pi-shared/src/stall-watchdog.ts:495-498`), and neither closing event touches anything
+    // else (`:701-702`), where the two opening ones both declare the turn open (`:685,691`).
   });
 
   test("no step runs while the host reports the session idle, and a call that ended before the sweep is left alone", async () => {
