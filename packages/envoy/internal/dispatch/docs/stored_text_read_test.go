@@ -48,7 +48,7 @@ func TestStoredTextReadCountsTheRendersOfAReadOfAVersionedDocument(t *testing.T)
 
 	renders := countRenders(t)
 	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
-	counted := renders()
+	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestStoredTextReadRendersARoomHoldingAnUnstoredUpdate(t *testing.T) {
 
 	renders := countRenders(t)
 	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
-	counted := renders()
+	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestStoredTextReadRendersAfterAnAnchorWriteMovedTheStamp(t *testing.T) {
 
 	renders := countRenders(t)
 	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
-	counted := renders()
+	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestStoredTextReadRendersAVersionOfAnotherRendererVersion(t *testing.T) {
 
 	renders := countRenders(t)
 	markdown, token, err := service.TextWithToken(context.Background(), artifactID)
-	counted := renders()
+	counted := len(renders())
 	if err != nil {
 		t.Fatalf("read the document's text: %v", err)
 	}

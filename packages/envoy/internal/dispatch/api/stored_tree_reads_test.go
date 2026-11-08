@@ -103,7 +103,7 @@ func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
 // dropped after the write to stand for a text written before there was a table, which is what
 // every text on the server is until the backfill reaches it.
 func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	const commentBody = "A body *no* row holds a tree of yet, read the long way."
 	key := commentingIssue(t, handler, "UNSTR", commentBody)
 	if _, err := database.Pool.Exec(context.Background(), `delete from text_trees`); err != nil {
@@ -115,6 +115,9 @@ func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
 	if built := pmdoc.DisplayTreeBuilds() - builds; built != 1 {
 		t.Errorf("the comment list built %d display trees for one unstored body, want 1", built)
 	}
+	// The read hands its store to the server's background work and answers without waiting for
+	// it (displayTreeReader.storeOf), so the table is asked once that work is done.
+	awaitBackgroundWrites(t, served)
 	stored, held := storedTreeOf(t, database, commentBody)
 	if !held {
 		t.Fatalf("the read answered %q and stored no tree of it", commentBody)
@@ -136,7 +139,7 @@ func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
 // hold is not the reading this build makes, so the read builds its own and stores it beside the
 // row it would not take (texttrees.Read keys by pmdoc.DisplayTreeVersionNow).
 func TestAReadOfATreeStoredAtAnotherVersionBuildsItsOwn(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	const commentBody = "A body whose stored tree another **parser** version read."
 	key := commentingIssue(t, handler, "OLDVR", commentBody)
 	if _, held := storedTreeOf(t, database, commentBody); !held {
@@ -150,6 +153,7 @@ func TestAReadOfATreeStoredAtAnotherVersionBuildsItsOwn(t *testing.T) {
 	if built := pmdoc.DisplayTreeBuilds() - builds; built != 1 {
 		t.Errorf("the comment list built %d display trees at a version the table does not hold, want 1", built)
 	}
+	awaitBackgroundWrites(t, served)
 	if _, held := storedTreeOf(t, database, commentBody); !held {
 		t.Errorf("the read at version %d stored no tree of its own", pmdoc.DisplayTreeVersionNow())
 	}
@@ -272,7 +276,7 @@ func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
 		unstoredBody = "The *rollback* is rehearsed: carry on, all of you."
 	)
 	listener, _ := newBroadcastListener(t, broadcastSessions)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: listener.URL})
 	send := func(body string) string {
 		t.Helper()
 		sent := postBroadcast(t, handler, map[string]any{
@@ -307,6 +311,7 @@ func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
 	if built := pmdoc.DisplayTreeBuilds() - builds; built != 1 {
 		t.Errorf("the broadcast read made %d display trees for one unstored body, want 1", built)
 	}
+	awaitBackgroundWrites(t, served)
 	if _, held := storedTreeOf(t, database, unstoredBody); !held {
 		t.Fatalf("the read answered %q and stored no tree of it", unstoredBody)
 	}
@@ -318,7 +323,7 @@ func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
 // no write stores that mode: the first read of a version is where its tree reaches the table,
 // and the latest mode's row of the same text is a row of its own.
 func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
-	handler, database := newTestHandlerWithStore(t)
+	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "VRTR", "A version's own tree", "# Head\n\nIts *own* text.")
 	target := "/api/v1/artifacts/" + issue.PrimaryArtifactID + "/versions/1"
 
@@ -329,6 +334,7 @@ func TestAVersionsDisplayTreeIsStoredOnItsFirstRead(t *testing.T) {
 	if version.Markdown == "" {
 		t.Fatalf("the version read answered no markdown:\n\t%s", first.Body.String())
 	}
+	awaitBackgroundWrites(t, served)
 	stored, held := storedTreeIn(t, database, pmdoc.DisplayVersion, version.Markdown)
 	if !held {
 		t.Fatalf("the first read of the version stored no tree of %q", version.Markdown)

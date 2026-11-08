@@ -1125,8 +1125,8 @@ func renderedBlocks(tree pmdoc.ValidDocument, rows map[string][]pmdoc.TableRow) 
 	if tokens.blocksErr != nil {
 		return renderedDocument{}, documentSchemaError(tokens.blocksErr)
 	}
-	countDocumentRender()
 	markdown, offsets, err := tree.RenderWithBlockOffsets()
+	countDocumentRender(markdown)
 	if err != nil {
 		return renderedDocument{}, documentSchemaError(err)
 	}

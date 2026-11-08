@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -50,8 +51,10 @@ func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ..
 //	defer reader.resolve()()
 //	WriteJSON(w, http.StatusOK, rows)
 //
-// The store stands after the answer is written because it is the next reader's saving and not
-// this one's, and a store that fails has changed no answer.
+// What the handler defers is the hand-off and not the store: the store itself runs on a
+// goroutine of the server's background work, once the request's own goroutine has let go of it,
+// so no reader ever waits for an INSERT of a tree that is the next reader's saving and not its
+// own (storeOf). A store that fails has changed no answer.
 //
 // A caller that asked for no tree has no reader at all: every method below answers at once on a
 // nil receiver, so a route shapes its rows the one way whether or not the header was sent, and
@@ -176,8 +179,9 @@ func (r *displayTreeReader) slotOf(markdown string) *readDisplayText {
 	return &r.texts[len(r.texts)-1]
 }
 
-// resolve fills every registered field and answers the store of the texts the table held no tree
-// for, which the handler runs once the answer is written.
+// resolve fills every registered field and answers the hand-off of the store of the texts the
+// table held no tree for, which the handler defers and which runs that store on a goroutine of
+// its own, after the answer (storeOf).
 //
 // It is three steps over the texts registered, each of them once over the whole request:
 //
@@ -260,12 +264,31 @@ func (r *displayTreeReader) storedTrees(sums [][32]byte) map[[32]byte]json.RawMe
 	return stored
 }
 
-// storeOf is the store of the trees the request read for itself, which its handler runs after
-// the answer is written, and nothing at all for a reader that reads no table or that missed on
-// nothing. The trees are stored as they were read: the texts are neither hashed nor read a
-// second time.
+// storeOf is the store of the trees the request read for itself, and nothing at all for a reader
+// that reads no table, that missed on nothing, or that holds a pooled connection of its own. The
+// trees are stored as they were read: the texts are neither hashed nor read a second time.
+//
+// What the handler's defer runs is the hand-off alone. The store is a goroutine of the server's
+// background work (backgroundWork.goDetached), which shutdown waits for as it waits for a
+// broadcast's delivery, because the handler's defer stands before compressAnswers calls finish()
+// and before net/http writes the buffered tail and the chunked terminator: a store run there is
+// an INSERT a cold reader with misses waits out, after its answer is built and before it has
+// every byte of it.
+//
+// It runs on the request's context detached from its cancellation (context.WithoutCancel), since
+// a reader who goes away must not leave the saving to the next one, and bounded by
+// storeTreesTimeout, which is what bounds it once cancellation no longer does. The hold mark is
+// the goroutine's own (store.ForConcurrentWorker), as the fill's connections are marked and as
+// every other detached run of this server is: the request's mark is still in use when the
+// handler returns - keyedWrites settles the Idempotency-Key on it - and the pool refuses a
+// second connection under a mark that already holds one (store.ErrNestedAcquire).
+//
+// A caller still holding a pooled connection stores nothing, which is decided here, while that
+// connection is still held: a document load and a compaction shape their answers inside
+// read-only transactions (docs/persistence.go, docs/compaction.go), and the fresh mark the
+// goroutine takes cannot see the connection those hold.
 func (r *displayTreeReader) storeOf(missing []int) func() {
-	if r.server == nil || len(missing) == 0 {
+	if r.server == nil || len(missing) == 0 || store.HoldsPooledConnection(r.ctx) {
 		return func() {}
 	}
 	built := make([]texttrees.Tree, 0, len(missing))
@@ -278,13 +301,24 @@ func (r *displayTreeReader) storeOf(missing []int) func() {
 	if len(built) == 0 {
 		return func() {}
 	}
+	storing := store.ForConcurrentWorker(context.WithoutCancel(r.ctx))
 	return func() {
-		if err := texttrees.StoreTreesFor(r.ctx, r.server.deps.Store, r.mode, built); err != nil {
-			slog.Warn("dispatch: store display trees failed",
-				"subject", r.subject, "mode", int(r.mode), "error", err)
-		}
+		r.server.detached.goDetached(func() {
+			ctx, cancel := context.WithTimeout(storing, storeTreesTimeout)
+			defer cancel()
+			if err := texttrees.StoreTreesFor(ctx, r.server.deps.Store, r.mode, built); err != nil {
+				slog.Warn("dispatch: store display trees failed",
+					"subject", r.subject, "mode", int(r.mode), "error", err)
+			}
+		})
 	}
 }
+
+// storeTreesTimeout bounds the store of a read's own trees, which runs detached from the request
+// that read them and so from every cancellation that would otherwise end it. It is generous
+// because the work is one INSERT of a page's trees and the only cost of losing it is the next
+// reader's reading, and it is bounded at all because shutdown waits for this goroutine.
+const storeTreesTimeout = 30 * time.Second
 
 // storeEventDisplayTrees stores the display trees of every stored text the published events carry
 // in their payloads, keyed as every other tree is by the text alone. The event log and a live

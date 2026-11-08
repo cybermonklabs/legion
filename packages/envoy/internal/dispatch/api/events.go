@@ -36,10 +36,37 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // them, having built, encoded and compressed nothing (list_answers.go).
 //
 // What the validator does not cover is the handful of fields an ask event's payload is given at
-// read time from rows elsewhere (attachAskEventFields): an inbound backlink counted on another
-// issue's write moves no sequence of this one, so a reader is answered 304 while that count has
-// moved. Those fields are an ask's own facts rather than the feed's, and the Inbox and the ask
-// read answer them fresh.
+// read time from rows elsewhere (attachAskEventFields). The validator decides both answers this
+// route gives: the 304 a reader holding the ETag is answered, and the kept bytes
+// (listAnswers.answer) a reader who sends no validator at all is written, which is a fresh page
+// load. So what follows is what either reader can be shown after it moved, and before this
+// change a fresh load always read all of it current.
+//
+// Each field, and what moves it:
+//
+//   - referenced_by_count, the edges that point at the ask. An inbound backlink is counted on
+//     the write that makes it, which is another issue's comment, message or document, and that
+//     write moves that issue's sequence and no sequence of this one. It can be stale.
+//   - The part ids of the options and the answer, and the ask's part revision, from ask_blocks.
+//     Every write of an ask indexes its parts in the transaction that appends the ask's event
+//     (refs.IndexAskPartsCounted, in asks.go, ask_transitions.go, issue_ask_lifecycle.go and
+//     reviews.go), so an ask's own writes move these and last_seq together. The one write that
+//     does not is the indexing of an ask the index owes - one written before its parts were
+//     indexed at all - which the block index pass makes on no event (refs.IndexOwedItemBlocks,
+//     docs/block_index.go): until that pass runs, a payload carries no part ids and no
+//     revision, and the page that was kept after it goes on carrying none.
+//   - anchor_artifact and approval_artifact: the project, slug, name and is_primary of the
+//     document an ask anchors or asks approval of (attachAskDocumentArtifacts). A document's
+//     rename, re-slug or primary flag moves the sequence of the issue that document belongs to,
+//     which is this issue only when the ask names a document of its own. An ask that anchors a
+//     document on another issue can be stale.
+//   - opened_event_id is the id of the ask.opened event itself, written once and never moved.
+//
+// Each of those lasts exactly as long as the validator does, for the 304 and the kept bytes
+// alike: the next event of this issue moves last_seq, which is a new ETag and so a new kept
+// entry, and the read behind it attaches all of them again. An entry the cache evicts and a
+// restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
+// Inbox, the ask read and the issue read answer them fresh, from no kept list.
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

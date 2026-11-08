@@ -473,8 +473,9 @@ const compactionApplicationName = "dispatch-compaction"
 
 // textTreePoolSize bounds the pool the background display tree fill reads and writes through
 // (texttreefill). A pass reads its next batch of texts only once the batch before it has been
-// stored, and stores a batch with two readings in flight (texttreefill.fillWorkers), so two
-// connections are every connection it can use.
+// stored, and stores a batch with at most two readings in flight (texttreefill.fillWorkers,
+// which is fewer on a pod with fewer than three cores), so two connections are every connection
+// it can use.
 const textTreePoolSize = 2
 
 // TextTrees is where the background display tree fill takes its connections: the two scans that

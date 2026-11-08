@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"slices"
 	"time"
 
@@ -50,9 +51,12 @@ const (
 
 // fillWorkers is how many of the batch's texts are read for display at once. A reading is the
 // markdown parse this pass exists to spare a reader, and it is CPU the process owes its requests
-// first: two keeps the pass to two cores of a pod that serves the API with the rest, which is
-// also the number of connections its pool holds (store.textTreePoolSize).
-const fillWorkers = 2
+// first: the pass takes a processor only where the process has one to spare, which is one worker
+// on the pod the deployment's default gives it (appCpu "1", infra/gcp/dispatch.go, so
+// GOMAXPROCS is 1), one on a two-core pod, and two on any pod with three cores or more - never
+// more than two, which is also the number of connections its pool holds
+// (store.textTreePoolSize).
+var fillWorkers = min(2, max(1, runtime.GOMAXPROCS(0)-1))
 
 // fillChunk is how many texts one worker reads and stores in one statement. The chunk is the unit
 // the workers balance on: a batch split in two halves would leave one worker holding the half
