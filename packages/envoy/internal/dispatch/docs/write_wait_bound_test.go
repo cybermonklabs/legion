@@ -17,6 +17,36 @@ func callerRequestSince(parent context.Context, ago time.Duration) context.Conte
 	return context.WithValue(parent, callerRequestKey{}, time.Now().Add(-ago))
 }
 
+// A caller's write that has spent the server's whole-write bound is refused with nothing of it
+// applied, wherever it spent it: the pool has room here and the write waits for nothing, so what
+// refuses it is the bound on the work. It is the other half of the wait bound's promise - the
+// first answers a write the pod has no room for, this one a write the pod admitted and cannot
+// finish, which is what left two writes of 320 answered by nothing while fourteen forks of a
+// mebibyte shared the pod's two processors (dispatch://INFRA-179, WriteRequestBound).
+func TestACallersWriteIsRefusedOnceItHasSpentTheServersWholeWriteBound(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	storeHistory(t, service, artifactID, grantTestState(t, 16<<10))
+	if err := loadRoomOf(service, artifactID); err != nil {
+		t.Fatalf("load the room: %v", err)
+	}
+	before := storedWriteOf(t, service, artifactID)
+
+	request, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	err := cancelWrite(callerRequestSince(request, WriteRequestBound), service, artifactID, grantWriteHeading, "Written", nil)
+	if err == nil {
+		t.Fatal("the write committed after it had spent the server's whole-write bound")
+	}
+	if request.Err() != nil {
+		t.Fatalf("the caller's request ended too (%v): the refusal must be the server's own", request.Err())
+	}
+	requireHeading(t, service, artifactID, true)
+	if after := storedWriteOf(t, service, artifactID); after != before {
+		t.Fatalf("the refused write left %+v, want the %+v it found", after, before)
+	}
+}
+
 // A caller's write that cannot get a slot of the pod's load concurrency within the server's own
 // bound is refused, by the server and not by its caller running out of time, and leaves the
 // document exactly as it found it. This is the half of the contract the server had none of: a

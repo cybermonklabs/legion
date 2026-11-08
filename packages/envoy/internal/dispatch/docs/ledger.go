@@ -31,6 +31,10 @@ import (
 type Ledger struct {
 	service *Service
 	tx      pgx.Tx
+	// releaseBound releases the timer of the server's bound on a caller's write, which Join put
+	// on the context its operations run with (boundWriteRequest). Discard runs it; it is never
+	// nil, and running it twice releases once.
+	releaseBound func()
 	// ownTx marks a ledger whose operations run inside a transaction of the writer's own,
 	// which no caller joined: a settlement's and the block-id backfill's.
 	ownTx  bool
@@ -138,9 +142,17 @@ var errUnjoined = errors.New("docs: the operation needs a transaction joined wit
 
 // Join joins the document operations run with the returned context to tx, recording what they
 // produce in the returned ledger.
+//
+// The context it returns carries the server's bound on a caller's whole document write
+// (WriteRequestBound), which is why the operations take it rather than the request's own: it is
+// the one door every write of a request comes through, so one deadline here bounds the waits and
+// the work alike. The ledger holds what releases that deadline's timer, and Discard, which every
+// caller defers, releases it.
 func (s *Service) Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger) {
 	ledger := &Ledger{service: s, tx: tx}
-	return withLedger(ctx, ledger), ledger
+	bounded, release := boundWriteRequest(ctx)
+	ledger.releaseBound = release
+	return withLedger(bounded, ledger), ledger
 }
 
 // inTransaction reports whether the operations recording into l run inside an open database
@@ -438,6 +450,9 @@ func (s *Service) commitConsuming(ctx context.Context, tx pgx.Tx, captures []roo
 // its authors stay where they were. After Commit only the read-backs are left to drop. Every
 // caller defers it, so it is where the request's use of the ledger ends.
 func (l *Ledger) Discard() {
+	if l.releaseBound != nil {
+		l.releaseBound()
+	}
 	for _, artifactID := range l.order {
 		l.service.finishLiveWrite(l.live[artifactID])
 	}

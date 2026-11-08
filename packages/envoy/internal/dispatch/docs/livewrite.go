@@ -540,11 +540,46 @@ func WithCallerRequest(ctx context.Context) context.Context {
 // and a continuation detached from its request, which keeps the mark but loses its cancellation
 // (ctx.Done() is nil) and is the server's work from then on.
 func BoundWriteWait(ctx context.Context) (context.Context, context.CancelFunc) {
+	return boundCallerWrite(ctx, WriteWaitBound)
+}
+
+// WriteRequestBound is how long a caller's whole document write may take - its waits and its work
+// together - before the request is ended and answered 503.
+//
+// The wait bound above answers a write the pod has no room for. It does not answer a write the
+// pod admitted and cannot finish, which is the other half of the same promise and which the
+// weighed copy pool made reachable: with the pool admitting fourteen forks of a mebibyte at the
+// calibration, measured over 320 concurrent writes on the two-processor pod, the applies
+// themselves ran 15.4 s at the median and 58.0 s at the longest - they share two processors - and
+// two of the 320 were answered by nothing at all inside their client's minute, which is the
+// defect this bound closes. Forty-five seconds is three quarters of the 60 s every agent's
+// `dispatch` command allows a call, so a write refused here is refused with a quarter of that
+// minute left for the caller to read the refusal and retry.
+//
+// It is the whole write and not one wait, so it ends the work too: every statement of the
+// transaction, every lock it waits for and the read of the request the ledger makes immediately
+// before its commit (commitConsuming), which refuses rather than committing. What the bound
+// cannot cut is the publish after that commit, which takes no context at all (Ledger.publish), so
+// a write that reached its commit is answered 200 and its edit is in the store: the bound
+// refuses a write that has not committed, never one that has.
+const WriteRequestBound = 45 * time.Second
+
+// boundWriteRequest is ctx with WriteRequestBound on a caller's whole write, taken from when the
+// request began, and every other caller's context as it is. Service.Join puts it on the context
+// a request's document operations run with, which is the one door they come through.
+func boundWriteRequest(ctx context.Context) (context.Context, context.CancelFunc) {
+	return boundCallerWrite(ctx, WriteRequestBound)
+}
+
+// boundCallerWrite is ctx with a deadline bound from when the caller's request began, for a live
+// caller's request alone: a write of the server's own, and a continuation detached from its
+// request, keep the context they have.
+func boundCallerWrite(ctx context.Context, bound time.Duration) (context.Context, context.CancelFunc) {
 	began, marked := ctx.Value(callerRequestKey{}).(time.Time)
 	if !marked || ctx.Done() == nil {
 		return ctx, func() {}
 	}
-	return context.WithDeadline(ctx, began.Add(WriteWaitBound))
+	return context.WithDeadline(ctx, began.Add(bound))
 }
 
 // giveFork drops this write's share of the transaction's slot (releaseFork), and gives the slot
