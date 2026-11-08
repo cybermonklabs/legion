@@ -6984,4 +6984,40 @@ describe("the stall watch the plugin's entry arms", () => {
     ]);
     expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
   });
+
+  test("a run that ends with the host going on closes them too, so no step is taken against the turn after it", async () => {
+    shortLimits();
+    const ended: StallCall[] = [];
+    setLegionStallProcessesForTests(() => fakeProcesses(ended));
+    const pane = await bootPane({
+      role: "implementer",
+      sessionId: "ses_stall_run_continues",
+    });
+    await callStarts(pane);
+
+    // The other road of the same handler: a run of this session that is not the last, because
+    // the host has something to go on with — a steering delivery it took while the turn ran, a
+    // background job's follow-up. `willContinue` is the whole of what an `agent_end` handler is
+    // given about that, and on this pin it is given nothing at all: measured on 2026-11-08
+    // (`legion-stall-watchdog-omp.test.ts`), the event carries `type`, `messages` and
+    // `willContinue`, with no `isTerminal` — that is the RPC frame's own field — and
+    // `willContinue` undefined on the non-terminal end and the terminal one alike. The entry
+    // closes the run's calls either way, which is what this case holds and what this watch
+    // wants: the turn after it is a turn of its own with calls of its own, so a ladder still
+    // judging this one's would end the processes of a call nobody waits on and abort the turn
+    // the host is running now.
+    await hook(pane.handlers, "agent_end")(
+      { willContinue: true, messages: [{ role: "assistant", stopReason: "stop" }] },
+      pane.context
+    );
+    await openCallWaitingToBeSwept(pane);
+
+    const { value: written } = await loggedWarnings(() => sweeps(pane.intervals, pane.entries, 2));
+
+    expect(written.map((record) => [record.kind, record.toolCallId])).toEqual([
+      ["evidence", "toolu_open"],
+      ["step", "toolu_open"],
+    ]);
+    expect(ended.map((call) => call.toolCallId)).toEqual(["toolu_open"]);
+  });
 });

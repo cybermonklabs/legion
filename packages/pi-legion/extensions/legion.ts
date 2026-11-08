@@ -401,7 +401,17 @@ export default function legionExtension(pi: PiApi): void {
   /** A `task` subagent's own event, which this watch is not about: the subagent shares the
    * worker's process, so a ladder run for one of its calls would end the worker. The host hands
    * a subagent's events a context that names its runner (`agent.kind`, as envoy.ts's own
-   * `tool_call` hook reads it); a host that names no agent is the top-level session. */
+   * `tool_call` hook reads it); a host that names no agent is the top-level session.
+   *
+   * **Seven handlers of this entry ask it**, and each is load-bearing: the two that open a call
+   * (`tool_call`, `tool_execution_start`), the two that close one by id (`tool_execution_end`,
+   * `tool_result`), and the three that close every call this watch holds at once (`turn_end`,
+   * `agent_end`, and `message_end`, whose aborted assistant message matches no id at all). A
+   * subagent's event reaching any of the last three would carry off the worker's own open calls,
+   * the `task` call running that subagent among them, and its stuck call would be judged by
+   * nobody; through either of the two closing by id it would do the same wherever the provider
+   * gives the two calls one id, which the ids being the provider's own leaves open. Each of the
+   * seven is held by a case of `legion.test.ts` that is red when that guard alone is cut. */
   const subagentEvent = (context: SessionContext): boolean => context.agent?.kind === "sub";
 
   /**
@@ -428,7 +438,16 @@ export default function legionExtension(pi: PiApi): void {
     stallWatch?.executionStarted(event);
   });
   // Both ends of a call close its record, the error end of a call the host failed closed before
-  // it ran among them.
+  // it ran among them — and the end of a call the host backgrounded, whose command keeps
+  // running. That call leaves this book while its process lives, and that is the record this
+  // watch wants rather than a gap in it: the agent is no longer parked in the call, since the
+  // host freed its turn and handed it the job, so the ladder's steps would end the processes of
+  // a call nobody waits on and abort a turn that is working. What the agent does with the job
+  // next is a call of its own with a clock of its own, and a session that goes quiet altogether
+  // is the daemon's backstop to end. Driven on this host in
+  // `legion-stall-watchdog-omp.test.ts`: a foreground shell command that does not return is
+  // backgrounded about a minute in, its `tool_execution_end` carries no error and a job still
+  // running, this watch writes nothing for it, and the command's process runs on.
   pi.on("tool_execution_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.executionEnded(event);
@@ -447,9 +466,15 @@ export default function legionExtension(pi: PiApi): void {
     stallWatch?.assistantMessage(event.message);
     stallWatch?.turnEnded();
   });
-  // The run settled. `turn_end` fires 3 ms before it for an aborted run (measured), so this
-  // closes nothing that run left open; it is what closes a run that ends with no turn end of its
-  // own, whose last assistant message is the only thing that says how it ended.
+  // The run settled, or ended with the host going on: `turn_end` fires 3 ms before this for an
+  // aborted run (measured), so this closes nothing that run left open; it is what closes a run
+  // that ends with no turn end of its own, whose last assistant message is the only thing that
+  // says how it ended. A run the host has something to continue with — a steering delivery it
+  // took while the turn ran, a background job's follow-up — ends here too, and the calls of that
+  // run are closed with every other: the turn after it is a turn of its own with calls of its
+  // own. Nothing here could tell the two apart in any case: the RPC frame's `isTerminal` is not
+  // given to an extension, and `willContinue` was undefined on both ends of a steered run
+  // measured on this host (`legion-stall-watchdog-omp.test.ts`).
   pi.on("agent_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.assistantMessage(event.messages?.at(-1));

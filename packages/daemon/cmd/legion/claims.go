@@ -187,6 +187,13 @@ func writeClaimLine(w io.Writer, c api.OperatorClaim) {
 // empty for a claim in no open call — one whose last call ended, and one whose agent has not
 // stepped at all — which the line prints as `-`.
 //
+// A call the host backgrounded is an ended call here, and its command may still be running: Oh
+// My Pi backgrounds a foreground shell command that has not returned in about a minute, ending
+// the call with no error and handing the job to the agent, which is a `tool_execution_end` on
+// the stream like any other (measured 2026-11-08 in the plugin's own live proof,
+// legion-stall-watchdog-omp.test.ts). So this column says what the agent is parked in, which is
+// what a stalled turn is read from, and never what is running on the worker's machine.
+//
 // A call still open is the one shape a stalled turn leaves behind (api.StepView), and this is
 // where an operator reads a controller's: internal/projection puts the controller's claim on no
 // issue, so `legion state` never shows one. The call's arguments are not here and are in no

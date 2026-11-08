@@ -277,6 +277,32 @@ const NO_ABORT_EXTENSION = `export default function noAbort(pi) {
 }
 `;
 
+/** What the steering delivery below carries, and what the pane's answer to it must contain, so a
+ * case can find the turn the steer started among the pane's own. */
+const STEER_TEXT = "WATCH-STEER: your architect asks how the work is going.";
+
+/**
+ * The one-handler extension a steering case loads beside the plugin. It sends one steering
+ * delivery as the call whose arguments carry `marker` begins — the case's wedging call — with the
+ * options an Envoy role delivery is sent with
+ * (`pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })` in
+ * `packages/pi-envoy/extensions/envoy.ts`), so what lands on the running turn is what a message
+ * from this worker's architect lands as. Nothing of the plugin is replaced: this extension only
+ * does what the listener's delivery would have done had this case run a NATS of its own.
+ */
+const steerExtension = (
+  text: string,
+  marker: string
+): string => `export default function steer(pi) {
+  let sent = false;
+  pi.on("tool_execution_start", (event) => {
+    if (sent || !JSON.stringify(event.args ?? {}).includes(${JSON.stringify(marker)})) return;
+    sent = true;
+    pi.sendMessage(${JSON.stringify(text)}, { deliverAs: "steer", triggerTurn: false });
+  });
+}
+`;
+
 /** How one pane differs from the others. */
 interface PaneOptions {
   /** The scratch root's prefix. */
@@ -288,6 +314,9 @@ interface PaneOptions {
   /** Loads the extension above, so the host has no `abort()` and the ladder reaches its last
    * step. A pane that loads it may end its own process, which `until` then expects. */
   readonly denyAbort?: boolean;
+  /** Loads the steering extension above: `text` is delivered as the call whose arguments carry
+   * `when` begins. */
+  readonly steer?: { readonly text: string; readonly when: string };
 }
 
 /** One running pane, and what a case may ask of it. */
@@ -303,6 +332,9 @@ interface StallPane {
   readonly records: () => Promise<StallWatchRecord[]>;
   /** The text of each message the worker sent its own session to start the work again. */
   readonly restarts: () => Promise<string[]>;
+  /** Every RPC frame omp printed, in order: what the host says it did, beside what the plugin
+   * recorded that it did. */
+  readonly frames: () => Record<string, unknown>[];
   /** The status omp exited with, once it has. */
   readonly exited: Promise<number>;
   /** Whether omp is still running. */
@@ -417,11 +449,17 @@ async function startPane(options: PaneOptions): Promise<StallPane> {
     await writeFile(file, NO_ABORT_EXTENSION);
     extensions.push(file);
   }
+  if (options.steer !== undefined) {
+    const file = path.join(root, "steer.ts");
+    await writeFile(file, steerExtension(options.steer.text, options.steer.when));
+    extensions.push(file);
+  }
   // The `eval` kernel is written under this pane's own TMPDIR, as it is under a pod's, rather than
   // into the machine's shared /tmp.
   const temporary = path.join(root, "tmp");
   await mkdir(temporary, { recursive: true });
 
+  const frames: Record<string, unknown>[] = [];
   const rpc = spawnRpc(
     binary,
     {
@@ -446,7 +484,7 @@ async function startPane(options: PaneOptions): Promise<StallPane> {
         LEGION_STALL_CALL_BOUND_MS: String(BOUND_MS),
         LEGION_STALL_STEP_MS: String(STEP_MS),
       },
-      onFrame: () => undefined,
+      onFrame: (frame) => frames.push(frame as Record<string, unknown>),
     },
     cleanup
   );
@@ -491,6 +529,7 @@ async function startPane(options: PaneOptions): Promise<StallPane> {
       (await entries(STALL_WATCH_ENTRY)).map((entry) => entry.data as StallWatchRecord),
     restarts: async () =>
       (await entries(STALL_RESTART_MESSAGE)).map((entry) => String(entry.content ?? "")),
+    frames: () => frames,
     exited: rpc.exited,
     running: () => running,
     async until(what, probe) {
@@ -916,6 +955,111 @@ test.skipIf(skip)(
     expect(ofKind(await pane.records(), "step").map((record) => record.step)).toEqual([
       "end-processes",
     ]);
+    expect(pane.running()).toBe(true);
+  },
+  DEADLINE_MS + 60_000
+);
+
+test.skipIf(skip)(
+  "a steering delivery into the turn a wedged cell holds open takes nothing out of the watch's book, and the run's non-terminal end reaches no extension as one",
+  async () => {
+    const state = await scratchDir("steer-state");
+    const pidFile = path.join(await scratchDir("steer-pid"), "child.pid");
+    const pane = await startPane({
+      name: "stall-steer",
+      stateDir: state,
+      // The delivery lands as the wedging cell begins, which is where a message from this
+      // worker's architect lands while its turn is parked in a call (steerExtension).
+      steer: { text: STEER_TEXT, when: "legion-watch-steer-pid" },
+      reply: warmedWedge(pidFile, { goOn: true }, "Noted."),
+    });
+    const child = await childOf(pane, pidFile);
+
+    // The steer does not free the agent from the call: the host neither backgrounds the cell nor
+    // ends the turn for it, so the call is still the turn's and still the watch's to judge. The
+    // evidence is the proposition — a watch that had lost the call would write nothing at all,
+    // and every delivery a worker gets would be a hole in this change.
+    const evidence = await pane.until("the evidence for the stuck call", async () =>
+      ofKind(await pane.records(), "evidence").at(0)
+    );
+    expect(evidence.tool).toBe("eval");
+    expect(evidence.rule).toEqual({ kind: "bound", boundMs: BOUND_MS });
+    const ended = await pane.until("the first step of the ladder", async () =>
+      stepOf(await pane.records(), "end-processes")
+    );
+    expect(ended.toolCallId).toBe(evidence.toolCallId);
+    expect(await runs(child)).toBe(false);
+
+    // Then the turn the abort ended settles, and the host has the steered message to go on with:
+    // the run's own end says so — `isTerminal` false on the RPC frame — and the host starts
+    // another turn for that message at once, which the worker answers.
+    const steered = await pane.until("the turn the steering delivery started", () =>
+      pane.turns().find((turn) => conversation(turn).includes(STEER_TEXT))
+    );
+    expect(conversation(steered)).toContain(STEER_TEXT);
+    expect(
+      pane
+        .frames()
+        .filter((frame) => frame.type === "agent_end")
+        .map((frame) => frame.isTerminal)
+    ).toContain(false);
+
+    // **And no extension can read that flag.** The entry closes the turn's calls on every run
+    // end, a non-terminal one included, because the host hands an extension none of it: measured
+    // here on 2026-11-08, an `agent_end` handler's event carries `type`, `messages` and
+    // `willContinue` alone, with `willContinue` undefined on the non-terminal end and on the
+    // terminal one alike, while the RPC frames of the same two ends read `isTerminal` false and
+    // true. Closing is also what this watch wants: a call of a run that has ended is not the
+    // next turn's, and a ladder judging it would abort the turn the host is running now
+    // (`legion.ts`'s `agent_end` handler, and the case in `legion.test.ts` that drives
+    // `willContinue`).
+    expect(pane.running()).toBe(true);
+  },
+  DEADLINE_MS + 60_000
+);
+
+test.skipIf(skip)(
+  "a foreground shell call the host backgrounds leaves the watch's book with the host's own end, while the command it started runs on",
+  async () => {
+    const state = await scratchDir("background-state");
+    const pidFile = path.join(await scratchDir("background-pid"), "shell.pid");
+    const pane = await startPane({
+      name: "stall-background",
+      stateDir: state,
+      reply: (index) =>
+        index === 1
+          ? [
+              call("bash", {
+                command: `echo $$ > ${JSON.stringify(pidFile)}; while true; do sleep 0.5; done`,
+                timeout: 600,
+              }),
+            ]
+          : [{ type: "text", text: "Noted." }],
+    });
+    const shell = await childOf(pane, pidFile);
+
+    // What the host does with a foreground shell command that does not return: about a minute in
+    // it backgrounds the command and ends the call itself, with no error and the job still
+    // running (measurement 1 in `@legion/pi-shared/stall-watchdog`'s header, driven here).
+    const end = await pane.until("the host's own end of the call", () =>
+      pane.frames().find((frame) => frame.type === "tool_execution_end")
+    );
+    expect(end.isError).toBe(false);
+    expect(end.result).toMatchObject({ details: { async: { state: "running" } } });
+
+    // So a backgrounded call is a closed call in this watch's book, and its command's process
+    // lives on outside it. That is the right record and not a gap: the agent is no longer parked
+    // in that call — the host freed its turn and handed it the job — and the ladder's steps would
+    // end the processes of a call nobody is waiting on and abort a turn that is working. What the
+    // agent does next is a call of its own with a clock of its own, and a session that then goes
+    // quiet altogether is the daemon's backstop to end, not this watch's.
+    const after = await pane.until("the turn that answers the backgrounded call", () =>
+      pane.turns().at(1)
+    );
+    expect(conversation(after)).toContain("Backgrounded");
+    expect(await pane.records()).toEqual([]);
+    expect(pane.publishes()).toEqual([]);
+    expect(await runs(shell)).toBe(true);
     expect(pane.running()).toBe(true);
   },
   DEADLINE_MS + 60_000
