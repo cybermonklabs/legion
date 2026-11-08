@@ -214,7 +214,7 @@ function WhatTheHeaderWouldSay({
         <span className="sr-only">Status</span>
         {statusText(issue.status)}
       </span>
-      <ApprovalChip artifact={artifact} showActions={false} variant="header" />
+      <ApprovalChip artifact={artifact} asText variant="header" />
     </>
   );
 }

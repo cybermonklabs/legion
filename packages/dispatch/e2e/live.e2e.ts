@@ -601,18 +601,42 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   await expect(page.getByText("Backlog message 4")).toBeVisible();
   await socketOpened;
 
+  // Four of the 21 go out after the message above is on the page, and the row waits for each
+  // of them by name rather than counting a page that is still filling. The issue header is a
+  // chunk of its own, asked for only once the page that holds it renders, so the three reads
+  // of its metadata rail - who is subscribed to the issue, the project's architecture sources
+  // and the repository mappings - go out when that chunk lands, which is after the
+  // Conversation, whose chunk the address asked for before React started (`app.tsx`'s
+  // `requestTheOpenPagesChunk`). The margin is mounted only once the route the reader asked
+  // for is drawn (`app.tsx`'s `TheRouteIsDrawn`), so its own list of the issue's asks goes out
+  // then too. Naming the four is what keeps the count honest: a read that stops happening
+  // fails here, saying which, instead of quietly leaving the total below.
+  const askedFor = (pathAndQuery: string): boolean =>
+    apiRequestUrls.some((url) => {
+      const asked = new URL(url);
+      return `${asked.pathname}${asked.search}` === pathAndQuery;
+    });
+  const theReadsThatFollowTheRoute = [
+    `/api/v1/issues/${issue.key}/subscribers`,
+    // The margin's own, told from the Conversation's by the thread the Conversation asks for.
+    `/api/v1/issues/${issue.key}/asks?state=all`,
+    "/api/v1/projects/CORE/architecture-sources",
+    "/api/v1/settings/repo-projects",
+  ];
+  await expect.poll(() => theReadsThatFollowTheRoute.filter((read) => !askedFor(read))).toEqual([]);
+
   // The socket is outside the HTTP request budget, and the sign-in check carries its event head.
   expect(apiRequestUrls.some((url) => new URL(url).pathname === "/api/v1/events")).toBe(false);
 
-  // Exactly 21 on desktop (chromium): whoami, the project sidebar's Inbox, Pinned,
-  // and Projects queries, me/state, issue detail, the shared inbox query for the
-  // margin's open-ask count, the active-sessions read, the primary artifact's comments -
-  // which the Conversation's own list shares rather than fetching again - the margin's own
-  // list of the issue's asks and the Conversation's, which asks the same route for each
-  // ask's thread (`?thread=1`) and so is a request of its own, not the margin's shared,
-  // the issue's message threads, the two one-row event reads the unread mark
-  // needs (the first event past the watermark, and the issue's head),
-  // Conversation's live-agent query, the one block-schema fetch every document
+  // Exactly 21 on desktop (chromium): whoami, the project sidebar's Inbox, Pinned, and
+  // Projects queries - the Inbox one is the query the margin's open-ask count shares, so the
+  // two surfaces make one request between them - me/state, issue detail, the header's read of
+  // who is subscribed to the issue, the primary artifact's comments - which the Conversation's
+  // own list shares rather than fetching again - the margin's own list of the issue's asks and
+  // the Conversation's, which asks the same route for each ask's thread (`?thread=1`) and so
+  // is a request of its own, not the margin's shared, the issue's message threads, the two
+  // one-row event reads the unread mark needs (the first event past the watermark, and the
+  // issue's head), Conversation's live-agent query, the one block-schema fetch every document
   // surface shares for the session, the header's read of the project's
   // architecture sources (the `Components:` line offers its picker only when the
   // project has one; the component tree itself is fetched only once the picker

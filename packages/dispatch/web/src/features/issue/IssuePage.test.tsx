@@ -2408,7 +2408,10 @@ test("IssuePage's header box says a closed issue is closed, where it stands and 
     // What the header would have told the reader stands in its box meanwhile.
     expect(within(box).getByText("This issue is closed.")).toBeTruthy();
     expect(within(box).getByText("Done")).toBeTruthy();
-    expect(within(box).getByRole("button", { name: "Changes requested" })).toBeTruthy();
+    // As text, not as a control: a press in this box replaces the box, so a chip drawn here as
+    // a button would swallow the press it was drawn for.
+    expect(within(box).getByText("Changes requested")).toBeTruthy();
+    expect(within(box).queryByRole("button", { name: "Changes requested" })).toBeNull();
 
     // And the header says the same three things when the batch lets it through, once each.
     act(() => theFirstBatchIsAwaited(false));

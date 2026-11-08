@@ -128,7 +128,7 @@ export function ArtifactHeader({
               {artifact.name}
             </h2>
             <div className="flex min-h-11 flex-wrap items-center gap-3">
-              <ApprovalChip artifact={artifact} showActions={false} variant="header" />
+              <ApprovalChip artifact={artifact} asText variant="header" />
               {toolbar === undefined ? null : (
                 <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
               )}

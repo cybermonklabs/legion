@@ -101,7 +101,11 @@ test("the artifact header's box says what a review of the document decided, and 
 
   try {
     expect(screen.queryByTestId("artifact-header")).toBeNull();
-    expect(screen.getByRole("button", { name: "Changes requested" })).toBeTruthy();
+    // The state as text, never as a control: a press inside this box replaces the box with the
+    // header it keeps, in that same press, so a chip drawn here as a button would swallow the
+    // press it was drawn for and open nothing.
+    expect(screen.getByText("Changes requested")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Changes requested" })).toBeNull();
     // Approve and Request changes are controls, and a press on the box is how a reader asks for
     // a control: they arrive with the rest of the chrome.
     expect(screen.queryByRole("button", { name: "Request changes" })).toBeNull();

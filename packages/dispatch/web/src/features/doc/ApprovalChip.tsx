@@ -233,6 +233,17 @@ export interface ApprovalChipProps {
   variant?: "header" | "list";
   /** The issue header exposes review actions only after an approval request exists. */
   showActions?: boolean;
+  /**
+   * The state alone, as text a reader cannot press: no reviews to open and no actions.
+   *
+   * For the space a host keeps while its header is still held back
+   * (`ChromeAfterTheFirstBatch`). A press inside that space replaces the space with the header
+   * it was keeping, in the same press, so a control drawn there swallows the press it was drawn
+   * for: the reader presses the chip and gets neither the reviews nor the chip. What the reader
+   * is owed there is the state, which they are never told otherwise, and the header a press
+   * brings carries the real chip.
+   */
+  asText?: boolean;
   /** `contents` lets a parent flex group place the state chip and actions independently. */
   layout?: "contents" | "inline";
   /** Called beside the chip's own refreshes once the server has recorded the reader's review, so
@@ -247,10 +258,11 @@ export interface ApprovalChipProps {
  */
 export function ApprovalChip({
   artifact,
+  asText = false,
   layout = "inline",
   onReviewed,
   variant = "list",
-  showActions = variant === "header",
+  showActions = variant === "header" && !asText,
 }: ApprovalChipProps): ReactNode {
   const { approval } = artifact;
   const [reviewsOpen, setReviewsOpen] = useState(false);
@@ -295,19 +307,32 @@ export function ApprovalChip({
     <div
       className={layout === "contents" ? "contents" : "inline-flex flex-wrap items-center gap-2"}
     >
-      <button
-        aria-haspopup="dialog"
-        className={approvalPillClassName(approval.state)}
-        onClick={() => setReviewsOpen(true)}
-        title={
-          approval.state === "stale"
-            ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
-            : undefined
-        }
-        type="button"
-      >
-        {approvalLabel(approval)}
-      </button>
+      {asText ? (
+        <span
+          className={approvalPillClassName(approval.state)}
+          title={
+            approval.state === "stale"
+              ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
+              : undefined
+          }
+        >
+          {approvalLabel(approval)}
+        </span>
+      ) : (
+        <button
+          aria-haspopup="dialog"
+          className={approvalPillClassName(approval.state)}
+          onClick={() => setReviewsOpen(true)}
+          title={
+            approval.state === "stale"
+              ? `Approved at version ${approval.version}; the latest version is ${approval.latest_version}`
+              : undefined
+          }
+          type="button"
+        >
+          {approvalLabel(approval)}
+        </button>
+      )}
       {variant === "header" && showActions ? (
         <>
           {approval.state === "approved" ? null : (
