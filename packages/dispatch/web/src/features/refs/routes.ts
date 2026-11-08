@@ -643,25 +643,40 @@ function pageRoutes(
 }
 
 /** A reference a text cites: the `dispatch://` form and the dashboard path it opens. The path
- *  is always a path of this app (`appPath`), since the pill it is drawn as is a link and the
- *  text behind it is the reader's own; a reference whose path is not one is no reference here. */
+ *  is always a path of this app (`isSafeAppPath`), since the pill it is drawn as is a link and
+ *  the text behind it is the reader's own; a reference whose path is not one is no reference
+ *  here. */
 export interface ComposerReference {
   href: string;
   reference: string;
 }
 
 /**
- * A path of this app and nothing else: one leading `/` and no second one, so what comes back is
- * a place inside the dashboard rather than a scheme or another origin.
+ * Whether a path is a place inside this dashboard: one leading `/` and no second one, and a path
+ * the URL parser resolves against the app's own origin to that same origin.
+ *
+ * The two halves catch different things, and neither alone is enough. The text these paths are
+ * read out of is the reader's own - a body they typed, a reference they pasted - so a `javascript:`
+ * or `data:` scheme and a `//elsewhere.example` address are what the leading-slash half refuses.
+ * A browser reads `/\elsewhere.example/x` as that second shape too, though, because the URL parser
+ * takes a backslash for a slash in an http(s) URL, and the leading-slash half passes it; resolving
+ * the path and comparing origins is what refuses that one, and anything else a parser reads
+ * otherwise than the characters suggest.
  *
  * Every builder below returns such a path for every route it knows, and this is what says so at
- * the one place a path becomes a link a reader can press. The text those routes are read out of
- * is the reader's own - a body they typed, a reference they pasted - so the rule a new route
- * kind has to keep is here, in front of the sink, rather than spread over the builders where
- * the next one would miss it.
+ * the one place a path becomes a link a reader can press. The rule a new route kind has to keep is
+ * here, in front of the sink, rather than spread over the builders where the next one would miss
+ * it.
  */
-export function appPath(path: string): string | undefined {
-  return path.startsWith("/") && !path.startsWith("//") ? path : undefined;
+export function isSafeAppPath(path: string, appOrigin = window.location.origin): boolean {
+  if (!path.startsWith("/") || path.startsWith("//")) {
+    return false;
+  }
+  try {
+    return new URL(path, appOrigin).origin === new URL(appOrigin).origin;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -681,8 +696,8 @@ export function composerReferences(
       continue;
     }
     // The pill is a link, and the text behind this route is the reader's own.
-    const href = appPath(buildReferencePath(route));
-    if (href === undefined) {
+    const href = buildReferencePath(route);
+    if (!isSafeAppPath(href, appOrigin)) {
       continue;
     }
     const reference = buildDispatchReference(route);
