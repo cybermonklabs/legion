@@ -28,12 +28,13 @@
 # sjawhar-agent App), never a Legion App, so run the script from the operator's own Oh My Pi
 # session, not a Legion pane, with no personal GH_TOKEN in its environment: `prerequisites` refuses
 # to start otherwise (require_proof_human, lib/workflow.sh).
-# Legion's two role Apps are this deployment's own by default, and four inputs for another
+# Legion's two role Apps are this deployment's own by default, and three inputs name another
 # deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id,
-# LEGION_E2E_IMPLEMENT_APP_SECRET, the name of the secrets broker github-app secret that releases
-# the implement App's installation tokens, and LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that
-# prints the review App's PEM private key on stdout (lib/github-apps.sh). The ids and the secret
-# name default; the key command has none, and a run that sets no key command is refused.
+# and LEGION_E2E_IMPLEMENT_APP_SECRET, the name of the secrets broker github-app secret that
+# releases the implement App's installation tokens (lib/github-apps.sh). Those three default. The
+# fourth, LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private
+# key on stdout, is no input for another deployment's Apps: every run needs it, this deployment's
+# own included, it has no default, and a run that sets none is refused.
 # `prerequisites` runs that command once, here on the driver, in the operator's own environment —
 # so it may read their HOME and their own gcloud or kubectl configuration — and writes what it
 # prints to $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which cleanup removes

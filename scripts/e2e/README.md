@@ -612,10 +612,13 @@ Three things the run had to learn about its surface:
 
 ```sh
 LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage3-devbox-workflow.sh     # → "stage 3 e2e: PASS", exit 0
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage3-devbox-workflow.sh     # the same, for a devbox with no Hawk gateway
 LEGION_E2E_MODEL_ROUTE=box-login SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage3-devbox-workflow.sh     # the same, on the operator's own Oh My Pi login
 ```
 
@@ -648,7 +651,8 @@ The run needs:
 
 - the `agent-secrets` client reaching the secrets broker that holds the implement App's github-app secret (this deployment's own unless `LEGION_E2E_IMPLEMENT_APP_SECRET` names another deployment's)
 
-- `LEGION_E2E_REVIEW_APP_KEY_COMMAND` (required, no default), shell text that prints the review App's PEM private key on stdout, which the daemon runs as that App's `private_key_command` and mints and renews that App's tokens from:
+- `LEGION_E2E_REVIEW_APP_KEY_COMMAND` (required, no default), shell text that prints the review App's PEM private key on stdout, which `prerequisites` runs once, here on the driver, in the operator's own environment — so it may read their `HOME`, their own gcloud or kubectl configuration and any variable of their shell — into `$work/app-key/review/key.pem`, 0600 in a directory of mode 0700 that cleanup removes on every exit:
+  the daemon never runs it, and the review App's `private_key_command` is a `cat` of that file, from which the daemon mints and renews that App's tokens ([`write_github_apps --key-dir`](#libgithub-appssh));
   the review App asks the broker for nothing, and this repository, being public, carries no key and no name of the store a deployment keeps one in ([`lib/github-apps.sh`](#libgithub-appssh))
 
 - `LEGION_E2E_MODEL_ROUTE` (required, `gateway`, `key-file` or `box-login`), which picks how the agents reach Anthropic, independently of which devbox this runs on:
@@ -682,7 +686,7 @@ it is never a Legion App, and the run needs no personal access token (`GH_PUBLIC
 The shim routes `gh` to that App only from the operator's own Oh My Pi session, so the run starts there:
 a plain shell's `gh`, a tmux window's included, is the user's own login, a Legion pane's is one of Legion's Apps, and a personal `GH_TOKEN` in the environment makes any session's `gh` that token's owner.
 `prerequisites` refuses to start, before the run's first write to GitHub, unless `gh` acts as `sjawhar-agent[bot]` ([`require_proof_human`](#libworkflowsh)).
-The daemon mints the implement App's installation tokens itself through that App's `token_command`, `agent-secrets <secret> … -- …`, and mints and renews the review App's from the key that App's `private_key_command`, the operator's own text, prints.
+The daemon mints the implement App's installation tokens itself through that App's `token_command`, `agent-secrets <secret> … -- …`, and mints and renews the review App's from the key its `private_key_command` prints, which is a `cat` of the key file `prerequisites` already wrote the operator's key command into, never that command itself.
 `prerequisites` first runs [`read_app_logins`](#libworkflowsh), which runs the same two commands once, in `lib/app-logins.ts`, to prove each App from a token of its own — the release the implement App's command gives, and the token the review App's key mints for an installation of itself — against GraphQL's viewer, which names the bot, and GitHub's `GET /apps/<slug>`, which must answer the configured id and the role's write permission, and to read each App's bot login, the login every check that names an App compares with, before the run's first write anywhere.
 The agents' model is Anthropic through the configured route:
 [`lib/install-model-gateway.sh`](#libinstall-model-gatewaysh) (`gateway`) or [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh) (`key-file`) or [`lib/install-box-login-route.sh`](#libinstall-box-login-routesh) (`box-login`) routes the isolated profile there in `prerequisites`, where the gateway and key-file routes' preflight refuses loudly before any pane exists (a locked keyring by name under `gateway`, an unreadable or empty key file under `key-file`), and the box-login route refuses a box with no operator login or an operator build without the refresh-race fix, and the daemon is given no `provider_keys` (the Google provider answered long workflow turns with empty responses, so the agents are not Gemini-backed).
@@ -835,6 +839,7 @@ The trap still closes the run's pull requests in two further cases ([`lib/transc
 ```sh
 LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic SMOKE_UPSTREAM_NATS=nats://<host>.<tailnet>.ts.net:4222 \
 ACCEPT_PG_CONTAINER=<postgres container> ACCEPT_PG_PORT=<its host port> ACCEPT_NATS_BIN=<nats-server> \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage3-4b13b-acceptance.sh     # → "acceptance 4b.13b: PASS at <head>", exit 0
 ```
 
@@ -856,10 +861,13 @@ The default evidence directory is under the scratch work directory, whose proces
 
 ```sh
 LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_CLAUDE_KEY_FILE=<file holding an Anthropic API key> LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-tmux.sh     # → "claude backend e2e: PASS", exit 0
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file> \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-tmux.sh     # the same, for a devbox with no Hawk gateway: one key file for both halves
 LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_ANTHROPIC_KEY_FILE=<0600 file holding the gateway key> LEGION_E2E_MODEL_BASE_URL=<gateway base URL> \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-tmux.sh     # the same through an Anthropic-compatible model gateway: no Anthropic key
 ```
 
@@ -875,6 +883,7 @@ The key is written 0600, never printed and never in an argv, and the subshell's 
   <runner> <GATEWAY_KEY_NAME> -- sh -c 'umask 077; printf %s "$<GATEWAY_KEY_NAME>" >"$1"' sh "$key" &&
     LEGION_E2E_MODEL_ROUTE=key-file LEGION_E2E_MODEL_BASE_URL=<gateway base URL> \
       LEGION_E2E_CLAUDE_KEY_FILE=$key LEGION_E2E_ANTHROPIC_KEY_FILE=$key \
+      LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
       bash scripts/e2e/claude-backend-tmux.sh
 )
 ```
@@ -959,7 +968,8 @@ That build refuses any Bun but the release the repository's `.bun-version` pins,
 On a devbox whose version manager defaults to another release, put the pinned release's own `bin` directory first on `PATH` for the run.
 Legion's role Apps resolve as Stage 3's do:
 the daemon runs the implement App's `token_command`, `agent-secrets <implement App secret> … -- …` (`agent-secrets`, which `prerequisites` requires on `PATH`;
-the secret name `LEGION_E2E_IMPLEMENT_APP_SECRET` gives), so that App's installation tokens come from the secrets broker's github-app secret, and it runs the review App's `private_key_command`, the text `LEGION_E2E_REVIEW_APP_KEY_COMMAND` gives, and mints and renews that App's tokens from the key it prints.
+the secret name `LEGION_E2E_IMPLEMENT_APP_SECRET` gives), so that App's installation tokens come from the secrets broker's github-app secret, while the review App's key is resolved before the daemon starts:
+`prerequisites` runs `LEGION_E2E_REVIEW_APP_KEY_COMMAND` once, here on the driver, in the operator's own environment, into `$work/app-key/review/key.pem` (0600, in a directory of mode 0700 that cleanup removes on every exit), and the daemon reads it through that App's `private_key_command`, a `cat` of that file, and mints and renews that App's tokens from the key itself.
 `prerequisites` proves each App from a token of its own ([`read_app_logins`](#libworkflowsh)) before the run's first write.
 The proof human is the devbox's ordinary `gh` acting as `sjawhar-agent[bot]` ([`require_proof_human`](#libworkflowsh)), so the run starts from the operator's own Oh My Pi session.
 The `EXIT` trap stops every process and container, copies every Oh My Pi session and Claude Code transcript into the evidence directory's `transcripts/`, closes any pull request of the run's project, and deletes the issue's branch on the smoke repository.
@@ -981,6 +991,7 @@ LEGION_E2E_MODEL_GATEWAY_AUDIENCE=<gateway audience> \
 LEGION_E2E_DAEMON_PORT=<port> LEGION_E2E_WORKER_STREAM_PORT=<port> \
 LEGION_E2E_DISPATCH_PORT=<port> LEGION_E2E_ENVOY_PORT=<port> LEGION_E2E_NATS_PORT=<port> \
 LEGION_E2E_SESSION_DB_PORT=<port> \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-sandbox.sh     # → "claude backend sandbox e2e: PASS", exit 0
 
 # A cluster whose pods cannot reach the devbox at all (GKE's shape), with no Hawk gateway; the six
@@ -1002,6 +1013,7 @@ LEGION_E2E_MODEL_ROUTE=key-file \
 LEGION_E2E_DAEMON_PORT=<port> LEGION_E2E_WORKER_STREAM_PORT=<port> \
 LEGION_E2E_DISPATCH_PORT=<port> LEGION_E2E_ENVOY_PORT=<port> LEGION_E2E_NATS_PORT=<port> \
 LEGION_E2E_SESSION_DB_PORT=<port> \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/claude-backend-sandbox.sh     # the same, through the bridge; needs docker
 ```
 
@@ -1105,9 +1117,9 @@ The rig is the tmux proof's — scratch Postgres, NATS, Envoy listener and nativ
 Its services are dialled from inside a pod, so every one of them binds the address [Pod reachability](#pod-reachability) picks:
 the devbox's private address under `aws-private-ip`, on a port the devbox's security group admits from the Legion nodes ([Port admission](#port-admission)), or its loopback under `bridge`, on a port that need only be free on the devbox.
 The daemon's and Dispatch's own Postgres is theirs alone and stays on loopback.
-Legion's role Apps resolve as the tmux proof's do, through the implement App's `token_command` and the review App's `private_key_command` and never this shell
-— under `bridge` with one difference, the App credential files below ([Pod reachability](#pod-reachability))
-— and the proof human is the devbox's ordinary `gh` acting as `sjawhar-agent[bot]` ([`require_proof_human`](#libworkflowsh)), so the run starts from the operator's own Oh My Pi session.
+Legion's role Apps resolve as the tmux proof's do, through the implement App's `token_command` and the review App's `private_key_command`, and in neither mode does the daemon run the operator's key command:
+that command runs here, once, in this shell's own environment, and the review App's `private_key_command` is a `cat` of the 0600 file it wrote, under `aws-private-ip` in `$work/app-key` ([`write_github_apps --key-dir`](#libgithub-appssh)) and under `bridge` in the App credential directory below ([Pod reachability](#pod-reachability));
+no token and no key passes through this shell either way, and the proof human is the devbox's ordinary `gh` acting as `sjawhar-agent[bot]` ([`require_proof_human`](#libworkflowsh)), so the run starts from the operator's own Oh My Pi session.
 
 Everything the run creates in namespace `legion` carries its own `legion.dev/project` label
 — the run's Dispatch project lowercased, which is the daemon's own claim token for it
@@ -1137,9 +1149,11 @@ the mode needs docker, which both modes need anyway, and no root.
 
 Neither `agent-secrets` nor the operator's review key command can run in that container:
 a broker that checks a process's ancestry (`agent-secrets` refuses with `NOT_A_SESSION`) finds none across the container's pid namespace, and the key command is the operator's own shell text, written for the devbox and for whatever holds the key there.
+The key command is the driver's in every mode — no daemon of any proof runs it — so what `bridge` moves to the devbox is the implement App's `agent-secrets` call, and what it changes for the review App is only the directory its key file goes in.
 So under `bridge` `prerequisites` runs both on the devbox instead, minting the implement App's releases through `agent-secrets` and writing the review App's private key once from its key command, into owner-only files of a directory of the run's own, `$XDG_RUNTIME_DIR/legion-e2eccs-app-tokens.<pid>.<random>` ([`mint_app_tokens`](#libgithub-appssh)):
 `implement/_all.json` (every installation), `implement/<owner>.json` and `implement/<owner>.read.json` (the run's repository owner's, read-write and read-only), and `review/key.pem`, each written to a temporary file of the same directory and renamed over the old one, each file 0600 in a directory of mode 0700.
-Each role's one credential command in `legion.yaml` then reads its own file with `cat` (`write_github_apps --token-dir`), the implement App's `token_command` the release of the owner and read-only flag the daemon asks for and the review App's `private_key_command` the key, the block `check_github_apps` proves against GitHub.
+Each role's one credential command in `legion.yaml` then reads its own file with `cat`, which is what [`write_github_apps --token-dir`](#libgithub-appssh) writes, naming the directory `mint_app_tokens` already wrote rather than resolving the key again:
+the implement App's `token_command` the release of the owner and read-only flag the daemon asks for, and the review App's `private_key_command` the key, as in every other mode — the block `check_github_apps` proves against GitHub, and the very commands it runs.
 An installation token lasts an hour, so a background refresher ([`start_app_token_refresher`](#libgithub-appssh)) mints every release file again every 15 minutes, well before the daemon runs its command again once fewer than 20 minutes remain on a lease;
 a refresh that fails prints one line naming the App and keeps the last good files.
 It never touches the key file: a private key does not expire, and that App asks the broker for nothing.
@@ -2000,11 +2014,13 @@ LEGION_E2E_RUNTIME_CONTEXT=<restricted context> LEGION_E2E_IMAGE=ghcr.io/cybermo
   LEGION_E2E_DISPATCH_URL=https://<dispatch> LEGION_E2E_ENVOY_URL=http://<listener>:<port> LEGION_E2E_NATS_URL=nats://<nats>:4222 \
   LEGION_E2E_DISPATCH_TOKEN_FILE=<0600 file> LEGION_E2E_ENVOY_TOKEN_SECRET_ID=<secret id> \
   LEGION_E2E_SESSION_DB_PORT=<port> \
+  LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage4b-sandbox-tree.sh        # → "stage 4b e2e: PASS", exit 0
 STAGE4B_UNTIL=<checkpoint> …                      # a development run: stops after that checkpoint, never PASS
 STAGE4B_DESIGN_GATE=root-issues STAGE4B_UNTIL=spec-posted …   # the design gate, armed, on tree 1 alone
 LEGION_E2E_POD_FILE=<block.json> STAGE4B_UNTIL=deployment-pod-block …   # a deployment's own worker pod block, before it ships
 LEGION_E2E_PROJECT=S4B2 LEGION_E2E_DAEMON_PORT=13370 LEGION_E2E_WORKER_STREAM_PORT=13371 LEGION_E2E_SESSION_DB_PORT=<port> \
+  LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
   bash scripts/e2e/stage4b-sandbox-tree.sh        # a second lane beside a default-identity run; S4B2 is created if missing
 ```
 
@@ -2916,7 +2932,9 @@ The agents are real.
 Nothing in the run reads production, and no tree reaches a pull request.
 
 ```bash
-LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic bash scripts/e2e/parked-decision-devbox.sh
+LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic \
+LEGION_E2E_REVIEW_APP_KEY_COMMAND='<command that prints the review App PEM private key>' \
+  bash scripts/e2e/parked-decision-devbox.sh
 ```
 
 `--help` prints the inputs and the checkpoints, and does nothing else.
@@ -2933,7 +2951,9 @@ LEGION_E2E_MODEL_ROUTE=gateway LEGION_E2E_MODEL_GATEWAY_URL=<gateway>/anthropic 
 - Legion's two role Apps: this deployment's own by default, the implement App's installation tokens minted through `agent-secrets`, or another deployment's ids and implement secret through `LEGION_E2E_IMPLEMENT_APP_ID`, `LEGION_E2E_IMPLEMENT_APP_SECRET` and `LEGION_E2E_REVIEW_APP_ID` ([`lib/github-apps.sh`](#libgithub-appssh)), as Stage 3 reads them.
 
   `LEGION_E2E_REVIEW_APP_KEY_COMMAND` is required and has no default:
-  shell text that prints the review App's PEM private key on stdout, which the daemon runs as that App's `private_key_command` and mints and renews that App's tokens from.
+  shell text that prints the review App's PEM private key on stdout, which `prerequisites` runs once, here on the driver, in the operator's own environment, into `$work/app-key/review/key.pem` (0600, in a directory of mode 0700 that cleanup removes on every exit).
+  The daemon never runs it:
+  the review App's `private_key_command` is a `cat` of that file, and the daemon mints and renews that App's tokens from the key it reads there ([`write_github_apps --key-dir`](#libgithub-appssh)).
 
   `prerequisites` proves each App from its token against GitHub's `GET /apps/<slug>` ([`read_app_logins`](#libworkflowsh)), and `legion.yaml`'s `github_apps` is the block it proved.
 
@@ -5244,13 +5264,19 @@ Each item below names an input, then what it names.
 
 - `LEGION_E2E_REVIEW_APP_KEY_COMMAND`
 
-  shell text that prints the review App's PEM private key on stdout, which the daemon runs as that App's `private_key_command` and mints and renews that App's tokens from by itself, the shape a Legion reviewer pod is configured with (`deploy/kubernetes/daemon/legion.yaml.example`).
+  shell text that prints the review App's PEM private key on stdout, which the run runs once, on the driver, in the operator's own environment, and the daemon never runs.
+  It may therefore read the operator's `HOME`, their own gcloud or kubectl configuration and any variable of their shell:
+  it is their command, run where they ran the script.
+  What it prints goes to the run's own `review/key.pem`, mode 0600 in a directory of mode 0700, and the review App's `private_key_command` is `cat -- '<that file>'`, the shape a Legion reviewer pod is configured with (`deploy/kubernetes/daemon/legion.yaml.example`, `private_key_command: cat ./review-app.pem`).
 
-  It is required, with no default and nothing behind it:
+  It is required, with no default and nothing behind it, of every run of the six proofs that drive the review App, this deployment's own included:
   this repository is public (`AGENTS.md`), so a value a live script needs is a required operator input the script refuses to start without, never a name in the script, and no name of the store a deployment keeps that key in belongs here either.
 
-  `require_app_inputs review` refuses a value that is unset, empty or whitespace alone, and one holding `-----BEGIN`, the key pasted where its command goes;
-  each refusal names the input and prints no part of the value.
+  `require_app_inputs review` refuses a value that is unset, empty or whitespace alone;
+  one that starts with `-----BEGIN`, which is the PEM pasted where its command goes;
+  and one that is a single word of 200 or more base64 characters, which is that key in the form an older recipe's `GH_REVIEW_APP_PRIVATE_KEY_B64` held.
+  Each refusal names the input and prints no part of the value.
+  A command that merely mentions a PEM header is a command and passes, `awk '/-----BEGIN/,/-----END/' <file>` among them.
 
 The three other inputs default to this deployment's own Apps, `legion-implementer` (App ID 5341240, secret `LEGION_IMPLEMENT_APP`, agent tier: no person's grant) and `legion-reviewer` (App ID 5341243), which the lib holds in one place (`default_implement_app_id`, `default_implement_app_secret`, `default_review_app_id`), so a run here sets the key command alone.
 The review App has no default credential, since the only credential it takes is a key.
@@ -5264,46 +5290,58 @@ Two key commands an operator might give, as examples and not as values any scrip
 - from the deployment's own secret store, whose names this repository keeps out, so they stand in angle brackets:
   `gcloud secrets versions access latest --secret=<secret> --project=<project>`
 
-- from the Legion namespace's daemon Secret in the cluster, whose names are Legion's own and may be written out, `<project>` apart:
-  `kubectl -n legion get secret legion-<project>-daemon-shared -o jsonpath='{.data.review-app\.pem}' | base64 -d`
+- from a Secret of the cluster's `legion` namespace, whose name and key this repository neither creates nor names anywhere, so they stand in angle brackets too:
+  `kubectl -n legion get secret <secret> -o jsonpath='{.data.<key>}' | base64 -d`
 
-Either prints the PEM on stdout, which is all the daemon reads of it.
-The daemon runs the command at every load of a configuration whose App credentials it resolves, which is every daemon start and not `legion start --check-config` or `legion state --config` (`internal/config`, `Load` and `LoadForValidation`), so it must keep working for the length of a run:
-three of the six proofs restart their daemon mid-run (Stage 3, the 4b.13b acceptance and Stage 4b), and each start reads the key again.
-Under `bridge` the Claude Code sandbox proof runs the command once on the devbox instead, since the daemon's container can run neither it nor `agent-secrets` ([Pod reachability](#pod-reachability)).
+Either prints the PEM on stdout, which is all the run reads of it.
+The run runs that command once, in `prerequisites`, before it writes anything;
+the key file it writes then lasts the whole run, because the daemon runs the `cat` of it at every load of a configuration whose App credentials it resolves, which is every daemon start and not `legion start --check-config` or `legion state --config` (`internal/config`, `Load` and `LoadForValidation`), and three of the six proofs restart their daemon mid-run (Stage 3, the 4b.13b acceptance and Stage 4b), so each start reads that file again.
+The operator's own command is run neither then nor by the check, so a command that works once in their shell is enough, and no environment of theirs stands between what `check_github_apps` proves and what the daemon loads.
+Under `bridge` the Claude Code sandbox proof writes the key into the App credential directory the daemon's container mounts, since that container can run neither `agent-secrets` nor anything else of the devbox's ([Pod reachability](#pod-reachability));
+the command still runs on the devbox, as it does in every other mode, and only the directory differs.
 
 `require_app_inputs ROLE...` reads each role's inputs, taking the default for an id or the implement secret that is unset, and fails naming the input that is set but malformed:
 an id that is not a number of at most 12 digits, or a secret name that is not letters, digits and underscores of at most 64 (so it is safe in a shell command and as a variable name, and a pasted token is refused by its length).
 A refusal never prints the value.
+For the review role it applies the key command's own refusals above, and refuses a run that still exports the retired `LEGION_E2E_REVIEW_APP_SECRET`, naming the key command to set in its place.
 With both roles read it also refuses one id for both Apps.
 `app_token_command NAME` prints the token command for the github-app secret `NAME`, `agent-secrets NAME --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_REPOS:+$(printf ' --github-repo %s' $LEGION_GITHUB_REPOS)} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$NAME"'`, whose three `${…}` expansions the daemon's `sh` expands:
 the daemon sets `LEGION_GITHUB_OWNER` to the owner it needs a token for (empty for every installation), `LEGION_GITHUB_REPOS` to the repositories of that owner the token may touch, separated by single spaces (one `--github-repo` each, empty where it asks for no narrowing), and `LEGION_GITHUB_READ_ONLY` to `1` for a read-only token (contents, metadata, pull requests and Actions read, the last left out for an installation that does not hold it).
 The `--ttl 12h` is the deployment example's (`docs/deployment.md`): a deployment may hold a role's github-app secret at human tier, a request of one naming no lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one, so without the flag every renewal of such a run would wait for a person again, where with it the approver reads the twelve hours on the card and decides them once.
 It depends on nothing but `NAME`.
-`write_github_apps [--token-dir DIR] ROLE...` writes `$work/github-apps.yaml`, the `github_apps` block a run's `legion.yaml` includes as it is:
-each App's `app_id` and exactly one credential field, which is what the daemon admits (`packages/daemon/internal/config/stage3.go`, `readGitHubApp`) — the implement App a `token_command`, `app_token_command`'s, and the review App a `private_key_command`, the operator's command verbatim.
-Given `--token-dir DIR`, the directory `mint_app_tokens` wrote, each command reads a file of it with `cat --`, in any POSIX `sh` (busybox's included), instead:
-the implement App's `token_command` the release file `DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json`, the owner lowercased and refused unless it is letters, digits and `-`, and the review App's `private_key_command` the key file `DIR/review/key.pem`.
+`write_github_apps (--token-dir DIR | --key-dir DIR) ROLE...` writes `$work/github-apps.yaml`, the `github_apps` block a run's `legion.yaml` includes as it is:
+each App's `app_id` and exactly one credential field, which is what the daemon admits (`packages/daemon/internal/config/stage3.go`, `readGitHubApp`) — the implement App a `token_command`, `app_token_command`'s, and the review App a `private_key_command` that reads the run's own key file, `cat -- 'DIR/review/key.pem'`, in any POSIX `sh` (busybox's included).
+The operator's key command is never that field and the daemon never runs it, so a call that writes the review role names the directory that key file goes in, one of the two ways below, or is refused having written nothing;
+a call naming both is refused the same way, since the two name one key file by two routes.
+`--key-dir DIR` resolves the key here:
+this call runs `LEGION_E2E_REVIEW_APP_KEY_COMMAND` once, on the driver, in the caller's own environment, into `DIR/review/key.pem` (0600, in a directory of mode 0700, through `app_token_mint_key`), before a line of the block is written, so a key command that fails leaves no block behind either, and the implement App's `token_command` still runs `agent-secrets`.
+`--token-dir DIR` is the directory `mint_app_tokens` already wrote, which holds that key file and the releases:
+each command reads a file of it with `cat --` instead, the implement App's `token_command` the release file `DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json`, the owner lowercased and refused unless it is letters, digits and `-`, and the review App's `private_key_command` that same `DIR/review/key.pem`.
 That second form serves what the refresher minted, which is keyed by owner and the read-only flag alone, so it ignores `LEGION_GITHUB_REPOS` and answers a token over every repository of the owner's installation.
+Either `DIR` must be a path the caller's cleanup removes unconditionally, on every exit, since the App's private key is in it:
+not the evidence directory, and not a workspace a failing run keeps for debugging — the rule [`lib/install-key-file-model-route.sh`](#libinstall-key-file-model-routesh)'s own `--key-dir` states for the model key, and the reason is the same.
 It refuses, writing nothing, a role the last `require_app_inputs` did not read, and the block it writes names commands, never a token and never a key.
 
-The refresher is for a daemon that can run neither `agent-secrets` nor the operator's key command (the Claude Code sandbox proof's container under `bridge`).
+The refresher is for a daemon that can run neither `agent-secrets` nor anything else of the devbox's (the Claude Code sandbox proof's container under `bridge`).
 `mint_app_tokens DIR OWNER...` mints, once and synchronously, the releases of each read role whose tokens come from the broker into `DIR` — `DIR/<role>/_all.json`, and `DIR/<role>/<owner>.json` and `DIR/<role>/<owner>.read.json` for each `OWNER`, lowercased — and, when that call read the review role, writes that App's private key once to `DIR/review/key.pem`, each directory 0700 and each file 0600.
 Each release, and the key with it, passes from its command's `sh` child to a temporary file of the same directory, and `mv` renames it over the file, so a reader sees the whole old file or the whole new one;
 a mint that fails or prints nothing leaves no temporary file, keeps the last good file, and fails the run naming the App by its role and id — a release also by its secret and `agent-secrets`' exit status, the key by the file it was to be written to and what went wrong — never a token and never a byte of the key.
 `start_app_token_refresher DIR` mints the same release files again every `app_token_refresh_seconds` (900) in the background, keeping the last good files when a round fails, and `stop_app_token_refresher` stops it.
 It never touches `DIR/review/key.pem`: a private key does not expire, and that App has no broker secret to ask for.
-A `DIR` holding anything but letters, digits and `_ . / -` is refused, by `mint_app_tokens` and `write_github_apps --token-dir`, since the commands carry it in their shell text.
+A `DIR` holding anything but letters, digits and `_ . / -` is refused, by `mint_app_tokens` and by `write_github_apps --token-dir` and `--key-dir` alike, since the credential commands carry it in their shell text.
 
 `check_github_apps ROLE...` runs [`lib/app-logins.ts`](#libworkflowsh) `--roles` over `$work/github-apps.yaml` and fails the check unless each App's one credential gives a token whose GraphQL viewer is an App's bot, `<slug>[bot]`, and GitHub's `GET /apps/<slug>`, under that token, answers the configured id and the write permission the role's work needs (the implement role's `contents`, the review role's `checks`):
 a token GitHub does not take is refused by GitHub's 401, an answer naming another id is refused naming both ids, and the two Apps configured the other way round are refused by the permission, since the implement App holds `checks: read` alone.
 The implement App's `token_command` releases that token, and the review App's `private_key_command` prints the PEM that signs an RS256 App JWT, under which `GET /app/installations` names an installation of the App and `POST /app/installations/<id>/access_tokens` mints that installation's token, so a key-configured App is held to every observation a token-configured one is.
 A broker that serves no github-app secret under the name the implement role gave refuses that role's token command outright (`UNKNOWN_SECRET`, `no agent secret has this name`), the one failure of this check whose fix is an input and not GitHub.
-`lib/app-logins.ts` reads that refusal out of the run it already makes, asking the broker nothing of its own, since a probe of a human-tier secret would raise a person's approval card, and names the role and the input to set, `LEGION_E2E_<ROLE>_APP_SECRET`, in place of its reason for that one failure, which the implement App alone can reach now that the review App asks the broker for nothing.
+`lib/app-logins.ts` reads that refusal out of the run it already makes, asking the broker nothing of its own, since a probe of a human-tier secret would raise a person's approval card, and names the role and the input to set in place of its reason for that one failure:
+`LEGION_E2E_IMPLEMENT_APP_SECRET` for the implement role, and for a review role, which a hand-written `github_apps.yaml` can still give a `token_command`, the key command `LEGION_E2E_REVIEW_APP_KEY_COMMAND` and the `private_key_command` that reads it, since that App asks the broker for nothing.
 It reads the whole of the command's stderr, so a refusal the client prints under a line of its own is named the same way, and `agent-secrets`' own lines reach the run's output as they are written, redacted of every token form before anything sees one.
 The key that command prints, and the App JWT it signs, stay in `lib/app-logins.ts`'s own memory: neither is printed, written to a file, or handed to another process.
-No token and no key enters the script's shell or an argv, and neither reaches a file but through the refresher:
-under the sandbox proof's `bridge`, the implement App's releases and the review App's key exist as owner-only files on the devbox user's tmpfs (`XDG_RUNTIME_DIR`) for the run's lifetime, and its teardown removes them ([Pod reachability](#pod-reachability)).
+No token and no key enters the script's shell or an argv:
+each passes from its command's stdout to an owner-only file of a directory its caller names and removes at teardown, and the commands the block carries read those files.
+The review App's key reaches such a file in every mode, under `$work/app-key` or, under the sandbox proof's `bridge`, beside the releases on the devbox user's tmpfs (`XDG_RUNTIME_DIR`);
+a token reaches one only where the daemon can run neither `agent-secrets` nor a key command, which is that `bridge` container, and the run's teardown removes them ([Pod reachability](#pod-reachability)).
 A run refuses before its first write anywhere:
 Stage 3, 4b.13b, the Claude Code backend and Stage 4b check both Apps (`read_app_logins`), Stage 4a, which acts as the implement App alone, checks that one.
 `TestRealGitHubCredentialSurface` and `TestRealGitHubReadyHoldsTheHeadToRetrosCommits` source this lib and run its `require_app_inputs implement`, `app_token_command` and `check_github_apps implement` (through `liveProofImplementApp` and `proveLiveProofApps` in `packages/daemon/internal/api/real_github_test.go`;
@@ -5312,8 +5350,8 @@ Stage 4a hands its Go harness the implement App's id, its secret and that App's 
 The checks run in the C locale whatever the caller's, so a UTF-8 locale does not admit fullwidth digits or accented letters.
 `require_app_inputs` also fills `app_key_unsets`, the `env` argument list (`-u NAME` …) every proof passes to a process it starts, which strips each read role's broker secret name, the implement default's, the two names the retired review inputs used, and every exported variable whose name holds `PRIVATE_KEY`.
 `lib/github-apps.test.ts` drives the functions under a stage script's shell options against a stand-in GitHub that serves GraphQL's viewer, `GET /apps/<slug>` and the two App-JWT routes a key proof takes, those two to a request signed with that App's own key, with a stand-in `agent-secrets`:
-the defaults, an unset input taking its default, an empty one refused rather than read as a choice of the default, a malformed one refused by name with its value unprinted, the review App's key command required and an unset, empty or blank one refused by name, a run that still exports the retired review secret input refused by name, a key command that is the key itself refused with no part of the key printed, `app_token_command`'s text and the `--github-owner`, `--github-repo` and `--github-read-only` words it passes only when the daemon sets each variable, `write_github_apps` refusing an unread role and writing the daemon's block (the implement App's `token_command`, the review App's `private_key_command`), `app_key_unsets` leaving no App secret in a child's environment, an answer naming another App id refused naming both ids, a secret the broker does not serve failing the check by its role and its input, the same refusal below the first line of the command's stderr failing it the same way, no token and no key in any message, and a match accepted (`lib/app-logins.test.ts` holds the rows over the helper beneath them: a role's missing write permission refused, a failed token command named by its field, exit code and stderr, that command run without the NATS seeds and with owner, repositories and read-only empty, and an App proved from its key, its two JWT routes asked before the viewer, refused there too for another id or a missing permission, and its key command named by its field, exit code and stderr when it fails or prints nothing);
-and `mint_app_tokens` writing each release 0600 and atomically and the review App's key once beside them, the broker asked for the implement App's releases alone, a failed or empty mint or key command leaving no file and the last good release, the refresher minting the releases again and never the key and stopping, `write_github_apps --token-dir`'s commands reading the right release file and the key file under busybox `sh`, its block proved with `agent-secrets` broken after the mint, the key reaching its own file and nothing else with the run's teardown leaving neither it nor its directory, and a token directory unsafe in shell text refused.
+the defaults, an unset input taking its default, an empty one refused rather than read as a choice of the default, a malformed one refused by name with its value unprinted, the review App's key command required and an unset, empty or blank one refused by name, a run that still exports the retired review secret input refused by name, a key command that is the key itself refused with no part of the key printed and one that is the key as a single base64 word refused the same way, a command that reads the key between its PEM markers taken as the command it is, `app_token_command`'s text and the `--github-owner`, `--github-repo` and `--github-read-only` words it passes only when the daemon sets each variable, `write_github_apps` refusing an unread role and writing the daemon's block (the implement App's `token_command`, the review App's `private_key_command`), `app_key_unsets` leaving no App secret in a child's environment, an answer naming another App id refused naming both ids, a secret the broker does not serve failing the check by its role and its input, the same refusal below the first line of the command's stderr failing it the same way, no token and no key in any message, and a match accepted (`lib/app-logins.test.ts` holds the rows over the helper beneath them: a role's missing write permission refused, a failed token command named by its field, exit code and stderr, that command run without the NATS seeds and with owner, repositories and read-only empty, and an App proved from its key, its two JWT routes asked before the viewer, refused there too for another id or a missing permission, and its key command named by its field, exit code and stderr when it fails or prints nothing);
+and `mint_app_tokens` writing each release 0600 and atomically and the review App's key once beside them, the broker asked for the implement App's releases alone, a failed or empty mint or key command leaving no file and the last good release, the refresher minting the releases again and never the key and stopping, `write_github_apps --key-dir` running the key command once, here, and writing a block that reads the file it wrote, a call that writes the review role with neither directory flag refused naming both and writing nothing, the two flags together refused as one key file named twice, `write_github_apps --token-dir`'s commands reading the right release file and the key file under busybox `sh`, its block proved with `agent-secrets` broken after the mint, the key reaching its own file and nothing else with the run's teardown leaving neither it nor its directory, and a credential directory unsafe in shell text refused.
 
 ## lib/namespace-rig.sh
 
