@@ -144,11 +144,12 @@ The notice says what became of the stalled process itself, for every end but the
 it was stopped, or that the runtime did not confirm the stop, in which case that process may be
 running still and holding what it runs on.
 A stop the runtime would not make is a finding to put to a person, with the notice in it, because
-nothing of the daemon's stops that process afterwards.
+the daemon stops that process again only at its next launch of that claim or at its next restart.
 
 Nothing was charged to the claim for the stall itself, and on every end but the failed one
-nothing failed either: the task that architect was serving is still owed to it and is sent to it
-again, at the launch's turn where the relaunch was parked, no issue was held, and no status moved.
+nothing failed either: the task that architect was serving is still owed to it, and the notice
+names what its return waits on — the parked launch's turn, the retried launch, or a resume — no
+issue was held, and no status moved.
 Do nothing to the tree — park nothing, re-admit nothing, set no status — and start nothing. A
 notice that names the failed end is the exception: that architect's claim is failed, its
 `worker-died` reaches you as any other does, and you answer that notice as its own section says.
