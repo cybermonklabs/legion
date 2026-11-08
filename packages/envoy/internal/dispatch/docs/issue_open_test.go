@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strconv"
@@ -103,7 +104,16 @@ func setIssueClosedHere(t *testing.T, service *Service, issueKey string, closed 
 // scope ("read-write" or "readonly") and the browser holds the stored document text.
 func connectWithScope(t *testing.T, serverURL, artifactID, login, scope, text string) *docstest.Peer {
 	t.Helper()
-	peer := connectPeer(t, serverURL, artifactID, login)
+	return requireScopeAndText(t, connectPeer(t, serverURL, artifactID, login), login, scope, text)
+}
+
+// requireScopeAndText authenticates login's connected browser as the dashboard's editor does and
+// fails unless the room granted scope ("read-write" or "readonly") and the browser holds the
+// stored document text. It is what connectWithScope does after the dial, for a test whose
+// browser dialled on a goroutine of its own because its admission was parked
+// (connectBrowserAsync).
+func requireScopeAndText(t *testing.T, peer *docstest.Peer, login, scope, text string) *docstest.Peer {
+	t.Helper()
 	granted, err := peer.Authenticate(strconv.Itoa(pmdoc.SchemaVersion()), roomWait(t))
 	if err != nil {
 		t.Fatalf("authenticate %s's browser: %v", login, err)
@@ -853,6 +863,152 @@ func TestTheAppendGateClosesARoomWhoseRecordAlreadyReadsItsIssueClosed(t *testin
 		t.Fatal("the refusal failed the room rather than closing it for its issue")
 	}
 	connectWithScope(t, server.URL, artifactID, "alice", "readonly", "before\n")
+}
+
+// A socket admitted while the gate's close ran must not roll that close back. The close records
+// its own read of the issue on the room's record, stamped with the moment it refused the append,
+// and a read that began before that stamp never replaces it (closeRefusedAppendRoom,
+// recordIssueLocked). The order below is the one that needs the stamp, and it was a live defect
+// until the stamp went in.
+//
+// Alice opens the document on an open issue, so her connect loads the room and is admitted
+// writable, a scope ygo fixes at her admission. Bob's socket then starts admitting: it reads the
+// issue, open as she read it, records that read on the room's record and is held there, with its
+// document still to load (holdForAdmission, afterSocketIssueRead,
+// parkSocketAfterItsIssueRead). His dial runs on a goroutine of its own, since it returns only
+// once that hold is let go (connectBrowserAsync). The issue then closes in the database with
+// nothing notified, as a listener's redial leaves it (this test runs no room sync), far enough
+// back for the update's age to decide it, and the gate refuses alice's keystroke
+// (ErrIssueClosed). The close that refusal starts marks the record closed and closes the room,
+// and the test waits for both before it lets bob go: a close still to reach the record would
+// leave his admission nothing to stand over, and the record would read closed after it whatever
+// his read did (waitForRefusedAppendClose, requireRecordClosed).
+//
+// Bob's admission then finishes. His load takes what the record reads rather than reading the
+// issue again (admittedIssueRead), and his authorize records the read he took before the close
+// all over again (authorize). Without the close's stamp that read is not older than the record's
+// - the close wrote the closed flag and left the stamp bob's own read had put there - so
+// recordIssueLocked takes his read as the fresher one and sets the flag back to open, and
+// `connection.issue.open && !state.closed` admits him writable on a closed issue: the room he
+// loaded takes his keystrokes and arms a settlement for a document whose issue is closed. With
+// the stamp his read is the older one and is dropped, which the two readings here are of: the
+// record still reads closed, and his browser is read-only - granted readonly, and its keystroke
+// neither taken by the room nor stored (requireRecordClosed, requireScopeAndText,
+// requireKeystrokeDropped).
+func TestTheAppendGatesCloseStandsOverASocketAdmittedWhileItRan(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	service, server := newTestServiceInstance(t, database)
+	seedServiceText(t, service, artifactID, "before")
+	waitForLandedAppends(t, service, artifactID)
+
+	alice := connectWithScope(t, server.URL, artifactID, "alice", "read-write", "before\n")
+	if !roomResident(service, artifactID) {
+		t.Fatalf("alice's browser loaded no room of %s, so her keystroke below is typed into none", artifactID)
+	}
+	requireRecordOpen(t, service, artifactID)
+
+	parked, release := parkSocketAfterItsIssueRead(service, artifactID)
+	dialed := connectBrowserAsync(server.URL, artifactID, "bob")
+	awaitSocketParked(t, parked)
+	// Bob read the issue open and recorded that read, so the record stands at his stamp when the
+	// close below reaches it: a record already reading closed here would be a record his read
+	// could not roll back, whatever the close wrote.
+	requireRecordOpen(t, service, artifactID)
+
+	// Closed far enough back that the gate judges alice's keystroke by its age alone: inside the
+	// margin it stores a browser's update whatever its age (observedBeforeClose).
+	writeIssueClosedAgo(t, database, "DOC-1", closeMargin+30*time.Second)
+	typeOver(t, alice, "before", "typed after the close")
+	requireEnds(t, alice, "the gate refused alice's keystroke on the closed issue and left her browser connected")
+	waitForRoomGone(t, service, artifactID, "DOC-1")
+	waitForRefusedAppendClose(t, service)
+	requireRecordClosed(t, service, artifactID)
+
+	close(release)
+	bob := awaitConnectedBrowser(t, dialed, "bob")
+	requireScopeAndText(t, bob, "bob", "readonly", "before\n")
+	requireRecordClosed(t, service, artifactID)
+	// Bob's connect makes a durable append of its own that changes no content; it lands before
+	// the head is read, so the head stands still unless his keystroke moves it.
+	waitForLandedAppends(t, service, artifactID)
+	requireKeystrokeDropped(t, service, bob, artifactID, storedHead(t, database, artifactID))
+}
+
+// parkSocketAfterItsIssueRead makes service park the first document socket admitted to
+// artifactID where it has read the issue and recorded that read on the room's record, with its
+// document still to load (afterSocketIssueRead, holdForAdmission). It answers the channel the
+// hook closes once that socket is parked (awaitSocketParked) and the one the test closes to let
+// it go. The socket holds no lock and no transaction there, so a close of the room runs through
+// as it would have had nothing parked it. A socket after the first runs unparked, as does every
+// socket to another room: the staging holds one socket, and a second waiting on a channel the
+// test never closes would be a browser that never connects.
+func parkSocketAfterItsIssueRead(service *Service, artifactID string) (parked chan struct{}, release chan struct{}) {
+	parked, release = make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	service.afterSocketIssueRead = func(room string) {
+		if room != artifactID || !first.CompareAndSwap(false, true) {
+			return
+		}
+		close(parked)
+		<-release
+	}
+	return parked, release
+}
+
+// awaitSocketParked waits for the socket a test parked after its read of the issue to be parked
+// there (parkSocketAfterItsIssueRead), and fails the test unless it parks within roomWait: until
+// it is, the read the work the test stages next must stand over has not been made.
+func awaitSocketParked(t *testing.T, parked <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-parked:
+	case <-time.After(roomWait(t)):
+		t.Fatalf("the socket's admission had not parked after its read of the issue within %v", roomWait(t))
+	}
+}
+
+// dialedBrowser is what connectBrowserAsync's goroutine answers with: the browser it connected,
+// or the failure its dial returned.
+type dialedBrowser struct {
+	peer *docstest.Peer
+	err  error
+}
+
+// connectBrowserAsync starts login's browser connecting to artifactID's room through the
+// document server at serverURL on a goroutine of its own, at the schema version the dashboard
+// presents (socketURL), for a test that parks that socket's admission
+// (parkSocketAfterItsIssueRead): the dial returns only once the admission is let go, and the
+// goroutine is what keeps the test from waiting there with it. It dials through DialContext
+// rather than connectPeer, which fails the test from whatever goroutine it runs on; a failure
+// comes back on the channel instead, for the test's own goroutine to read
+// (awaitConnectedBrowser).
+func connectBrowserAsync(serverURL, artifactID, login string) chan dialedBrowser {
+	dialed := make(chan dialedBrowser, 1)
+	go func() {
+		peer, err := docstest.DialContext(context.Background(), socketURL(serverURL, artifactID),
+			http.Header{"X-Dispatch-User": []string{login}}, artifactID, crdt.New())
+		dialed <- dialedBrowser{peer: peer, err: err}
+	}()
+	return dialed
+}
+
+// awaitConnectedBrowser takes login's browser from the goroutine connectBrowserAsync dialled it
+// on, fails the test unless it connected within roomWait, and closes it with the test, as
+// docstest.Dial closes the browsers it connects.
+func awaitConnectedBrowser(t *testing.T, dialed <-chan dialedBrowser, login string) *docstest.Peer {
+	t.Helper()
+	select {
+	case connected := <-dialed:
+		if connected.err != nil {
+			t.Fatalf("connect %s's browser: %v", login, connected.err)
+		}
+		t.Cleanup(connected.peer.Close)
+		return connected.peer
+	case <-time.After(roomWait(t)):
+		t.Fatalf("%s's browser had not connected after %v", login, roomWait(t))
+		return nil
+	}
 }
 
 // A room stores one update per keystroke (PersistCoalesceWindow = -1), so a browser typing into
@@ -1833,6 +1989,109 @@ func TestAnIssuesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapsh
 
 	close(release)
 	awaitNotifiedClose(t, handled)
+	requirePendingSettlementActor(t, taskA, artifactID, carolsEdit,
+		"the close let go once a settlement on the other task had taken the row it read and the edit after it had written another")
+	requireRecordClosed(t, taskA, artifactID)
+	requireRecordLastActor(t, taskA, artifactID, alicesEdit)
+}
+
+// The close the append gate's refusal starts reads the same two readings in the same order as
+// the issue-open lane does, and a settlement committing between them is what that order is for
+// there as well: the document's pending-settlement row first, under the room's close gate, and
+// the room's record after it (closeRefusedAppendRoom, closeSnapshot). Read the record first and
+// such a settlement lands inside the snapshot's reading of the row while the record's reading
+// is from before it: the row the close then holds is as new as the one its write re-reads under
+// the document's advisory lock, so the row's facts agree, and the record answers for nothing a
+// settlement on another task does - it moves neither this record's closed flag nor its credit
+// sequence - so the write commits a source the document has moved past
+// (settlementRowFacts.unchangedSince, recordClosedAt, persistLastActor).
+//
+// A settlement alone cannot tell the two orders apart, since a close whose snapshot read no row
+// writes nothing whatever its record says (persistLastActor). What the record-first order lets
+// through is a row written again after that settlement: both of that order's readings hold it
+// and neither of this one's does. So the gap staged here holds the settlement and then the edit
+// it did not cover.
+//
+// Here alice types into a writable room on task A, alone in it, so her keystroke credits her and
+// nobody else and its append writes her to the row (connectedCreditLocked), with no settlement
+// to take either, this service's Settle being an hour. The issue then closes unheard, as a
+// listener's redial leaves it (neither task here runs a room sync), far enough back for the
+// update's age to decide it, and the gate refuses her next keystroke (ErrIssueClosed): the room
+// credits her for it too, and the append stores nothing (gateAppend). The close that refusal
+// starts is parked between its two readings (parkCloseBetweenItsSnapshotReads), where it holds
+// the room's close gate, no lock of the record and no transaction, so the work below commits as
+// it would have had nothing parked it.
+//
+// While it is parked the issue reopens in the database, unheard here, and task B, a second
+// Dispatch process on the same database, settles the document - crediting the edits the row
+// stood for with a version and taking the row (clearSettlementPending) - and carol then writes
+// through task B, the edit that settlement did not cover, whose commit leaves the document owing
+// again on a row naming her. Task A hears none of it, so the record its close goes on to read
+// reads exactly as it did before the settlement, at the credit sequence alice's refused keystroke
+// left it at: the record half of the write's guard passes, and the row's facts are what refuse
+// it.
+//
+// The close is then let go and waited for (evictWG, waitForRefusedAppendClose). The row must
+// still name carol: the close read a row naming alice and the write re-reads carol's, which
+// carries an age no reading before it holds (updateOwedStatement). A write made the other way
+// puts alice there, owing a settlement for an edit task B's version has already credited her
+// with, on a document carol edited last. The record keeps alice and reads closed, as a refused
+// write leaves both, since clearing is what a written row buys (persistClosedLastActor,
+// lastActorPersisted).
+func TestTheAppendGatesCloseWritesNoPendingSettlementRowASettlementTookInsideItsSnapshot(t *testing.T) {
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "before")
+	taskA, serverA := newTestServiceInstance(t, database)
+	seedServiceText(t, taskA, artifactID, "before")
+	waitForLandedAppends(t, taskA, artifactID)
+	alice := connectWithScope(t, serverA.URL, artifactID, "alice", "read-write", "before\n")
+	// Alice's connect makes a durable append of its own that changes no content; it lands before
+	// the head is read, so the head stands still unless her keystroke moves it.
+	waitForLandedAppends(t, taskA, artifactID)
+	head := storedHead(t, database, artifactID)
+	alicesEdit := model.Actor{Kind: "user", ID: "alice"}
+	typeOver(t, alice, "before", "alice typed")
+	waitFor(t, roomWait(t), "alice's keystroke on the open issue to be stored", func() bool {
+		return storedHead(t, database, artifactID) > head
+	})
+	waitForLandedAppends(t, taskA, artifactID)
+	requireRecordLastActor(t, taskA, artifactID, alicesEdit)
+	requirePendingSettlementActor(t, taskA, artifactID, alicesEdit,
+		"alice's keystroke landed on the open issue, the row the close reads at its snapshot")
+
+	taskB, _ := newTestServiceInstance(t, database)
+	carolsEdit := model.Actor{Kind: "user", ID: "carol"}
+	parked, release := parkCloseBetweenItsSnapshotReads(taskA, artifactID)
+
+	// Closed far enough back that the gate judges alice's next keystroke by its age alone: inside
+	// the margin it stores a browser's update whatever its age (observedBeforeClose).
+	writeIssueClosedAgo(t, database, "DOC-1", closeMargin+30*time.Second)
+	typeOver(t, alice, "alice typed", "alice typed after the close")
+	awaitCloseParked(t, parked)
+	// The credit sequence the close reads its source at, once it is past the gap. Nothing below
+	// moves it, so the record half of the guard passes at the write and the row's facts are what
+	// refuse it (recordClosedAt).
+	creditSeq := recordCreditSeq(t, taskA, artifactID)
+
+	// The settlement runs on an open issue, as every settlement does (lockArtifactOwner), so the
+	// issue reopens first. Task A hears neither that nor anything below it.
+	writeIssueClosed(t, database, "DOC-1", false)
+	settleTheDocumentNow(t, taskB, artifactID)
+	requireNoPendingSettlement(t, taskB, artifactID, "the settlement on the other task, which took the row the close had read")
+	writeThroughLedger(t, taskB, artifactID, carolsEdit, "Carol typed on the other task.\n", withoutVersion)
+	requirePendingSettlementActor(t, taskB, artifactID, carolsEdit,
+		"carol's write on the other task, the edit its settlement did not cover")
+	// The settlement and the write on the other task left task A's record where it was, so the
+	// record the close reads below is the one it would have read before either of them.
+	requireRecordLastActor(t, taskA, artifactID, alicesEdit)
+	if moved := recordCreditSeq(t, taskA, artifactID); moved != creditSeq {
+		t.Fatalf("the record of %s stands at credit sequence %d, want %d, the one the close reads its source at: the write below would be refused by the record rather than by the row",
+			artifactID, moved, creditSeq)
+	}
+
+	close(release)
+	requireEnds(t, alice, "the close the gate's refusal started left alice's browser connected")
+	waitForRefusedAppendClose(t, taskA)
 	requirePendingSettlementActor(t, taskA, artifactID, carolsEdit,
 		"the close let go once a settlement on the other task had taken the row it read and the edit after it had written another")
 	requireRecordClosed(t, taskA, artifactID)

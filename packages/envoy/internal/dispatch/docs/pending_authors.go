@@ -774,7 +774,7 @@ type settlementRowFacts struct {
 // snapshot read a row, since a close that read none writes nothing (persistLastActor). Each fact
 // catches a writer of its own:
 //   - the row being there, or not, catches the settlement, which deletes the row whether or not
-//     it wrote a version (clearSettlementPending), and the append that writes one again;
+//     it wrote a version (clearSettlementPending);
 //   - marked_at catches every append that leaves the document owing a settlement, which stamps
 //     it now() as it marks the document owed (updateOwedStatement, appendUpdateTxClass), so a row
 //     deleted and written again carries an age no reading of the row before it holds. An append
@@ -841,8 +841,8 @@ func readSettlementRowFacts(ctx context.Context, q Queryer, room string) (settle
 // The order the snapshot reads the two in is what makes that pair enough: the row first, the
 // record after it (closeRefusedAppendRoom, setRoomIssueOpen). Every writer of the row then falls
 // on one side of that first reading. One before it is in what the snapshot holds - a settlement
-// that took the row leaves the snapshot no row, and this write makes none - and one after it is
-// in neither reading the snapshot holds, so it shows in this transaction's own reading under the
+// that took the row leaves the snapshot no row, and this write makes none - and one after it
+// shows in this transaction's own reading under the
 // advisory lock: the row is gone, or carries an age or a source the snapshot does not hold, and
 // the write is refused. Reading the record first left a settlement in between caught by neither
 // fact: the row read after it found no row, which is what this transaction found too, while the

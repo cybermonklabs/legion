@@ -324,9 +324,10 @@ type Service struct {
 	beforeRefusedAppendClose func(room string)
 	// betweenCloseSnapshotReads runs in a close for a closed issue between the two readings its
 	// snapshot is made of: the document's pending-settlement row, read first, and the room's
-	// record, read after it (setRoomIssueOpen, closeSnapshot). Nil outside tests; tests use it
-	// to commit a settlement of the document inside that gap, the one window in which a writer
-	// of the row can reach the record's reading and the row's alike.
+	// record, read after it (setRoomIssueOpen, closeRefusedAppendRoom, closeSnapshot). Nil
+	// outside tests; tests use it to commit a settlement of the document inside that gap, the
+	// one window in which a writer of the row can reach the record's reading and the row's
+	// alike.
 	betweenCloseSnapshotReads func(room string)
 	// settlementWoke runs at each wake of a wait for a room's appends: each time the room's idle
 	// signal wakes waitForPendingUpdates or waitForDurableAppends - a settlement's waits, and
@@ -3059,8 +3060,9 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 // the record is written on the first check that passes and on no later one (closeWhenFree), so a
 // try after that one can find the name holding another instance and close nothing while that
 // write stands. What it left on the record - the closed flag, the bumped generation, the stopped
-// settle timer - stands only until the room under the name loads again, which writes that flag
-// from the issue it reads, as the load of the room now standing did (onLoadDocument); and the
+// settle timer - stands only until a read of the issue stamped later than this close's writes
+// that flag again: a socket's admission records its own read, and so does the load it starts
+// (holdForAdmission, authorize, onLoadDocument); and the
 // write of the record's latest edit source to the document's pending-settlement row is refused
 // outright unless the record still reads closed at the credit sequence that source was read at
 // (persistLastActor). The room stores one update per keystroke, so a burst of refused keystrokes
@@ -3130,10 +3132,11 @@ func (s *Service) refuseClosedIssueAppend(room string, instance *roomInstance) {
 // (closeWhenFree), while the record is written on the first check that passes and on no later
 // one. So a try that finds the name holding another instance closes nothing although this close
 // wrote the record, and what it wrote - the closed flag, the bumped generation, the stopped
-// settle timer - is left on the record of the room now standing. That flag holds only until that
-// room loads again, since a load writes it from the issue it reads, as the load of the room now
-// standing did (onLoadDocument), and the room itself is closed by the notification of its issue's
-// state or by its own refused append (setRoomIssueOpen, refuseClosedIssueAppend). The wait
+// settle timer - is left on the record of the room now standing. That flag holds until a read of
+// the issue stamped later than this close's writes it again, which a socket's admission and the
+// load it starts each do (holdForAdmission, authorize, onLoadDocument), and the room itself is
+// closed by the notification of its issue's state or by its own refused append
+// (setRoomIssueOpen, refuseClosedIssueAppend). The wait
 // between tries has no ctx of its own, which costs this caller nothing: its ctx carries no
 // deadline (refuseClosedIssueAppend).
 //
@@ -3175,8 +3178,21 @@ func (s *Service) closeRefusedAppendRoom(ctx context.Context, room string, insta
 			}
 			if !recorded {
 				row := s.readCloseRowFacts(ctx, room)
+				if s.betweenCloseSnapshotReads != nil {
+					s.betweenCloseSnapshotReads(room)
+				}
 				if state := s.lockExistingState(room); state != nil {
-					snapshot = s.closeRecordLocked(state, state.closed)
+					// The refusal is this close's own read of the issue: the gate judged the
+					// keystroke against the issue it read and refused it as closed, so the
+					// close records that read on the record, stamped, as the issue-open lane
+					// records its own (setRoomIssueOpen, recordIssueLocked). Left unstamped,
+					// the flag alone would be rolled back by a socket admitted while this ran,
+					// whose own earlier read is already the record's stamp and goes on again
+					// when it registers its connection, letting that browser into a closed
+					// issue's document writable (holdForAdmission, authorize).
+					alreadyClosed := state.closed
+					state.recordIssueLocked(issueRead{open: false, at: time.Now()})
+					snapshot = s.closeRecordLocked(state, alreadyClosed)
 					snapshot.row = row
 					recorded = true
 					s.unlockState(room, state)
@@ -3281,8 +3297,8 @@ func (s *Service) closeRoomOnReplacedHistory(room string, instance *roomInstance
 // generation bump, the settle failures reset and the settle timer's stop - not at all, and
 // leaves nothing armed by skipping it: a settlement reads the record's closed flag at the same
 // check it reads the generation at, so that flag ends the settlement whose timer already fired
-// and the one a leftover timer fires
-// later (settleRoomWithin), and a settlement that returns there reports no failure, so the count
+// and the one a leftover timer fires later (settleRoomWithin), and a settlement that returns
+// there reports no failure, so the count
 // the reset would clear cannot grow while the flag stands. A recheck reads only rooms that hold a
 // record and closes only those whose record holds the other state, so a LISTEN that stands again
 // closes no room the issue's state already matches. Its ctx is the room-sync lane's or a close's
@@ -3368,19 +3384,22 @@ type closeSnapshot struct {
 // it, and answers the latest edit source it held with the credit sequence that source was read
 // at, for its caller to put beside the row it read before taking this lock and to write to the
 // document's pending-settlement row once the lock has gone (readCloseRowFacts,
-// persistClosedLastActor). A record that already read its issue closed takes the snapshot alone:
-// the generation bump, the settle-failures reset and the settle timer's stop are a close's, and
-// leaving them out of a second one arms nothing (setRoomIssueOpen). That reading is the caller's
-// to take, as alreadyClosed, and the issue-open lane takes it before it records the close on the
-// record: the record write marks the flag itself, so a reading taken after it would say every
-// notified close is a second one and leave the room it closes with its settlements armed
-// (recordIssueLocked). The flag it writes here is for the append gate's refusal, which carries no
-// read of the issue of its own; the lane's own record write has already set it. Its callers are
-// the two closes a closed issue makes, the issue-open lane's and the append gate's refusal's
-// (setRoomIssueOpen, closeRefusedAppendRoom). Its caller holds state.mu.
+// persistClosedLastActor). It writes the closed flag itself no longer: each of its two callers
+// records its own read of the issue, stamped, before it calls here, so no later reading of that
+// same moment rolls the flag back (setRoomIssueOpen, closeRefusedAppendRoom,
+// recordIssueLocked).
+//
+// A record that already read its issue closed takes the snapshot alone: the generation bump, the
+// settle-failures reset and the settle timer's stop belong to the close that first finds the
+// record open, and a second close repeating them would move the generation under a settlement
+// that already stood down. That reading is alreadyClosed, and it is the caller's to take before
+// its own stamped write, since that write marks the flag: read after it, every notified close
+// would call itself a second one and leave the room it closes with its settle timer armed, its
+// failures counted and its generation where the live settlement reads it. Its callers are the
+// two closes a closed issue makes, the issue-open lane's and the append gate's refusal's. Its
+// caller holds state.mu.
 func (s *Service) closeRecordLocked(state *roomState, alreadyClosed bool) closeSnapshot {
 	if !alreadyClosed {
-		state.closed = true
 		state.roomGeneration = s.nextRoomGeneration()
 		// The closed room's settlement failures are not the next room's (see
 		// reserveRoomCloseLocked): a record kept across the close and a reopen starts over.
