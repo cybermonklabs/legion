@@ -119,12 +119,13 @@
 #   Dispatch     A bare dispatch:// reference, resolved by `dispatch read --ref`.
 #   Web          An https:// address immediately followed by ` (read YYYY-MM-DD)`. A
 #                404 or a 410 fails. Any other answer prints unreachable and does not
-#                fail the run. Of the exits curl itself can end on, exactly two are
-#                lenient and print unreachable: 28, the request timed out, and 7,
-#                nothing accepted the connection. Those two are the third party's
-#                uptime, and a merge must not wait on that. Every other non-zero curl
-#                exit fails, 6 among them, which is the host not resolving: a name that
-#                resolves nowhere is a citation of nothing, not a site briefly down.
+#                fail the run. Of the exits curl itself can end on, exactly one fails:
+#                6, the host not resolving, because a name that resolves nowhere is a
+#                citation of nothing, not a site briefly down. Every other non-zero
+#                curl exit prints unreachable and names the exit -- 28, the request
+#                timed out; 7, nothing accepted the connection; 56, a transfer broken
+#                in the middle; and the rest -- because a merge must not wait on a
+#                third party's uptime (web_transport_verdict).
 #
 # What this gate does not read, line for line as the coverage table below holds it:
 # --coverage prints these lines, the directory's README states them in the same words,
