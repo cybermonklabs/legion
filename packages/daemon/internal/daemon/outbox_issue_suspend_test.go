@@ -767,7 +767,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		// of the new generation and the new run's first phase, and the pair of them is the one
 		// workflow.StartOrOwe writes — the task-less relaunch and the row carrying the phase's own
 		// task and the assignment it minted, which is no resume of anything.
-		queued := startRowsOf(t, rig.pool, rig.child.Key)
+		queued := startRequestsOf(t, rig.pool, rig.child.Key)
 		if len(queued) != 2 {
 			t.Fatalf("the re-entry queued %d starts, want the two of the planner's first phase: %+v", len(queued), queued)
 		}
@@ -917,7 +917,7 @@ func TestAnIssueThatComesBackIsNotStrandedByTheStartFence(t *testing.T) {
 		resume := workflow.ResumePhaseTask(carried)
 		taskless := map[claim.Role]bool{}
 		var relaunch, owed *record.SuperviseRequest
-		for _, row := range startRowsOf(t, pool, member.Key) {
+		for _, row := range startRequestsOf(t, pool, member.Key) {
 			if row.Generation != carried.Generation || row.Phase != carried.Phase || row.Tree != root.Tree {
 				t.Fatalf("the re-admission queued %+v for the member, want every start to serve its own run and the phase it stands in", row)
 			}
@@ -995,9 +995,11 @@ func storedIssue(t *testing.T, pool *pgxpool.Pool, records record.Store, key str
 	return *got
 }
 
-// startRowsOf is every start the outbox holds for issue, oldest first, as the pass that queued it
-// wrote it. The rows a drain has run are gone, so a reader must take them before it drains.
-func startRowsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
+// startRequestsOf is every start the outbox holds for issue, oldest first, decoded as the pass
+// that queued it wrote it. The rows a drain has run are gone, so a reader must take them before
+// it drains. The name is this file's own: internal/daemon's stopped_worker_test.go has a
+// startRowsOf of its own, which answers the same rows as rendered strings.
+func startRequestsOf(t *testing.T, pool *pgxpool.Pool, issue string) []record.SuperviseRequest {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select payload from outbox where issue = $1 and kind = 'supervise'
 		and payload->>'op' = 'start' order by id`, issue)
