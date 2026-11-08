@@ -158,11 +158,12 @@ function mockDispatch({
   );
 }
 
-/** The page as the shell mounts it: the session the address names, in front. These rows are the
- *  page's own; the shell's host of the mounted views is `MountedLiveViews`, tested beside it. */
+/** The page as the shell mounts it: the session the address names, in front, keyed by that
+ *  session, so a move to another one mounts a page of its own as `MountedLiveViews` does. These
+ *  rows are the page's own; the shell's host of the mounted views is tested beside it. */
 function LiveView(): ReactNode {
   const { sessionId = "" } = useParams<{ sessionId: string }>();
-  return <AgentConversationPage front sessionId={sessionId} />;
+  return <AgentConversationPage front key={sessionId} sessionId={sessionId} />;
 }
 
 /** Session `session`'s live view on `queryClient`, beside the navigation when `sidebar`. */
@@ -553,23 +554,35 @@ test("a streamed user message tagged with a person's message but saying somethin
   ).toEqual(["Merge only after review.", "Merge now, skip review."]);
 });
 
+/** What the session publishes once a person's `!` line has run: their line, what the command
+ *  printed as a fenced block, and how it ended (`shellCommandReport`,
+ *  `packages/pi-envoy/src/typed-shell.ts`). Spelt as the wire carries it. */
+const SHELL_REPORT =
+  "!cat missing.txt\n\n```\ncat: missing.txt: No such file or directory\n```\n\nThe command ended with exit status 1.";
+
 // R4. A person's `!command` is run by the session, which publishes the person's line, what the
 // command printed and how it ended as one user message tagged with that message's Dispatch id
-// (INFRA-812's D12). The line is theirs, so the report takes the stored copy's place rather
-// than standing under it, and the pair is one turn under Dispatch's own key.
+// (INFRA-812's D12), and posts that same report as its Dispatch reply to the message, which
+// every message to a session gets. The line is theirs, so the report takes the stored copy's
+// place rather than standing under it, the pair is one turn under Dispatch's own key, and the
+// stored reply saying it all over again as something the agent said is drawn nowhere.
 test("a shell command's report takes over the person's own message rather than doubling it", async () => {
   renderLiveView({
     agentState: {},
-    messages: [{ message: message("m1", "!cat missing.txt"), replies: [] }],
-    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
-    replay: [
-      userFrame(
-        1,
-        Date.parse("2026-09-27T21:16:16Z"),
-        "!cat missing.txt\n\ncat: missing.txt: No such file or directory\n\nThe command ended with exit status 1.",
-        "m1"
-      ),
+    messages: [
+      {
+        message: message("m1", "!cat missing.txt"),
+        replies: [
+          message("r1", SHELL_REPORT, {
+            author: { id: SESSION, kind: "session" },
+            created_at: "2026-09-27T21:16:17Z",
+            in_reply_to: "m1",
+          }),
+        ],
+      },
     ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [userFrame(1, Date.parse("2026-09-27T21:16:16Z"), SHELL_REPORT, "m1")],
   });
 
   const thread = await screen.findByTestId("agent-thread");
@@ -579,6 +592,39 @@ test("a shell command's report takes over the person's own message rather than d
   expect(own[0].textContent).toContain("!cat missing.txt");
   expect(own[0].textContent).toContain("The command ended with exit status 1.");
   expect(own[0].getAttribute("data-message-id")).toBe("dispatch:m1");
+  // Theirs, not the session's: the reply carrying the same report is not a turn of its own.
+  expect(within(thread).queryAllByTestId("agent-dispatch-reply")).toHaveLength(0);
+  expect(within(thread).queryAllByTestId("agent-message-assistant")).toHaveLength(0);
+});
+
+// The session's reply to a message of the person's that is not a `!` line is its own answer and
+// stands on the session's side of the conversation, whether or not the stream took that message
+// over: only the report of a command the person ran is the same text twice.
+test("the session's reply to a message the stream took over is still drawn", async () => {
+  renderLiveView({
+    agentState: {},
+    messages: [
+      {
+        message: message("m1", "Where is the dashboard?"),
+        replies: [
+          message("r1", "It is at /dash.", {
+            author: { id: SESSION, kind: "session" },
+            created_at: "2026-09-27T21:16:17Z",
+            in_reply_to: "m1",
+          }),
+        ],
+      },
+    ],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [userFrame(1, Date.parse("2026-09-27T21:16:16Z"), "Where is the dashboard?", "m1")],
+  });
+
+  const thread = await screen.findByTestId("agent-thread");
+  const replies = await within(thread).findAllByTestId("agent-dispatch-reply");
+  expect(replies.map((reply) => reply.textContent)).toEqual([
+    expect.stringContaining("It is at /dash."),
+  ]);
+  expect(within(thread).getAllByTestId("agent-message-user")).toHaveLength(1);
 });
 
 // The placeholder lines a streamed row may carry beyond the person's words are the stream's own
@@ -2242,10 +2288,11 @@ test("a draft outlives the view it was written in and comes back when it wakes",
 // A model or thinking switch pending on a session holds that session's Send (it keeps reading
 // "Send", and the line under the box says what its placeholder says) and holds no other's; a
 // message out on another session holds nothing there either, and Enter sends nothing while a
-// switch holds.
+// switch holds. What the switch's own answer then does is the row above's
+// (`while a switch waits the pickers and Send hold`), on the one session.
 test("a pending switch holds its own session's Send, and a send out on another holds nothing there", async () => {
   const { createAgentMessage, held: answers } = holdSends();
-  const view = renderLiveView({
+  renderLiveView({
     agentState: {},
     messages: [],
     other: {},
@@ -2293,37 +2340,19 @@ test("a pending switch holds its own session's Send, and a send out on another h
   await waitFor(() => expect(screen.getAllByTestId("agent-send-held")).toHaveLength(1));
   expect(sendButton().getAttribute("title")).toBe("Type a message first.");
 
+  // Back on the planner, which the shell mounts as a view of its own keyed by its session: what
+  // belongs to the session is here - the draft its entry kept - and the reviewer's send, still
+  // out, shows nothing on this page.
   const back = await switchTo("Planner");
   expect(back.value).toBe("and then run the tests");
-  expect(sendButton().disabled).toBe(true);
   expect(screen.queryByTestId("agent-send-held")).toBeNull();
+
+  // Both messages land, so neither session is left with a write of its own out.
   await act(async () => {
     answers[0]?.resolve(message("switch-1", "/model anthropic/model-b"));
-  });
-  await waitFor(() =>
-    expect(screen.getByTestId("agent-switch-status").textContent).toBe(
-      "Switching model to anthropic/model-b…"
-    )
-  );
-  expect(sendButton().disabled).toBe(true);
-  await act(async () => {
     answers[1]?.resolve(message("sent", "review the diff"));
+    await Bun.sleep(50);
   });
-  expect(sendButton().disabled).toBe(true);
-
-  await view.storeThread([
-    {
-      message: message("switch-1", "/model anthropic/model-b"),
-      replies: [sessionReply("switch-1", "Model set to anthropic/model-b.")],
-    },
-  ]);
-  await waitFor(() =>
-    expect(screen.getByTestId("agent-switch-status").textContent).toBe(
-      "The session answered: Model set to anthropic/model-b."
-    )
-  );
-  expect(sendButton().disabled).toBe(false);
-  expect(composerHint()).toBe("");
   await switchTo("Reviewer");
   expect(sendButton().disabled).toBe(false);
 });

@@ -79,14 +79,20 @@ function withPin(state: UserAgentState | undefined, pinned: boolean, at: string)
  * pending-writes indicator and, refused, retried or discarded there, as an issue's pin is. A
  * press whose write fails has the viewer's agent state read again, so no row is left pinned in a
  * page Dispatch never took the pin for.
+ *
+ * It answers whether Dispatch made the write - a landing it kept no answer for counts, a
+ * refusal and a press the reader stopped do not - and never rejects, so a control that presses
+ * and forgets may ignore it. The shell's one-time migration of the browser's old pins is what
+ * reads it: it writes the kept ids one after another and keeps the old key until every one of
+ * them has landed (`app.tsx`).
  */
-export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => void {
+export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => Promise<boolean> {
   const queryClient = useQueryClient();
   const text = useAgentText();
   const reread = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
   }, [queryClient]);
-  const { mutate } = useKeyedWrite<UserAgentState, PinPress>({
+  const { mutateAsync } = useKeyedWrite<UserAgentState, PinPress>({
     label: ({ pinned, sessionId }) =>
       `${pinned ? "Pin" : "Unpin"} ${text.sessionText(sessionId, undefined)}`,
     onError: reread,
@@ -107,8 +113,12 @@ export function useAgentPinWrite(): (sessionId: string, pinned: boolean) => void
     target: ({ sessionId }) => `pin:agent:${sessionId}`,
   });
   return useCallback(
-    (sessionId: string, pinned: boolean) => mutate({ pinned, sessionId }),
-    [mutate]
+    (sessionId: string, pinned: boolean) =>
+      mutateAsync({ pinned, sessionId }).then(
+        () => true,
+        () => false
+      ),
+    [mutateAsync]
   );
 }
 

@@ -3,7 +3,7 @@ import {
   type ThreadMessageLike,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import type { AgentStreamCommand } from "@legion/contracts";
+import { type AgentStreamCommand, isShellCommandReport } from "@legion/contracts";
 import { type ReactNode, useCallback, useLayoutEffect, useMemo } from "react";
 
 import type { Message, MessageRead } from "../../api/types";
@@ -47,18 +47,19 @@ function dispatchId(messageId: string): string {
  * A turn saying what the person wrote is that message, beside what the stream names of what the
  * message carried, such as a picture's `[image]` (`turnSaysBody`, which holds the row to the
  * body's own lines and to the body's own pictures). So is the report of a person's `!command`
- * (INFRA-812, R4): the session runs the line itself and publishes the person's line, what the
- * command printed and how it ended as one user message, because the person ran it and the host
- * wrote nothing (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). Its first line
- * is the message's whole body and a blank line follows it, so the turn still says what the
- * person said and the rest of it is the session's answer to that line.
+ * (INFRA-812, R4): the session runs the line itself and publishes the person's line and what the
+ * command printed as one user message, because the person ran it and the host wrote nothing
+ * (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`). What a report reads like is
+ * one rule both packages import rather than spell twice (`isShellCommandReport` in
+ * `@legion/contracts`): the body is a `!` command, and the turn opens with that whole body and a
+ * blank line, so the turn still says what the person said and the rest of it - the fenced output
+ * and how the command ended - is the session's answer to that line.
  *
  * Anything else is left to show beside the stored copy: the bus is open to any client, and a
  * tag is no licence to put words in a person's mouth.
  */
 function takesOverStored(turn: DispatchTurn, body: string): boolean {
-  if (turnSaysBody(turn, body)) return true;
-  return body.startsWith("!") && turn.text.startsWith(`${body}\n\n`);
+  return turnSaysBody(turn, body) || isShellCommandReport(turn.text, body);
 }
 
 /**
@@ -123,7 +124,9 @@ export function AgentRuntimeThread({
     // bus client can publish a tag, so only a person's stored message can be one, and only a
     // streamed message saying what that person wrote - beside what the stream names of what the
     // message carried, such as a picture's `[image]` - or answering their `!` line, replaces its
-    // stored copy (`takesOverStored`).
+    // stored copy (`takesOverStored`). A `!` line's report also reaches Dispatch as this
+    // session's reply to that message, which is the same text once more: the turn the stream
+    // took over is the one the reader gets, and that reply is drawn nowhere (`reported`).
     const byID = new Map(
       storedMessages
         .filter((message) => message.author.kind === "user")
@@ -131,6 +134,10 @@ export function AgentRuntimeThread({
     );
     const turns = dispatchTurns(conversation);
     const taken = new Set<string>();
+    // The `!` messages whose report the stream took over. The plugin posts that report twice -
+    // this frame, and the reply on Dispatch every message to a session gets - so the stored
+    // reply to one of these is the same text again, and the view draws it nowhere.
+    const reported = new Set<string>();
     const streamed = toThreadMessages(conversation).map((message) => {
       const turn = turns.get(message.id ?? "");
       const source = byID.get(turn?.dispatchMessageId ?? "");
@@ -138,6 +145,7 @@ export function AgentRuntimeThread({
         return message;
       }
       taken.add(source.id);
+      if (isShellCommandReport(turn.text, source.body)) reported.add(source.id);
       // The streamed turn keeps the key the stored copy would have had, so it is one turn under
       // one key for `useLiveFollow` whether the reader sees this frame or, after a rebuild that
       // dropped it, the stored copy below under that same `dispatch:<id>` id.
@@ -156,7 +164,16 @@ export function AgentRuntimeThread({
     // messages carry microseconds, so they are put in time order first, and the stable merge keeps
     // that order between two stored messages in one millisecond.
     const dispatch: KeyedMessage[] = storedMessages
-      .filter((message) => !taken.has(message.id))
+      .filter(
+        (message) =>
+          !taken.has(message.id) &&
+          !(
+            message.author.kind === "session" &&
+            message.author.id === sessionId &&
+            message.in_reply_to !== null &&
+            reported.has(message.in_reply_to)
+          )
+      )
       .sort((left, right) => compareTimestamps(left.created_at, right.created_at))
       .map((message) => {
         const content = [{ text: message.body, type: "text" as const }];
@@ -185,10 +202,10 @@ export function AgentRuntimeThread({
     );
   }, [conversation, sessionId, stored, viewer]);
 
-  // The page, this component, and its one runtime and composer outlive a move to another session
-  // (the route has no key), and a view that sleeps is unmounted altogether (D6), so neither the
-  // box nor this component owns what the person has written or where they were reading: the
-  // session's entry in the live-view store does.
+  // `MountedLiveViews` keys each view by its session, so this component never outlives a move to
+  // another session - the shell mounts one of it per session - and a view that sleeps is
+  // unmounted altogether (D6). So neither the box nor this component owns what the person has
+  // written or where they were reading: the session's entry in the live-view store does.
   const views = useLiveViews();
 
   const runtime = useExternalStoreRuntime({
@@ -268,7 +285,6 @@ export function AgentRuntimeThread({
         replayCount={replayCount}
         resetKey={resetKey}
         sends={sends}
-        sessionId={sessionId}
       />
     </AssistantRuntimeProvider>
   );

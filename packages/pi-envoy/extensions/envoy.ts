@@ -155,6 +155,7 @@ import {
 import { LOCAL_ENVOY_NOTICE, publishEnvoyPluginInterface } from "@legion/pi-shared/interface";
 import type {
   ContentBlock,
+  ContextUsage,
   ImageContent,
   PiApi,
   SessionContext,
@@ -215,6 +216,7 @@ import {
   shellCommandFrom,
   shellCommandMessage,
   shellCommandReport,
+  shellCommandShutdownReport,
 } from "../src/typed-shell";
 import { type CardDelivery, UnwrittenFrames } from "../src/unwritten-frames";
 import { type AskGateRegistration, registerAskGate } from "./askgate/askgate";
@@ -1334,9 +1336,34 @@ export default function envoyExtension(pi: PiApi): void {
   // printed kept. Read inline, as this file's other knobs are.
   const SHELL_COMMAND_LIMIT_MS = Number(process.env.ENVOY_SHELL_COMMAND_LIMIT_MS ?? "") || 120_000;
 
-  // The `!command` this session runs now, if one runs. One runs for a session at a time, so a
-  // second is answered naming this one rather than queued behind it.
-  let runningShellCommand: string | undefined;
+  // The `!command` this session runs now, if one runs, and the kill of its process group. One
+  // runs for a session at a time, so a second is answered naming this one rather than queued
+  // behind it; the kill is what the shutdown stops it with, since the command's group is its own
+  // and would otherwise outlive the session (`stop`, set as the command starts).
+  let runningShellCommand: { readonly command: string; stop: () => void } | undefined;
+
+  // Posts the session's answer to a person's typed line, and falls back on Dispatch's own words
+  // when Dispatch refuses it. Nothing cuts the reply here, so a reply Dispatch refuses - one
+  // holding a block longer than it takes, or output it cannot store - would otherwise leave the
+  // person who sent the line with no answer at all; Dispatch's words say why, and they are short
+  // enough to post in its place. Both the typed path and the `!command` path post through here,
+  // so the fallback exists once.
+  const postTypedInputReply = async (
+    delivery: DispatchDelivery,
+    replySessionID: string,
+    body: string
+  ): Promise<void> => {
+    try {
+      await postDispatchReply(delivery, { body }, replySessionID);
+    } catch (error) {
+      if (!(error instanceof DispatchServiceError) || !error.fromDispatch) throw error;
+      await postDispatchReply(
+        delivery,
+        { body: `Your command ran, and Dispatch refused its output: ${error.message}` },
+        replySessionID
+      );
+    }
+  };
 
   // Runs a person's `!command` for them (`../src/typed-shell`). The host is handed nothing: the
   // session runs the rest of the line under `/bin/sh -c` in its own working directory, and what it
@@ -1359,62 +1386,77 @@ export default function envoyExtension(pi: PiApi): void {
     const running = runningShellCommand;
     const session = sessionID;
     const cwd = activeSessionContext?.cwd ?? process.cwd();
-    if (running === undefined) runningShellCommand = command;
-    void Promise.resolve()
-      .then(async () => {
-        if (running !== undefined) return shellCommandBusyReport(command, running);
-        try {
-          const result = await runShellCommand(command, { cwd, limitMs: SHELL_COMMAND_LIMIT_MS });
-          const report = shellCommandReport(result);
-          // The frame carries the Dispatch message id, so the live view re-keys it over the
-          // person's Dispatch turn instead of drawing the line twice.
-          if (session !== "") {
-            agentStream.record(
-              agentStreamFramesSubject(session),
-              {
-                content: [{ text: report, type: "text" }],
-                role: "user",
-                tag: turn.messageId,
-                timestamp: Date.now(),
-              },
-              false,
-              turn.messageId
-            );
-          }
-          pi.sendMessage(
+    // Claimed before the command starts rather than from inside it, so a second `!` handed to
+    // this session in the same tick is answered naming this one.
+    const claim = { command, stop: () => {} };
+    if (running === undefined && !shuttingDown) runningShellCommand = claim;
+    const ran = async (): Promise<string> => {
+      // A session shutting down starts no command: what it started would outlive the session it
+      // was asked of, and nothing here would be left to answer for it.
+      if (shuttingDown) return shellCommandShutdownReport(command);
+      if (running !== undefined) return shellCommandBusyReport(command, running.command);
+      try {
+        const result = await runShellCommand(command, {
+          cwd,
+          limitMs: SHELL_COMMAND_LIMIT_MS,
+          started: (stop) => {
+            claim.stop = stop;
+          },
+        });
+        const report = shellCommandReport(result);
+        // The frame carries the Dispatch message id, so the live view re-keys it over the
+        // person's Dispatch turn instead of drawing the line twice.
+        if (session !== "") {
+          agentStream.record(
+            agentStreamFramesSubject(session),
             {
-              content: shellCommandMessage(report),
-              customType: "envoy-message",
-              details: LOCAL_ENVOY_NOTICE,
-              display: true,
+              content: [{ text: report, type: "text" }],
+              role: "user",
+              tag: turn.messageId,
+              timestamp: Date.now(),
             },
-            { deliverAs: "nextTurn", triggerTurn: false }
+            false,
+            turn.messageId
           );
-          return report;
-        } finally {
-          runningShellCommand = undefined;
         }
-      })
-      .then(async (report) => {
-        const reply = typedInputReply(turn.body, { shell: report });
-        try {
-          if (reply !== undefined) {
-            await postDispatchReply(delivery, { body: reply }, replySessionID);
-          }
-        } finally {
-          // The host writes nothing for this line, so no turn is awaited: the ledger records the
-          // message here and its claim settles. It is recorded whether or not its reply reached
-          // Dispatch, since the command has run and a redelivery would run it again.
-          await taken();
-        }
-      })
-      .catch((error: unknown) => {
+        pi.sendMessage(
+          {
+            content: shellCommandMessage(report),
+            customType: "envoy-message",
+            details: LOCAL_ENVOY_NOTICE,
+            display: true,
+          },
+          { deliverAs: "nextTurn", triggerTurn: false }
+        );
+        return report;
+      } finally {
+        if (runningShellCommand === claim) runningShellCommand = undefined;
+      }
+    };
+    const answer = async (): Promise<void> => {
+      try {
+        await postTypedInputReply(delivery, replySessionID, await ran());
+      } catch (error: unknown) {
         logger.warn("envoy: a person's shell command from Dispatch was not answered", {
           attempt: delivery.attempt,
           error: messageFor(error),
           messageID: delivery.id,
         });
+      } finally {
+        // The host writes nothing for this line, so no turn is awaited: the ledger records the
+        // message here and its claim settles. It is recorded whether or not the command ran, the
+        // frame was published or the reply reached Dispatch, since a redelivery would run the
+        // command again.
+        await taken();
+      }
+    };
+    void answer().catch((error: unknown) => {
+      logger.warn("envoy: a person's shell command from Dispatch was not recorded as taken", {
+        attempt: delivery.attempt,
+        error: messageFor(error),
+        messageID: delivery.id,
       });
+    });
   };
 
   // Runs a person's accepted Send or Aside as if typed at the terminal (`pi.sendUserInput`): a
@@ -1426,27 +1468,20 @@ export default function envoyExtension(pi: PiApi): void {
   // (a command, a terminal-only built-in, a refusal, a failure): no message will carry its tag, so
   // the frame is done with then, and otherwise once the host writes the message that carries it.
   //
-  // A body whose first character is `!` is read here, before it reaches the host, and only here:
-  // the plugin's own `input` handler passes on every line whose source is not `extension`, so a
-  // line typed at the session's own terminal keeps the host's shell mode. The session runs that
-  // line itself (`runShellCommandTurn`) and the host is handed nothing, so no turn is awaited for
-  // it. A BTW never reaches this path, and a broadcast is no user turn at all
-  // (`isUserTurnCandidate`), so neither runs a command.
+  // A body whose first character is `!` never reaches here: the caller reads it before this and
+  // only there, so a line typed at the session's own terminal keeps the host's shell mode (the
+  // plugin's one `input` handler passes on every line whose source is not `extension`). The
+  // session runs that line itself (`runShellCommandTurn`), and the host is handed nothing. A BTW
+  // never reaches this path, and a broadcast is no user turn at all (`isUserTurnCandidate`), so
+  // neither runs a command.
   const runTypedInput = (
     sendUserInput: NonNullable<PiApi["sendUserInput"]>,
     delivery: DispatchDelivery,
     replySessionID: string,
     turn: AcceptedUserTurn,
     content: string | readonly ContentBlock[],
-    pictureAddresses: readonly string[],
-    ledger: { readonly awaitTurn: () => void; readonly taken: () => Promise<void> }
+    pictureAddresses: readonly string[]
   ): void => {
-    const command = shellCommandFrom(turn.body);
-    if (command !== undefined) {
-      runShellCommandTurn(delivery, replySessionID, turn, command, ledger.taken);
-      return;
-    }
-    ledger.awaitTurn();
     const images =
       typeof content === "string"
         ? []
@@ -1496,19 +1531,7 @@ export default function envoyExtension(pi: PiApi): void {
         // reply that names it reaches the page.
         refreshAgentStreamSettings(sessionID);
         if (reply === undefined) return;
-        try {
-          await postDispatchReply(delivery, { body: reply }, replySessionID);
-        } catch (error) {
-          // Nothing cuts the reply here, so a reply Dispatch refuses - one holding a block longer
-          // than it takes - would leave the person who typed the command with no answer at all.
-          // Dispatch's own words say why, and they are short enough to post in its place.
-          if (!(error instanceof DispatchServiceError) || !error.fromDispatch) throw error;
-          await postDispatchReply(
-            delivery,
-            { body: `Your command ran, and Dispatch refused its output: ${error.message}` },
-            replySessionID
-          );
-        }
+        await postTypedInputReply(delivery, replySessionID, reply);
       })
       .catch((error: unknown) => {
         logger.warn("envoy: the reply to a person's typed input did not reach Dispatch", {
@@ -1860,20 +1883,22 @@ export default function envoyExtension(pi: PiApi): void {
             }
           } else {
             // The wait for the host's own message of this turn is armed only for a line the host
-            // is handed: a `!command` is the session's to run, and nothing is written for it.
-            runTypedInput(
-              sendUserInput,
-              accepted.delivery,
-              acceptedSessionID,
-              turn,
-              delivery.content,
-              delivery.shown,
-              {
-                awaitTurn: () =>
-                  unwritten.awaitTurn(turn.messageId, { sessionID, identity, claim, via: "typed" }),
-                taken,
-              }
-            );
+            // is handed: a `!command` is the session's to run, nothing is written for it, and the
+            // host never sees it, which is why the branch is here rather than inside the send.
+            const command = shellCommandFrom(turn.body);
+            if (command !== undefined) {
+              runShellCommandTurn(accepted.delivery, acceptedSessionID, turn, command, taken);
+            } else {
+              unwritten.awaitTurn(turn.messageId, { sessionID, identity, claim, via: "typed" });
+              runTypedInput(
+                sendUserInput,
+                accepted.delivery,
+                acceptedSessionID,
+                turn,
+                delivery.content,
+                delivery.shown
+              );
+            }
           }
         }
       }
@@ -2536,8 +2561,14 @@ export default function envoyExtension(pi: PiApi): void {
   let agentStreamControl: Subscription | undefined;
   let agentStreamControlSession = "";
   let agentStreamCommandsRefreshedOnWatchAt = -Infinity;
-  // When this session last read its context usage, which bounds how often it is read and sent.
+  // When this session last put its context usage on the wire, which bounds how often it sends
+  // one, and the reading a turn's last message is owed, waiting for that interval to be up
+  // (`refreshAgentStreamContext`).
   let agentStreamContextRefreshedAt = -Infinity;
+  let agentStreamContextTrailing: Timer | undefined;
+  let agentStreamContextHeld:
+    | { readonly session: string; readonly usage: ContextUsage | undefined }
+    | undefined;
   let agentStreamViewerAttached = false;
 
   // The slash commands a viewer can send this session, in its terminal picker's order
@@ -2609,25 +2640,68 @@ export default function envoyExtension(pi: PiApi): void {
     Number(process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS ?? "") || 2_000;
   // The context window's filling, as a viewer's ring shows it (INFRA-812). The host fires no event
   // for it either, so it is re-read after each message of a turn, at each turn's start and after a
-  // compaction, at most once per interval. The read is an in-memory getter over the session's own
-  // breakdown; a host too old to have it (`getContextUsage`, read behind the same guard the host's
-  // own callers use) publishes nothing. A getter that throws must not fail the handler it runs
-  // under, so it is logged and the last frame stands.
+  // compaction, and put on the wire at most once per interval. The read is an in-memory getter
+  // over the session's own breakdown; a host too old to have it (`getContextUsage`, read behind
+  // the same guard the host's own callers use) publishes nothing. A getter that throws must not
+  // fail the handler it runs under, so it is logged and the last frame stands.
+  //
+  // The interval holds the frame back, never the read: a reading a turn's last message is owed -
+  // a short reply, a quick tool round - is taken here and published when the interval is up, so
+  // the ring follows the turn rather than holding the figure before its last message for as long
+  // as the session then stays idle. The read cannot wait for the timer, because the host answers
+  // for the turn that is running: measured on the pinned binary, a session whose turn read 7,661
+  // tokens answers 5 two seconds later, with the turn over, and a ring drawn from that would show
+  // a full session as empty.
+  const publishAgentStreamContext = (session: string, usage: ContextUsage | undefined): void => {
+    agentStreamContextRefreshedAt = Date.now();
+    try {
+      agentStream.setContext(agentStreamFramesSubject(session), usage);
+    } catch (error) {
+      logger.warn("envoy: could not publish the agent stream's context frame", {
+        error: messageFor(error),
+        sessionID: session,
+      });
+    }
+  };
   const refreshAgentStreamContext = (session: string): void => {
     if (session === "") return;
     const context = activeSessionContext;
     if (context === undefined || typeof context.getContextUsage !== "function") return;
-    const now = Date.now();
-    if (now - agentStreamContextRefreshedAt < CONTEXT_FRAME_INTERVAL_MS) return;
-    agentStreamContextRefreshedAt = now;
+    let usage: ContextUsage | undefined;
     try {
-      agentStream.setContext(agentStreamFramesSubject(session), context.getContextUsage());
+      usage = context.getContextUsage();
     } catch (error) {
       logger.warn("envoy: could not refresh agent stream context", {
         error: messageFor(error),
         sessionID: session,
       });
+      return;
     }
+    const waited = Date.now() - agentStreamContextRefreshedAt;
+    if (waited >= CONTEXT_FRAME_INTERVAL_MS) {
+      publishAgentStreamContext(session, usage);
+      return;
+    }
+    // Held rather than dropped, and the newest reading is the one that goes out.
+    agentStreamContextHeld = { session, usage };
+    if (agentStreamContextTrailing !== undefined) return;
+    agentStreamContextTrailing = setTimeout(() => {
+      agentStreamContextTrailing = undefined;
+      const held = agentStreamContextHeld;
+      agentStreamContextHeld = undefined;
+      if (held !== undefined) publishAgentStreamContext(held.session, held.usage);
+    }, CONTEXT_FRAME_INTERVAL_MS - waited);
+    // A frame nobody is waiting on must not hold this process open at its end.
+    agentStreamContextTrailing.unref?.();
+  };
+
+  // Drops the held reading and the frame it was owed: the session it was read from is no longer
+  // the one this publisher serves, so its figures are no longer the ones a viewer would draw.
+  const forgetAgentStreamContext = (): void => {
+    clearTimeout(agentStreamContextTrailing);
+    agentStreamContextTrailing = undefined;
+    agentStreamContextHeld = undefined;
+    agentStreamContextRefreshedAt = -Infinity;
   };
 
   const pumpAgentStreamControl = async (
@@ -2714,7 +2788,7 @@ export default function envoyExtension(pi: PiApi): void {
       agentStream.reset();
       agentStreamViewerAttached = false;
       agentStreamCommandsRefreshedOnWatchAt = -Infinity;
-      agentStreamContextRefreshedAt = -Infinity;
+      forgetAgentStreamContext();
     }
     agentStreamControlSession = session;
     // A queued task connects through its handle: an acquisition its task outran refuses there,
@@ -3866,6 +3940,11 @@ export default function envoyExtension(pi: PiApi): void {
     // stopped refreshing (dispatch://INFRA-392).
     tmuxPlaces.shutDown();
     cardWake.cancel();
+    // A person's `!command` runs in a process group of its own, which outlives this process
+    // unless something kills it: the session that was asked for it is going, so it goes too,
+    // with what it printed never answered. A `!` that arrives from here on is refused saying so
+    // (`runShellCommandTurn`).
+    runningShellCommand?.stop();
     if (publishedInterface !== undefined) {
       const bound = publishedInterface.roleClaim.instances.indexOf(claimInstance);
       if (bound !== -1) publishedInterface.roleClaim.instances.splice(bound, 1);
@@ -3928,6 +4007,7 @@ export default function envoyExtension(pi: PiApi): void {
       // instance registered, and the host's live one, which a task subagent's tool calls carried
       // (its instance never ran restoreLocalSessionState, so its `sessionID` stayed empty).
       const liveSessionID = context.sessionManager.getSessionId();
+      forgetAgentStreamContext();
       forgetShownPictures(sessionID);
       if (liveSessionID !== sessionID) forgetShownPictures(liveSessionID);
     }

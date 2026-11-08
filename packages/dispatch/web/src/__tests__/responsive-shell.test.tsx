@@ -3,8 +3,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../api/client";
-import type { Agent, InboxRow, IssueDetails } from "../api/types";
+import { ApiError, api } from "../api/client";
+import type { Agent, InboxRow, IssueDetails, UserAgentState } from "../api/types";
 import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { answerAgentStates } from "./send-answers";
@@ -299,21 +299,36 @@ const PINS_KEY = "dispatch.agents.pinned:alice";
 // The pins were this browser's until INFRA-812 made them the person's. The shell writes each id
 // the old key holds as a pin and removes the key, so the person's pins survive the change
 // without being pinned again by hand, and each browser migrates only its own list.
-test("the shell writes the browser's old pins to Dispatch once and forgets the old key", async () => {
-  const putAgentState = answerAgentStates().mockImplementation(async (_session, input) =>
-    input.pinned === true ? { pinned_at: "2026-09-14T12:00:00Z" } : {}
+//
+// One write at a time, in the order the key kept them: Dispatch stamps each pin as it arrives
+// and `pinned_at` is the order the rail draws. The key holds every id until the last of them
+// has landed, so nothing in between - a reload, a build rolled back - loses a pin that was
+// never written.
+test("the shell writes the browser's old pins one at a time and forgets the key once they land", async () => {
+  const planner = Promise.withResolvers<UserAgentState>();
+  const putAgentState = answerAgentStates().mockImplementation(async (session) =>
+    session === "planner-session" ? planner.promise : { pinned_at: "2026-09-14T12:00:01Z" }
   );
   window.localStorage.setItem(PINS_KEY, JSON.stringify(["planner-session", "reviewer-session"]));
   api.getMyAgentState = async () => ({});
 
   try {
     renderShellAt(1280);
+    // The first id is out on its own, and the key still holds both: nothing has landed yet.
+    await waitFor(() => expect(putAgentState).toHaveBeenCalledTimes(1));
+    expect(putAgentState.mock.calls[0]?.[0]).toBe("planner-session");
+    expect(window.localStorage.getItem(PINS_KEY)).not.toBeNull();
+
+    await act(async () => {
+      planner.resolve({ pinned_at: "2026-09-14T12:00:00Z" });
+      await planner.promise;
+    });
     await waitFor(() => expect(putAgentState).toHaveBeenCalledTimes(2));
     expect(putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
       ["planner-session", { pinned: true }],
       ["reviewer-session", { pinned: true }],
     ]);
-    expect(window.localStorage.getItem(PINS_KEY)).toBeNull();
+    await waitFor(() => expect(window.localStorage.getItem(PINS_KEY)).toBeNull());
 
     // The next load of the same browser has nothing left to migrate, so it writes nothing.
     cleanup();
@@ -322,6 +337,36 @@ test("the shell writes the browser's old pins to Dispatch once and forgets the o
       expect(screen.queryByRole("navigation", { name: "Navigation" })).not.toBeNull()
     );
     expect(putAgentState).toHaveBeenCalledTimes(2);
+  } finally {
+    window.localStorage.removeItem(PINS_KEY);
+    putAgentState.mockRestore();
+  }
+});
+
+// A write Dispatch refuses is the reader's to retry or discard in the pending-writes list, and
+// what they discard was never made: the key keeps every id it held, including the ids after the
+// refused one, which this load does not write at all. The next load writes the lot again, in
+// the same order.
+test("a pin write Dispatch refuses leaves the browser's old key as it was", async () => {
+  const kept = JSON.stringify(["planner-session", "reviewer-session"]);
+  const putAgentState = answerAgentStates().mockImplementation(async (session) => {
+    if (session === "planner-session") {
+      throw new ApiError(400, { code: "AGENT_STATE_INPUT", error: "Dispatch refused it" });
+    }
+    return { pinned_at: "2026-09-14T12:00:01Z" };
+  });
+  window.localStorage.setItem(PINS_KEY, kept);
+  api.getMyAgentState = async () => ({});
+
+  try {
+    renderShellAt(1280);
+    await waitFor(() => expect(putAgentState).toHaveBeenCalled());
+    // Long enough for a second write to have gone out, had the refusal not stopped the run.
+    await act(async () => {
+      await Bun.sleep(50);
+    });
+    expect(putAgentState.mock.calls.map(([session]) => session)).toEqual(["planner-session"]);
+    expect(window.localStorage.getItem(PINS_KEY)).toBe(kept);
   } finally {
     window.localStorage.removeItem(PINS_KEY);
     putAgentState.mockRestore();

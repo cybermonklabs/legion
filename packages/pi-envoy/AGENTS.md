@@ -223,9 +223,10 @@ pick in its header is the person's own Send of `/model <provider/id>` or `/effor
 runs the host's built-in, and what the built-in prints is the reply the page shows as its answer.
 
 A body whose first character is `!` is no prompt: the session runs the rest of it itself
-(`src/typed-shell.ts`), read in `runTypedInput` before the body reaches `sendUserInput` and only
-there, so a line typed at the session's own terminal keeps the host's shell mode (the plugin's one
-`input` handler passes on every line whose source is not `extension`). The mark is one `!` and the
+(`src/typed-shell.ts`), read where the delivery hands a person's accepted turn over, before
+`runTypedInput` and the host's `sendUserInput` see it and only there, so a line typed at the
+session's own terminal keeps the host's shell mode (the plugin's one `input` handler passes on
+every line whose source is not `extension`). The mark is one `!` and the
 rest is the command whatever it starts with, so `!!printf hi` runs `!printf hi` and is answered
 with that shell's own failure. The command runs on the same detached promise, never inside the
 queued delivery task, whose pass deadline a two-minute command would blow while holding every
@@ -235,15 +236,30 @@ streams pipes read to their end with the first 32,000 bytes kept and the rest th
 command that prints without end writes no file and fills no disk, stopped after
 `ENVOY_SHELL_COMMAND_LIMIT_MS` (default 120000) with what it printed kept. One command runs for a
 session at a time, and a `!` that arrives while one runs is answered naming the command still
-running. What it printed goes three ways, each cut at 8,000 characters with a line saying it was
-cut: one user message frame through `AgentStreamPublisher.record` carrying the person's line, the
+running. The group is also killed as this process exits and at `session_shutdown`, which holds
+the running command's own kill: a detached group outlives the session otherwise, so an `/exit`
+during `!while :; do :; done` would leave a process nobody stops. A `!` that arrives once the
+session is shutting down runs nothing and is answered saying so, since a command started then
+would outlive the session it was asked of. What it printed goes three ways, each cut at 8,000
+characters with a line saying it was
+cut, and each carrying the output in a fenced code block whose fence is longer than the longest
+run of backticks in it, since all three surfaces read the text as Markdown and the fence is also
+what marks where the output ends: one user message frame through `AgentStreamPublisher.record`
+carrying the person's line, the
 output and the status of a command that failed or was stopped, which is a user message because the
 person ran it and the host wrote nothing, and which carries the Dispatch message id so the view
 re-keys it over the person's turn instead of drawing it twice; the reply on Dispatch, which every
 such message gets, one whose command printed nothing included; and the agent's transcript, through
 `pi.sendMessage` with `deliverAs: "nextTurn"` and `triggerTurn: false`, so it reads them at its
-next turn and no turn starts for them. The message is marked taken with no turn awaited, since the
-host wrote nothing for that line, and its pictures are withdrawn as the non-submitted path
+next turn and no turn starts for them. What the command printed is kept without its control
+characters, the line break and the tab apart: Dispatch cannot store U+0000 and refuses a whole
+reply holding one (400 `NUL_CHARACTER`), which would leave `!head -c 64 /dev/urandom` with no
+answer at all; a reply Dispatch refuses for any other reason is posted again as Dispatch's own
+words, the one fallback both this path and a typed command's reply go through. The message is
+marked taken with no turn awaited, since the
+host wrote nothing for that line, whether or not the command ran, the frame was published or the
+reply reached Dispatch, since a redelivery would run the command again; its pictures are
+withdrawn as the non-submitted path
 withdraws them. A BTW never reaches this path, and a broadcast is no user turn at all
 (`isUserTurnCandidate`), so neither runs a command.
 
@@ -268,8 +284,10 @@ twice: one the record missed, which the stream carries untagged; and a prompt te
 command, whose streamed user message is the expanded text while Dispatch stores what the person
 typed, and the page takes the stored copy away only when the streamed turn is that message
 (`takesOverStored` in `AgentRuntimeThread.tsx`, a guard against a forged tag on an open bus):
-the two texts are equal, or the body is a `!command` and the streamed text opens with that whole
-body and a blank line, which is the report above. A `/skill:` shows once:
+the two texts are equal, or the streamed text is the report of that `!command`, which is one
+rule both sides import rather than spell twice (`isShellCommandReport` and
+`SHELL_COMMAND_REPORT_SEPARATOR` in `@legion/contracts`: the body is a command, and the text
+opens with that whole body and a blank line, which is the report above). A `/skill:` shows once:
 the stream carries no custom message, so the page shows Dispatch's stored copy alone. A typed turn
 the host starts under a new id (queued across a branch or a move-off, or a session change during
 its `sendUserInput`) is untagged by the record there, and shows once: Dispatch stored the Send
@@ -346,9 +364,20 @@ session answers `{tokens: 0, contextWindow, percent: null}`, which would draw a 
 zero per cent for a conversation that is nothing of the sort.
 The host fires no event for the figures either, so `refreshAgentStreamContext` re-reads them after
 each message of a turn (`message_end`), at each `turn_start`, and after a compaction
-(`session_compact`, `auto_compaction_end`, the one moment they fall rather than climb), at most
+(`session_compact`, `auto_compaction_end`, the one moment they fall rather than climb), and puts
+one on the wire at most
 once in each `ENVOY_CONTEXT_FRAME_INTERVAL_MS` (default 2,000), since a frame per message of a
 storm would be noise while a second or two of lag costs nothing.
+The interval holds the frame back, never the read:
+a reading taken inside it is kept, and the newest one goes out when the interval is up,
+so a turn whose last message ends inside the interval still moves the ring
+rather than leaving it at the figure before that message
+for as long as the session then stays idle.
+The read cannot wait for that timer, because the host answers for the turn that is running:
+measured on the pinned binary, a session whose turn read 7,661 tokens
+answers 5 two seconds later with the turn over,
+and a ring drawn from that would show a full session as empty.
+The held reading and the frame it is owed go when the session id changes and at shutdown.
 A getter that throws is logged and leaves the reading already kept standing.
 The publisher (`setContext`) keeps the frame and publishes it only when it differs from the
 reading last kept and a viewer is attached, and a change of session id resets it with the

@@ -407,7 +407,6 @@ export function AgentThread({
   replayCount,
   resetKey,
   sends,
-  sessionId,
 }: {
   /** The slash commands the composer completes; none is offered while this is undefined or
    *  empty. */
@@ -437,9 +436,6 @@ export function AgentThread({
   /** Every message to the session Dispatch has not yet made, in press order, each a turn of its
    *  own at the transcript's end, and what acts on them. */
   sends: SessionSends;
-  /** The session being read: moving to another one lands where that session was left, or at its
-   *  live end when nothing was kept for it. */
-  sessionId: string;
 }): ReactNode {
   // The element itself, not a ref held once: this viewport is inside the boundary below, which
   // renders a fresh node once a reset clears the error it was holding, and the hook binds its
@@ -456,7 +452,6 @@ export function AgentThread({
     onPlace,
     ownSendCount,
     replayCount,
-    sessionId,
     viewport,
   });
   // An empty box is the one thing that refuses Send (INFRA-442): a message still out, late or

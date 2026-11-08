@@ -274,3 +274,23 @@ export function capAgentStreamText(text: string, limit: number): string {
   if (text.length <= limit) return text;
   return text.slice(0, limit) + AGENT_STREAM_TRUNCATION_SUFFIX;
 }
+
+/**
+ * What a `!command`'s report puts between the person's own line and the rest of it: the output,
+ * fenced, and how the command ended (dispatch://INFRA-812, R4). The session writes the report
+ * (`shellCommandReport` in `packages/pi-envoy/src/typed-shell.ts`) and publishes it as the
+ * person's own user message, because they ran the line and the host wrote nothing; the Agents
+ * page reads it back to show the pair once rather than one under the other. The rule is spelt
+ * here so neither side can drift from the other.
+ */
+export const SHELL_COMMAND_REPORT_SEPARATOR = "\n\n";
+
+/**
+ * Whether `text`, a streamed user turn's text, is the report of the `!command` message whose
+ * stored body is `body`: the body is a command, and the report opens with that whole body and
+ * the separator above. Anything else is some other text under the message's tag, which the bus
+ * is open to any client to publish.
+ */
+export function isShellCommandReport(text: string, body: string): boolean {
+  return body.startsWith("!") && text.startsWith(`${body}${SHELL_COMMAND_REPORT_SEPARATOR}`);
+}

@@ -1,3 +1,4 @@
+import { SHELL_COMMAND_REPORT_SEPARATOR } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 
 /**
@@ -65,6 +66,20 @@ function killGroup(pid: number): void {
   }
 }
 
+/** The process groups of the commands running now. A command's group is its own, so nothing but
+ *  a kill ends it: this process holds the only handle on it, and a group left behind when the
+ *  process goes is a `!while :; do :; done` nobody stops. The kill runs as this process exits,
+ *  for every way out that is not a signal it cannot handle. */
+const runningGroups = new Set<number>();
+let killsGroupsOnExit = false;
+function killGroupsOnExit(): void {
+  if (killsGroupsOnExit) return;
+  killsGroupsOnExit = true;
+  process.on("exit", () => {
+    for (const pid of runningGroups) killGroup(pid);
+  });
+}
+
 /**
  * The first `SHELL_OUTPUT_BYTES` the command printed, from both of its streams in the order they
  * arrived. Everything past that is read and thrown away rather than kept or written anywhere: a
@@ -115,7 +130,8 @@ async function drained(reads: readonly Promise<void>[]): Promise<void> {
  * Runs one `!command` under `/bin/sh -c` in `cwd` with this session's own environment, and answers
  * with what it printed and how it ended. It is stopped after `limitMs` with what it printed kept,
  * and runs in a process group of its own, so nothing it left running outlives it or holds the
- * session.
+ * session: the group is killed when the command ends, when `stop` is called, and as this process
+ * exits, which is the only handle anything has on a detached group.
  *
  * Both streams are pipes this module reads to their end, keeping the first `SHELL_OUTPUT_BYTES`
  * and throwing the rest away, so `!yes` or `!cat /dev/urandom` costs the session those bytes of
@@ -126,10 +142,18 @@ async function drained(reads: readonly Promise<void>[]): Promise<void> {
  */
 export async function runShellCommand(
   command: string,
-  options: { readonly cwd: string; readonly limitMs: number }
+  options: {
+    readonly cwd: string;
+    readonly limitMs: number;
+    /** Handed the kill of the command's whole process group, before this call's first await, so
+     *  a session that must stop the command before its limit - one shutting down - holds it from
+     *  the command's first moment. What it printed up to then is still its answer. */
+    readonly started?: (stop: () => void) => void;
+  }
 ): Promise<ShellCommandResult> {
   let child: ShellSubprocess;
   try {
+    killGroupsOnExit();
     child = Bun.spawn(["/bin/sh", "-c", command], {
       cwd: options.cwd,
       detached: true,
@@ -146,16 +170,19 @@ export async function runShellCommand(
       status: `The command could not start: ${messageFor(error)}.`,
     };
   }
+  runningGroups.add(child.pid);
   // The reads start before the wait: a pipe nobody empties fills, and a command blocked on a
   // full one would never reach its own end.
   const printed = new BoundedOutput();
   const reads = [drain(child.stdout, printed), drain(child.stderr, printed)];
-  let stopped = false;
-  const limit = setTimeout(() => {
-    stopped = true;
+  let ended: "limit" | "stop" | undefined;
+  const kill = (why: "limit" | "stop"): void => {
+    ended ??= why;
     child.kill("SIGKILL");
     killGroup(child.pid);
-  }, options.limitMs);
+  };
+  const limit = setTimeout(() => kill("limit"), options.limitMs);
+  options.started?.(() => kill("stop"));
   try {
     await child.exited;
   } finally {
@@ -163,48 +190,97 @@ export async function runShellCommand(
     // Whatever the outcome, nothing the command started outlives it - and the pipes close with
     // the last process holding them, which is what ends the reads.
     killGroup(child.pid);
+    runningGroups.delete(child.pid);
   }
   await drained(reads);
-  const output = printed.text();
+  const output = printable(printed.text());
   const cut = output.length > SHELL_OUTPUT_MAX;
   return {
     command,
     cut,
     output: output.slice(0, SHELL_OUTPUT_MAX).trimEnd(),
-    status: statusOf(child, stopped, options.limitMs),
+    status: statusOf(child, ended, options.limitMs),
   };
+}
+
+/**
+ * What is kept of what a command printed: every control character but the line break and the tab
+ * is dropped. Dispatch cannot store U+0000 at all and refuses a whole reply holding one
+ * (400 NUL_CHARACTER), so `!head -c 64 /dev/urandom` or `!find . -print0` would leave the person
+ * with no answer; the rest go with it because none of them shows as anything a person reads, and
+ * the three texts this output becomes are all read as text.
+ */
+function printable(output: string): string {
+  return output.replace(/\p{Cc}/gu, (control) =>
+    control === "\n" || control === "\t" ? control : ""
+  );
 }
 
 /** How a command ended, as the one sentence the three texts carry, or undefined for one that
  *  exited 0. A command this session stopped says so rather than naming the signal that stopped
  *  it, which is the session's own doing and not the command's. */
-function statusOf(child: ShellSubprocess, stopped: boolean, limitMs: number): string | undefined {
-  if (stopped) return `The command was stopped after ${limitMs} ms.`;
+function statusOf(
+  child: ShellSubprocess,
+  ended: "limit" | "stop" | undefined,
+  limitMs: number
+): string | undefined {
+  if (ended === "limit") return `The command was stopped after ${limitMs} ms.`;
+  if (ended === "stop") return "The command was stopped.";
   if (child.signalCode !== null) return `The command was killed by ${child.signalCode}.`;
   if (child.exitCode !== 0) return `The command ended with exit status ${child.exitCode}.`;
   return undefined;
 }
 
 /**
+ * What the command printed, as a fenced code block: every surface this text reaches reads it as
+ * Markdown - the live view's conversation, the reply's body on Dispatch, and the agent's own
+ * transcript - and unfenced output is read as whatever it happens to look like. A `git diff`'s
+ * `---` and `+++` lines become headings, an `ls` holding `*` or `_` loses them, a line of pipes
+ * becomes a table, and a `dispatch://` in the output becomes a reference. The fence is longer
+ * than the longest run of backticks in the output, so output that is itself fenced stays whole,
+ * and it marks where the output ends: what follows it is the session's own words and not the
+ * command's.
+ */
+function fenced(output: string): string {
+  let longest = 0;
+  for (const run of output.match(/`+/g) ?? []) longest = Math.max(longest, run.length);
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}\n${output}\n${fence}`;
+}
+
+/**
  * The person's line, what the command printed and how it ended: the one text the live view, the
  * reply on Dispatch and the agent's transcript all carry. A command that printed nothing says so,
- * so every `!` message has an answer.
+ * so every `!` message has an answer. The person's line is the first paragraph and the separator
+ * follows it, which is the rule the Agents page reads this text back by
+ * (`isShellCommandReport`, `@legion/contracts`).
  */
 export function shellCommandReport(result: ShellCommandResult): string {
-  const parts = [`!${result.command}`, result.output === "" ? NOTHING_PRINTED : result.output];
+  const parts = [
+    `!${result.command}`,
+    result.output === "" ? NOTHING_PRINTED : fenced(result.output),
+  ];
   if (result.cut) parts.push(`The output was cut at ${SHELL_OUTPUT_MAX} characters.`);
   if (result.status !== undefined) parts.push(result.status);
-  return parts.join("\n\n");
+  return parts.join(SHELL_COMMAND_REPORT_SEPARATOR);
 }
 
 /** The report as the agent reads it in its transcript, under the line that says whose command it
- *  was. */
+ *  was. The report's own fence is what marks where the output ends here too: a file or a `curl`
+ *  response that prints a line like the heading above would otherwise reach the agent as if
+ *  Dispatch had written it. */
 export function shellCommandMessage(report: string): string {
-  return `${SHELL_COMMAND_HEADING}\n\n${report}`;
+  return `${SHELL_COMMAND_HEADING}${SHELL_COMMAND_REPORT_SEPARATOR}${report}`;
 }
 
 /** The answer a `!` gets while this session still runs one: the line, and the command it waits
  *  on. One command runs for a session at a time, and a second is refused rather than queued. */
 export function shellCommandBusyReport(command: string, running: string): string {
-  return `!${command}\n\nThe command was not run: this session is still running !${running}.`;
+  return `!${command}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: this session is still running !${running}.`;
+}
+
+/** The answer a `!` gets once this session has begun shutting down: nothing was run, and nothing
+ *  will be. A command started now would outlive the session that was asked for it. */
+export function shellCommandShutdownReport(command: string): string {
+  return `!${command}${SHELL_COMMAND_REPORT_SEPARATOR}The command was not run: this session is shutting down.`;
 }

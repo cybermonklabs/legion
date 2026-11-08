@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 import { type FakeSession, setLiveSessions } from "./agents";
-import { createAgentMessage, publishAgentStreamFrame } from "./api";
+import { createAgentMessage, publishAgentStreamFrame, replyToMessageDelivery } from "./api";
 import { frontLiveView } from "./live-views";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -15,12 +15,14 @@ import { asUser } from "./users";
  * `shellCommandReport`, recorded by `extensions/envoy.ts`): a user message, because the person
  * ran it and the host wrote nothing. The frame carries the Dispatch message id of the message
  * that asked for it, so the view draws the frame over the person's own Dispatch turn rather
- * than beside it, and the `!` line is read once.
+ * than beside it, and the `!` line is read once. The plugin also posts that report as the
+ * session's reply to the person's message, as it does for every message a session is sent, so
+ * the same text reaches the view from both sides.
  *
- * These rows seed both halves - Dispatch's stored message and the session's frame - because
- * that pair is what the claim is about. Both are spelt here as the wire carries them, never
- * imported from the SPA or the plugin, so this file reads the same against the commit before
- * the change and each row fails there on its own assertion.
+ * These rows seed all three - Dispatch's stored message, the session's frame and that reply -
+ * because what the view does with them together is what the claim is about. Each is spelt here
+ * as the wire carries it, never imported from the SPA or the plugin, so this file reads the
+ * same against the commit before the change and each row fails there on its own assertion.
  */
 
 /** The session these rows read: a UUID, which Dispatch's agent routes require, and this file's
@@ -37,9 +39,12 @@ const COMMAND_LINE = "!cat missing.txt";
  *  with the rest. */
 const OUTPUT = "cat: missing.txt: No such file or directory";
 
-/** What the plugin publishes once the command has run: the person's line, what it printed, and
- *  the sentence a command that did not exit 0 ends with. */
-const REPORT = `${COMMAND_LINE}\n\n${OUTPUT}\n\nThe command ended with exit status 1.`;
+/** What the plugin publishes once the command has run: the person's line, what it printed as a
+ *  fenced block, and the sentence a command that did not exit 0 ends with. It reaches the view
+ *  twice - this frame, and the session's reply on Dispatch, which every message to a session
+ *  gets (`postTypedInputReply` in `packages/pi-envoy/extensions/envoy.ts`) - and the reader
+ *  must meet it once. */
+const REPORT = `${COMMAND_LINE}\n\n\`\`\`\n${OUTPUT}\n\`\`\`\n\nThe command ended with exit status 1.`;
 
 function livePath(sessionID: string): string {
   return `/agents/${sessionID}/live`;
@@ -60,9 +65,10 @@ function shellSession(): FakeSession {
 }
 
 /**
- * Seeds the exchange one `!` message makes: the person's Dispatch message, and the session's
- * user message frame carrying the report and that message's id. Answers the Dispatch message's
- * id, which is the key the view must draw the pair under.
+ * Seeds the exchange one `!` message makes, as production holds it: the person's Dispatch
+ * message, the session's user message frame carrying the report and that message's id, and the
+ * session's reply to that message, which carries the same report once more. Answers the
+ * Dispatch message's id, which is the key the view must draw the pair under.
  */
 async function seedShellCommand(): Promise<string> {
   await setLiveSessions([shellSession()]);
@@ -90,6 +96,13 @@ async function seedShellCommand(): Promise<string> {
     },
     "replay"
   );
+  // The plugin answers the person's message on Dispatch too, with the report it published: the
+  // view has the same text from both sides, and draws it once.
+  await replyToMessageDelivery(
+    asked.id,
+    { attempt: 1, body: REPORT },
+    { id: SHELL_ID, kind: "session" }
+  );
   return asked.id;
 }
 
@@ -99,9 +112,10 @@ test.beforeEach(async () => {
 
 // R4. What a person reads after sending `!cat missing.txt`: their own line,
 // what the command printed, and how it ended - all three as their own message, on their own
-// side of the conversation, never as something the agent said.
-// SLOW(>=2s): a live view opened on the session's replay, over a Dispatch message the row
-// stored first.
+// side of the conversation, never as something the agent said - including the session's reply
+// on Dispatch, which carries that same report and is drawn nowhere.
+// SLOW(>=2s): a live view opened on the session's replay, over a Dispatch message and a reply
+// the row stored first.
 test("the live view shows a person's shell command, its output and its exit status as their own message", async ({
   browser,
 }) => {
@@ -115,21 +129,24 @@ test("the live view shows a person's shell command, its output and its exit stat
     await expect(own).toContainText(OUTPUT);
     await expect(own).toContainText("The command ended with exit status 1.");
 
-    // Theirs, not the session's: nothing here is drawn as a turn the agent took, and nothing
-    // names another author.
+    // Theirs, not the session's: nothing here is drawn as a turn the agent took, neither a
+    // streamed one nor the session's Dispatch reply saying it all again, and nothing names
+    // another author.
     await expect(frontLiveView(page).getByTestId("agent-message-assistant")).toHaveCount(0);
+    await expect(frontLiveView(page).getByTestId("agent-dispatch-reply")).toHaveCount(0);
     await expect(frontLiveView(page).getByTestId("agent-message-other")).toHaveCount(0);
   } finally {
     await context.close();
   }
 });
 
-// R4, D12. The gap row of the plan: the `!` line shows once, not twice. The frame and the
-// Dispatch message it names are one message in the conversation, and the key that message is
-// drawn under is Dispatch's own - which is what re-keying the frame over the person's turn
-// means, and what keeps the two from being drawn one under the other.
-// SLOW(>=2s): a live view opened on the session's replay, over a Dispatch message the row
-// stored first.
+// R4, D12. The gap row of the plan: the `!` line shows once, not twice. The frame, the Dispatch
+// message it names and the session's reply carrying the same report are one message in the
+// conversation, and the key that message is drawn under is Dispatch's own - which is what
+// re-keying the frame over the person's turn means, and what keeps them from being drawn one
+// under the other.
+// SLOW(>=2s): a live view opened on the session's replay, over a Dispatch message and a reply
+// the row stored first.
 test("a shell command's frame and the Dispatch message it answers are one message, not two", async ({
   browser,
 }) => {

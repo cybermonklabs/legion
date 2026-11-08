@@ -68,7 +68,6 @@ function Harness({ messages }: { messages: KeyedMessage[] }): ReactNode {
         replayCount={0}
         resetKey="session-1"
         sends={NO_SESSION_SENDS}
-        sessionId="session-1"
       />
     </AssistantRuntimeProvider>
   );

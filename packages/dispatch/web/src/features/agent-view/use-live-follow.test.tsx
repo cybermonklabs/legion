@@ -37,7 +37,6 @@ interface Props {
   /** The turns the DOM actually holds, where they lag the ids the way assistant-ui's runtime
    *  does; `null` renders `contentIds` itself. */
   renderedIds: string[] | null;
-  sessionId: string;
   /** Changing it remounts the viewport element, as the view's error boundary does when a reset
    *  replaces the node under the mounted hook. */
   viewportKey: string;
@@ -152,7 +151,6 @@ function Harness({
   places,
   renderedIds,
   replayCount,
-  sessionId,
   viewportKey,
 }: Props & {
   control: { current: LiveFollowControl | null };
@@ -184,7 +182,6 @@ function Harness({
     ),
     ownSendCount,
     replayCount,
-    sessionId,
     viewport,
   });
   return (
@@ -238,7 +235,6 @@ function startHarness(
     places,
     renderedIds: null,
     replayCount: 0,
-    sessionId: "session-1",
     viewportKey: "first",
   };
   const view = render(<Harness {...props} control={control} geometry={geometry} />);
@@ -427,7 +423,7 @@ test("jumpToEnd clears the count and resumes following", () => {
   }
 });
 
-test("an own send, and a session with no place kept, each force the live end", () => {
+test("an own send forces the live end", () => {
   const live = startHarness([...SIX]);
 
   try {
@@ -443,8 +439,8 @@ test("an own send, and a session with no place kept, each force the live end", (
     live.scroll({ scrollTop: 100 });
     expect(live.atEnd()).toBe(false);
 
-    // No place is kept for session-2 - nobody has read it yet - so it opens at its live end.
-    live.update({ sessionId: "session-2" });
+    // A second send from where the reader has scrolled back to does the same.
+    live.update({ ownSendCount: 2 });
     expect(live.position()).toBe(300);
     expect(live.atEnd()).toBe(true);
   } finally {
@@ -719,22 +715,6 @@ test("the place the reader holds is reported, and cleared once they follow again
 
     live.jumpToEnd();
     expect(live.reported().at(-1)).toBeNull();
-  } finally {
-    live.stop();
-  }
-});
-
-test("a move to another session lands where that session's view was left", () => {
-  const live = startHarness([...SIX]);
-
-  try {
-    // `session-2`'s entry holds `b` at the viewport's top edge: `scrollTop` 100.
-    live.update({ initialPlace: { id: "b", top: 0 }, sessionId: "session-2" });
-
-    expect(live.position()).toBe(100);
-    expect(live.atEnd()).toBe(false);
-    expect(live.count()).toBe(0);
-    expect(live.reported().at(-1)).toEqual({ id: "b", top: 0 });
   } finally {
     live.stop();
   }

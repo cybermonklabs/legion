@@ -494,10 +494,16 @@ async function within<T>(what: string, ms: number, promise: Promise<T>): Promise
   }
 }
 
+/** One reading of the context window as a case sees it: the frame's two figures, and when this
+ *  case saw the frame. */
+interface Reading {
+  readonly at: number;
+  readonly tokens: number;
+  readonly contextWindow: number;
+}
+
 /** The `context` frames among `seen`, which carry the two figures. */
-function contextFrames(
-  seen: readonly SeenFrame[]
-): { readonly at: number; readonly tokens: number; readonly contextWindow: number }[] {
+function contextFrames(seen: readonly SeenFrame[]): Reading[] {
   return seen
     .filter((each) => each.frame.kind === "context")
     .map((each) => ({
@@ -551,13 +557,31 @@ async function pastTheInterval(at: number): Promise<void> {
   if (left > 0) await Bun.sleep(left);
 }
 
+/** The newest `context` frame once two intervals have passed with no further one, which is when
+ *  the publisher owes nothing: a reading it held and then found unchanged sends no frame of its
+ *  own, and the interval that publish opens cannot be seen from here, so one interval of quiet
+ *  is not proof that the next reading goes out at once. */
+async function settledReading(session: SurfaceSession): Promise<Reading | undefined> {
+  for (;;) {
+    const published = contextFrames(session.frames);
+    const last = published.at(-1);
+    if (last === undefined) return undefined;
+    await pastTheInterval(last.at);
+    await pastTheInterval(last.at + CONTEXT_INTERVAL_MS);
+    if (contextFrames(session.frames).length === published.length) return last;
+  }
+}
+
 // The figures the frame carries are the host's own (`getContextUsage`), and the window is the
 // model's: the harness's models.yml gives the stand-in model a 200000-token window. One turn of a
 // real conversation ends several messages - the person's own and the assistant's - and the
 // publisher reads the figures at the turn's start and after each of them, so a turn inside one
-// interval is one frame, not one per message.
+// interval is the turn's own frame and one more carrying the reading its last message was owed,
+// which the interval held rather than dropped. Without that second frame the ring would hold the
+// turn's first figure for as long as the session then stayed idle, however much the reply added
+// to it.
 test.skipIf(skip)(
-  "a turn's messages inside one interval publish one frame, carrying the host's figures",
+  "a turn's messages inside one interval publish the turn's frame and the figure after its reply",
   async () => {
     const session = await contextSession();
     const from = session.frames.length;
@@ -565,19 +589,32 @@ test.skipIf(skip)(
     const turn = await session.nextTurn("the first model request");
     turn.reply([text("The first case.")]);
     await session.settled();
+    const trailing = await session.until("the frame the reply's own reading was owed", () => {
+      const published = contextFrames(session.frames.slice(from));
+      return published.length > 1 ? published.at(-1) : undefined;
+    });
     const seen = session.frames.slice(from);
 
     const published = contextFrames(seen);
-    expect(published).toHaveLength(1);
-    const reading = published[0] as { readonly at: number; readonly tokens: number };
+    expect(published).toHaveLength(2);
+    const reading = published[0] as Reading;
     // Two messages of the turn, the person's own and the assistant's, and the premise of the row:
-    // both ended inside the interval the first reading opened.
+    // both ended inside the interval the first reading opened, so the reading the last of them is
+    // owed is the one the interval held back.
     const messages = messageFrames(seen);
     expect(new Set(messages.map((each) => each.message.id)).size).toBeGreaterThanOrEqual(2);
-    expect((messages.at(-1)?.at ?? 0) - reading.at).toBeLessThan(CONTEXT_INTERVAL_MS);
+    const lastMessage = messages.at(-1)?.at ?? 0;
+    expect(lastMessage - reading.at).toBeLessThan(CONTEXT_INTERVAL_MS);
     expect(published[0]?.contextWindow).toBe(200_000);
     expect(reading.tokens).toBeGreaterThan(0);
-    expect(reading.tokens).toBeLessThan(200_000);
+    // The figure after the reply, on the wire one interval after the reading before it at the
+    // latest, and read when the reply ended rather than when the frame went out: the host answers
+    // for the turn that is running, and a reading taken later, with the session idle, is a
+    // figure of its own.
+    expect(trailing.at).toBeGreaterThan(lastMessage);
+    expect(trailing.at - reading.at).toBeLessThan(2 * CONTEXT_INTERVAL_MS);
+    expect(trailing.tokens).toBeGreaterThan(reading.tokens);
+    expect(trailing.tokens).toBeLessThan(200_000);
   },
   120_000
 );
@@ -585,14 +622,13 @@ test.skipIf(skip)(
 // The next message after the interval publishes the next frame, and the figures reach the viewer
 // in the same breath as that message: the publisher reads them in the host's `message_end`, right
 // after the message's own frame, so the gap between the two frames is what the read cost. The
-// model request is held past the interval, so the turn's start is one interval and the assistant's
-// message the next.
+// model request is held past the interval, and past the trailing read the turn's own user message
+// is owed, so the assistant's message is the next read of its own.
 test.skipIf(skip)(
   "a message after the interval publishes the next frame, within 200 ms of that message",
   async () => {
     const session = await contextSession();
-    const before = contextFrames(session.frames).at(-1);
-    if (before !== undefined) await pastTheInterval(before.at);
+    await settledReading(session);
 
     const from = session.frames.length;
     await session.command({ type: "prompt", message: "What is the second case?" });
@@ -602,7 +638,7 @@ test.skipIf(skip)(
       const published = contextFrames(session.frames.slice(from));
       return published.length > 0 ? published[0] : undefined;
     });
-    await pastTheInterval(atStart.at);
+    await settledReading(session);
     const held = session.frames.length;
     turn.reply([text("The second case.")]);
     await session.settled();
@@ -610,7 +646,7 @@ test.skipIf(skip)(
     const seen = session.frames.slice(held);
     const published = contextFrames(seen);
     expect(published).toHaveLength(1);
-    const frame = published[0] as { readonly at: number; readonly tokens: number };
+    const frame = published[0] as Reading;
     expect(frame.tokens).toBeGreaterThan(atStart.tokens);
     const message = messageFrames(seen)
       .filter((each) => each.at <= frame.at)
@@ -627,7 +663,7 @@ test.skipIf(skip)(
   "a replay after the turn carries the context frame in its tail, beside the settings and the commands",
   async () => {
     const session = await contextSession();
-    const live = contextFrames(session.frames).at(-1);
+    const live = await settledReading(session);
     if (live === undefined) throw new Error("no context frame was published before this case");
     const turnsBefore = session.turns.length;
 
@@ -651,8 +687,7 @@ test.skipIf(skip)(
   "a compaction publishes a frame of its own, with no further message",
   async () => {
     const session = await contextSession();
-    const last = contextFrames(session.frames).at(-1);
-    if (last !== undefined) await pastTheInterval(last.at);
+    await settledReading(session);
 
     const opened = session.frames.length;
     await session.command({ type: "prompt", message: "What is the third case?" });
@@ -663,7 +698,9 @@ test.skipIf(skip)(
     const atSummary = await session.until("the turn's own context frame", () =>
       contextFrames(session.frames.slice(opened)).at(-1)
     );
-    await pastTheInterval(atSummary.at);
+    // Past the trailing read the turn's own messages are owed too, so the next frame is the
+    // compaction's own.
+    const beforeCompaction = (await settledReading(session)) ?? atSummary;
 
     const from = session.frames.length;
     summary.reply([text("The conversation so far.")]);
@@ -686,7 +723,7 @@ test.skipIf(skip)(
       session.turns.slice(summary.index + 1).filter((call) => !isSummarization(call.request))
     ).toEqual([]);
     expect(after.contextWindow).toBe(200_000);
-    expect(after.tokens).not.toBe(atSummary.tokens);
+    expect(after.tokens).not.toBe(beforeCompaction.tokens);
   },
   120_000
 );
@@ -751,7 +788,7 @@ test.skipIf(skip)(
       frameText(each.message)
     );
     expect(published).toContain("printf hi");
-    expect(published).not.toContain("printf hi\n\nhi");
+    expect(published).not.toContain("printf hi\n\n```\nhi\n```");
     expect(conversation(turn.request)).not.toContain(SHELL_HEADING);
   },
   120_000
@@ -769,7 +806,7 @@ test.skipIf(skip)(
 
     const sent = await session.send("!printf hi");
     const reply = await session.reply(sent, "the reply to the person's command");
-    expect(reply).toBe("!printf hi\n\nhi");
+    expect(reply).toBe("!printf hi\n\n```\nhi\n```");
 
     // The live view: one user message, keyed on the Dispatch message it answers.
     const published = messageFrames(session.frames.slice(from));
@@ -777,14 +814,14 @@ test.skipIf(skip)(
     const message = published[0]?.message as Record<string, unknown>;
     expect(message.role).toBe("user");
     expect(message.dispatchMessageId).toBe(sent.messageID);
-    expect(frameText(message)).toBe("!printf hi\n\nhi");
+    expect(frameText(message)).toBe("!printf hi\n\n```\nhi\n```");
 
     // No turn ran for it, and the model reads the command with the next turn.
     expect(session.turns.length).toBe(turnsBefore);
     const request = await probe(session);
     const messages = messagesOf(request);
     expect(messages.filter((each) => each.includes(SHELL_HEADING))).toHaveLength(1);
-    expect(conversation(request)).toContain("!printf hi\\n\\nhi");
+    expect(conversation(request)).toContain("!printf hi\\n\\n```\\nhi\\n```");
     // No prompt carries the person's line: the host was handed nothing for it, so the only copy
     // of the line in the conversation is the one inside the command's own report.
     expect(conversation(request).split("!printf hi").length - 1).toBe(1);
@@ -813,7 +850,7 @@ test.skipIf(skip)(
     const session = await shellSession();
     const sent = await session.send("!pwd -P");
     expect(await session.reply(sent, "the reply to `!pwd -P`")).toBe(
-      `!pwd -P\n\n${realpathSync(session.workspace)}`
+      `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
     );
   },
   120_000
@@ -829,11 +866,11 @@ test.skipIf(skip)(
 
     const sent = await session.send("!printf aside", { mode: "aside" });
     expect(await session.reply(sent, "the reply to the person's Aside")).toBe(
-      "!printf aside\n\naside"
+      "!printf aside\n\n```\naside\n```"
     );
     const published = messageFrames(session.frames.slice(from));
     expect(published).toHaveLength(1);
-    expect(frameText(published[0]?.message ?? {})).toBe("!printf aside\n\naside");
+    expect(frameText(published[0]?.message ?? {})).toBe("!printf aside\n\n```\naside\n```");
     expect(session.turns.length).toBe(turnsBefore);
   },
   120_000
@@ -849,6 +886,27 @@ test.skipIf(skip)(
     expect(await session.reply(sent, "the reply to `!true`")).toBe(
       "!true\n\nThe command printed nothing."
     );
+  },
+  120_000
+);
+
+// Dispatch cannot store U+0000 and refuses a whole reply holding one (400 NUL_CHARACTER), so a
+// command that prints one would leave the person with no answer at all: it is dropped from what
+// the three texts carry, as every control character but the line break and the tab is.
+test.skipIf(skip)(
+  "a Send of a command printing a NUL is answered with the NUL dropped",
+  async () => {
+    const session = await shellSession();
+    const from = session.frames.length;
+    const sent = await session.send("!printf 'a\\0b'");
+    expect(await session.reply(sent, "the reply to the command printing a NUL")).toBe(
+      "!printf 'a\\0b'\n\n```\nab\n```"
+    );
+    const published = messageFrames(session.frames.slice(from)).filter(
+      (each) => each.message.dispatchMessageId === sent.messageID
+    );
+    expect(published).toHaveLength(1);
+    expect(frameText(published[0]?.message ?? {})).toBe("!printf 'a\\0b'\n\n```\nab\n```");
   },
   120_000
 );
@@ -915,7 +973,7 @@ test.skipIf(skip)(
     const from = session.frames.length;
     const command = "!printf 'a%.0s' $(seq 1 20000)";
     const sent = await session.send(command);
-    const cut = `${command}\n\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
+    const cut = `${command}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
     expect(await session.reply(sent, "the reply to the long command")).toBe(cut);
     // This send's own frames, not every frame since: the row before it stops a command at the
     // limit, and under load that command's own frame can land after this row has read the
@@ -941,7 +999,7 @@ test.skipIf(skip)(
     const session = await shellSession();
     const sent = await session.send("!!printf hi");
     const reply = await session.reply(sent, "the reply to `!!printf hi`");
-    expect(reply).toStartWith("!!printf hi\n\n");
+    expect(reply).toStartWith("!!printf hi\n\n```\n");
     expect(reply).toContain("!printf");
     expect(reply).toEndWith("The command ended with exit status 127.");
 
@@ -965,7 +1023,7 @@ test.skipIf(skip)(
     expect(await session.reply(sent, "the BTW's reply")).toBe("The model's answer.");
     expect(
       messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
-    ).not.toContain("!printf hi\n\nhi");
+    ).not.toContain("!printf hi\n\n```\nhi\n```");
     await session.settled();
   },
   120_000
@@ -990,7 +1048,7 @@ test.skipIf(skip)(
     expect(session.replied(sent)).toBe(false);
     expect(
       messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
-    ).not.toContain("!printf hi\n\nhi");
+    ).not.toContain("!printf hi\n\n```\nhi\n```");
     expect(
       session.requests.some((request) =>
         request.path.startsWith(`/api/v1/messages/${sent.messageID}/deliveries/`)
@@ -1024,7 +1082,9 @@ test.skipIf(skip)(
     expect(session.replied(prompt)).toBe(false);
 
     await Bun.write(release, "");
-    expect(await session.reply(waiting, "the reply once the command ended")).toEndWith("released");
+    expect(await session.reply(waiting, "the reply once the command ended")).toEndWith(
+      "```\nreleased\n```"
+    );
   },
   120_000
 );

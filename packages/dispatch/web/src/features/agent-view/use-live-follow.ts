@@ -114,7 +114,6 @@ export function useLiveFollow({
   onPlace,
   ownSendCount,
   replayCount,
-  sessionId,
   viewport,
 }: {
   /** Every turn in the transcript, in the order it is rendered, by the key the DOM carries in
@@ -133,7 +132,8 @@ export function useLiveFollow({
   front: boolean;
   /** Where this session's reader was when the view last reported, from the view's entry in
    *  `live-views.ts`, or `null` for a reader who was following the live end. Read at the first
-   *  render and at every move to another session, which is when a place is restored. */
+   *  render: the shell mounts one view per session (`MountedLiveViews` keys each by its
+   *  session), so a hook never changes the session it follows. */
   initialPlace: LivePlace | null;
   /** The place the hook holds now, reported as it changes: the turn the reader is on, or `null`
    *  while they follow the live end. The store keeps it for the view's next waking. */
@@ -142,7 +142,6 @@ export function useLiveFollow({
   ownSendCount: number;
   /** Bumped once per rebuild of the whole transcript from the session's replay. */
   replayCount: number;
-  sessionId: string;
   /** The scroller itself, not a ref holding it: the view renders it inside an error boundary,
    *  which replaces the node when a reset clears the error it held, and every listener below
    *  binds to the node it is given rather than to the first one there was. */
@@ -163,7 +162,6 @@ export function useLiveFollow({
   const remembered = useRef<LivePlace | null>(initialPlace);
   const previousSends = useRef(ownSendCount);
   const previousReplays = useRef(replayCount);
-  const previousSession = useRef(sessionId);
   // Whether the view is in front, as the listeners below read it: they outlive the render they
   // were made in, as `ids` does. `wasFront` is what the effect below tells a view coming back
   // in front by.
@@ -180,13 +178,11 @@ export function useLiveFollow({
   // several times a second while a turn streams. Declared first, so it is current by the time the
   // effects below read it in the same commit.
   const ids = useRef(contentIds);
-  // The place of whichever session is being shown now, and where to report the one held: both
-  // are read from the commit that is current, never from the render a listener was made in.
-  const given = useRef(initialPlace);
+  // Where to report the place held: read from the commit that is current, never from the render
+  // a listener was made in.
   const report = useRef(onPlace);
   useLayoutEffect(() => {
     ids.current = contentIds;
-    given.current = initialPlace;
     inFront.current = front;
     report.current = onPlace;
   });
@@ -449,8 +445,6 @@ export function useLiveFollow({
     }
     const ownSend = ownSendCount !== previousSends.current;
     previousSends.current = ownSendCount;
-    const switched = sessionId !== previousSession.current;
-    previousSession.current = sessionId;
     const rebuilt = replayCount !== previousReplays.current;
     previousReplays.current = replayCount;
     const cameToFront = front && !wasFront.current;
@@ -473,16 +467,9 @@ export function useLiveFollow({
       }
       return;
     }
-    if (ownSend || switched) {
-      // A move to another session puts the reader back where that session's view was left, as
-      // waking a view does; with no place kept for it - a reader who was following, a view
-      // opened for the first time - and after a send of the viewer's own, the live end.
-      const place = switched ? given.current : null;
-      if (place === null) {
-        jumpToEnd();
-      } else {
-        restorePlace(element, place);
-      }
+    if (ownSend) {
+      // A send of the viewer's own takes them back to the live end, wherever they were reading.
+      jumpToEnd();
       return;
     }
     const follows = observe(element);
@@ -521,7 +508,6 @@ export function useLiveFollow({
     ownSendCount,
     replayCount,
     restorePlace,
-    sessionId,
     settleRebuild,
     viewport,
   ]);

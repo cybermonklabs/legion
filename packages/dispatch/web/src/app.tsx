@@ -475,16 +475,32 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     liveViews.setPinned(pinnedAgents);
   }, [liveViews, pinnedAgents]);
   // The pins were this browser's until INFRA-812 made them the person's. At the first load
-  // after the change each id the old key holds is written as a pin and the key is removed, so
-  // this runs once per browser and Dispatch ends up holding the union of what each of the
-  // person's browsers had kept.
+  // after the change each id the old key holds is written as a pin, so this runs once per
+  // browser and Dispatch ends up holding the union of what each of the person's browsers had
+  // kept.
+  //
+  // One write at a time, in the order the key kept them, because Dispatch stamps each pin as it
+  // arrives and `pinned_at` is the order the rail draws; and the key is removed only once every
+  // one of them has landed, since a write Dispatch refuses is the reader's to retry or discard
+  // and a key removed before that would be the person's pins gone. A refusal stops the run and
+  // leaves the key whole, so the next load writes the lot again, in the same order. The key the
+  // run began under is held here rather than read back from storage, because the key outlives
+  // the first write now: an effect that runs again - React runs it twice under StrictMode -
+  // would otherwise write every id a second time.
   const writePin = useAgentPinWrite();
+  const migrated = useRef<string | null>(null);
   useEffect(() => {
     const key = legacyPinnedAgentsKey(user.login);
+    if (migrated.current === key) return;
     const kept = window.localStorage.getItem(key);
     if (kept === null) return;
-    window.localStorage.removeItem(key);
-    for (const sessionId of legacyPinnedIds(kept)) writePin(sessionId, true);
+    migrated.current = key;
+    void (async () => {
+      for (const sessionId of legacyPinnedIds(kept)) {
+        if (!(await writePin(sessionId, true))) return;
+      }
+      window.localStorage.removeItem(key);
+    })();
   }, [user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work

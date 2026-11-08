@@ -542,6 +542,7 @@ afterEach(async () => {
   // Each is read when an extension instance is created, and a row aborted at Bun's own timeout
   // never runs its `finally`, so a row that sets one must not decide a later row's timings; the
   // place cache's lifetime is set again by the hook above.
+  delete process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS;
   delete process.env.ENVOY_RESUBSCRIBE_DELAY_MS;
   delete process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS;
   delete process.env.ENVOY_SHELL_COMMAND_LIMIT_MS;
@@ -13098,6 +13099,17 @@ console.log(JSON.stringify(args));
       const ledgerRecords = (entries: readonly { readonly customType?: string }[]) =>
         JSON.stringify(entries.filter((entry) => entry.customType === REPLAY_DELIVERED_ENTRY));
 
+      /** Whether a process of this machine is still running, as the rows that watch a command's
+       *  own process group read it. */
+      const alive = (pid: number): boolean => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
       /**
        * Boots ses_delivery on a host that runs typed input, in a working directory of its own and
        * with a viewer watching its live stream. The limit a command is stopped after is read when
@@ -13107,6 +13119,9 @@ console.log(JSON.stringify(args));
         query: string,
         options: {
           readonly accept?: (count: number) => AcceptAnswer;
+          /** Runs as the host is handed the agent's copy of the report; a throw is the host
+           *  refusing it. */
+          readonly beforeSend?: () => void;
           readonly limitMs?: number;
           readonly sideTurn?: (prompt: string) => string;
         } = {}
@@ -13120,6 +13135,7 @@ console.log(JSON.stringify(args));
           cwd: work,
           sendUserInput: async () => ({ handled: "prompt" }),
           ...(options.accept !== undefined && { accept: options.accept }),
+          ...(options.beforeSend !== undefined && { beforeSend: options.beforeSend }),
           ...(options.sideTurn !== undefined && { sideTurn: options.sideTurn }),
         });
         natsState.controls
@@ -13148,12 +13164,14 @@ console.log(JSON.stringify(args));
         expect(frames[0]?.message.role).toBe("user");
         expect(frames[0]?.message.dispatchMessageId).toBe(DIRECT_MESSAGE_ID);
         expect(frames[0]?.message.id).toEndWith(`:${DIRECT_MESSAGE_ID}`);
-        expect(frames[0]?.message.parts).toEqual([{ text: "!printf hi\n\nhi", type: "text" }]);
+        expect(frames[0]?.message.parts).toEqual([
+          { text: "!printf hi\n\n```\nhi\n```", type: "text" },
+        ]);
 
         // The agent: read at its next turn, with no turn started for it.
         expect(sends).toEqual([
           {
-            content: expect.stringContaining("!printf hi\n\nhi"),
+            content: expect.stringContaining("!printf hi\n\n```\nhi\n```"),
             options: { deliverAs: "nextTurn", triggerTurn: false },
           },
         ]);
@@ -13164,7 +13182,7 @@ console.log(JSON.stringify(args));
             body: {
               actor: { id: "ses_delivery", kind: "session" },
               attempt: 1,
-              body: "!printf hi\n\nhi",
+              body: "!printf hi\n\n```\nhi\n```",
             },
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
@@ -13188,7 +13206,9 @@ console.log(JSON.stringify(args));
         await delivered(1);
         await replied(1);
 
-        expect(replies[0]?.body).toMatchObject({ body: `!pwd -P\n\n${realpathSync(work)}` });
+        expect(replies[0]?.body).toMatchObject({
+          body: `!pwd -P\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
+        });
       }, 20_000);
 
       test("answers a command that printed nothing", async () => {
@@ -13235,7 +13255,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(replies[0]?.body).toMatchObject({
-          body: "!printf early; sleep 600\n\nearly\n\nThe command was stopped after 1000 ms.",
+          body: "!printf early; sleep 600\n\n```\nearly\n```\n\nThe command was stopped after 1000 ms.",
         });
       }, 20_000);
 
@@ -13275,7 +13295,7 @@ console.log(JSON.stringify(args));
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
             new RegExp(
-              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\na{${SHELL_OUTPUT_MAX}}\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
+              `^!printf 'a%\\.0s' \\$\\(seq 1 20000\\)\\n\\n\`\`\`\\na{${SHELL_OUTPUT_MAX}}\\n\`\`\`\\n\\nThe output was cut at ${SHELL_OUTPUT_MAX} characters\\.$`
             )
           ),
         });
@@ -13294,11 +13314,103 @@ console.log(JSON.stringify(args));
 
         expect(replies[0]?.body).toMatchObject({
           body: expect.stringMatching(
-            /^!!printf hi\n\n.*!printf.*\n\nThe command ended with exit status 127\.$/s
+            /^!!printf hi\n\n```\n.*!printf.*\n```\n\nThe command ended with exit status 127\.$/s
           ),
         });
         // Nothing is hidden from the model: it reads the same report.
         expect(sends[0]?.content).toContain("The command ended with exit status 127.");
+      }, 20_000);
+
+      // Dispatch cannot store U+0000 and refuses a whole reply holding one (400 NUL_CHARACTER),
+      // so output that holds one would leave the person with no answer at all and their message
+      // untaken. What the command printed is stripped of it before any of the three texts is
+      // written.
+      test("answers a command whose output holds a NUL, and takes the message", async () => {
+        const { agent, delivered, fixture, replied, replies } = await bootShellSession(
+          "shell-command-nul",
+          { accept: () => ({ accepted: true, body: "!printf 'a\\0b'" }) }
+        );
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-nul"));
+        await delivered(1);
+        await replied(1);
+
+        expect(replies[0]?.body).toMatchObject({ body: "!printf 'a\\0b'\n\n```\nab\n```" });
+        expect(JSON.stringify(replies[0]?.body)).not.toContain("\\u0000");
+        expect(JSON.stringify(streamFrames()[0]?.message.parts)).not.toContain("\\u0000");
+        await until(
+          () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-nul"),
+          "the shell command's message to be recorded as taken"
+        );
+      }, 20_000);
+
+      // The host can refuse the agent's copy (`pi.sendMessage` throws on a host mid-switch), and
+      // the person's message must be taken all the same: the command has run, and a redelivery
+      // would run it a second time.
+      test("takes the message when the host refuses the agent's copy", async () => {
+        const { agent, fixture } = await bootShellSession("shell-command-send-throws", {
+          accept: () => ({ accepted: true, body: "!printf hi" }),
+          beforeSend: () => {
+            throw new Error("the host refused the send");
+          },
+        });
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-send-throws"));
+
+        await until(
+          () => ledgerRecords(fixture.entries).includes("dispatch-shell-command-send-throws"),
+          "the shell command's message to be recorded as taken though the send threw"
+        );
+      }, 20_000);
+
+      // A command runs in a process group of its own, which nothing but this process's kill
+      // ends: the session that was asked for it is going, so the command goes with it rather
+      // than running on with its session gone.
+      test("kills a running command's process group when the session shuts down", async () => {
+        const { agent, context, fixture, replied, replies, work } = await bootShellSession(
+          "shell-command-shutdown-kill",
+          // Written in the session's own working directory, which the command runs in: the pid
+          // is the group's leader, and `exec` leaves the shell's own pid to `sleep`.
+          { accept: () => ({ accepted: true, body: "!echo $$ > pid; exec sleep 600" }) }
+        );
+        const pidFile = join(work, "pid");
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-kill"));
+        // The command itself, not the agent's copy of its report: nothing is sent until the
+        // command ends, and this one would run for ten minutes.
+        await until(() => existsSync(pidFile), "the command to be running");
+        const pid = Number(readFileSync(pidFile, "utf8").trim());
+        expect(Number.isInteger(pid)).toBe(true);
+        // The command is still running: nothing but the shutdown below ends it.
+        expect(alive(pid)).toBe(true);
+
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+
+        await until(() => !alive(pid), "the command's process group to be killed");
+        // The person is answered all the same, and the message is taken.
+        await replied(1);
+        expect(replies[0]?.body).toMatchObject({
+          body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
+        });
+      }, 20_000);
+
+      // A session shutting down runs no command: one started now would outlive the session it
+      // was asked of. The message is answered saying so rather than left with no answer.
+      test("refuses a command while the session is shutting down, and says so", async () => {
+        const { agent, context, fixture, replied, replies, sends } = await bootShellSession(
+          "shell-command-shutdown-refused",
+          { accept: () => ({ accepted: true, body: "!printf hi" }) }
+        );
+        await fixture.handlers.get("session_shutdown")?.({}, context);
+
+        agent.push(directDispatchEnvelope("steer", "shell-command-shutdown-refused"));
+        await replied(1);
+
+        expect(replies[0]?.body).toMatchObject({
+          body: "!printf hi\n\nThe command was not run: this session is shutting down.",
+        });
+        expect(sends).toEqual([]);
+        expect(streamFrames()).toEqual([]);
       }, 20_000);
 
       test("a BTW is answered by the model and runs no command", async () => {
@@ -13970,6 +14082,31 @@ console.log(JSON.stringify(args));
       await fixture.handlers.get("message_end")?.({ message }, context);
 
       expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
+    });
+
+    // The reading a turn's last message is owed is held, not dropped: a turn whose last message
+    // ends inside the interval - a short reply, a quick tool round - is the last reading of that
+    // turn, and the ring would otherwise hold the figure before it for as long as the session
+    // then stays idle. The figure is the message's own: the host answers for the turn that is
+    // running, so a reading taken when the frame goes out would be a different conversation's.
+    test("publishes the reading its interval held back, as it stood at the message", async () => {
+      process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
+      let tokens = 50_000;
+      const { context, fixture } = await bootDirectSession("context-frame-trailing", {
+        contextUsage: () => ({ contextWindow: 200_000, percent: tokens / 2_000, tokens }),
+      });
+      await attachViewer();
+
+      await fixture.handlers.get("turn_start")?.({}, context);
+      tokens = 60_000;
+      await fixture.handlers.get("message_end")?.({ message }, context);
+      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000]);
+      // The turn is over by the time the frame goes out, and this host answers for the turn
+      // that is running.
+      tokens = 5;
+
+      await until(() => publishedContext().length > 1, "the frame the message's reading was owed");
+      expect(publishedContext().map((frame) => frame.tokens)).toEqual([50_000, 60_000]);
     });
 
     for (const [name, usage] of [
