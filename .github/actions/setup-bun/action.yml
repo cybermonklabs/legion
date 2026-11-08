@@ -11,6 +11,14 @@ description: >-
   commits: the new version's row in .github/ci-images.yaml first, then .bun-version, the
   `ARG BUN_VERSION` default of packages/daemon/docker/worker.Dockerfile and every `FROM`.
 
+  Bun has a second source, because oven-sh/setup-bun reads one: the npm package upstream
+  publishes the same binary in, which needs no copy of ours and which every job already reaches
+  for `bun install`.
+  The second step reads it when the release asset left no Bun of the pinned version behind, and
+  the third step checks the installed binary's sha256 against the row .github/ci-tools.yaml holds
+  for this runner's Bun, whichever source served the bytes — oven-sh/setup-bun verifies no
+  checksum of its own.
+
   A run off main passes no-cache, so only a run on main saves: an entry a pull request writes is
   readable by no other pull request. ci.yaml runs on no push, so the entry comes from the
   workflows that do run on main — claude-envoy-rebuild.yaml, docs-pages.yaml (through
@@ -22,7 +30,74 @@ description: >-
 runs:
   using: composite
   steps:
+    # A failed download here is an outage of GitHub's release assets, not a reason to fail the
+    # job: the step after this one installs the same binary from the second source. The action
+    # puts ~/.bun/bin on $GITHUB_PATH before it downloads anything, and a runner applies a step's
+    # $GITHUB_PATH whether that step succeeded or failed, so every later step finds a bun there
+    # either way.
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      continue-on-error: true
       with:
         bun-version-file: .bun-version
         no-cache: ${{ github.ref != 'refs/heads/main' }}
+
+    - id: bun-second-source
+      name: Install Bun from npm when the release asset did not serve it
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        # The row is chosen the way oven-sh/setup-bun chooses its asset, so both sources serve
+        # the same build: an x86_64 CPU without avx2 takes the baseline one, and a /proc/cpuinfo
+        # this step cannot read counts as having no avx2, which is that action's own fallback.
+        machine=$(uname -m)
+        case "$machine" in
+          x86_64)
+            if grep -q avx2 /proc/cpuinfo 2> /dev/null; then
+              row=bun-linux-x64
+            else
+              row=bun-linux-x64-baseline
+            fi
+            ;;
+          aarch64 | arm64) row=bun-linux-aarch64 ;;
+          *)
+            echo "::error::setup-bun: .github/ci-tools.yaml holds no Bun row for a $machine runner" >&2
+            exit 1
+            ;;
+        esac
+        # What decides this is the filesystem, not whether the step above was green: a cached
+        # Bun of the pinned version is as good as a downloaded one, and a step that exited 0
+        # having installed something else is not.
+        pinned=$(tr -d '[:space:]' < .bun-version)
+        revision=
+        if [ -x "$HOME/.bun/bin/bun" ]; then
+          revision=$("$HOME/.bun/bin/bun" --revision) || revision=
+        fi
+        if [ -n "$revision" ] && [ "${revision%%+*}" = "$pinned" ]; then
+          source=github-release
+          echo "setup-bun: the release asset served Bun $pinned, so this step installs nothing"
+        else
+          source=npm
+          echo "setup-bun: no Bun $pinned at $HOME/.bun/bin/bun, so the second source serves it"
+          mkdir -p "$HOME/.bun/bin"
+          binary=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bun.XXXXXX")
+          ci_tools_fetch_fallback "$row" "$binary"
+          install -m 0755 "$binary" "$HOME/.bun/bin/bun"
+          rm -f "$binary"
+        fi
+        printf 'row=%s\nsource=%s\n' "$row" "$source" >> "$GITHUB_OUTPUT"
+
+    - name: Check the installed Bun is the pinned binary
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=.github/scripts/ci-tools.sh
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh"
+        bun=$(command -v bun) || bun=
+        if [ -z "$bun" ]; then
+          echo "::error::setup-bun: no bun is on this job's PATH, so neither source installed one" >&2
+          exit 1
+        fi
+        echo "setup-bun: checking $bun"
+        ci_tools_verify "${{ steps.bun-second-source.outputs.row }}" "$bun" "${{ steps.bun-second-source.outputs.source }}"

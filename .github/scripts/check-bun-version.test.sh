@@ -192,6 +192,7 @@ installers=(
   'npm i --global bun'
   'mise use -g bun@1.4.2'
   'curl -L https://github.com/oven-sh/bun/releases/download/bun-v1.4.2/bun-linux-x64.zip -o bun.zip'
+  'curl -L https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-1.4.4.tgz -o bun.tgz'
 )
 for index in "${!installers[@]}"; do
   installer=${installers[index]}
@@ -410,7 +411,7 @@ cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
 YAML
 run_check "$root"
 check "a second setup-bun step in the wrapper fails" "$(is "$status" 1)"
-check "counts them" "$(contains "$out" 'holds 2 steps, not one')"
+check "counts them" "$(contains "$out" 'holds 2 oven-sh/setup-bun steps, not one')"
 
 root=$(fixture wrapper-second-step)
 cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
@@ -418,17 +419,33 @@ cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
       run: echo "/opt/bun/bin" >> "$GITHUB_PATH"
 YAML
 run_check "$root"
-check "a second step prepending \$GITHUB_PATH in the wrapper fails" "$(is "$status" 1)"
-check "says what a second step can do to a later one" "$(contains "$out" 'prepend $GITHUB_PATH')"
-check "and the step count is the only rule that catches it" "$(contains "$out" '1 place(s)')"
+check "a step of the wrapper prepending \$GITHUB_PATH fails" "$(is "$status" 1)"
+check "says what that path does to a later step" "$(contains "$out" 'prepends \$GITHUB_PATH, which every step after this action keeps')"
+check "and one rule catches it, not two" "$(contains "$out" '1 place(s)')"
 
-root=$(fixture wrapper-inert-step)
-cat >> "$root/.github/actions/setup-bun/action.yml" <<'YAML'
-    - name: neither run nor uses
+# What this branch's wrapper is: the install, then the second source the pin decides between,
+# then the check of the binary that ended up installed. A step that writes no $GITHUB_PATH and
+# no INPUT_* hands a later step nothing, so how many of them there are is not the gate's
+# business.
+root=$(fixture wrapper-three-steps)
+cat > "$root/.github/actions/setup-bun/action.yml" <<'YAML'
+name: Setup Bun
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      continue-on-error: true
+      with:
+        bun-version-file: .bun-version
+    - id: bun-second-source
+      shell: bash
+      run: echo "source=npm" >> "$GITHUB_OUTPUT"
+    - shell: bash
+      run: echo "checking $(command -v bun)"
 YAML
 run_check "$root"
-check "a second step carrying neither run nor uses is still a step" "$(is "$status" 1)"
-check "counts it" "$(contains "$out" 'holds 2 steps, not one')"
+check "a wrapper of three steps, one of them setup-bun on the version file, passes" "$(is "$status" 0)"
+check "and says every install reads the pin" "$(contains "$out" 'every Bun install reads .bun-version (1.3.14)')"
 
 root=$(fixture wrapper-env)
 cat > "$root/.github/actions/setup-bun/action.yml" <<'YAML'
