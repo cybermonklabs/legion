@@ -31,6 +31,8 @@ const issue: IssueDetails = {
       kind: "doc",
       name: "spec.md",
       primary: true,
+      ref_key: "CORE-1/spec",
+      session_id: null,
       slug: "spec",
       versions: [],
     },
@@ -51,7 +53,10 @@ const issue: IssueDetails = {
   assignee: null,
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   project: "CORE",
   referenced_by_count: 0,
   route: null,
@@ -120,8 +125,15 @@ function stubIssueApi() {
   // children, or open asks. The stub mirrors that so the page is exercised against the
   // real response shape.
   const patchIssue = answerIssuePatches().mockImplementation(
-    async (_key, { rank: _rank, components: _components, ...update }) =>
-      narrowIssue({ ...issue, ...update })
+    // A null `status` or `title` in the body means "leave it as it is", which is what the server
+    // does with it; every other field the body names is written through.
+    async (_key, { rank: _rank, components: _components, status, title, ...update }) =>
+      narrowIssue({
+        ...issue,
+        ...update,
+        status: status ?? issue.status,
+        title: title ?? issue.title,
+      })
   );
 
   return {
@@ -992,7 +1004,7 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");
@@ -1025,7 +1037,7 @@ test("IssuePage clears the parent with an empty editor save", async () => {
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
     );
-    await screen.findByRole("button", { name: "Set parent issue" });
+    await screen.findByRole("button", { name: "None, set parent issue" });
     expect(screen.queryByRole("link", { name: "CORE-9" })).not.toBeInTheDocument();
   } finally {
     unmount();
@@ -1047,7 +1059,7 @@ test("IssuePage renders the server's reason inline when a parent save is refused
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "None, set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     await user.click(parent);
     await user.paste("CORE-9");

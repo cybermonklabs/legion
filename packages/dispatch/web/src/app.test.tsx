@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { realClock, tick } from "./__tests__/fake-clock";
+import { graphNode } from "./__tests__/graph-fixture";
 import { installFakeLiveSockets } from "./__tests__/live-socket-harness";
 import { answerIssuePatches } from "./__tests__/send-answers";
 import { userOnFakeClock } from "./__tests__/user";
@@ -575,7 +576,13 @@ test("project routes render the project page and a project document route", asyn
   const getMyState = spyOn(api, "getMyState").mockResolvedValue({});
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([
-    { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
+    {
+      created_at: "2026-09-10T00:00:00Z",
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+      gated_steps: [],
+    },
   ]);
   const listProjectArtifacts = spyOn(api, "listProjectArtifacts").mockResolvedValue([]);
   // No architecture source: the bare project path opens on Issues.
@@ -592,6 +599,8 @@ test("project routes render the project page and a project document route", asyn
     name: "Design notes",
     primary: false,
     project: "CORE",
+    ref_key: "CORE/design-notes",
+    session_id: null,
     slug: "design-notes",
     versions: [],
   });
@@ -606,19 +615,25 @@ test("project routes render the project page and a project document route", asyn
     name: "Design notes",
     primary: false,
     project: "CORE",
+    ref_key: "CORE/design-notes",
+    session_id: null,
     slug: "design-notes",
     versions: [],
   };
   const documentReads = [
     spyOn(api, "getArtifact").mockResolvedValue(artifact),
-    spyOn(api, "getArtifactText").mockResolvedValue({ markdown: "", version: null }),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "",
+      token: "sha256:design-notes",
+      version: null,
+    }),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
     spyOn(api, "listArtifactComments").mockResolvedValue([]),
     spyOn(api, "listArtifactAsks").mockResolvedValue([]),
     spyOn(api, "getArtifactSubscribers").mockResolvedValue([]),
     spyOn(api, "getReferences").mockResolvedValue({
       edges: [],
-      node: { id: "artifact-1", kind: "artifact" },
+      node: graphNode({ id: "artifact-1", kind: "artifact" }),
     }),
   ];
   const renderRoute = (path: string) => {

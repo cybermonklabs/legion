@@ -28,7 +28,10 @@ const home = join(dir, "home");
 // on PATH, which, as the real CLI does, puts the release the github-app secret it names gives
 // (STORE/<name>) into the environment of the command after `--` under that name. It appends its
 // argv to ARGV_LOG, fails with exit 3 when the `<owner>/<read-only>` it was asked for matches
-// FAIL_MINT, releases nothing when EMPTY_MINT is set, and streams stdout when OVERSIZED_MINT is set.
+// FAIL_MINT, refuses the names UNKNOWN_SECRETS lists as the broker refuses a name it does not
+// serve (`UNKNOWN_SECRET`, exit 1, under the line UNKNOWN_PREFACE gives when it gives one, as the
+// client's own progress lines put it), releases nothing when EMPTY_MINT is set, and streams
+// stdout when OVERSIZED_MINT is set.
 const store = join(dir, "store");
 const fakeBin = join(dir, "bin");
 // Every directory and stand-in this file's children read, staged before the first row: `dir` is
@@ -56,6 +59,14 @@ done
 shift
 if [ -n "\${FAIL_MINT:-}" ]; then
   case "$owner/$ro" in $FAIL_MINT) echo "grant for $name denied" >&2; exit 3 ;; esac
+fi
+if [ -n "\${UNKNOWN_SECRETS:-}" ]; then
+  case " \$UNKNOWN_SECRETS " in
+    *" $name "*)
+      [ -z "\${UNKNOWN_PREFACE:-}" ] || echo "\$UNKNOWN_PREFACE" >&2
+      echo "agent-secrets: no agent secret has this name (UNKNOWN_SECRET); asked the broker AGENT_SECRETS_URL names" >&2
+      exit 1 ;;
+  esac
 fi
 if [ -n "\${EMPTY_MINT:-}" ]; then export "$name="; exec "$@"; fi
 if [ -n "\${OVERSIZED_MINT:-}" ]; then exec yes x; fi
@@ -291,6 +302,43 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     expect(stdout).not.toContain("logins");
     expect(stderr).toContain("answered App id 405, want 404");
     expect(stderr).toMatch(/^FAIL prerequisites: lib\/app-logins.ts could not prove/m);
+    holdsNoToken(stderr);
+  });
+
+  // A deployment whose broker holds no credential for a role (the review App's secret deleted)
+  // must set that role's input: app-logins.ts reads the broker's own refusal out of the run it
+  // already makes and names the role and the input, rather than its generic reason alone. It
+  // reads it out of the whole of the command's stderr, so a refusal the client prints under a
+  // line of its own is named the same way.
+  const refusal =
+    /^app-logins: the review App \(app_id 202\): the secrets broker serves no github-app secret under the name github_apps\.review\.token_command gives \(UNKNOWN_SECRET\): set LEGION_E2E_REVIEW_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App$/m;
+
+  test("a secret the broker does not serve fails the check, naming the role and the input", async () => {
+    const { code, stdout, stderr } = await githubApps(
+      { ...appInputs, UNKNOWN_SECRETS: "REVIEW_APP" },
+      proveBoth
+    );
+    expect(code).toBe(1);
+    expect(stdout).not.toContain("logins");
+    // The broker's own line still reaches the run's stderr as it is written.
+    expect(stderr).toContain("no agent secret has this name (UNKNOWN_SECRET)");
+    expect(stderr).toMatch(refusal);
+    holdsNoToken(stderr);
+  });
+
+  test("a broker refusal below the first line of the command's stderr names the role and the input too", async () => {
+    const preface = "agent-secrets: asking the broker AGENT_SECRETS_URL names for REVIEW_APP";
+    const { code, stdout, stderr } = await githubApps(
+      { ...appInputs, UNKNOWN_SECRETS: "REVIEW_APP", UNKNOWN_PREFACE: preface },
+      proveBoth
+    );
+    expect(code).toBe(1);
+    expect(stdout).not.toContain("logins");
+    const relayed = stderr.split("\n");
+    expect(relayed.indexOf(preface)).toBeLessThan(
+      relayed.findIndex((l) => l.includes("no agent secret has this name (UNKNOWN_SECRET)"))
+    );
+    expect(stderr).toMatch(refusal);
     holdsNoToken(stderr);
   });
 

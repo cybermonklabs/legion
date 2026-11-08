@@ -6,6 +6,7 @@ import { type ComponentProps, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
@@ -295,7 +296,7 @@ test("the author can edit a comment and an edited comment carries its marker", a
   const commentBlocks = spyOn(api, "commentBlocks").mockResolvedValue({
     blocks: [],
     indexed: false,
-    item: { id: root.id, issue_key: "CORE-1", kind: "comment" },
+    item: graphNode({ id: root.id, issue_key: "CORE-1", kind: "comment" }),
   });
   const onEdit = spyOn({ call: async () => undefined }, "call");
   const view = renderCard(undefined, { onEdit: onEdit });

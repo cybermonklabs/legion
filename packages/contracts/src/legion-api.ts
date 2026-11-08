@@ -141,6 +141,29 @@ const legionCapabilityReportView = z.object({
   open: z.array(z.object({ name: nonEmptyString, detail: nonEmptyString })),
 });
 
+/** `api.StepView` — what the daemon last saw a claim's agent do, built from the tool frames of
+ * its worker stream (contract 57): `at`, when the daemon received that step; `turnStartedAt`,
+ * when the turn it belongs to began; `tool` and `callId`, the call the agent is in, which the
+ * start and end frames pair by; `argsBytes` and `argsHash`, the length of that call's arguments
+ * and an eight-byte fingerprint of them; and `startedAt` and `endedAt`, when the daemon received
+ * that call's start and end.
+ *
+ * The arguments themselves are never on the wire: a shell command routinely holds a credential,
+ * and this record reaches every surface an operator reads. Every field is absent where the
+ * record holds nothing for it — a claim whose turn has begun and whose agent has called nothing
+ * carries `turnStartedAt` alone, and a call still open carries `startedAt` and no `endedAt`,
+ * which is the shape a stalled turn leaves behind. */
+const legionStepView = z.object({
+  at: timestamp.optional(),
+  turnStartedAt: timestamp.optional(),
+  tool: nonEmptyString.optional(),
+  callId: nonEmptyString.optional(),
+  argsBytes: z.number().int().positive().optional(),
+  argsHash: nonEmptyString.optional(),
+  startedAt: timestamp.optional(),
+  endedAt: timestamp.optional(),
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), and `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does). */
@@ -160,6 +183,11 @@ const legionClaimView = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
+   * begun a turn nor made a call the daemon saw. A caller in a pod whose plugin declares a
+   * contract below 57 is served the state with no such key at all (the daemon's
+   * `withoutStallRecord`), so every reader takes it as optional. */
+  step: legionStepView.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -234,6 +262,14 @@ const legionSlotView = z.object({
   lentTo: issueKey.optional(),
 });
 
+/** `api.WaitingLineView` — where the issue stands in `admission.waiting`: `place`, 1 being first
+ * in the line, and `length`, how long that list was at this read. It says where the issue stands,
+ * not what holds it, which `admission.blocked` names. */
+const legionWaitingLineView = z.object({
+  place: z.number().int().positive(),
+  length: z.number().int().positive(),
+});
+
 /** `api.CheckWakeView` — what woke a production check's latest look: `kind` names the cause
  * (`merge` for the look the close opens, `check wake` for one the checking agent's own `wake_at`
  * or the retry of a look nobody reported starts, and `bound` for the last look; a check whose
@@ -290,8 +326,8 @@ export const LEGION_WAIT_ANSWERS = [
 
 /** The fields every `waitingOn` shape shares: `since`, Dispatch's time of the hand-back the wait
  * began at (absent when unknown), and `answeredAt` with `answeredBy` once the wait was answered
- * (`answeredBy` names how, not always by a person), when the root waits at the front of
- * admission's waiting line for its slot. */
+ * (`answeredBy` names how, not always by a person), when the root waits in admission's waiting
+ * line for its slot, among the issues whose work came back, oldest first. */
 const legionWaitTimes = {
   since: timestamp.optional(),
   answeredAt: timestamp.optional(),
@@ -418,6 +454,10 @@ const legionIssue = z.object({
    * beside it, the `spec` step's row, which a reader that asks one question of one gate takes. */
   gatedSteps: z.array(legionGatedStepView).optional(),
   slot: legionSlotView.optional(),
+  /** Where the issue stands in `admission.waiting` (contract 58): present only for an issue that
+   * list names, so a slot holder and every other issue the line does not carry have none, and a
+   * daemon before contract 58 writes none at all, which is why a reader takes it as optional. */
+  waitingLine: legionWaitingLineView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
@@ -915,6 +955,11 @@ export const LegionOperatorClaimResponse = z.object({
    * round; absent until it answers, and for a worker that reported none. It is the worker's
    * word, which nothing verifies. */
   updateHead: nonEmptyString.optional(),
+  /** What the daemon last saw this claim's agent do; absent for a claim whose agent has neither
+   * begun a turn nor made a call the daemon saw. These routes are the only surface a
+   * controller's record reaches: the state puts the controller's claim on no issue, so no claim
+   * view of it carries one. */
+  step: legionStepView.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;
