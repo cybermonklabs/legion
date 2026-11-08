@@ -341,14 +341,14 @@ test("Refresh with a broken model keeps the last model up behind an error banner
       "aria-selected",
       "true"
     );
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeVisible();
 
     // A project without a source has no Architecture tab and opens on Issues, the filter
     // parameters forwarded.
     await page.goto("/projects/OPS?label=frontend");
     await expect(page).toHaveURL(/\/projects\/OPS\/issues\?label=frontend$/);
     await expect(page.getByRole("tab", { name: "Architecture" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Filter Labels: 1 picked" })).toBeVisible();
   } finally {
     await context.close();
   }

@@ -62,8 +62,10 @@ function rowAtCenter(
   scroller: HTMLElement | null
 ): HTMLElement | null {
   const rect = root.getBoundingClientRect();
-  const x = rect.left + rect.width / 2;
   const box = scroller === null ? null : scroller.getBoundingClientRect();
+  const visibleLeft = Math.max(rect.left, box?.left ?? 0);
+  const visibleRight = Math.min(rect.right, box?.right ?? window.innerWidth);
+  const x = (visibleLeft + visibleRight) / 2;
   const visibleTop = Math.max(rect.top, box === null ? 0 : box.top);
   const visibleBottom = Math.min(rect.bottom, box === null ? window.innerHeight : box.bottom);
   const y = (visibleTop + visibleBottom) / 2;

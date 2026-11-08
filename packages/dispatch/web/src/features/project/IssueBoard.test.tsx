@@ -50,6 +50,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     status: "triage",
     title: "Plan the work",
     updated_at: "2026-09-13T00:00:00Z",
+    created_by: null,
+    created_at: "2026-09-13T00:00:00Z",
     ...overrides,
   };
 }

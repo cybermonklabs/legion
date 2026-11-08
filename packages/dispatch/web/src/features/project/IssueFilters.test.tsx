@@ -7,8 +7,8 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { api } from "../../api/client";
 import type { IssueSummary, UserState } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
-import { IssueList } from "./IssueList";
 
 function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
   return {
@@ -34,6 +34,8 @@ function issue(overrides: Partial<IssueSummary> = {}): IssueSummary {
     rank: "U",
     title: "Core work",
     updated_at: "2026-09-10T00:00:00Z",
+    created_by: null,
+    created_at: "2026-09-10T00:00:00Z",
     ...overrides,
   };
 }
@@ -58,12 +60,12 @@ function pickOption(picker: "Labels" | "Status", option: string): void {
   fireEvent.click(screen.getByRole("option", { name: option }));
 }
 
-/** The strip and the List as `ProjectPage` mounts them: siblings sharing the URL. */
+/** The Board and its filter strip share the URL. */
 function StripAndList({ showStatus }: { showStatus: boolean }) {
   return (
     <>
       <IssueFilters project="CORE" showStatus={showStatus} />
-      <IssueList project="CORE" />
+      <IssueBoard project="CORE" showEdges />
     </>
   );
 }
@@ -84,9 +86,6 @@ function renderStrip(
   const getMyState = spyOn(api, "getMyState").mockResolvedValue(state);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   queryClient.setQueryData(["whoami"], { kind: "user", login });
-  // `ProjectPage` keeps one strip across the List/Board toggle and flips `showStatus`, so
-  // re-rendering this tree with the other value is that toggle. It has to be a re-render of this
-  // root: a second `render` mounts a second strip, whose own mount read is not the rule tested.
   const tree = (status: boolean) => (
     <MemoryRouter initialEntries={[initialEntry]}>
       <QueryClientProvider client={queryClient}>
@@ -279,35 +278,6 @@ test("a ?q= over the cap from a link is cut on a code point, never leaving half 
   }
 });
 
-test("one or many statuses narrow the List as an OR, each in the URL and each a chip", async () => {
-  const { getMyState, listIssues, view } = renderStrip([
-    issue({ key: "CORE-1", status: "todo", title: "Planned" }),
-    issue({ key: "CORE-2", status: "testing", title: "Under test" }),
-    issue({ key: "CORE-3", status: "done", title: "Shipped" }),
-  ]);
-
-  try {
-    await screen.findByText("Planned");
-    await openFilters();
-    pickOption("Status", "Todo");
-    expect(screen.getByTestId("location-search").textContent).toBe("?status=todo");
-    expect(screen.queryByText("Under test")).toBeNull();
-    pickOption("Status", "Testing");
-    expect(screen.getByTestId("location-search").textContent).toBe("?status=todo&status=testing");
-    expect(screen.getByText("Planned")).toBeTruthy();
-    expect(screen.getByText("Under test")).toBeTruthy();
-    expect(screen.queryByText("Shipped")).toBeNull();
-    expect(screen.getByRole("button", { name: "Filters · 2 active" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Remove Status: Todo filter" }));
-    expect(screen.getByTestId("location-search").textContent).toBe("?status=testing");
-    expect(screen.queryByText("Planned")).toBeNull();
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-  }
-});
-
 test("collapses filter controls by default and retains the disclosure preference per login", async () => {
   window.localStorage.clear();
   const { getMyState, listIssues, view } = renderStrip([issue()]);
@@ -352,44 +322,6 @@ test("collapses a saved filter disclosure when no filters are active", async () 
         screen.getByRole("button", { name: "Filters · 0 active" }).getAttribute("aria-expanded")
       ).toBe("false")
     );
-  } finally {
-    view.unmount();
-    getMyState.mockRestore();
-    listIssues.mockRestore();
-    window.localStorage.clear();
-  }
-});
-
-// The saved preference is the only owner of the open state: the strip reads it when it mounts
-// and when identity resolves, never because the filter count moved. The List folding a
-// `?status=` into the count on the view toggle is one of two ways that count rises on a mounted,
-// closed strip (Back or Forward within the Issues tab is the other), and neither opens it.
-test("the List and Board toggle leaves a closed strip closed; the reader still opens it", async () => {
-  window.localStorage.clear();
-  const { getMyState, listIssues, tree, view } = renderStrip(
-    [issue()],
-    {},
-    "/projects/CORE?status=todo",
-    "alice",
-    false
-  );
-
-  try {
-    await screen.findByText("Core work");
-    // The Board ignores `?status=`, so nothing is active and the strip starts collapsed.
-    expect(
-      screen.getByRole("button", { name: "Filters · 0 active" }).getAttribute("aria-expanded")
-    ).toBe("false");
-
-    view.rerender(tree(true));
-    const trigger = screen.getByRole("button", { name: "Filters · 1 active" });
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(screen.getByRole("button", { name: "Remove Status: Todo filter" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Status( · \d+)?$/ })).toBeNull();
-
-    fireEvent.click(trigger);
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    expect(screen.getByRole("button", { name: "Status · 1" })).toBeTruthy();
   } finally {
     view.unmount();
     getMyState.mockRestore();

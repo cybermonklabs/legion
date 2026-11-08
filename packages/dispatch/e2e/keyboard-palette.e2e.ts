@@ -704,7 +704,9 @@ test("a List row's own row runs on the row that opened the palette, and its move
   try {
     const page = await context.newPage();
     await page.goto("/projects/CORE/issues");
-    const row = page.locator(`[data-issue-row]`, { hasText: "List palette" });
+    const row = page
+      .getByRole("table", { name: "Project issues table" })
+      .locator("[data-issue-row]", { hasText: "List palette" });
     await expect(row).toBeVisible();
     await page.locator("body").focus();
     await page.keyboard.press("j");

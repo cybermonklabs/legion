@@ -14,7 +14,7 @@ test.beforeEach(async () => {
   await resetDatabase();
 });
 
-test("project filters stay collapsed until needed and margin asks use the compact composer", async ({
+test("project header filters open on demand and margin asks use the compact composer", async ({
   browser,
 }, testInfo) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -32,21 +32,19 @@ test("project filters stay collapsed until needed and margin asks use the compac
 
   try {
     await page.goto("/projects/CORE");
-    const filters = page.getByRole("button", { name: "Filters · 0 active" });
-    await expect(filters).toHaveAttribute("aria-expanded", "false");
-    await expect(filterPicker(page, "Status")).toHaveCount(0);
+    await expect(page.getByRole("table", { name: "Project issues table" })).toBeVisible();
+    await expect(page.getByRole("listbox")).toHaveCount(0);
     await page.screenshot({
       path: testInfo.outputPath("polish-project-list-1280.png"),
       fullPage: true,
     });
 
-    await filters.click();
-    await pickFilterOption(page, "Status", "Todo");
-    await expect(page.getByRole("button", { name: "Remove Status: Todo filter" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Filters · 1 active" })).toHaveAttribute(
-      "aria-expanded",
-      "true"
+    await pickFilterOption(page, "Labels", "frontend");
+    await expect(filterPicker(page, "Labels")).toHaveAttribute(
+      "aria-label",
+      "Filter Labels: 1 picked"
     );
+    await expect(page.getByRole("listbox")).toHaveCount(0);
     await page.getByRole("button", { name: "Board" }).click();
     await expect(page.getByRole("region", { name: "Project board" })).toBeVisible();
     const boardCard = page.getByRole("article", { name: `${issue.key} Polish the queue` });

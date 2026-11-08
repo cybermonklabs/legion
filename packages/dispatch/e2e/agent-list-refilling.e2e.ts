@@ -168,7 +168,11 @@ function askRecipients(page: Page, askId: string): Locator {
 
 async function openProjectList(page: Page, issueKey: string): Promise<void> {
   await page.goto("/projects/CORE/issues");
-  await expect(page.locator(`[data-issue-row]`).filter({ hasText: issueKey })).toHaveCount(1);
+  await expect(
+    page
+      .getByRole("table", { name: "Project issues table" })
+      .locator(`[data-issue-row="${issueKey}"]`)
+  ).toHaveCount(1);
 }
 
 async function openProjectBoard(page: Page, issueKey: string): Promise<void> {

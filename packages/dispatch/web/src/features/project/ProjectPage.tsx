@@ -34,7 +34,7 @@ import { useUserPreference } from "../shell/userPreference";
 import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
-import { IssueList } from "./IssueList";
+import { IssuesTable } from "./IssuesTable";
 
 type ProjectTab = "architecture" | "issues" | "documents";
 
@@ -294,22 +294,12 @@ export function ProjectPage(): ReactNode {
         role="tabpanel"
       >
         {activeTab === "issues" ? (
-          issueView === "legion" ? (
-            // The Legion view has its own columns and its own header; the filter strip's chips
-            // belong to Dispatch's own list and board, and none of them reaches the daemon.
-            <LegionView project={route.project} />
+          issueView === "list" ? (
+            <IssuesTable key={route.project} project={route.project} />
           ) : (
             <>
-              <IssueFilters
-                key={route.project}
-                project={route.project}
-                showStatus={issueView === "list"}
-              />
-              {issueView === "list" ? (
-                <IssueList project={route.project} />
-              ) : (
-                <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
-              )}
+              <IssueFilters key={route.project} project={route.project} showStatus={false} />
+              <IssueBoard lanes={lanes} project={route.project} showEdges={showEdges} />
             </>
           )
         ) : null}

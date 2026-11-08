@@ -545,6 +545,8 @@ export interface IssueSummary
       | "route"
       | "repo"
       | "resolved_repo"
+      | "created_by"
+      | "created_at"
       | "updated_at"
       | "last_seq"
       | "primary_artifact_id"

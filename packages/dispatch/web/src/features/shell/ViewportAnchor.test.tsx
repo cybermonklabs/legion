@@ -64,6 +64,8 @@ const viewportTop = (id: string) =>
   document.querySelector(`[data-row="${id}"]`)?.getBoundingClientRect().top;
 
 let listTop = LIST_TOP;
+let contentLeft = 0;
+let contentWidth = 100;
 let scrollYDescriptor: PropertyDescriptor | undefined;
 let originalScrollBy: typeof window.scrollBy;
 let restoreSpies: (() => void)[] = [];
@@ -76,6 +78,8 @@ beforeEach(() => {
   scrollYDescriptor = Object.getOwnPropertyDescriptor(window, "scrollY");
   originalScrollBy = window.scrollBy;
   listTop = LIST_TOP;
+  contentLeft = 0;
+  contentWidth = 100;
   setScrollY(0);
   window.scrollBy = ((x: number | ScrollToOptions, y?: number) => {
     const top = typeof x === "number" ? y : x.top;
@@ -103,16 +107,17 @@ beforeEach(() => {
     return {
       bottom: top + height,
       height,
-      left: 0,
-      right: 100,
+      left: isScroller ? 0 : contentLeft,
+      right: isScroller ? 100 : contentLeft + contentWidth,
       toJSON: () => ({}),
       top,
-      width: 100,
-      x: 0,
+      width: isScroller ? 100 : contentWidth,
+      x: isScroller ? 0 : contentLeft,
       y: top,
     };
   });
   const point = spyOn(document, "elementFromPoint").mockImplementation((_x, y) => {
+    if (_x < 0 || _x > 100) return null;
     const offset = scrollerRef.current?.scrollTop ?? window.scrollY;
     const index = Math.floor((offset + y - listTop) / ROW_HEIGHT);
     return rows()[index] ?? null;
@@ -396,6 +401,23 @@ test("a held row that changed group is not followed to the section it moved to",
     );
     expect(scroller.scrollTop).toBe(100);
     expect(viewportTop("r4")).toBe(LIST_TOP + 11 * ROW_HEIGHT - 100);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the centre anchor stays inside a horizontally scrolled table's visible box", () => {
+  contentLeft = -800;
+  contentWidth = 2000;
+  const view = render(<List rows={ids(12)} scroller={scrollerRef} />);
+  try {
+    const scroller = scrollerRef.current;
+    if (!scroller) throw new Error("No scroller");
+    scroller.scrollTop = 100;
+    expect(chosen()).toEqual({ id: "r7", via: "center" });
+    const before = viewportTop("r7");
+    view.rerender(<List rows={["new", ...ids(12)]} scroller={scrollerRef} />);
+    expect(viewportTop("r7")).toBe(before);
   } finally {
     view.unmount();
   }

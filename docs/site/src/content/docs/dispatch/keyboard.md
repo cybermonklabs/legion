@@ -81,7 +81,7 @@ reference, so `y` does nothing on one either.
 | --- | --- |
 | `v` | Toggle List / Board (on the Issues tab) |
 
-On the List:
+On the List table, `j` and `k` follow the current sorted, filtered page, skip collapsed groups, and scroll virtual rows into view:
 
 | Keys | Action |
 | --- | --- |

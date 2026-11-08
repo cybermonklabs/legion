@@ -493,6 +493,8 @@ type IssueSummary struct {
 	Repo         *string `json:"repo"`
 	ResolvedRepo *string `json:"resolved_repo"`
 	IssueRouteReach
+	CreatedBy         *Actor        `json:"created_by"`
+	CreatedAt         time.Time     `json:"created_at"`
 	UpdatedAt         time.Time     `json:"updated_at"`
 	LastSeq           int           `json:"last_seq"`
 	PrimaryArtifactID string        `json:"primary_artifact_id"`

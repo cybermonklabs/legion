@@ -70,7 +70,9 @@ test("a refilling agent list never lapses a session's claim on the chip or in th
       `Couldn't check which claims have lapsed, so every claim counts as held: ${REFILLING}`,
       { timeout: REFILL_TIMEOUT }
     );
-    await expect(page.locator("[data-issue-row]").filter({ hasText: key })).toHaveCount(0);
+    await expect(
+      page.getByRole("table", { name: "Project issues table" }).locator(`[data-issue-row="${key}"]`)
+    ).toHaveCount(0);
   } finally {
     await alice.close();
   }
@@ -87,7 +89,9 @@ test("a complete agent list without the holder lapses its claim on the chip and 
     await page.goto(`/issues/${key}`);
     await expect(page.getByTestId("issue-claim")).toHaveAttribute("title", /no longer running/);
     await page.goto("/projects/CORE/issues?unclaimed=1");
-    await expect(page.locator("[data-issue-row]").filter({ hasText: key })).toHaveCount(1);
+    await expect(
+      page.getByRole("table", { name: "Project issues table" }).locator(`[data-issue-row="${key}"]`)
+    ).toHaveCount(1);
     await expect(page.getByTestId("unclaimed-unchecked")).toHaveCount(0);
   } finally {
     await alice.close();
