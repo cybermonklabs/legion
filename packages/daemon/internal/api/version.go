@@ -730,8 +730,9 @@ package api
 // that issue, the effect `legion claims retry --fresh-session` runs for an operator: the claim
 // leaves the session it recorded behind and starts again in a new one, which also puts its run
 // of provider-error turns back to zero. One effect stands behind both doors (api's
-// freshSession), and it reaches every claim of the project that is not in a turn, where the
-// plain retry reaches only a claim that failed and one an operator stopped. Its answer
+// freshSession), and it reaches every claim of the project that is not in a turn and whose
+// launch is not in flight, where the plain retry reaches only a claim that failed and one an
+// operator stopped. Its answer
 // (`api.FreshSessionResponse`), and the `api.OperatorClaim` the operator's retry answers, carry
 // an optional `phaseNotRestarted`: the claim came back owing no task and the workflow refused
 // the restart of its phase, which is the one thing the claim's state does not record, so the

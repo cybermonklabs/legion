@@ -22,9 +22,9 @@ const nonEmptyString = z.string().min(1);
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
  * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches every
- * claim of the project that is not in a turn, a root architect included: one idle on the
- * provider-error ladder, one whose agent has registered and is not ready yet, and one that is
- * suspended, stopped or failed.
+ * claim of the project that is not in a turn and whose launch is not in flight, a root architect
+ * included: one idle on the provider-error ladder, one whose agent has registered and is not
+ * ready yet, and one that is suspended, stopped or failed.
  *
  * `compact` shortens the session instead, the effect `legion claims compact` runs for one: the
  * claim keeps its session, its workspace and everything it knows of its issue, and whatever task
