@@ -739,4 +739,32 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says. main held 56 at the forward merge that renumbered this entry, ff2a10ef3ef0; read main's
 // own number again at the next merge rather than from this line.)
-const DaemonAPIVersion = 57
+//
+// 58: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
+// issue stands in `admission.waiting`: its `place`, 1 being first in the line, and the `length`
+// of that list at this read (`api.WaitingLineView`). It is present only for an issue the list
+// names, so a slot holder and an issue the line does not carry have no such key, and the wire
+// carries no place for an issue that stands in no line. It says where the issue stands, not what
+// holds it: `admission.blocked` names what holds it, and a member a Dispatch link blocks stands
+// in the line and has its place like every other member.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 58 is served the issues without the field (api's stateFor, withoutWaitingLine),
+// as a caller below 57 is served the claim views with no `step`, one below 56 the stranded
+// report without its retired entries, one below 55 the issues without the gated steps, one below
+// 53 a body with no wakes waiting, one below 51 the issues without the admission's trees and
+// each issue's tree, one below 49 without the memory draw and one below 46 without the claim
+// views' update rounds; the eight compose, and every reader from 58 on takes the field as
+// optional. A plugin at 57 does not refuse the field, as a plugin before one of the earlier
+// contracts above refuses its own: every answer-side schema of `packages/contracts` has stripped
+// a key it does not name since sjawhar/legion#2788, which that package's own test holds it to,
+// and 57 is later than that change, so such a plugin reads this state and sees no `waitingLine`
+// at all. The strip below is still what serves it: a caller that did not ask for the field is
+// not given it, and a plugin built before #2788 is strict and would refuse the body.
+// (This branch declared 56 while main held 55. main then landed INFRA-1480 at 56, and
+// @sjawhar/pi-legion 18.32.1 was released declaring that 56 with none of these shapes, so this
+// branch took 57; main has since landed INFRA-1274's claim step record at 57, which carries none
+// of these shapes either, so this branch takes the number above it, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main held 57 at the forward merge that renumbered this entry, 0297a21a3b07; read main's
+// own number again at the next merge rather than from this line.)
+const DaemonAPIVersion = 58

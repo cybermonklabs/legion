@@ -619,6 +619,9 @@ Each item below names a task and where its code is, then notes on it.
   Seven jobs are not in that shape: `changes`, `pr-title`, `cancel-started` and `ci-ok` hold their own steps, and `docs`, `dispatch-browser` and `worker-image` call `docs-site.yaml`, `dispatch-browser.yaml` and `worker-image.yaml` instead.
   The `changes` job runs two `dorny/paths-filter` steps, `filter` and `filter2`, because one `filters` input over 131,072 bytes is a string the kernel refuses to pass the action, which a run measured; a new filter goes in either step and its `changes` output names that step, which `check-ci-filters.sh` holds.
   Most of each filter's `!` patterns are generated: `.github/scripts/check-ci-filters.sh write` writes, into a marked block of each filter, the patterns that keep it off the Go test files its job does not run, and the check refuses a block that is not what it computes.
+  Those blocks name Go test files one by one, so a change that adds, deletes or renames a `_test.go` file anywhere a Go job reads runs that command too and commits what it writes, whatever else the change touches:
+  a pull request that adds one and leaves the blocks alone is refused by `ci-filters`, naming the file and each filter whose block lacks it (run 42532845737 is such a refusal, of three filters over one new migration test).
+  A pull request is judged on the merge of its head and the base, so another pull request's new test file reddens this check on a head that never changed, and the cure is the same command after a forward merge, in the same commit that resolves it.
   `ci.yaml`'s own header lists the eight places a new job joins the router, and `docs/solutions/github/join-a-job-to-the-ci-router.md` walks through the shape it had before this split
 
 - Documentation site — `docs/site/`
@@ -960,9 +963,9 @@ A close of an item of the wait — a tree question, or an approval request of th
 — moves the wait to what is still with the person, and ends it only when nothing is;
 so does a session's reply that hands the last item still with the person back to the agent's turn.
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
-An answered root goes to the front of the waiting line, among the issues whose work came back and ahead of every issue whose first phase has yet to start, oldest answer first, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
+An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
 the resume starts no phase worker, so a root whose design gate has already opened holds no slot and resumes at once however full the cap is, while one whose gate has never opened — its architect still writing the spec, which is work the cap counts — resumes at the next free slot;
-a phase that resume then starts waits for a slot of its own, at the front of the line;
+a phase that resume then starts waits for a slot of its own, the root's own first phase among the issues whose work came back, oldest first, by the moment its design gate opened, and a released child of it behind them, by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.
