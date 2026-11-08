@@ -87,6 +87,13 @@ func (d *claimReleaseDispatch) SetStatus(_ context.Context, _ string, status str
 	return dispatch.Issue{}, nil
 }
 
+// SetStatusAt is the write the outbox's status row makes in this release (record.StatusWrite's
+// fence). Without it the embedded stand-in's own SetStatus would take the write, and this
+// stand-in's statusWrites would show none.
+func (d *claimReleaseDispatch) SetStatusAt(ctx context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	return d.SetStatus(ctx, issue.Key, status)
+}
+
 // releases is each key a DELETE was sent for, in order, and statusWrites each status written.
 func (d *claimReleaseDispatch) releases() []string {
 	d.mu.Lock()
