@@ -128,8 +128,26 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 		return nil
 	}
 	suspended := m.held != nil
+	// The claim's process is read through a guard, and the two reads this recovery's own other
+	// entries make are too (repoint, displaced, noProcessRecorded). No live path reaches any of
+	// the three with no process recorded: the sweep posts this event only over a claim in
+	// StateWorking that is in no update round (the daemon's backstopStalledTurns), the table
+	// runs this row from StateWorking alone, a claim reaches working only from Ready or Idle
+	// after it has registered (the table's turnStarted rows), every caller of letGo writes a
+	// state that is not working in the same decision, and judge drops an observation while the
+	// Locator is nil, which is what would reach the other two.
+	//
+	// The guard is here all the same, and not because one of those is in doubt: this is a
+	// backstop, which runs when a machine is already in a state nobody designed, and a nil
+	// dereference inside the supervisor takes the daemon's process down with every tree of the
+	// deployment it supervises. A line that says the claim records no process is the whole cost
+	// of being wrong about the list above.
+	incarnation := noProcessRecorded
+	if loc := m.claim.Locator; loc != nil {
+		incarnation = loc.Incarnation
+	}
 	m.log.Warn("supervise: the daemon's stall backstop ends a turn whose agent stopped stepping; the task it was serving stays owed",
-		"incarnation", m.claim.Locator.Incarnation, "bound", ev.Bound, "deadline", ev.Deadline,
+		"incarnation", incarnation, "bound", ev.Bound, "deadline", ev.Deadline,
 		"lastStep", last, "turnStartedAt", ev.Step.TurnStartedAt, "tool", ev.Step.Tool, "callId", ev.Step.CallID,
 		"callStartedAt", ev.Step.StartedAt, "heldSuspension", suspended)
 	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd)
@@ -146,6 +164,12 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	m.log.Info("supervise: the stall backstop's end of the stalled turn", "end", end)
 	return err
 }
+
+// noProcessRecorded is what a line of this recovery prints in place of the claim's process
+// where the claim records none (backstopStalledTurn's guard, repoint, displaced). It is the
+// honest reading of a field that is not there, and the alternative to the panic an unguarded
+// read of it makes.
+const noProcessRecorded = "no process the claim records"
 
 // backstopStall is the StallBackstop event's row, for the one state a claim is in a turn in.
 func backstopStall(m *Machine, ctx context.Context, ev Event) error {

@@ -22,8 +22,16 @@ import (
 // never charged, unlike a death (chargeDeath, relaunchAfterFailure): the process did nothing wrong.
 // A relaunch the runtime refuses is charged as any launch failure is.
 func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) error {
+	// The process is read through the guard backstopStalledTurn's comment gives the reason for:
+	// judge drops an observation while the claim records none, so no live path arrives here
+	// without one, and a panic in the supervisor would take every tree of the deployment with it
+	// (noProcessRecorded).
+	incarnation := noProcessRecorded
+	if loc := m.claim.Locator; loc != nil {
+		incarnation = loc.Incarnation
+	}
 	m.log.Warn("supervise: the process is alive at a stale address; replacing it with one at the current address",
-		"incarnation", m.claim.Locator.Incarnation, "detail", observation.Detail)
+		"incarnation", incarnation, "detail", observation.Detail)
 	_, err := m.replaceProcess(ctx, "the process at a stale address is replaced mid-turn", ordinaryEnd)
 	return err
 }
@@ -41,8 +49,14 @@ func (m *Machine) repoint(ctx context.Context, observation runtime.Observation) 
 // daemon replaced can also have run out of memory before the replacement landed, and the role
 // whose turn that end cut off is told so wherever the end is recovered.
 func (m *Machine) displaced(ctx context.Context, observation runtime.Observation) error {
+	// Guarded as repoint's own read is, and for the reason its comment gives
+	// (backstopStalledTurn, noProcessRecorded).
+	incarnation, process := noProcessRecorded, noProcessRecorded
+	if loc := m.claim.Locator; loc != nil {
+		incarnation, process = loc.Incarnation, loc.Label()
+	}
 	m.log.Warn("supervise: the process was displaced through no fault of its own, its pod replaced by the daemon or it another runtime's process this daemon takes over; relaunching it uncharged",
-		"incarnation", m.claim.Locator.Incarnation, "process", m.claim.Locator.Label(), "observed", string(observation.Kind), "detail", observation.Detail)
+		"incarnation", incarnation, "process", process, "observed", string(observation.Kind), "detail", observation.Detail)
 	_, err := m.replaceProcess(ctx, "the process was displaced mid-turn, its pod replaced by the daemon or it another runtime's process this daemon takes over", observation.OutOfMemory)
 	return err
 }

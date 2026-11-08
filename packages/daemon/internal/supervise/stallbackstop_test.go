@@ -691,12 +691,22 @@ func TestEveryProcessEndTellsItsOwnerExactlyOnce(t *testing.T) {
 // not need a suspension or a second machine shares.
 func stalledFor(h *harness) time.Time {
 	h.t.Helper()
+	last, _ := stalledSweep(h)
+	return last
+}
+
+// stalledSweep is stalledFor with the record the sweep carries as well: the store's own, read
+// where the sweep reads it, which is what the request holds and what the machine reports back
+// unchanged (StallBackstop.Step, StallBackstopStop.Step).
+func stalledSweep(h *harness) (time.Time, StepRecord) {
+	h.t.Helper()
 	h.workingOnATask("implement the plan")
 	h.advance(time.Minute)
 	h.stepped("bash", "toolu_turn1_0", toolArgs, false)
 	last := h.clock.Now()
+	swept := h.store.step(h.token)
 	h.advance(backstopBound + time.Minute)
-	return last
+	return last, swept
 }
 
 // ProcessEnds is the list the walks read, so a value declared and left out of it would be
@@ -816,4 +826,193 @@ func compiledDependencies(t *testing.T) func(string) (io.ReadCloser, error) {
 		}
 		return os.Open(export)
 	}
+}
+
+// The one thing the claim cannot show about an end is whether the runtime made the stop that
+// end asked for, and these four cases are every write of it (Machine.stopUnconfirmed): the
+// refusal a launch's own stop met, the refusal cleared by a start that succeeded, the launch
+// the daemon's own stop cut short before any stop was made, and the refusal an earlier
+// replacement of the same claim met, which this one does not carry. What rests on them is one
+// sentence of the owner's notice: a pod the runtime would not stop goes on holding its node's
+// room and its disk, and the owner is the one who acts on that (the daemon's
+// stallStopClause).
+//
+// Here the launch's write was refused and the stop of the process it let go was refused too,
+// so the claim is left with the replacement still to make and with a process nobody has seen
+// end (launchNow, stopPrevious, relaunchLater).
+func TestTheBackstopReportsAStopTheRuntimeRefusedWithTheLaunchWrite(t *testing.T) {
+	h, stops := backstopReports(t)
+	last, swept := stalledSweep(h)
+	h.rt.FailSuspend(errors.New("the pod would not stop"))
+	h.store.fail("PutClaim", errBoom)
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, errBoom) {
+		t.Fatalf("the backstop whose launch the store would not take = %v, want the store's refusal", err)
+	}
+
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching with the stalled process let go", c.State, c.Locator)
+	}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunchPending, StopUnconfirmed: true}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the end it made with the stop left unconfirmed, %+v", *stops, want)
+	}
+}
+
+// A refusal an earlier try of the same launch met is not what the launch that started says of
+// the process it replaced: the start was handed that process and waits it out, so nothing is
+// left for anyone to be told of (launchNow, start). An owner told otherwise would go looking
+// for a pod the replacement had already taken over.
+func TestTheBackstopReportsNoUnconfirmedStopOnceTheReplacementStarted(t *testing.T) {
+	h, stops := backstopReports(t)
+	last, swept := stalledSweep(h)
+	h.rt.FailSuspend(errors.New("the pod would not stop"))
+	h.rt.ScriptResume(fake.SpawnResult{Err: errors.New("the pod did not start")})
+
+	h.must(h.backstop(last))
+
+	h.wantState(StateLaunching)
+	if c := h.claim(); c.Locator == nil {
+		t.Fatalf("the claim is %+v, want it recording the process the second try started", c)
+	}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunched}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the relaunch it made with nothing left unstopped, %+v", *stops, want)
+	}
+}
+
+// The daemon's own stop inside the start: the launch wrote itself, the runtime was asked, and
+// the context ended there. The process the launch let go was never stopped, and nothing stops
+// it before the next boot's orphan reconciliation, so the owner hears that rather than that it
+// was stopped (launchNow).
+func TestTheBackstopReportsAnUnconfirmedStopWhenItsOwnStopCutTheLaunchShort(t *testing.T) {
+	h, stops := backstopReports(t)
+	last, swept := stalledSweep(h)
+	h.m.deps.Runtime = &cancelInsideResume{Runtime: h.rt, cancel: h.cancel}
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, context.Canceled) {
+		t.Fatalf("the backstop whose launch the daemon's own stop cut short = %v, want the context's end", err)
+	}
+
+	if c := h.claim(); c.State != StateLaunching || c.Locator != nil {
+		t.Fatalf("the claim is %s with locator %+v, want it launching with nothing started", c.State, c.Locator)
+	}
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunchPending, StopUnconfirmed: true}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the end it made with the stop never attempted, %+v", *stops, want)
+	}
+}
+
+// cancelInsideResume ends the daemon's own context where the runtime is asked to start the
+// replacement, which is the window launchNow answers by leaving the claim launching: the stop
+// of the process it let go is never made, and the next boot is what reaps it.
+type cancelInsideResume struct {
+	*fake.Runtime
+	cancel context.CancelFunc
+}
+
+func (r *cancelInsideResume) Resume(ctx context.Context, _ *runtime.Locator, _ runtime.SpawnSpec) (runtime.Locator, error) {
+	r.cancel()
+	return runtime.Locator{}, ctx.Err()
+}
+
+// A refusal belongs to the replacement that met it, so the next replacement of the same claim
+// starts without it (replaceProcess): this end's stop was made, and the owner is told that
+// however an earlier end of the claim went. The earlier refusal is written onto the machine
+// directly, because every path that records one either ends the claim or goes on to a start
+// that clears it (launchNow), and the clear at the head of the replacement is what this pins.
+func TestTheBackstopReportsAStopTheRuntimeMadeAfterAnEarlierRefusal(t *testing.T) {
+	h, stops := backstopReports(t)
+	last, swept := stalledSweep(h)
+	h.m.stopUnconfirmed = true
+	h.store.fail("PutClaim", errBoom)
+
+	if err := h.handle(h.backstop(last)); !errors.Is(err, errBoom) {
+		t.Fatalf("the backstop whose launch the store would not take = %v, want the store's refusal", err)
+	}
+
+	want := StallBackstopStop{Step: swept, LastStep: last, Bound: backstopBound, End: EndRelaunchPending}
+	if len(*stops) != 1 || (*stops)[0] != want {
+		t.Fatalf("the backstop reported %+v, want the end it made with the stop this replacement did make, %+v", *stops, want)
+	}
+}
+
+// The lines this recovery opens with read the claim's process, and each reads it through a
+// guard (backstopStalledTurn, repoint, displaced, noProcessRecorded). No live path hands one of
+// them a claim that records none: the sweep posts the backstop only over a claim in
+// StateWorking that is in no update round, the table runs that row from StateWorking alone, a
+// claim reaches working only from Ready or Idle after it has registered, every caller of letGo
+// writes a state that is not working in the same decision, and judge drops an observation while
+// the Locator is nil. So the claim is built here rather than reached.
+//
+// The guard is held to its purpose all the same, and each case below panics the machine with
+// the guard taken out: these are the recoveries that run when a machine is already in a state
+// nobody designed, and a nil dereference inside the supervisor takes the daemon's process down
+// with every tree of the deployment it supervises. The line that says the claim records no
+// process is the whole cost of the list above being wrong.
+func TestTheStallRecoveriesLogAClaimThatRecordsNoProcess(t *testing.T) {
+	cases := []struct {
+		name, line string
+		act        func(h *harness, m *Machine) error
+	}{
+		{
+			name: "the backstop's own end of the stalled turn",
+			line: "the daemon's stall backstop ends a turn whose agent stopped stepping",
+			act: func(h *harness, m *Machine) error {
+				c := m.Claim()
+				return h.postTo(m, StallBackstop{Claim: c.Token, Bound: backstopBound,
+					Deadline: c.Step.LastStep().Add(backstopBound), Step: c.Step})
+			},
+		},
+		{
+			name: "the replacement of a process at a stale address",
+			line: "the process is alive at a stale address",
+			act: func(h *harness, m *Machine) error {
+				return h.insideDecision(m, func() error {
+					return m.repoint(h.ctx, runtime.Observation{Kind: runtime.StaleAddress,
+						At: h.clock.Now(), Detail: "the worker stream moved"})
+				})
+			},
+		},
+		{
+			name: "the replacement of a process the daemon displaced",
+			line: "the process was displaced through no fault of its own",
+			act: func(h *harness, m *Machine) error {
+				return h.insideDecision(m, func() error {
+					return m.displaced(h.ctx, runtime.Observation{Kind: runtime.Gone, Displaced: true,
+						At: h.clock.Now(), Detail: "the daemon replaced the pod"})
+				})
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newBareHarness(t)
+			stepped := h.clock.Now().Add(-backstopBound - time.Minute)
+			working := queuedClaim()
+			working.State, working.Locator = StateWorking, nil
+			working.Step = StepRecord{At: stepped, TurnStartedAt: stepped, Tool: "bash",
+				CallID: "toolu_turn1_0", StartedAt: stepped}
+			m := h.machineFor(working)
+
+			if err := tc.act(h, m); err != nil {
+				t.Fatalf("the recovery over a claim that records no process = %v, want it to run", err)
+			}
+
+			if lines := h.logs.lines(tc.line, noProcessRecorded); len(lines) != 1 {
+				t.Fatalf("the lines of this recovery naming the claim's process = %v, want the one saying %q", lines, noProcessRecorded)
+			}
+		})
+	}
+}
+
+// insideDecision runs step where one of the machine's own decisions would run it: under the
+// lock Handle takes, and with the publish its return makes (Machine.Handle, unlock). It is for
+// a case over a shape no event of the table reaches, whose machine is built from a claim the
+// case constructs.
+func (h *harness) insideDecision(m *Machine, step func() error) error {
+	h.t.Helper()
+	m.mu.Lock()
+	defer m.unlock()
+	return step()
 }

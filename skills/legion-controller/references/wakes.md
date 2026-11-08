@@ -131,11 +131,15 @@ id, when it started and whether it ended — never a call's arguments, whose tex
 in no column. It says what the daemon did as well, which is not always a relaunch: where the
 daemon's wake pacing parked the replacement, the task was taken back and the launch that replaces
 the stalled process is queued, due at the moment the notice names, and that process runs on until
-the launch's turn, which starts nothing at all if a suspension waiting for the claim, a refused
-lifecycle recheck or the tree's close ends the claim there instead; where a suspension was already
-waiting for that turn, the suspension ran instead of a replacement and the claim is suspended with
-nothing queued for it, waiting on a resume; where the launch that replaces the process could not
-be written, the daemon is still retrying that launch; and where every try at that
+the launch's turn, which may start nothing, or not the launch the park queued — a suspension
+waiting for the claim, a refused lifecycle recheck, the tree's close, a take-back the store
+refuses at the turn itself, a launch whose own write or start the daemon cannot make, and an
+operator's task that runs the launch early are among the things that can change it; where a
+suspension was already waiting for that turn, the suspension ran instead of a replacement and the
+claim is suspended with nothing queued for it, waiting on a resume; where the launch that replaces
+the process has not started, either its write was refused and the daemon retries it at its probe
+interval, or the daemon's own stop cut the launch short and the daemon's next start takes it up;
+and where every try at that
 launch was refused, the claim has failed and nothing relaunches it. The notice says which, and no
 second notice follows it: where it names a parked launch, the `wakesWaiting` list of `read_state`
 is what says whether that launch is still waiting its turn.

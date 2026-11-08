@@ -605,17 +605,20 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite(t *testing.T)
 	if c := m.Claim(); c.State != supervise.StateLaunching || c.Locator != nil {
 		t.Fatalf("the claim is %s with locator %+v, want it launching with the stalled process let go", c.State, c.Locator)
 	}
-	for _, want := range []string{"still owed", "the daemon ended the implementer's turn and took its stalled process off the claim",
-		"the launch that replaces that process could not be written, so nothing runs for the claim",
-		"the daemon tries that launch again at its probe interval",
-		"leaves it suspended or failed with nothing in its place instead", "nothing was charged to the claim",
+	for _, want := range []string{"still owed", "the daemon ended the implementer's turn and let its stalled process go",
+		"the launch that replaces that process has not started",
+		"either its write was refused, which the daemon tries again at its probe interval",
+		"or the daemon's own stop cut the launch short, which the daemon's next start takes up",
+		"leaves it suspended or failed with nothing started for it instead", "nothing was charged to the claim",
 		stallProcessStopped} {
 		if !strings.Contains(notices[0].Reason, want) {
 			t.Errorf("the notice says %q, which does not carry %q", notices[0].Reason, want)
 		}
 	}
-	if strings.Contains(notices[0].Reason, "brought back") {
-		t.Errorf("the notice says the session was brought back, and none was: %q", notices[0].Reason)
+	for _, never := range []string{"brought back", "nothing runs for the claim", "could not be written"} {
+		if strings.Contains(notices[0].Reason, never) {
+			t.Errorf("the notice says %q, which claims %q: the write of this launch landed where the daemon's own stop cut it short, and the sentence about the process is the stop clause's", notices[0].Reason, never)
+		}
 	}
 }
 
@@ -695,14 +698,18 @@ func TestTheStallBackstopTellsTheOwnerOfAnEndThatFailedTheClaim(t *testing.T) {
 // A replacement the wake pacing parked is the one end whose turn was not ended: the take-back
 // has run, so the task is owed again, and the claim keeps the stalled process and keeps running
 // it until the launch's turn (supervise's reserveWake, parkWake). The notice says exactly that
-// much and no more. Its opening never says the turn was ended, because it was not. Its clause
-// never says the process is replaced at that turn, because three things end the claim there
-// instead and none of them writes this owner a second notice: a suspension that arrived while
-// the launch waited ends the turn in a stop (supervise's wakeNow, endHeld), a lifecycle recheck
-// the turn's own launch is refused keeps the process (runWake, relaunchRefused), and a tree
-// close drops the wake with the process (letGo). And the wait is the wake's own due time, which
-// the machine carries on its report (supervise.StallBackstopStop.WakeDue), not a guess at how
-// long a wave takes.
+// much and no more. Its opening never says the turn was ended, because it was not — the opening
+// cannot say it, since the daemon derives that clause from the end's own record of the process
+// (stallTurnClause). Its clause says what the park settled and then names what can change it,
+// as an open list rather than a closed one: a suspension that arrived while the launch waited
+// ends the turn in a stop (supervise's wakeNow, endHeld), a lifecycle recheck refuses the
+// turn's own launch and keeps the process (runWake, relaunchRefused), a tree close drops the
+// wake with the process (letGo), the take-back the turn itself makes can be refused by the
+// store (runWake), the launch can fail its own write or its start (launchNow, relaunchLater,
+// fail), and an operator's task can run the launch before its turn (runParkedLaunchNow). None
+// of them writes this owner a second notice. And the wait is the wake's own due time, which the
+// machine carries on its report (supervise.StallBackstopStop.WakeDue), not a guess at how long
+// a wave takes.
 func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T) {
 	rig := newBackstopRig(t)
 	limiter := pacedWakes()
@@ -736,13 +743,17 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 		t.Fatalf("the claim holds wake %+v, want the backstop's launch waiting its turn", parked)
 	}
 	for _, want := range []string{
-		"the daemon took back the implementer's task and queued the relaunch that replaces its stalled process",
+		"the daemon took back the implementer's task without ending its turn and queued the relaunch that replaces its stalled process",
 		"still owed",
 		"the launch that replaces its stalled process is queued in the daemon's wake pacing and is due at " + stallInstant(parked.At),
-		"the stalled process runs on until that launch's turn",
-		"that turn starts nothing at all if a suspension waiting for this claim ends it there",
-		"if the tree lifecycle recheck every launch makes first refuses this one",
-		"if the tree's close has dropped the queued launch",
+		"what the park settled is that launch queued and that process running on until its turn",
+		"That turn may start nothing, or not the launch the park queued",
+		"a suspension waiting for this claim",
+		"the lifecycle recheck every launch makes refusing this one",
+		"the tree's close dropping the queued launch",
+		"a take-back the store refuses at the turn itself",
+		"a launch whose own write or start the daemon cannot make",
+		"an operator's task that runs this launch before its turn are among the things that can change it",
 		"nothing was charged to the claim",
 	} {
 		if !strings.Contains(notices[0].Reason, want) {
@@ -751,12 +762,13 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 	}
 	for _, never := range []string{
 		"the daemon ended the implementer's turn",
+		"starts nothing at all if",
 		"is stopped and replaced there",
 		"tens of minutes",
 		"brought back",
 	} {
 		if strings.Contains(notices[0].Reason, never) {
-			t.Errorf("the notice says %q, which claims %q: the turn runs on and nothing is promised of the launch's turn", notices[0].Reason, never)
+			t.Errorf("the notice says %q, which claims %q: the turn runs on, nothing is promised of the launch's turn, and the things that can change it are named as some of them rather than all", notices[0].Reason, never)
 		}
 	}
 }
@@ -769,6 +781,20 @@ func TestTheStallBackstopTellsAParkedRelaunchAsWhatParkTimeSettles(t *testing.T)
 // one opening shared by every end had, so all three clauses are total over the type and the
 // default is unreachable for every end this daemon declares (stallBackstopEnds,
 // stallBackstopEnd).
+//
+// Every end is rendered under both values of the one fact the machine records about the stop
+// (supervise.StallBackstopStop.StopUnconfirmed), and both directions of two properties are
+// held over every rendering, so neither is satisfied by a row that says nothing:
+//
+//   - an end that let the claim's process go says that the process was stopped under a
+//     confirmed stop and that it may be running still under an unconfirmed one, and never the
+//     other sentence; an end that kept the process says neither, under either value;
+//   - an end that let the process go says the turn was ended under a confirmed stop and says
+//     so nowhere under an unconfirmed one; an end that kept the process never says it at all.
+//
+// The second is read over the whole notice rather than over the clause the turn is derived
+// into, because the derivation is what keeps a row from picking those words and this is what
+// keeps a row from writing them anyway (stallTurnClause, stallTurnEndedClaims).
 //
 // It catches an end added with no opening or no sentence, an end whose sentence claims the
 // wrong thing, a clause whose values nothing fills in (stallFill), and a row left behind for an
@@ -793,8 +819,8 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			t.Errorf("the notice has no sentence for the end %q: add a row to stallBackstopEnds saying what is running for the claim now and what its owner is waiting on", end)
 			continue
 		}
-		if words.opening == "" {
-			t.Errorf("the notice's row for %q is %+v, want an opening: add one to stallBackstopEnds saying what the daemon did to this claim, since the notice opens with the end's own words and never with one sentence for all of them", end, words)
+		if words.did == "" {
+			t.Errorf("the notice's row for %q is %+v, want the end's own half of the opening: add a did to stallBackstopEnds saying what the daemon did to this claim beside what it did to the turn, which the notice derives (stallTurnClause)", end, words)
 		}
 		if words.end == "" || words.charged == "" {
 			t.Errorf("the notice's row for %q is %+v, want both clauses: what became of the worker and what the claim was charged", end, words)
@@ -807,21 +833,26 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			t.Errorf("the notice's row for %q is %+v, want it to say what the end did with the claim's process: set process to stallProcessLetGo or stallProcessKept, since the sentence about that process is written from it and an end that lets one go must not reach its owner with nothing said about it", end, words)
 		}
 		stop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now()}
+		refusedStop := supervise.StallBackstopStop{Bound: backstopBound, End: end, WakeDue: time.Now(), StopUnconfirmed: true}
 		fill := stallFill(rigClaim(), stop)
 		told := stallBackstopRecord(rigClaim(), stop, time.Hour)
-		for clause, text := range map[string]string{"opening": words.opening, "sentence": words.end, "charge clause": words.charged} {
+		// The sentence about the stalled process and the opening's claim about the turn are
+		// both written from the machine's record of the stop, so every end is read both ways:
+		// the stop the runtime made, and the stop it refused, which leaves a process that may
+		// be running the turn still.
+		refused := stallBackstopRecord(rigClaim(), refusedStop, time.Hour)
+		for clause, text := range map[string]string{"opening": words.opening(stop), "sentence": words.end, "charge clause": words.charged} {
 			if !strings.Contains(told, fill.Replace(text)) {
 				t.Errorf("the notice of %q reads %q, which does not carry its own %s", end, told, clause)
 			}
 		}
+		if !strings.Contains(refused, fill.Replace(words.opening(refusedStop))) {
+			t.Errorf("the notice of %q over a stop the runtime refused reads %q, which does not open with %q", end, refused, fill.Replace(words.opening(refusedStop)))
+		}
 		if strings.Contains(told, stallRoleWord) || strings.Contains(told, stallDueWord) {
 			t.Errorf("the notice of %q reads %q, which still holds %s or %s: every value a clause names is filled in by stallFill", end, told, stallRoleWord, stallDueWord)
 		}
-		// The sentence about the stalled process is written from the machine's record of the
-		// stop, so each end that let one go is read both ways: the stop the runtime made, and
-		// the stop it refused, which leaves a process running that the owner must know about.
-		refused := stallBackstopRecord(rigClaim(), supervise.StallBackstopStop{Bound: backstopBound, End: end,
-			WakeDue: time.Now(), StopUnconfirmed: true}, time.Hour)
+		ended := stallTurnEndedClaims(rigClaim())
 		switch words.process {
 		case stallProcessLetGo:
 			if !strings.Contains(told, stallProcessStopped) {
@@ -833,10 +864,21 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 			if strings.Contains(refused, stallProcessStopped) {
 				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q all the same", end, refused, stallProcessStopped)
 			}
+			if said := saidFirst(told, ended); said == "" {
+				t.Errorf("the notice of %q over a stop the runtime made reads %q, which says nowhere that the turn was ended: this end let the claim's process go and the runtime confirmed the stop of it, so the opening is the end's claim that the turn is over", end, told)
+			}
+			if said := saidFirst(refused, ended); said != "" {
+				t.Errorf("the notice of %q over a stop the runtime refused reads %q, which says %q: nobody saw that process stop, so it may be running the turn still and no word of this notice may call the turn ended (stallTurnClause)", end, refused, said)
+			}
 		case stallProcessKept:
 			for _, said := range []string{stallProcessStopped, stallStopRefused} {
 				if strings.Contains(told, said) || strings.Contains(refused, said) {
 					t.Errorf("the notice of %q says %q, and this end let no process go: the claim keeps and runs it", end, said)
+				}
+			}
+			for reading, text := range map[string]string{"a stop the runtime made": told, "a stop the runtime refused": refused} {
+				if said := saidFirst(text, ended); said != "" {
+					t.Errorf("the notice of %q over %s reads %q, which says %q: this end kept the claim's process and the turn it is running, so no word of this notice may call that turn ended", end, reading, text, said)
 				}
 			}
 		}
@@ -844,6 +886,35 @@ func TestTheNoticeHasWordsForEveryEndThatTellsItsOwner(t *testing.T) {
 	for end := range worded {
 		t.Errorf("the notice has a sentence for %q, which is no end the machine can reach: drop the row, or add the end to supervise.ProcessEnds", end)
 	}
+}
+
+// stallTurnEndedClaims is every way this notice's words can say the stalled turn was ended,
+// filled for the claim the walk writes its notices from. The walk reads the whole notice for
+// them, because what the derivation above cannot reach is a row that writes the claim into its
+// own words (stallTurnClause, stallEndWords.did).
+func stallTurnEndedClaims(c supervise.Claim) []string {
+	role := string(c.Role)
+	return []string{
+		"ended the " + role + "'s turn",
+		"ended its turn",
+		"ended this turn",
+		"ended that turn",
+		"ended the turn",
+		"turn was ended",
+		"turn has ended",
+		"turn is over",
+	}
+}
+
+// saidFirst is the first of claims that told carries, and the empty string for a notice that
+// carries none.
+func saidFirst(told string, claims []string) string {
+	for _, said := range claims {
+		if strings.Contains(told, said) {
+			return said
+		}
+	}
+	return ""
 }
 
 // rigClaim is a claim of the rig's shape for a case that writes a notice from it directly,

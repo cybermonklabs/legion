@@ -885,7 +885,7 @@ type Machine struct {
 	// memory only: after a restart the boot orphan sweep has reaped every process no claim records.
 	previous *runtime.Locator
 	// stopUnconfirmed is whether the runtime left the process this replacement let go possibly
-	// running: it refused the stop and the machine went on anyway (endHeld, fail, stopPrevious),
+	// running: it refused the stop and the machine went on anyway (endHeld, stopPrevious),
 	// or the daemon's own stop cut the launch short before the stop was made (launchNow). It is
 	// the one thing a caller cannot read off the claim the replacement leaves — the claim records
 	// no process either way — and a stalled worker's owner is told of it, since a process the
@@ -1899,12 +1899,11 @@ func (m *Machine) forgetSession() {
 // fail puts the claim where nothing relaunches it: its timers stop, its locator goes, and the
 // pending delivery stays for whoever decides what happens next. A process the claim still records
 // — found dead, or never stopped — is suspended first, so nothing of it keeps holding what it ran
-// on until the tree closes; a suspension that fails is logged and recorded (stopUnconfirmed), and
-// the claim fails all the same.
+// on until the tree closes; a suspension that fails is logged, and the claim fails all the
+// same.
 func (m *Machine) fail(ctx context.Context, why string) error {
 	if loc := m.claim.Locator; loc != nil {
 		if err := m.endProcess(ctx); err != nil {
-			m.stopUnconfirmed = true
 			m.log.Error("supervise: could not suspend the failed claim's process", "incarnation", loc.Incarnation, "error", err)
 		}
 	}
