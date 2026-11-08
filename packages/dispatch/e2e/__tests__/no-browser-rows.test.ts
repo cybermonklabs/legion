@@ -1,13 +1,11 @@
 import { expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { type Listing, rowsOfListing } from "../configurations";
 import {
   type Exemption,
   exemptions,
-  rowsOfSource,
+  rowsOfFiles,
   type SuiteRow,
   specFiles,
   staleExemptions,
@@ -22,21 +20,15 @@ import { listing, retained } from "./playwright-listing";
 // the command line alone for whatever test file this worker runs next.
 const e2eDirectory = fileURLToPath(new URL("..", import.meta.url));
 
-/** The rows a file under the `e2e` directory declares, under the path this test reports them
- *  by. */
-function rowsOfFile(file: string): SuiteRow[] {
-  return rowsOfSource(file, readFileSync(join(e2eDirectory, file), "utf8"));
-}
-
 // All three listings are read-only subprocesses, so they start here rather than in the test that
-// awaits them: the second and third collect while the first does, which is most of this file's
-// cost. All three are needed, and the third is the one easily missed. The default run ignores
-// every `*.multiprocess.e2e.ts`; the two-process run takes those and ignores
-// `signin.multiprocess.e2e.ts`; and only DISPATCH_E2E_SIGNIN=oidc with DISPATCH_E2E_PROCESSES=2
-// lists that last spec, whose servers sign people in through the dev OIDC issuer alone
-// (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40). Each listing names
-// its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the ambient ones, so this
-// file reads the same suite in every lane.
+// awaits them: the second and third collect while the first does, and the two scans below run
+// while all three do, which is most of this file's cost. All three are needed, and the third is
+// the one easily missed. The default run ignores every `*.multiprocess.e2e.ts`; the two-process
+// run takes those and ignores `signin.multiprocess.e2e.ts`; and only DISPATCH_E2E_SIGNIN=oidc
+// with DISPATCH_E2E_PROCESSES=2 lists that last spec, whose servers sign people in through the
+// dev OIDC issuer alone (e2e/playwright.config.ts's project lists, e2e/harness-signin.ts:20-40).
+// Each listing names its own DISPATCH_E2E_PROCESSES and DISPATCH_E2E_SIGNIN and never the
+// ambient ones, so this file reads the same suite in every lane.
 const defaultListing = retained(listing("e2e/playwright.config.ts", {}));
 const multiprocessListing = retained(
   listing("e2e/playwright.config.ts", { DISPATCH_E2E_PROCESSES: "2" })
@@ -49,7 +41,7 @@ const signInListing = retained(
 );
 
 const scannedFiles = specFiles(e2eDirectory);
-const realRows = scannedFiles.flatMap(rowsOfFile);
+const realRows = rowsOfFiles(e2eDirectory, scannedFiles);
 // Each rule is run over the suite once, here, because two tests below read each result: the one
 // that asserts it and the one that prints the evidence line only when every rule held.
 const realUnexplained = unexplainedRows(realRows, exemptions);
@@ -61,21 +53,44 @@ const realStale = staleExemptions(realRows, exemptions);
 // the same cores, and the ceiling is the point at which something is wrong rather than slow.
 const listingTimeout = 180_000;
 
-/** The six planted controls, read by name rather than by pointing `specFiles` at their
- *  directory: they are no part of the suite, and a file that was would run in it. Each is read
- *  and parsed once, here, for the tests below that read its rows. */
+/** The planted controls, read by name rather than by pointing `specFiles` at their directory:
+ *  they are no part of the suite, and a file that was would run in it. */
 const noBrowserFixture = "__tests__/fixtures/no-browser-row.fixture.ts";
 const browserFixture = "__tests__/fixtures/browser-row.fixture.ts";
 const unreadShapesFixture = "__tests__/fixtures/unread-row-shapes.fixture.ts";
 const unresolvedShapeFixture = "__tests__/fixtures/unresolved-row-shape.fixture.ts";
 const crossFileShapeFixture = "__tests__/fixtures/cross-file-row-shape.fixture.ts";
 const namedCallbackFixture = "__tests__/fixtures/named-callback-fixtures.fixture.ts";
-const noBrowserFixtureRows = rowsOfFile(noBrowserFixture);
-const browserFixtureRows = rowsOfFile(browserFixture);
-const unreadShapesFixtureRows = rowsOfFile(unreadShapesFixture);
-const unresolvedShapeFixtureRows = rowsOfFile(unresolvedShapeFixture);
-const crossFileShapeFixtureRows = rowsOfFile(crossFileShapeFixture);
-const namedCallbackFixtureRows = rowsOfFile(namedCallbackFixture);
+const shadowedNamesFixture = "__tests__/fixtures/shadowed-names.fixture.ts";
+const rowCalleesFixture = "__tests__/fixtures/row-callees.fixture.ts";
+
+// One scan over all eight, because a scan is a program: read one file at a time it would build
+// eight of them, and each fixture's imports — the callbacks two of them pass by name out of a
+// module beside them — are resolved the same way either way.
+const fixtureRows = rowsOfFiles(e2eDirectory, [
+  noBrowserFixture,
+  browserFixture,
+  unreadShapesFixture,
+  unresolvedShapeFixture,
+  crossFileShapeFixture,
+  namedCallbackFixture,
+  shadowedNamesFixture,
+  rowCalleesFixture,
+]);
+
+/** The rows one planted control declares, in the order the scan read them. */
+function rowsOf(file: string): SuiteRow[] {
+  return fixtureRows.filter((row) => row.file === file);
+}
+
+const noBrowserFixtureRows = rowsOf(noBrowserFixture);
+const browserFixtureRows = rowsOf(browserFixture);
+const unreadShapesFixtureRows = rowsOf(unreadShapesFixture);
+const unresolvedShapeFixtureRows = rowsOf(unresolvedShapeFixture);
+const crossFileShapeFixtureRows = rowsOf(crossFileShapeFixture);
+const namedCallbackFixtureRows = rowsOf(namedCallbackFixture);
+const shadowedNamesFixtureRows = rowsOf(shadowedNamesFixture);
+const rowCalleesFixtureRows = rowsOf(rowCalleesFixture);
 
 // A scan that found nothing would satisfy every rule below without reading a row, so this is
 // asserted once here rather than again in each test that reads `realRows`.
@@ -154,17 +169,17 @@ test("a planted row that drives no browser is named, and one that drives a brows
 
 test("a planted row with a computed title, and one with a callback by name, are both named", () => {
   // Both rows are read: the first by its inline callback, whatever its title is, the second by
-  // its literal title, with no fixtures because its callback is out of this module's reach.
+  // the function its second argument names, which takes no parameter and so binds nothing.
   expect(unreadShapesFixtureRows).toEqual([
     {
       file: unreadShapesFixture,
-      line: 19,
+      line: 20,
       title: "computedTitle",
       fixtures: [],
     },
     {
       file: unreadShapesFixture,
-      line: 29,
+      line: 31,
       title: '"a planted row whose callback is declared beside it"',
       fixtures: [],
     },
@@ -176,16 +191,10 @@ test("a planted row with a computed title, and one with a callback by name, are 
   expect(unexplainedRows(unreadShapesFixtureRows, exemptions)).toEqual(unreadShapesFixtureRows);
 });
 
-// A row whose title and whose callback are BOTH passed by name. Playwright runs it like any
-// other row and it binds no browser fixture, so the check must report it and name it. It reads
-// nothing of it today, which is the gate hole this test pins: a row of this shape passes in
-// silence, and neither the file-set comparison nor the two controls above can see it, since the
-// file keeps whatever other rows it holds. `packages/dispatch/AGENTS.md` promises otherwise -
-// the check "reads every `test(` call" and "refuses … a row whose callback it cannot read …
-// since fixtures it did not read are not fixtures it saw". Reading the second argument's
-// declaration in the same file settles it with no type checker, and leaves the four
-// `test.skip(<condition>, <reason>)` calls of this suite that name neither by a literal alone,
-// since what they name is no function.
+// A row whose title and whose callback are BOTH passed by name: neither half is written in the
+// call, so a reading that wanted a literal title or an inline function had nothing of it at all.
+// The scan reports it from its callee and its arguments, and reads the callback's parameters
+// where it stands - there are none, so the row drives no browser and the check names it.
 test("a planted row whose title and whose callback are both passed by name is named too", () => {
   expect(unresolvedShapeFixtureRows.map((row) => row.fixtures)).toEqual([[]]);
   expect(unexplainedRows(unresolvedShapeFixtureRows, exemptions)).toEqual(
@@ -193,18 +202,15 @@ test("a planted row whose title and whose callback are both passed by name is na
   );
 });
 
-// The other half of the same hole, and the half no reading of the file under scan can settle:
-// the row's callback is imported from `cross-file-row-callback.ts`, so the name resolves to
-// nothing in the file `rowsOfSource` parses. The call is still a row — `test` takes a title
-// first and nothing else, unlike `test.skip(<condition>, <reason>)` — and the check reports it
-// with no fixtures, which is what `packages/dispatch/AGENTS.md` means by refusing a row whose
-// callback it cannot read. A reading that skipped it would return no row for a file holding a
-// `test(` call, which is the gate hole in its purest form.
-test("a planted row whose callback is imported from another module is named too", () => {
+// The same two halves with the callback declared in a module beside the fixture, which is what
+// the program the scan builds is for: the import is resolved to the function it names and read
+// there. It takes no fixture, so the row drives no browser and the check names it. The fixtures
+// of an imported callback that does bind one are pinned in the shadowed-names fixture below.
+test("a planted row whose callback is imported from another module is read there", () => {
   expect(crossFileShapeFixtureRows).toEqual([
     {
       file: crossFileShapeFixture,
-      line: 33,
+      line: 35,
       title: "computedTitle",
       fixtures: [],
     },
@@ -236,6 +242,138 @@ test("the fixtures of a callback passed by name are read, whatever the row's tit
   expect(unexplainedRows(namedCallbackFixtureRows, exemptions)).toEqual([
     namedCallbackFixtureRows[1],
   ]);
+});
+
+// The correctness the checker is here for. Each of the first five rows passes a name that a
+// reading matching names against the functions a file declares resolved to `opensAPage`, the one
+// function of the fixture that binds `page`: it reported `fixtures: ["page"]` for a row that
+// drives nothing and the gate passed it. Each name is bound somewhere else - a for-of `const`, a
+// `let` in a describe, a destructured `const`, a parameter, an import beside a nested function
+// of its name - and the scan reads each binding where it stands. Two more pass no name at all,
+// and the last two are the other direction: the file's own `opensAPage` where nothing shadows
+// it, and an import that binds `page` in the module it comes from, both read and both left.
+test("a name in a row's callback position is read as what it is bound to", () => {
+  expect(shadowedNamesFixtureRows).toEqual([
+    {
+      file: shadowedNamesFixture,
+      line: 45,
+      title: '"a planted row whose callback is a for-of const of a declared name"',
+      fixtures: [],
+    },
+    {
+      file: shadowedNamesFixture,
+      line: 56,
+      title: '"a planted row whose callback is a let inside a describe"',
+      fixtures: [],
+    },
+    {
+      file: shadowedNamesFixture,
+      line: 63,
+      title: '"a planted row whose callback is a destructured const"',
+      fixtures: [],
+    },
+    // The helper's own `test(title, body)` call, read once where it is written: the title is the
+    // parameter's source text, since no reader of the source can say what a caller passes.
+    {
+      file: shadowedNamesFixture,
+      line: 69,
+      title: "title",
+      fixtures: [],
+    },
+    {
+      file: shadowedNamesFixture,
+      line: 74,
+      title: '"a planted row whose callback is an import beside a nested function of that name"',
+      fixtures: [],
+    },
+    // Neither of these two is a name, so there is no declaration to read. The second binds
+    // `page` all the same, and the check still names its row: fixtures it did not read are not
+    // fixtures it saw, and failing closed is what keeps the residual honest.
+    {
+      file: shadowedNamesFixture,
+      line: 89,
+      title: '"a planted row whose callback is what a call returns"',
+      fixtures: [],
+    },
+    {
+      file: shadowedNamesFixture,
+      line: 91,
+      title: '"a planted row whose callback is a property of an imported object"',
+      fixtures: [],
+    },
+    {
+      file: shadowedNamesFixture,
+      line: 93,
+      title: '"a planted row whose callback is this file\'s own function"',
+      fixtures: ["page"],
+    },
+    {
+      file: shadowedNamesFixture,
+      line: 95,
+      title: '"a planted row whose callback is imported and opens a page"',
+      fixtures: ["page"],
+    },
+  ]);
+
+  // The seven that drive no browser are named and the two that do are left, which is the whole
+  // of the difference between reading a name and matching it.
+  expect(unexplainedRows(shadowedNamesFixtureRows, exemptions)).toEqual(
+    shadowedNamesFixtureRows.slice(0, 7)
+  );
+});
+
+// The callee set, which decides whether a call is a row before any of its arguments is read.
+// `test.fail`, `test.skip` and `test.fixme` declare a row in their title-first forms and mark
+// the row they stand in in their condition forms; `test.fail.only` is three parts long and
+// declares a row; `test.describe.only` and `test.step.skip` are three parts long and declare
+// none. The fixture holds all of them, with a `test.skip(<condition>, <reason>)` whose reason is
+// a `const` - the shape of the four real calls of this suite - and a `test.slow()` beside them.
+test("every callee that declares a row is read as one, and no other callee is", () => {
+  expect(rowCalleesFixtureRows).toEqual([
+    {
+      file: rowCalleesFixture,
+      line: 36,
+      title: '"a planted row declared by test.fail"',
+      fixtures: [],
+    },
+    {
+      file: rowCalleesFixture,
+      line: 38,
+      title: '"a planted row declared by test.skip"',
+      fixtures: [],
+    },
+    {
+      file: rowCalleesFixture,
+      line: 40,
+      title: '"a planted row declared by test.fixme"',
+      fixtures: [],
+    },
+    {
+      file: rowCalleesFixture,
+      line: 42,
+      title: '"a planted row declared by test.fail with details before its body"',
+      fixtures: [],
+    },
+    {
+      file: rowCalleesFixture,
+      line: 48,
+      title: '"a planted row declared by test.fail.only"',
+      fixtures: [],
+    },
+    // The row inside the `test.describe.only` block. The block's own call declares no row, and
+    // neither does the `test.slow()`, the `test.skip(<condition>, <reason>)` or the
+    // `test.step.skip(…)` inside this one, or there would be more rows here than six.
+    {
+      file: rowCalleesFixture,
+      line: 54,
+      title: '"a planted row inside a describe block"',
+      fixtures: ["page"],
+    },
+  ]);
+
+  expect(unexplainedRows(rowCalleesFixtureRows, exemptions)).toEqual(
+    rowCalleesFixtureRows.slice(0, 5)
+  );
 });
 
 test("an exemption for a row that drives a browser, and one for a row no file holds, are stale", () => {

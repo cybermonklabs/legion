@@ -1,23 +1,25 @@
-/** The fifth planted shape of e2e/__tests__/no-browser-rows.test.ts, and the half of the hole
- *  that same-file resolution cannot close: a row whose title is computed AND whose callback is
- *  an identifier imported from another module (`cross-file-row-callback.ts`). Playwright runs it
- *  like any other row and it binds no browser fixture, so `rowsOfSource` must report it and
+/** The planted shape of e2e/__tests__/no-browser-rows.test.ts whose halves are BOTH names and
+ *  whose callback is declared in ANOTHER MODULE: the title is computed and the second argument
+ *  is an identifier imported from `cross-file-row-callback.ts`. Playwright runs it like any
+ *  other row and it binds no browser fixture, so `rowsOfFiles` must report it and
  *  `unexplainedRows` must name it.
  *
- * `unresolved-row-shape.fixture.ts` beside it declares its callback in its own file, so reading
- * the declarations of the file under scan settles that one. Here there is nothing to read:
- * `rowsOfSource` parses this file alone, with no type checker and no second parse, and
- * `offTheBrowserInAnotherFile` names nothing it holds. The check must still report the row,
- * with no fixtures, because fixtures it did not read are not fixtures it saw — what tells this
- * call from the four `test.skip(<condition>, <reason>)` calls of the suite written with no
- * string literal is its callee: `test` takes a title first and nothing else, while `test.skip`
- * also takes a condition (@playwright/test 1.64.1, `types/test.d.ts`).
+ * `unresolved-row-shape.fixture.ts` beside it declares its callback in its own file. Here the
+ * declaration is a module away, which a reading of the file under scan alone could not follow:
+ * it reported the row with no fixtures and could not have said whether that was the truth. The
+ * scan builds one program over the files it reads, so the import is a symbol like any other and
+ * `getAliasedSymbol` leads to the function it names; that function takes no parameter, and the
+ * empty fixture list is read rather than assumed.
+ *
+ * What says the call is a row at all is its callee: `test` takes a title first and nothing else,
+ * while `test.skip` also takes a condition (@playwright/test 1.64.1, `types/test.d.ts`), which
+ * is what keeps the four `test.skip(<condition>, <reason>)` calls of this suite out.
  *
  * Its name ends `.fixture.ts` and not `.e2e.ts` because e2e/playwright.config.ts says
  * `testDir: "."` and `testMatch: /.*\.e2e\.ts/`: Playwright walks the `e2e` directory
  * recursively, so a `.e2e.ts` file here, under `__tests__/fixtures/`, would join the real suite
- * and run. `bun test` collects only `*.test.ts` and its kin, so this file runs nowhere; the test
- * reads its text and parses it.
+ * and run. `bun test` collects only `*.test.ts` and its kin, so this file runs nowhere; the scan
+ * parses it and the test reads the rows.
  */
 
 import { test } from "@playwright/test";

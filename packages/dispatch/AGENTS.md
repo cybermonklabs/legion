@@ -1655,11 +1655,18 @@ against stub upstreams and kills it in `afterAll`), that package's own tests for
 a command, and a Go test for a claim about the server (INFRA-1404). Every row
 of this suite binds `page`, `browser` or `context`, and
 `cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
-check that decides it: it reads every `test(` call of `e2e/**/*.e2e.ts` for the
-fixtures its callback binds and refuses a row that binds none of the three, a
-row whose callback it cannot read among them, since fixtures it did not read
-are not fixtures it saw. It reads the three Playwright listings first, to prove
-it scanned the files the suite runs. A row may stand all the same as a named
+check that decides it: it reads every call of `e2e/**/*.e2e.ts` that
+@playwright/test declares a row — `test`, `test.only`, `test.skip`,
+`test.fixme`, `test.fail` and `test.fail.only`, title first — for the fixtures
+its callback binds, and refuses a row that binds none of the three. A callback
+written in the call is read there, and one passed by name is read where
+TypeScript's own checker says that name is bound: in its own scope, and in the
+module an import leads to, so a `for`-of `const`, a parameter or an import is
+never read as a same-named function declared elsewhere in the file. Any other
+callback — a `let`, `helpers.body`, a name the program cannot resolve — leaves
+its row refused with no fixtures, since fixtures the check did not read are not
+fixtures it saw. It reads the three Playwright listings first, to prove it
+scanned the files the suite runs. A row may stand all the same as a named
 exemption with its reason, written in `e2e/no-browser-rows.ts`, whose list
 ships empty; the check refuses a stale exemption too — one naming a row the
 suite no longer holds, or one that drives a browser now — so the rule cannot

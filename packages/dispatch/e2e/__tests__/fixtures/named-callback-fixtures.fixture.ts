@@ -1,14 +1,14 @@
-/** The sixth planted shape of e2e/__tests__/no-browser-rows.test.ts: the two ways a file
- *  declares a callback a row then passes by name, each binding a fixture, so that reading the
- *  declaration's parameters is pinned and not merely the fail-closed `fixtures: []` every
- *  unreadable shape already reports.
+/** The planted shape of e2e/__tests__/no-browser-rows.test.ts that pins WHAT A RESOLVED
+ *  CALLBACK IS READ FOR: the two ways a file declares a callback a row then passes by name, each
+ *  binding a fixture, so that reading the declaration's parameters is pinned and not merely the
+ *  fail-closed `fixtures: []` every callback the scan cannot read reports.
  *
  * The first row's callback is a function declaration and its title is computed; the second's is
- * a function-valued `const` and its title is a literal, which is the shape that reported no
- * fixtures before `namedCallbacksOfFile` resolved it. One binds `page` and drives a browser,
- * the other binds `request` — Playwright's HTTP client, which opens no page — and does not, so
- * this file also shows that a resolved callback can take a row out of `unexplainedRows` as well
- * as leave it in.
+ * a function-valued `const` and its title is a literal, so neither the title's shape nor the
+ * declaration's decides what is read. One binds `page` and drives a browser, the other binds
+ * `request` — Playwright's HTTP client, which opens no page — and does not, so this file also
+ * shows that a resolved callback can take a row out of `unexplainedRows` as well as leave it
+ * in.
  *
  * Its name ends `.fixture.ts` and not `.e2e.ts` because e2e/playwright.config.ts says
  * `testDir: "."` and `testMatch: /.*\.e2e\.ts/`: Playwright walks the `e2e` directory

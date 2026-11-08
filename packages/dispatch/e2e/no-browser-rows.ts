@@ -16,8 +16,23 @@
  * there are projects that run the file. The set of files is the one thing the two agree on
  * exactly.
  *
- * Every function here but `specFiles`, which reads the file system, is pure over its arguments:
- * no environment, no network, no database and no server, so any process may call it.
+ * What a name in a row's callback position stands for is TypeScript's own answer, not this
+ * module's: `rowsOfFiles` builds one `ts.Program` over the files it scans and asks
+ * `checker.getSymbolAtLocation` what each name is bound to. So a name bound by a `for`-of
+ * `const`, a `let`, a parameter, a destructured binding or an import is read as that binding and
+ * never as a same-named function declared elsewhere in the file, which is the one way a reading
+ * of this kind can report fixtures a row does not take. A name bound to a function declaration or
+ * to a function-valued `const` — in the spec, or through `getAliasedSymbol` in the module it is
+ * imported from — gives the row the fixtures that function's first parameter binds.
+ *
+ * Every other callback is reported with no fixtures, and the row with it: a `let`, a parameter,
+ * `helpers.body`, `makeBody()`, a name whose declaration the program does not hold. The check
+ * fails closed there, because fixtures it did not read are not fixtures it saw, and the row
+ * stands in `unexplainedRows` until someone moves it or writes it an exemption.
+ *
+ * `specFiles` and `rowsOfFiles` read the file system — the program reads every module its root
+ * files import — and everything else here is pure over its arguments: no environment, no
+ * network, no database and no server, so any process may call it.
  */
 
 import { readdirSync } from "node:fs";
@@ -38,13 +53,21 @@ export type SuiteRow = {
   title: string;
   /** The fixtures the callback's first parameter destructures, by the name Playwright knows them
    *  by: the property name where one is renamed, so `{ page: p }` names `page`. A callback whose
-   *  first parameter is no object binding pattern, or that takes none, binds nothing. */
+   *  first parameter is no object binding pattern, or that takes none, binds nothing, and so does
+   *  a callback this module could not read. */
   fixtures: string[];
 };
 
 /** A row that drives no browser and is allowed to stay, named by `file` and `title` exactly as
  *  `SuiteRow` reports them — the title including its quotes or backticks. Never by line: a line
- *  moves under every edit above it. */
+ *  moves under every edit above it.
+ *
+ * `file` and `title` are the whole of the key, and a title is source text rather than the string
+ * Playwright prints, so rows titled from one expression are one key between them: two calls in a
+ * file that both pass `computedTitle`, and a call in a loop whose title is `` `…${landed}…` ``,
+ * which Playwright runs once a turn. One entry excuses every row that shares its key, and
+ * `staleExemptions` calls the entry stale only when they all drive a browser. Where that is more
+ * than the row deserves, give the rows titles the source tells apart and write one entry each. */
 export type Exemption = {
   file: string;
   title: string;
@@ -69,7 +92,7 @@ export type StaleExemption = {
  *
  *     { file: "<the spec>.e2e.ts", title: '"<the title as the source writes it>"', reason: "…" }
  *
- * where `title` is the title's source text, quotes included, since that is what `rowsOfSource`
+ * where `title` is the title's source text, quotes included, since that is what `rowsOfFiles`
  * reads. `staleExemptions` refuses an entry that has outlived what it excuses — one naming a row
  * the suite no longer holds, or one naming a row that now drives a browser — so this list cannot
  * quietly grow stale.
@@ -78,112 +101,121 @@ export type StaleExemption = {
  */
 export const exemptions: readonly Exemption[] = [];
 
-/** The callees that declare a row. `test.describe`, `test.step` and `test.use` declare none, and
- *  neither does `test.slow`: @playwright/test 1.64.1 (`types/test.d.ts`) gives it three forms,
- *  `slow(): void`, `slow(condition: boolean, description?: string): void` and
- *  `slow(callback: ConditionBody<TestArgs & WorkerArgs>, description?: string): void`, each of
- *  which marks a row already declared as slow rather than declaring one.
- *  `test.skip(condition, reason)` inside a row body is a skip, not a row: it is left out by the
- *  title and callback tests in `rowOfCall` rather than by its callee. */
-const rowCallees = new Set(["test", "test.skip", "test.only", "test.fixme", "test.fail"]);
+/** The callees that declare a row, by the forms @playwright/test 1.64.1 (`types/test.d.ts`)
+ *  declares. `test` and its `only` take `(title, body)` and `(title, details, body)` and nothing
+ *  else, and so does `fail.only`, the one modifier with an `only` of its own. `skip`, `fixme` and
+ *  `fail` take those two title forms as well as three that declare no row — `()`,
+ *  `(condition, description?)` and `(callback, description?)` — which mark the row the call
+ *  stands in; `conditionCallees` is how those are told apart.
+ *
+ * No chain of `test.describe` or `test.step` is here, however it is spelled: `describe` and its
+ * `only`, `skip`, `fixme`, `serial` and `parallel` take a `() => void` block, which declares rows
+ * rather than being one, and `step` and its `skip` take a step body inside a row already running.
+ * Neither is `test.use`, which takes a fixture object, nor `test.slow`, whose three forms all
+ * mark a row already declared. */
+const rowCallees = new Set([
+  "test",
+  "test.only",
+  "test.skip",
+  "test.fixme",
+  "test.fail",
+  "test.fail.only",
+]);
 
-/** The row callees whose first argument is a title and nothing else, so a call of one declares
- *  a row however little of it this module can read. @playwright/test 1.64.1
- *  (`types/test.d.ts`) gives `test` and `test.only` their title forms alone — `(title, body)`
- *  and `(title, details, body)` — while `skip`, `fixme` and `fail` each take
- *  `(condition, description)` as well, which marks the row it stands in rather than declaring
- *  one. That second form is why a call of those three is read as a row only when something of
- *  it is readable: a literal title, or a callback. */
-const titledRowCallees = new Set(["test", "test.only"]);
+/** The row callees that also carry the forms marking the row the call stands in. A call of one
+ *  of these with three or more arguments is a row whatever its arguments say, since
+ *  `(condition, description?)` and `(callback, description?)` take two; of a two-argument call,
+ *  a row is the one whose second argument can be a body at all. */
+const conditionCallees = new Set(["test.skip", "test.fixme", "test.fail"]);
 
 /** The fixtures that are a browser. Playwright's `request` is not one of them: it is
  *  Playwright's HTTP client, which opens no page. */
 const browserFixtures = new Set(["browser", "context", "page"]);
 
-/** `test` or `test.skip` for a callee written that way, and nothing for any other expression. */
+/** `test`, `test.skip` or `test.fail.only` for a callee written as a chain of identifiers, and
+ *  nothing for any other expression, which is no callee of `rowCallees` whatever it computes. */
 function calleeName(expression: ts.Expression): string | undefined {
   if (ts.isIdentifier(expression)) return expression.text;
-  if (
-    ts.isPropertyAccessExpression(expression) &&
-    ts.isIdentifier(expression.expression) &&
-    ts.isIdentifier(expression.name)
-  ) {
-    return `${expression.expression.text}.${expression.name.text}`;
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.name)) {
+    const qualifier = calleeName(expression.expression);
+    return qualifier === undefined ? undefined : `${qualifier}.${expression.name.text}`;
   }
   return undefined;
 }
 
-/** A function this module can read a row's fixtures from: one written in the call, or one the
- *  file declares under a name the call passes. */
+/** A function this module reads a row's fixtures from: one written in the call, or one a name in
+ *  the call is bound to. */
 type RowCallback = ts.ArrowFunction | ts.FunctionExpression | ts.FunctionDeclaration;
 
-/** The functions one file declares under a name a call in it can pass, by that name: every
- *  function declaration, and every `const` whose initializer is a function. Anything else a name
- *  may stand for — a `let`, a parameter, a property, an import — is left out, so an argument
- *  that names one resolves to nothing and the call is read as if the name were unreadable.
- *
- * A name this file declares twice is recorded as unreadable rather than as either declaration:
- * a walk of the whole file is no scope analysis, and two functions of one name are two
- * different parameter lists, of which this module cannot say which the call names. The map
- * holds `undefined` for such a name, which is why it is read with `get` and not `has`. */
-function namedCallbacksOfFile(sourceFile: ts.SourceFile): Map<string, RowCallback | undefined> {
-  const callbacks = new Map<string, RowCallback | undefined>();
-  const record = (name: string, callback: RowCallback): void => {
-    callbacks.set(name, callbacks.has(name) ? undefined : callback);
-  };
-  const visit = (node: ts.Node): void => {
-    if (ts.isFunctionDeclaration(node)) {
-      if (node.name !== undefined) record(node.name.text, node);
-    } else if (ts.isVariableStatement(node)) {
-      // `setParentNodes` is false in `rowsOfSource`, so a declaration cannot be asked for its
-      // list: the `const` test is made here, where the list is in hand.
-      if ((node.declarationList.flags & ts.NodeFlags.Const) !== 0) {
-        for (const declaration of node.declarationList.declarations) {
-          const initializer = declaration.initializer;
-          if (
-            ts.isIdentifier(declaration.name) &&
-            initializer !== undefined &&
-            (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
-          ) {
-            record(declaration.name.text, initializer);
-          }
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(sourceFile, visit);
-  return callbacks;
-}
+/** What one argument of a call is, as far as this module reads it. */
+type RowArgument =
+  /** A function, whose first parameter binds the row's fixtures. */
+  | { kind: "callback"; declaration: RowCallback }
+  /** Something no row can run: a title, a details object, a reason string. */
+  | { kind: "value" }
+  /** Something that can be a body and whose declaration this module could not read. */
+  | { kind: "unreadable" };
 
-/** The row's callback among the arguments that follow the title: the first that is a function,
- *  which both an arrow function and a function expression carry a body for, or the first that
- *  names one this file declares. A row may take a details object between its title and its
- *  callback (`test(title, { tag }, callback)`), so this reads the arguments rather than one
- *  position. It is passed the arguments after the first because a function in first position is
- *  a condition, not a callback:
- *  `test.skip(({ browserName }) => browserName === "webkit", "reason")` inside a row body
- *  declares no row.
+/** The function a name is bound to, or nothing when it is bound to anything else.
  *
- * A name is resolved wherever it stands, including on a call with a literal title, which until
- * now reported `fixtures: []` for a callback passed by name. One syntax is read one way: the
- * fixtures are written in the file and this module now reads them, and reading them only where
- * nothing else resolved would report two different fixture lists for one callback depending on
- * how its row happens to be titled. It cuts both ways and that is the point — such a row now
- * passes the gate when its named callback binds `page`, because it does drive a browser, and it
- * is still named when the callback binds none. */
-function rowCallback(
-  argumentsAfterTitle: readonly ts.Expression[],
-  namedCallbacks: ReadonlyMap<string, RowCallback | undefined>
-): RowCallback | undefined {
-  for (const argument of argumentsAfterTitle) {
-    if (ts.isArrowFunction(argument) || ts.isFunctionExpression(argument)) return argument;
-    if (ts.isIdentifier(argument)) {
-      const named = namedCallbacks.get(argument.text);
-      if (named !== undefined) return named;
+ * The symbol comes from the checker, so the name resolves in its own scope: a `for`-of `const`, a
+ * parameter, a catch variable or a destructured binding is itself, and a name declared in a
+ * `describe` callback is that declaration rather than a same-named one at the top of the file. An
+ * import is a symbol of its own too, which `getAliasedSymbol` follows to what it imports, so a
+ * callback declared in a module beside the spec is read there.
+ *
+ * A `let` or `var` is not read even where its initializer is a function: that binding can hold
+ * another function by the time Playwright runs the row, so reading it would be a guess, and this
+ * module reports what it cannot read rather than guessing at it. */
+function boundFunction(name: ts.Identifier, checker: ts.TypeChecker): RowCallback | undefined {
+  const symbol = checker.getSymbolAtLocation(name);
+  if (symbol === undefined) return undefined;
+  const bound =
+    (symbol.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(symbol) : symbol;
+  for (const declaration of bound.declarations ?? []) {
+    // An overload signature declares no parameters the row runs with; its implementation does.
+    if (ts.isFunctionDeclaration(declaration)) {
+      if (declaration.body !== undefined) return declaration;
+      continue;
+    }
+    if (!ts.isVariableDeclaration(declaration)) continue;
+    if ((ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const) === 0) continue;
+    const initializer = declaration.initializer;
+    if (
+      initializer !== undefined &&
+      (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer))
+    ) {
+      return initializer;
     }
   }
   return undefined;
+}
+
+/** Whether an expression this module read no function out of can be a row's body at all. A title,
+ *  a details object and a reason string cannot, which is what tells `test.skip(condition, reason)`
+ *  from `test.skip(title, body)`; anything callable can, and so does anything the program could
+ *  not work a type out for, which is read as a body this module failed to read rather than
+ *  dismissed. */
+function mayBeCallable(expression: ts.Expression, checker: ts.TypeChecker): boolean {
+  const type = checker.getTypeAtLocation(expression);
+  const constituents = type.isUnion() ? type.types : [type];
+  return constituents.some(
+    (part) =>
+      (part.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) !== 0 ||
+      part.getCallSignatures().length > 0
+  );
+}
+
+/** What `expression`, written as one argument of a row callee, is to this module. */
+function rowArgument(expression: ts.Expression, checker: ts.TypeChecker): RowArgument {
+  if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+    return { kind: "callback", declaration: expression };
+  }
+  if (ts.isIdentifier(expression)) {
+    const declaration = boundFunction(expression, checker);
+    if (declaration !== undefined) return { kind: "callback", declaration };
+  }
+  return mayBeCallable(expression, checker) ? { kind: "unreadable" } : { kind: "value" };
 }
 
 /** The fixture names a callback's first parameter binds. */
@@ -202,73 +234,93 @@ function fixturesOfCallback(callback: RowCallback): string[] {
 
 /** The row `call` declares, or nothing when it declares none.
  *
- * A call whose callback is written inline, or passed by the name of a function the same file
- * declares, is a row whatever its first argument is, so a row titled from a variable is read as
- * surely as one titled by a literal, and its `title` is that argument's source text — all a
- * reader of the source alone can have.
+ * A call of a row callee is a row whatever its title is written as, so a row titled from a
+ * variable is read as surely as one titled by a literal, and its `title` is that argument's
+ * source text — all a reader of the source alone can have. The body is the first argument after
+ * the title that is not plainly a value, because a row may carry a details object between the two
+ * (`test(title, { tag }, body)`), and the arguments after the first are what is read because a
+ * function in first position is a condition rather than a body:
+ * `test.skip(({ browserName }) => browserName === "webkit", "reason")` inside a row body declares
+ * no row.
  *
- * A call whose callback this module still cannot read — an identifier naming something this
- * file does not declare, because it is imported — is reported too, with no fixtures, whenever
- * the call is a row at all. It is reported rather than skipped because a gate a row can get
- * past is a gap in the gate: fixtures this module did not read are not fixtures it saw, so the
- * check fails closed and `unexplainedRows` names the row until someone moves it or writes it an
- * exemption.
+ * That is also what leaves out the calls of `conditionCallees` that mark the row they stand in:
+ * `test.skip(<condition>, "<reason>")` and the four of this suite whose reason is the imported
+ * `plainHttpSkipReason` of `e2e/plain-http-origin.ts` carry two arguments of which the second is a
+ * string, and a string is no body.
  *
- * What says the call is a row at all, when neither half can be read, is its callee: `test` and
- * `test.only` take a title first and nothing else (`titledRowCallees`), while `test.skip` and
- * its kin also take `(condition, description)`, which declares no row. That and the all-strings
- * test leave out the modifier calls of this suite: `test.skip(<condition>, "<reason>")` inside
- * a row body, and the four written with no string literal at all, whose second argument names a
- * string constant and not a function, so it resolves to no callback here.
- */
+ * A row whose body this module could not read is reported with no fixtures rather than skipped,
+ * because a gate a row can get past is a gap in the gate. */
 function rowOfCall(
   call: ts.CallExpression,
   sourceFile: ts.SourceFile,
   file: string,
-  namedCallbacks: ReadonlyMap<string, RowCallback | undefined>
+  checker: ts.TypeChecker
 ): SuiteRow | undefined {
   const callee = calleeName(call.expression);
   if (callee === undefined || !rowCallees.has(callee)) return undefined;
   const [title, ...rest] = call.arguments;
-  // Every form that declares a row names it and gives it a body, so a call of one argument or
-  // none — `test.skip()`, `test.fail("this is broken")` — marks the row it stands in.
+  // Every form that declares a row gives it a title and a body, so a call of one argument or
+  // none — `test.skip()`, `test.skip(<condition>)` — marks the row it stands in.
   if (title === undefined || rest.length === 0) return undefined;
-  const callback = rowCallback(rest, namedCallbacks);
-  if (callback === undefined) {
-    // `test.fixme(condition, description)` and its kin: a call carrying nothing but strings
-    // after its first argument gives no body and declares nothing.
-    if (rest.every((argument) => ts.isStringLiteral(argument))) return undefined;
-    const titled = ts.isStringLiteralLike(title) || ts.isTemplateExpression(title);
-    if (!titled && !titledRowCallees.has(callee)) return undefined;
-  }
+  const body = rest
+    .map((argument) => rowArgument(argument, checker))
+    .find((argument) => argument.kind !== "value");
+  if (conditionCallees.has(callee) && rest.length === 1 && body === undefined) return undefined;
   return {
     file,
     line: sourceFile.getLineAndCharacterOfPosition(call.getStart(sourceFile)).line + 1,
     title: title.getText(sourceFile),
-    fixtures: callback === undefined ? [] : fixturesOfCallback(callback),
+    fixtures: body?.kind === "callback" ? fixturesOfCallback(body.declaration) : [],
   };
 }
 
-/** Every row `source` declares, reported under `file`. The walk is over the TypeScript syntax
- *  tree because a line regex reads this suite wrong: the same patterns run over the text return
- *  25 candidates, of which 21 are multi-line `test.skip(` calls inside a row body and no rows at
- *  all. */
-export function rowsOfSource(file: string, source: string): SuiteRow[] {
-  // `setParentNodes` is false: nothing here reads a node's `.parent`. The walk is
-  // `ts.forEachChild`, and both position reads pass the source file (`call.getStart(sourceFile)`,
-  // `title.getText(sourceFile)`), so attaching a parent to every node of every spec of the
-  // suite would roughly double this parse for no reader.
-  const sourceFile = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, false);
-  const namedCallbacks = namedCallbacksOfFile(sourceFile);
+/** The compiler options the scan's program is built with: the package's own `tsconfig.json` less
+ *  what reading a name does not need. `types` is empty because no global of `bun` or
+ *  `vite/client` is a row's callback, and `skipLibCheck` and `noEmit` are there for the same
+ *  reason no diagnostic of this program is read — it is built to bind names, not to type-check
+ *  the suite, which `bunx tsc --noEmit` does from the package's own configuration. */
+const scanOptions: ts.CompilerOptions = {
+  lib: ["lib.es2022.d.ts", "lib.dom.d.ts", "lib.dom.iterable.d.ts"],
+  module: ts.ModuleKind.ESNext,
+  moduleResolution: ts.ModuleResolutionKind.Bundler,
+  noEmit: true,
+  skipLibCheck: true,
+  target: ts.ScriptTarget.ES2022,
+  types: [],
+};
+
+/** Every row the given files declare, each reported under the path it was named by: `specFiles`'
+ *  path relative to `directory`.
+ *
+ * One program is built for the whole scan. It is what resolves a name — including a name imported
+ * from a module beside the spec, which is in the program because the spec imports it — and
+ * building one per file would build it 150 times over this suite and resolve nothing more.
+ *
+ * The walk is over the syntax tree because a line regex reads this suite wrong: the same patterns
+ * run over the text return 25 candidates, of which 21 are multi-line `test.skip(` calls inside a
+ * row body and no rows at all. */
+export function rowsOfFiles(directory: string, files: readonly string[]): SuiteRow[] {
+  const program = ts.createProgram({
+    rootNames: files.map((file) => join(directory, file)),
+    options: scanOptions,
+  });
+  const checker = program.getTypeChecker();
   const rows: SuiteRow[] = [];
-  const visit = (node: ts.Node): void => {
-    if (ts.isCallExpression(node)) {
-      const row = rowOfCall(node, sourceFile, file, namedCallbacks);
-      if (row !== undefined) rows.push(row);
-    }
-    ts.forEachChild(node, visit);
-  };
-  ts.forEachChild(sourceFile, visit);
+  for (const file of files) {
+    const path = join(directory, file);
+    const sourceFile = program.getSourceFile(path);
+    // A file the program does not hold is a file this scan did not read, and a scan that reads
+    // nothing passes every rule: it is an error rather than an empty result.
+    if (sourceFile === undefined) throw new Error(`${path} is no file of this scan's program`);
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const row = rowOfCall(node, sourceFile, file, checker);
+        if (row !== undefined) rows.push(row);
+      }
+      ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(sourceFile, visit);
+  }
   return rows;
 }
 

@@ -1,8 +1,9 @@
-/** The third negative control of e2e/__tests__/no-browser-rows.test.ts: the two row shapes a
- *  reading that wanted both a literal title and an inline callback dropped without a word. One
- *  row is titled from a variable; the other's callback is declared beside it and passed by name.
- *  Neither binds a browser fixture, so `rowsOfSource` must report both and `unexplainedRows`
- *  must name both. A reading that skipped them would let past the one thing the rule is about.
+/** A planted control of e2e/__tests__/no-browser-rows.test.ts: the two row shapes with one half
+ *  written in the call and one half not, which a reading that wanted both a literal title and
+ *  an inline callback dropped without a word. One row is titled from a variable; the other's
+ *  callback is declared beside it and passed by name. Neither binds a browser fixture, so
+ *  `rowsOfFiles` must report both and `unexplainedRows` must name both. A reading that skipped
+ *  them would let past the one thing the rule is about.
  *
  * Its name ends `.fixture.ts` and not `.e2e.ts` because e2e/playwright.config.ts says
  * `testDir: "."` and `testMatch: /.*\.e2e\.ts/`: Playwright walks the `e2e` directory
@@ -20,8 +21,9 @@ test(computedTitle, async () => {
   expect(await Promise.resolve("the layer that owns this claim")).toContain("claim");
 });
 
-/** The second row's callback, declared here rather than written in the call, which is what puts
- *  its fixtures out of the reach of a reader of the `test(` call. It takes none. */
+/** The second row's callback, declared here rather than written in the call, so that the row's
+ *  fixtures are read from the declaration the name is bound to. It takes none, which is why the
+ *  row drives no browser. */
 async function offTheBrowser(): Promise<void> {
   expect(await Promise.resolve("the layer that owns this claim")).toContain("claim");
 }
