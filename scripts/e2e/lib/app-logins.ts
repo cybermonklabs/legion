@@ -54,14 +54,14 @@ const roleWrites: Record<AppRole, string> = { implement: "contents", review: "ch
 
 /** The credential fields an App of `github_apps` may configure, in the order a message names
  * them. */
-const appSources = ["token_command", "private_key_command"] as const;
+const appCredentialFields = ["token_command", "private_key_command"] as const;
 
 /** One App of `github_apps`: its id, which of the two credential fields configures it, and that
  * field's command. The field's name travels with the command, so every message about the command
  * names the field it was read from rather than the one this file happens to expect. */
-export interface AppTokenSource {
+export interface AppCredentialSource {
   readonly appId: string;
-  readonly source: (typeof appSources)[number];
+  readonly kind: (typeof appCredentialFields)[number];
   readonly command: string;
 }
 
@@ -74,21 +74,21 @@ function member(value: unknown, key: string): unknown {
 
 /** The Apps of `roles` that `github_apps` configures in the legion.yaml text `text`, or a throw
  * naming the role whose id is missing, or whose credential fields are neither one nor a command. */
-export function appTokenSources(
+export function appCredentialSources(
   text: string,
   roles: readonly AppRole[] = appRoles
-): Partial<Record<AppRole, AppTokenSource>> {
+): Partial<Record<AppRole, AppCredentialSource>> {
   const apps = member(Bun.YAML.parse(text), "github_apps");
   if (apps === undefined || apps === null || typeof apps !== "object") {
     throw new Error("the config has no github_apps");
   }
-  const source = (role: AppRole): AppTokenSource => {
+  const source = (role: AppRole): AppCredentialSource => {
     const app = member(apps, role);
     const appId = member(app, "app_id");
     if (typeof appId !== "string" && typeof appId !== "number") {
       throw new Error(`github_apps.${role}.app_id is not set`);
     }
-    const configured = appSources.filter((field) => {
+    const configured = appCredentialFields.filter((field) => {
       const command = member(app, field);
       return typeof command === "string" && command !== "";
     });
@@ -106,7 +106,7 @@ export function appTokenSources(
       );
     }
     const field = configured[0];
-    return { appId: String(appId), source: field, command: member(app, field) as string };
+    return { appId: String(appId), kind: field, command: member(app, field) as string };
   };
   return Object.fromEntries(roles.map((role) => [role, source(role)]));
 }
@@ -125,8 +125,10 @@ const natsSeedVariables = ["NATS_NKEY_SEED", "NATS_DAEMON_NKEY_SEED"];
  * like a PEM, is a few kilobytes, as the daemon bounds a release (internal/appauth,
  * releaseLimit). */
 const outputLimit = 1 << 20;
-/** How long one credential command may run here: a review App's first grant waits on a person,
- * and `agent-secrets` waits 30 minutes for a decision by default. */
+/** How long one credential command may run here: a deployment may hold a role's github-app
+ * secret at human tier, whose release waits on a person and which `agent-secrets` waits 30
+ * minutes for by default, and an operator's key command may read a store that waits on a person
+ * too. */
 const commandLimitMs = 35 * 60 * 1000;
 /** How long the command's output may go on after the command itself has exited, before the run
  * gives up on a descendant that is holding the pipes open. What it bounds is the time since the
@@ -202,7 +204,7 @@ function writeAll(fd: number, text: string): void {
 async function runCredentialCommand(
   field: string,
   command: string,
-  source: AppTokenSource["source"]
+  kind: AppCredentialSource["kind"]
 ): Promise<string> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const name of natsSeedVariables) delete env[name];
@@ -210,7 +212,7 @@ async function runCredentialCommand(
   // every installation, and sets none of them for a key command, which reads a key no
   // installation narrows (internal/config, executePrivateKeyCommand). So a key command here sees
   // whatever this process's environment holds under those names, as the daemon's would.
-  if (source === "token_command") {
+  if (kind === "token_command") {
     env.LEGION_GITHUB_OWNER = "";
     env.LEGION_GITHUB_REPOS = "";
     env.LEGION_GITHUB_READ_ONLY = "";
@@ -289,7 +291,7 @@ async function runCredentialCommand(
     for await (const chunk of child.stdout) {
       size += chunk.length;
       if (size > outputLimit) {
-        end(`printed more than ${outputLimit} bytes, which no release is`);
+        end(`printed more than ${outputLimit} bytes, which no credential is`);
         continue;
       }
       chunks.push(chunk);
@@ -454,18 +456,22 @@ function appJwt(key: string, appId: string, now: Date, app: string, field: strin
  * GitHub answers the mint `{"token":…,"expires_at":…}`, which is GitHub's own body and no broker
  * release, so nothing here reads it as one. Minting a token at all, rather than reading the
  * App's slug from `GET <api>/app` under the JWT, is deliberate: the token is what carries the
- * viewer observation of appLogin, the one that refuses an App whose viewer is a person. Every
+ * viewer observation of appLogin, the one that refuses an App whose viewer is a person. `now` is
+ * the clock rather than a reading of it, and it is read after the command returns: the command
+ * runs to commandLimitMs, 35 minutes, where the JWT it signs lives nine (appJwt), so a key
+ * command that waits that long on a person would otherwise present a JWT that expired while it
+ * waited and the run would be refused with GitHub's 401 in place of its real cause. Every
  * refusal names the App by its role and id, and none quotes the key, the JWT or the token. */
 async function mintedInstallationToken(
-  source: AppTokenSource,
+  source: AppCredentialSource,
   app: string,
   field: string,
   base: string,
-  now: Date
+  now: () => Date
 ): Promise<string> {
   let key: string;
   try {
-    key = (await runCredentialCommand(field, source.command, source.source)).trim();
+    key = (await runCredentialCommand(field, source.command, source.kind)).trim();
   } catch (error) {
     throw new Error(`${app}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -473,7 +479,7 @@ async function mintedInstallationToken(
   // empty is refused here rather than carried into a signature, as the daemon refuses it
   // (internal/config, executePrivateKeyCommand).
   if (key === "") throw new Error(`${app}: ${field} produced empty output`);
-  const jwt = appJwt(key, source.appId, now, app, field);
+  const jwt = appJwt(key, source.appId, now(), app, field);
   const read = `GET /app/installations as ${app}`;
   const listed = await githubRead(read, `${base}/app/installations`, jwt, {}, "Bearer");
   if (!Array.isArray(listed.answer)) {
@@ -513,23 +519,23 @@ async function mintedInstallationToken(
  * there and not on GitHub. */
 export async function appLogin(
   role: AppRole,
-  source: AppTokenSource,
+  source: AppCredentialSource,
   api: string,
   now: () => Date = () => new Date()
 ): Promise<string> {
   const app = `the ${role} App (app_id ${source.appId})`;
-  const field = `github_apps.${role}.${source.source}`;
+  const field = `github_apps.${role}.${source.kind}`;
   const base = api.replace(/\/+$/, "");
   /** How a message names where the token this proves came from, which is the field's doing
    * either way: a token_command releases one, a private_key_command's key mints one. */
-  const gave = source.source === "token_command" ? `${field} released` : `${field}'s key minted`;
+  const gave = source.kind === "token_command" ? `${field} released` : `${field}'s key minted`;
   let token: string;
-  if (source.source === "private_key_command") {
-    token = await mintedInstallationToken(source, app, field, base, now());
+  if (source.kind === "private_key_command") {
+    token = await mintedInstallationToken(source, app, field, base, now);
   } else {
     try {
       token = firstInstallationToken(
-        await runCredentialCommand(field, source.command, source.source),
+        await runCredentialCommand(field, source.command, source.kind),
         field,
         now()
       );
@@ -593,7 +599,7 @@ export async function appLogins(
   api: string,
   roles: readonly AppRole[] = appRoles
 ): Promise<AppLogins> {
-  const sources = appTokenSources(await Bun.file(configPath).text(), roles);
+  const sources = appCredentialSources(await Bun.file(configPath).text(), roles);
   const logins: AppLogins = {};
   for (const role of roles) {
     const source = sources[role];

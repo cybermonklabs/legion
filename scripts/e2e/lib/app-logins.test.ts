@@ -10,9 +10,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { appTokenSources } from "./app-logins";
+import { appCredentialSources } from "./app-logins";
 import {
   appPrivateKey,
+  holdsNoKey,
   holdsNoToken,
   release,
   standInGitHub,
@@ -66,21 +67,6 @@ const app = (id: string, command = `cat ${join(dir, `release-${id}.json`)}`) =>
  * lib/github-apps.sh writes under --token-dir. */
 const keyApp = (id: string, command = `cat -- ${join(dir, `key-${id}.pem`)}`) =>
   `    app_id: "${id}"\n    private_key_command: ${JSON.stringify(command)}`;
-/** The first part of every App JWT the key path signs, `{"alg":"RS256","typ":"JWT"}` in
- * base64url. */
-const jwtHeader = Buffer.from('{"alg":"RS256","typ":"JWT"}', "utf8").toString("base64url");
-/** Asserts that TEXT quotes no stand-in App's private key and no App JWT, as `holdsNoToken`
- * asserts it quotes no token: the key's base64 body lines are 64 characters apiece of a key this
- * run generated, which nothing else here could print. */
-const holdsNoKey = (text: string) => {
-  expect(text).not.toContain("BEGIN PRIVATE KEY");
-  expect(text).not.toContain(jwtHeader);
-  for (const id of keyIDs) {
-    for (const pem of appPrivateKey(id).split("\n")) {
-      if (pem.length >= 40 && pem[0] !== "-") expect(text).not.toContain(pem);
-    }
-  }
-};
 
 // The run is asynchronous: the stand-in GitHub answers from this test's own event loop. The child
 // gets PATH, a home of the test's own and `env`, never the caller's whole environment. The helper
@@ -554,7 +540,7 @@ describe("app-logins.ts", () => {
       "GET /apps/example-review",
     ]);
     holdsNoToken(stdout);
-    holdsNoKey(stdout);
+    holdsNoKey(stdout, keyIDs);
   });
 
   test("an App whose GET /apps/<slug> answers another id is refused from its key too, naming both ids", async () => {
@@ -568,7 +554,7 @@ describe("app-logins.ts", () => {
       "github_apps.review.private_key_command's key minted another App's token"
     );
     holdsNoToken(stderr);
-    holdsNoKey(stderr);
+    holdsNoKey(stderr, keyIDs);
   });
 
   test("an App without its role's write permission is refused from its key", async () => {
@@ -580,7 +566,7 @@ describe("app-logins.ts", () => {
     expect(stderr).toMatch(namesApp("review", "101"));
     expect(stderr).toContain('answered permissions.checks "read", want write');
     holdsNoToken(stderr);
-    holdsNoKey(stderr);
+    holdsNoKey(stderr, keyIDs);
   });
 
   test("a key command that fails is named by its field, exit code and stderr, its key never quoted", async () => {
@@ -592,7 +578,7 @@ describe("app-logins.ts", () => {
       "the key command refused\napp-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 5): the key command refused"
     );
     holdsNoToken(stderr);
-    holdsNoKey(stderr);
+    holdsNoKey(stderr, keyIDs);
   });
 
   test("a key command that prints nothing is refused", async () => {
@@ -602,23 +588,43 @@ describe("app-logins.ts", () => {
       "app-logins: the review App (app_id 202): github_apps.review.private_key_command produced empty output"
     );
     holdsNoToken(stderr);
-    holdsNoKey(stderr);
+    holdsNoKey(stderr, keyIDs);
+  });
+
+  test("a key command runs as the daemon runs it: no NATS seed, stdin closed, owner, repositories and read-only untouched", async () => {
+    // The daemon sets none of the three narrowing variables for a key command, so each reaches
+    // it with the value the caller set, where the token command's row above reads them empty.
+    const probe =
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: a shell parameter expansion, not a template
+      'printf "%s|%s|%s|%s|%s|%s|%s" "$NATS_NKEY_SEED" "$NATS_DAEMON_NKEY_SEED" "$NATS_NKEY_SEED_FILE" "${LEGION_GITHUB_OWNER-unset}" "${LEGION_GITHUB_REPOS-unset}" "${LEGION_GITHUB_READ_ONLY-unset}" "$(cat)" >&2; exit 4';
+    const { code, stderr } = await run(config(app("101"), keyApp("202", probe)), {
+      NATS_NKEY_SEED: "pane-seed",
+      NATS_DAEMON_NKEY_SEED: "daemon-seed",
+      NATS_NKEY_SEED_FILE: "/seed-file",
+      LEGION_GITHUB_OWNER: "kept-owner",
+      LEGION_GITHUB_REPOS: "kept-repo",
+      LEGION_GITHUB_READ_ONLY: "1",
+    });
+    expect(code).toBe(1);
+    expect(stderr).toBe(
+      "||/seed-file|kept-owner|kept-repo|1|app-logins: the review App (app_id 202): github_apps.review.private_key_command failed (exit 4): ||/seed-file|kept-owner|kept-repo|1|"
+    );
   });
 
   test("an App configured with neither credential field is refused by name, as is a config with no github_apps", () => {
     expect(() =>
-      appTokenSources(
+      appCredentialSources(
         'github_apps:\n  implement: { app_id: "1" }\n  review: { app_id: "2", token_command: "true" }\n'
       )
     ).toThrow(
       "github_apps.implement names its credential without a token_command or a private_key_command"
     );
-    expect(() => appTokenSources("project: ACME\n")).toThrow("the config has no github_apps");
+    expect(() => appCredentialSources("project: ACME\n")).toThrow("the config has no github_apps");
   });
 
   test("an App configured with both credential fields is refused by name", () => {
     expect(() =>
-      appTokenSources(
+      appCredentialSources(
         'github_apps:\n  implement: { app_id: "1", token_command: "true", private_key_command: "true" }\n  review: { app_id: "2", token_command: "true" }\n'
       )
     ).toThrow("github_apps.implement names both a token_command and a private_key_command");

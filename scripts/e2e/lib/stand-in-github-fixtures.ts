@@ -83,8 +83,8 @@ const installationOf = (id: number) => 10 * id;
  * keyed by, so the key path and the token path name one account. */
 const accountLogin = "sjawhar";
 
-/** When a minted installation token expires: as far off as the releases of `release()`, since no
- * proof here is about a token running out. */
+/** When a minted installation token expires, and when the installations of `release()` do, since
+ * no proof here is about a token running out. */
 const expiry = "2099-01-01T00:00:00Z";
 
 /** The JSON object a base64url part of a JWT holds, or undefined when the part holds no such
@@ -147,8 +147,25 @@ export const holdsNoToken = (text: string) => {
   for (const token of allTokens) expect(text).not.toContain(token);
 };
 
+/** The first part of every App JWT the key path signs, `{"alg":"RS256","typ":"JWT"}` in
+ * base64url: what lib/app-logins.ts writes there and what signerOf above reads back. */
+const jwtHeader = Buffer.from('{"alg":"RS256","typ":"JWT"}', "utf8").toString("base64url");
+
+/** Asserts that TEXT quotes no App JWT and no private key of the stand-in Apps IDS names, as
+ * `holdsNoToken` asserts it quotes no token: the key's base64 body lines are 64 characters
+ * apiece of a key this run generated, which nothing else here could print. */
+export const holdsNoKey = (text: string, ids: readonly number[]) => {
+  expect(text).not.toContain("BEGIN PRIVATE KEY");
+  expect(text).not.toContain(jwtHeader);
+  for (const id of ids) {
+    for (const pem of appPrivateKey(id).split("\n")) {
+      if (pem.length >= 40 && pem[0] !== "-") expect(text).not.toContain(pem);
+    }
+  }
+};
+
 /** A release as the secrets broker gives one: one entry per installation, keyed by login. */
-export function release(installations: Record<string, string>, expires = "2099-01-01T00:00:00Z") {
+export function release(installations: Record<string, string>, expires = expiry) {
   return JSON.stringify({
     installations: Object.fromEntries(
       Object.entries(installations).map(([owner, token], index) => [

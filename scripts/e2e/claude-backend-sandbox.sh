@@ -807,7 +807,7 @@ exec_credential_said='
 prove_daemon_container() {
   local plugin= plugin_word plugin_exec plugin_api gac mount role key_command inside got_uid got_gid got_hosts got_plugin plugin_said
   local key_args=() key_said key_status plugin_args=() plugin_run=() plugin_status token_said plugin_err
-  local key_lines=() key_line key_found=() key_field
+  local key_lines=() key_found=() key_field
   local -A key_commands=() key_fields=()
   mountable "$runtime_kubeconfig" ||
     fail "LEGION_E2E_RUNTIME_KUBECONFIG names $runtime_kubeconfig, which the daemon's container cannot mount at its own path: it must be an existing absolute path holding no ',' or ':'"
@@ -834,7 +834,7 @@ prove_daemon_container() {
     gac=
   fi
   [ -n "$app_tokens_dir" ] && [ -d "$app_tokens_dir" ] ||
-    fail "the App token directory is missing ('${app_tokens_dir:-unset}'): mint_app_tokens must run before the daemon's container is proved"
+    fail "the App credential directory is missing ('${app_tokens_dir:-unset}'): mint_app_tokens must run before the daemon's container is proved"
   daemon_mounts=()
   for mount in "$runtime_kubeconfig" "$plugin" /etc/ssl/certs "$gac" "$app_tokens_dir" "${daemon_extra_mounts[@]}"; do
     [ -z "$mount" ] || daemon_mount_add "$mount"
@@ -863,11 +863,10 @@ prove_daemon_container() {
   for role in implement review; do
     mapfile -t key_lines < <(awk -v role="$role" '/^  [^ ]/ { in_role = ($0 == "  " role ":") } in_role && /^    (token_command|private_key_command): / { print substr($0, 5) }' \
       "$work/github-apps.yaml")
-    key_found=()
-    for key_line in "${key_lines[@]}"; do key_found+=("${key_line%%:*}"); done
+    key_found=("${key_lines[@]%%:*}")
     [ "${#key_lines[@]}" = 1 ] ||
       fail "$work/github-apps.yaml gives the $role App ${#key_lines[@]} of token_command and private_key_command (${key_found[*]:-neither}), want exactly one"
-    key_field=${key_lines[0]%%:*}
+    key_field=${key_found[0]}
     key_command=$(jq -er . <<<"${key_lines[0]#*: }") ||
       fail "$work/github-apps.yaml gives the $role App a $key_field this run cannot read as a JSON-quoted command"
     key_args+=("$role" "$key_command")

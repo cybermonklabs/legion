@@ -123,8 +123,10 @@ require_app_inputs() {
   github_apps_read=("${roles_read[@]}")
   app_key_unsets=()
   for role in "${roles_read[@]}"; do
-    # Only a role whose tokens come from the broker has a secret name to strip; the review App's
-    # key command is no variable a child could inherit.
+    # Only a role whose tokens come from the broker has a secret name to strip, and the review
+    # role has none. Its own input, LEGION_E2E_REVIEW_APP_KEY_COMMAND, is exported and every
+    # child does inherit it, but it carries no credential: the -----BEGIN refusal above holds it
+    # to a command that prints the key rather than to the key itself.
     secret_var=${role}_app_secret
     if [ -n "${!secret_var-}" ]; then
       app_key_unsets+=(-u "${!secret_var}")
@@ -159,11 +161,22 @@ app_token_command() {
 }
 
 # app_token_dir_ok DIR fails unless DIR is a path of letters, digits and `_ . / -` alone, since the
-# token commands carry it in their shell text.
+# credential commands carry it in their shell text.
 app_token_dir_ok() {
   local LC_ALL=C
   [[ "$2" =~ ^[A-Za-z0-9_./-]+$ ]] ||
-    fail "$1: the token directory '$2' holds a character other than letters, digits and _ . / -, which the token commands could not carry in their shell text"
+    fail "$1: the token directory '$2' holds a character other than letters, digits and _ . / -, which the credential commands could not carry in their shell text"
+}
+
+# app_token_dir_made ROLE DIR makes DIR, where ROLE's credential files go, owner-only: mode 0700,
+# and umask 077 for whatever is written under it. It returns 1 with app_token_mint_failed naming
+# the directory when it cannot. Both minters below make their role's directory through this, so
+# the releases and the key are given the same directory and the same refusal.
+app_token_dir_made() {
+  if ! (umask 077 && mkdir -p -- "$2" && chmod 0700 -- "$2"); then
+    app_token_mint_failed="the $1 App's credential directory $2 could not be made owner-only"
+    return 1
+  fi
 }
 
 # The refresher, for a daemon that can run neither agent-secrets nor the operator's key command
@@ -198,10 +211,7 @@ app_token_mint() {
   for role in "$@"; do
     id_var=${role}_app_id
     secret_var=${role}_app_secret
-    if ! (umask 077 && mkdir -p -- "$dir/$role" && chmod 0700 -- "$dir/$role"); then
-      app_token_mint_failed="the $role App's token directory $dir/$role could not be made owner-only"
-      return 1
-    fi
+    app_token_dir_made "$role" "$dir/$role" || return 1
     for owner in "" "${app_token_owners[@]}"; do
       owner=${owner,,}
       for ro in "" 1; do
@@ -306,10 +316,7 @@ app_token_mint_file() {
 app_token_mint_key() {
   local dir=$1 file=$1/review/key.pem status=0
   app_token_mint_failed=
-  if ! (umask 077 && mkdir -p -- "$dir/review" && chmod 0700 -- "$dir/review"); then
-    app_token_mint_failed="the review App's token directory $dir/review could not be made owner-only"
-    return 1
-  fi
+  app_token_dir_made review "$dir/review" || return 1
   app_token_mint_command "$file" "$review_app_key_command" || status=$?
   case "$status" in
     0) return 0 ;;
