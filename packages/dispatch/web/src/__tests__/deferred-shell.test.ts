@@ -50,8 +50,11 @@ describe("the shell's deferred parts", () => {
   });
 
   test("app.tsx takes each from deferred-shell, never from the part's own module", () => {
+    // The module path is `deferred-shell.ts`'s own, which reaches a feature as `../<feature>`;
+    // app.tsx reaches the same file as `./features/<feature>`. Anchored, because what is being
+    // swapped is the one leading step out of that directory and nothing later in the path.
     const fromTheirOwnModules = parts.filter((part) =>
-      staticImports.includes(part.module.replace("../", "./features/"))
+      staticImports.includes(part.module.replace(/^\.\.\//, "./features/"))
     );
     expect(fromTheirOwnModules.map((part) => part.name)).toEqual([]);
     for (const part of parts) {
