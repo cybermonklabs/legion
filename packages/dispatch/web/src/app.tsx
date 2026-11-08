@@ -5,6 +5,7 @@ import {
   type RefObject,
   Suspense,
   startTransition,
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -15,6 +16,7 @@ import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { whoAmIQuery } from "./api/queries";
 import type { AuthenticatedUser } from "./api/types";
+import { chunkComponent } from "./components/chunk-component";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShellSkeleton } from "./components/ShellSkeleton";
 import { MachineLoginRoute } from "./features/credentials/MachineLoginRoute";
@@ -33,6 +35,7 @@ import {
   ANSWERS_PATH,
   buildInboxPath,
   buildProjectPath,
+  type IssueRoute,
   parseIssuePath,
   parseProjectPath,
   routeFillsViewport,
@@ -105,35 +108,84 @@ import {
 } from "./theme/classes";
 
 const importIssuePage = () => import("./features/issue/IssuePage");
-const IssuePage = lazy(() => importIssuePage().then((module) => ({ default: module.IssuePage })));
-
-const ProjectPage = lazy(() =>
-  import("./features/project/ProjectPage").then((module) => ({ default: module.ProjectPage }))
-);
+const importProjectPage = () => import("./features/project/ProjectPage");
 const importDocumentPage = () => import("./features/document/DocumentPage");
-const DocumentPage = lazy(() =>
-  importDocumentPage().then((module) => ({ default: module.DocumentPage }))
-);
+
 /**
- * Requests the chunk of the page this address opens, as this module evaluates - which is while
+ * The three pages a reader lands on, each drawn in the commit its chunk arrives in rather than
+ * under the route's `Suspense` (`components/chunk-component.tsx` says what that boundary costs
+ * a page whose chunk is already on its way). The space each keeps is the skeleton that
+ * boundary drew.
+ */
+const IssuePage = chunkComponent(
+  () => importIssuePage().then((module) => module.IssuePage),
+  <IssuePageFallback />
+);
+const ProjectPage = chunkComponent(
+  () => importProjectPage().then((module) => module.ProjectPage),
+  <IssuePageFallback />
+);
+const DocumentPage = chunkComponent(
+  () => importDocumentPage().then((module) => module.DocumentPage),
+  <IssuePageFallback />
+);
+
+/**
+ * The tab panel an issue address opens, where the page keeps that panel in a chunk of its own
+ * (`features/issue/IssuePage.tsx`). The Spec and a named artifact open the document surface
+ * instead, whose chunk the page preloads with its own (`DOCUMENT_ADDRESS_MODULES` in
+ * `web/vite.config.ts`), and a tab with no chunk of its own is drawn from the page's.
+ */
+function importTheOpenTab(route: IssueRoute): Promise<unknown> | undefined {
+  switch (route.kind) {
+    case "activity":
+      return import("./features/activity/ActivityTab");
+    case "ask":
+    case "comment":
+    case "conversation":
+    case "message":
+      return import("./features/conversation/ConversationTab");
+    case "children":
+      return import("./features/issue/ChildrenTab");
+    case "decisions":
+      return import("./features/issue/DecisionsPanel");
+    case "plan":
+      return import("./features/plan/PlanTab");
+    case "verification":
+      return import("./features/verification/VerificationTab");
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Requests the chunks of the page this address opens, as this module evaluates - which is while
  * the shell is still asking who is signed in, and well before the route tree that would ask for
- * it renders. A document's page used to wait for that check before its chunk was so much as
+ * them renders. A document's page used to wait for that check before its chunk was so much as
  * requested, and then for the chunk before anything of the document was asked for
  * (dispatch://INFRA-341, R11); the chunk needs neither, and a request for it changes nothing
  * about what the page then shows or who may see it.
  *
- * The two pages that open a document are the ones worth the request, and so is the Inbox, whose
- * list left this module's chunk for one of its own and which the shell lands on: every other
- * route's chunk is asked for by its own `lazy` as it always was, and so is each of these on a
- * later navigation, where the shell is long since up and the chunk is usually in hand.
+ * Every page a reader lands on is worth the request, and so is the tab panel an issue address
+ * names: a chunk asked for here is usually in hand by the commit that draws its part, so the
+ * reader is shown that part rather than the space kept for it. Every other route's chunk is
+ * asked for by its own `lazy` as it always was, and so is each of these on a later navigation,
+ * where the shell is long since up.
  */
 function requestTheOpenPagesChunk(pathname: string): void {
-  if (parseIssuePath(pathname) !== undefined) {
+  const issue = parseIssuePath(pathname);
+  if (issue !== undefined) {
     void importIssuePage().catch(() => undefined);
+    void importTheOpenTab(issue)?.catch(() => undefined);
     return;
   }
-  if (parseProjectPath(pathname)?.kind === "document") {
+  const project = parseProjectPath(pathname);
+  if (project?.kind === "document") {
     void importDocumentPage().catch(() => undefined);
+    return;
+  }
+  if (project !== undefined) {
+    void importProjectPage().catch(() => undefined);
     return;
   }
   if (routeIsInbox(pathname)) {
@@ -224,6 +276,27 @@ function IssuePageInATransition(): ReactNode {
     startTransition(() => setRenderThePage(true));
   }, []);
   return renderThePage ? <IssuePage /> : <IssuePageFallback />;
+}
+
+/**
+ * Tells the shell the commit the route the reader asked for is drawn in.
+ *
+ * It stands inside that route's own `Suspense`, so it is mounted when the boundary's content
+ * lands rather than while its fallback stands there, and it draws nothing itself.
+ *
+ * The shell's own parts wait for it (`SearchPalette`, `RefPreviewHost`,
+ * `AgentRegistryPoller`). Each lives in a chunk of its own and none of them is on any route's
+ * first frame (`features/shell/deferred-shell.ts`), but mounted beside the route they are
+ * boundaries suspended beside it, and React charges a page for that: the first fallback a page
+ * commits opens a 300 ms window (`FALLBACK_THROTTLE_MS` in react-dom), and while it is open
+ * every render that resolves one suspended boundary with another still suspended is held to
+ * the end of it. Measured on this pod, a page load paid one of those waits for parts the
+ * reader cannot see (dispatch://INFRA-341, R11). Mounted after the route, they suspend beside
+ * nothing, and their chunks are asked for where they compete with nothing either.
+ */
+function TheRouteIsDrawn({ tell }: { tell: () => void }): null {
+  useEffect(tell, [tell]);
+  return null;
 }
 
 function ShellMessagePage({ children, title }: { children?: ReactNode; title: string }): ReactNode {
@@ -467,6 +540,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // (`features/doc/AfterTheFirstBatch.tsx`).
   const [shellReached, setShellReached] = useState(false);
   const reachForTheShell = () => setShellReached(true);
+  // Whether the route the reader asked for is on the page, which is when the shell's own
+  // parts are mounted (`TheRouteIsDrawn`).
+  const [theRouteIsDrawn, setTheRouteIsDrawn] = useState(false);
+  const tellTheRouteIsDrawn = useCallback(() => setTheRouteIsDrawn(true), []);
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
@@ -812,23 +889,32 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<PipelinePage />} path="/pipeline" />
                 <Route element={<NotFoundPage />} path="*" />
               </Routes>
+              <TheRouteIsDrawn tell={tellTheRouteIsDrawn} />
             </Suspense>
           </ErrorBoundary>
         </main>
-        <ErrorBoundary region="the margin" resetKey={location.pathname}>
-          <MarginColumn
-            collapsed={marginHidden}
-            onCollapsedChange={setMarginHidden}
-            onWidthChange={setMarginWidth}
-            width={marginWidth}
-          />
-        </ErrorBoundary>
-        {/* Mounted on every route, closed: it keeps the last `/` search and the row a close is
-            about to run, so unmounting it when nothing is open would lose both. Closed it draws
-            nothing, so the frames before its chunk arrives look exactly as the frames after. */}
-        <Suspense fallback={null}>
-          <SearchPalette mode={paletteMode} onClose={() => setPaletteMode(null)} />
-        </Suspense>
+        {/* The margin is the fourth part that waits for the route (`TheRouteIsDrawn`): it is
+            mounted on every route and draws nothing on the first frame of any of them
+            (`features/margin/MarginColumn.tsx`). */}
+        {theRouteIsDrawn ? (
+          <ErrorBoundary region="the margin" resetKey={location.pathname}>
+            <MarginColumn
+              collapsed={marginHidden}
+              onCollapsedChange={setMarginHidden}
+              onWidthChange={setMarginWidth}
+              width={marginWidth}
+            />
+          </ErrorBoundary>
+        ) : null}
+        {/* The palette is mounted on every route, closed: it keeps the last `/` search and the
+            row a close is about to run, so unmounting it when nothing is open would lose both.
+            Closed it draws nothing, so the frames before its chunk arrives look exactly as the
+            frames after. */}
+        {theRouteIsDrawn ? (
+          <Suspense fallback={null}>
+            <SearchPalette mode={paletteMode} onClose={() => setPaletteMode(null)} />
+          </Suspense>
+        ) : null}
         {inboxDrawerOpen ? (
           // The reader is in the peek, so every read inside it goes out now rather than
           // waiting for the editor's first batch (`features/doc/first-batch.ts`).
@@ -844,9 +930,19 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
             <CreateIssueDialog onClose={() => setCreateOpen(false)} />
           </Suspense>
         ) : null}
-        <Suspense fallback={null}>
-          <RefPreviewHost />
-        </Suspense>
+        {theRouteIsDrawn ? (
+          <>
+            <Suspense fallback={null}>
+              <RefPreviewHost />
+            </Suspense>
+            {/* The one owner of the agent registry's refresh cadence. It draws nothing, and
+                nothing on the page waits for it: a reader it would have named is named from
+                the cache until it lands. */}
+            <Suspense fallback={null}>
+              <AgentRegistryPoller />
+            </Suspense>
+          </>
+        ) : null}
       </div>
     </MarginProvider>
   );
@@ -882,9 +978,6 @@ function AuthenticatedApp({ user }: { user: AuthenticatedUser }): ReactNode {
   // fetched after the first paint (`features/doc/DeferredAskCard.tsx`).
   return (
     <KeymapProvider>
-      <Suspense fallback={null}>
-        <AgentRegistryPoller />
-      </Suspense>
       <OpenDocumentEarly />
       <TextAskCard.Provider value={DeferredAskCard}>
         <AppShell user={user} />

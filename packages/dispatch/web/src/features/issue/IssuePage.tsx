@@ -13,6 +13,7 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
 import { ApiError } from "../../api/client";
 import type { Artifact, IssuePriority } from "../../api/types";
+import { chunkComponent } from "../../components/chunk-component";
 import { QueryError } from "../../components/QueryError";
 import { tabButtonId } from "../../components/Tabs";
 import {
@@ -46,8 +47,9 @@ import { useIssuePriority } from "./useIssuePriority";
 import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from "./useItemLanding";
 
 /**
- * The parts of the issue page that are not its frame, each in a chunk of its own behind a
- * `Suspense` boundary of its own.
+ * The parts of the issue page that are not its frame, each in a chunk of its own: the header
+ * and the tab strip behind a `Suspense` boundary of their own, and each tab panel drawn in
+ * the commit its chunk arrives in (`components/chunk-component.tsx`).
  *
  * There are two reasons, and they are different reasons.
  *
@@ -55,7 +57,7 @@ import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from ".
  * and the document surface together - and a commit cannot be interrupted, so that one commit
  * held the main thread for about 0.7 s on a phone at 4x CPU throttling; rendering the page
  * inside a transition makes its render interruptible and leaves that commit whole
- * (dispatch://INFRA-341, R11). Each boundary here makes one commit of its own instead: the
+ * (dispatch://INFRA-341, R11). Each part here makes one commit of its own instead: the
  * document's part commits first, with the two boxes the reader already has in front of them
  * (`issue-page-skeleton.tsx`), and the header, the tabs and each side list land after it, one
  * commit each.
@@ -71,9 +73,10 @@ import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from ".
  *
  * The chunks a document address needs are downloaded beside the page's own, from the address
  * (`DOCUMENT_ADDRESS_MODULES` in `web/vite.config.ts`), so the reader waits for no request
- * here - only for the microtask each boundary resolves in. What appears, and when, is
- * unchanged: the header and tabs replace the skeleton the reader was already reading, and a
- * side list draws under the document it belongs to, where nothing above it moves as it lands.
+ * here. What appears, and when, is unchanged: the header and tabs replace the skeleton the
+ * reader was already reading, and a side list draws under the document it belongs to, where
+ * nothing above it moves as it lands.
+ *
  * A tab's panel is mounted only once that tab has been opened (`activatedTabs`), so its chunk
  * is asked for then, as the reader asks for the tab.
  */
@@ -93,27 +96,25 @@ const ArtifactDocument = lazy(() =>
     default: module.ArtifactDocument,
   }))
 );
-const ActivityTab = lazy(() =>
-  import("../activity/ActivityTab").then((module) => ({ default: module.ActivityTab }))
+/** The tab panels, each drawn in the commit its chunk arrives in, for the same reason: the
+ *  panel an address names is asked for from that address (`requestTheOpenPagesChunk` in
+ *  `app.tsx`), and a reader who opens a tab is waiting for its panel rather than for a space
+ *  kept where it will be. */
+const ActivityTab = chunkComponent(() =>
+  import("../activity/ActivityTab").then((module) => module.ActivityTab)
 );
-const ChildrenTab = lazy(() =>
-  import("./ChildrenTab").then((module) => ({ default: module.ChildrenTab }))
+const ChildrenTab = chunkComponent(() =>
+  import("./ChildrenTab").then((module) => module.ChildrenTab)
 );
-const ConversationTab = lazy(() =>
-  import("../conversation/ConversationTab").then((module) => ({
-    default: module.ConversationTab,
-  }))
+const ConversationTab = chunkComponent(() =>
+  import("../conversation/ConversationTab").then((module) => module.ConversationTab)
 );
-const DecisionsPanel = lazy(() =>
-  import("./DecisionsPanel").then((module) => ({ default: module.DecisionsPanel }))
+const DecisionsPanel = chunkComponent(() =>
+  import("./DecisionsPanel").then((module) => module.DecisionsPanel)
 );
-const PlanTab = lazy(() =>
-  import("../plan/PlanTab").then((module) => ({ default: module.PlanTab }))
-);
-const VerificationTab = lazy(() =>
-  import("../verification/VerificationTab").then((module) => ({
-    default: module.VerificationTab,
-  }))
+const PlanTab = chunkComponent(() => import("../plan/PlanTab").then((module) => module.PlanTab));
+const VerificationTab = chunkComponent(() =>
+  import("../verification/VerificationTab").then((module) => module.VerificationTab)
 );
 
 export function IssuePage(): ReactNode {

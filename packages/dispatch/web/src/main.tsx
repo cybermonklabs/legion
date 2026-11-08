@@ -1,9 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { lazy, StrictMode, Suspense } from "react";
+import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import { DispatchQueryClient, queryRetry, queryRetryDelay } from "./api/query-client";
+import { chunkComponent } from "./components/chunk-component";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ShellSkeleton } from "./components/ShellSkeleton";
 import { rememberEarlyKeys } from "./early-keys";
@@ -24,8 +25,9 @@ import "./styles.css";
  * It costs no request. Both chunks are written into `index.html` for the page to preload
  * beside this one (`DOCUMENT_ADDRESS_MODULES` and `documentAddressChunks` in
  * `web/vite.config.ts`), from every address rather than only the two that open a document, so
- * their bytes are in hand by the time this task ends. And it costs the reader no frame: the
- * `Suspense` below shows the same skeleton `AuthGate` shows while the sign-in check is out.
+ * their bytes are in hand by the time this task ends. And it costs the reader no frame: until
+ * the app's chunk is in, `TheApp` below draws the same skeleton `AuthGate` draws while the
+ * sign-in check is out.
  */
 
 // Never two requests in flight for one read: an invalidation during a fetch fetches again once it
@@ -67,15 +69,17 @@ void import("./features/shell/boot").then(
   () => undefined
 );
 
-const App = lazy(() => import("./app").then(({ App }) => ({ default: App })));
+/** The app, with the shell's frame standing where it will be until its chunk is in
+ *  (`components/chunk-component.tsx` says why neither part waits under a `Suspense`). */
+const TheApp = chunkComponent(() => import("./app").then(({ App }) => App), <ShellSkeleton />);
 
 /** The long-lived tab's Markdown engine and the reload a new deployment offers. It draws
- *  nothing until there is something to offer, so it waits for its own chunk under a `null`
- *  fallback, outside the app's error boundary exactly as it was outside it in this module. */
-const DeploymentResilience = lazy(() =>
-  import("./features/shell/DeploymentResilience").then((module) => ({
-    default: module.DeploymentResilience,
-  }))
+ *  nothing until there is something to offer, so nothing stands where it will be, and it stays
+ *  outside the app's error boundary exactly as it was outside it in this module. */
+const TheDeploymentWatch = chunkComponent(() =>
+  import("./features/shell/DeploymentResilience").then(
+    ({ DeploymentResilience }) => DeploymentResilience
+  )
 );
 
 const root = document.getElementById("root");
@@ -87,13 +91,9 @@ createRoot(root).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <BrowserRouter>
-        <Suspense fallback={null}>
-          <DeploymentResilience />
-        </Suspense>
+        <TheDeploymentWatch />
         <ErrorBoundary region="Dispatch">
-          <Suspense fallback={<ShellSkeleton />}>
-            <App />
-          </Suspense>
+          <TheApp />
         </ErrorBoundary>
       </BrowserRouter>
     </QueryClientProvider>
