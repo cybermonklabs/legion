@@ -24,6 +24,7 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 check_script="$script_dir/check-ci-tools.sh"
+repository=$(cd "$script_dir/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -42,11 +43,12 @@ MISE_URL=https://github.com/example/mise/releases/download/v7.7.7/mise-v7.7.7-li
 JJ_URL=https://github.com/example/jj/releases/download/v5.5.5/jj-v5.5.5-x86_64.tar.gz
 BUN_URL=https://registry.npmjs.org/@oven/bun-linux-x64/-/bun-linux-x64-9.9.9.tgz
 
-# pins <root> <bun version> <mise version> <mise sha256> <jj tool>: the two files rule 2 holds the
-# rows to. The fixture writes the pins the rows agree with, and a red case writes one of them
-# again with one value changed.
+# pins <root> [bun version] [mise version] [mise sha256] [jj tool]: the two files rule 2 holds
+# the rows to. Each value defaults to the one the green rows agree with, so the fixture names
+# none of them and a red case names only the values up to the one it changes.
 pins() {
-  local root=$1 bun=$2 mise_version=$3 mise_sha256=$4 jj_tool=$5
+  local root=$1 bun=${2:-9.9.9} mise_version=${3:-v7.7.7} mise_sha256=${4:-$MISE} \
+    jj_tool=${5:-github:example/jj@5.5.5}
   printf '%s\n' "$bun" > "$root/.bun-version"
   cat > "$root/packages/daemon/docker/worker.Dockerfile" <<DOCKERFILE
 # syntax=docker/dockerfile:1
@@ -71,7 +73,7 @@ fixture() {
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/.github/actions/install-tool" \
     "$root/packages/daemon/docker"
   ln -s "$check_script" "$root/.github/scripts/check-ci-tools.sh"
-  pins "$root" 9.9.9 v7.7.7 "$MISE" github:example/jj@5.5.5
+  pins "$root"
   cat > "$root/.github/ci-tools.yaml" <<YAML
 registry: $REGISTRY
 
@@ -83,7 +85,6 @@ tools:
     primary: $TOOL_URL
     second_source: ghcr
     max_time: 60
-    mirror_tag: tool-tool-1.0.0-${TOOL:0:8}
     mirror_from: $TOOL_URL
     mirror_member: ""
 
@@ -94,7 +95,6 @@ tools:
     primary: $MISE_URL
     second_source: ghcr
     max_time: 60
-    mirror_tag: tool-mise-7.7.7-${MISE:0:8}
     mirror_from: $MISE_URL
     mirror_member: ""
 
@@ -105,7 +105,6 @@ tools:
     primary: ""
     second_source: ghcr
     max_time: 60
-    mirror_tag: tool-jj-5.5.5-${JJ:0:8}
     mirror_from: $JJ_URL
     mirror_member: ./jj
 
@@ -118,14 +117,6 @@ tools:
     max_time: 60
     npm_package: "@oven/bun-linux-x64"
     npm_member: package/bin/bun
-YAML
-  cat > "$root/.github/ci-images.yaml" <<YAML
-registry: $REGISTRY
-
-images:
-  - upstream: docker.io/library/nats:2.10
-    tag: nats-2.10-0a1b2c3d
-    digest: sha256:4e5f60718293a4b54e5f60718293a4b54e5f60718293a4b54e5f60718293a4b5
 YAML
   cat > "$root/.github/workflows/ci.yaml" <<'YAML'
 name: CI
@@ -243,28 +234,6 @@ check "fails" "$(is "$status" 1)"
 check "names the row and the two sources the helper serves" \
   "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves ghcr and npm")"
 
-echo "case: rule 1 — a mirror_tag that is not the one the rule gives"
-root=$(fixture shape-mirror-tag)
-cat >> "$root/.github/ci-tools.yaml" <<YAML
-
-  - name: mistagged
-    version: 1.0.0
-    digest: $BUN
-    digest_of: the release tarball, whole
-    primary: ""
-    second_source: ghcr
-    max_time: 60
-    mirror_tag: mistagged-latest
-    mirror_from: https://github.com/example/tool/releases/download/v1.0.0/mistagged-1.0.0.tar.gz
-    mirror_member: ""
-YAML
-run_gate "$root"
-check "fails" "$(is "$status" 1)"
-check "names both tags" \
-  "$(contains "$out" "the mistagged row's mirror_tag is mistagged-latest and the rule gives it tool-mistagged-1.0.0-${BUN:0:8}")"
-check "and says what the eight characters are for" \
-  "$(contains "$out" 'The eight characters of the digest are what keep one tag on one digest')"
-
 echo "case: rule 1 — a primary that does not hold the row's version"
 root=$(fixture shape-primary-version)
 cat >> "$root/.github/ci-tools.yaml" <<YAML
@@ -276,7 +245,6 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
     primary: https://github.com/example/tool/releases/download/v4.4.3/adrift-4.4.3.tar.gz
     second_source: ghcr
     max_time: 60
-    mirror_tag: tool-adrift-4.4.4-${BUN:0:8}
     mirror_from: https://github.com/example/tool/releases/download/v4.4.4/adrift-4.4.4.tar.gz
     mirror_member: ""
 YAML
@@ -309,7 +277,7 @@ check "and says raising Bun is two commits" "$(contains "$out" 'Raising Bun is t
 
 echo "case: rule 2 — the mise row and ARG MISE_VERSION disagree"
 root=$(fixture pin-mise-version)
-pins "$root" 9.9.9 v8.8.8 "$MISE" github:example/jj@5.5.5
+pins "$root" 9.9.9 v8.8.8
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both values and both files" \
@@ -317,7 +285,7 @@ check "names both values and both files" \
 
 echo "case: rule 2 — the mise row and ARG MISE_SHA256 disagree"
 root=$(fixture pin-mise-digest)
-pins "$root" 9.9.9 v7.7.7 "$BUN" github:example/jj@5.5.5
+pins "$root" 9.9.9 v7.7.7 "$BUN"
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names both digests and both files" \
@@ -457,19 +425,24 @@ check "and names the URL a reader of a tool blob uses" \
 
 echo "case: rule 4 — the same string in .github/ci-images.yaml"
 # That file's own rows are images, and its digests are read by check-ci-images.sh. This sweep
-# skips it, so a row of it that happened to carry a tool row's digest is no problem of this gate.
+# skips it, so a row of it that happened to carry a tool row's digest is no problem of this
+# gate. It is the one case that needs the file at all: every other case's tree holds none, and
+# the gate reads that path only as one to skip.
 root=$(fixture short-reference-in-ci-images)
-cat >> "$root/.github/ci-images.yaml" <<YAML
+cat > "$root/.github/ci-images.yaml" <<YAML
+registry: $REGISTRY
+
+images:
+  - upstream: docker.io/library/nats:2.10
+    tag: nats-2.10-0a1b2c3d
+    digest: sha256:4e5f60718293a4b54e5f60718293a4b54e5f60718293a4b54e5f60718293a4b5
   # $REGISTRY@sha256:$TOOL
 YAML
 run_gate "$root"
 check "exits 0" "$(is "$status" 0)"
 
 echo "case: this repository's own tree"
-set +e
-out=$("$check_script" 2>&1)
-status=$?
-set -e
+run_gate "$repository"
 check "exits 0" "$(is "$status" 0)"
 check "names the manifest and its rows" "$(contains "$out" '^.github/ci-tools.yaml holds [0-9]* row(s)')"
 

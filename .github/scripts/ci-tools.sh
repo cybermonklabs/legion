@@ -20,7 +20,8 @@
 # the exit status never runs a half-written or unverified file, and one that does not check it
 # finds nothing to run.
 #
-# THIS FILE IS SOURCED, NEVER EXECUTED. It defines functions and runs nothing at load, and it is
+# THIS FILE IS SOURCED, NEVER EXECUTED. It defines functions, declares the empty cache those
+# functions keep a read manifest row in, reads nothing and fetches nothing at load, and it is
 # not executable (0644). It carries no `set -euo pipefail`, because that would change the shell of
 # the caller that sourced it; each function is written to be safe on its own, under a caller that
 # has errexit, nounset and pipefail on, as a GitHub `run:` step does, and under one that has none
@@ -34,6 +35,17 @@
 #   ci_tools_field <row> <field>          one field of that row of the manifest, and the
 #                                         manifest's own `registry` under that name.
 #   ci_tools_digest <row>                 that row's pinned digest.
+#   ci_tools_rows [<second source>]       every row's name, in the manifest's own order, and
+#                                         only the rows whose second source is that word where
+#                                         the argument is given.
+#   ci_tools_github_url <url>             that URL with the CI_TOOLS_GITHUB_BASE seam in place
+#                                         of its https://github.com prefix.
+#   ci_tools_token_of <file>              the `.token` of a registry token response. It is the
+#                                         one reader of such an answer this repository has, and
+#                                         .github/scripts/mirror-ci-tools.sh reads its own
+#                                         pull,push token with it.
+#   ci_tools_ghcr_token [<max_time>]      an anonymous pull token for the package `registry:`
+#                                         names, which is what a read of a copy carries.
 #   ci_tools_verify <row> <file> <source> holds <file> to that digest and writes the line that
 #                                         names <source>. It is what an action calls to hold an
 #                                         installed binary to its row, so it leaves the file where
@@ -73,14 +85,32 @@ ci_tools__manifest() {
   printf '%s\n' "$here/../ci-tools.yaml"
 }
 
-# ci_tools__row <row>: every field of that row as `<field><TAB><value>` lines, with the manifest's
-# own `registry` among them, since a ghcr row's second source is a blob in that package. One read
-# of the manifest per call: the file is small, and a cache on disk would be one more thing that
-# can be stale.
+# The rows this process has already read, keyed by the manifest's path and the row's name, and
+# the fields of the row the last read answered with.
+# It is the memory of one process and not a file: a cache on disk would be one more thing that
+# can be stale, and that objection stands.
+declare -gA ci_tools__row_cache=()
+ci_tools__row_fields=''
+
+# ci_tools__row <row>: every field of that row as `<field><TAB><value>` lines in
+# ci_tools__row_fields, with the manifest's own `registry` among them, since a ghcr row's second
+# source is a blob in that package.
+# A successful read is kept for the rest of this process: the file is small, but a full PyYAML
+# parse costs about 95 ms and one job makes a hundred of these calls.
+# Only a successful read is kept, so a refusal is produced and printed every time it is asked
+# for, and the manifest's own path is part of the key, so a caller that moves the
+# CI_TOOLS_MANIFEST seam reads the file it named.
+# It answers in a variable and not on stdout because a command substitution is a process of its
+# own: the row a reader read inside one is a row the shell that asked for it never learns.
 ci_tools__row() {
-  local row=$1 manifest fields
+  local row=$1 manifest key
   manifest=$(ci_tools__manifest) || return 1
-  fields=$(CI_TOOLS_ROW="$row" CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+  key="$manifest"$'\t'"$row"
+  if [ -n "${ci_tools__row_cache[$key]+held}" ]; then
+    ci_tools__row_fields=${ci_tools__row_cache[$key]}
+    return 0
+  fi
+  ci_tools__row_fields=$(CI_TOOLS_ROW="$row" CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
 import os
 import sys
 
@@ -108,26 +138,37 @@ for field, value in row.items():
     print(f"{field}\t{value}")
 PY
   ) || return 1
-  printf '%s\n' "$fields"
+  ci_tools__row_cache[$key]=$ci_tools__row_fields
+  return 0
 }
 
-# ci_tools_field <row> <field>: one field of that row.
+# ci_tools__read <variable> <row> <field>: that field of that row into <variable>, which is how
+# every reader inside this file asks for one. No command substitution stands between the caller
+# and the cache above, so the second field of a row this process already read costs nothing.
+ci_tools__read() {
+  local __variable=$1 __row=$2 __field=$3 __key __value __held=''
+  ci_tools__row "$__row" || return 1
+  while IFS=$'\t' read -r __key __value; do
+    if [ "$__key" = "$__field" ]; then
+      printf -v "$__variable" '%s' "$__value"
+      return 0
+    fi
+    __held="$__held${__held:+, }$__key"
+  done <<<"$ci_tools__row_fields"
+  ci_tools__error "$__row: this row of the manifest carries no field '$__field' (it carries: $__held)"
+  return 1
+}
+
+# ci_tools_field <row> <field>: one field of that row, printed. It is what a call site outside
+# this file reads a row with.
 ci_tools_field() {
   if [ "$#" -ne 2 ]; then
     ci_tools__error "ci_tools_field takes a row and a field, and this call gave $#"
     return 1
   fi
-  local row=$1 field=$2 fields key value held=''
-  fields=$(ci_tools__row "$row") || return 1
-  while IFS=$'\t' read -r key value; do
-    if [ "$key" = "$field" ]; then
-      printf '%s\n' "$value"
-      return 0
-    fi
-    held="$held${held:+, }$key"
-  done <<<"$fields"
-  ci_tools__error "$row: this row of the manifest carries no field '$field' (it carries: $held)"
-  return 1
+  local value
+  ci_tools__read value "$1" "$2" || return 1
+  printf '%s\n' "$value"
 }
 
 # ci_tools_digest <row>: that row's pinned digest.
@@ -139,6 +180,42 @@ ci_tools_digest() {
   ci_tools_field "$1" digest
 }
 
+# ci_tools_rows [<second source>]: every row's name, in the manifest's own order, and only the
+# rows whose `second_source` is that word where the argument is given. One reader of the
+# manifest's row list, so a job's step names neither the file nor its shape.
+ci_tools_rows() {
+  if [ "$#" -gt 1 ]; then
+    ci_tools__error "ci_tools_rows takes an optional second source, and this call gave $#"
+    return 1
+  fi
+  local manifest names
+  manifest=$(ci_tools__manifest) || return 1
+  names=$(CI_TOOLS_SECOND="${1:-}" CI_TOOLS_FILE="$manifest" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import os
+import sys
+
+import yaml
+
+path = os.environ["CI_TOOLS_FILE"]
+want = os.environ["CI_TOOLS_SECOND"]
+try:
+    with open(path) as handle:
+        document = yaml.safe_load(handle) or {}
+except OSError as error:
+    sys.stderr.write(f"::error::ci-tools: this run cannot read {path} ({error})\n")
+    raise SystemExit(1)
+for row in document.get("tools") or []:
+    name = row.get("name")
+    if not name:
+        continue
+    if want and row.get("second_source") != want:
+        continue
+    print(name)
+PY
+  ) || return 1
+  [ -z "$names" ] || printf '%s\n' "$names"
+}
+
 # ci_tools_verify <row> <file> <source>: holds <file> to the row's digest, and says so either way.
 # It never deletes the file: an action calls it to hold an installed binary to its row, and the
 # caller that fetched the file is the one that owns it.
@@ -148,7 +225,7 @@ ci_tools_verify() {
     return 1
   fi
   local row=$1 file=$2 source=$3 want read_back
-  want=$(ci_tools_digest "$row") || return 1
+  ci_tools__read want "$row" digest || return 1
   read_back=$(sha256sum -- "$file") || {
     ci_tools__error "$row: $source left no file this run can read at $file — refusing"
     return 1
@@ -179,9 +256,10 @@ ci_tools__curl() {
   curl -fsSL --retry 7 --retry-all-errors --max-time "$max_time" -o "$file" "$@" "$url"
 }
 
-# ci_tools__github_url <url>: that URL with the CI_TOOLS_GITHUB_BASE seam in place of its
-# https://github.com prefix.
-ci_tools__github_url() {
+# ci_tools_github_url <url>: that URL with the CI_TOOLS_GITHUB_BASE seam in place of its
+# https://github.com prefix. .github/scripts/mirror-ci-tools.sh reads a row's `mirror_from`
+# through it, so both readers of a row's URL apply that seam the one way.
+ci_tools_github_url() {
   local url=$1
   case "$url" in
     https://github.com/*) printf '%s\n' "${CI_TOOLS_GITHUB_BASE:-https://github.com}${url#https://github.com}" ;;
@@ -206,20 +284,38 @@ ci_tools__place() {
   return 0
 }
 
-# ci_tools__fetch_ghcr <row> <max_time> <file>: the row's blob from the copy in the package the
-# manifest's `registry:` names. The package is public, so the token request carries no credential;
-# ghcr.io answers an anonymous pull token for it and refuses the blob without one. The blob is
-# already the bytes the digest names, so nothing is taken out of it.
-# Prints what happened, and returns non-zero, where the service did not serve the bytes.
-ci_tools__fetch_ghcr() {
-  local row=$1 max_time=$2 file=$3
+# ci_tools_token_of <file>: the `.token` of the JSON a registry's token endpoint answered, and
+# nothing where that file holds no readable one. One reader of a token response: this file asks
+# for an anonymous pull token and .github/scripts/mirror-ci-tools.sh for a pull,push one, and
+# both read the answer here.
+ci_tools_token_of() {
+  PYTHONDONTWRITEBYTECODE=1 python3 -c '
+import json
+import sys
+
+with open(sys.argv[1]) as handle:
+    print(json.load(handle)["token"])
+' "$1" 2>/dev/null
+}
+
+# ci_tools_ghcr_token [<max_time>]: an anonymous pull token for the package the manifest's
+# `registry:` names. The package is public, so this request carries no credential; ghcr.io
+# answers a pull token for it and refuses a blob without one.
+# Prints the token, and prints what happened and returns non-zero where the request or the read
+# of its answer failed, as the fetch functions below do, so a caller holds the sentence rather
+# than a half-read token.
+ci_tools_ghcr_token() {
+  if [ "$#" -gt 1 ]; then
+    ci_tools__error "ci_tools_ghcr_token takes an optional per-attempt bound, and this call gave $#"
+    return 1
+  fi
+  local max_time=${1:-60}
   local base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
-  local registry path digest token_file token status=0
-  registry=$(ci_tools_field "$row" registry) || return 1
-  digest=$(ci_tools_digest "$row") || return 1
+  local registry path token_file token status=0
+  ci_tools__registry registry || return 1
   # The registry's path is the manifest's `registry:` with its host removed.
   path=${registry#*/}
-  token_file=$(ci_tools__tempfile "$row-token") || {
+  token_file=$(ci_tools__tempfile ghcr-token) || {
     printf 'this run could not make a temporary file for the pull token\n'
     return 1
   }
@@ -230,19 +326,47 @@ ci_tools__fetch_ghcr() {
     printf 'the anonymous pull token request failed (curl exit %s)\n' "$status"
     return 1
   fi
-  token=$(PYTHONDONTWRITEBYTECODE=1 python3 -c '
-import json
-import sys
-
-with open(sys.argv[1]) as handle:
-    print(json.load(handle)["token"])
-' "$token_file" 2>/dev/null) || token=''
+  token=$(ci_tools_token_of "$token_file") || token=''
   rm -f -- "$token_file"
   if [ -z "$token" ]; then
     printf 'the token request answered no .token this run could read\n'
     return 1
   fi
-  status=0
+  printf '%s\n' "$token"
+}
+
+# ci_tools__registry <variable>: the package every ghcr copy lives in, which the manifest names
+# once for the whole file, into that variable. Every row carries it, so the first row answers
+# for all of them.
+ci_tools__registry() {
+  local __variable=$1 first
+  first=$(ci_tools_rows) || return 1
+  first=${first%%$'\n'*}
+  if [ -z "$first" ]; then
+    ci_tools__error "the manifest holds no row, so this run cannot read the package the copies live in"
+    return 1
+  fi
+  ci_tools__read "$__variable" "$first" registry
+}
+
+# ci_tools__fetch_ghcr <row> <max_time> <file>: the row's blob from the copy in the package the
+# manifest's `registry:` names, read with the anonymous pull token above. The blob is already the
+# bytes the digest names, so nothing is taken out of it.
+# Prints what happened, and returns non-zero, where the service did not serve the bytes.
+ci_tools__fetch_ghcr() {
+  local row=$1 max_time=$2 file=$3
+  local base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
+  local registry path digest token status=0
+  ci_tools__read registry "$row" registry || return 1
+  ci_tools__read digest "$row" digest || return 1
+  # The registry's path is the manifest's `registry:` with its host removed.
+  path=${registry#*/}
+  # The token helper prints what went wrong in place of a token, and this is the caller that
+  # reports it: the sentence belongs in the refusal this row's fetch builds.
+  token=$(ci_tools_ghcr_token "$max_time") || {
+    printf '%s\n' "$token"
+    return 1
+  }
   ci_tools__curl "$file" "$max_time" "$base/v2/$path/blobs/sha256:$digest" \
     -H "Authorization: Bearer $token" || status=$?
   if [ "$status" -ne 0 ]; then
@@ -260,9 +384,9 @@ ci_tools__fetch_npm() {
   local row=$1 max_time=$2 file=$3
   local base=${CI_TOOLS_NPM_BASE:-https://registry.npmjs.org}
   local package version member tarball status=0
-  package=$(ci_tools_field "$row" npm_package) || return 1
-  version=$(ci_tools_field "$row" version) || return 1
-  member=$(ci_tools_field "$row" npm_member) || return 1
+  ci_tools__read package "$row" npm_package || return 1
+  ci_tools__read version "$row" version || return 1
+  ci_tools__read member "$row" npm_member || return 1
   tarball=$(ci_tools__tempfile "$row-npm") || {
     printf 'this run could not make a temporary file for the package tarball\n'
     return 1
@@ -288,12 +412,21 @@ ci_tools__fetch_npm() {
 # argument is empty where there was no primary to try, and the refusal then names one source.
 ci_tools__second_source() {
   local row=$1 dest=$2 primary_report=$3
-  local second source max_time file report status=0
-  second=$(ci_tools_field "$row" second_source) || return 1
-  max_time=$(ci_tools_field "$row" max_time) || return 1
+  local second source fetch max_time file report status=0
+  ci_tools__read second "$row" second_source || return 1
+  ci_tools__read max_time "$row" max_time || return 1
+  # One decision: the source a line and a refusal name, and the function that reads it. A third
+  # source added to one of the two and forgotten in the other would leave an empty temporary file
+  # for the digest check to refuse, which is the wrong refusal for the wrong reason.
   case "$second" in
-    ghcr) source=ghcr-mirror ;;
-    npm) source=npm ;;
+    ghcr)
+      source=ghcr-mirror
+      fetch=ci_tools__fetch_ghcr
+      ;;
+    npm)
+      source=npm
+      fetch=ci_tools__fetch_npm
+      ;;
     *)
       ci_tools__error "$row: the manifest's second_source is '$second', and this file serves ghcr and npm"
       return 1
@@ -303,10 +436,7 @@ ci_tools__second_source() {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
     return 1
   }
-  case "$second" in
-    ghcr) report=$(ci_tools__fetch_ghcr "$row" "$max_time" "$file") || status=$? ;;
-    npm) report=$(ci_tools__fetch_npm "$row" "$max_time" "$file") || status=$? ;;
-  esac
+  report=$("$fetch" "$row" "$max_time" "$file") || status=$?
   if [ "$status" -ne 0 ]; then
     rm -f -- "$file"
     [ -n "$report" ] || report="the fetch failed (exit $status)"
@@ -328,18 +458,18 @@ ci_tools_fetch() {
     return 1
   fi
   local row=$1 dest=$2 primary max_time file status=0
-  primary=$(ci_tools_field "$row" primary) || return 1
+  ci_tools__read primary "$row" primary || return 1
   if [ -z "$primary" ]; then
     # A third party fetches this row's primary bytes, so there is nothing here to try first.
     ci_tools__second_source "$row" "$dest" ''
     return
   fi
-  max_time=$(ci_tools_field "$row" max_time) || return 1
+  ci_tools__read max_time "$row" max_time || return 1
   file=$(ci_tools__tempfile "$row") || {
     ci_tools__error "$row: this run could not make a temporary file under ${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
     return 1
   }
-  ci_tools__curl "$file" "$max_time" "$(ci_tools__github_url "$primary")" || status=$?
+  ci_tools__curl "$file" "$max_time" "$(ci_tools_github_url "$primary")" || status=$?
   if [ "$status" -eq 0 ]; then
     # The bytes arrived. Whatever they are, this call answers for them: a mismatch here is a
     # supply-chain signal, and the second source is never read after one.

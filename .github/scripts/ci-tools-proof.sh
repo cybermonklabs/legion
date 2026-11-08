@@ -47,6 +47,11 @@
 #       The second reading is what catches a bypass: a request that never reached the proxy
 #       leaves no line in its log, whatever carried it past.
 #
+#   version-answers <row> <printed>
+#       Reads what one installed tool printed as its version against the row that pins it.
+#       Prints the reading and returns non-zero where the two do not agree, so the step that
+#       runs it keeps its own list of the tools that answered wrongly.
+#
 #   corrupt [row…]
 #       Writes the control file the origin reads, with those rows or with none, and prints what
 #       it wrote.
@@ -54,6 +59,11 @@
 #       case and of no other.
 #       Every case calls it, the cases that corrupt nothing included: the control file is one
 #       file for the whole job, and a case that did not empty it would read the case before it.
+#
+#   flip-last-byte <file>
+#       Changes the last byte of that file and prints its sha256 afterwards, for the two cases
+#       whose corrupted payload is a binary already installed on the runner rather than
+#       something the origin serves.
 #
 #   report <case> --outcome <the step's outcome> --expect <fail|pass>
 #          [--expect-source <name>] [--expect-untried <name>]
@@ -315,34 +325,34 @@ describe() {
 # pack_npm <row> <binary> <tarball>: the binary as the npm registry serves it, a gzipped tar whose
 # one member is the row's `npm_member`, so the helper's own `tar -xzO` of it reads the same bytes
 # it reads from the registry.
+# The member is a hard link and the compression is gzip's fastest level: both files are under
+# this rig's own directory, and the tarball is served over 127.0.0.1 to a reader that takes any
+# level. Measured here on the 107 MB Bun binary: 0.3 s to copy it and 9.6 s to compress it at
+# the default level, against 4.4 s at -1, all of it on the proof job's critical path.
 pack_npm() {
   local row=$1 binary=$2 tarball=$3 member staging
   member=$(ci_tools_field "$row" npm_member)
   staging="$work/pack-$row"
   rm -rf "$staging"
   mkdir -p "$staging/$(dirname "$member")"
-  cp -- "$binary" "$staging/$member"
-  tar -czf "$tarball" -C "$staging" "$member"
+  ln -- "$binary" "$staging/$member"
+  tar --use-compress-program='gzip -1' -cf "$tarball" -C "$staging" "$member"
   rm -rf "$staging"
 }
 
 stage() {
   [ "$#" -eq 0 ] || die "stage takes no argument, and this call gave $#"
   mkdir -p "$payload"
-  local row primary digest file name read_back failures=""
+  local row digest file name read_back failures=""
   for row in $STAGED_ROWS; do
     note "staging $row"
-    primary=$(ci_tools_field "$row" primary)
     digest=$(ci_tools_digest "$row")
     file="$work/staged-$row"
     rm -f "$file"
-    # The row's own path: the helper tries the primary where the row has one, and reads the
-    # second source alone where a third party fetches the primary bytes.
-    if [ -n "$primary" ]; then
-      ci_tools_fetch "$row" "$file" || { failures="$failures $row"; continue; }
-    else
-      ci_tools_fetch_fallback "$row" "$file" || { failures="$failures $row"; continue; }
-    fi
+    # The row's own path, which the helper decides: a row with a primary is tried there first,
+    # and a row whose primary bytes a third party fetches falls straight through to the second
+    # source.
+    ci_tools_fetch "$row" "$file" || { failures="$failures $row"; continue; }
     while read -r name; do
       case $name in
         *.tgz)
@@ -487,6 +497,27 @@ probe() {
   echo "  the pair reads as it must, so every install below meets the fault rather than the host"
 }
 
+# ---------------------------------------------------------------- version-answers
+
+# version_answers <row> <printed>: what one tool printed as its version, read against the row
+# that pins it. The job runs it once per installed tool, before the corrupted cases and again
+# after them.
+# A fork's binary prints the version upstream released, where the row's version is the fork's
+# own tag with a suffix on it (docs/solutions/daemon/omp-pin-bump-behavioral-proof.md:79
+# measures that for the Oh My Pi fork this repository pins the same way), so a reading is held
+# to the row's version or to the part of it before that suffix.
+version_answers() {
+  [ "$#" -eq 2 ] ||
+    die "version-answers takes a row and what the tool printed, and this call gave $#"
+  local row=$1 printed=$2 version
+  version=$(ci_tools_field "$row" version)
+  echo "$row answers '$printed', and its row pins $version"
+  case $printed in
+    *"$version"* | *"${version%%-*}"*) return 0 ;;
+  esac
+  return 1
+}
+
 # ---------------------------------------------------------------- corrupt
 
 corrupt() {
@@ -508,6 +539,27 @@ corrupt() {
   else
     note "the origin now serves $* with the last byte changed, and every other row whole"
   fi
+}
+
+# ---------------------------------------------------------------- flip-last-byte
+
+# flip_last_byte <file>: that file with its last byte changed, and the sha256 it has afterwards.
+# It is the origin's own corruption rule (write_origin above) applied to a file on the runner
+# rather than to a body in memory: the smallest edit that moves the sha256 of the whole file,
+# and the one that leaves an archive's own framing alone until the digest is read.
+# The two cases whose corrupted bytes are a binary a third party already installed use it.
+flip_last_byte() {
+  [ "$#" -eq 1 ] || die "flip-last-byte takes a file, and this call gave $#"
+  python3 - "$1" <<'PY'
+import sys
+
+with open(sys.argv[1], "r+b") as handle:
+    handle.seek(-1, 2)
+    last = handle.read(1)
+    handle.seek(-1, 2)
+    handle.write(bytes([last[0] ^ 0x01]))
+PY
+  sha256sum "$1"
 }
 
 # ---------------------------------------------------------------- report
@@ -651,14 +703,16 @@ report() {
 
 verb=${1:-}
 [ "$#" -ge 1 ] ||
-  die "usage: $(basename "$0") <origin-start|stage|start-fault|probe|corrupt|report> [argument…]"
+  die "usage: $(basename "$0") <origin-start|stage|start-fault|probe|version-answers|corrupt|flip-last-byte|report> [argument…]"
 shift
 case $verb in
   origin-start) origin_start "$@" ;;
   stage) stage "$@" ;;
   start-fault) start_fault "$@" ;;
   probe) probe "$@" ;;
+  version-answers) version_answers "$@" ;;
   corrupt) corrupt "$@" ;;
+  flip-last-byte) flip_last_byte "$@" ;;
   report) report "$@" ;;
-  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, probe, corrupt, report)" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, probe, version-answers, corrupt, flip-last-byte, report)" ;;
 esac

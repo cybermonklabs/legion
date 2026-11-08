@@ -19,14 +19,11 @@
 #
 #   1. Shape.
 #      Every row carries `name`, `version`, `digest`, `digest_of`, `primary`, `second_source` and
-#      `max_time`, a `ghcr` row carries `mirror_tag`, `mirror_from` and `mirror_member` as well,
-#      and an `npm` row carries `npm_package` and `npm_member`.
+#      `max_time`, a `ghcr` row carries `mirror_from` and `mirror_member` as well, and an `npm`
+#      row carries `npm_package` and `npm_member`.
 #      `digest` is 64 lower-case hex characters, written bare, because that one literal goes into
 #      a `sha256sum` line and into a ghcr blob URL alike.
 #      Two rows never share a name, and `second_source` is `ghcr` or `npm`.
-#      A ghcr row's `mirror_tag` is exactly `tool-<name>-<version>-<the first eight characters of
-#      the digest>`, so one tag names one digest and a row that moves to a new digest takes a new
-#      tag with it.
 #      A row's `primary`, where it is not empty, holds the row's `version`, and so does its
 #      `mirror_from`: a row whose version and URL disagree installs one version and pins another.
 #
@@ -122,9 +119,9 @@ GITHUB = Path(".github")
 REACH_DIRECTORIES = (Path(".github/actions"), Path(".github/workflows"))
 HELPER = ".github/scripts/ci-tools.sh"
 
-# Every row carries these, and each kind of second source carries its own two or three more.
+# Every row carries these, and each kind of second source carries its own two more.
 COMMON_FIELDS = ("name", "version", "digest", "digest_of", "primary", "second_source", "max_time")
-GHCR_FIELDS = ("mirror_tag", "mirror_from", "mirror_member")
+GHCR_FIELDS = ("mirror_from", "mirror_member")
 NPM_FIELDS = ("npm_package", "npm_member")
 # A field whose value may be empty: `primary` on a row whose bytes a third party fetches, and
 # `mirror_member` on a row that pushes an archive whole.
@@ -280,16 +277,6 @@ for row in rows:
         continue
 
     version = str(row["version"]).strip()
-    if second == "ghcr":
-        tag = str(row["mirror_tag"]).strip()
-        rule = f"tool-{name}-{version}-{digest[:8]}"
-        if tag != rule:
-            problems.append(
-                f"{CI_TOOLS}:{key_line(row, 'mirror_tag')}: the {name} row's mirror_tag is {tag} "
-                f"and the rule gives it {rule}. The eight characters of the digest are what keep "
-                f"one tag on one digest: a row that moves to a new digest takes a new tag with "
-                f"it, and no fill moves a tag off a digest an install reads. Name it {rule}."
-            )
     for field in ("primary", "mirror_from"):
         url = str(row.get(field) or "").strip()
         if url and version not in url:
@@ -411,7 +398,7 @@ for row in readable:
 reach: list[Path] = []
 for directory in REACH_DIRECTORIES:
     for suffix in ("*.yml", "*.yaml"):
-        reach.extend(sorted(directory.rglob(suffix)))
+        reach.extend(directory.rglob(suffix))
 reach = sorted(set(reach))
 
 named_rows = 0

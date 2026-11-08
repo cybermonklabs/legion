@@ -21,10 +21,11 @@
 # and `no-query-location` for one written with no query. It appends one line per request to
 # `requests.log`, which is what a case reads to say what the run read and wrote.
 #
-# Each case builds a miniature repository under $work/<case>/repo and symlinks the real script
-# into its .github/scripts/, so the script under test is the file CI runs: it resolves its root
-# from its own path (`cd "$(dirname "$0")/../.."`), which the symlink puts at the fixture root,
-# and it reads the manifest at the default path under that root.
+# Each case builds a miniature repository under $work/<case>/repo and symlinks the real script,
+# and the fetch helper it sources, into its .github/scripts/, so the script under test is the
+# file CI runs: it resolves its root from its own path (`cd "$(dirname "$0")/../.."`), which the
+# symlink puts at the fixture root, and it reads the manifest at the default path under that
+# root.
 #
 # CURL_HOME: the script gives curl `--retry 7 --retry-all-errors`, whose backoff is 1, 2, 4 … 64
 # seconds, so the case whose asset does not answer would sleep about 127 seconds. The cases give
@@ -41,6 +42,7 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 mirror_script="$script_dir/mirror-ci-tools.sh"
+helper_script="$script_dir/ci-tools.sh"
 work=$(mktemp -d)
 servers=()
 trap 'for server in ${servers[@]+"${servers[@]}"}; do kill "$server" 2>/dev/null || true; done; rm -rf "$work"' EXIT
@@ -73,6 +75,12 @@ INNER=$(digest_of "$work/inner-build/inner")
 OTHER=$(digest_of "$work/payloads/other.tar.gz")
 WHOLE_TAG="tool-whole-1.0.0-${WHOLE:0:8}"
 INNER_TAG="tool-inner-2.0.0-${INNER:0:8}"
+# The two URLs the fixture rows name, written once, and the path the origin serves each asset
+# at: the URL with the host the CI_TOOLS_GITHUB_BASE seam stands in for taken off its front.
+WHOLE_URL=https://github.com/example/whole/releases/download/v1.0.0/whole.tar.gz
+INNER_URL=https://github.com/example/inner/releases/download/v2.0.0/inner.tar.gz
+WHOLE_ASSET=${WHOLE_URL#https://github.com/}
+INNER_ASSET=${INNER_URL#https://github.com/}
 WHOLE_SIZE=$(wc -c < "$work/payloads/whole.tar.gz")
 INNER_SIZE=$(wc -c < "$work/inner-build/inner")
 
@@ -244,11 +252,10 @@ row() {
     version: 1.0.0
     digest: $WHOLE
     digest_of: the fixture's release tarball, whole
-    primary: https://github.com/example/whole/releases/download/v1.0.0/whole.tar.gz
+    primary: $WHOLE_URL
     second_source: ghcr
     max_time: 7
-    mirror_tag: $WHOLE_TAG
-    mirror_from: https://github.com/example/whole/releases/download/v1.0.0/whole.tar.gz
+    mirror_from: $WHOLE_URL
     mirror_member: ""
 YAML
       ;;
@@ -261,8 +268,7 @@ YAML
     primary: ""
     second_source: ghcr
     max_time: 7
-    mirror_tag: $INNER_TAG
-    mirror_from: https://github.com/example/inner/releases/download/v2.0.0/inner.tar.gz
+    mirror_from: $INNER_URL
     mirror_member: ./inner
 YAML
       ;;
@@ -301,21 +307,20 @@ fixture() {
     return 1
   fi
   mkdir -p "$root/.github/scripts" "$state/blobs" "$state/manifests" "$state/flags" \
-    "$state/assets/example/whole/releases/download/v1.0.0" \
-    "$state/assets/example/inner/releases/download/v2.0.0"
+    "$state/assets/$(dirname "$WHOLE_ASSET")" "$state/assets/$(dirname "$INNER_ASSET")"
   ln -s "$mirror_script" "$root/.github/scripts/mirror-ci-tools.sh"
+  # The helper that script sources, beside it, as it is beside it in the repository.
+  ln -s "$helper_script" "$root/.github/scripts/ci-tools.sh"
   : > "$log"
   printf 'registry: %s\n\ntools:\n' "$REGISTRY" > "$root/.github/ci-tools.yaml"
   for which in "$@"; do
     row "$which" >> "$root/.github/ci-tools.yaml"
     case "$which" in
       whole)
-        cp "$work/payloads/whole.tar.gz" \
-          "$state/assets/example/whole/releases/download/v1.0.0/whole.tar.gz"
+        cp "$work/payloads/whole.tar.gz" "$state/assets/$WHOLE_ASSET"
         ;;
       inner)
-        cp "$work/payloads/inner.tar.gz" \
-          "$state/assets/example/inner/releases/download/v2.0.0/inner.tar.gz"
+        cp "$work/payloads/inner.tar.gz" "$state/assets/$INNER_ASSET"
         ;;
     esac
   done
@@ -394,12 +399,12 @@ check "exits 0" "$(is "$status" 0)"
 check "fills the row" "$(contains "$out" "^filled whole sha256:$WHOLE ($WHOLE_TAG)$")"
 check "counts it" "$(contains "$out" '^0 ghcr row(s) held, 1 filled, 0 cold, and 0 row(s) that need no copy$')"
 check "read the release asset" \
-  "$(is "$(requests 'GET asset')" "GET asset /example/whole/releases/download/v1.0.0/whole.tar.gz ")"
+  "$(is "$(requests 'GET asset')" "GET asset /$WHOLE_ASSET ")"
 check "pushed the layer, then the config, then the manifest" \
   "$(is "$(requests PUT)" "PUT blob sha256:$WHOLE PUT blob sha256:$WHOLE_CONFIG PUT manifest $WHOLE_TAG ")"
 check "started one upload per blob" "$(is "$(requests POST)" "POST upload POST upload ")"
-check "the package now holds the asset's own bytes under its own digest" \
-  "$(is "$(digest_of "$state/blobs/sha256:$WHOLE")" "$WHOLE")"
+check "the package now holds the whole archive, which is what this row pushes" \
+  "$(is "$(wc -c < "$state/blobs/sha256:$WHOLE")" "$WHOLE_SIZE")"
 check "the manifest names the archive layer media type" \
   "$(contains "$(cat "$state/manifests/$WHOLE_TAG")" '"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip"')"
 check "and the asset's own file name" \
@@ -426,12 +431,11 @@ check "says nothing was filled" \
 
 echo "case: an asset that serves bytes of another digest"
 fixture asset-changed whole
-cp "$work/payloads/other.tar.gz" \
-  "$state/assets/example/whole/releases/download/v1.0.0/whole.tar.gz"
+cp "$work/payloads/other.tar.gz" "$state/assets/$WHOLE_ASSET"
 run_mirror
 check "fails" "$(is "$status" 1)"
 check "names the row, the URL and both digests" \
-  "$(contains "$out" "::error file=.github/ci-tools.yaml::whole: https://github.com/example/whole/releases/download/v1.0.0/whole.tar.gz served bytes whose sha256 is $OTHER, and this row pins $WHOLE")"
+  "$(contains "$out" "::error file=.github/ci-tools.yaml::whole: $WHOLE_URL served bytes whose sha256 is $OTHER, and this row pins $WHOLE")"
 check "says nothing is pushed" "$(contains "$out" 'so nothing is pushed')"
 check "and pushes nothing" "$(is "$(requests PUT)$(requests POST)" "")"
 
@@ -452,13 +456,13 @@ echo "case: an asset that does not answer and a blob that is absent"
 # The one case that stays green: the asset is down, the blob is absent, and nothing can be done.
 # A cold copy must not redden ci-ok during the outage the copy exists to survive.
 fixture asset-is-down whole
-rm -- "$state/assets/example/whole/releases/download/v1.0.0/whole.tar.gz"
+rm -- "$state/assets/$WHOLE_ASSET"
 run_mirror
 check "exits 0" "$(is "$status" 0)"
 check "leaves the row cold" \
-  "$(contains "$out" "^cold whole sha256:$WHOLE — https://github.com/example/whole/releases/download/v1.0.0/whole.tar.gz did not answer (curl exit 22)$")"
+  "$(contains "$out" "^cold whole sha256:$WHOLE — $WHOLE_URL did not answer (curl exit 22)$")"
 check "warns beside it" \
-  "$(contains "$out" '^::warning::mirror-ci-tools: whole has no second source yet, because https://github.com/example/whole/releases/download/v1.0.0/whole.tar.gz did not answer this run')"
+  "$(contains "$out" "^::warning::mirror-ci-tools: whole has no second source yet, because $WHOLE_URL did not answer this run")"
 check "says each install keeps the source it has" \
   "$(contains "$out" 'Each install of this tool keeps the single source it has today')"
 check "counts it" "$(contains "$out" '^0 ghcr row(s) held, 0 filled, 1 cold, and 0 row(s) that need no copy$')"
@@ -478,8 +482,8 @@ check "exits 0" "$(is "$status" 0)"
 check "fills the row" "$(contains "$out" "^filled inner sha256:$INNER ($INNER_TAG)$")"
 check "pushed the member and not the archive" \
   "$(is "$(requests PUT)" "PUT blob sha256:$INNER PUT blob sha256:$INNER_CONFIG PUT manifest $INNER_TAG ")"
-check "the package holds the member's own bytes" \
-  "$(is "$(digest_of "$state/blobs/sha256:$INNER")" "$INNER")"
+check "the package holds the member's own bytes and not the archive's" \
+  "$(is "$(wc -c < "$state/blobs/sha256:$INNER")" "$INNER_SIZE")"
 check "the manifest names the member's size" \
   "$(contains "$(cat "$state/manifests/$INNER_TAG")" "\"digest\":\"sha256:$INNER\",\"size\":$INNER_SIZE")"
 check "and its media type, which is no archive" \

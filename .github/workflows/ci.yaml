@@ -1847,43 +1847,14 @@ jobs:
               - '**/go.work.sum'
               - 'packages/daemon/**'
               - 'packages/envoy/**'
-            # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
-            # through the crane .github/actions/install-crane installs), the package mode of
-            # .github/scripts/check-ci-images.sh, which reads ghcr.io, and the tool copy
-            # (.github/scripts/mirror-ci-tools.sh), which fills the second source of every tool
-            # install. These files are what decides what those three steps do. The gate's other
-            # half reads the whole tree and is a step of lint, which runs on every change.
-            # It also names every pattern of the tool_fallback filter below, so this filter is a
-            # superset of that one. The tool-fallback job needs this job, because the copy for
-            # this change must be filled before the proof reads it, and a job whose `needs:` is
-            # skipped is skipped — which ci-ok then reads as a selected job that did not run. A
-            # filter that selects fewer changes than the job it gates depends on is exactly that
-            # defect.
-            ci_images:
-              - '.github/ci-images.yaml'
-              - '.github/scripts/mirror-ci-images.sh'
-              - '.github/scripts/check-ci-images.sh'
-              - '.github/scripts/ci_images.py'
-              - '.github/ci-tools.yaml'
-              - '.github/scripts/ci-tools.sh'
-              - '.github/scripts/mirror-ci-tools.sh'
-              - '.github/scripts/check-ci-tools.sh'
-              - '.github/scripts/ci-tools-proof.sh'
-              - '.github/scripts/ci-fault-proxy.py'
-              - '.github/actions/install-crane/**'
-              - '.github/actions/install-changie/**'
-              - '.github/actions/install-jj/**'
-              - '.github/actions/setup-bun/**'
-              - '.bun-version'
-              - 'packages/daemon/docker/worker.Dockerfile'
-              - '.github/workflows/ci.yaml'
             # ci.yaml's tool-fallback job, the live proof of the second source every tool
             # install reads when the first source does not serve the bytes: the manifest that
             # names both sources of each row, the fetch helper every install goes through, the
             # filler and the gate beside it, the rig and the fault proxy it drives, the four
             # actions it installs through, and the two files a row's version is pinned in
             # (.bun-version for the bun rows, the worker image's Dockerfile for mise and jj).
-            tool_fallback:
+            # It carries an anchor because the ci_images filter below names it whole.
+            tool_fallback: &tool_fallback
               - '.github/ci-tools.yaml'
               - '.github/scripts/ci-tools.sh'
               - '.github/scripts/mirror-ci-tools.sh'
@@ -1897,6 +1868,25 @@ jobs:
               - '.bun-version'
               - 'packages/daemon/docker/worker.Dockerfile'
               - '.github/workflows/ci.yaml'
+            # ci.yaml's ci-images job: the image copy (.github/scripts/mirror-ci-images.sh,
+            # through the crane .github/actions/install-crane installs), the package mode of
+            # .github/scripts/check-ci-images.sh, which reads ghcr.io, and the tool copy
+            # (.github/scripts/mirror-ci-tools.sh), which fills the second source of every tool
+            # install. These files are what decides what those three steps do. The gate's other
+            # half reads the whole tree and is a step of lint, which runs on every change.
+            # It names the tool_fallback filter above through that filter's own anchor, which
+            # dorny/paths-filter flattens into this list, so this filter is a superset of that
+            # one by construction and not by a copy kept in step by hand. The tool-fallback job
+            # needs this job, because the copy for this change must be filled before the proof
+            # reads it, and a job whose `needs:` is skipped is skipped — which ci-ok then reads
+            # as a selected job that did not run. A filter that selects fewer changes than the
+            # job it gates depends on is exactly that defect.
+            ci_images:
+              - '.github/ci-images.yaml'
+              - '.github/scripts/mirror-ci-images.sh'
+              - '.github/scripts/check-ci-images.sh'
+              - '.github/scripts/ci_images.py'
+              - *tool_fallback
             # ci.yaml's proof-sdk-offline job: a frozen install behind a proxy that answers 504
             # for every host the proof editor's old `github:sjawhar/proof-sdk#<sha>` route used.
             # What can send that install to one of those hosts again is every file the install
@@ -2178,15 +2168,8 @@ jobs:
           . .github/scripts/ci-tools.sh
           registry=$(ci_tools_field crane registry)
           path=${registry#*/}
-          token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$path:pull" \
-            | python3 -c 'import json, sys; print(json.load(sys.stdin)["token"])')
-          rows=$(PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-          import yaml
-
-          document = yaml.safe_load(open(".github/ci-tools.yaml"))
-          print("\n".join(row["name"] for row in document["tools"] if row["second_source"] == "ghcr"))
-          PY
-          )
+          token=$(ci_tools_ghcr_token)
+          rows=$(ci_tools_rows ghcr)
           cold=""
           for row in $rows; do
             digest=$(ci_tools_digest "$row")
@@ -2209,12 +2192,7 @@ jobs:
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
           . .github/scripts/ci-tools.sh
-          rows=$(PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
-          import yaml
-
-          print("\n".join(row["name"] for row in yaml.safe_load(open(".github/ci-tools.yaml"))["tools"]))
-          PY
-          )
+          rows=$(ci_tools_rows)
           unread=""
           for row in $rows; do
             digest=$(ci_tools_digest "$row")
@@ -2264,7 +2242,9 @@ jobs:
 
       - id: fault
         name: Start the fault in front of GitHub's release assets
-        run: .github/scripts/ci-tools-proof.sh start-fault --hosts github.com,githubusercontent.com
+        run: >-
+          .github/scripts/ci-tools-proof.sh start-fault
+          --hosts github.com,release-assets.githubusercontent.com,objects.githubusercontent.com
 
       # Every later step reads the proxy, in all four spellings of the two variables and with
       # both bypass lists emptied, which is the whole of what a client reads before it decides to
@@ -2274,9 +2254,16 @@ jobs:
       # The runner resolves and downloads an action with its own environment rather than a
       # step's, so every action this job uses is already on disk when the fault starts and the
       # fault is met only by what an action fetches.
-      # The hosts are github.com and githubusercontent.com rather than the
-      # objects.githubusercontent.com a release download ends at: that download redirects to a
-      # host of that domain whose name moves, and the domain covers every one of them.
+      # The hosts are github.com, where a release download starts, and the two
+      # githubusercontent.com hosts it ends at, rather than the whole githubusercontent.com
+      # domain. Measured on 2026-11-08: a release asset redirects to
+      # release-assets.githubusercontent.com, and a ghcr.io blob redirects to
+      # pkg-containers.githubusercontent.com, so faulting the domain takes the second source
+      # down with the first and the proof reads nothing (run 42484733737, where crane's copy
+      # answered curl exit 22 behind that fault). objects.githubusercontent.com is the host
+      # release downloads ended at before, and the issue's own check names it.
+      # The negative control below is what catches a release host that moves again: a merge
+      # base install that succeeds under this fault fails the job by name.
       - name: Route every later step through the fault
         env:
           PROXY: ${{ steps.fault.outputs.proxy }}
@@ -2345,27 +2332,12 @@ jobs:
       - name: Check every tool is the version its row pins
         run: |
           set -euo pipefail
-          # shellcheck source=.github/scripts/ci-tools.sh
-          . .github/scripts/ci-tools.sh
+          proof=.github/scripts/ci-tools-proof.sh
           wrong=""
-          # A fork's binary prints the version upstream released, where the row's version is the
-          # fork's own tag with a suffix on it
-          # (docs/solutions/daemon/omp-pin-bump-behavioral-proof.md:79 measures that for the Oh
-          # My Pi fork this repository pins the same way), so a reading is held to the row's
-          # version or to the part of it before that suffix.
-          answers() {
-            local row=$1 printed=$2 version
-            version=$(ci_tools_field "$row" version)
-            echo "$row answers '$printed', and its row pins $version"
-            case $printed in
-              *"$version"* | *"${version%%-*}"*) ;;
-              *) wrong="$wrong $row" ;;
-            esac
-          }
-          answers crane "$(crane version)"
-          answers changie "$(changie --version)"
-          answers jj "$(jj --version)"
-          answers bun-linux-x64 "$(bun --version)"
+          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
+          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
+          "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
           if [ -n "$wrong" ]; then
             echo "::error::$wrong answered a version its row does not pin, so the source that served it served something else" >&2
             exit 1
@@ -2449,16 +2421,7 @@ jobs:
           jj_tool=$(sed -n 's/^ARG JJ_TOOL=//p' packages/daemon/docker/worker.Dockerfile)
           binary=$("$HOME/.local/bin/mise" x "$jj_tool" -- sh -c 'command -v jj')
           echo "mise holds $jj_tool at $binary"
-          python3 - "$binary" <<'PY'
-          import sys
-
-          with open(sys.argv[1], "r+b") as handle:
-              handle.seek(-1, 2)
-              last = handle.read(1)
-              handle.seek(-1, 2)
-              handle.write(bytes([last[0] ^ 0x01]))
-          PY
-          sha256sum "$binary"
+          .github/scripts/ci-tools-proof.sh flip-last-byte "$binary"
 
       - id: jj-primary
         continue-on-error: true
@@ -2512,16 +2475,7 @@ jobs:
       - name: Change the last byte of the installed Bun
         run: |
           set -euo pipefail
-          python3 - "$HOME/.bun/bin/bun" <<'PY'
-          import sys
-
-          with open(sys.argv[1], "r+b") as handle:
-              handle.seek(-1, 2)
-              last = handle.read(1)
-              handle.seek(-1, 2)
-              handle.write(bytes([last[0] ^ 0x01]))
-          PY
-          sha256sum "$HOME/.bun/bin/bun"
+          .github/scripts/ci-tools-proof.sh flip-last-byte "$HOME/.bun/bin/bun"
           revision=$("$HOME/.bun/bin/bun" --revision)
           pinned=$(tr -d '[:space:]' < .bun-version)
           echo "the changed binary answers --revision $revision, and .bun-version pins $pinned"
@@ -2569,22 +2523,14 @@ jobs:
           set -euo pipefail
           # shellcheck source=.github/scripts/ci-tools.sh
           . .github/scripts/ci-tools.sh
+          proof=.github/scripts/ci-tools-proof.sh
           wrong=""
-          answers() {
-            local row=$1 printed=$2 version
-            version=$(ci_tools_field "$row" version)
-            echo "$row answers '$printed', and its row pins $version"
-            case $printed in
-              *"$version"* | *"${version%%-*}"*) ;;
-              *) wrong="$wrong $row" ;;
-            esac
-          }
-          answers crane "$(crane version)"
-          answers changie "$(changie --version)"
-          answers jj "$(jj --version)"
+          "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
+          "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+          "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
           ci_tools_verify jj "$HOME/.local/bin/jj" "the tool this job leaves on the runner" || wrong="$wrong jj"
           if [ -x "$HOME/.bun/bin/bun" ]; then
-            answers bun-linux-x64 "$(bun --version)"
+            "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
             ci_tools_verify bun-linux-x64 "$HOME/.bun/bin/bun" "the tool this job leaves on the runner" ||
               wrong="$wrong bun-linux-x64"
           else

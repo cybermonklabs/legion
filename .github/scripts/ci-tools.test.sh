@@ -98,7 +98,6 @@ tools:
     primary: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
     second_source: ghcr
     max_time: 7
-    mirror_tag: tool-tarred-1.0.0-${TARRED:0:8}
     mirror_from: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
     mirror_member: ""
   - name: jjlike
@@ -108,7 +107,6 @@ tools:
     primary: ""
     second_source: ghcr
     max_time: 7
-    mirror_tag: tool-jjlike-2.0.0-${JJLIKE:0:8}
     mirror_from: https://github.com/example/jjlike/releases/download/v2.0.0/jjlike.tar.gz
     mirror_member: ./jjlike
   - name: packaged
@@ -185,9 +183,6 @@ origin() {
   base="http://127.0.0.1:$(cat "$work/origins/$name/port")"
 }
 
-# The three cases that read no source at all still need `base` set, since `run` names it.
-base="http://127.0.0.1:1"
-
 # run <function> <argument…>: the helper, sourced into a shell with errexit, nounset and pipefail
 # on, as a GitHub `run:` step has. Sets `out` to the combined output and `status` to the exit
 # code. Not a subshell, so both survive the call.
@@ -216,6 +211,10 @@ run_real() {
 
 # asked_for <log> <prefix>: true when the origin was asked for a path under that prefix.
 asked_for() { grep -q "^$2" "$1" && echo true || echo false; }
+
+# nothing_at <path>: true when nothing is there, which is what every refusal leaves at the
+# destination.
+nothing_at() { [ -e "$1" ] && echo false || echo true; }
 
 # temporary_files: what the helper left under RUNNER_TEMP, which is nothing on every path.
 temporary_files() { find "$runner_temp" -mindepth 1 | sort; }
@@ -260,7 +259,7 @@ check "fails" "$(is "$status" 1)"
 check "names the source and both digests" \
   "$(contains "$out" "^::error::ci-tools: tarred: the bytes from github-release are not the pinned ones (pinned sha256 $TARRED, read sha256 $TARRED_CHANGED) — refusing$")"
 check "the second source was not read" "$(is "$(asked_for "$log" "/ghcr/")" false)"
-check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: ghcr-mirror — the copy serves one byte changed"
@@ -272,7 +271,7 @@ run ci_tools_fetch tarred "$dest"
 check "fails" "$(is "$status" 1)"
 check "names the source and both digests" \
   "$(contains "$out" "^::error::ci-tools: tarred: the bytes from ghcr-mirror are not the pinned ones (pinned sha256 $TARRED, read sha256 $TARRED_CHANGED) — refusing$")"
-check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: both sources refuse"
@@ -283,7 +282,7 @@ run ci_tools_fetch tarred "$dest"
 check "fails" "$(is "$status" 1)"
 check "names both sources and what each did" \
   "$(contains "$out" '^::error::ci-tools: tarred: no source served the bytes; github-release: curl exit 22; ghcr-mirror: the blob request failed (curl exit 22)$')"
-check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: ghcr-mirror — a row whose primary bytes a third party fetches"
@@ -312,7 +311,7 @@ run ci_tools_fetch_fallback jjlike "$dest"
 check "fails" "$(is "$status" 1)"
 check "names the source and both digests" \
   "$(contains "$out" "^::error::ci-tools: jjlike: the bytes from ghcr-mirror are not the pinned ones (pinned sha256 $JJLIKE, read sha256 $JJLIKE_CHANGED) — refusing$")"
-check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: npm — the package serves the bytes"
@@ -335,7 +334,7 @@ run ci_tools_fetch_fallback packaged "$dest"
 check "fails" "$(is "$status" 1)"
 check "names the source and both digests" \
   "$(contains "$out" "^::error::ci-tools: packaged: the bytes from npm are not the pinned ones (pinned sha256 $PACKAGED, read sha256 $PACKAGED_CHANGED) — refusing$")"
-check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: npm — the registry refuses"
@@ -348,18 +347,22 @@ check "fails" "$(is "$status" 1)"
 check "names the source and what it did" \
   "$(contains "$out" '^::error::ci-tools: packaged: no source served the bytes; npm: the package tarball request failed (curl exit 22)$')"
 check "and names no release asset it never had" "$(is "$(contains "$out" 'github-release')" false)"
-check "nothing is at the destination" "$(is "$([ -e "$dest" ] && echo there || echo nothing)" nothing)"
+check "nothing is at the destination" "$(nothing_at "$dest")"
 check "and no temporary file is left" "$(is "$(temporary_files)" "")"
 
 echo "case: ci_tools_digest and ci_tools_field"
-# These cases read the manifest and no source.
+# These cases read the manifest and no source. The base they are run with points at a port
+# nothing listens on, which is the statement that no source is read here.
+base="http://127.0.0.1:1"
 run ci_tools_digest tarred
 check "ci_tools_digest prints the row's digest" "$(is "$out" "$TARRED")"
 check "and exits 0" "$(is "$status" 0)"
 run ci_tools_field packaged npm_package
 check "ci_tools_field prints the field asked for" "$(is "$out" "@fixture/packaged")"
-run ci_tools_field tarred primary
+# jjlike's primary is empty: a third party fetches that row's primary bytes.
+run ci_tools_field jjlike primary
 check "an empty field is an empty line, not a failure" "$(is "$status" 0)"
+check "and prints nothing" "$(is "$out" "")"
 run ci_tools_digest crane
 check "an unknown row fails" "$(is "$status" 1)"
 check "naming the row and what the manifest holds" \
@@ -382,15 +385,23 @@ check "naming the source and both digests" \
   "$(contains "$out" "^::error::ci-tools: tarred: the bytes from github-release are not the pinned ones (pinned sha256 $TARRED, read sha256 $TARRED_CHANGED) — refusing$")"
 
 echo "case: the repository's own .github/ci-tools.yaml"
-# The default manifest seam, and every row of the real file: a row this helper cannot read fails
+# The default manifest seam, and every row of the real file, read off that file rather than
+# listed here, so a row added to the manifest is exercised: a row this helper cannot read fails
 # here rather than in the job that installs the tool.
-for row in crane changie mise jj bun-linux-x64 bun-linux-x64-baseline bun-linux-aarch64; do
+real_rows=$(CI_TOOLS_FILE="$repository/.github/ci-tools.yaml" PYTHONDONTWRITEBYTECODE=1 python3 - <<'PY'
+import os
+
+import yaml
+
+with open(os.environ["CI_TOOLS_FILE"]) as handle:
+    document = yaml.safe_load(handle)
+print("\n".join(row["name"] for row in document["tools"]))
+PY
+)
+for row in $real_rows; do
   run_real ci_tools_digest "$row"
   check "$row prints a 64-character lower-case hex digest" \
     "$(contains "$out" '^[0-9a-f]\{64\}$')"
 done
-mise_pin=$(sed -n 's/^ARG MISE_SHA256=//p' "$repository/packages/daemon/docker/worker.Dockerfile")
-run_real ci_tools_digest mise
-check "the mise row's digest is ARG MISE_SHA256 of worker.Dockerfile" "$(is "$out" "$mise_pin")"
 
 summary "ci-tools.sh"

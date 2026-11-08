@@ -67,11 +67,6 @@ tools:
     # The per-attempt bound in seconds the helper gives curl. One attempt that hangs past a minute
     # is the outage the second source answers, so every row carries 60.
     max_time: 60
-    # ghcr rows only. The copy's tag in the package, `tool-<name>-<version>-<the first eight hex
-    # characters of the digest>`, so one tag names one digest and a row that moves to a new digest
-    # takes a new tag with it. The tag also keeps the blob from being a package version nothing
-    # names, which a retention policy may remove.
-    mirror_tag: tool-crane-0.22.1-0ab7a1d6
     # ghcr rows only. The URL .github/scripts/mirror-ci-tools.sh fetches the bytes from to fill the
     # copy. It is the row's `primary` wherever the primary is the asset itself.
     mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
@@ -87,7 +82,6 @@ tools:
     primary: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
     second_source: ghcr
     max_time: 60
-    mirror_tag: tool-changie-1.26.0-eab168c8
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
     mirror_member: ""
 
@@ -101,7 +95,6 @@ tools:
     primary: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
     second_source: ghcr
     max_time: 60
-    mirror_tag: tool-mise-2026.8.12-0c782233
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
     mirror_member: ""
 
@@ -120,7 +113,6 @@ tools:
     primary: ""
     second_source: ghcr
     max_time: 60
-    mirror_tag: tool-jj-0.45.1-sami.20260910-043938-fe32ffcd
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj
 

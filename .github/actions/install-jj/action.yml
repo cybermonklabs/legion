@@ -65,6 +65,7 @@ runs:
           source=ghcr-mirror
           ci_tools_fetch_fallback jj "$RUNNER_TEMP/jj"
           install -m 0755 "$RUNNER_TEMP/jj" "$HOME/.local/bin/jj"
+          rm -f "$RUNNER_TEMP/jj"
         fi
         echo "$jj_tool: $HOME/.local/bin/jj"
         ci_tools_verify jj "$HOME/.local/bin/jj" "$source"

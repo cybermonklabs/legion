@@ -35,7 +35,7 @@
 #
 # WHAT IT DOES WITH EACH ghcr ROW, IN ORDER.
 #
-#   1. It asks the package for the row's blob, and for the row's `mirror_tag`.
+#   1. It asks the package for the row's blob, and for the tag that names it.
 #      A blob the package holds under a tag that resolves is `held`, and nothing is pushed.
 #      A blob it holds under a tag that does not resolve gets the manifest pushed, because an
 #      untagged blob is a package version nothing names and a retention policy may take it.
@@ -54,8 +54,8 @@
 #      are the bytes.
 #   3. It checks the sha256 of those bytes against the row's `digest`.
 #      A mismatch is refused, naming the row, the URL and both digests, and nothing is pushed.
-#   4. It pushes the layer blob, then the config blob, then the manifest at the row's
-#      `mirror_tag`, each with the status the registry API gives it.
+#   4. It pushes the layer blob, then the config blob, then the manifest at the row's tag, each
+#      with the status the registry API gives it.
 #      Any other status is refused, naming the row, the request and the status.
 #   5. It reads the blob back.
 #      Anything but 200 is refused, naming the row: an asset that answered and a fill that then
@@ -73,8 +73,9 @@
 #   CI_TOOLS_MANIFEST     the manifest. Default .github/ci-tools.yaml, relative to the repository
 #                         root this script cd's to.
 #   CI_TOOLS_GHCR_BASE    default https://ghcr.io.
-#   CI_TOOLS_GITHUB_BASE  default https://github.com, applied to a row's `mirror_from` the way
-#                         that helper applies it to a row's `primary`.
+#   CI_TOOLS_GITHUB_BASE  default https://github.com, applied to a row's `mirror_from` by that
+#                         helper's own ci_tools_github_url, which is what applies it to a row's
+#                         `primary`.
 #
 # .github/scripts/mirror-ci-tools.test.sh serves the package and the release host from a local
 # HTTP origin through those seams, so no case of it reaches the network.
@@ -84,11 +85,20 @@
 # already holds for the package. Its tests run in ci.yaml's test job.
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+# The directory of this script, resolved before the cd below, so the helper beside it is found
+# however this script was named on the command line.
+script_dir=$(cd "$(dirname "$0")" && pwd)
+cd "$script_dir/../.."
+
+# The fetch helper every install goes through, sourced for the pieces this script would
+# otherwise write a second time: ci_tools__curl's flag set, ci_tools_github_url's seam and
+# ci_tools_token_of's reading of a token response. It defines only ci_tools_* names and runs
+# nothing at load.
+# shellcheck source=.github/scripts/ci-tools.sh
+. "$script_dir/ci-tools.sh"
 
 manifest=${CI_TOOLS_MANIFEST:-.github/ci-tools.yaml}
 ghcr_base=${CI_TOOLS_GHCR_BASE:-https://ghcr.io}
-github_base=${CI_TOOLS_GITHUB_BASE:-https://github.com}
 
 # The media types of the copy. A row that pushes an archive whole pushes a gzipped tar layer, and
 # a row that pushes a member taken out of one pushes those bytes as they are.
@@ -141,7 +151,7 @@ fields = (
     "name",
     "second_source",
     "digest",
-    "mirror_tag",
+    "version",
     "mirror_from",
     "mirror_member",
     "max_time",
@@ -164,13 +174,7 @@ if ! curl -fsS -u "$GITHUB_ACTOR:$GITHUB_TOKEN" -o "$work/token.json" \
   error "the registry would not answer a pull,push token request for $path, so this run reads nothing and fills nothing."
   exit 1
 fi
-token=$(PYTHONDONTWRITEBYTECODE=1 python3 -c '
-import json
-import sys
-
-with open(sys.argv[1]) as handle:
-    print(json.load(handle)["token"])
-' "$work/token.json" 2>/dev/null) || token=''
+token=$(ci_tools_token_of "$work/token.json") || token=''
 if [ -z "$token" ]; then
   error "the token request for $path answered no .token this run could read, so it reads nothing and fills nothing."
   exit 1
@@ -196,15 +200,6 @@ header_value() {
     tolower($1) == want { value = $2 }
     END { gsub(/\r/, "", value); print value }
   ' "$headers"
-}
-
-# github_url <url>: that URL with the CI_TOOLS_GITHUB_BASE seam in place of its https://github.com
-# prefix, which is how .github/scripts/ci-tools.sh reads the same field.
-github_url() {
-  case "$1" in
-    https://github.com/*) printf '%s\n' "$github_base${1#https://github.com}" ;;
-    *) printf '%s\n' "$1" ;;
-  esac
 }
 
 # push_blob <row> <file> <digest> <what these bytes are>: one blob of the copy, in the two steps
@@ -314,13 +309,20 @@ held=0
 filled=0
 cold=0
 uncopied=0
-while IFS=$'\x1f' read -r name second digest tag from member max_time; do
+while IFS=$'\x1f' read -r name second digest version from member max_time; do
   [ -n "$name" ] || continue
   if [ "$second" != ghcr ]; then
     echo "none $name needs no copy: its second source is $second, which serves the bytes itself"
     uncopied=$((uncopied + 1))
     continue
   fi
+  # The copy's tag in the package, `tool-<name>-<version>-<the first eight hex characters of the
+  # digest>`, so one tag names one digest and a row that moves to a new digest takes a new tag
+  # with it. The tag also keeps the blob from being a package version nothing names, which a
+  # retention policy may remove.
+  # It is derived here and written in no row: a field that can hold one string is a field a gate
+  # has to police, and the rule it would be policed against is this line.
+  tag="tool-$name-$version-${digest:0:8}"
   blob_url="$ghcr_base/v2/$path/blobs/sha256:$digest"
   tag_url="$ghcr_base/v2/$path/manifests/$tag"
   blob_status=$(registry_head "$blob_url")
@@ -368,8 +370,7 @@ while IFS=$'\x1f' read -r name second digest tag from member max_time; do
 
   asset="$work/$name.asset"
   status=0
-  curl -fsSL --retry 7 --retry-all-errors --max-time "$max_time" -o "$asset" \
-    "$(github_url "$from")" || status=$?
+  ci_tools__curl "$asset" "$max_time" "$(ci_tools_github_url "$from")" || status=$?
   if [ "$status" -ne 0 ]; then
     printf 'cold %s sha256:%s — %s did not answer (curl exit %s)\n' "$name" "$digest" "$from" "$status"
     printf '::warning::%s\n' \

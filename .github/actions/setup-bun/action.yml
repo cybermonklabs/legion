@@ -81,10 +81,12 @@ runs:
           source=npm
           echo "setup-bun: no Bun $pinned at $HOME/.bun/bin/bun, so the second source serves it"
           mkdir -p "$HOME/.bun/bin"
-          binary=$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/bun.XXXXXX")
-          ci_tools_fetch_fallback "$row" "$binary"
-          install -m 0755 "$binary" "$HOME/.bun/bin/bun"
-          rm -f "$binary"
+          # The fetch's own destination, so the 107 MB binary is written once and not three
+          # times. The trust boundary is where it was: .github/scripts/ci-tools.sh verifies the
+          # digest before it moves the bytes to this path, and removes its own temporary on
+          # every path that refuses, so nothing unverified is ever at this name.
+          ci_tools_fetch_fallback "$row" "$HOME/.bun/bin/bun"
+          chmod 0755 "$HOME/.bun/bin/bun"
         fi
         printf 'row=%s\nsource=%s\n' "$row" "$source" >> "$GITHUB_OUTPUT"
 
