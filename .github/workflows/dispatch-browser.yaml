@@ -25,15 +25,25 @@ name: Dispatch browser suite
 # and .github/scripts/dispatch-browser-samples.sh for the memory and CPU sampler and its two
 # readings - and each of those files' head is where what it does and why is written down.
 #
-# The budget rule every job and step below follows, this file being where it is written down now
-# that ci.yaml's dispatch job is gone: a step's budget is its measured maximum plus 15 per cent,
-# rounded up to the next whole minute, with a floor of two minutes; a job's budget is the sum of
-# its step budgets plus the measured maximum of every step without one. The budgets sit on the
-# steps and not on the job alone, because a step the runner cancels at its own budget fails that
-# step and names it (`The action '<step name>' has timed out after <N> minutes.`), where a job
-# budget cancels the job. So the `if: always()` and `if: failure()` upload steps still run and the
-# report, the memory samples and the CPU samples still reach the run, which a cancelled job loses.
-# A job budget is the backstop above the sum of its step budgets, so it never fires first.
+# The budget rule every job and step below follows. A step that holds no retried download
+# carries its measured maximum plus 15 per cent, rounded up to the next whole minute, with a
+# floor of two minutes. A step that holds one carries its own retry arithmetic instead of a
+# measured maximum - five attempts at the call's own bound with the helper's sleeps between
+# them, 5 x <bound> + 150 s, or 8 x <bound> + 127 s where curl makes the attempts itself - at
+# the next whole minute strictly above it. A job carries its measured duration plus the
+# arithmetic of its single slowest retried step alone, never the sum of every retried step, and
+# it stands above its largest step budget, so it cancels no step the step's own bound was meant
+# to end. The sum answers the wrong case: a job whose every download exhausts every attempt at
+# once has met an outage of the host rather than the transient fault a retry survives, and in an
+# outage failing at the job's budget is the right behaviour, where each step's own budget is
+# where that step's exhausted retry stops. .github/workflows/ci.yaml's "Budgets" note writes
+# that rule down in full, and every job below derives both of its terms.
+#
+# The budgets sit on the steps and not on the job alone, because a step the runner cancels at
+# its own budget fails that step and names it (`The action '<step name>' has timed out after
+# <N> minutes.`), where a job budget cancels the job. So the `if: always()` and `if: failure()`
+# upload steps still run and the report, the memory samples and the CPU samples still reach the
+# run, which a cancelled job loses.
 #
 # No permissions: block, so each caller's permissions stand. The merge job reads the run's jobs
 # through the API (`actions: read`) and ends with the ci-ok report (`checks: write`), both of
@@ -104,9 +114,9 @@ jobs:
     # .github/scripts/playwright-install.sh's retry arithmetic rather than a measured maximum,
     # for the reason that file's head gives.
     #
-    # The job budget contains the install step's own 98 minutes, because this file's rule builds a
-    # job budget from its steps' budgets. A warm install is far inside that: it fetches none of
-    # the list's 114 MB (`Need to get 0 B/114 MB of archives.`, job 128209099649 of
+    # The job budget contains the install step's own arithmetic, which that step's 98 minutes
+    # round up. A warm install is far inside that: it fetches none of the list's 114 MB
+    # (`Need to get 0 B/114 MB of archives.`, job 128209099649 of
     # cybermonklabs/legion#2888 at 5ff42456) and runs the 90 s bound of the `apt-get update` that
     # still reads the mirror, 1.1 s to seed the restored .deb files, 13.6 s of unpack, 0.4 s of
     # decoder guard, about 90 s for a cold browser download and 1.6 s for the list check -
@@ -125,44 +135,53 @@ jobs:
     # reading of a restore that hits is that job's browser cache, 482 MB, whose hit line is at
     # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
     # this cache's 114 MB are under that. They are counted here as 7 s on top of the 85 s row,
-    # and no save follows the install: .github/workflows/ci-caches.yaml's browsers and apt-debs
-    # jobs fill both entries, on a push to main and on a workflow_dispatch of that file, each of
-    # which writes the default branch's cache scope, and this workflow restores them.
+    # which this budget's first term stands far above, and no save follows the install:
+    # .github/workflows/ci-caches.yaml's browsers and apt-debs jobs fill both entries, on a push
+    # to main and on a workflow_dispatch of that file, each of which writes the default
+    # branch's cache scope, and this workflow restores them.
     #
-    # So the job budget is the install step's 5880 s, the browser step's 540 s, the Go download
-    # step's 1080 s, the bun install step's 1080 s and 92 s of every other step summed:
-    # 8672 s -> 145 min.
+    # So the job budget is this job's measured duration plus the arithmetic of its one slowest
+    # retried step: 1980 s, the 33 minutes this job carried before this branch and above the
+    # 1004 s of its slowest measured leg, plus the install step's whole wait - 1170 s of bounded
+    # apt, 13.6 s of unpack, 0.4 s of decoder guard, 4650 s of browser download (five attempts
+    # of 900 s with the 150 s of sleeps between them) and 1.6 s for the list check, 5835.6 s,
+    # the arithmetic .github/scripts/playwright-install.sh's head derives and that step's 98
+    # minutes round up. 1980 + 5835.6 = 7815.6 s -> 131 min.
     #
-    # Three of those terms are new on this head (dispatch://INFRA-1545). The install step's
-    # 5880 s is .github/scripts/playwright-install.sh's own retry arithmetic, where it was
-    # 1320 s before that script's phases were retried; the Go download step's 1080 s and the bun
-    # install step's 1080 s are each one `retry_fetch` call's 5 x 180 + 150 s. A retried step's
-    # ceiling is its own arithmetic and not a measured maximum, and it is reached only against a
-    # host that accepts the connection and then sends nothing, which is the one fault where
-    # every attempt runs its whole bound.
+    # The install step is this job's slowest retried step by a wide margin: the Go module
+    # download and the workspace install are one `retry_fetch` call each,
+    # 5 x 180 + 150 = 1050 s, against its 5835.6 s. A retried step's ceiling is its own
+    # arithmetic and not a measured maximum, and it is reached only against a host that accepts
+    # the connection and then sends nothing, which is the one fault where every attempt runs its
+    # whole bound.
     #
-    # The 92 s row still holds the seconds the `bun install` step spent before it had a budget
-    # of its own, so this sum counts those seconds twice. That is margin, not a gap.
+    # The sum of all three is deliberately not the model. A job whose every download exhausts
+    # every attempt at once has met an outage of the host rather than the transient fault a
+    # retry survives, and in an outage failing at the job's budget is the right behaviour, where
+    # each step's own budget is where that step's exhausted retry stops. A budget summed that
+    # way was refused on this tree once already, when it took ci.yaml's `lint` job to 173
+    # minutes. 131 min stands above this job's largest step budget, the install step's 98, so no
+    # job budget fires before a step's own.
     #
     # The 114 MB cold draw is still a tail rather than a cost of the lane: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the 1004 s leg below. It is accounted in this pull request's body, cited to
     # dispatch://INFRA-1443. What this budget costs instead: a leg that is going to fail its
-    # install holds a runner for up to 145 min before it says so.
+    # install holds a runner for up to 131 min before it says so.
     #
     # The 1004 s leg sets none of that, and is named here as the tail it is. Its install stalled
     # 627 s on the apt download where every other install of the two runs took 19 to 49 s, and
     # that stall is the same slow-mirror case the apt archive cache now answers on every run but
-    # the first under a key. The rule builds a job budget from step budgets and not from measured
-    # job maxima, so letting that one leg set this figure would charge the job twice for a stall
-    # the step already holds.
+    # the first under a key. The 33 minutes this budget's first term takes already stand above
+    # that leg, and its second term is the install step's own arithmetic, so letting the leg set
+    # a term of its own would charge the job twice for a stall the step already holds.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed at
     # this head, after the forward merges of main, the suite holds 1,200 rows: 1,145 in the
     # eight projects the full lane's four shards run, of which 1,058 are in the two the
     # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
     # job runs.
-    timeout-minutes: 145
+    timeout-minutes: 131
     strategy:
       fail-fast: false
       # Four legs. The count is written here and in the `--shard` denominator of the browser step
@@ -505,9 +524,9 @@ jobs:
     # .github/scripts/playwright-install.sh's retry arithmetic rather than a measured maximum,
     # for the reason that file's head gives.
     #
-    # The job budget contains the install step's own 98 minutes, because this file's rule builds a
-    # job budget from its steps' budgets. A warm install is far inside that: it fetches none of
-    # the list's 114 MB (`Need to get 0 B/114 MB of archives.`, job 128209099649 of
+    # The job budget contains the install step's own arithmetic, which that step's 98 minutes
+    # round up. A warm install is far inside that: it fetches none of the list's 114 MB
+    # (`Need to get 0 B/114 MB of archives.`, job 128209099649 of
     # cybermonklabs/legion#2888 at 5ff42456) and runs the 90 s bound of the `apt-get update` that
     # still reads the mirror, 1.1 s to seed the restored .deb files, 13.6 s of unpack, 0.4 s of
     # decoder guard, about 90 s for a cold browser download and 1.6 s for the list check -
@@ -524,34 +543,42 @@ jobs:
     # the restore missed, and the key and restore steps took under a second each. The nearest
     # reading of a restore that hits is that job's browser cache, 482 MB, whose hit line is at
     # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
-    # this cache's 114 MB are under that. They are counted here as 7 s on top of the 82 s row.
+    # this cache's 114 MB are under that. They are counted here as 7 s on top of the 82 s row,
+    # which this budget's first term stands far above.
     #
-    # So the job budget is the install step's 5880 s, the browser step's 180 s, the Go download
-    # step's 1080 s, the bun install step's 1080 s and 89 s of every other step summed:
-    # 8309 s -> 139 min.
+    # So the job budget is this job's measured duration plus the arithmetic of its one slowest
+    # retried step: 1620 s, the 27 minutes this job carried before this branch and above the
+    # 259 s of its slowest leg in the table, plus the install step's whole wait - 1170 s of
+    # bounded apt, 13.6 s of unpack, 0.4 s of decoder guard, 4650 s of browser download (five
+    # attempts of 900 s with the 150 s of sleeps between them) and 1.6 s for the list check,
+    # 5835.6 s, the arithmetic .github/scripts/playwright-install.sh's head derives and that
+    # step's 98 minutes round up. 1620 + 5835.6 = 7455.6 s -> 125 min.
     #
-    # Three of those terms are new on this head (dispatch://INFRA-1545), as they are in the
-    # shard job. The install step's 5880 s is .github/scripts/playwright-install.sh's own retry
-    # arithmetic, where it was 1320 s before that script's phases were retried; the Go download
-    # step's 1080 s and the bun install step's 1080 s are each one `retry_fetch` call's
-    # 5 x 180 + 150 s. A retried step's ceiling is its own arithmetic and not a measured
-    # maximum, and it is reached only against a host that accepts the connection and then sends
-    # nothing, which is the one fault where every attempt runs its whole bound.
+    # The install step is this job's slowest retried step, as it is the shard job's: the Go
+    # module download and the workspace install are one `retry_fetch` call each,
+    # 5 x 180 + 150 = 1050 s, against its 5835.6 s. That ceiling is its own arithmetic and not a
+    # measured maximum, and it is reached only against a host that accepts the connection and
+    # then sends nothing, which is the one fault where every attempt runs its whole bound.
     #
-    # The 89 s row still holds the seconds the `bun install` step spent before it had a budget
-    # of its own, so this sum counts those seconds twice. That is margin, not a gap.
+    # The sum of all three is deliberately not the model, for the reason the shard job's own
+    # paragraph and ci.yaml's "Budgets" note give: a job whose every download exhausts every
+    # attempt at once has met an outage of the host rather than the transient fault a retry
+    # survives, and in an outage failing at the job's budget is the right behaviour, where each
+    # step's own budget is where that step's exhausted retry stops. 125 min stands above this
+    # job's largest step budget, the install step's 98, so no job budget fires before a step's
+    # own.
     #
     # The 114 MB cold draw is still a tail rather than a cost of this job: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the shard job's 627 s apt stall. It is accounted in this pull request's
     # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going to
-    # fail its install holds a runner for up to 139 min before it says so.
+    # fail its install holds a runner for up to 125 min before it says so.
     #
     # Three legs of one run is a thin reading, and these are the projects whose rows are read
     # from the wall clock, so a slower machine moves them further than it moves a parallel row.
     # The 15 per cent the rule adds is what carries that, and a leg that outran it fails the
     # browser step by name, which is a reading of its own.
-    timeout-minutes: 139
+    timeout-minutes: 125
     strategy:
       fail-fast: false
       matrix:
@@ -823,25 +850,29 @@ jobs:
     # 1.15 = 232 s -> 4 min for the dashboard step, 13 s x 1.15 = 15 s -> the two-minute floor
     # for the sign-in step, and 28 min for the install step, which is that step's own retry
     # arithmetic and no measured maximum, for the reason its own comment gives.
-    # The job budget is the sum of its step budgets plus the measured maximum of every step
-    # without one: the install step's 1680 s, the dashboard step's 240 s, the sign-in step's
-    # 120 s, the Go download step's 1080 s, the bun install step's 1080 s and the 135 s row
-    # above - 4335 s -> 73 min. With budgets on the steps, the `if: failure()` upload below
-    # still runs, which a cancelled job skips.
+    # The job budget is this job's measured duration plus the arithmetic of its one slowest
+    # retried step: 780 s, the 13 minutes this job carried before this branch and above the
+    # 516 s maximum in the table, plus the install step's one `retry_fetch` call,
+    # 5 x 300 + 150 = 1650 s. 780 + 1650 = 2430 s -> 41 min. With budgets on the steps, the
+    # `if: failure()` upload below still runs, which a cancelled job skips.
     #
-    # Three of those terms are new on this head (dispatch://INFRA-1545): the install step's
-    # 1680 s, which was 240 s until its download went through the retry, and 1080 s each for
-    # the Go download step and the bun install step, which is one `retry_fetch` call's
-    # 5 x 180 + 150 s. A retried step's ceiling is reached only against a host that accepts the
-    # connection and then sends nothing, which is the one fault where every attempt runs its
-    # whole bound. The 135 s row still holds the seconds the `bun install` step spent before it
-    # had a budget of its own, so this sum counts those seconds twice; that is margin, not a
-    # gap.
+    # The install step is this job's slowest retried step: the Go module download and the
+    # workspace install are one `retry_fetch` call each at a 180 s bound,
+    # 5 x 180 + 150 = 1050 s, under its 1650 s. A retried step's ceiling is reached only against
+    # a host that accepts the connection and then sends nothing, which is the one fault where
+    # every attempt runs its whole bound.
+    #
+    # The sum of all three is deliberately not the model, for the reason ci.yaml's "Budgets"
+    # note gives: a job whose every download exhausts every attempt at once has met an outage of
+    # the host rather than the transient fault a retry survives, and in an outage failing at the
+    # job's budget is the right behaviour, where each step's own budget is where that step's
+    # exhausted retry stops. 41 min stands above this job's largest step budget, the Chromium
+    # install's 28, so no job budget fires before a step's own.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
     # machine, and this head's full-lane run, 42316487530, falls inside every figure above - 9 s
     # install, 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
-    timeout-minutes: 73
+    timeout-minutes: 41
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -1001,25 +1032,32 @@ jobs:
     # ran 27 s on the pull-request lane of this head (42334424798) and 22 s on its full lane
     # (42316487530); over the twelve merge jobs of this branch's ten ci.yaml runs the maximum is
     # 37 s, on the green second attempt of 42328655988. By the rule in this file's head the
-    # budget is the sum of the step budgets plus the measured maximum of every step without one:
-    # the bun install step's 1080 s, reading one's 360 s for the jobs it reads, the ci-ok report
-    # step's 720 s and that 37 s - 2197 s -> 37 min.
+    # budget is this job's measured duration plus the arithmetic of its one slowest retried
+    # step: 120 s, the 2 minutes this job carried before this branch and above that 37 s, plus
+    # the workspace install's one `retry_fetch` call, 5 x 180 + 150 = 1050 s.
+    # 120 + 1050 = 1170 s -> 20 min.
     #
-    # Each of those three budgets is new on this head (dispatch://INFRA-1545), and each is its
-    # step's own retry arithmetic rather than a measured maximum: 5 x 180 + 150 s for the
-    # install, 5 x 30 + 150 s for the jobs read, and 2 x (5 x 30 + 150) s for the two ladders
-    # the ci-ok report runs, each rounded to a whole minute strictly above it. A step reaches
-    # that ceiling only against a host that accepts the connection and then sends nothing,
-    # which is the one fault where every attempt runs its whole bound. The 37 s maximum still
-    # holds the seconds the install and the jobs read spent before they had budgets of their
-    # own, so this sum counts those seconds twice; that is margin, not a gap.
+    # The workspace install is this job's slowest retried step. Each of the three carries its
+    # own retry arithmetic rather than a measured maximum (dispatch://INFRA-1545): 5 x 180 + 150
+    # = 1050 s for the install, 5 x 30 + 150 = 300 s for reading one's jobs read, and
+    # 2 x (5 x 30 + 150) = 600 s for the two ladders the ci-ok report runs, so the install is
+    # the slowest of them. A step reaches that ceiling only against a host that accepts the
+    # connection and then sends nothing, which is the one fault where every attempt runs its
+    # whole bound.
+    #
+    # The sum of all three is deliberately not the model, for the reason ci.yaml's "Budgets"
+    # note gives: a job whose every download exhausts every attempt at once has met an outage of
+    # the host rather than the transient fault a retry survives, and in an outage failing at the
+    # job's budget is the right behaviour, where each step's own budget is where that step's
+    # exhausted retry stops. 20 min stands above this job's largest step budget, the workspace
+    # install's 18, so no job budget fires before a step's own.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
     # report in them carries a failed row's trace, and the download, the merge and reading
     # three's per-leg merge all grow with those. A job cancelled at this budget posts no ci-ok,
     # so the run is red and read again from the jobs API; it cannot pass a verdict it never
     # reached.
-    timeout-minutes: 37
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
