@@ -258,7 +258,9 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
 
   the `gh` first on every tmux pane's and pod's PATH (a script in the pane's launcher directory, `/opt/legion/bin/gh` in the image) runs it, never a person:
   it runs the real gh (LEGION_GH_PATH) with GH_CONFIG_DIR at a directory of the role's gh bundle (LEGION_GH_OWNERS_DIR:
-  one directory per GitHub owner of the project, the issue's owner's holding the role App's write token for the issue's repository alone, a `<owner>/<repo>` directory under it, read-only over that repository alone, for every other repository the project serves there, and every other owner's read-only over the repositories that owner serves):
+  one directory per GitHub owner of the project and one more per owner a configured rename moved a repository away from while the project serves the name it moved to, the role App's write token for the issue's repository alone standing in two of them, the directory named for the issue's recorded owner and the one named for the owner whose installation serves that repository now, which are one directory unless a rename moved the issue's repository;
+  beside them a `<owner>/<repo>` directory for each other repository the owner serving the issue's repository serves and for each the recorded owner serves, read-only over the one repository its own name resolves to;
+  and every other owner's directory read-only over the repositories that owner serves, or, for an owner only a rename puts in the bundle, over those of the owner its repository moved to):
   the repository's own directory where the command names one repository and the bundle holds that directory, and its owner's otherwise, read as gh reads the command, with pflag's rules, from the real gh's own help of each command down to its leaf (its selectors:
   -R/--repo before or after the command, a repository or owner argument, before `--` or as a clone's or fork's first after it, a github.com URL argument (for a pr command or agent-task view only a pull request's, any other naming a branch of its own repository), every one of a slot gh's usage takes several of, agent-task view's OWNER/REPO#N, `gh api`'s `repos/orgs/users/<owner>/` endpoint and a search endpoint's q, a search query's plain repo:/owner:
   qualifiers, the options naming a repository, an owner, a team or an issue by URL;
@@ -631,10 +633,11 @@ Each item below names a task and where its code is, then notes on it.
 - **Tests** — co-located `__tests__/` dirs, Bun test runner (`bun:test`)
 
 - **The slow test suites run in the merge queue, not on a pull-request push**
-  — nine jobs of `ci.yaml` (`dispatch`, `envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
+  — eight jobs of `ci.yaml` (`envoy-go`, `envoy-go-race`, `envoy-go-race-api`, `envoy-go-race-docs`, `envoy-go-docs-finalizers`, `dispatch-memory`, `dispatch-multiprocess` and `envoy-smoke`) are held back on a pull request, and the merge queue runs them on the tree the change lands as, which is where their result normally comes from.
+  The browser suite (`dispatch-browser`) runs on every pull request that changes what it reads, in its two-project `pull-request` lane; the label puts it on the full lane the merge queue runs.
   A worker adds the label `full-ci` to its pull request only to check a fix for a slow-suite failure that took the pull request out of the queue, or when a person asks.
   The label is read from the pull request as the run's own event carries it, so it takes effect at the next push, not when it is added.
-  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the nine again.
+  The worker takes it off again once that run has passed, because the label stays on the pull request and every later push would run the eight again, and the browser suite's full lane with them.
 
 - **Release jobs keep credentials away from dependency code**
   — in `release.yaml`, `release-envoy-listener.yaml` and `release-envoy-infra.yaml`, a job that holds `contents: write`, `id-token: write`, `attestations: write`, `actions: write` or the deploy key runs no dependency code (no `bun`, `go`, `node`, no built binary, no `scripts/` program) and restores no cache (`cache-mode: none`);

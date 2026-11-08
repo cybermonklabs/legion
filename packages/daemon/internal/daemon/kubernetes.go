@@ -527,8 +527,11 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // sandboxRuntime builds the Agent Sandbox runtime, whose informers run for ctx (supervision's
 // lifetime), over the worker stream and with the workflow's App tokens as every pod's provisioning
 // token source (the implement App's, minted for the repository's owner) and every tree role's gh
-// bundle (gitHubCredential, a directory for each owner of repos and for each repository the
-// pod's own owner serves beside the one it writes to), with the controller's own bundle beside it
+// bundle (gitHubCredential, a directory for each owner of repos, one for each owner a configured
+// rename moved a repository away from while repos holds the name it moved to, and one for each
+// repository the pod's recorded owner and the owner whose installation serves its repository
+// serve beside the one it writes to), with the
+// controller's own bundle beside it
 // (appauth.ControllerCredential), which a controller's launch and its refresh both ask by owner,
 // and the directory set those directories are compared with (appauth.GitHubDirs), whose owner
 // directories the runtime reads a running pod's gh projection against — a pod lacking an owner's
