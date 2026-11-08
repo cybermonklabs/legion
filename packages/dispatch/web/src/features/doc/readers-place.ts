@@ -80,8 +80,27 @@ function scrollOffset(within: HTMLElement): number {
   return scroller === null ? window.scrollY : scroller.scrollTop;
 }
 
+/** Where the page's own place-keeping last left each box it scrolled, and where it last left
+ *  the page itself. A keeper's correction is the page moving what it draws to hold the reader
+ *  still, never the reader moving themselves, and the watch that reads a scroll as the reader
+ *  taking the page over (`refocus-when-settled.ts`) has to tell the two apart. It is recorded
+ *  in the one call both keepers scroll through rather than by a flag each raises around its
+ *  own write: a caller that moves the page through `moveTheScroll` cannot forget to say that
+ *  it did, and a caller that moves it any other way is not the page's place-keeping. */
+const thePageLeftBoxesAt = new WeakMap<HTMLElement, number>();
+let thePageLeftTheWindowAt: number | undefined;
+
+/** Whether the page's own place-keeping is what left `scroller` - the page itself where null -
+ *  standing where it stands now. A box the page moved and somebody else then moved stands
+ *  somewhere else, and reads false. */
+export function thePageLeftItThere(scroller: HTMLElement | null): boolean {
+  const left = scroller === null ? thePageLeftTheWindowAt : thePageLeftBoxesAt.get(scroller);
+  return left !== undefined && left === (scroller === null ? window.scrollY : scroller.scrollTop);
+}
+
 /** Scrolls whatever carries `within` by `moved` pixels, so what the reader is looking at stays
- *  on the same line of their screen while the page changes above it. */
+ *  on the same line of their screen while the page changes above it. Where it leaves that box
+ *  is recorded as the page's own doing (above). */
 export function moveTheScroll(within: HTMLElement, moved: number): void {
   if (moved === 0) {
     return;
@@ -89,9 +108,11 @@ export function moveTheScroll(within: HTMLElement, moved: number): void {
   const scroller = whatScrolls(within);
   if (scroller === null) {
     window.scrollBy(0, moved);
+    thePageLeftTheWindowAt = window.scrollY;
     return;
   }
   scroller.scrollTop += moved;
+  thePageLeftBoxesAt.set(scroller, scroller.scrollTop);
 }
 
 /** Puts the reader back where `place` left them, in a document `drawn` draws the same blocks of
