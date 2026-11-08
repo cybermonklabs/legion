@@ -238,6 +238,8 @@ def at_browser(step, job=BROWSER_SHARD):
 CONTRACTS_SRC = "packages/contracts/src/**"
 ENVOY_CLIENT_SRC = "packages/envoy-client/src/**"
 BROKER_CLIENT_SRC = "packages/broker-client/**"
+# The shared test fixtures every other Bun package's tests import.
+TEST_FIXTURES_SRC = "packages/test-fixtures/src/**"
 
 
 def envoy_client_dep(why):
@@ -1298,6 +1300,7 @@ GATES = [
         ("scripts/e2e/**", f"{at('test', 'bun test scripts/e2e/lib')} (lib/script-functions.test.ts:101-104 scans scripts/e2e/*.sh and lib/*); "
                            f"{at('test', 'Test the e2e proof selector')}: the selector reads scripts/e2e/*.sh"),
         (CONTRACTS_SRC, "scripts/e2e/lib/envoy-bridge.ts:9-10, session-settings-services.ts:6; scripts/dispatch/ask-census.ts:9 (tsc -p scripts/dispatch)"),
+        (TEST_FIXTURES_SRC, f"{at('test', 'bun test scripts/e2e/lib')} and the other bun test steps import @legion/test-fixtures"),
         # The envoy-client sources, and broker-client's with them, are the shared read below:
         # scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11
         # and scripts/dispatch/ask-census.ts:10-15 import @legion/envoy-client/*, and the
@@ -1404,12 +1407,26 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/typed-block-id-spellings.json", "packages/contracts/src/dispatch-block-ref.test.ts:147 reads pmdoc's own JSON copy of the typed block id spellings by relative path"),
         (f"{ENVOY}/internal/contracts/generated.go", "packages/contracts/scripts/gen-go.test.ts:6,54-58 and gen-go.ts's outputs list (--check compares the committed file)"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema_generated.go", "packages/contracts/scripts/gen-go.test.ts:7-10,54-58 and gen-go.ts's outputs list (the block schema's shape, generated from schemas/block-schema.schema.json)"),
+        (TEST_FIXTURES_SRC, "packages/contracts/src/*.test.ts import @legion/test-fixtures"),
     ) + bun_job("contracts")),
+
+    gate("test_fixtures", "test-fixtures", reads=reads(
+        ("packages/test-fixtures/**", f"{at('test-fixtures', 'Lint the shared test fixtures')}, typecheck and test in "
+                                      "packages/test-fixtures (its own biome.json among them); its modules import only "
+                                      "one another, node: and bun:"),
+    ) + biome(at("test-fixtures", "Lint the shared test fixtures")) + bun_job("test-fixtures")),
 
     gate("conflicts_script", "conflicts-script", reads=reads(
         ("scripts/conflicts/**", f"{at('conflicts-script', 'Lint the conflict measurement script')}, typecheck (tsc -p scripts/conflicts) "
                                  "and test (__tests__/ and __fixtures__/); its modules import only one another, node: and bun:"),
     ) + biome(at("conflicts-script", "Lint the conflict measurement script")) + bun_job("conflicts-script")),
+
+    gate("broker_client", "broker-client", reads=reads(
+        ("packages/broker-client/**", f"{at('broker-client', 'Lint the broker client')}, typecheck and test in "
+                                      "packages/broker-client; its modules import only one another, node:, bun: and "
+                                      "the third-party packages its manifest names"),
+        (TEST_FIXTURES_SRC, "packages/broker-client/src/__tests__ import @legion/test-fixtures"),
+    ) + biome(at("broker-client", "Lint the broker client")) + bun_job("broker-client")),
 
     gate("envoy_client", "envoy-client", reads=reads(
         ("packages/envoy-client/**", f"{at('envoy-client', 'Typecheck Envoy client')}, test and build in packages/envoy-client"),
@@ -1419,6 +1436,7 @@ GATES = [
         (f"{FIX}/dispatch-public-url.json", "packages/envoy-client/src/__tests__/dispatch-config.test.ts:5"),
         (f"{ENVOY}/internal/dispatch/api/testdata/**", "packages/envoy-client/src/__tests__/askgate-new-asks.test.ts:14-21 reads the Dispatch server's table of decision-block inserts, which packages/envoy/internal/dispatch/api's TestDocumentEditAdviceCountsTheAskBlocksTheEditAdded reads too"),
         ("skills/**", "packages/envoy-client/src/__tests__/dispatch-advice.test.ts:683-690 reads skills/<skill>/SKILL.md for every skill a notice cites"),
+        (TEST_FIXTURES_SRC, "packages/envoy-client/src/__tests__ import @legion/test-fixtures"),
         (f"{ENVOY}/internal/brokerclient/testdata/wire.json", "packages/broker-client/src/__tests__/wire.test.ts:23-29 reads the Go package's own corpus by relative path - that file itself, never a copy, so the two clients are held to one wire"),
     ) + bun_job("envoy-client")),
 
@@ -1427,6 +1445,7 @@ GATES = [
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-shared/src/handoff-record.test.ts:7 imports @legion/envoy-client/test/fake-dispatch"),
         (CONTRACTS_SRC, "pi-shared and envoy-client import @legion/contracts (contracts exports.bun -> src)"),
+        (TEST_FIXTURES_SRC, "packages/pi-shared's src and test suites import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-shared/src/daemon-client.test.ts:15, legion-claim-core.test.ts:12, legion-phase-ops.test.ts:21"),
         ("skills/**", "packages/pi-shared/test/skills-partition.test.ts:11-18,40-41 reads every skills/ directory and stages both partitions"),
         ("scripts/pi-plugin-prepack.sh", "packages/pi-shared/test/skills-guard.ts:17,34 runs scripts/pi-plugin-prepack.sh --stage-skills"),
@@ -1440,6 +1459,7 @@ GATES = [
         ("packages/pi-envoy/**", f"{at('pi-envoy', 'Typecheck pi-envoy')}, test and pack in packages/pi-envoy"),
         ("packages/pi-shared/src/**", "packages/pi-envoy/tsconfig.json paths @legion/pi-shared/* and include ../pi-shared/src/omp-host.d.ts; the bundle inlines it"),
         ("packages/pi-shared/test/**", "packages/pi-envoy/extensions/dispatch-first-omp.test.ts:13, src/skills-guard.test.ts:23, scripts/prepack.test.ts:6"),
+        (TEST_FIXTURES_SRC, "packages/pi-envoy's extensions and src tests import @legion/test-fixtures"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         ("packages/envoy-client/test/envoy-stack.ts", "packages/pi-envoy/extensions/envoy.test.ts:45-49 imports @legion/envoy-client/test/envoy-stack"),
         ("packages/envoy-client/test/fake-dispatch.ts", "packages/pi-envoy/extensions/askgate/decision-record.test.ts:9 imports @legion/envoy-client/test/fake-dispatch"),
@@ -1469,6 +1489,7 @@ GATES = [
         ("packages/pi-shared/test/**", "packages/pi-legion/extensions/legion-phase-stall-omp.test.ts:12, legion-role-tools-omp.test.ts:12, src/skills-guard.test.ts:14, scripts/prepack.test.ts:4"),
         # envoy-client's sources, and broker-client's with them, are the shared read below.
         (CONTRACTS_SRC, f"{at('pi-legion', 'Build contracts for pi-legion')}; tsconfig paths @legion/contracts"),
+        (TEST_FIXTURES_SRC, "packages/pi-legion's extensions and src tests import @legion/test-fixtures"),
         (f"{FIX}/daemon-api/**", "packages/pi-legion/extensions/legion.test.ts:1061,2738, legion-role-claim.test.ts:12, src/daemon-api-version.test.ts:14"),
         (f"{FIX}/capability-redaction.json", "packages/pi-legion/src/capability-report.test.ts:768-770"),
         (f"{FIX}/capability-redaction-plugin-report.json", "packages/pi-legion/src/capability-report.test.ts:776,874"),
@@ -1510,6 +1531,7 @@ GATES = [
                            "above put envoy-client's sources in this job's program too (check-ts-filters.sh measures it); "
                            "@legion/broker-client does not come with them, since no source of this program reaches "
                            "packages/envoy-client/src/broker-credential.ts"),
+        (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them"),
     ) + bun_job("dispatch-ui")),
 
     # The browser suite, every row of it: the shard legs, the three `-alone` projects, the
@@ -1583,8 +1605,9 @@ GATES = [
       + setup_go(BROWSER_SHARD, f"{ENVOY}/go.mod", BROWSER_SITE) + bun_job(BROWSER_SHARD, BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF, workflow=CI),
 
-    gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + biome(at("claude-envoy", "Lint Claude Envoy plugin"))
-         + bun_job("claude-envoy")),
+    gate("claude_envoy", "claude-envoy", reads=CLAUDE_ENVOY_JOB + reads(
+        (TEST_FIXTURES_SRC, "packages/claude-envoy/tests import @legion/test-fixtures"),
+    ) + biome(at("claude-envoy", "Lint Claude Envoy plugin")) + bun_job("claude-envoy")),
 
     gate("envoy_go", "envoy-go", runs=[
         step_run("envoy-go", "Integration test envoy (a real NATS server, in the test process)",
@@ -1814,18 +1837,19 @@ GATES = [
         ("packages/pi-legion/package.json", "packages/envoy/docker/Dockerfile:38"),
         ("packages/pi-shared/package.json", "packages/envoy/docker/Dockerfile:39"),
         ("packages/claude-envoy/package.json", "packages/envoy/docker/Dockerfile:40"),
-        ("docs/site/package.json", "packages/envoy/docker/Dockerfile:44; :45 RUN bun install --frozen-lockfile reads every manifest above"),
-        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:34 and :47 COPY packages/contracts packages/contracts, which :52 runs gen:go in"),
-        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:41 and :48 COPY packages/dispatch packages/dispatch, which :53 runs build:web in"),
-        ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:42 and :49 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
-        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:51 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
-        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:70 COPY, run by :71 and :99"),
-        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:70 COPY, run by :101"),
-        (f"{ENVOY}/cmd/**", "packages/envoy/docker/Dockerfile:75 COPY packages/envoy/cmd ./cmd, which :99-122 builds the four binaries from"),
-        (f"{ENVOY}/going/**", "packages/envoy/docker/Dockerfile:83 COPY packages/envoy/going ./going"),
-        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:79 COPY packages/envoy/listenfd ./listenfd"),
-        (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:86 COPY packages/envoy/migrationid ./migrationid"),
-        (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:88 COPY packages/envoy/roleholder ./roleholder"),
+        ("packages/test-fixtures/package.json", "packages/envoy/docker/Dockerfile:43"),
+        ("docs/site/package.json", "packages/envoy/docker/Dockerfile:45; :46 RUN bun install --frozen-lockfile reads every manifest above"),
+        ("packages/contracts/**", "packages/envoy/docker/Dockerfile:34 and :48 COPY packages/contracts packages/contracts, which :53 runs gen:go in"),
+        ("packages/dispatch/**", "packages/envoy/docker/Dockerfile:41 and :49 COPY packages/dispatch packages/dispatch, which :54 runs build:web in"),
+        ("packages/proof-editor/**", "packages/envoy/docker/Dockerfile:42 and :50 COPY packages/proof-editor packages/proof-editor, which the SPA build aliases"),
+        ("scripts/third-party-notices.ts", "packages/envoy/docker/Dockerfile:52 COPY scripts/third-party-notices.ts, which the SPA build writes its notices with"),
+        ("scripts/go-third-party-notices.sh", "packages/envoy/docker/Dockerfile:71 COPY, run by :72 and :100"),
+        ("scripts/assemble-third-party-notices.sh", "packages/envoy/docker/Dockerfile:71 COPY, run by :102"),
+        (f"{ENVOY}/cmd/**", "packages/envoy/docker/Dockerfile:76 COPY packages/envoy/cmd ./cmd, which :100-123 builds the four binaries from"),
+        (f"{ENVOY}/going/**", "packages/envoy/docker/Dockerfile:84 COPY packages/envoy/going ./going"),
+        (f"{ENVOY}/listenfd/**", "packages/envoy/docker/Dockerfile:80 COPY packages/envoy/listenfd ./listenfd"),
+        (f"{ENVOY}/migrationid/**", "packages/envoy/docker/Dockerfile:87 COPY packages/envoy/migrationid ./migrationid"),
+        (f"{ENVOY}/roleholder/**", "packages/envoy/docker/Dockerfile:89 COPY packages/envoy/roleholder ./roleholder"),
         # The second image this job builds. Its context is that directory alone, test file and
         # all, so the filter owes every file of it: check-image-trigger-paths.sh refuses a
         # trigger that leaves one out, and rule 17 of check-ci-filters.sh would otherwise write
@@ -1858,6 +1882,7 @@ GATES = [
     ], reads=reads(
         ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
         ("packages/pi-envoy/**", at(STALL, "Stall test of pi-envoy")),
+        (TEST_FIXTURES_SRC, "packages/pi-envoy/extensions/envoy.test.ts imports @legion/test-fixtures/environment"),
         ("packages/claude-envoy/**", f"{at(STALL, 'Stall test of claude-envoy')} (tests/envoy-channel-stall.test.ts runs bin/envoy-channel.ts)"),
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),

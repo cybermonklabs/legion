@@ -52,16 +52,16 @@ jobs:
       - name: Typecheck dispatch dashboard
         run: bun run typecheck
         working-directory: packages/dispatch
-      # The lane cases of e2e/__tests__/psql-session.test.ts and harness-lanes.test.ts skip
-      # themselves where no database is named, so in this job they do not run: it has no
-      # `postgres:` service, as this job's head says. A container of the pinned image for this
-      # step alone was tried and taken out again, in the job these tests ran in before this
-      # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on
-      # one runner in three. What those cases prove - that a lane's psql reads its own lane's
-      # database and not the plain name - is proven on any machine with DATABASE_URL set, which
-      # is how a developer and an issue pod run them (`bun run test` in packages/dispatch), and
-      # the lane contract they guard is also covered end to end by every multi-lane run of the
-      # browser suite itself.
+      # The database cases of e2e/__tests__/psql-session.test.ts and harness-lanes.test.ts skip
+      # themselves where LEGION_TEST_PG_DSN names no server, so in this job they do not run: it
+      # has no `postgres:` service, as this job's head says. A container of the pinned image for
+      # this step alone was tried and taken out again, in the job these tests ran in before this
+      # one: it cost an image pull and a readiness wait, about 90 s, and the wait timed out on one
+      # runner in three. What those cases prove - that a lane's psql reads its own lane's database
+      # and not the plain name - is proven on any machine with LEGION_TEST_PG_DSN set, which is how
+      # a developer and an issue pod run them (`bun run test` in packages/dispatch; psql-session
+      # makes a database of its own there), and the lane contract they guard is also covered end to
+      # end by every multi-lane run of the browser suite itself.
       - name: Test dispatch dashboard
         run: bun run test
         working-directory: packages/dispatch

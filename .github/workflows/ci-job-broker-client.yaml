@@ -1,0 +1,52 @@
+name: CI job broker-client
+
+# The steps of ci.yaml's `broker-client` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The secrets broker's TypeScript client, which packages/envoy-client's broker credential
+# imports. It has no build: its consumers read its sources through the workspace.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  broker-client:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Lint the broker client
+        run: bun run lint
+        working-directory: packages/broker-client
+      - name: Typecheck the broker client
+        run: bun run typecheck
+        working-directory: packages/broker-client
+      - name: Test the broker client
+        run: bun run test
+        working-directory: packages/broker-client
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: broker-client
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}

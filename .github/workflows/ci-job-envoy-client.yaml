@@ -58,9 +58,11 @@ jobs:
         # it.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
       # TMPDIR is a directory of this step's own, read by the step below: a test file that leaves
-      # its temporary directory behind is how 7,063 of them gathered on a shared machine
-      # (`packages/envoy-client/test/temp-dir.ts`). It is exported on the command line rather than
-      # set in `env:` so the reading step can name the same path.
+      # its temporary directory behind is how 7,063 of them gathered on a shared development
+      # machine, measured on 2026-11-07, which is the count this step keeps at zero. The suites
+      # take their directories from @legion/test-fixtures, whose rules are docs/testing.md's "Bun
+      # tests". It is exported on the command line rather than set in `env:` so the reading step
+      # can name the same path.
       - name: Test Envoy client
         run: |
           mkdir -p "$RUNNER_TEMP/envoy-client-tmp"

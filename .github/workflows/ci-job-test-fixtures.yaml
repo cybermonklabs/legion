@@ -1,0 +1,52 @@
+name: CI job test-fixtures
+
+# The steps of ci.yaml's `test-fixtures` job, in a file of its own.
+# ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
+# whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
+#
+# The split is for the filters. This job's filter names this file beside ci.yaml, so a change to
+# these steps selects this job alone, where a change to ci.yaml selects every job.
+#
+# The shared test fixtures package has no build: nothing imports it at run time, and its
+# consumers read its sources through the workspace.
+#
+# The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
+# decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
+# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+on:
+  workflow_call:
+    inputs:
+      ci-ok-changes:
+        description: >-
+          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          (.github/actions/ci-ok-report), as every job of ci.yaml ends.
+        type: string
+        required: true
+
+jobs:
+  test-fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Lint the shared test fixtures
+        run: bun run lint
+        working-directory: packages/test-fixtures
+      - name: Typecheck the shared test fixtures
+        run: bun run typecheck
+        working-directory: packages/test-fixtures
+      - name: Test the shared test fixtures
+        run: bun run test
+        working-directory: packages/test-fixtures
+
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: test-fixtures
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
