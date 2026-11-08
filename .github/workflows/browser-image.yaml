@@ -182,8 +182,11 @@ jobs:
       # a change to what the image holds would publish nothing and every job pinning that row
       # would keep running the old image. The label alone would republish an image the row does
       # not yet name, because the package can hold a digest no row points at — the one an earlier
-      # push's build pushed, whose row lands in a later push — and this build would push those
-      # same bytes again on every run until the row caught up. So this publishes unless the row
+      # push's build pushed, whose row lands in a later push — and this build would push a NEW
+      # digest on every run until the row caught up, since a rebuild of one recipe does not
+      # reproduce the bytes it built before (measured: the Dockerfile is byte-identical at
+      # d3bbd5f18339 and e25ec3364287, sha256 6a1e68f543ade8a0…, and those two builds' images
+      # differ), so the row would chase a digest that moved. So this publishes unless the row
       # names a digest AND the image at that digest carries this build recipe's own sha256 in
       # its legion.browser-image.source-sha256 label. This answer decides the build and not only
       # the push: the three steps below it run on `publish=true` and on nothing else.
@@ -439,35 +442,25 @@ jobs:
   # SO THE ATTESTATION OF A CI IMAGE NAMES THE BRANCH WHOSE RUN BUILT IT, NOT main. The
   # certificate names this workflow and the ref the run carried — `refs/pull/<n>/merge` for the
   # pull-request run that pushes, `refs/heads/gh-readonly-queue/…` for a merge group, the
-  # dispatched ref for a workflow_dispatch — so the `gh attestation verify` command that checks
-  # the image a row pins is the one naming that run's ref, which AGENTS.md writes out; the
-  # `…@refs/heads/main` pair that stood here names an attestation this repository never makes,
-  # so it refused every one of them. That a CI image's attestation names a branch is acceptable
-  # HERE and nowhere else: this image is a CI input, pinned by digest in a row of
-  # .github/ci-images.yaml that main must contain before any job runs it.
+  # dispatched ref for a workflow_dispatch — so a `gh attestation verify` of the image a row pins
+  # is the one naming that run's ref; the `…@refs/heads/main` pair that stood here names an
+  # attestation this repository never makes, so it refused every one of them. That a CI image's
+  # attestation names a branch is acceptable HERE and nowhere else: this image is a CI input,
+  # pinned by digest in a row of .github/ci-images.yaml that main must contain before any job
+  # runs it.
   #
-  # WHAT THE GATES ON THAT ROW PROVE IS NARROWER THAN IT LOOKS. Rule 9 and rule 10 of
-  # .github/scripts/check-ci-images.sh hold the row to an image the package serves whose
-  # PUBLISHING RUN STAMPED THIS RECIPE'S HASH into it. That catches the mistake those rules
-  # exist for — a row left behind at the digest an older recipe was built into, which every
-  # consumer would keep running while this tree describes another image — and it is a mistake,
-  # not an attack. It establishes nothing about where the bytes came from: the label is written
-  # by the run that publishes, and on a pull request that run is the PULL REQUEST'S OWN COPY of
-  # this workflow, which can stamp whatever hash it likes into whatever image it builds. The
-  # certificate is the one part of this a workflow edit cannot write, so a reviewer who sees a
-  # `built:` row's digest move reads it by hand.
-  #
-  # THE READING ITSELF IS IN AGENTS.md, in the three items after its "Container images" item:
-  # the verify command and the pull request number it names, the test merge commit the
-  # certificate carries and the head at its second parent, and the one `git diff` of .github
-  # between that head and this tree, which covers every file the build job above reads or runs
-  # — this file, .github/docker, .github/scripts/ci_images.py and .github/actions/install-crane
-  # among them. It is written there and not here because this file is part of the recipe the
-  # row's gate hashes: correcting a word of a procedure written here moves that hash, publishes
-  # another image and asks for the row to move again, while the same correction in AGENTS.md
-  # costs nothing. A gate that reads the attestation's source commit itself, which is what
-  # would make that reading automatic, is a design decision for the architect, not something
-  # these two rules do today.
+  # WHAT THE GATES ON THAT ROW PROVE IS NARROWER THAN IT LOOKS, AND THE REST IS AN ACCEPTED
+  # LIMIT. Rule 9 and rule 10 of .github/scripts/check-ci-images.sh hold the row to an image the
+  # package serves whose label carries recipe_sha256 of the row's own Dockerfile and this
+  # workflow, so a row left behind at the digest an older recipe was built into — which every
+  # consumer would keep running while this tree describes another image — is refused. The one
+  # case those rules do not catch is an image built from a recipe other than the one its label
+  # names, the label stamped with the honest recipe's hash and that recipe restored at the head.
+  # There is no automated gate for it: building one is out of this tree by the controller's
+  # decision, no such attack having been seen, and no reliable by-hand reading stands in for it
+  # either — one was written here and in AGENTS.md and withdrawn, after seven rounds in which
+  # every version of it claimed more than it proved (dispatch://INFRA-1443). So this is a known
+  # limit of the row's gates, written down rather than papered over with prose.
   #
   # AGENTS.md's rule that an image is accepted only at a revision main contains is about
   # the worker and Envoy images a deployment runs, which no pull request's run may publish.

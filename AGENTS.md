@@ -132,8 +132,7 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   Adding or changing an image this repository builds is two pushes instead:
   the push that adds or changes any part of the build recipe is what builds the image and pushes it into the package, and a later push moves the row's `digest:` onto what that build pushed.
   The second push is what the gate asks for: its `package` mode refuses a row whose published image was built from another build recipe — `.github/docker` and the build workflow — than this tree's (its rule 10), so an edit to any of them is red until that build has run and the row has moved.
-  A `built:` row's digest moving is read by hand too: rule 10 trusts a label its own run wrote.
-  The three items after this one are that reading: the attestation, the head its certificate names, and the comparison of the build's source with this tree, which takes one of two forms.
+  What rule 10 leaves is a known limit, written down rather than checked: an image built from another recipe but stamped with the honest hash, that recipe restored at the head, passes it — a gate for that is out of this tree by the controller's decision, no such attack having been seen, and a by-hand reading was written and withdrawn (dispatch://INFRA-1443).
   Moving a copy to a new version is two commits:
   the new version's row first, which that job copies while nothing pulls it yet, then the pin and every `FROM` onto it with the row they leave deleted
   — in one commit a consumer job, which waits on `changes` alone, can pull the new digest while that same run's copy is still landing it.
@@ -141,79 +140,6 @@ the shim runs `legion claude-bridge -- claude -p …`, which speaks the shim's O
   `lint` runs its `tree` mode on every change, which refuses a reference to any other source and a Go `FROM` on a `library/golang` row that `ARG GO_VERSION` does not name, and the `ci-images` job runs its `package` mode, which reads ghcr.io.
   The devbox live proofs under `scripts/e2e/` and the deployment examples, which no CI job runs, keep Google's mirror `mirror.gcr.io`.
   CI jobs that run testcontainers set `TESTCONTAINERS_RYUK_DISABLED`, so its Ryuk image is never pulled
-
-- **Reading a `built:` row's digest move** starts at the attestation, whose certificate is the one part of the chain a workflow edit cannot write.
-  Rule 10 trusts a label the publishing run wrote, and on a pull request that run is the pull request's own copy of `browser-image.yaml`, which can stamp whatever hash it likes into whatever image it builds.
-  The procedure is written here and not in that workflow because this file is in no image's recipe hash:
-  correcting a word of it costs nothing, while the same correction there moves the hash, publishes another image and asks for the row to move again, so the worked run below, which published `sha256:f77e9ae1…` on 8 November 2026 (job 128653250894), may be refreshed freely.
-  A CI image's attestation names the branch whose run built it — `refs/pull/<n>/merge` for the pull-request run that pushes, `refs/heads/gh-readonly-queue/…` for a merge group, the dispatched ref for a `workflow_dispatch` — so the command names that run's ref, and `--cert-identity …@refs/heads/main` names an attestation this repository never makes:
-
-  ```bash
-  gh attestation verify oci://<the row's registry>@<the row's digest> \
-    --repo cybermonklabs/legion \
-    --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/browser-image.yaml@refs/pull/<n>/merge \
-    --source-ref refs/pull/<n>/merge
-  ```
-
-  A reader substitutes two things and not one:
-  the digest `.github/ci-images.yaml` names when they read it, and the pull request number both `<n>`s carry.
-  That number is the pull request whose run published the digest being verified, which under the two-push order is the pull request under review:
-  the push that changes the recipe and the push that moves the row onto what it built are two pushes of one pull request.
-  That a CI image's attestation names a branch at all is acceptable here and nowhere else:
-  this image is a CI input, pinned by digest in a row of `.github/ci-images.yaml` that main must contain before any job runs it.
-
-- **The commit that certificate names is not the head under review.**
-  `sourceRepositoryDigest` is GitHub's own test merge commit of the push that published the image — what `refs/pull/<n>/merge` pointed at for that run, a commit on no branch whose message is `Merge <head> into <base>`.
-  Its second parent is the pull request's head, which is the commit the build checked out, and the row's `digest:` moves in a later push still, so a reader holding that commit to "the head whose review moved this row" rejects every correct move.
-  Worked through on the row that pinned `sha256:f77e9ae1…`, which the run of pull request 2938 published:
-
-  ```bash
-  gh attestation verify oci://ghcr.io/cybermonklabs/legion/ci@sha256:f77e9ae1c4a522c14bc6fb163e22c14797854e43e5acbf506484a5aef7a5f4fd \
-    --repo cybermonklabs/legion \
-    --cert-identity https://github.com/cybermonklabs/legion/.github/workflows/browser-image.yaml@refs/pull/2938/merge \
-    --source-ref refs/pull/2938/merge --format json \
-    | jq -r '.[0].verificationResult.signature.certificate | .sourceRepositoryRef, .sourceRepositoryDigest'
-  ```
-
-  printed `refs/pull/2938/merge` and `42352a056ea30bf578dac9e4a7a251973bdf10e8`, and
-
-  ```bash
-  gh api repos/cybermonklabs/legion/commits/42352a056ea30bf578dac9e4a7a251973bdf10e8 \
-    --jq '.commit.message, (.parents[].sha)'
-  ```
-
-  printed `Merge 1f240c0049b7bda0edc40891ffeb5307450262bf into 30f6270b5868f3561bb3bec4900c9cebde41f639`, then those two parents in that order:
-  the base first, the head the build read second.
-
-- **The comparison itself is one reading**, run with that second parent in hand (`git fetch origin <it>` where the clone has not got the commit).
-  It compares the source the build actually read with this tree, so it reaches every file the build job reads or runs under `.github`, which the rule below names.
-  For a head with no merge after that second parent it is `git diff <that second parent> <the head under review> -- .github`.
-  For a head that merged `main` after it — which any long-lived branch does — read it as
-  `git log --first-parent --remerge-diff -p <that second parent>..<the head under review> -- .github` instead, which shows this branch's own commits and, of each merge, only its conflict resolutions:
-  measured on this pull request's `7d56e209c1d0..d3bbd5f18339`, the plain diff is 662 lines of `.github`, almost all of it `main`'s, and this form 30.
-  That form holds only while every merge in the range is a merge of `main`.
-  Another kind defeats it: a `--no-ff` merge of the branch's own child, where that child reverts a build input and moves the row, is never visited by `--first-parent`, and `--remerge-diff` prints nothing of it, merging those parents reproducing the recorded tree, so the reader sees a merge with no hunks while rule 10 passes on the restored recipe's hash.
-  So list the merges first, `git log --first-parent --merges --format='%H %P' <that second parent>..<the head under review>`, require each one's non-first parent to be on `main` (`git merge-base --is-ancestor <that parent> origin/main`), and where one is not, read the plain `git diff`, which visits every commit of the range.
-
-  - **What that reading may show is one rule**, and "whatever this pull request is reviewed for" is not part of it:
-    refuse any hunk in `.github/docker/**`, `.github/workflows/browser-image.yaml`, `.github/scripts/ci_images.py` or `.github/actions/install-crane/**`, and any hunk of `.github/ci-images.yaml` other than the `built:` row's `digest:` and `tag:` lines;
-    every other hunk is reviewed as the pull request's own change, the forward merges' conflict resolutions and the `container:` pins that move with the row among them.
-    A refused hunk is the case this reading exists for:
-    a push that changes a build input so that it stamps the hash of the recipe the next push holds, then a push that reverts it and moves the row, which rule 10 passes.
-    The row's `digest:` and `tag:` lines are the move being read and cost nothing to allow, since a row naming another Dockerfile is refused by rule 10, which compares the label with `recipe_sha256` of the row's own;
-    that is why the row's `built:` line is refused with the rest of that file.
-    `.github/actions/ci-ok-report`, which the build job also runs, runs after the push and attest steps have taken their digest, so it is no build input.
-
-  - **Two files the rule guards are not folded into the hash**, `.github/scripts/ci_images.py` and `.github/actions/install-crane/**`, which `recipe_sha256` leaves out: it takes the Dockerfile's path, its context's files and the workflow (`ci_images.py:177-187`).
-    So an honest edit to either after the attested head — a forward merge's conflict resolution among them is one — leaves a hunk the rule refuses.
-    The remedy is to change a byte of a recipe file in the same push, which rebuilds the image, and to move the row onto that build in a later push, the two-push order over again;
-    a reader who stops at the rebuild leaves the row on a digest whose only attestation names the earlier head.
-    Re-running the build is no remedy: with `recipe_sha256` unchanged the decide step writes `publish=false` (`browser-image.yaml:211`), and the push and `attest` steps run on `publish=true` alone (`:270`, `:485`).
-    Recomputing the recipe hash at that head proves nothing either, which is why this procedure has no such step:
-    that head's own run stamped the label with that head's own `ci_images.py`, which `recipe_sha256` does not fold, so the two agree whatever the recipe there was.
-    A later push that restores this tree's recipe and moves the row onto what the changed recipe built is refused by rule 10 only when the changed push stamped its own recipe's hash;
-    a push that stamped the restored recipe's hash passes rule 10, and that case is the one this reading catches.
-    A reviewer runs it by hand because no gate reads the attestation's own source commit, building one having been decided out with no attack seen.
 
 ## Commands
 
