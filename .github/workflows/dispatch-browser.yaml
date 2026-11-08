@@ -233,15 +233,6 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # e2e/agent-view.e2e.ts imports AGENT_STREAM_LIMITS and capAgentStreamText as values
-        # (LEGION-548), which Playwright's own Node resolution reads from contracts' built
-        # dist/: under Node the package's "default" condition is dist/index.js. A type-only
-        # import needs none of it, and neither does the dashboard's own Vite build, which
-        # reaches contracts' src/ through the aliases at packages/dispatch/web/vite.config.ts
-        # (the "bun" export condition is Bun's own and is no part of how Vite resolves it).
-        run: bun run build
-        working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
@@ -627,25 +618,6 @@ jobs:
         run: |
           . .github/scripts/ci-retry.sh
           retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
-      - name: Build contracts for dispatch e2e
-        # This job is a matrix and each leg runs one project, so the readers here are not the
-        # shard job's. The two every leg runs: e2e/heavy-bodies.ts:16, which imports
-        # DISPATCH_BLOCK_UNITS from @legion/contracts/dispatch-tools, reached from
-        # heavy-bodies.e2e.ts, which every leg runs; and e2e/agents.ts:1, which imports
-        # DELIVERY_CAPABILITIES from @legion/contracts, reached through e2e/seed.ts, which every
-        # clock spec imports. No leg has a reader of its own: chromium-alone's testMatch is
-        # `clockSpecs` (e2e/playwright.config.ts:389), where firefox-alone and webkit-alone take
-        # /heavy-bodies\.e2e\.ts/ alone (:397, :409), and nested-directive.e2e.ts, the one more
-        # spec chromium-alone runs, imports contracts only through those two.
-        #
-        # Playwright's own Node resolution reads each from contracts' built dist/: under Node the
-        # package's "default" condition is dist/index.js, or dist/dispatch-tools.js for that
-        # subpath. A type-only import needs none of it, and neither does the dashboard's own Vite
-        # build, which reaches contracts' src/ through the aliases at
-        # packages/dispatch/web/vite.config.ts (the "bun" export condition is Bun's own and is no
-        # part of how Vite resolves it).
-        run: bun run build
-        working-directory: packages/contracts
       # The build writes dist/THIRD_PARTY_NOTICES.txt, failing on a bundled package whose license
       # cannot be determined; the listing shows the build shipped it.
       - name: Build dispatch dashboard
