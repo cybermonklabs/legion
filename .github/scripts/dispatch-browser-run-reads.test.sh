@@ -39,12 +39,18 @@ cat > "$work/bin/gh" <<GH
 # The stand-in. It records the whole argument list of every call, one file per call, so a case
 # can hold the route to the attempt endpoint, and answers from the files the case wrote: it
 # refuses its first \`refuse\` calls with \`stderr\` on its own stderr and prints \`page.json\`
-# for the calls after those.
+# for the calls after those. A case whose attempts are refused for different reasons writes
+# \`stderr.<n>\` for the n-th call, counting from 0, and that file answers in place of
+# \`stderr\` for that call alone.
 set -euo pipefail
 calls=\$(find "$work/calls" -maxdepth 1 -type f | wc -l)
 printf '%s\n' "\$*" > "$work/calls/call.\$calls"
 if [ "\$((calls + 1))" -le "\$(cat "$work/refuse")" ]; then
-  cat "$work/stderr" >&2
+  if [ -f "$work/stderr.\$calls" ]; then
+    cat "$work/stderr.\$calls" >&2
+  else
+    cat "$work/stderr" >&2
+  fi
   exit 1
 fi
 cat "$work/page.json"
@@ -80,9 +86,11 @@ happy_page() {
 # fixture <refused calls> [<stderr of a refused call>]: a fresh call log and no out-file, a
 # stand-in that refuses that many calls and then answers, and the happy page for the answer. It
 # also puts the ladder's wait back to 0, so a case that does not ask for one waits not at all
-# and the three that do set `retry_seconds` themselves after calling it.
+# and the three that do set `retry_seconds` themselves after calling it. Any per-call `stderr.<n>`
+# an earlier case wrote goes with it, so one case's faults never answer another's call.
 fixture() {
   rm -rf "$work/calls" "$work/out.json"
+  rm -f "$work"/stderr.*
   mkdir -p "$work/calls"
   printf '%s\n' "${1:-0}" > "$work/refuse"
   printf '%s\n' "${2:-HTTP 502}" > "$work/stderr"
@@ -188,6 +196,29 @@ check "and names no status of its own" \
   "$(is "$(contains "$(error_line)" 'HTTP [0-9][0-9][0-9]')" false)"
 check "while gh's own words reach the log" \
   "$(contains "$out" '^could not resolve host: api.github.com$')"
+
+echo "case: an earlier attempt answered a status and the last attempt did not"
+# The ladder's three attempts need not fail for one reason: during the 2026-11-08 incident the
+# jobs API answered 502 and GitHub's hosts were also refusing connections, and `timeout 30`
+# ends an attempt that is answered by nothing with no status at all. The line reports the
+# attempt that decided the failure, which is the last one, so it must not hand that attempt a
+# status an earlier attempt answered: a reader sent to GitHub's API health by a 502 that did
+# not decide the failure is exactly the mis-reading this lane's messages exist to end.
+fixture 3 "error connecting to api.github.com"
+printf '%s\n' 'gh: Server Error (HTTP 502)' > "$work/stderr.0"
+drive jobs "$work/out.json"
+check "fails the step" "$(is "$status" 1)"
+check "writes no out-file" "$(is "$(wrote_out_file)" no)"
+check "tried three times" "$(is "$(calls)" 3)"
+check "prints exactly one ::error:: line" "$(is "$(errors)" 1)"
+check "does not hand the last attempt a status only an earlier one answered" \
+  "$(is "$(contains "$(error_line)" 'the last attempt answered HTTP 502')" false)"
+check "says gh printed no status for the attempt that decided the failure" \
+  "$(contains "$(error_line)" 'gh printed no HTTP status')"
+check "while every attempt's own words still reach the log" \
+  "$(contains "$out" '^gh: Server Error (HTTP 502)$')"
+check "the later attempts' too" \
+  "$(is "$(grep -c '^error connecting to api.github.com$' <<<"$out" || true)" 2)"
 
 echo "case: refused once, answered on the second attempt"
 fixture 1
