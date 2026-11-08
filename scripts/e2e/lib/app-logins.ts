@@ -26,6 +26,8 @@
 // another process. An App configured with any other credential source is refused, since every
 // stage proof's file names a token command.
 
+import { writeSync } from "node:fs";
+
 /** The two App roles `github_apps` names (internal/appauth, Implement and Review). */
 export type AppRole = "implement" | "review";
 export type AppLogins = Partial<Record<AppRole, string>>;
@@ -104,6 +106,40 @@ export function redactTokens(text: string): string {
   return text.replace(tokenPattern, "[redacted]");
 }
 
+/** Writes every byte of `text` to the descriptor `fd` before it returns, so the kernel holds
+ * them and this process holds none. Every exit in this file is explicit, and an explicit exit
+ * discards whatever of this process's output is still buffered, so nothing here goes through
+ * `process.stdout` or `process.stderr`: a stream write's callback is not a flush while another
+ * write is queued ahead of it. A 1,000,111-byte `process.stderr.write` issued behind a relayed
+ * megabyte called its callback 1 to 10 ms later and reported `writableLength === 0` while the
+ * caller had received 212,992, 425,984 or 638,976 bytes of it, whole multiples of the
+ * 212,992-byte socket send buffer that `Bun.spawn`'s `stderr: "pipe"` gives the child, and the
+ * `process.exit` that followed discarded the rest.
+ *
+ * Nothing bounds the wait, and nothing can: fd 2 as a pipe has no `O_NONBLOCK`, and a `writeSync`
+ * of 1 MiB against a reader that slept three seconds blocked for 2,985 ms and raised `EAGAIN`
+ * zero times, so a deadline inside this loop would never fire. The trade that inverts: a reader
+ * that stalls forever used to make the helper exit after five seconds with its own diagnosis
+ * truncated, and now makes it wait, bounded by the job's own timeout, with the evidence the
+ * helper exists to print kept whole. A reader that is gone is `EPIPE`, which ends the write:
+ * there is nothing left to say and nobody to say it to. */
+function writeAll(fd: number, text: string): void {
+  const bytes = Buffer.from(text, "utf8");
+  for (let written = 0; written < bytes.length; ) {
+    let count: number;
+    try {
+      count = writeSync(fd, bytes, written);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EPIPE") return;
+      throw error;
+    }
+    if (count === 0) {
+      throw new Error(`fd ${fd} took none of the ${bytes.length - written} bytes left`);
+    }
+    written += count;
+  }
+}
+
 async function runTokenCommand(field: string, command: string): Promise<string> {
   const env: Record<string, string | undefined> = { ...process.env };
   for (const name of natsSeedVariables) delete env[name];
@@ -145,7 +181,7 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
   let pendingLine = "";
   const relayLine = (line: string) => {
     const clean = redactTokens(line);
-    process.stderr.write(clean);
+    writeAll(2, clean);
     stderr += clean;
   };
   const relay = (async () => {
@@ -360,24 +396,6 @@ function parseRoles(value: string): AppRole[] | undefined {
   return roles.filter(known);
 }
 
-/** How long a write below may wait to reach the pipe: the bound the drain of a token command's
- * streams carries (the five seconds in runTokenCommand), for the same reason. A caller that has
- * stopped reading, or an escaped descendant holding the pipe, can leave the write's callback to
- * come late or never, and a lost tail beats a proof that never returns. */
-const writeLimitMs = 5000;
-
-/** Writes `text` to `stream` and resolves when the write has reached the pipe, or sooner when it
- * fails or the bound passes. Every exit below is explicit, and an explicit exit discards whatever
- * of this process's output is still buffered: a token command's relayed stderr can leave a
- * megabyte of it in front of the line that matters, so each exit waits for its own write first. */
-async function writeFully(stream: NodeJS.WriteStream, text: string): Promise<void> {
-  const written = Promise.withResolvers<void>();
-  const bound = setTimeout(() => written.resolve(), writeLimitMs);
-  stream.write(text, () => written.resolve());
-  await written.promise;
-  clearTimeout(bound);
-}
-
 if (import.meta.main) {
   const args = process.argv.slice(2);
   let roles: AppRole[] | undefined = [...appRoles];
@@ -387,8 +405,8 @@ if (import.meta.main) {
   }
   const [configPath, api = "https://api.github.com"] = args;
   if (roles === undefined || configPath === undefined || configPath === "") {
-    await writeFully(
-      process.stderr,
+    writeAll(
+      2,
       "usage: bun scripts/e2e/lib/app-logins.ts [--roles <role>[,<role>]] <legion.yaml> [<GitHub API URL>]\n"
     );
     process.exit(2);
@@ -396,14 +414,11 @@ if (import.meta.main) {
   // Exit explicitly: a stream reader a token command's escaped descendant still feeds would keep
   // the event loop, and so the run, alive past the drain bound.
   try {
-    await writeFully(
-      process.stdout,
-      `${JSON.stringify(await appLogins(configPath, api, roles))}\n`
-    );
+    writeAll(1, `${JSON.stringify(await appLogins(configPath, api, roles))}\n`);
     process.exit(0);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await writeFully(process.stderr, `app-logins: ${message}\n`);
+    writeAll(2, `app-logins: ${message}\n`);
     process.exit(1);
   }
 }
