@@ -17,32 +17,45 @@
 #                                      that App's installation tokens, never its key; it is an
 #                                      agent-tier secret and defaults to the name below
 #   LEGION_E2E_REVIEW_APP_KEY_COMMAND  shell text that prints the review App's PEM private key on
-#                                      stdout, which the daemon runs as that App's
-#                                      private_key_command. It has no default and no fallback:
-#                                      this repository is public (AGENTS.md), so a value a live
-#                                      script needs is a required operator input the script
-#                                      refuses to start without, never a literal, and no name of
-#                                      the infrastructure a deployment keeps its key in belongs
-#                                      here. The lib carries the command text alone; the key
-#                                      itself never enters a variable, an argv, a note or a
+#                                      stdout. The run runs it once, on the driver, in the
+#                                      operator's own environment (write_github_apps --key-dir,
+#                                      or mint_app_tokens where the caller passes --token-dir),
+#                                      so it may read the operator's HOME, their own gcloud or
+#                                      kubectl configuration and any variable of their shell. The
+#                                      daemon never runs it: it reads the key from the run's own
+#                                      0600 file, whose `cat` is the private_key_command the
+#                                      block below carries. The input has no default and no
+#                                      fallback: this repository is public (AGENTS.md), so a
+#                                      value a live script needs is a required operator input the
+#                                      script refuses to start without, never a literal, and no
+#                                      name of the infrastructure a deployment keeps its key in
+#                                      belongs here. The lib carries the command text alone; the
+#                                      key itself never enters a variable, an argv, a note or a
 #                                      message here.
 # LEGION_E2E_REVIEW_APP_SECRET is retired, and a run that still exports it is refused when the
 # review role is read: that App's tokens no longer come from the broker.
 # write_github_apps writes the `github_apps` block of legion.yaml from them, one credential field
 # a role, which is what the daemon admits: the implement App a token_command that runs
 # `agent-secrets <secret> … -- …` (or reads the release file the refresher below wrote, when its
-# caller names that directory), the review App the private_key_command the operator gave. Then
-# check_github_apps proves each App from its token, whether its inputs came from a default or an
-# operator: lib/app-logins.ts reads the token's bot login from GraphQL's viewer and refuses the run
-# unless GitHub's GET /apps/<slug> answers the configured id and the write permission the role's
-# work needs. No token and no key enters this shell or an argv, and either enters a file only
-# through the refresher (mint_app_tokens, start_app_token_refresher), for a daemon that can run
-# neither agent-secrets nor the key command: it writes each release, and the review App's key, to
-# an owner-only file of a directory its caller names (the sandbox proof's, on the devbox user's
-# tmpfs under bridge) and removes at teardown, and the caller passes that directory to
-# write_github_apps, whose commands then read those files. Each caller that writes a legion.yaml
-# includes $work/github-apps.yaml as it is (`$(<"$work/github-apps.yaml")` in its heredoc), never a
-# copy or an edit, so the block the check proved is the block the daemon loads; Stage 4a, which
+# caller names that directory), the review App a private_key_command that reads the run's own key
+# file with `cat`. The operator's command is never that field. It runs here instead, once, before
+# the run writes anything, in the caller's own environment, and what it prints goes to a 0600 file
+# of a directory the caller names and its cleanup removes unconditionally on every exit: --key-dir
+# DIR, which write_github_apps resolves itself, or --token-dir DIR, which mint_app_tokens wrote
+# the key into beside the releases. So the check below and the daemon can no longer disagree about
+# that command, since both run the same `cat`, and a command that reads the operator's HOME or
+# their own configuration is fine. Then check_github_apps proves each App from its token, whether
+# its inputs came from a default or an operator: lib/app-logins.ts reads the token's bot login from
+# GraphQL's viewer and refuses the run unless GitHub's GET /apps/<slug> answers the configured id
+# and the write permission the role's work needs. No token and no key enters this shell or an argv:
+# each passes from its command's stdout to an owner-only file of a directory its caller names and
+# removes at teardown, and the commands the block carries read those files. A token reaches a file
+# only where the daemon can run neither agent-secrets nor a key command (the sandbox proof's
+# container under bridge), through the refresher (mint_app_tokens, start_app_token_refresher,
+# writing to the devbox user's tmpfs); the review App's key reaches one in every mode.
+# Each caller that writes a legion.yaml includes $work/github-apps.yaml as it is
+# (`$(<"$work/github-apps.yaml")` in its heredoc), never a copy or an edit, so the block the check
+# proved is the block the daemon loads; Stage 4a, which
 # writes no legion.yaml and acts as the implement App alone, hands its Go harness the same
 # implement_app_id, implement_app_secret and app_token_command the check read. app_key_unsets is
 # the `env` argument list that keeps every App credential variable out of a process the run starts.
@@ -67,22 +80,28 @@ default_review_app_id=5341243
 # it sets implement_app_secret from LEGION_E2E_IMPLEMENT_APP_SECRET, defaulting to the name above:
 # letters, digits and underscores, so it is safe in the token command's shell text and as a
 # variable name. For review it sets review_app_key_command from LEGION_E2E_REVIEW_APP_KEY_COMMAND,
-# which has no default, and refuses a value that is unset, empty, whitespace alone, or the key
-# itself pasted where its command goes (it holds -----BEGIN); it also refuses a run that still
-# exports the retired LEGION_E2E_REVIEW_APP_SECRET, whose broker secret that App no longer has.
+# which has no default, and refuses a value that is unset, empty, whitespace alone, or a pasted key
+# rather than a command: a value that starts with -----BEGIN (a PEM), and a value that is one long
+# word of base64 characters (the shape of the key GH_REVIEW_APP_PRIVATE_KEY_B64 held, below), each
+# refused by its own message, which names the input and prints no part of the value. A command that
+# merely mentions a PEM header is a command and passes, `awk '/-----BEGIN/,/-----END/' <file>`
+# among them. It also refuses a run that still exports the retired LEGION_E2E_REVIEW_APP_SECRET,
+# whose broker secret that App no longer has.
 # When this call reads both roles, one App id for both is refused, since the daemon refuses two
 # roles on one App at boot. It records the roles it read for write_github_apps, and sets
-# app_key_unsets: `-u NAME` for each read role's broker secret name, for the implement default's,
-# for the two names the retired review inputs used (LEGION_REVIEW_APP,
-# GH_REVIEW_APP_PRIVATE_KEY_B64), and for every exported variable whose name holds PRIVATE_KEY, so
-# a process the run starts inherits no App credential, the proof human's included.
+# app_key_unsets: `-u NAME` for the implement App's broker secret name, when that role is read (the
+# review App has no broker secret), for the implement default's, for LEGION_REVIEW_APP, the name of
+# the broker secret that released the review App's tokens before its key replaced them, for
+# GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older recipe's private_key_command read that key
+# out of, and for every exported variable whose name holds PRIVATE_KEY, so a process the run starts
+# inherits no App credential, the proof human's included.
 github_apps_read=()
 app_key_unsets=()
 require_app_inputs() {
   # The checks below use bracket ranges, which bash's =~ reads in the caller's locale: under a
   # UTF-8 locale [0-9] and [A-Za-z] admit fullwidth digits and accented letters. C keeps them ASCII.
   local LC_ALL=C
-  local role upper id_var secret_var id_default secret_default id secret key_command name roles_read=()
+  local role upper id_var id_default id secret key_command name roles_read=()
   for role in "$@"; do
     case "$role" in implement | review) ;; *) fail "require_app_inputs: no App role '$role'" ;; esac
     upper=${role^^}
@@ -104,15 +123,23 @@ require_app_inputs() {
       key_command=${LEGION_E2E_REVIEW_APP_KEY_COMMAND-}
       [[ "$key_command" =~ [^[:space:]] ]] ||
         fail "LEGION_E2E_REVIEW_APP_KEY_COMMAND must be set to shell text that prints the review App's PEM private key on stdout; its value is not printed"
-      [[ "$key_command" != *-----BEGIN* ]] ||
+      # A pasted key is refused by the shape it has, not by the characters it holds: a command may
+      # name a PEM header (`awk '/-----BEGIN/,/-----END/' <file>` is a legitimate key command), but
+      # a value that begins with one is the key itself, and a value that is one long word of base64
+      # characters is the key in the form older recipes exported it in. Either, left in, would
+      # reach `sh`, which echoes what it cannot run back into the transcript, past a stderr relay
+      # that redacts GitHub token forms alone. Neither refusal prints any part of the value.
+      [[ "$key_command" != -----BEGIN* ]] ||
         fail "LEGION_E2E_REVIEW_APP_KEY_COMMAND must name a command that prints the review App's private key, not the key itself; its value is not printed"
+      [[ ! "$key_command" =~ ^[A-Za-z0-9+/=]{200,}$ ]] ||
+        fail "LEGION_E2E_REVIEW_APP_KEY_COMMAND is one long word of base64 characters, which is a key pasted where its command goes (the GH_REVIEW_APP_PRIVATE_KEY_B64 form an older recipe used), not a command that prints a key; its value is not printed"
       review_app_key_command=$key_command
     else
-      secret_var=LEGION_E2E_${upper}_APP_SECRET
-      secret_default=default_${role}_app_secret
-      secret=${!secret_var-${!secret_default}}
-      [[ "$secret" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && ${#secret} -le 64 ]] || fail "$secret_var must be the name of a secrets broker github-app secret (letters, digits and underscores, at most 64), not a credential; its value is not printed"
-      printf -v "${role}_app_secret" %s "$secret"
+      # The implement App is the one role whose credential is a broker secret's name, and the role
+      # says so: the review App's credential is its key, whatever this deployment's shell exports.
+      secret=${LEGION_E2E_IMPLEMENT_APP_SECRET-$default_implement_app_secret}
+      [[ "$secret" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && ${#secret} -le 64 ]] || fail "LEGION_E2E_IMPLEMENT_APP_SECRET must be the name of a secrets broker github-app secret (letters, digits and underscores, at most 64), not a credential; its value is not printed"
+      implement_app_secret=$secret
     fi
     roles_read+=("$role")
   done
@@ -122,18 +149,19 @@ require_app_inputs() {
   fi
   github_apps_read=("${roles_read[@]}")
   app_key_unsets=()
-  for role in "${roles_read[@]}"; do
-    # Only a role whose tokens come from the broker has a secret name to strip, and the review
-    # role has none. Its own input, LEGION_E2E_REVIEW_APP_KEY_COMMAND, is exported and every
-    # child does inherit it, but it carries no credential: the -----BEGIN refusal above holds it
-    # to a command that prints the key rather than to the key itself.
-    secret_var=${role}_app_secret
-    if [ -n "${!secret_var-}" ]; then
-      app_key_unsets+=(-u "${!secret_var}")
-    fi
-  done
-  # The implement default, and the two names the retired review inputs used: a stale export of
-  # either must not reach a process the run starts.
+  # Only the implement role's tokens come from the broker, so its secret name is the only one to
+  # strip, and the role says that rather than whether a variable of some name happens to be set: a
+  # review_app_secret inherited from the caller's shell puts no stale value in this list. The
+  # review role's own input, LEGION_E2E_REVIEW_APP_KEY_COMMAND, is exported and every child does
+  # inherit it, but it carries no credential: the refusals above hold it to a command that prints
+  # the key rather than to the key itself.
+  if [[ " ${roles_read[*]} " == *" implement "* ]]; then
+    app_key_unsets+=(-u "$implement_app_secret")
+  fi
+  # The implement default; LEGION_REVIEW_APP, the broker secret that released the review App's
+  # tokens before its key replaced them; and GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older
+  # recipe's private_key_command read that key out of: a stale export of any of the three must not
+  # reach a process the run starts.
   for name in "$default_implement_app_secret" LEGION_REVIEW_APP GH_REVIEW_APP_PRIVATE_KEY_B64; do
     app_key_unsets+=(-u "$name")
   done
@@ -161,11 +189,13 @@ app_token_command() {
 }
 
 # app_token_dir_ok DIR fails unless DIR is a path of letters, digits and `_ . / -` alone, since the
-# credential commands carry it in their shell text.
+# credential commands carry it in their shell text. It guards every directory a credential file of
+# the run goes into: mint_app_tokens' releases and key alike, and write_github_apps' --token-dir
+# and --key-dir.
 app_token_dir_ok() {
   local LC_ALL=C
   [[ "$2" =~ ^[A-Za-z0-9_./-]+$ ]] ||
-    fail "$1: the token directory '$2' holds a character other than letters, digits and _ . / -, which the credential commands could not carry in their shell text"
+    fail "$1: the credential directory '$2' holds a character other than letters, digits and _ . / -, which the credential commands could not carry in their shell text"
 }
 
 # app_token_dir_made ROLE DIR makes DIR, where ROLE's credential files go, owner-only: mode 0700,
@@ -179,7 +209,7 @@ app_token_dir_made() {
   fi
 }
 
-# The refresher, for a daemon that can run neither agent-secrets nor the operator's key command
+# The refresher, for a daemon that can run neither agent-secrets nor anything else of the devbox's
 # (the Claude Code sandbox proof's container under bridge). It mints, here, each role's credential
 # into DIR, one directory a role:
 #   DIR/<role>/_all.json           the release of every installation (no owner)
@@ -204,6 +234,21 @@ app_token_owners=()
 # again: the read roles whose tokens come from the broker.
 app_token_roles=()
 app_token_mint_failed=
+# app_token_mint_reason STATUS RAN WHOLE SECRET [NOTE] prints why app_token_mint_command exited
+# STATUS, which is the reason both minters below name their failure with, so a new status, or a fix
+# to one of these lines, reaches the release mints and the key mint alike. RAN is what was run
+# (agent-secrets, the key command), WHOLE what a whole output of it is (a release, a private key),
+# SECRET what it prints and this reason never does (a token, a key), and NOTE, when given, follows
+# the exit status of a status not listed here. It is called for a non-zero status alone.
+app_token_mint_reason() {
+  local status=$1 ran=$2 whole=$3 secret=$4 note=${5-}
+  case "$status" in
+    125) printf '%s printed nothing' "$ran" ;;
+    126) printf '%s printed more than %s bytes, which no %s is' "$ran" "$app_token_release_limit" "$whole" ;;
+    123) printf '%s wrote more than %s bytes to stderr' "$ran" "$app_token_release_limit" ;;
+    *) printf '%s exited %s%s; no %s is printed' "$ran" "$status" "${note:+ $note}" "$secret" ;;
+  esac
+}
 app_token_mint() {
   local dir=$1 role id_var secret_var owner ro file status
   shift
@@ -220,14 +265,8 @@ app_token_mint() {
         file=$dir/$role/${owner:-_all}${ro:+.read}.json
         status=0
         app_token_mint_file "$file" "$owner" "$ro" "${!secret_var}" || status=$?
-        case "$status" in
-          0) continue ;;
-          125) app_token_mint_failed="agent-secrets printed nothing" ;;
-          126) app_token_mint_failed="agent-secrets printed more than $app_token_release_limit bytes, which no release is" ;;
-          123) app_token_mint_failed="agent-secrets wrote more than $app_token_release_limit bytes to stderr" ;;
-          *) app_token_mint_failed="agent-secrets exited $status; no token is printed" ;;
-        esac
-        app_token_mint_failed="the $role App (App ${!id_var}, github-app secret ${!secret_var}) gave no release for $file: $app_token_mint_failed"
+        [ "$status" != 0 ] || continue
+        app_token_mint_failed="the $role App (App ${!id_var}, github-app secret ${!secret_var}) gave no release for $file: $(app_token_mint_reason "$status" agent-secrets release token)"
         return 1
       done
     done
@@ -310,22 +349,19 @@ app_token_mint_file() {
 }
 # app_token_mint_key DIR writes the review App's private key, once, to DIR/review/key.pem (mode
 # 0600, in a directory of mode 0700) by running the operator's LEGION_E2E_REVIEW_APP_KEY_COMMAND
-# through app_token_mint_command, as the daemon would run it. It returns 1 with
-# app_token_mint_failed naming the App by its role and id, the file and what went wrong, and never
-# a byte the command printed; the command's own stderr has already reached the run's stderr.
+# through app_token_mint_command: here, on the driver, in the caller's own environment, so that
+# command may read the operator's HOME and their own gcloud or kubectl configuration. The daemon
+# never runs it and reads this file instead, and both ways to that file come through here —
+# mint_app_tokens, and write_github_apps --key-dir. It returns 1 with app_token_mint_failed naming
+# the App by its role and id, the file and what went wrong, and never a byte the command printed;
+# the command's own stderr has already reached the run's stderr.
 app_token_mint_key() {
   local dir=$1 file=$1/review/key.pem status=0
   app_token_mint_failed=
   app_token_dir_made review "$dir/review" || return 1
   app_token_mint_command "$file" "$review_app_key_command" || status=$?
-  case "$status" in
-    0) return 0 ;;
-    125) app_token_mint_failed="the key command printed nothing" ;;
-    126) app_token_mint_failed="the key command printed more than $app_token_release_limit bytes, which no private key is" ;;
-    123) app_token_mint_failed="the key command wrote more than $app_token_release_limit bytes to stderr" ;;
-    *) app_token_mint_failed="the key command exited $status (124 is its 35-minute timeout); no key is printed" ;;
-  esac
-  app_token_mint_failed="the review App (App $review_app_id, LEGION_E2E_REVIEW_APP_KEY_COMMAND) gave no private key for $file: $app_token_mint_failed"
+  [ "$status" != 0 ] || return 0
+  app_token_mint_failed="the review App (App $review_app_id, LEGION_E2E_REVIEW_APP_KEY_COMMAND) gave no private key for $file: $(app_token_mint_reason "$status" "the key command" "private key" key "(124 is its 35-minute timeout)")"
   return 1
 }
 
@@ -337,7 +373,7 @@ app_token_mint_key() {
 # person's approval waits here, as long as agent-secrets does. DIR must exist; the caller owns it
 # and removes it, the files with it.
 mint_app_tokens() {
-  local dir=$1 owner role secret_var
+  local dir=$1 owner
   shift
   app_token_dir_ok mint_app_tokens "$dir"
   [ -d "$dir" ] || fail "mint_app_tokens: the token directory $dir is not a directory"
@@ -347,13 +383,13 @@ mint_app_tokens() {
       fail "mint_app_tokens: '$owner' is not a GitHub account login"
   done
   app_token_owners=("$@")
-  # A role whose App has a broker secret has releases to mint, and to mint again as they expire;
-  # the review App has a key command instead, run once below.
+  # The implement App's releases are what there is to mint, and to mint again as they expire; the
+  # review App has a key command instead, run once below. The role decides which it is, never
+  # whether a variable of some name is set, so a stale review_app_secret asks the broker nothing.
   app_token_roles=()
-  for role in "${github_apps_read[@]}"; do
-    secret_var=${role}_app_secret
-    [ -z "${!secret_var-}" ] || app_token_roles+=("$role")
-  done
+  if [[ " ${github_apps_read[*]} " == *" implement "* ]]; then
+    app_token_roles=(implement)
+  fi
   if [ "${#app_token_roles[@]}" -gt 0 ]; then
     app_token_mint "$dir" "${app_token_roles[@]}" || fail "$app_token_mint_failed"
   fi
@@ -402,50 +438,77 @@ stop_app_token_refresher() {
   app_token_refresher=
 }
 
-# write_github_apps [--token-dir DIR] ROLE... writes $work/github-apps.yaml, the `github_apps` block
-# of legion.yaml for each ROLE the last require_app_inputs read, or fails naming a role it did not
-# read, before the file is opened. Each role carries its app_id and exactly one credential field,
-# which is what the daemon admits (packages/daemon/internal/config/stage3.go, readGitHubApp): the
-# implement App a token_command, app_token_command's, and the review App a private_key_command, the
-# operator's command verbatim. Given --token-dir DIR (the directory mint_app_tokens wrote), the
-# implement App's token_command instead reads the release file of the owner and read-only flag the
-# daemon asks for, `DIR/<role>/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json` with the owner
-# lowercased, with `cat --`, in any POSIX sh (busybox's included), and the review App's
-# private_key_command reads DIR/review/key.pem the same way. That form serves what the refresher
-# minted, which is keyed by owner and the read-only flag alone, so it ignores LEGION_GITHUB_REPOS
-# and answers a token over every repository of the owner's installation: the refresher runs
-# agent-secrets, and the key command, where the daemon can run neither, and it mints one release
-# per owner rather than one per scope a role asks for. The block names commands, never a token and
-# never a key.
+# write_github_apps (--token-dir DIR | --key-dir DIR) ROLE... writes $work/github-apps.yaml, the
+# `github_apps` block of legion.yaml for each ROLE the last require_app_inputs read, or fails
+# naming a role it did not read, before the file is opened. Each role carries its app_id and
+# exactly one credential field, which is what the daemon admits
+# (packages/daemon/internal/config/stage3.go, readGitHubApp): the implement App a token_command,
+# app_token_command's, and the review App a private_key_command that reads the run's own key file,
+# `cat -- 'DIR/review/key.pem'`, in any POSIX sh (busybox's included). The operator's key command
+# is never that field, and the daemon never runs it, so a call that writes the review role names
+# the directory that file goes in, one of two ways, or is refused having written nothing:
+#   --key-dir DIR    this call runs LEGION_E2E_REVIEW_APP_KEY_COMMAND once, here on the driver, in
+#                    the caller's own environment, into DIR/review/key.pem (mode 0600, in a
+#                    directory of mode 0700, through app_token_mint_key). The implement App's
+#                    token_command still runs agent-secrets, which that mode's daemon can run.
+#   --token-dir DIR  the directory mint_app_tokens wrote, which already holds that key file and the
+#                    releases the implement App's token_command then reads instead of running
+#                    agent-secrets: DIR/implement/${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json
+#                    with the owner lowercased, with `cat --`. That form serves what the refresher
+#                    minted, which is keyed by owner and the read-only flag alone, so it ignores
+#                    LEGION_GITHUB_REPOS and answers a token over every repository of the owner's
+#                    installation: the refresher mints one release an owner rather than one per
+#                    scope a role asks for.
+# The two name one key file by two routes, so a call naming both is refused. Either DIR must be a
+# path the caller's cleanup removes unconditionally, on every exit, since the App's private key is
+# in it: not the evidence directory, and not a workspace a failing run keeps for debugging — the
+# rule lib/install-key-file-model-route.sh's own --key-dir states for the same reason. The block
+# names commands, never a token and never a key.
 write_github_apps() {
   local LC_ALL=C
-  local role id_var secret_var token_dir='' field command block="github_apps:"$'\n'
-  if [ "${1-}" = --token-dir ]; then
-    [ "$#" -ge 2 ] || fail "write_github_apps: --token-dir names no directory"
-    token_dir=$2
+  local role id_var token_dir='' key_dir='' key_file_dir field command block="github_apps:"$'\n'
+  while [ "${1-}" = --token-dir ] || [ "${1-}" = --key-dir ]; do
+    [ "$#" -ge 2 ] || fail "write_github_apps: $1 names no directory"
+    [ -z "$token_dir" ] && [ -z "$key_dir" ] ||
+      fail "write_github_apps: --token-dir and --key-dir name the review App's key file two ways; pass one"
+    case "$1" in
+      --token-dir) token_dir=$2 ;;
+      *) key_dir=$2 ;;
+    esac
+    app_token_dir_ok write_github_apps "$2"
     shift 2
-    app_token_dir_ok write_github_apps "$token_dir"
-  fi
+  done
   for role in "$@"; do
     [[ " ${github_apps_read[*]} " == *" $role "* ]] ||
       fail "write_github_apps: the $role App's inputs are unread: require_app_inputs $role has not run"
+  done
+  # The directory the review App's key file is in: written here under --key-dir, by mint_app_tokens
+  # under --token-dir, and read by the private_key_command either way.
+  key_file_dir=${token_dir:-$key_dir}
+  if [[ " $* " == *" review "* ]]; then
+    [ -n "$key_file_dir" ] ||
+      fail "write_github_apps: the review App's key must be resolved into a directory the caller's cleanup removes unconditionally, on every exit: pass --key-dir DIR, which runs LEGION_E2E_REVIEW_APP_KEY_COMMAND once, here, in the caller's own environment, or --token-dir DIR, the directory mint_app_tokens already wrote that key into. The daemon never runs the operator's command: the private_key_command written here is a cat of that file"
+    # The key is resolved before a line of the block is written, so a key command that fails leaves
+    # no block behind either.
+    if [ -n "$key_dir" ]; then
+      app_token_mint_key "$key_dir" || fail "$app_token_mint_failed"
+    fi
+  fi
+  for role in "$@"; do
     id_var=${role}_app_id
     if [ "$role" = review ]; then
       field=private_key_command
-      if [ -n "$token_dir" ]; then
-        # The single quotes hold the path to one word: app_token_dir_ok admits no quote in DIR.
-        command=$(printf "cat -- '%s/%s/key.pem'" "$token_dir" "$role")
-      else
-        command=$review_app_key_command
-      fi
+      # The single quotes hold the path to one word: app_token_dir_ok admits no quote in DIR.
+      command=$(printf "cat -- '%s/review/key.pem'" "$key_file_dir")
     else
       field=token_command
       if [ -n "$token_dir" ]; then
         # shellcheck disable=SC2016 # the expansions are the token command's own, run by its sh
         command=$(printf 'owner=$(printf %%s "$LEGION_GITHUB_OWNER" | tr "[:upper:]" "[:lower:]"); case $owner in *[!a-z0-9-]*) echo "no release file for owner $owner" >&2; exit 2;; esac; cat -- '\''%s/%s/'\''"${owner:-_all}${LEGION_GITHUB_READ_ONLY:+.read}.json"' "$token_dir" "$role")
       else
-        secret_var=${role}_app_secret
-        command=$(app_token_command "${!secret_var}")
+        # The implement App is the one role whose token_command asks the broker, so its secret is
+        # named here rather than reached through the role.
+        command=$(app_token_command "$implement_app_secret")
       fi
     fi
     # jq quotes the command as a JSON string, which YAML reads as a double-quoted scalar.
@@ -457,7 +520,9 @@ write_github_apps() {
 
 # check_github_apps ROLE... proves each ROLE's App of $work/github-apps.yaml against GitHub and sets
 # github_app_logins to lib/app-logins.ts's answer, {"<role>":"<slug>[bot]",…}: each App's
-# credential is taken from the block as the daemon takes it, GraphQL's viewer under an
+# credential command is run as the daemon runs it, and for the review App that is the very `cat`
+# of the run's own key file the daemon will run, so no environment of the operator's stands
+# between what this check proves and what the daemon loads; GraphQL's viewer under an
 # installation's token names the bot, and GET /apps/<slug> must answer the App's id and the write
 # permission the role's work needs (the implement App's contents, the review App's checks), which
 # also refuses the two Apps swapped whole.

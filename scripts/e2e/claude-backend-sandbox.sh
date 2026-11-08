@@ -152,22 +152,28 @@
 #   tokens from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets
 #   none.
 # - LEGION_E2E_REVIEW_APP_KEY_COMMAND (required, no default) is shell text that prints the review
-#   App's PEM private key on stdout. The daemon runs it as that App's private_key_command and
-#   mints and renews that App's tokens from the key itself; the repository carries neither the key
-#   nor the command, and the run prints neither.
+#   App's PEM private key on stdout. prerequisites runs it once, here on the driver, in the
+#   operator's own environment — so it may read their HOME and their own gcloud or kubectl
+#   configuration — and writes what it prints to a 0600 file of the run's own that cleanup
+#   removes on every exit. The daemon never runs it: that App's private_key_command is a `cat` of
+#   that file, and the daemon mints and renews that App's tokens from the key it reads there. The
+#   repository carries neither the key nor the command, and the run prints neither.
 # - CLAUDE_SANDBOX_E2E_EVIDENCE_DIR (default a fresh /tmp directory, kept and printed) holds the
 #   transcript of the run, the daemon's log, the legion.yaml and pod fixture the run wrote, the
 #   implementer's Claude Code transcript as the session table holds it, and the namespace snapshots.
 #
-# Legion's role Apps resolve as the tmux proof's do (lib/github-apps.sh): under aws-private-ip the
-# daemon runs the implement App's token_command, `agent-secrets <secret> … -- …`, and the review
-# App's private_key_command, the operator's own text, never this shell; under bridge prerequisites
-# runs both on the devbox instead, minting the implement App's releases into owner-only files on
-# the user's tmpfs and writing the review App's key beside them once (mint_app_tokens), a
-# refresher mints the releases again every 15 minutes (start_app_token_refresher), and each role's
-# command is `cat` of its own file — the release of the owner the daemon asks for, or the key
-# (write_github_apps --token-dir) — which the daemon's container mounts read-only, for the run's
-# lifetime alone. Either way prerequisites proves each App from its token against
+# Legion's role Apps resolve as the tmux proof's do (lib/github-apps.sh), and in neither mode does
+# the daemon run the operator's key command: it runs here, once, in this shell's own environment,
+# and the review App's private_key_command is a `cat` of the 0600 file it wrote. Under
+# aws-private-ip the daemon runs the implement App's token_command itself,
+# `agent-secrets <secret> … -- …`, and that key file is $work/app-key/review/key.pem
+# (write_github_apps --key-dir), which cleanup removes. Under bridge the daemon's container can
+# run neither command, so prerequisites mints the implement App's releases into owner-only files
+# on the devbox user's tmpfs and writes the key beside them once (mint_app_tokens), a refresher
+# mints the releases again every 15 minutes (start_app_token_refresher), and each role's command
+# is `cat` of its own file — the release of the owner the daemon asks for, or the key
+# (write_github_apps --token-dir) — which the container mounts read-only, for the run's lifetime
+# alone. Either way prerequisites proves each App from its token against
 # GitHub (GraphQL's viewer, then GET /apps/<slug>, lib/app-logins.ts) before the run writes
 # anything; legion.yaml's github_apps is the block proved. The proof human is the devbox's ordinary
 # gh acting as sjawhar-agent[bot] (require_proof_human), so run it from the operator's own Oh My Pi
@@ -1088,6 +1094,11 @@ cleanup() {
   # FAIL line, and the run's exit status stays the one the checks set.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
   rm -f "$work/claude-model-key" "$work/claude-key-header" "$work/auth-plugin.env" "$work/auth-plugin.stderr"
+  # The review App's private key under aws-private-ip, which prerequisites resolved the operator's
+  # key command into for the daemon to read: removed first, whatever the rest of the teardown
+  # does, since $work is kept when a run fails. Under bridge the key is on the tmpfs instead, and
+  # remove_app_tokens below takes it with the releases.
+  rm -rf "$work/app-key" || true
   # The daemon goes first: a live one would launch the Sandboxes the teardown is deleting.
   collect_transcripts
   stop_pid "$daemon_pid"
@@ -1261,7 +1272,10 @@ if [ "$pod_reachability" = bridge ]; then
   note "the App credential files, whose releases the refresher mints again every ${app_token_refresh_seconds}s and which cleanup removes: $(stat -c '%n (mode %a)' -- "$app_tokens_dir"/*/* | paste -sd' ' -), on $(stat -f -c %T -- "$app_tokens_dir")"
   write_github_apps --token-dir "$app_tokens_dir" implement review
 else
-  write_github_apps implement review
+  # The daemon here runs the implement App's token_command itself, agent-secrets on this devbox,
+  # but never the operator's key command: that runs once, in this shell's own environment, into
+  # $work/app-key, whose 0600 key file the daemon's private_key_command reads with `cat`.
+  write_github_apps --key-dir "$work/app-key" implement review
 fi
 read_app_logins
 require_proof_human

@@ -43,10 +43,13 @@ Inputs (environment):
                                  App's id (default: this deployment's own; lib/github-apps.sh)
   LEGION_E2E_REVIEW_APP_KEY_COMMAND
                                  shell text that prints the review App's PEM private key on
-                                 stdout (required, no default); the daemon runs it as that App's
-                                 private_key_command and mints and renews that App's tokens
-                                 itself. Both Apps are proved from their tokens against GitHub's
-                                 GET /apps/<slug> in prerequisites
+                                 stdout (required, no default); prerequisites runs it once, on
+                                 this box, in the operator's own environment, into a 0600 file of
+                                 the run's work directory that cleanup removes on every exit. The
+                                 daemon never runs it: it reads the key from that file (its
+                                 private_key_command is a cat of it) and mints and renews that
+                                 App's tokens itself. Both Apps are proved from their tokens
+                                 against GitHub's GET /apps/<slug> in prerequisites
 The devbox gh must act as the proof human.
 
 Checkpoints, in order:
@@ -167,6 +170,9 @@ cleanup() {
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
   # The key-file route's key command bakes in the key file's path: it never survives the run.
   rm -rf "$work/model-gateway-key" || true
+  # The review App's private key goes with it: prerequisites resolved the operator's key command
+  # into $work/app-key for the daemon to read, and $work is kept when a run fails.
+  rm -rf "$work/app-key" || true
   tm kill-server >/dev/null 2>&1 || true
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
@@ -590,9 +596,10 @@ for tool in go docker jq curl python3 tmux bun mise agent-secrets gh shellcheck 
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
 # implement App's broker secret and the review App's key command behind them (--help), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, as Stage 3 does);
-# legion.yaml's github_apps is the block proved.
+# legion.yaml's github_apps is the block proved. The key command runs once, here, in this shell's
+# own environment, into $work/app-key, which the daemon reads the key from and cleanup removes.
 require_app_inputs implement review
-write_github_apps implement review
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 until_checkpoint=${PARKED_DECISION_UNTIL:-}
 if [ -n "$until_checkpoint" ]; then

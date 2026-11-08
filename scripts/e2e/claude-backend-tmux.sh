@@ -43,8 +43,11 @@
 # deployment's own unless LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and
 # LEGION_E2E_REVIEW_APP_ID name another deployment's, while LEGION_E2E_REVIEW_APP_KEY_COMMAND is
 # required and has no default: shell text that prints the review App's PEM private key on stdout,
-# which the daemon runs as that App's private_key_command and mints and renews that App's tokens
-# from itself; either App is proved once to lib/app-logins.ts, which reads its bot login and
+# which prerequisites runs once, here on the driver, in the operator's own environment — so it may
+# read their HOME and their own configuration — into $work/app-key/review/key.pem, 0600 and
+# removed on every exit: the daemon never runs that command, reads the key from that file through
+# a `cat` private_key_command, and mints and renews that App's tokens from the key itself; either
+# App is proved once to lib/app-logins.ts, which reads its bot login and
 # refuses a credential that is not its id's App's, before the run writes anything and never in
 # this shell), and the smoke repository
 # sjawhar/legion-smoke, where the implementer pushes a branch and opens no pull request.
@@ -154,6 +157,10 @@ cleanup() {
   # the same.
   rm -f "$work/claude-model-key" "$work/claude-key-header" "$work/agent-model-key" "$work/agent-key-header"
   rm -rf "$work/model-gateway-key" || true
+  # The review App's private key goes with them, and for the same reason: prerequisites resolved
+  # the operator's key command into $work/app-key for the daemon to read, and $work itself is kept
+  # when a run fails.
+  rm -rf "$work/app-key" || true
   stop_tree "$watcher_pid"
   stop_pid "$daemon_pid"
   stop_pid "$dispatch_pid"
@@ -586,8 +593,10 @@ if [ -n "$model_base_url" ] && [ "$agent_key_file" != "$key_file" ]; then
   note "the Oh My Pi agents' key from $agent_key_file: $model_base_url accepts it"
 fi
 # Legion's two role Apps proved against GitHub before the run writes anything (lib/github-apps.sh);
-# legion.yaml's github_apps is the block proved.
-write_github_apps implement review
+# legion.yaml's github_apps is the block proved. The review App's key command runs once, here, in
+# this shell's own environment, into $work/app-key, which the daemon reads the key from and
+# cleanup removes.
+write_github_apps --key-dir "$work/app-key" implement review
 # The Bun on PATH must be the release the repository's .bun-version pins, the file
 # packages/claude-envoy/scripts/build.ts reads: the rig builds the run's claude-envoy with it, and
 # that build refuses any other (assertPinnedBun, LEGION-568). Checked here, before the first bun this

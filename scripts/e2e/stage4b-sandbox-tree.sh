@@ -87,9 +87,12 @@
 #   github-app secret the `agent-secrets` client releases the implement App's installation tokens
 #   from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets none.
 # - LEGION_E2E_REVIEW_APP_KEY_COMMAND (required, no default) is shell text that prints the review
-#   App's PEM private key on stdout. The daemon runs it as that App's private_key_command and
-#   mints and renews that App's tokens from the key itself. The repository carries neither the
-#   key nor the command, and the run prints neither.
+#   App's PEM private key on stdout. prerequisites runs it once, here on the driver, in the
+#   operator's own environment — so it may read their HOME and their own gcloud or kubectl
+#   configuration — into $work/app-key/review/key.pem, 0600 in a directory of mode 0700, which
+#   cleanup removes on every exit. The daemon never runs it: that App's private_key_command is a
+#   `cat` of that file, and the daemon mints and renews that App's tokens from the key it reads
+#   there. The repository carries neither the key nor the command, and the run prints neither.
 #   prerequisites proves both Apps from their tokens against GitHub (GraphQL's viewer, then
 #   GET /apps/<slug>) before the run's first write anywhere; the daemon's github_apps is the block
 #   proved.
@@ -2844,6 +2847,10 @@ cleanup() {
   # one the checks set. Inside this EXIT trap BASH_COMMAND is still the command the trap interrupted,
   # so the warning names the line alone.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
+  # First, whatever the rest of the teardown does: the review App's private key, which
+  # prerequisites resolved the operator's key command into for the daemon to read. $work goes
+  # below, but only once the teardown that can hang or be killed has run.
+  rm -rf "$work/app-key" || true
   stop_tree "$shape_pid"
   # The review pair exists only once tree-moved has named the reviewer's session; a run cut before
   # that has nothing to record.
@@ -3257,8 +3264,10 @@ esac
 [[ $envoy_token_secret_id =~ ^[A-Za-z0-9/_+=.@:-]+$ ]] ||
   fail "LEGION_E2E_ENVOY_TOKEN_SECRET_ID is unset or not a Secrets Manager secret id or ARN"
 # Legion's two role Apps proved against GitHub before the run's first write anywhere
-# (lib/github-apps.sh); legion.yaml's github_apps is the block proved.
-write_github_apps implement review
+# (lib/github-apps.sh); legion.yaml's github_apps is the block proved. The review App's key
+# command runs once, here, in this shell's own environment, into $work/app-key, which the daemon
+# reads the key from and cleanup removes.
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 # The gateway's health endpoint is at its origin.
 gateway_origin=$(sed -E 's#^(https://[^/]+).*#\1#' <<<"$gateway")

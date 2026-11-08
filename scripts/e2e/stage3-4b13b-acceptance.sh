@@ -19,8 +19,11 @@
 # Run it as `bash scripts/e2e/stage3-4b13b-acceptance.sh` from the operator's own Oh My Pi session,
 # with the Stage 3 proof's three required inputs, LEGION_E2E_MODEL_GATEWAY_URL, SMOKE_UPSTREAM_NATS
 # and LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private key on
-# stdout, which the daemon runs as that App's private_key_command and mints and renews that App's
-# tokens from (scripts/e2e/README.md; the two role Apps' ids, LEGION_E2E_IMPLEMENT_APP_ID and
+# stdout, which prerequisites runs once, here on the driver, in this session's own environment (so
+# it may read the operator's HOME and their own configuration) into $work/app-key/review/key.pem,
+# the 0600 file whose `cat` is that App's private_key_command and from whose key the daemon mints
+# and renews that App's tokens; cleanup removes that directory on every exit
+# (scripts/e2e/README.md; the two role Apps' ids, LEGION_E2E_IMPLEMENT_APP_ID and
 # LEGION_E2E_REVIEW_APP_ID, and the name of the implement App's secrets broker github-app secret,
 # LEGION_E2E_IMPLEMENT_APP_SECRET, default to this deployment's own, lib/github-apps.sh), and three
 # of its own, since it creates no Docker container:
@@ -137,6 +140,10 @@ cleanup() {
   # left as the checks set it. The warning names the line alone: inside a trap BASH_COMMAND is the
   # command the trap interrupted, not the cleanup command that failed.
   trap 'printf "cleanup warning: line %s exited %s\n" "$LINENO" "$?" >&2' ERR
+  # First, whatever the rest of the teardown does: the review App's private key, which
+  # prerequisites resolved the operator's key command into for the daemon to read. This run keeps
+  # $work for review, so the key must not be in it when the run ends.
+  rm -rf "$work/app-key" || true
   if [ -z "${ok:-}" ] && [ -z "$audited" ] && [ -n "$prod_baseline" ]; then
     printf 'production audit after failure:\n' >&2
     production_audit >&2
@@ -586,11 +593,12 @@ for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj ha
 # Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
 # implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, which the lib sourced
-# from ACCEPT_ROOT must carry).
+# from ACCEPT_ROOT must carry). The key command runs once, here, in this shell's own environment,
+# into $work/app-key, which the daemon reads the key from and cleanup removes.
 declare -F require_app_inputs >/dev/null ||
   fail "ACCEPT_ROOT's scripts/e2e/lib/workflow.sh ($root) predates lib/github-apps.sh: point ACCEPT_ROOT at a checkout that has it"
 require_app_inputs implement review
-write_github_apps implement review
+write_github_apps --key-dir "$work/app-key" implement review
 read_app_logins
 [ -x "$nats_bin" ] || fail "no native nats-server at $nats_bin"
 # The suspension waits are bounded by lib/workflow.sh's turn budget, and the lib sourced is ACCEPT_ROOT's.
