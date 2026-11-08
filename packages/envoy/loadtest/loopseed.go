@@ -178,10 +178,19 @@ func readLoopRows(source, text string) ([]loopRow, error) {
 		var nums [10]int64
 		for i, name := range []string{"ids", "live_ids", "met", "rejected", "parked", "withdrawn",
 			"other", "thread_bytes", "reply_lines", "doc_bytes"} {
-			v, err := strconv.ParseInt(f[i+1], 10, 64)
+			// Eight of the ten columns are counts this package holds as int, so they are read at
+			// 32 bits: int is at least that wide wherever Go builds, which makes the int(...)
+			// conversions below lossless, and a wider figure is refused here by name rather than
+			// truncated into a row. The two byte totals (thread_bytes, doc_bytes) are int64
+			// throughout and keep the full width.
+			bits := 32
+			if i == 7 || i == 9 {
+				bits = 64
+			}
+			v, err := strconv.ParseInt(f[i+1], 10, bits)
 			if err != nil || v < 0 {
-				return nil, fmt.Errorf("%s line %d: %s is %q, want a number of 0 or more",
-					source, n+2, name, f[i+1])
+				return nil, fmt.Errorf("%s line %d: %s is %q, want a number from 0 to %d",
+					source, n+2, name, f[i+1], int64(1)<<(bits-1)-1)
 			}
 			nums[i] = v
 		}

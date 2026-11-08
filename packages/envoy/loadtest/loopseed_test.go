@@ -162,6 +162,32 @@ func TestLoopSourceRefusesATotalThatDiffers(t *testing.T) {
 			t.Errorf("a short row was refused with %v, want a refusal naming the columns", err)
 		}
 	})
+	// A count column is held as int and read at 32 bits, so a figure above that is refused by the
+	// column's name rather than truncated into a row; the two byte columns are int64 and take a
+	// figure of the same size, which is why the reader splits them.
+	t.Run("count above its width", func(t *testing.T) {
+		_, err := readLoopRows(loopSource, loopTSVEdit(map[[2]int]string{{0, 1}: "4294967296"}))
+		if err == nil {
+			t.Fatal("a count of 4294967296 was read as a row's ids without a word")
+		}
+		if !strings.Contains(err.Error(), "ids is") || !strings.Contains(err.Error(), "2147483647") {
+			t.Errorf("the refusal is %q, want one naming ids and the bound it passed", err)
+		}
+	})
+	t.Run("thread_bytes above a count's width", func(t *testing.T) {
+		_, err := readLoopRows(loopSource, loopTSVEdit(map[[2]int]string{{0, 8}: "4294967296"}))
+		if err == nil {
+			t.Fatal("a thread_bytes total of 4294967296 was read without a word about the seed's total")
+		}
+		// Read, not refused at its width: what rejects it is the seed's own total, so the refusal
+		// names the total rather than a bound.
+		if strings.Contains(err.Error(), "2147483647") {
+			t.Errorf("the refusal is %q, so thread_bytes was held to a count's width", err)
+		}
+		if !strings.Contains(err.Error(), "thread_bytes") {
+			t.Errorf("the refusal is %q, which does not name thread_bytes", err)
+		}
+	})
 }
 
 // TestLoopPlanTotals is the seed the plan holds: one issue per proposal, every comment row and
