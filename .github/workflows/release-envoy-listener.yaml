@@ -532,9 +532,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     # Budget (the Budgets note in .github/workflows/ci.yaml's header): 600 s, the 10 minutes
-    # this job carried, plus its slowest retried step alone — install-changie's curl of the
-    # release tarball, 8 x 60 + 127 = 607 s. 600 + 607 = 1207 s -> 21 min.
-    timeout-minutes: 21
+    # this job carried, plus its slowest retried step alone — packages/envoy's
+    # `go mod download`, 5 x 180 + 150 = 1050 s, above install-changie's curl of the release
+    # tarball, 8 x 60 + 127 = 607 s. 600 + 1050 = 1650 s -> 28 min.
+    timeout-minutes: 28
     permissions:
       contents: read
     outputs:
@@ -588,6 +589,29 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/envoy/go.mod
+      # The module the builds below compile, downloaded once and retried before the first of
+      # them (the Retries note in .github/workflows/ci.yaml's header; the retried unit is the
+      # download, never the build). On the same condition as those builds. One call:
+      # every binary this job ships is a command of packages/envoy, and the cross-builds read
+      # that one module graph whatever GOOS and GOARCH they set. This job holds `contents: read`
+      # and no secret, so it is a build job like any other and the retry belongs in it;
+      # .github/scripts/check-release-credentials.sh pins the command set of the credentialed
+      # release_publish below, not of this one.
+      #
+      # 180 s per attempt: the slowest cold `go mod download` measured is 113 s, for
+      # packages/envoy/infra, against 77 s for packages/envoy, each on an empty module cache on
+      # 2026-11-07, so the bound is 1.6 times the slowest of them; an attempt it kills leaves
+      # what it fetched in the module cache for the next one to resume from, which a tarball
+      # fetch cannot do. This job restores no module cache, so the cold figure is the one every
+      # run pays.
+      - name: Download the Go modules this job builds
+        if: steps.version.outputs.skip != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # CGO_ENABLED=0 matches the existing agent-secrets builds
       # (packages/envoy/docker/Dockerfile, packages/daemon/docker/worker.Dockerfile):
       # without it, a same-arch build (amd64 here) links dynamically against the

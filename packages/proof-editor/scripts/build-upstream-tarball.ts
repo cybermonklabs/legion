@@ -17,9 +17,10 @@
  * fixture tree of its own.
  *
  * The bytes are reproducible: the member list is sorted here rather than left to readdir order,
- * every entry carries the commit's author date as its mtime and `0:0` as its numeric ownership,
- * and `gzip -n` writes no timestamp. So two runs over one source tree give one file, and a
- * rebuild of a pin already committed changes nothing.
+ * every entry carries the commit's author date as its mtime, `0:0` as its numeric ownership and
+ * a mode this script fixes rather than the one the extract happened to leave, and `gzip -n`
+ * writes no timestamp. So two runs over one source tree give one file, and a rebuild of a pin
+ * already committed changes nothing.
  *
  * Its scratch trees go under `node:os`'s `tmpdir()`, which reads `$TMPDIR`: the issue volume's,
  * where the environment sets one, since an upstream tarball is 31 MB and a container's own disk
@@ -97,12 +98,21 @@ function members(sourceDir: string): string[] {
 
 /**
  * Writes the gzipped tar: `package/src/**`, `package/package.json` and `package/LICENSE`, in that
- * sorted order and nothing else, each entry stamped with `mtime` and owned by `0:0`.
+ * sorted order and nothing else, each entry stamped with `mtime`, owned by `0:0` and at mode 644.
  *
  * tar is handed the member list rather than the directory, so the order is this process's sorted
  * one rather than the filesystem's, and no directory entry, no stray file beside the three and no
  * `.` entry can reach the archive. `--format=ustar` carries no atime or ctime, and `gzip -n` no
  * name or timestamp, so the only dates in the output are the ones passed in.
+ *
+ * `--mode=a+r,go-w` is there because tar records each file's mode as it finds it on disk, and the
+ * extract that put it there applied the caller's umask: one upstream tree unpacked under umask
+ * 022 and under umask 002 is 644 and 664 on disk, and packs to two sha256 values from one commit.
+ * The symbolic form leaves the executable bit alone — `a+r` adds read for everyone, `go-w` takes
+ * write from group and other, and neither touches x — so a 644 file stays 644, a 664 one becomes
+ * 644 and a 755 one stays 755. Every one of the 250 members of the committed
+ * proof-sdk-dc6a852b2ab45463dc9d3d17762235450c8ff0d6.tgz is 644, so a rebuild of that pin writes
+ * the bytes already committed.
  */
 export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): void {
   const names = members(sourceDir);
@@ -120,6 +130,7 @@ export function packUpstream({ sourceDir, mtime, outputPath }: PackOptions): voi
         "--files-from=-",
         "--transform=s|^|package/|",
         `--mtime=${mtime}`,
+        "--mode=a+r,go-w",
         "--owner=0",
         "--group=0",
         "--numeric-owner",

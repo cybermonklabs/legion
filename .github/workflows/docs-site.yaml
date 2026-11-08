@@ -158,26 +158,44 @@ jobs:
       - name: Build the Dispatch dashboard the screenshots show
         run: bun run build:web
         working-directory: packages/dispatch
-      - name: Install Playwright Chromium
-        # Its own retry arithmetic: 5 x 300 + 150 = 1650 s -> 28 min.
-        timeout-minutes: 28
-        # The runner image's chrome-stable apt source intermittently fails `apt-get update`, which
-        # takes `--with-deps` down with it; Chrome itself is preinstalled, so the source goes.
-        #
-        # `--with-deps` is written out as its two halves so the retry covers the half this issue
-        # owns: `install-deps` is the apt phase, left bare because the host packages of a
-        # Playwright install are dispatch://INFRA-1443's, and `install chromium` is the browser
-        # download from Playwright's CDN, which goes through .github/scripts/ci-retry.sh for five
-        # bounded attempts, the last starting 150 s after the first.
-        #
-        # 300 s per attempt: this step measured at most 15 s across the 20 most recent successful
-        # ci.yaml push runs on main, which is a download the runner image's cache had already
-        # served; the same window measured a cold download of Chromium, WebKit and Firefox
-        # together at 634 s, so one cold browser is about 210 s. The bound is 20 times the
-        # measured maximum and above that cold figure.
+      # The host packages Chromium needs, in a step of its own. `--with-deps` is written out as
+      # its two halves because only one of them is this issue's: `install-deps` is the apt
+      # phase, which dispatch://INFRA-1443 owns and which this branch leaves unretried, and
+      # `install chromium` is the browser download, retried in the step below. They are two
+      # steps rather than one because a step's budget covers its retried calls plus whatever
+      # unretried work it holds (the Budgets note in .github/workflows/ci.yaml's header): with
+      # the apt phase inside the download's step, a mirror that dragged for a minute would eat
+      # the margin that budget leaves, and the runner would cut the last attempt before the
+      # helper could name the site. Split, each half fails within a budget written for it.
+      #
+      # The runner image's chrome-stable apt source intermittently fails `apt-get update`,
+      # which takes the apt phase down with it; Chrome itself is preinstalled, so the source
+      # goes.
+      #
+      # 600 s, and the arithmetic is the unretried work alone, since this step holds no retried
+      # call: the apt phase and the browser download together measured at most 15 s across the
+      # 20 most recent successful ci.yaml push runs on main, where the runner image's cache had
+      # already served the download, so the budget is 40 times a maximum that covers both
+      # halves.
+      - name: Install the host packages Chromium needs
+        timeout-minutes: 10
         run: |
           grep -rl dl.google.com /etc/apt/sources.list.d | xargs -r sudo rm -f
           bunx playwright install-deps chromium
+        working-directory: docs/site
+      # Chromium itself, from Playwright's CDN, through .github/scripts/ci-retry.sh for five
+      # bounded attempts, the last starting 150 s after the first.
+      #
+      # 300 s per attempt: this download measured at most 15 s across the 20 most recent
+      # successful ci.yaml push runs on main, which is a download the runner image's cache had
+      # already served; the same window measured a cold download of Chromium, WebKit and
+      # Firefox together at 634 s, so one cold browser is about 210 s. The bound is 20 times the
+      # measured maximum and above that cold figure.
+      - name: Install Playwright Chromium
+        # Its own retry arithmetic, and nothing unretried is left beside it: 5 x 300 + 150 =
+        # 1650 s -> 28 min, the next whole minute strictly above it.
+        timeout-minutes: 28
+        run: |
           . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
           retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
         working-directory: docs/site

@@ -78,9 +78,13 @@ jobs:
   # belongs to, though that step also builds the envoy and infra modules' commands.
   daemon:
     runs-on: ubuntu-24.04
-    # The notices build is the long one: it writes the notices of, and cross-compiles, every
-    # release target of three modules on a cold module cache.
-    timeout-minutes: 90
+    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 5400 s, the 90 minutes
+    # this job carried — the notices build is the long one, writing the notices of, and
+    # cross-compiling, every release target of three modules on a cold module cache — plus its
+    # slowest retried step alone: the notices download's three calls,
+    # 3 x (5 x 180 + 150) = 3150 s, above the daemon download's 1050 s.
+    # 5400 + 3150 = 8550 s -> 143 min.
+    timeout-minutes: 143
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -100,6 +104,28 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
+
+      # The modules the build below compiles, downloaded once and retried before it (the Retries
+      # note in .github/workflows/ci.yaml's header; the retried unit is the download, never the
+      # build and never the test). On that build's own condition, so a run that finds the key
+      # downloads nothing. One call: the root go.work binds packages/daemon and packages/envoy,
+      # and a download in either reads both modules' requirements.
+      #
+      # 180 s per attempt: the slowest cold `go mod download` measured is 113 s, for
+      # packages/envoy/infra, against 81 s for packages/daemon and 77 s for packages/envoy, each
+      # on an empty module cache on 2026-11-07, so the bound is 1.6 times the slowest of the
+      # three. It can be that tight where a tarball fetch's could not: an attempt the bound kills
+      # leaves what it fetched in the module cache for the next one to resume from. Every lookup
+      # of this job is `lookup-only`, so no module cache is ever restored here and that cold
+      # figure is what a miss pays.
+      - name: Download the Go modules this job builds
+        if: steps.go-daemon.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
 
       # What typecheck and test build: the vet behind the e2e tag, the test binary of every
       # package, and the race build of the three packages test runs under the detector, whose
@@ -139,6 +165,30 @@ jobs:
           key: go-notices-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
+      # The modules the notices script loads and cross-builds for every release target,
+      # downloaded once and retried before it (the Retries note in .github/workflows/ci.yaml's
+      # header; the retried unit is the download, never the build). On the notices step's own
+      # condition, so a run that finds that key downloads nothing. Three calls, because the
+      # script builds in three module directories and packages/envoy/infra is a workspace of its
+      # own, which the root go.work does not bind. packages/daemon is among them though the step
+      # above may have fetched it already: the two steps answer different keys, so either runs
+      # alone, and a repeat over a module cache that already holds those modules takes a second.
+      #
+      # 180 s per attempt, as above: 1.6 times the 113 s of the slowest cold run measured
+      # (packages/envoy/infra; packages/daemon 81 s, packages/envoy 77 s, each on an empty module
+      # cache on 2026-11-07), and an attempt the bound kills leaves what it fetched for the next
+      # one.
+      - name: Download the Go modules the notices script builds
+        if: steps.go-notices.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: three calls, 3 x (5 x 180 + 150) = 3150 s -> 53 min.
+        timeout-minutes: 53
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
+
       # The very script lint's notices step runs, .github/scripts/go-release-notices.sh: the
       # same loops over .github/go-release-targets.json, .github/agent-secrets-client-targets.json
       # and .github/envoy-infra-targets.json, with the same GOOS, GOARCH and CGO_ENABLED per
@@ -164,9 +214,12 @@ jobs:
   # independent, and each build is gated on its own lookup.
   envoy:
     runs-on: ubuntu-24.04
-    # Compiling the test binary of every package of the envoy module on a cold module cache is
-    # the long step; the listener and natsd are minutes.
-    timeout-minutes: 60
+    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 3600 s, the 60 minutes
+    # this job carried — compiling the test binary of every package of the envoy module on a
+    # cold module cache is the long step, and the listener and natsd are minutes — plus its
+    # slowest retried step alone: either Go module download below, 5 x 180 + 150 = 1050 s each.
+    # 3600 + 1050 = 4650 s -> 78 min.
+    timeout-minutes: 78
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -186,6 +239,26 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
+
+      # The module the build below compiles — both builds of this job compile it, and each has a
+      # download of its own — retried before it (the Retries note in
+      # .github/workflows/ci.yaml's header; the retried unit is the download, never the build).
+      # On that build's own condition, so a run that finds the key downloads nothing.
+      #
+      # 180 s per attempt: 1.6 times the 113 s of the slowest cold `go mod download` measured
+      # (packages/envoy/infra; packages/envoy 77 s, each on an empty module cache on 2026-11-07),
+      # and an attempt the bound kills leaves what it fetched in the module cache for the next
+      # one to resume from, which a tarball fetch cannot do. Every lookup of this job is
+      # `lookup-only`, so no module cache is ever restored here and that cold figure is what a
+      # miss pays.
+      - name: Download the Go modules this job builds
+        if: steps.go-envoy.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
 
       # The two binaries envoy-e2e-local's scripts/e2e-local.sh and envoy-session-stall's
       # test/envoy-stack.ts build, and whose packages listener-server-change compiles too: the
@@ -213,6 +286,23 @@ jobs:
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
 
+      # The same module again, and a step of its own because the two builds answer two keys: a
+      # run whose go-envoy key was already there skips the download above and still compiles
+      # here, so this build needs a retried download in front of it too (the Retries note in
+      # .github/workflows/ci.yaml's header). Where both keys missed, the download above has
+      # already filled the module cache and this call takes a second.
+      #
+      # 180 s per attempt, as above: 1.6 times the 113 s of the slowest cold run measured
+      # (packages/envoy/infra; packages/envoy 77 s, each on an empty module cache on 2026-11-07).
+      - name: Download the Go modules the test build compiles
+        if: steps.go-envoy-test.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+
       # envoy-go's set: the test binary of every package of the envoy module, the integration
       # package's and the natslive build of internal/testnats among them. `go test -c` links each
       # package's test binary and `-o /dev/null` writes none of them, so every object the restored
@@ -238,7 +328,10 @@ jobs:
   # as ci.yaml's envoy-infra-go does.
   envoy-infra:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # Budget (the Budgets note in .github/workflows/ci.yaml's header): 2700 s, the 45 minutes
+    # this job carried, plus its slowest retried step alone — packages/envoy/infra's
+    # `go mod download`, 5 x 180 + 150 = 1050 s. 2700 + 1050 = 3750 s -> 63 min.
+    timeout-minutes: 63
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -258,6 +351,26 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           lookup-only: true
+
+      # The infra module's own workspace, downloaded once and retried before the vet and the
+      # builds below (the Retries note in .github/workflows/ci.yaml's header; the retried unit is
+      # the download, never the build). On that build's own condition, so a run that finds the
+      # key downloads nothing. One call: packages/envoy/infra's go.work binds it and
+      # packages/envoy, and a download in it reads both modules' requirements.
+      #
+      # 180 s per attempt: a cold `go mod download` of packages/envoy/infra measured 113 s on an
+      # empty module cache on 2026-11-07, the slowest of the three modules measured there, so the
+      # bound is 1.6 times it, and an attempt it kills leaves what it fetched in the module cache
+      # for the next one to resume from. The lookup above is `lookup-only`, so no module cache is
+      # ever restored here and that cold figure is what a miss pays.
+      - name: Download the Go modules this job builds
+        if: steps.go-envoy-infra.outputs.cache-hit != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy/infra's Go modules" 180 -- go -C packages/envoy/infra mod download
 
       # What envoy-infra-go builds: the vet with both live-test tags, the test binary of every
       # package, and the natslive binaries of the three packages its live step runs. Compiled, not

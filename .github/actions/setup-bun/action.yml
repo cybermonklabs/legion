@@ -12,7 +12,8 @@ description: >-
   `ARG BUN_VERSION` default of packages/daemon/docker/worker.Dockerfile and every `FROM`.
 
   The restore below runs on every ref: it reads the `bun` cache family, one entry holding
-  ~/.bun/bin keyed on the pinned version. no-cache: true runs on every ref too, so
+  ~/.bun/bin keyed on the runner's operating system, its architecture and the pinned version.
+  no-cache: true runs on every ref too, so
   oven-sh/setup-bun writes no entry of its own — an entry a pull request writes is readable by no
   other pull request, and the family above is the one copy worth keeping. On a hit setup-bun
   finds ~/.bun/bin/bun, reads its `bun --revision`, takes it as an existing installation of the
@@ -37,14 +38,23 @@ runs:
       shell: bash
       run: echo "version=$(tr -d '[:space:]' < .bun-version)" >> "$GITHUB_OUTPUT"
 
-    # One entry per Bun version, and no restore-keys: a near-miss Go module cache is still most
-    # of a module cache, while a Bun binary of another version is one setup-bun rejects after
-    # paying for the restore.
+    # One entry per runner architecture and Bun version, and no restore-keys: a near-miss Go
+    # module cache is still most of a module cache, while a Bun binary of another version is one
+    # setup-bun rejects after paying for the restore.
+    #
+    # runner.arch is in the key because one job of this repository's CI runs on arm64 —
+    # release-envoy-listener.yaml's docker job builds its arm64 leg on ubuntu-24.04-arm — and an
+    # entry is written once and never replaced. Without it the two architectures share one key,
+    # and which way the restore is wrong is then decided by whichever ran first: an x64 binary
+    # restored on the arm leg leaves `bun --revision` failing, so that leg downloads the release
+    # asset on every run and the restore buys it nothing; and an arm64 binary saved first on a
+    # push to main leaves every x64 job restoring a binary it cannot run and downloading too,
+    # with no way to replace the entry. With it, each architecture keeps an entry of its own.
     - id: bun-cache
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bun/bin
-        key: bun-${{ runner.os }}-${{ steps.bun-pin.outputs.version }}
+        key: bun-${{ runner.os }}-${{ runner.arch }}-${{ steps.bun-pin.outputs.version }}
 
     - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
       with:
@@ -58,4 +68,4 @@ runs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ~/.bun/bin
-        key: bun-${{ runner.os }}-${{ steps.bun-pin.outputs.version }}
+        key: bun-${{ runner.os }}-${{ runner.arch }}-${{ steps.bun-pin.outputs.version }}

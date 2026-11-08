@@ -6,13 +6,13 @@
  * The bytes matter rather than the contents: `bun.lock` records the tarball's `sha512`, so a
  * rebuild of a pin already committed must produce the file already committed, or a lockfile check
  * fails for a change nobody made. Each case below pins one of the reasons the bytes are a
- * function of the source tree alone: the member list, the order, the mtimes, the ownership and
- * the gzip header's timestamp.
+ * function of the source tree's contents alone: the member list, the order, the mtimes, the
+ * ownership, the modes and the gzip header's timestamp.
  */
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { packUpstream } from "../scripts/build-upstream-tarball";
@@ -30,19 +30,36 @@ let sourceDir: string;
 let first: string;
 let second: string;
 
+/**
+ * The fixture tree: the three members the archive holds and one file beside them that it must
+ * not. The modes are the caller's umask's, which is what the umask case below varies.
+ */
+function writeSource(dir: string): string {
+  mkdirSync(join(dir, "src", "editor", "plugins"), { recursive: true });
+  writeFileSync(join(dir, "src", "lib.ts"), "export const lib = 1;\n");
+  writeFileSync(join(dir, "src", "editor", "plugins", "marks.ts"), "export const marks = 2;\n");
+  writeFileSync(join(dir, "package.json"), '{ "name": "proof-sdk" }\n');
+  writeFileSync(join(dir, "LICENSE"), "MIT\n");
+  // Neither under src/ nor one of the two named files, so the archive must not hold it.
+  writeFileSync(join(dir, "tsconfig.json"), '{ "compilerOptions": {} }\n');
+  return dir;
+}
+
+/** `dir`, written under `umask` and packed, with the umask put back whatever happens. */
+function packUnderUmask(dir: string, umask: number, outputPath: string): string {
+  const previous = process.umask(umask);
+  try {
+    writeSource(dir);
+  } finally {
+    process.umask(previous);
+  }
+  packUpstream({ sourceDir: dir, mtime: MTIME, outputPath });
+  return outputPath;
+}
+
 beforeAll(() => {
   workDir = mkdtempSync(join(tmpdir(), "proof-sdk-pack-test-"));
-  sourceDir = join(workDir, "source");
-  mkdirSync(join(sourceDir, "src", "editor", "plugins"), { recursive: true });
-  writeFileSync(join(sourceDir, "src", "lib.ts"), "export const lib = 1;\n");
-  writeFileSync(
-    join(sourceDir, "src", "editor", "plugins", "marks.ts"),
-    "export const marks = 2;\n"
-  );
-  writeFileSync(join(sourceDir, "package.json"), '{ "name": "proof-sdk" }\n');
-  writeFileSync(join(sourceDir, "LICENSE"), "MIT\n");
-  // Neither under src/ nor one of the two named files, so the archive must not hold it.
-  writeFileSync(join(sourceDir, "tsconfig.json"), '{ "compilerOptions": {} }\n');
+  sourceDir = writeSource(join(workDir, "source"));
   first = join(workDir, "first.tgz");
   second = join(workDir, "second.tgz");
   packUpstream({ sourceDir, mtime: MTIME, outputPath: first });
@@ -82,6 +99,28 @@ test("every member carries the given mtime and is owned by 0:0", () => {
     expect(owner).toBe("0/0");
     expect(`${date}T${time}`).toBe("2026-10-17T22:41");
   }
+});
+
+test("every member is at mode 644, whatever the source tree's own modes are", () => {
+  for (const line of listing(first)) {
+    expect(line.split(/\s+/)[0]).toBe("-rw-r--r--");
+  }
+});
+
+/**
+ * tar records each file's mode as it finds it, and the extract that wrote the upstream tree
+ * applied the caller's umask — so without `--mode` one commit packed under umask 022 and under
+ * umask 002 gave two sha256 values, which is what `--mode=a+r,go-w` answers.
+ */
+test("one tree packed under two umasks gives the same bytes", () => {
+  const lax = join(workDir, "lax");
+  const strict = join(workDir, "strict");
+  const laxArchive = packUnderUmask(lax, 0o002, join(workDir, "lax.tgz"));
+  const strictArchive = packUnderUmask(strict, 0o022, join(workDir, "strict.tgz"));
+  // The two trees differ on disk, which is the difference the archives must not carry.
+  expect(statSync(join(lax, "src", "lib.ts")).mode & 0o777).toBe(0o664);
+  expect(statSync(join(strict, "src", "lib.ts")).mode & 0o777).toBe(0o644);
+  expect(readFileSync(laxArchive)).toEqual(readFileSync(strictArchive));
 });
 
 test("the gzip header carries no timestamp", () => {
