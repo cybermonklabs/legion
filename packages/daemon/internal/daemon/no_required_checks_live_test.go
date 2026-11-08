@@ -41,7 +41,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -52,6 +51,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -529,9 +529,7 @@ type noRequiredChecksPull struct {
 func newNoRequiredChecksGitHub(t *testing.T) *noRequiredChecksGitHub {
 	t.Helper()
 	g := &noRequiredChecksGitHub{t: t, pulls: map[int]noRequiredChecksPull{}, requires: map[string][]string{}}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
 	return g
 }
 
@@ -569,7 +567,6 @@ func (g *noRequiredChecksGitHub) unanswered() []string {
 func (g *noRequiredChecksGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return

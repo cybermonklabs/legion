@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -683,7 +683,7 @@ type failingGitHub struct {
 func (g *failingGitHub) start(t *testing.T) string {
 	t.Helper()
 	named := newNamedGitHub(t, g.named)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if g.fail.Load() && (g.only == "" || strings.Contains(r.URL.Path, g.only)) {
 			http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
 			return
@@ -696,9 +696,7 @@ func (g *failingGitHub) start(t *testing.T) string {
 		defer proxied.Body.Close()
 		w.WriteHeader(proxied.StatusCode)
 		_, _ = io.Copy(w, proxied.Body)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }
 
 // quickInstallReads shortens installReadRetry for a test, restoring it once the rig the test

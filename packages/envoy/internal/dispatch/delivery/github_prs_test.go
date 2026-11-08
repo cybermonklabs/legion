@@ -9,7 +9,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // fakeInstallation is one entry fakeGitHub's installations field lists, for a test that exercises
@@ -151,8 +151,7 @@ func (f *fakeGitHub) newTestClient() *githubapp.Client {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	server := httptest.NewServer(f.mux)
-	t.Cleanup(server.Close)
+	server := githubtest.Serve(t, githubtest.Spec{Handle: f.mux.ServeHTTP})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, server.URL)
 	if err != nil {
 		t.Fatalf("new client: %v", err)

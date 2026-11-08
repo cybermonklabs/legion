@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -186,9 +185,7 @@ func TestARowQueuedBeforeTheFillActsOnTheFilledRepository(t *testing.T) {
 // defaultBranch.
 func newRepositoryGitHubFor(t *testing.T, fullName, defaultBranch string) string {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+defaultBranch+`"}`)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
+	}})
 }

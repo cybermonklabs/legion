@@ -142,9 +142,6 @@ func Live(t testing.TB) {
 // then assert that its entry point kept them, where reading the live state would pass on whatever
 // the test that ran first had set.
 func Kept() []string {
-	if guardedKeep == nil {
-		return nil
-	}
 	return slices.Clone(guardedKeep)
 }
 

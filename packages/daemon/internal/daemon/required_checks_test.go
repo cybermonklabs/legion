@@ -453,11 +453,7 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 	pool := isolatedOutboxPool(t)
 	seedCapture(t, pool, phase.AwaitingMerge, "retro",
 		record.PhaseRow{Issue: "CAPTURE-1", Role: claim.RoleMerger, Claim: "merge-claim", HandoffCommit: "code", Summary: "READY #86 at code"})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer outbox-token" {
-			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
-			return
-		}
+	server := githubtest.Serve(t, githubtest.Spec{Token: "outbox-token", Handle: func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/acme/widgets/pulls/86":
 			w.Write([]byte(`{"number":86,"base":{"ref":"main"},"mergeable":false}`))
@@ -466,8 +462,7 @@ func TestAFailedRulesetsReadNeverDiscardsAnAlreadyDecodedConflict(t *testing.T) 
 		default:
 			http.NotFound(w, r)
 		}
-	}))
-	defer server.Close()
+	}})
 	requiredRuntime(pool, server.URL, quietLogger()).readRequiredChecks(context.Background())
 	got, pr := capturePhase(t, pool)
 	if got != phase.Implementing {

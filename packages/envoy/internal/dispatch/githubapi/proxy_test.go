@@ -13,6 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // fakeGitHub answers the App's installation lookup and token mint, and records every other read.
@@ -92,8 +93,7 @@ func (f *fakeGitHub) seen() []string {
 func newProxyRig(t *testing.T) (*githubapp.Client, *fakeGitHub) {
 	t.Helper()
 	fake := &fakeGitHub{installations: map[string]int64{"acme/web": 11}}
-	server := httptest.NewServer(fake.handler(t))
-	t.Cleanup(server.Close)
+	server := githubtest.Serve(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
 	_, pemText := githubapptest.Key(t)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.proxy", PEM: pemText}, server.URL)
 	if err != nil {

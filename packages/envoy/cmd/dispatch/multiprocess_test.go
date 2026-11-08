@@ -2227,7 +2227,7 @@ type githubFake struct {
 func startGitHubFake(t *testing.T) *githubFake {
 	t.Helper()
 	fake := &githubFake{release: make(chan struct{})}
-	fake.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	fake.server = githubtest.Serve(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "/hook/deliveries") {
 			fake.countDeliveryListing()
 			fake.holdFirstDeliveryListing(r.Context())
@@ -2236,14 +2236,10 @@ func startGitHubFake(t *testing.T) *githubFake {
 			fake.countPullRequestFetch()
 		}
 		status, body := githubFakeAnswer(r)
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
-	}))
-	t.Cleanup(func() {
-		fake.Release()
-		fake.server.Close()
-	})
+	}})
+	t.Cleanup(fake.Release)
 	return fake
 }
 

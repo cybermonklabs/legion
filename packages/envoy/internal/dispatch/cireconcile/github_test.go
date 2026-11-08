@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // fakeGitHub is an httptest stand-in for the GitHub App and REST APIs a reconcile pass calls,
@@ -255,8 +255,7 @@ func queryNumber(values url.Values, name string, fallback int) int {
 func (f *fakeGitHub) client(limits *ratelimit.Store) *githubapp.Client {
 	f.t.Helper()
 	_, text := githubapptest.Key(f.t)
-	server := httptest.NewServer(http.HandlerFunc(f.serve))
-	f.t.Cleanup(server.Close)
+	server := githubtest.Serve(f.t, githubtest.Spec{Handle: f.serve})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, server.URL, githubapp.WithLimits(limits))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)

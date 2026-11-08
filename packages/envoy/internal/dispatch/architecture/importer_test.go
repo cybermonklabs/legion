@@ -13,7 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"reflect"
 	"sort"
@@ -31,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // archRepo is the repository newImporterFixture's source of CORE reads.
@@ -329,8 +329,7 @@ func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	server := httptest.NewServer(handler)
-	t.Cleanup(server.Close)
+	server := githubtest.Serve(t, githubtest.Spec{Handle: handler.ServeHTTP})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL)
 	if err != nil {
 		t.Fatalf("new github client: %v", err)

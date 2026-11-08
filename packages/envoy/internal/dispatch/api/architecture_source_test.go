@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 // The fixture repositories' commits: full 40-hex SHAs, the only answer Ref accepts.
@@ -208,8 +209,7 @@ func newArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp) (http.Handle
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	github := httptest.NewServer(fake.handler(t))
-	t.Cleanup(github.Close)
+	github := githubtest.Serve(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
 	handler, database, _ := newTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: github.URL,

@@ -1122,11 +1122,10 @@ func newQueueGitHub(t *testing.T, mergeState string) *armableGitHub {
 
 func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		g.mu.Lock()
 		defer g.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.Contains(string(body), "disablePullRequestAutoMerge"):
 			g.disables++
@@ -1162,9 +1161,7 @@ func serveArmable(t *testing.T, g *armableGitHub) *armableGitHub {
 			_, _ = fmt.Fprintf(w, `{"data":{"repository":{"autoMergeAllowed":true,"pullRequest":{"id":"PR_42","state":%q,"title":"feat(daemon): merge the accepted READY head","headRefOid":"ready-head","mergeStateStatus":%q,"updatedAt":%q,"isMergeQueueEnabled":%t,"autoMergeRequest":%s,"mergeQueueEntry":%s}}}}`,
 				g.state, g.mergeState, time.Now().UTC().Format(time.RFC3339), g.queueRequired, autoMerge, entry)
 		}
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	}})
 	return g
 }
 
@@ -1593,7 +1590,7 @@ func newMergeGitHub(t *testing.T, read func(int) string, mutation func(http.Resp
 	t.Helper()
 	g := &mergeGitHub{}
 	reads := 0
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		g.mu.Lock()
 		g.bearers = append(g.bearers, r.Header.Get("Authorization"))
@@ -1608,15 +1605,12 @@ func newMergeGitHub(t *testing.T, read func(int) string, mutation func(http.Resp
 		}
 		count := reads
 		g.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
 		if isMerge {
 			mutation(w)
 			return
 		}
 		_, _ = io.WriteString(w, read(count))
-	}))
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	}})
 	return g
 }
 
