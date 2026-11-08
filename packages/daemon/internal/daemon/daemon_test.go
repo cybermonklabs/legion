@@ -1632,16 +1632,24 @@ func workflowConfig(t *testing.T, natsURL string) config.Config {
 	return cfg
 }
 
+// workflowJetStream is the package's one connect to a test NATS server: the client, closed when
+// t ends, and a JetStream handle on it. Every caller that needs a stream as well goes through
+// notificationsStreamOn, which is this plus the shape this project's durable consumers are
+// opened on.
+//
+// The connect is given 5 s. A timeout is a bound and not a wait, so the wider one costs a
+// passing test nothing; the narrower one it replaced only decided a server this pod is slow to
+// answer, where a second is a flake and not a finding.
 func workflowJetStream(t *testing.T, natsURL string) jetstream.JetStream {
 	t.Helper()
-	conn, err := nats.Connect(natsURL, nats.Timeout(time.Second))
+	conn, err := nats.Connect(natsURL, nats.Timeout(5*time.Second))
 	if err != nil {
-		t.Fatalf("connect NATS: %v", err)
+		t.Fatalf("connect to the NATS server at %s: %v", natsURL, err)
 	}
 	t.Cleanup(conn.Close)
 	js, err := jetstream.New(conn)
 	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
+		t.Fatalf("open JetStream on %s: %v", natsURL, err)
 	}
 	return js
 }
@@ -1740,8 +1748,8 @@ func (r *workflowTokenRecorder) Roles() []appauth.AppRole {
 
 // workflowNATS is the package's shared NATS server with Envoy's notification stream on it, for
 // every test that boots a daemon against it: the URL testnats hands out, and the stream the
-// daemon's durable consumers are opened on (notificationsStreamOn, which is the one place the
-// connect, the JetStream handle and the stream's own shape are written).
+// daemon's durable consumers are opened on (notificationsStreamOn, which writes that stream's
+// shape, over workflowJetStream's one connect).
 func workflowNATS(t *testing.T) string {
 	t.Helper()
 	url := testnats.URL(t)

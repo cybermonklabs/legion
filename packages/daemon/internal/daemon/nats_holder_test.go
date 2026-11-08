@@ -561,28 +561,15 @@ func (h *heardPullRequests) repositories() []string {
 	return slices.Clone(h.repos)
 }
 
-// notificationsStreamOn creates Envoy's notification stream on the NATS server at url, through a
-// client of the test's own that is closed when t ends, and returns that client and the stream:
-// the stream this project's durable consumers are opened on, which every test here creates
-// before the daemon connects, and the client a test publishes through or reads another stream
-// with. It is the one place that setup is written — workflowNATS is this on the package's
-// shared server — so a test cannot boot a daemon against a stream of another shape.
-//
-// The connect is given 5 s rather than the second it took in one of the copies this replaced.
-// A timeout is a bound and not a wait, so the wider one costs a passing test nothing; the
-// narrower one only decides a server this pod is slow to answer, where a second is a flake and
-// not a finding.
+// notificationsStreamOn creates Envoy's notification stream on the NATS server at url, through
+// workflowJetStream's client, and returns that client and the stream: the stream this project's
+// durable consumers are opened on, which every test here creates before the daemon connects,
+// and the client a test publishes through or reads another stream with. The stream's own shape
+// is written here and nowhere else — workflowNATS is this on the package's shared server — so a
+// test cannot boot a daemon against a stream of another shape.
 func notificationsStreamOn(t *testing.T, url string) (jetstream.JetStream, jetstream.Stream) {
 	t.Helper()
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the NATS server at %s: %v", url, err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream on %s: %v", url, err)
-	}
+	js := workflowJetStream(t, url)
 	return js, testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 }
 
