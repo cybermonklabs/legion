@@ -917,7 +917,13 @@ test.skipIf(skip)(
     const sent = await session.send(command);
     const cut = `${command}\n\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
     expect(await session.reply(sent, "the reply to the long command")).toBe(cut);
-    const published = messageFrames(session.frames.slice(from));
+    // This send's own frames, not every frame since: the row before it stops a command at the
+    // limit, and under load that command's own frame can land after this row has read the
+    // length it starts from. One frame for this message is the claim either way, since the
+    // plugin tags each with the Dispatch message it answers.
+    const published = messageFrames(session.frames.slice(from)).filter(
+      (each) => each.message.dispatchMessageId === sent.messageID
+    );
     expect(published).toHaveLength(1);
     expect(frameText(published[0]?.message ?? {})).toBe(cut);
 
