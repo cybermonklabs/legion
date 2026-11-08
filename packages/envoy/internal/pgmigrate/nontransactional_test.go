@@ -69,13 +69,21 @@ func TestLoadRefusesUniqueConcurrentIndex(t *testing.T) {
 	}
 }
 
-func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
-	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, testpg.URL(t))
+// connect opens one connection to url and closes it when t ends. The URL is the caller's, since
+// testpg.URL makes a database of its own at each call and a test's two connections share one.
+func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {
+	t.Helper()
+	conn, err := pgx.Connect(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { conn.Close(context.Background()) })
+	return conn
+}
+
+func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
+	ctx := context.Background()
+	conn := connect(t, ctx, testpg.URL(t))
 	if _, err := conn.Exec(ctx, `create table things (kind text);
 		create function check_build_settings() returns event_trigger language plpgsql as $$
 		begin
@@ -163,19 +171,11 @@ func leaveInvalidIndex(t *testing.T, ctx context.Context, conn *pgx.Conn, name, 
 func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 	ctx := context.Background()
 	url := testpg.URL(t)
-	conn, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close(context.Background()) })
+	conn := connect(t, ctx, url)
 	if _, err := conn.Exec(ctx, "create table things (kind text); insert into things values ('a'), ('b')"); err != nil {
 		t.Fatal(err)
 	}
-	holder, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { holder.Close(context.Background()) })
+	holder := connect(t, ctx, url)
 	tx, err := holder.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -223,11 +223,7 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 // one ExecNonTransactional drops it and builds again.
 func TestExecNonTransactionalDropsTheLeftoverOfAKilledBuild(t *testing.T) {
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, testpg.URL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close(context.Background()) })
+	conn := connect(t, ctx, testpg.URL(t))
 	if _, err := conn.Exec(ctx, "create table things (kind text); insert into things values ('same'), ('same')"); err != nil {
 		t.Fatal(err)
 	}
@@ -257,11 +253,7 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 	}
 	t.Run("an INVALID index of the migration's name on another table", func(t *testing.T) {
 		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, testpg.URL(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { conn.Close(context.Background()) })
+		conn := connect(t, ctx, testpg.URL(t))
 		if _, err := conn.Exec(ctx, `create table things (kind text); insert into things values ('a');
 			create table others (kind text); insert into others values ('same'), ('same')`); err != nil {
 			t.Fatal(err)
@@ -275,11 +267,7 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 	})
 	t.Run("a valid index of the migration's name on another table", func(t *testing.T) {
 		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, testpg.URL(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { conn.Close(context.Background()) })
+		conn := connect(t, ctx, testpg.URL(t))
 		if _, err := conn.Exec(ctx, `create table things (kind text);
 			create table others (kind text); create index things_kind on others (kind)`); err != nil {
 			t.Fatal(err)
@@ -294,11 +282,7 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 	})
 	t.Run("a non-index relation of the migration's name", func(t *testing.T) {
 		ctx := context.Background()
-		conn, err := pgx.Connect(ctx, testpg.URL(t))
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { conn.Close(context.Background()) })
+		conn := connect(t, ctx, testpg.URL(t))
 		if _, err := conn.Exec(ctx, "create table things (kind text); create table things_kind (x int)"); err != nil {
 			t.Fatal(err)
 		}
@@ -315,11 +299,7 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 // runner neither drops it nor refuses over it, and its own build goes through.
 func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, testpg.URL(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close(context.Background()) })
+	conn := connect(t, ctx, testpg.URL(t))
 	if _, err := conn.Exec(ctx, "create table things (kind text, other text); insert into things values ('a', 'same'), ('b', 'same')"); err != nil {
 		t.Fatal(err)
 	}
@@ -343,20 +323,12 @@ func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 func TestExecNonTransactionalRetriesADropThatTimesOut(t *testing.T) {
 	ctx := context.Background()
 	url := testpg.URL(t)
-	conn, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { conn.Close(context.Background()) })
+	conn := connect(t, ctx, url)
 	if _, err := conn.Exec(ctx, "create table things (kind text); insert into things values ('same'), ('same')"); err != nil {
 		t.Fatal(err)
 	}
 	leaveInvalidIndex(t, ctx, conn, "things_kind", "things", "kind")
-	holder, err := pgx.Connect(ctx, url)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { holder.Close(context.Background()) })
+	holder := connect(t, ctx, url)
 	tx, err := holder.Begin(ctx)
 	if err != nil {
 		t.Fatal(err)

@@ -89,6 +89,7 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	if index.Relation.Schemaname != "" {
 		table = pgx.Identifier{index.Relation.Schemaname, index.Relation.Relname}
 	}
+	target := table.Sanitize()
 	// The settings are set before the leftover check so the drop below is bounded by
 	// LockTimeout for every caller, whatever bound the caller's session carries (the server's
 	// default is none at all).
@@ -107,27 +108,31 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 		}
 	}()
 	// At most one relation of the index's name exists in the target table's schema, since
-	// Postgres keeps relation names distinct within a schema.
+	// Postgres keeps relation names distinct within a schema. A relation that is no index has
+	// no pg_index row, so coalesce reads its indisvalid and its table as false.
 	var schema, relkind string
-	var valid, onTarget *bool
-	switch err := conn.QueryRow(ctx, `select n.nspname, c.relkind, i.indisvalid, i.indrelid = to_regclass($1)
+	var valid, onTarget bool
+	err = conn.QueryRow(ctx, `select n.nspname, c.relkind, coalesce(i.indisvalid, false),
+			coalesce(i.indrelid = to_regclass($1), false)
 		from pg_class c join pg_namespace n on n.oid = c.relnamespace
 		left join pg_index i on i.indexrelid = c.oid
 		where c.relname = $2 and c.relnamespace =
-			(select relnamespace from pg_class where oid = to_regclass($1))`, table.Sanitize(), index.Idxname).Scan(&schema, &relkind, &valid, &onTarget); {
+			(select relnamespace from pg_class where oid = to_regclass($1))`, target, index.Idxname).
+		Scan(&schema, &relkind, &valid, &onTarget)
+	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		// Nothing of that name: the build has everything to do.
 	case err != nil:
 		return fmt.Errorf("migration %s: check for a relation named %s: %w", migration.Name, index.Idxname, err)
 	default:
 		qualified := pgx.Identifier{schema, index.Idxname}.Sanitize()
-		isIndexOnTarget := relkind == "i" && onTarget != nil && *onTarget
+		isIndexOnTarget := relkind == "i" && onTarget
 		switch {
-		case isIndexOnTarget && valid != nil && *valid:
+		case isIndexOnTarget && valid:
 			// The index this migration builds, already built: the build skips it.
 		case isIndexOnTarget:
 			slog.Warn("pgmigrate: dropping the INVALID index a failed concurrent build left, then building it again",
-				"migration", migration.Name, "index", qualified, "table", table.Sanitize())
+				"migration", migration.Name, "index", qualified, "table", target)
 			drop := Migration{Name: migration.Name, SQL: "drop index concurrently if exists " + qualified, NonTransactional: true}
 			// Alone on the connection: Postgres refuses DROP INDEX CONCURRENTLY inside a
 			// transaction block. execWatched reports a drop cancelled by lock_timeout as a
@@ -137,9 +142,9 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 				return fmt.Errorf("drop the INVALID index %s left by a failed concurrent build: %w", qualified, err)
 			}
 		case relkind != "i":
-			return fmt.Errorf("migration %s: %s is a relation of relkind %q, not a plain index the runner can DROP INDEX CONCURRENTLY; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename or remove that relation, then retry the migration", migration.Name, qualified, relkind, table.Sanitize())
-		case valid != nil && *valid:
-			return fmt.Errorf("migration %s: index %s is a VALID index on another table; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename it, or run DROP INDEX CONCURRENTLY %s outside a transaction if it is unwanted, then retry the migration", migration.Name, qualified, table.Sanitize(), qualified)
+			return fmt.Errorf("migration %s: %s is a relation of relkind %q, not a plain index the runner can DROP INDEX CONCURRENTLY; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename or remove that relation, then retry the migration", migration.Name, qualified, relkind, target)
+		case valid:
+			return fmt.Errorf("migration %s: index %s is a VALID index on another table; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename it, or run DROP INDEX CONCURRENTLY %s outside a transaction if it is unwanted, then retry the migration", migration.Name, qualified, target, qualified)
 		default:
 			return fmt.Errorf("migration %s: index %s is INVALID but is on another table, so it is not this migration's to drop; investigate it, run DROP INDEX CONCURRENTLY %s outside a transaction if it is unwanted, then retry the migration", migration.Name, qualified, qualified)
 		}
