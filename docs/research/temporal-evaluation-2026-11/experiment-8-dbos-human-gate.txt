@@ -1,0 +1,75 @@
+Experiment 8, DBOS: a wait for a person.
+Recorded 2026-11-07T22:39:42Z by docs/research/temporal-evaluation-2026-11/run.sh,
+from the branch of dispatch://INFRA-1546 based on commit 09bf32cc0298db50261183a12e129ad324b03cee,
+in one Legion worker pod, against a real server or a real PostgreSQL.
+This is a transcript of one run, not a golden file: nothing re-records it.
+------------------------------------------------------------------------------
+system-database: legion_dbos_eval
+system-database-schema: exp8_28516_234021
+application-version: exp8-code-1
+executor-id: exp8-gate-host
+workflow-id: exp8-gate-1794091019061447206
+wait-mechanism: dbos.Recv on a topic, answered by dbos.Send from another process
+unbounded-wait-available: no: Recv takes a required timeout and checkpoints the absolute deadline it computes as a DBOS.sleep step, so an open-ended wait is a timeout long enough to outlast the person
+wait-bound-this-run-used: 1m40s
+[gate1] dbosworker: pid=28524
+gate1-pid: 28524
+[gate1] dbosworker: goroutines-before-the-workflow=11
+[gate1] dbosworker: workflow-started=exp8-gate-1794091019061447206
+[gate1] dbosworker: goroutines-while-waiting=13
+sql-while-waiting-workflow_status: status=PENDING executor=exp8-gate-host version=exp8-code-1 queue=none recovery_attempts=1 owner_xid=c833b71d-7369-4a1c-bd16-2dcc4af59b69 output=null error=null
+sql-while-waiting-operation_outputs: 0:ask-the-person 2:DBOS.sleep
+sql-while-waiting-step: id=0 name=ask-the-person output=Imlzc3VlPUlORlJBLTE1NDYgcXVlc3Rpb249YXBwcm92ZS10aGUtc3BlYyBhc2tlZC1ieS1waWQ9Mjg1MjQi error=null
+sql-while-waiting-step: id=2 name=DBOS.sleep output=MTc5NDA5MTEyMDY1NQ== error=null
+recorded-wait-deadline: 2026-11-07T22:38:40Z (epoch-ms 1794091120655, recorded as step 2 "DBOS.sleep")
+sql-while-waiting-unconsumed-notifications: 0
+recorded-state-while-waiting: PENDING
+held-while-waiting-goroutines-in-the-waiting-process: 11 before the workflow, 13 while it waits
+held-while-waiting-goroutine-delta: 2
+held-while-waiting-connections: total=5 active=1 idle=4 idle-in-transaction=0
+held-while-waiting-open-transactions: 0
+held-while-waiting-locks-on-the-schema-or-rows: 0
+held-while-waiting-rows: workflow_status=1 workflow_input=1 workflow_output=0 operation_outputs=2 notifications=0 workflow_events=0 streams=0
+held-while-waiting-row-bytes: 1015
+connection-model-read-from-the-library: DBOS holds one pool for the process and one further connection for the LISTEN that wakes a waiting Recv; neither is per waiting workflow, and no connection is held inside the wait
+killed-pid: 28524
+kill-signal: SIGKILL
+sql-after-the-waiting-process-died: status=PENDING executor=exp8-gate-host version=exp8-code-1 queue=none recovery_attempts=1 owner_xid=c833b71d-7369-4a1c-bd16-2dcc4af59b69 output=null error=null
+[gate2] dbosworker: pid=28531
+replacement-pid: 28531
+[gate2] dbosworker: goroutines-before-the-workflow=12
+[gate2] dbosworker: recovery-launched=true
+[gate2] dbosworker: goroutines-while-waiting=12
+wait-resumed-after-restart: true
+wait-resumed-after-seconds: 1.791
+goroutines-in-the-replacement-while-waiting: 12
+sql-after-the-replacement-resumed-the-wait: status=PENDING executor=exp8-gate-host version=exp8-code-1 queue=_dbos_internal_queue recovery_attempts=2 owner_xid=79bb143b-74b1-4d85-9943-4e3e4de25390 output=null error=null
+sql-after-the-replacement-operation_outputs: 0:ask-the-person 2:DBOS.sleep
+question-asked-times: 1
+step-before-the-wait-re-run-on-recovery: false
+answer-sent: approved
+seconds-from-answer-to-terminal: 0.256
+sql-final-workflow_status: status=SUCCESS executor=exp8-gate-host version=exp8-code-1 queue=_dbos_internal_queue recovery_attempts=2 owner_xid=none output=eyJxdWVzdGlvbiI6Imlzc3VlPUlORlJBLTE1NDYgcXVlc3Rpb249YXBwcm92ZS10aGUtc3BlYyBhc2tlZC1ieS1waWQ9Mjg1MjQiLCJhbnN3ZXIiOiJhcHBy... (256 bytes of serialized value) error=empty
+sql-final-operation_outputs: 0:ask-the-person 1:DBOS.recv 2:DBOS.sleep 3:apply-the-answer
+sql-final-workflow-output-decoded: map[answer:approved decision:issue=INFRA-1546 answer=approved applied-by-pid=28531 question:issue=INFRA-1546 question=approve-the-spec asked-by-pid=28524 waitedSeconds:1.675433472]
+decision-line-1: issue=INFRA-1546 answer=approved applied-by-pid=28531
+notifications-rows-after-the-answer: 1 row(s), 0 of them unconsumed: DBOS marks a delivered message consumed rather than deleting it
+timed: row-bytes-for-one-open-wait: 1015
+timed: row-bytes-source: sum(pg_column_size(row)) over workflow_status, workflow_input, workflow_output and operation_outputs for this workflow
+timed: goroutines-added-by-one-open-wait: 2
+timed: connections-to-the-database-while-one-wait-was-open: 5
+timed: connections-idle-in-transaction-while-waiting: 0
+timed: locks-held-while-waiting: 0
+timed: undelivered-message-rows-while-waiting: 0
+timed: wall-clock-this-gate-actually-waited: 5.134s, from the question being asked to the answer being sent
+reasoned: storage-bytes-for-one-gate-open-1-days: 1015 (the rows do not grow while nothing happens: a wait writes nothing per day, so 1 days cost the same 1015 bytes as one minute)
+reasoned: storage-bytes-for-one-gate-open-7-days: 1015 (the rows do not grow while nothing happens: a wait writes nothing per day, so 7 days cost the same 1015 bytes as one minute)
+reasoned: storage-bytes-for-one-gate-open-30-days: 1015 (the rows do not grow while nothing happens: a wait writes nothing per day, so 30 days cost the same 1015 bytes as one minute)
+reasoned: storage-bytes-for-1000-gates-open-30-days: 1015000 (1000 x 1015 bytes, on the PostgreSQL Legion already runs, not a metered store)
+reasoned: goroutine-stacks-for-1000-open-gates-in-one-process: 2000 goroutines, about 16384000 bytes of initial stack (1000 x 2 x 8192 bytes)
+reasoned: what-a-waiting-gate-costs-per-day: no workflow task, no poll and no write: the waiting process holds its goroutine and the row sits still until a Send writes a notifications row and the LISTEN wakes the waiter
+reasoned: what-the-bound-costs: the wait's deadline is recorded when the wait starts, so a gate of days needs its Recv timeout set to days up front (1m40s here); past it the Recv returns a timeout error and the workflow, not DBOS, decides what an unanswered question means
+reasoned: what-a-pod-cannot-do: this run waited seconds; the lines above extend its measured bytes and goroutines over days by arithmetic, and nothing here observed a gate that really stood for days
+limit: one gate on one PostgreSQL, waiting seconds rather than days, with one answer: it shows what a DBOS wait holds in a process and in a database and that the wait survives the process dying, while the cost of a real multi-day wait is arithmetic on this run's bytes and goroutines, not a wait this pod sat through
+schema-dropped: exp8_28516_234021
+experiment 8: PASS
