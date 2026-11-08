@@ -30,12 +30,24 @@ export interface ReviewSeed {
   readonly pipelineAt: string;
   /** When `e2e/visual-seed.ts` finished writing this corpus, ISO 8601. The visual rows pin
    *  their page clock a little after it, so every relative label the pages draw reads the same
-   *  on every run; the accessibility rows, which seed per row and compare no pixels, ignore it
-   *  and `e2e/review-seed.ts` does not set it. */
+   *  on every run, and they read `VisualSeed` below to get it required; the accessibility rows,
+   *  which seed per row and compare no pixels, ignore it and `e2e/review-seed.ts` does not set
+   *  it. */
   readonly seededAt?: string;
 }
 
-export type ReviewLayer = "scan" | "shoot";
+/** The seed the containerised visual review reads, which is `e2e/visual-seed.ts`'s output and
+ *  always carries `seededAt`. Required here because a shot row that silently skipped its clock
+ *  pin would bring back the minute-boundary drift the pin exists to remove, and that shows up
+ *  only as baselines differing late in a run. */
+export interface VisualSeed extends ReviewSeed {
+  readonly seededAt: string;
+}
+
+/** Which layer reads an entry: the accessibility scan, the desktop shot, and the phone shot -
+ *  the same page again in the `visual-phone` project, for the pages a phone width rearranges
+ *  (`phoneShotRoutes` below). */
+export type ReviewLayer = "scan" | "shoot" | "shoot-phone";
 
 export type ReviewRoute =
   | {
@@ -62,13 +74,25 @@ export type ReviewRoute =
       readonly reason: string;
     };
 
-/** Both layers, which is every reviewed page unless its row says otherwise. */
+/** The scan and the desktop shot, which is every reviewed page unless its row says otherwise.
+ *  A row that is shot on a phone too spreads this and adds `"shoot-phone"`. */
 const bothLayers: readonly ReviewLayer[] = ["scan", "shoot"];
+
+/** The width from which the shell draws its wide layout - the Inbox's reading pane beside the
+ *  list, the document margin as a column rather than a bottom sheet. Two rows below branch on
+ *  it, so the number lives here and a change to the breakpoint is one edit. */
+const WIDE_LAYOUT_MIN_PX = 1280;
+
+/** Whether `page`'s viewport is wide enough for that layout, which decides what a row has to
+ *  wait for: the phone projects draw neither of the two elements above. */
+function wideLayout(page: Page): boolean {
+  return (page.viewportSize()?.width ?? 0) >= WIDE_LAYOUT_MIN_PX;
+}
 
 export const reviewRoutes: readonly ReviewRoute[] = [
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "inbox",
     path: () => "/",
     pattern: "/",
@@ -77,12 +101,12 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // is about ("Skip to the answer", `web/src/features/inbox/PaneDocument.tsx`). The column
     // waits `DOCUMENT_SETTLE_MS` before it reads its document, so a page read on the heading
     // alone caught the head without that control in one run of the drift probe and with it in
-    // the next. The column shows from 1280 px and nowhere narrower (`READING_PANE_QUERY`,
-    // `web/src/features/shell/useDialog.ts`), so the phone row, whose Inbox is the list of
-    // cards alone, has nothing there to wait for.
+    // the next. The column shows from the wide layout's width and nowhere narrower
+    // (`READING_PANE_QUERY`, `web/src/features/shell/useDialog.ts`), so the phone row, whose
+    // Inbox is the list of cards alone, has nothing there to wait for.
     ready: (page) => {
       const heading = page.getByRole("heading", { exact: true, level: 1, name: "Inbox" });
-      const wideEnoughForPane = (page.viewportSize()?.width ?? 0) >= 1280;
+      const wideEnoughForPane = wideLayout(page);
       return wideEnoughForPane
         ? [heading, page.getByRole("button", { name: "Skip to the answer" })]
         : [heading];
@@ -124,7 +148,7 @@ export const reviewRoutes: readonly ReviewRoute[] = [
   },
   {
     kind: "reviewed",
-    layers: bothLayers,
+    layers: [...bothLayers, "shoot-phone"],
     name: "issue-spec",
     path: (seed) => `/issues/${seed.issue}/spec`,
     pattern: "/issues/:key/*",
@@ -147,13 +171,14 @@ export const reviewRoutes: readonly ReviewRoute[] = [
     // (`web/src/features/refs/MarkdownPreview.tsx`). Both states were shot. The words are the
     // spec block `e2e/review-seed.ts` points the decision at.
     //
-    // The margin is a column beside the document from 1280 px and a bottom sheet below it, shut
-    // until a button opens it (`packages/dispatch/AGENTS.md`, "Phone acceptance"), so the card
-    // is on the screen at a desktop width and nowhere narrower. The phone row of this page
-    // waits on the dot alone, as the Inbox row waits on its heading alone.
+    // The margin is a column beside the document at the wide layout's width and a bottom sheet
+    // below it, shut until a button opens it (`packages/dispatch/AGENTS.md`, "Phone
+    // acceptance"), so the card is on the screen at a desktop width and nowhere narrower. The
+    // phone row of this page waits on the dot alone, as the Inbox row waits on its heading
+    // alone.
     ready: (page) => {
       const connected = page.getByRole("status", { name: "connected" });
-      const wideEnoughForMargin = (page.viewportSize()?.width ?? 0) >= 1280;
+      const wideEnoughForMargin = wideLayout(page);
       return wideEnoughForMargin
         ? [
             connected,
@@ -441,13 +466,15 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
   route.layers.includes("shoot")
 );
 
-/** The desktop routes a phone viewport draws differently, a subset of `shotRoutes` by name.
+/** The routes a phone viewport draws differently, the rows `e2e/visual.e2e.ts` tags `@phone`
+ *  and the `visual-phone` project runs. Derived from the layer each entry carries, as
+ *  `shotRoutes` is, so a page joins this set by saying so in its own row.
  *
  *  A phone width is one under 768 px (`packages/dispatch/AGENTS.md`, "Phone acceptance"), where
  *  the shell hides the sidebar behind the navigation drawer and shows the compact top bar. That
- *  alone changes every page, so the ones named here are those whose own content the width
- *  rearranges rather than only its frame: the Inbox becomes the compact row list with no
- *  reading pane beside it, and the Spec's margin becomes a bottom sheet rather than a column
+ *  alone changes every page, so the entries that carry `shoot-phone` are those whose own content
+ *  the width rearranges rather than only its frame: the Inbox becomes the compact row list with
+ *  no reading pane beside it, and the Spec's margin becomes a bottom sheet rather than a column
  *  beside the document.
  *
  *  An issue's Conversation belongs in that company and is deliberately absent. At a phone width
@@ -457,7 +484,9 @@ export const shotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
  *  which moved the card above it and differed by 15,776 pixels. Waiting for the pill would be
  *  waiting for that race to go one way. The desktop row of the same page is not shot either: a
  *  turn arriving over the live socket changes its height there (its entry above says so). */
-export const phoneShotNames: readonly string[] = ["inbox", "issue-spec"];
+export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route) =>
+  route.layers.includes("shoot-phone")
+);
 
 /** Waits until `route`'s page has settled, which is more than drawn.
  *

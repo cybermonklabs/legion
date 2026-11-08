@@ -260,15 +260,15 @@ const multiprocessProjects = [
 // and one row at a time, and in no project above them (sjawhar/legion#2612).
 const clockSpecs = /(heavy-bodies|nested-directive)\.e2e\.ts/;
 
-// The two specs of the containerised visual review (`visual.e2e.ts`, `visual-phone.e2e.ts`),
-// which run in the `visual` and `visual-phone` projects at the end of this list and in no
-// project above them: a project whose configuration key equals one of theirs - the same engine,
-// viewport, origin and server-process count - would run the same row twice, which
+// The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
+// and `visual-phone` projects at the end of this list and in no project above them: a project
+// whose configuration key equals one of theirs - the same engine, viewport, origin and
+// server-process count - would run the same row twice, which
 // e2e/__tests__/row-configurations.test.ts refuses. `iphone` is that project for `visual-phone`,
 // which spreads the same device, and the three other projects that name a `testIgnore` name
 // this one too for the reason given above `webkit`: without a `testMatch` a project sees every
-// spec in this directory, so the ignore is what keeps these two files to their own projects.
-const visualSpecs = /visual(-phone)?\.e2e\.ts$/;
+// spec in this directory, so the ignore is what keeps this file to its own two projects.
+const visualSpecs = /visual\.e2e\.ts$/;
 
 // Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
 // project added here is one more the clock rows wait for.
@@ -493,15 +493,21 @@ const aloneProjects = [
 
 /**
  * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
- * comparing that page against a committed baseline in light and in dark
- * (e2e/visual.e2e.ts, e2e/visual-phone.e2e.ts).
+ * comparing that page against a committed baseline in light and in dark, and the pages a phone
+ * width rearranges once more in that viewport (e2e/visual.e2e.ts).
+ *
+ * Both projects run that one spec and split its rows by the ` @phone` tag its phone rows carry,
+ * the tag the suite already selects phone rows by (`phoneTagged` above): `visual-phone` greps
+ * it and `visual` inverts it, so every row runs under exactly one project and reads the
+ * baseline directory of that project alone. Two specs would be two copies of one head comment,
+ * which is what they were and how they drifted.
  *
  * A baseline a person takes and a baseline CI compares must be the same rendering, so both
  * projects run inside the pinned Playwright image and nowhere else: `e2e/visual-run.sh` seeds on
  * the host, starts that container and runs exactly these two projects in it. A run outside the
  * container reaches the rows, and every one of them skips itself, because the host's browser
  * builds, fonts and GPU stack are not the image's and its shots would be a different rendering
- * of the same page (the skip and its message are in the two specs).
+ * of the same page (the skip and its message are in the spec).
  *
  * They are declared unconditionally, never behind the variable that turns the rows on.
  * `e2e/__tests__/row-configurations.test.ts` lists this config in a subprocess whose environment
@@ -523,7 +529,8 @@ const aloneProjects = [
 const visualProjects = [
   {
     name: "visual",
-    testMatch: /visual\.e2e\.ts$/,
+    testMatch: visualSpecs,
+    grepInvert: phoneTagged,
     // A baseline is an input a person reads in a review, not an output of a row, so these files
     // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and are
     // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`
@@ -538,7 +545,8 @@ const visualProjects = [
   },
   {
     name: "visual-phone",
-    testMatch: /visual-phone\.e2e\.ts$/,
+    testMatch: visualSpecs,
+    grep: phoneTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
     workers: 1,

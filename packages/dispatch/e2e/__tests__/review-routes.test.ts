@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import { accessibilityExclusions } from "../accessibility-exclusions";
-import { phoneShotNames, reviewRoutes, scannedRoutes, shotRoutes } from "../review-routes";
+import { reviewRoutes, scannedRoutes, shotRoutes } from "../review-routes";
 import { walkRoutes } from "../two-builds-routes";
 
 // The review layers (an accessibility pass and a containerised visual review) open exactly the
@@ -44,11 +44,6 @@ describe("the review layers' route list", () => {
 
     const names = reviewRoutes.map((route) => route.name);
     expect(names.filter((name, index) => names.indexOf(name) !== index)).toEqual([]);
-  });
-
-  test("names only shot entries in the phone list", () => {
-    const shot = new Set(shotRoutes.map((route) => route.name));
-    expect(phoneShotNames.filter((name) => !shot.has(name))).toEqual([]);
   });
 
   // An entry of e2e/accessibility-exclusions.ts whose `route` names no scanned entry is inert:
