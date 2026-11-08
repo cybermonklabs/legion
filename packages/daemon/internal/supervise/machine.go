@@ -628,7 +628,7 @@ type Deps struct {
 	// the turn alone, a suspension held for that turn ends the process rather than replacing it,
 	// the wake pacing can park the relaunch the take-back has already begun, and a replacement
 	// the store or the runtime refused on the way still ended the turn (ProcessEnd). Every end
-	// but the one that changed nothing is told here, exactly once (ProcessEnd.TellsOwner). Nil
+	// but the one that changed nothing is told here, once per decision (ProcessEnd.TellsOwner). Nil
 	// tells no one — a daemon with no workflow has no owner to tell. It is called inside the
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)

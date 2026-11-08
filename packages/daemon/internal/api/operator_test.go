@@ -1184,7 +1184,8 @@ func TestListShowsTheStoredStepOfASupervisedClaim(t *testing.T) {
 // written exactly as production writes it and the machine keeps none of it (supervise's
 // putStep).
 //
-// Every route that answers through operatorAnswer is walked, and each is walked over a claim
+// Every route that answers through operatorAnswer is walked but one, the held-phase retry's 202
+// answer (retryClaim), which this test's retry does not reach; and each is walked over a claim
 // that takes it: the root's own stop is refused, since a tree root ends at its tree's close, so
 // stop is read over a worker of that tree, whose record is put where the stream's own call
 // would have left it. The order is the one the states allow — the claim is spawned, given a

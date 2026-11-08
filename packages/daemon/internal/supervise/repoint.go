@@ -65,9 +65,10 @@ type ProcessEnd string
 
 const (
 	// EndNotMade is the claim still holding the process the replacement found, and its turn with
-	// it: the take-back that replacement begins with was refused (interrupted), or the launch's
-	// own lifecycle recheck was (relaunchRefused). Nothing has happened to this worker, which is
-	// why it is the one end told to nobody (TellsOwner).
+	// it, with no launch queued: the take-back that replacement begins with was refused
+	// (interrupted), or the take-back landed and the launch's own lifecycle recheck refused
+	// (relaunchRefused). No process was let go and none is coming, so the next sweep posts over
+	// the claim again, which is why it is the one end told to nobody (TellsOwner).
 	EndNotMade ProcessEnd = "not made"
 	// EndRelaunched is the process let go and stopped and the claim's session brought back on a
 	// new one, which the claim records (launchNow).
@@ -104,12 +105,14 @@ func ProcessEnds() []ProcessEnd {
 
 // TellsOwner is whether this end is news for the claim's owner, which is the one thing the
 // machine decides about the telling: the call that tells is a single one (backstopStalledTurn),
-// so an end that tells, tells exactly once.
+// so an end that tells is told once per decision that reaches it. A stall can be decided twice:
+// a wake lives only in memory, so a daemon restart while a relaunch is parked forgets it, and
+// the next sweep decides the claim again and tells again.
 //
-// Every end but EndNotMade is something that happened to the worker — its task taken back, its
+// Every end but EndNotMade is something that happened to the worker — a relaunch committed, its
 // process stopped, its session brought back, its claim failed — and EndNotMade is the claim
-// exactly as the decision found it, which telling of would send an architect looking for a
-// recovery nobody made.
+// still holding its process with nothing queued to replace it, which telling of would send an
+// architect looking for a recovery nobody made.
 //
 // It is written as "everything but" rather than as a list of the ends that tell, because the
 // failure this rule exists against is silence: a value added to the type tells its owner before
