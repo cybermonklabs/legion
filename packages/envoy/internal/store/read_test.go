@@ -475,7 +475,7 @@ func TestAnUnsubscribeKeepsATopicAnotherWriterAddedToTheRow(t *testing.T) {
 	reg.StopWatch()
 	putInterest(t, delayed.KeyValue, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{added, dropped, kept}})
 
-	if err := reg.Remove(context.Background(), sessionID, []string{dropped}); err != nil {
+	if _, err := reg.Remove(context.Background(), sessionID, []string{dropped}, releasedByItsProcess); err != nil {
 		t.Fatalf("unsubscribe from %s: %v", dropped, err)
 	}
 	row, _, err := reg.RefreshAt(context.Background(), sessionID)

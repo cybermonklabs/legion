@@ -4529,6 +4529,7 @@ The death is seen twice over: at once, when the pod's worker stream closes and t
 and, for a death the stream never reported, on the next resync tick, which probes every located, ready-confirmed worker claim with the rules above.
 Either judgement is a probe's, never the closed stream by itself — a daemon restart closes every stream while the agents run on — and when a probe says the process is gone the daemon sends the Envoy listener `DELETE /v1/sessions/<the session the claim registered>?if_not_registered_after=<the moment that probe judged, in unix milliseconds>`.
 That clean stop makes the listener read the session `gone` at once, rather than `unresponsive` until the gone horizon ends, so the role claim that session held is released at the role reaper's next pass instead of an hour later, and the issue claims it held become another agent's to take at once instead of 20 minutes after it last registered (dispatch://INFRA-392).
+The reaper frees that claim once nobody has answered for it inside the live window and its holder's session is gone, which holds for a claim naming the process that held it and one that names none alike (dispatch://INFRA-783, which left that rule as it was).
 The moment is a condition, not a label, because the very decision that asks for the stop goes on to relaunch the claim under the same session id:
 the listener deletes the registration only while it was last written at or before that moment, under the same compare-and-swap it deletes at a read revision with, so a stop that lands after the relaunch has registered is refused there — `200 {"deleted":false,"reason":…}`, which the daemon logs as the registration it kept — rather than taking a working session's registration away.
 The request is bounded at 5 seconds, so a stop the listener does not answer is abandoned rather than left in flight.
@@ -4957,7 +4958,16 @@ each issue's pod (every role of it alike) and the image probe's.
   a rule narrower than the agents' URL parser, so a value load accepts never turns Dispatch off in an agent.
   The controller's `slack_post` refuses a reply linking an address inside the cluster.
   Like every `pod.env` variable, it reaches an agent with the start command of its next generation, so set it in the same restart that installs this release, which relaunches the controller once.
-  To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session; `legion claims stop` starts it fresh.
+  To hand a later change to a running agent, start its next generation with `legion claims suspend` and then `legion claims resume`, which resumes its session.
+  `legion claims stop` is not a second way to do that:
+  it ends the agent's process and retires its claim, and for a phase worker no pass the daemon makes on its own starts that claim again, not even the one that refills a slot whose worker holds no task.
+  The stop leaves the issue where it stood, in its phase, and if it held an admission slot it keeps that slot, with no worker in it;
+  an issue still waiting for a slot leaves the waiting line, because the next admission pass ends the start it was owed, unless a relaunch of that worker queued before the stop is still waiting to run.
+  A retired claim is no claim failure, so the stop writes no workflow fact and the issue's architect is not told.
+  What starts a stopped phase worker again is the workflow's own next start of its role:
+  a backward move into its phase, the promotion of a re-admitted root, or a production check's look after the issue's merge;
+  the retry of a held issue is a fourth, and it starts the worker only after something else has held the issue, since the stop holds nothing.
+  Each of these brings the worker back in the session the claim kept.
 
 - **The Legion machine-user sign-in.**
   `legion model-token` is a model `apiKey` command that signs a pod in to Cognito with its projected service-account token and prints the access token;

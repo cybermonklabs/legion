@@ -46,6 +46,8 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
   })
   const roles: unknown[] = []
   const advertised: unknown[] = []
+  /** The client instance each registration carried: the process the pane's claim must name. */
+  const instances: Array<string | undefined> = []
   const holders = new Map<string, string>()
   const listener = Bun.serve({
     port: 0,
@@ -53,8 +55,12 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
       const url = new URL(request.url)
       const interest = { session_id: SESSION, machine_id: "test", dir: root, topics: [] }
       if (request.method === "POST" && url.pathname === "/v1/interests/subscribe") {
-        const registration = (await request.json()) as { readonly capabilities?: unknown }
+        const registration = (await request.json()) as {
+          readonly capabilities?: unknown
+          readonly client_instance_id?: string
+        }
         advertised.push(registration.capabilities)
+        instances.push(registration.client_instance_id)
         // Every accepted registration is answered with the session's own consumer.
         return Response.json({
           ...interest,
@@ -158,7 +164,14 @@ test("a Legion pane's server registers on its transcript, claims its role, serve
         },
       },
     ])
-    expect(roles).toEqual([{ session_id: SESSION, role: claimToken, soft: true }])
+    // The claim names the process that made it — the one id this server minted and registers
+    // with — so the listener holds the role for this `claude` alone (dispatch://INFRA-783).
+    const instance = instances[0]
+    expect(instance).toMatch(/^[0-9a-f]{32}$/)
+    expect([...new Set(instances)]).toEqual([instance])
+    expect(roles).toEqual([
+      { session_id: SESSION, role: claimToken, soft: true, client_instance_id: instance },
+    ])
     // Dispatch refuses a mode the session does not advertise, and sends a Send by default: every
     // registration of the session carries both modes the bridge serves.
     expect(advertised.length).toBeGreaterThan(0)

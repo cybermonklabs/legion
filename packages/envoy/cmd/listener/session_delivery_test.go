@@ -425,7 +425,7 @@ func TestSessionConsumerCarriesTheGapAndTheUnsubscribeAcrossARefusedWrite(t *tes
 			return
 		}
 		fired = true
-		if err := rig.harness.registry.Remove(context.Background(), sessionID, []string{dropped}); err != nil {
+		if _, err := rig.harness.registry.Remove(context.Background(), sessionID, []string{dropped}, store.RoleReleaseAuthority{}); err != nil {
 			t.Errorf("unsubscribe from %s: %v", dropped, err)
 		}
 	}
