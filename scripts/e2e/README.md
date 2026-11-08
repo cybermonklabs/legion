@@ -1248,9 +1248,15 @@ runs, and every process stopped by its exact pid on exit:
   A7 and A18 put an operator's resume or a daemon's kill between a `gh` call and the reply; a
   stand-in file answers one label with a reply of the proof's own (A12's malformed reply, the one
   model step no real model gives on demand).
-- [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts): the run's asker, a session it registers with the
-  listener, served at a port of its own: what comes back on the asker's agent topic is a line of
-  `inbox.jsonl`, matched to its question by the listener's `In Reply To: <event id>`.
+- [`lib/envoy-inbox.ts`](lib/envoy-inbox.ts): the inbox of the run's two stand-in sessions, a core
+  NATS subscriber (`--nats`, `--record`, one `--watch <session>=<subject>[,<subject>]` each). It
+  watches the asker's own subject, `notifications.agent.<asker>`, and both passes' controller
+  lanes, `notifications.legion.<project token>.controller`, and writes each envelope that lands
+  there as a line of `inbox.jsonl` — when it came, the session the subject was watched for, and
+  its text as a session's deliverer renders it (`In Reply To: <event id>`, `Message:`, the
+  payload, `Topic: …`), the same dedupe key never twice. Neither subject can be heard through the
+  listener: it delivers nothing to a port of a session's own (`/v1/interests/subscribe` refuses
+  `port`) and drops a private stream subject, the controller lane included, from a registration.
 - The listener and Dispatch (`DISPATCH_IDENTITY=header:X-Dispatch-User`), the scratch Dispatch
   project mapped to `sjawhar/legion-smoke` (and to `LEGION_E2E_REPO_SECOND_OWNER` when given), and
   each daemon, all started with `env -i` and every variable named, so a pod's own `ENVOY_*`,
@@ -1315,9 +1321,10 @@ run refuses a provisioned directory other than the one the runtime looks in. Bot
 session bucket lapses with the bucket's 5-minute TTL. Every wait for a session to leave (after each
 agent is made, and in `suspend_agent`) is 420 s long; `resume_agent` waits for the session to be
 live again. A loop renews the run's asker's registration every minute, so a late answer still
-finds it live. The same registration subscribes a stand-in for each pass's controller (the operator
-launches no controller under tmux) to `notifications.legion.<project token>.controller`, so the
-controller notices the daemons publish land in `inbox.jsonl` under its session.
+finds it live: the registration carries no port, and the answer published on the asker's own
+subject is read from NATS by `lib/envoy-inbox.ts`, which also hears each pass's controller lane
+(the operator launches no controller under tmux), so the controller notices the daemons publish
+land in `inbox.jsonl` under the stand-in controller's session.
 
 **The checks**, per pass unless said:
 
@@ -1356,7 +1363,8 @@ controller notices the daemons publish land in `inbox.jsonl` under its session.
 - A8: one envelope sent twice, then again across a restart, gets one reply (`handed off again`
   logged); a kill -9 the moment the reply lands, a restart and a redelivery still one reply; a
   question to the planner sent as the replaced tester's session gets the planner's answer, which
-  creates no question for the tester; a person's edit of A3's comment creates none.
+  creates no question for the tester; a person's edit of A1's comment, on the open root issue (a
+  closed issue refuses every comment edit, `409 ISSUE_CLOSED`), creates none for the architect.
 - A9: two questions at once are answered in order; the resumed architect's first captured request
   holds each question and each answer (the first line of the message the asker received) once,
   and its turn quotes both.

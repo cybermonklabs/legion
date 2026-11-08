@@ -142,7 +142,6 @@ daemon_pid=
 port_pg=
 port_nats=
 port_proxy=
-port_inbox=
 port_listener=
 port_dispatch=
 port_daemon=
@@ -541,12 +540,18 @@ start_proxy() {
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/proxy.log' | grep -q 'recording-proxy listening'"
 }
 
+# start_inbox subscribes the run's inbox to the subjects of its two stand-in sessions over core
+# NATS: the asker's own agent subject, where an answer to one of its questions lands, and both
+# passes' controller lanes, `notifications.legion.<project token>.controller`. Neither can be heard
+# through the listener: a private stream subject is dropped from a registration, and the listener
+# delivers nothing to a session's port (/v1/interests/subscribe refuses one; cmd/listener/api.go).
 start_inbox() {
   local offset
-  pick_port port_inbox
   offset=$(log_size inbox)
-  start_process inbox "${service_env[@]}" "HOME=$work" bun "$root/scripts/e2e/lib/envoy-inbox.ts" --port "$port_inbox" \
-    --record "$evidence/inbox.jsonl"
+  start_process inbox "${service_env[@]}" "HOME=$work" bun "$root/scripts/e2e/lib/envoy-inbox.ts" \
+    --nats "nats://127.0.0.1:$port_nats" --record "$evidence/inbox.jsonl" \
+    --watch "$asker_session=notifications.agent.$asker_session" \
+    --watch "$controller_session=notifications.legion.alf$run_tag.controller,notifications.legion.alp$run_tag.controller"
   await_start inbox "$inbox_pid" 30 "the Envoy inbox" \
     sh -c "tail -c +$((offset + 1)) '$evidence/logs/inbox.log' | grep -q 'envoy-inbox listening'"
 }
@@ -706,19 +711,23 @@ more_than() {
   shift
   [ "$("$@")" -gt "$n" ]
 }
-# register_asker makes the run's own sender session live in the listener's registry, served by the
-# Envoy inbox: what comes back to it on its agent topic lands in $evidence/inbox.jsonl. With it, a
-# stand-in for the project's controller (the operator launches none under tmux) subscribes to both
-# passes' controller topics, `notifications.legion.<project token>.controller`, so every controller
-# notice the daemons publish lands there too, under its session.
+# register_asker makes the run's own sender session live in the listener's registry, so a send in
+# its name resolves and the answer to it is published on its own agent subject; the inbox hears
+# that subject over core NATS (start_inbox), since this listener delivers to no port of a
+# session's own. The registration carries no port for that reason: /v1/interests/subscribe refuses
+# one (cmd/listener/api.go), and a self-subscribed session with no consumer resolves Skipped, which
+# is the 200 the send wants. The second registration is the stand-in for the project's controller
+# (the operator launches none under tmux), naming both passes' controller topics; the listener
+# drops those from the stored row (a private stream subject, bus.ReachesPrivateStreamSubject), so
+# the controller notices the daemons publish are heard on core NATS too.
 asker_session=legion-e2eal-asker-$$
 controller_session=legion-e2eal-controller-$$
 register_asker() {
-  envoy -f -o /dev/null --data "$(jq -cn --arg s "$asker_session" --argjson port "$port_inbox" --arg dir "$work" \
-    '{session_id: $s, topics: [], port: $port, host: "127.0.0.1", dir: $dir, title: "answer-loop rig asker", capabilities: ["steer"], driving: true, self_subscribed: true}')" \
+  envoy -f -o /dev/null --data "$(jq -cn --arg s "$asker_session" --arg dir "$work" \
+    '{session_id: $s, topics: [], dir: $dir, title: "answer-loop rig asker", capabilities: ["steer"], driving: true, self_subscribed: true}')" \
     "$(listener_url /v1/interests/subscribe)"
-  envoy -f -o /dev/null --data "$(jq -cn --arg s "$controller_session" --argjson port "$port_inbox" --arg dir "$work" --arg tag "$run_tag" \
-    '{session_id: $s, topics: ["notifications.legion.alf\($tag).controller", "notifications.legion.alp\($tag).controller"], port: $port, host: "127.0.0.1", dir: $dir, title: "answer-loop rig controller", capabilities: ["steer"], driving: true, self_subscribed: true}')" \
+  envoy -f -o /dev/null --data "$(jq -cn --arg s "$controller_session" --arg dir "$work" --arg tag "$run_tag" \
+    '{session_id: $s, topics: ["notifications.legion.alf\($tag).controller", "notifications.legion.alp\($tag).controller"], dir: $dir, title: "answer-loop rig controller", capabilities: ["steer"], driving: true, self_subscribed: true}')" \
     "$(listener_url /v1/interests/subscribe)"
 }
 # controller_notices KIND NEEDLE: how many notices of KIND the controller stand-in received whose
@@ -1135,7 +1144,7 @@ start_proxy
 start_inbox
 start_listener "$work/branch"
 start_dispatch "$work/branch" dispatch
-note "NATS $port_nats (pid $nats_pid), proxy $port_proxy (pid $proxy_pid), inbox $port_inbox (pid $inbox_pid), listener $port_listener (pid $listener_pid), Dispatch $port_dispatch (pid $dispatch_pid)"
+note "NATS $port_nats (pid $nats_pid), proxy $port_proxy (pid $proxy_pid), inbox (pid $inbox_pid), listener $port_listener (pid $listener_pid), Dispatch $port_dispatch (pid $dispatch_pid)"
 # The asker's session lapses with the session bucket's TTL like any other: a loop renews it every
 # minute, so an answer that comes late still finds it live.
 (while :; do
@@ -1200,7 +1209,7 @@ envoy_ask() { envoy_ask_text "$1" "$2" "$(question_text "$3") (question $3 of ru
 # send's idempotency key, so the same KEY is the same question.
 envoy_ask_text() {
   local kind=$1 target=$2 text=$3 key=${4:-} body out code
-  register_asker
+  register_asker || note "the listener refused the asker's subscribe; the send follows anyway"
   out=$work/ask-$RANDOM$RANDOM.json
   if [ "$kind" = session ]; then
     body=$(jq -cn --arg s "$target" --arg m "$text" --arg from "$asker_session" --arg key "$key" \
@@ -1219,8 +1228,8 @@ inbox_reply() {
   [ -f "$evidence/inbox.jsonl" ] || return 1
   jq -s -e -r --arg e "In Reply To: $1" '[.[] | select(.text | contains($e)) | .text] | .[0]' "$evidence/inbox.jsonl"
 }
-# inbox_message EVENT prints only the message of that reply: the listener renders a delivery as
-# header lines, `Message:`, the message, a blank line and `Topic: …` (internal/session.Text).
+# inbox_message EVENT prints only the message of that reply: the inbox renders an envelope as a
+# reply header, `Message:`, the message, a blank line and `Topic: …` (lib/envoy-inbox.ts).
 inbox_message() {
   inbox_reply "$1" | jq -R -s -r 'split("\nMessage:\n") | (.[1] // .[0]) | sub("\n\nTopic: [^\n]*\n?$"; "")'
 }
@@ -1343,27 +1352,28 @@ release() { rm -f "$work/proxy-hold/$1"; }
 # pr_comments NUMBER MARKER prints the smoke repository's comments on the pull request that hold
 # MARKER, as {id, user, body}.
 pr_comments() {
-  timeout 60 gh api "repos/$repo/issues/$1/comments?per_page=100" |
-    jq -c --arg m "$2" '[.[] | select(.body | contains($m)) | {id, user: .user.login, body}]'
+  timeout 60 gh api "repos/$repo/issues/$1/comments?per_page=100" 2>/dev/null |
+    jq -c --arg m "$2" '[.[]? | select(.body | contains($m)) | {id, user: .user.login, body}]' || printf '[]\n'
 }
 
 check_a1() {
   criterion A1 "a question on a parked tree's architect's ask is answered in the thread within four minutes, nothing of the tree starting" || return 0
-  local asks ask before panes_before panes_after reply
-  asks=$(dispatch_get "issues/${agent[$store:root]}/asks?thread=1")
-  ask=$(jq -r --arg s "${agent[$store:architect.session]}" '[(.asks // .)[] | select(.author.id == $s)] | last | .id // empty' <<<"$asks")
+  local asks ask a1_comment before panes_before panes_after reply
+  asks=$(dispatch_get "issues/${agent[$store:root]}/asks?thread=1") || asks='[]'
+  ask=$(jq -r --arg s "${agent[$store:architect.session]}" '[.[] | select(.author.id == $s)] | last | .id // empty' <<<"$asks")
   [ -n "$ask" ] || {
     record_result A1 FAIL "the parked architect opened no ask on ${agent[$store:root]}"
     return 0
   }
-  panes_before=$(TMUX_TMPDIR="$work/tmux" "$tmux_bin" -L "legion-${project,,}" list-panes -a -F '#{pane_id}' 2>/dev/null | wc -l)
+  panes_before=$(TMUX_TMPDIR="$work/tmux" "$tmux_bin" -L "legion-${project,,}" list-panes -a -F '#{pane_id}' 2>/dev/null | wc -l || true)
   before=$(date +%s)
-  dispatch_human POST "issues/${agent[$store:root]}/comments" "$(jq -cn --arg ask "$ask" --arg body "$(question_text architect-decision)" \
-    '{body: $body, ask_id: $ask}')" >/dev/null
+  a1_comment=$(dispatch_human POST "issues/${agent[$store:root]}/comments" "$(jq -cn --arg ask "$ask" --arg body "$(question_text architect-decision)" \
+    '{body: $body, ask_id: $ask}')" | jq -r .id)
+  agent[$store:a1.comment]=$a1_comment
   thread() { dispatch_get "asks/$ask" | jq -e --arg s "${agent[$store:architect.session]}" '[.replies[] | select(.author.id == $s)] | length > 0'; }
   if soft_wait 240 "the architect's answer in ask $ask's thread" thread; then
     reply=$(dispatch_get "asks/$ask" | jq -r --arg s "${agent[$store:architect.session]}" '[.replies[] | select(.author.id == $s)] | last | .body')
-    panes_after=$(TMUX_TMPDIR="$work/tmux" "$tmux_bin" -L "legion-${project,,}" list-panes -a -F '#{pane_id}' 2>/dev/null | wc -l)
+    panes_after=$(TMUX_TMPDIR="$work/tmux" "$tmux_bin" -L "legion-${project,,}" list-panes -a -F '#{pane_id}' 2>/dev/null | wc -l || true)
     note "answered after $(($(date +%s) - before)) s: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     note "claims of the tree: $(claims_cmd list --json | jq -c --arg t "${agent[$store:root]}" '[.claims[] | select(.tree == $t) | {role, state}]'); panes $panes_before → $panes_after"
     if answer_holds architect-decision "$reply" >/dev/null && [ "$panes_after" -le "$panes_before" ] &&
@@ -1405,7 +1415,7 @@ check_a3() {
   local issue=${agent[$store:tester.issue]} session=${agent[$store:tester.session]} collaborators token comment id reply='' control before
   set_status "$issue" "done"
   note "closed $issue: status $(dispatch_get "issues/$issue" | jq -r .status)"
-  collaborators=$(dispatch_get "issues/$issue/collaborators")
+  collaborators=$(dispatch_get "issues/$issue/collaborators") || collaborators='{"agents":[],"legion_registry":"unavailable"}'
   note "collaborators of $issue: registry $(jq -r .legion_registry <<<"$collaborators"); agents $(jq -c '[.agents[] | {session_id, legion: (.legion | if . then {role, role_token, replaced_by} else null end)}]' <<<"$collaborators")"
   token=$(jq -r --arg s "$session" '[.agents[] | select(.session_id == $s and .legion.role == "tester" and .legion.replaced_by == null) | .legion.role_token] | first // empty' <<<"$collaborators")
   if [ -z "$token" ]; then
@@ -1417,7 +1427,6 @@ check_a3() {
   comment=$(dispatch_human POST "issues/$issue/comments" "$(jq -cn --arg body "@tester $(question_text tester-closed-thread) (question tester-closed-thread of run $run_tag)" \
     --arg t "role:$token" '{body: $body, mentions: [{target: $t}]}')")
   id=$(jq -r .id <<<"$comment")
-  agent[$store:a3.comment]=$id
   note "the person's comment $id on closed $issue mentions role:$token; deliveries $(jq -c '[.deliveries[]? | {target, state, session_id, error}]' <<<"$comment")"
   answered() { dispatch_get "issues/$issue/comments" | jq -e --arg id "$id" --arg s "$session" 'any(.[]; .reply_to == $id and .author.id == $s)'; }
   if soft_wait 240 "the tester's reply to comment $id" answered; then
@@ -1470,7 +1479,7 @@ check_passed_on() {
 # ask_of SESSION ISSUE prints the id of the newest ask SESSION opened on ISSUE, empty for none;
 # ask_reply_by ASK SESSION prints SESSION's newest reply on ASK's thread, or fails.
 ask_of() {
-  dispatch_get "issues/$2/asks?thread=1" | jq -r --arg s "$1" '[(.asks // .)[] | select(.author.id == $s)] | last | .id // empty'
+  dispatch_get "issues/$2/asks?thread=1" | jq -r --arg s "$1" '[.[] | select(.author.id == $s)] | last | .id // empty' || true
 }
 ask_reply_by() { dispatch_get "asks/$1" | jq -e -r --arg s "$2" '[.replies[] | select(.author.id == $s)] | last | .body'; }
 # notices_in_conversation NAME NEEDLE: how many entries of NAME's conversation that are not its own
@@ -1543,7 +1552,7 @@ check_a6() {
   child6=$(new_rig_issue "Answer loop proof child: parked under a running tree (A6)" "$root6")
   stop_daemon
   for issue in "$root6" "$child6"; do
-    seq=$(dispatch_events "$issue" | jq -s '[.[].seq] | max // 0')
+    seq=$(dispatch_events "$issue" | jq '[.[].seq] | max // 0')
     pg_sql "$daemon_db" "insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
       values ('$issue', '$root6', '$project', 'A6 $issue', $([ "$issue" = "$root6" ] && printf null || printf "'%s'" "$root6"), 'implementing', 1, 'in_progress', 'a', true, $seq, 'in_progress', '$repo', 'main', '$repo')" >/dev/null
   done
@@ -1555,8 +1564,8 @@ check_a6() {
   agent[$store:a6_architect.token]=$architect
   agent[$store:a6_architect.issue]=$root6
   soft_wait 600 "the running tree's architect to hold its role" claim_is "$architect" '.state | IN("ready", "idle")' || true
-  agent[$store:a6_architect.session]=$(claim_json "$architect" | jq -r .session)
-  agent[$store:a6_architect.file]=$(claim_json "$architect" | jq -r .sessionFile)
+  agent[$store:a6_architect.session]=$(claim_json "$architect" | jq -r .session || true)
+  agent[$store:a6_architect.file]=$(claim_json "$architect" | jq -r .sessionFile || true)
   spawn_agent a6_child tester "$root6" "$child6" \
     "$(jq -r .agents.a6_child.task "$questions_file") Then make exactly one tool call: open one Dispatch ask on $child6 asking a person whether to quarantine TestGarnetFalcon, and wait."
   await_turn a6_child
@@ -1668,7 +1677,7 @@ check_a8() {
     [ "$(inbox_replies "$event3")" = 0 ] || break
     sleep 0.1
   done
-  kill -KILL "$daemon_pid"
+  kill -KILL "$daemon_pid" 2>/dev/null || note "the daemon $daemon_pid was already gone before the kill"
   daemon_pid=
   note "killed the daemon $(inbox_replies "$event3") reply after its post; the question's last state before the kill: $(boot_log | jq -s -c --arg s "$planner" '[.[] | select(.msg == "answers: question" and .session == $s) | .state] | last')"
   start_daemon "$work/branch/legion" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
@@ -1687,13 +1696,14 @@ check_a8() {
   note "the planner's answers posted $posted_before → $(answers_lines "answers: question" "$planner" posted); questions for the replaced tester $own_before → $(answers_lines "answers: question" "${agent[$store:tester_old.session]}")"
   [ "$(answers_lines "answers: question" "$planner" posted)" -gt "$posted_before" ] &&
     [ "$(answers_lines "answers: question" "${agent[$store:tester_old.session]}")" = "$own_before" ] && ok_own=1
-  # An edit: the person edits the comment A3's question was, on the closed issue.
-  if [ -n "${agent[$store:a3.comment]:-}" ]; then
-    edit_before=$(answers_lines "answers: question" "${agent[$store:tester.session]}")
-    dispatch_human PATCH "comments/${agent[$store:a3.comment]}" "$(jq -cn --arg b "@tester $(question_text tester-closed-thread) (edited)" '{body: $b}')" >/dev/null
+  # An edit: the person edits the comment A1's question was, on the open root issue. A closed
+  # issue refuses every comment edit (409 ISSUE_CLOSED, comment_actions.go:19-31 lockedComment).
+  if [ -n "${agent[$store:a1.comment]:-}" ]; then
+    edit_before=$(answers_lines "answers: question" "${agent[$store:architect.session]}")
+    dispatch_human PATCH "comments/${agent[$store:a1.comment]}" "$(jq -cn --arg b "$(question_text architect-decision) (edited)" '{body: $b}')" >/dev/null
     sleep 60
-    note "after the person edited comment ${agent[$store:a3.comment]}: questions for the tester $edit_before → $(answers_lines "answers: question" "${agent[$store:tester.session]}")"
-    [ "$(answers_lines "answers: question" "${agent[$store:tester.session]}")" = "$edit_before" ] && ok_edit=1
+    note "after the person edited comment ${agent[$store:a1.comment]}: questions for the architect $edit_before → $(answers_lines "answers: question" "${agent[$store:architect.session]}")"
+    [ "$(answers_lines "answers: question" "${agent[$store:architect.session]}")" = "$edit_before" ] && ok_edit=1
   fi
   if [ "$ok_twice$ok_kill$ok_own$ok_edit" = 1111 ]; then
     record_result A8 PASS "one envelope delivered three times across a restart: one answer; killed just after the post and delivered again: one answer; the loop's own answer and an edit were not answered"
@@ -1704,10 +1714,10 @@ check_a8() {
 
 # first_request_after LABEL N prints the request body of LABEL's first model call after ordinal N.
 first_request_after() {
-  jq -s -c --arg l "$1" --argjson n "$2" '[.[] | select(.label == $l and .ordinal > $n)] | sort_by(.ordinal) | (.[0].request_body // null)' "$evidence/model-calls.jsonl"
+  jq -s -c --arg l "$1" --argjson n "$2" '[.[] | select(.label == $l and .ordinal > $n)] | sort_by(.ordinal) | (.[0].request_body // null)' "$evidence/model-calls.jsonl" 2>/dev/null || printf 'null\n'
 }
 # occurrences TEXT NEEDLE: how many times NEEDLE occurs in TEXT.
-occurrences() { grep -oF -- "$2" <<<"$1" | wc -l; }
+occurrences() { grep -oF -- "$2" <<<"$1" | wc -l || true; }
 
 check_a9() {
   criterion A9 "two questions at once are answered in order, and the resumed agent holds both once and carries on from them" || return 0
@@ -1724,8 +1734,8 @@ check_a9() {
     return 0
   }
   first=$(jq -s -r --arg a "In Reply To: $e1" --arg b "In Reply To: $e2" '[.[] | select((.text | contains($a)) or (.text | contains($b)))] | .[0].text' "$evidence/inbox.jsonl")
-  a1=$(inbox_message "$e1" | head -1 | head -c 60)
-  a2=$(inbox_message "$e2" | head -1 | head -c 60)
+  a1=$(inbox_message "$e1" | awk 'NR == 1 { first = substr($0, 1, 60) } END { print first }')
+  a2=$(inbox_message "$e2" | awk 'NR == 1 { first = substr($0, 1, 60) } END { print first }')
   note "answers: 1: $(inbox_message "$e1" | head -c 200 | tr '\n' ' ') | 2: $(inbox_message "$e2" | head -c 200 | tr '\n' ' ')"
   m=$(proxy_count agents)
   resume_agent architect || true
@@ -1750,7 +1760,7 @@ check_a9() {
 # daemon_request_for TEXT prints the request body of the loop's first model call (this store's
 # daemon label) whose body holds TEXT.
 daemon_request_for() {
-  jq -s -c --arg l "daemon-$store" --arg t "$1" '[.[] | select(.label == $l and (.request_body | tostring | contains($t)))] | sort_by(.ordinal) | (.[0].request_body // null)' "$evidence/model-calls.jsonl"
+  jq -s -c --arg l "daemon-$store" --arg t "$1" '[.[] | select(.label == $l and (.request_body | tostring | contains($t)))] | sort_by(.ordinal) | (.[0].request_body // null)' "$evidence/model-calls.jsonl" 2>/dev/null || printf 'null\n'
 }
 
 # check_a10: A10's Claude Code leg (the pre-change reviewer, answered twice within the cache
@@ -1860,7 +1870,7 @@ check_a14() {
   criterion A14 "a cost line per answer, cache writes included, recomputed from the captured usage and the prices" || return 0
   local lines bad
   lines=$(boot_log | jq -c 'select(.msg == "answers: answered" and .fault == "")')
-  bad=$(jq -s -c '[.[] | select(.model | test("claude-sonnet-5-5")) | select((((.inputTokens * 3) + (.outputTokens * 15) + (.cacheWriteTokens * 3.75) + (.cacheReadTokens * 0.3)) / 1000000 - .costUSD | fabs) > 0.000001)]' <<<"$lines")
+  bad=$(jq -s -c '[.[] | select(((.model // "") | test("claude-sonnet-5-5"))) | select(((((.inputTokens // 0) * 3) + ((.outputTokens // 0) * 15) + ((.cacheWriteTokens // 0) * 3.75) + ((.cacheReadTokens // 0) * 0.3)) / 1000000 - (.costUSD // 0) | fabs) > 0.000001)]' <<<"$lines")
   note "cost lines: $(jq -s -c 'map({question, model, inputTokens, outputTokens, cacheWriteTokens, cacheReadTokens, costUSD})' <<<"$lines")"
   if [ -n "$lines" ] && [ "$bad" = "[]" ]; then
     record_result A14 PASS "every answer's costUSD equals its tokens at the configured prices, cache writes included"
@@ -1962,7 +1972,7 @@ check_a17() {
     for id in $(jq -r '.[].id' <<<"$comments"); do github_writes+=("comment:$id"); done
     gh_line=$(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "implementer")' | tail -1)
     reply=$(inbox_reply "$event")
-    note "comments: $(jq -c 'map({id, user, footer: (.body | capture("legion: (?<f>\\{[^}]*\\})").f // null)})' <<<"$comments")"
+    note "comments: $(jq -c 'map({id, user, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)})' <<<"$comments")"
     note "gh line: $gh_line"
     note "reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     jq -e --arg login "$implement_app_login" --arg s "${agent[$store:implementer.session]}" \
@@ -2011,7 +2021,7 @@ check_a18() {
   event=${sent#* }
   if hold_after_tool "$label" "$n"; then
     note "the comment's gh line before the kill: $(boot_log | jq -c 'select(.msg == "answers: gh" and .role == "implementer")' | tail -1)"
-    kill -KILL "$daemon_pid"
+    kill -KILL "$daemon_pid" 2>/dev/null || note "the daemon $daemon_pid was already gone before the kill"
     daemon_pid=
     start_daemon "$daemon_bin" "$daemon_config" "$daemon_log" "$daemon_home" "$daemon_profile" "$daemon_plugin_dir"
     release "$label"
@@ -2089,7 +2099,7 @@ check_a19() {
   suspend_agent reviewer || true
   claims_cmd suspend --claim "${agent[$store:a19_architect.token]}" >/dev/null || true
   stop_daemon
-  seq=$(dispatch_events "$issue" | jq -s '[.[].seq] | max // 0')
+  seq=$(dispatch_events "$issue" | jq '[.[].seq] | max // 0')
   pg_sql "$daemon_db" "insert into issues (key, tree, project, title, parent, phase, generation, status, rank, handed_over, last_dispatch_seq, dispatch_status, repo, default_branch, github_repo)
     values ('$issue', '$issue', '$project', 'Answer loop proof: the review round ($store)', null, 'reviewing', 1, 'in_progress', 'a', true, $seq, 'in_progress', '$repo', 'main', '$repo')" >/dev/null
   pg_sql "$daemon_db" "insert into phases (issue, role, claim, handoff_commit, rounds, verdict, completed_at) values ('$issue', 'reviewer', '$token', '$head', 1, '', now() - interval '2 minutes')" >/dev/null
@@ -2112,10 +2122,10 @@ check_a19() {
     note "the reviewer's reply: $(head -c 300 <<<"$reply" | tr '\n' ' ')"
     note "its gh line: $(boot_log | jq -c --arg i "$issue" 'select(.msg == "answers: gh" and .issue == $i)' | tail -1)"
   fi
-  ended() { review_record "$issue" | jq -e '.phase != "reviewing"' >/dev/null; }
+  ended() { review_record "$issue" | jq -e '(.phase? // "reviewing") != "reviewing"' >/dev/null; }
   soft_wait 300 "the daemon to end the round" ended || true
   after=$(review_record "$issue")
-  review=$(timeout 60 gh api "repos/$repo/pulls/$number/reviews" | jq -c --arg s "$session" '[.[] | select(.state == "APPROVED" and (.body | contains("\"session\":\"" + $s + "\""))) | {id, user: .user.login, commit_id, footer: (.body | capture("legion: (?<f>\\{[^}]*\\})").f // null)}]')
+  review=$(timeout 60 gh api "repos/$repo/pulls/$number/reviews" 2>/dev/null | jq -c --arg s "$session" '[.[]? | select(.state == "APPROVED" and (.body | contains("\"session\":\"" + $s + "\""))) | {id, user: .user.login, commit_id, footer: (.body | [capture("legion: (?<f>\\{[^}]*\\})").f] | first // null)}]' || printf '[]\n')
   note "the reviewer's approvals on GitHub: $review"
   note "the round after its approval: $after; the daemon's lines for $issue: $(boot_log | jq -s -c --arg i "$issue" '[.[] | select((.issue // "") == $i and ((.msg | startswith("answers:")) | not)) | .msg] | .[-6:]')"
   jq -e --arg login "$review_app_login" --arg h "$head" 'length == 1 and .[0].user == $login and .[0].commit_id == $h' <<<"$review" >/dev/null &&
