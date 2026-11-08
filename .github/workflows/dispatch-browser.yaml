@@ -863,6 +863,109 @@ jobs:
           name: dispatch-browser-multiprocess-test-results-${{ github.run_attempt }}
           path: packages/dispatch/e2e/test-results
 
+  # The containerised visual review: every page of packages/dispatch/e2e/review-routes.ts's shot
+  # set compared against a committed baseline, in light and in dark, at a desktop width and three
+  # of them again at a phone width. Forty-eight comparisons.
+  #
+  # The full lane only. A snapshot difference holds the merge queue, which is the point: a palette
+  # or a layout regression is refused at the merge rather than found the next morning, and the
+  # nightly tells nobody but the default branch's last committer (that workflow's own head says
+  # so). The cost is that a flaky comparison would hold the queue too, which is why the tolerance
+  # is measured from zero rather than defaulted (packages/dispatch/e2e/visual.e2e.ts).
+  #
+  # Why a `docker run` inside a step and not a job-level `container:`. A `container:` on any job
+  # of this file drops every `go build` the suite starts out of check-ci-filters.sh's reduction
+  # (ci_filter_coverage.py's `shell_reason`, "the job runs in a container:"), which then counts
+  # each as reading every Go file of the repository and fails the dispatch_browser filter. The
+  # `env:` rule of the shard job's head holds here for the same reason, and so does its remedy:
+  # every variable this job's run needs is exported on the command line.
+  #
+  # It writes no blob report. The merge job's row accounting reads legs out of the job names with
+  # a capture that knows `shard (N)` and `alone (P)` alone, and it fails the run when the merged
+  # report holds rows no leg printed; the multiprocess job writes none for the same reason. This
+  # job joins `merge`'s `needs:` and the verdict step's pair list instead, which is what makes a
+  # red visual job fail the workflow.
+  #
+  # PROVISIONAL BUDGETS. This job has never run, so the figures below are not measured and are
+  # replaced, by this file's rule, from the first full-lane run of this head: a step's budget is
+  # its measured maximum plus 15 per cent, rounded up to the next whole minute, with a floor of
+  # two minutes, and the job's is the sum of its step budgets plus the measured maximum of every
+  # step without one. Until then they are the shard job's same steps, with the browser step given
+  # the shard job's 9 minutes for 24 rows one at a time.
+  visual:
+    if: inputs.lane == 'full'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      # go-envoy, restored only: this job's run-server.sh builds the Dispatch server, not the
+      # listener and natsd the family's saving jobs build, so it saves none.
+      - id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-envoy-{0}-', runner.os) || '' }}
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - name: Build contracts for dispatch e2e
+        # The e2e helpers the visual specs import read some of contracts' values from its built
+        # dist/, through the Node resolution the shard job's step of this name describes. This
+        # job's Playwright runs under node in the container, which resolves it the same way.
+        run: bun run build
+        working-directory: packages/contracts
+      - name: Build dispatch dashboard
+        run: |
+          bun run build:web
+          ls -l web/dist/THIRD_PARTY_NOTICES.txt
+        working-directory: packages/dispatch
+      # No Playwright install and neither browser cache: the image below carries all three
+      # engines at the Playwright version bun.lock pins, which is what makes its shots the ones
+      # a person's `--update-snapshots` takes.
+      - name: Pull the pinned Playwright copy
+        # The copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml), named by the one
+        # digest packages/dispatch/e2e/visual-run.sh runs, pulled here so the run below does not
+        # pay for it inside the browser step's own budget. A failed pull is a fault of this
+        # repository's own package, so it fails here and says so.
+        run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      - name: Browser-test dispatch dashboard against its baselines
+        timeout-minutes: 9
+        run: |
+          # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts among
+          # it. TMPDIR, the lane's image and the worker count are exported on the command line,
+          # not in this step's `env:`, for the reason the job's head gives.
+          export TMPDIR="$RUNNER_TEMP"
+          # pgvector, the copy in ghcr.io/cybermonklabs/legion/ci (.github/ci-images.yaml), as the
+          # shard job's lanes use.
+          export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          # One lane. Each project of the two runs one worker (e2e/playwright.config.ts), since
+          # two comparisons drawing at once on one machine is the contention that makes one read
+          # a half-drawn frame, so a second lane would stand idle.
+          export DISPATCH_E2E_WORKERS=1
+          bun e2e/run.ts -- e2e/visual-run.sh
+        working-directory: packages/dispatch
+      # Always, not on failure alone: a reader of a green run wants the report too, and a run
+      # that wrote a baseline no tree holds yet - a route this layer gained - leaves it here,
+      # which is how that file reaches the pull request from a machine with no container.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: dispatch-browser-visual-${{ github.run_attempt }}
+          path: |
+            packages/dispatch/e2e/test-results
+            packages/dispatch/e2e/__screenshots__
+            ${{ runner.temp }}/dispatch-e2e-run-*/lane-*/log/*.log
+          if-no-files-found: ignore
+
   # What the legs together ran. It joins every shard's and every alone leg's blob report into one
   # report, publishes three readings of it - the rows, the flake rate and the legs that did not
   # succeed - and is the one job of this workflow that reports ci-ok, so a run gets one verdict
@@ -881,7 +984,7 @@ jobs:
   # own jobs for the same reason. The step-level `if: always()` inside this job are a different
   # thing and stay: a step's condition is about the steps before it, not about the run.
   merge:
-    needs: [shard, alone, multiprocess]
+    needs: [shard, alone, multiprocess, visual]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     # The budget is measured. This job ran 27 s on the pull-request lane of this head
@@ -1225,7 +1328,7 @@ jobs:
         run: |
           failed=0
           for pair in "shard:${{ needs.shard.result }}" "alone:${{ needs.alone.result }}" \
-            "multiprocess:${{ needs.multiprocess.result }}"; do
+            "multiprocess:${{ needs.multiprocess.result }}" "visual:${{ needs.visual.result }}"; do
             case "${pair#*:}" in
               success | skipped) ;;
               *)

@@ -172,6 +172,7 @@ def at_docs(step):
 # dispatch-browser.yaml that holds the step.
 BROWSER_JOB = "dispatch-browser"
 BROWSER_SHARD, BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "shard", "alone", "multiprocess", "merge"
+BROWSER_VISUAL = "visual"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
 
@@ -731,6 +732,11 @@ BROWSER_INSTALL = "Install the lane's Playwright browsers"
 BROWSER_APT_KEY = "Compute the apt archive cache key"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
 BROWSER_SELECT_STEP = "Take the newest attempt of each leg's blob report"
+# The visual job's own step, which runs e2e/visual-run.sh: that script seeds on the host, where
+# e2e/run-server.sh's `go build` of the Dispatch server has already run, and then runs Playwright
+# in the pinned container. The `go build` the Run above pins is the same one, started the same
+# way, so this job adds no command of its own.
+BROWSER_VISUAL_SPECS = "Browser-test dispatch dashboard against its baselines"
 STALL = "envoy-session-stall"
 STALL_CLIENT = "Stall test of envoy-client's NATS connection options"
 LOADTEST_RUN_STEP = "One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)"
@@ -1012,7 +1018,8 @@ GATES = [
         ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
-         f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} run the suite, "
+         f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} and "
+         f"{at_browser(BROWSER_VISUAL_SPECS, BROWSER_VISUAL)} run the suite, "
          f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
          f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
