@@ -659,6 +659,44 @@ test("phone status labels and Done load are readable and reachable @phone", asyn
   }
 });
 
+test("on a desktop the status bar spans its box and stays one short line", async ({ browser }) => {
+  await createProject({ key: "CORE", name: "Core" });
+  for (const [status, title] of [
+    ["todo", "Queued member"],
+    ["testing", "Testing member"],
+    ["backlog", "Parked member"],
+  ] as const) {
+    const issue = await createIssue({ project: "CORE", title });
+    await patchIssue(issue.key, { status });
+  }
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/projects/CORE/issues");
+    const strip = page.getByRole("group", { name: "Issues by status" });
+    await expect(strip.getByRole("button", { name: "Done: load", exact: true })).toBeAttached();
+    const geometry = await strip.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const buttons = [...element.querySelectorAll("button")].map((button) =>
+        button.getBoundingClientRect()
+      );
+      return {
+        left: box.left,
+        right: box.right,
+        height: box.height,
+        first: buttons[0]?.left ?? 0,
+        last: buttons.at(-1)?.right ?? 0,
+      };
+    });
+    expect(Math.abs(geometry.first - geometry.left)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.right - geometry.last)).toBeLessThanOrEqual(1);
+    expect(geometry.height).toBeLessThanOrEqual(32);
+  } finally {
+    await context.close();
+  }
+});
+
 test("a session creator renders its live name, state and conversation link @phone", async ({
   browser,
 }) => {

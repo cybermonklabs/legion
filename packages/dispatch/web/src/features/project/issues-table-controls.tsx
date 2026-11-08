@@ -516,7 +516,7 @@ export function IssueTableStatus({
       </div>
       <fieldset
         aria-label="Issues by status"
-        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 ${surfaceMutedBg}`}
+        className={`flex min-h-11 min-w-0 overflow-x-auto rounded-md border-0 p-0 md:min-h-7 ${surfaceMutedBg}`}
       >
         {issueStatuses.map((status) => {
           const count = statusCounts.get(status) ?? 0;
@@ -524,7 +524,7 @@ export function IssueTableStatus({
           const on = statusPicks.length === 0 || statusPicks.includes(status);
           return (
             <button
-              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
+              className={`min-h-11 shrink-0 px-3 py-2 text-left text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${issueStatusScale[status]} ${on ? "" : "opacity-30"}`}
               key={status}
               onClick={() =>
                 statusColumn?.setFilterValue(
@@ -532,6 +532,9 @@ export function IssueTableStatus({
                 )
               }
               title={`${statusLabel(status)}: ${count}`}
+              // Each status takes width in proportion to its count, so the bar spans the box
+              // and reads as shares; a phone keeps 44 px targets and scrolls sideways instead.
+              style={{ flexGrow: count }}
               type="button"
             >
               {statusLabel(status)} {count}
@@ -540,7 +543,7 @@ export function IssueTableStatus({
         })}
         {doneLoaded ? null : (
           <button
-            className={`min-h-11 shrink-0 px-3 py-2 text-xs font-medium whitespace-nowrap ${issueStatusScale.done}`}
+            className={`min-h-11 shrink-0 px-3 py-2 text-xs font-medium whitespace-nowrap md:min-h-7 md:py-1 ${issueStatusScale.done}`}
             onClick={() => statusColumn?.setFilterValue(["done"])}
             title="Closed issues load when you show them"
             type="button"
