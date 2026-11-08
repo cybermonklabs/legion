@@ -744,13 +744,25 @@ func (s *server) fillRelatedItems(
 		}
 	}
 
-	seen := map[string]bool{}
+	// One item per owner, and for an issue's own owner that item is the issue itself wherever
+	// search answered it. An issue and its spec share an owner, so both reach this loop as rows
+	// of one owner, and taking whichever the score put first made the choice turn on the fusion
+	// rather than on what a person is being offered: the row's label reads the issue's key and
+	// title either way, so a document row sends a reader who clicks it to /issues/KEY/spec?q=…
+	// rather than to the issue, with nothing on screen to say so. The issue is the item here -
+	// the thing the check is about - and its document is one place its words live.
+	seen := map[string]int{}
 	related := make([]model.SearchResult, 0, len(candidates))
 	for _, result := range candidates {
 		owner := result.Owner.Kind + ":" + cmp.Or(result.Owner.Key, result.Owner.ArtifactID)
-		if !seen[owner] {
-			seen[owner] = true
+		at, held := seen[owner]
+		if !held {
+			seen[owner] = len(related)
 			related = append(related, result)
+			continue
+		}
+		if result.Kind == "issue" && related[at].Kind != "issue" {
+			related[at] = result
 		}
 	}
 	slices.SortStableFunc(related, func(a, b model.SearchResult) int {
