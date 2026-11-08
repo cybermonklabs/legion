@@ -400,7 +400,7 @@ func TestContractDispatchDecidesNoSecretRequest(t *testing.T) {
 // page where it is decided.
 func TestContractPendingListShowsCreatedRecordThroughDispatch(t *testing.T) {
 	rig := newContractRig(t)
-	recordID := rig.createPendingAgentSecretRecord(t, "", "DEEL_API_KEY").RecordID
+	recordID := rig.createPendingAgentSecretRecord(t, "checking the inbox lists a pending record", "DEEL_API_KEY").RecordID
 
 	rows := rig.pendingFor(t, contractApprover)
 	if len(rows) != 1 || rows[0].RecordID != recordID || rows[0].Kind != "agent_secret" || rows[0].ApproveURL != rig.BrokerURL+"/approve/"+recordID {
@@ -453,7 +453,7 @@ func TestContractMachineLoginDeniedThroughDispatch(t *testing.T) {
 // ending its own.
 func TestContractGrantsListAndRevokeByApproverThroughDispatch(t *testing.T) {
 	rig := newContractRig(t)
-	pending := rig.createPendingAgentSecretRecord(t, "", "DEEL_API_KEY")
+	pending := rig.createPendingAgentSecretRecord(t, "checking a grant lists and its approver revokes it", "DEEL_API_KEY")
 	rig.approveOnBrokerPage(t, contractApprover, pending.RecordID)
 	grantID := rig.grantOf(t, pending, pending.RequestID)
 
