@@ -4145,6 +4145,17 @@ describe("envoy OMP extension", () => {
       mock.module("@oh-my-pi/pi-coding-agent/session/settings", () => ({
         cfgRetry: { get: () => ({ enabled: false, modelFallback: false }) },
       }));
+      // The gate declares `askgate.sharedAccountProviders` on this registry at load; the stand-in
+      // host declares no provider pair, so every comparison is the plain provider-id one.
+      const settingHandles = new Map<string, { get: () => unknown }>();
+      mock.module("@oh-my-pi/pi-coding-agent/config/registry", () => ({
+        register: (definition: { id: string; default: unknown }) => {
+          const handle = { get: () => definition.default };
+          settingHandles.set(definition.id, handle);
+          return handle;
+        },
+        lookup: (id: string) => settingHandles.get(id),
+      }));
     };
     /** A stand-in `dispatch` whose --dry-run prints its flags as JSON, first on PATH for the call. */
     const standInDispatch = () => {
@@ -13002,7 +13013,7 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: expect.stringMatching(
-            /^\/compact was not run: this session's Oh My Pi \S+ cannot run commands sent from Dispatch; nothing was sent\.$/
+            /^\/compact was not run: this session's agent, version \S+, cannot run commands sent from Dispatch; nothing was sent\.$/
           ),
         },
       ]);
