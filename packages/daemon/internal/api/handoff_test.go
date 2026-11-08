@@ -272,8 +272,9 @@ func seedPullRequestAt(t *testing.T, h *harness, key, head string, at time.Time)
 }
 
 // seedReviewDecision records decision as key's review round's decision, on its reviewer's row: an
-// approval names the head READY compares the pull request's head with, and nil is a round that
-// recorded none.
+// approval is the one thing READY asks of the round, whatever head it names, since the daemon
+// keeps no check of its own on what sits above the approved head (ready.go, READY_NOT_APPROVED),
+// and nil is a round that recorded none.
 func seedReviewDecision(t *testing.T, h *harness, key string, decision *record.ReviewDecision) {
 	t.Helper()
 	err := h.store.Tx(context.Background(), func(tx pgx.Tx) error {
