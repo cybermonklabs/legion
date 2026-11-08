@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import {
+  constants,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -297,9 +298,8 @@ describe("app-logins.ts", () => {
   // would reject that loop's promise, leave runTokenCommand through its `Promise.all`, and reach
   // the `catch` that writes its diagnosis to the same dead descriptor and throws again: a caller
   // that stopped reading stderr would get a stack trace and the wrong exit code where the helper
-  // promises the logins and exit 0, and lib/github-apps.sh's check_github_apps reads both. The
-  // row guards the synchronous writer this pull request puts there rather than a regression it
-  // fixes: `main`'s helper passes it too (measured).
+  // promises the logins and exit 0, and lib/github-apps.sh's check_github_apps reads both. What
+  // the row guards is the writer: no `EPIPE` may leave it.
   test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
     const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
     const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
@@ -336,8 +336,7 @@ describe("app-logins.ts", () => {
       printed.split("\n").find((line) => line.startsWith("fd2 flags:")) ?? "fd2 flags: none";
     const bits = Number.parseInt(flags.slice("fd2 flags:".length).trim(), 8);
     // The `O_NONBLOCK` bit alone, since another flag on the pipe is no business of this row's.
-    // The line read is part of the assertion, so a failure names the flags it was given.
-    expect(`${flags} O_NONBLOCK=${(bits & 0o4000) === 0o4000}`).toBe(`${flags} O_NONBLOCK=true`);
+    expect(bits & constants.O_NONBLOCK, flags).toBe(constants.O_NONBLOCK);
     expectFailureLine(printed);
   }, 30_000);
 
@@ -350,19 +349,36 @@ describe("app-logins.ts", () => {
     expect(Date.now() - started).toBeLessThan(30_000);
   }, 30_000);
 
-  // The drain bound exists for a descendant that holds the pipes open after the command exits, so
-  // it must not count this process's own blocked writes. Each shape here is one group whose
-  // stdout and stderr meet a reader that sleeps eight seconds, three past the bound, and whose
-  // token command prints 300,000 bytes with no newline until a descendant writes one half a
-  // second later: the relay issues one write far larger than the 64 KiB pipe, and that write
-  // blocks until the reader wakes. Where the bound measured wall-clock time from the exit, that
-  // block spent it: both shapes came back as `token_command exited while a process it started
-  // still held its output open` and exit 1, the failing shape losing the exit 3 and the stderr
-  // quoted in it, and the succeeding shape losing the release it printed and its exit 0.
+  // The same shape with a descendant that prints while it holds the pipes open: its output is
+  // not the command's progress and must not push the bound out, which the silent row above
+  // cannot catch.
+  test("a token command whose escaped descendant writes while it holds its output open fails within the drain bound too", async () => {
+    // The descendant counts its writes rather than looping for ever, so that it ends itself as
+    // the silent row's `sleep 60` does: `setsid` puts it outside every process group the helper
+    // kills, and the helper's own exit does not stop it (measured: it was still writing into the
+    // socket `Bun.spawn` gave the command ten seconds later). Thirty seconds is six times the
+    // bound it must not push out.
+    const escaped =
+      "setsid sh -c 'i=0; while [ $i -lt 30 ]; do printf x >&2; sleep 1; i=$((i + 1)); done'" +
+      " >&2 & exit 3";
+    const started = Date.now();
+    const { code, stderr } = await run(config(app("101", escaped), app("202")));
+    expect(code).toBe(1);
+    expect(stderr).toContain("still held its output open");
+    expect(Date.now() - started).toBeLessThan(20_000);
+  }, 25_000);
+
+  // The drain bound must not count this process's own blocked writes, which the relay's
+  // synchronous writer holds for as long as a caller stays behind. Each shape here is one group
+  // whose stdout and stderr meet a reader that sleeps eight seconds, three past the bound, and
+  // whose token command writes one 300,008-byte line, its newline left to a descendant half a
+  // second later: the relay issues that line in a single write, far larger than the 64 KiB pipe,
+  // and it blocks until the reader wakes. The row checks that each shape still ends on the token
+  // command's own verdict: the failing one on its exit 3 and the stderr quoted in it, the
+  // succeeding one on the release it printed and its exit 0.
   test("a reader that falls behind still gets the token command's own verdict", async () => {
     // A bound of its own: the row holds a reader for eight seconds on purpose.
     const held = "printf 'denied-%0300000d' 0 >&2; (sleep 0.5; printf '\\n' >&2) &";
-    const failing = join(dir, "behind-failing.json");
     const succeeding = join(dir, "behind-succeeding.json");
     // Both shapes at once, so the row costs one stall rather than two.
     const stalled = (command: string, out: string) => {
@@ -374,7 +390,7 @@ describe("app-logins.ts", () => {
       );
     };
     const [bad, good] = await Promise.all([
-      stalled(`${held} exit 3`, failing),
+      stalled(`${held} exit 3`, "/dev/null"),
       stalled(`${held} cat ${join(dir, "release-101.json")}`, succeeding),
     ]);
     expect(bad).toContain("failed (exit 3): denied-");
