@@ -4386,6 +4386,7 @@ jobs:
       # setup-bun restores the Bun binary alone (and off main not even that), so this install is
       # the cold one without any cache being deleted to make it so.
       - name: Frozen install behind the proxy, cold
+        id: cold_install
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
@@ -4394,6 +4395,7 @@ jobs:
       # The same install again, over the cache and the node_modules the step above left: the
       # requirement is that no install reaches those hosts, warm or cold.
       - name: Frozen install behind the proxy, warm
+        id: warm_install
         env:
           http_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
@@ -4417,8 +4419,15 @@ jobs:
       # confirms: a proxy that had died would have failed the installs first.
       - name: Count what the installs asked the proxy for
         if: ${{ !cancelled() && steps.probe.outcome == 'success' }}
+        # The two installs' outcomes, because the step runs after a failed one: a tally over a
+        # log an install stopped writing part way through says nothing about the rest of the
+        # install, so the line below that says every byte came out of the checkout is printed
+        # only when both ran whole. The warm install is skipped when the cold one failed, so its
+        # outcome alone would say which, and both are passed to name which stopped.
         env:
           PROXY_PID: ${{ steps.proxy.outputs.pid }}
+          COLD_INSTALL: ${{ steps.cold_install.outcome }}
+          WARM_INSTALL: ${{ steps.warm_install.outcome }}
         run: |
           log="$RUNNER_TEMP/ci-fault-proxy.log"
           # One `<verdict> <host>` line per request the proxy logged, from both line shapes it
@@ -4444,6 +4453,10 @@ jobs:
             echo "::error::the frozen install reached the old proof-sdk route through the proxy $refused time(s); a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"
             grep -E '^ci-fault-proxy: 504 ' "$log" | sed 's/^/  /'
             exit 1
+          fi
+          if [ "$COLD_INSTALL" != success ] || [ "$WARM_INSTALL" != success ]; then
+            echo "the cold install $COLD_INSTALL and the warm install $WARM_INSTALL, so this tally is partial: it reached none of $FAULT_HOSTS up to the point the install stopped, and says nothing about what the rest of it would have asked for. The job is red on the install itself."
+            exit 0
           fi
           if [ "$passed" = 0 ]; then
             echo "::error::the proxy passed no request through while the two installs ran; the cold install fetches every package from registry.npmjs.org, so a zero here means the installs did not reach the proxy at all and their silence about the three hosts proves nothing"
