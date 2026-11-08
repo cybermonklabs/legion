@@ -602,7 +602,7 @@ Each item below names a task and where its code is, then notes on it.
 - Dispatch's document editor — `packages/proof-editor/`
 
   The editor entry, typed blocks and block ids, source-only.
-  Copied from the `sjawhar/proof-sdk` fork at the commit a git dependency pins; the upstream editor modules stay there.
+  Copied from the `sjawhar/proof-sdk` fork at the commit a committed tarball pins; the upstream editor modules stay there.
   See `packages/proof-editor/AGENTS.md`
 
 - Legion daemon — `packages/daemon/`
