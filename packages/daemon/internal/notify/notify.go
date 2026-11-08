@@ -269,6 +269,74 @@ type SessionDeleted struct {
 	Reason  string
 }
 
+// SessionRegistration is what the listener's registry holds for one session id at the moment it
+// was read (GET /v1/registry/<session_id>, sessionInfo in packages/envoy/cmd/listener/api.go).
+// Registered is false only for a registry that holds no record of the session at all, which the
+// route answers 404; ClientInstanceID names the client process whose registration it is, empty
+// for an entry a client predating that field wrote, and LastSeen is that registration's own
+// write in unix milliseconds.
+type SessionRegistration struct {
+	Registered       bool
+	ClientInstanceID string
+	LastSeen         int64
+}
+
+// ReadSessionRegistration reads what the listener's registry holds for session, the read the
+// daemon's clean stop makes before it deletes anything: the delete it then sends names the
+// client instance the entry carries, so it can only take that process's registration and never
+// its successor's (DeleteSession).
+//
+// The read asks include=unresponsive because the stop matters exactly when the session's last
+// registration is already past the listener's live window — its process is gone, so nothing
+// refreshes it — and without that selector the route answers 404 for a record it still holds
+// and the stop that is owed would never be sent.
+//
+// A 404 is no failure and no error: the registry holds no registration to stop, which is the
+// outcome the stop wanted, and Registered is false. Every other status is an error naming what
+// the listener said, as a refused delete is, since a stop sent on a registration this daemon
+// could not read would rest on the moment alone.
+func (p *HTTPPublisher) ReadSessionRegistration(ctx context.Context, session string) (SessionRegistration, error) {
+	target := fmt.Sprintf("%s/v1/registry/%s?include=unresponsive", p.baseURL, url.PathEscape(session))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return SessionRegistration{}, fmt.Errorf("build the registration read for %s: %w", session, err)
+	}
+	if p.token != "" {
+		request.Header.Set("Authorization", "Bearer "+p.token)
+	}
+	response, err := p.client.Do(request)
+	if err != nil {
+		return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyLimit))
+	switch response.StatusCode {
+	case http.StatusOK:
+		var entry struct {
+			ClientInstanceID string `json:"client_instance_id"`
+			LastSeen         int64  `json:"last_seen"`
+		}
+		if err := json.Unmarshal(body, &entry); err != nil {
+			return SessionRegistration{}, fmt.Errorf("read the registration of session %s: %w", session, err)
+		}
+		return SessionRegistration{Registered: true, ClientInstanceID: entry.ClientInstanceID, LastSeen: entry.LastSeen}, nil
+	case http.StatusNotFound:
+		return SessionRegistration{}, nil
+	}
+	return SessionRegistration{}, fmt.Errorf("read the registration of session %s: listener returned %s: %s",
+		session, response.Status, strings.TrimSpace(string(body)))
+}
+
+// DeleteConditions is what one clean stop holds under: the registration it means to remove, named
+// by the client instance that wrote it, and the moment the stop belongs to. Both are sent
+// together and the listener judges both (deleteSessionHandler,
+// packages/envoy/cmd/listener/api.go); ClientInstanceID is left empty only for an entry that
+// carries none, which leaves the moment to judge the delete alone.
+type DeleteConditions struct {
+	ClientInstanceID   string
+	NotRegisteredAfter time.Time
+}
+
 // DeleteSession removes session's registration from the listener's registry (DELETE
 // /v1/sessions/<session>), the clean stop the daemon sends for a Legion role whose agent process
 // is gone. The listener then reads the session `gone` at once rather than at the end of its live
@@ -277,15 +345,31 @@ type SessionDeleted struct {
 // for the session answers 404: it is already gone, which is the outcome asked for, so that is no
 // failure.
 //
-// goneAt is the moment the stop belongs to — when the daemon's probe judged the agent process
-// gone — and rides as if_not_registered_after, the condition the listener deletes under: a
-// registration written after it belongs to the process that replaced the dead one, and the
-// listener keeps it and says so (SessionDeleted.Deleted false). Without that condition a stop
-// slow to land would take a live session's registration, which is the loss this clean stop
-// exists to prevent.
-func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, goneAt time.Time) (SessionDeleted, error) {
+// That delete must take the dead process's registration and never the registration a relaunch
+// of the same claim writes under the same session id, so it carries both of its conditions at
+// once, and each covers what the other cannot:
+//
+//   - ClientInstanceID, read from the entry itself a moment earlier
+//     (ReadSessionRegistration), names that one client process. It is what judges the dead
+//     process's own last heartbeat, which the listener stamped with its own clock after the
+//     moment the stop belongs to and which no comparison of moments can tell from a successor's
+//     write.
+//   - NotRegisteredAfter, the moment the daemon's probe judged the process gone, rides as
+//     if_not_registered_after. It is what judges a read answered so late that the entry it
+//     handed back was already the successor's, which an instance id taken from that read would
+//     then name — the one case the id gets wrong.
+//
+// The listener judges both at the revision it deletes, under its own compare-and-swap
+// (session.SessionRegistry.DeleteIf), so what is stored when the delete lands decides it,
+// whatever this daemon knew when it sent it. An entry carrying no instance id leaves the moment
+// to judge alone, and that parameter is then left out rather than sent empty, which the listener
+// would read as a condition naming no process.
+func (p *HTTPPublisher) DeleteSession(ctx context.Context, session string, conditions DeleteConditions) (SessionDeleted, error) {
 	target := fmt.Sprintf("%s/v1/sessions/%s?if_not_registered_after=%d",
-		p.baseURL, url.PathEscape(session), goneAt.UnixMilli())
+		p.baseURL, url.PathEscape(session), conditions.NotRegisteredAfter.UnixMilli())
+	if conditions.ClientInstanceID != "" {
+		target += "&client_instance_id=" + url.QueryEscape(conditions.ClientInstanceID)
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodDelete, target, nil)
 	if err != nil {
 		return SessionDeleted{}, fmt.Errorf("build the session delete for %s: %w", session, err)
