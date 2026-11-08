@@ -318,8 +318,8 @@ reviewing until you finish.
     recorded the result: `dispatch result` against the issue's `after_merge` check, at the merge
     commit, its `observed` ending `woken by <event>`, the printed line in the PR body's `Checks`
     block and one pull-request comment with the Legion footer. A closed issue takes a result for
-    an `after_merge` or `default_branch` check and refuses every other write. A staging pass is
-    not this: staging does not run every resource production does.
+    an `after_merge` or `default_branch` check, a comment and a message, and refuses every other
+    write. A staging pass is not this: staging does not run every resource production does.
   - `pending`, when production does not carry the merge yet (a shared profile still holding the
     previous release, a daemon still running the previous commit, a deploy nobody has run), or a
     requirement's observation has not happened: the summary names what is missing and what you
@@ -368,12 +368,12 @@ reviewing until you finish.
   only production not carrying the merge ends it `pending`, which carries no `wake_at` and
   closes the check as not run, written first on the pull request — its check line and a comment
   — because production did not carry the merge within the bound.
-- **The record lives on the pull request and in the result.** Dispatch refuses a message, a
-  comment or an ask on a closed issue (`ISSUE_CLOSED`) and takes only a result for an
-  `after_merge` or `default_branch` check, so the deployment instructions' "on the pull request
-  and the issue" is the pull request and that result, and a defect reaches Dispatch by the `fail`
-  verdict's two paths alone — the message to the controller, which gives it to the tree that owns
-  that code, and the ask on the controller's report issue. The architect accepted before the
+- **The record lives on the pull request and in the result.** Dispatch takes a comment, a message
+  and a result for an `after_merge` or `default_branch` check on a closed issue, and refuses an
+  ask there (`ISSUE_CLOSED`), so the deployment instructions' "on the pull request and the issue"
+  is the pull request and that result, and a defect reaches Dispatch by the `fail` verdict's two
+  paths alone — the message to the controller, which gives it to the tree that owns that code,
+  and the ask on the controller's report issue. The architect accepted before the
   merge and is asked nothing after. `pass` or
   `fail` closes the check: your claim is retired and the issue's Sandbox goes with its pod and
   disk, for a root as for a child. Neither ending retires or suspends anything of an issue back in

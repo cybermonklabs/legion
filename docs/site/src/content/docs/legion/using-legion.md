@@ -152,7 +152,8 @@ worked, so a parent is accepted after its children. After the close the role you
 `production_check` names — the tester, unless the setting is `off` — checks the change in
 production and records what it saw
 as the result of the issue's `after_merge` check, with that result's line on the pull request; a
-closed issue takes a result for such a check and no other write, so look in both places.
+closed issue takes a result for such a check, a comment and a message, and no other write, so
+look in both places.
 Each look that finds the deploy missing says when it wants to look again, and nothing else brings
 it back.
 The tree's workspace is kept for three days (`linger_hours`, 72 by default) in case the work
