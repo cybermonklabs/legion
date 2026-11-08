@@ -4173,13 +4173,14 @@ jobs:
   # host for them. This job runs that install behind a proxy that answers HTTP 504 for the hosts
   # of the old `github:sjawhar/proof-sdk#<sha>` route - api.github.com, where Bun asks for a
   # `github:` dependency's tarball, and codeload.github.com and objects.githubusercontent.com,
-  # which that request redirects to - and fails when the proxy's log holds a single request for
-  # one of them, on a cold install and on a warm one. It refuses the behaviour rather than the
-  # text: a gate on the string `github:sjawhar/proof-sdk` would pass the same dependency spelled
-  # another way, and this one asks what the install actually reaches. It is permanent because a
-  # reintroduced remote dependency necessarily moves bun.lock, which the proof_sdk_offline filter
-  # selects on, and the install then asks the proxy for one of the three hosts: that host's count
-  # goes above zero and the report step fails naming it.
+  # which that request redirects to, and every subdomain of the three - and fails when the
+  # proxy's log holds a single refusal, on a cold install and on a warm one. It refuses the
+  # behaviour rather than the text: a gate on the string `github:sjawhar/proof-sdk` would pass
+  # the same dependency spelled another way, and this one asks what the install actually
+  # reaches. It is permanent because a reintroduced remote dependency necessarily moves
+  # bun.lock, which the proof_sdk_offline filter selects on, and the install then asks the proxy
+  # for one of those hosts: the refusal count goes above zero and the verdict step fails,
+  # printing every refused line.
   #
   # github.com itself is not faulted, and that is measured rather than assumed. A cold runner
   # install makes one request to github.com and one to release-assets.githubusercontent.com, and
@@ -4195,9 +4196,9 @@ jobs:
     if: needs.changes.outputs.proof_sdk_offline == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    # The hosts of the old route, named once: the proxy is started with them and the count step
-    # reads them back, and a host in one list and not the other would be faulted and never
-    # counted, or counted and never faulted. Nothing else of this job reads the variable.
+    # The hosts of the old route, named once: the proxy is started with them, and the verdict
+    # below quotes them. The proxy faults each of them and every subdomain of one, and refuses
+    # nothing else, so the verdict counts its refusals rather than matching this list again.
     env:
       FAULT_HOSTS: api.github.com,codeload.github.com,objects.githubusercontent.com
     steps:
@@ -4210,7 +4211,7 @@ jobs:
       # `--port 0` takes a free port from the kernel and `--port-file` is written, whole and by
       # rename, once it is listening, so this step waits for that file rather than for a fixed
       # time and fails when it never appears. The port reaches the later steps through
-      # $GITHUB_OUTPUT; http_proxy and its three spellings stay in the `env:` of the steps that
+      # $GITHUB_OUTPUT; http_proxy and https_proxy stay in the `env:` of the steps that
       # must be behind the proxy, so neither the report step below nor the Actions service is
       # proxied. The proxy's stderr is the log every count in this job is read from, opened for
       # appending so that the probe step can empty it after printing its own two lines and the
@@ -4288,14 +4289,20 @@ jobs:
           https_proxy: http://127.0.0.1:${{ steps.proxy.outputs.port }}
         run: bun install --frozen-lockfile
 
-      # The verdict, read off the proxy's log: the host of every refusal it wrote while the two
-      # installs ran, counted per host. Zero for each of the three is the proof. It prints the
-      # refused lines themselves when one is not zero, and a tally of every host it passed
-      # through whatever the verdict, so the log says what the installs talked to rather than
-      # only what they did not. The step is behind no proxy itself - it reaches nothing - and it
-      # stops the proxy, whose liveness the kill also confirms: a proxy that had died would have
-      # failed the installs first.
+      # The verdict, read off the proxy's log: every refusal it wrote while the two installs
+      # ran. In `--mode fail` the proxy refuses a faulted host and every subdomain of one and
+      # passes everything else, so each `504` line is a request for the old route whatever host
+      # it names, and the count is of the lines rather than of a match against FAULT_HOSTS,
+      # which would pass over a subdomain the proxy refused. Zero of them is the proof. It
+      # prints the refused lines themselves when there are any, and a tally of every host it
+      # passed through whatever the verdict, so the log says what the installs talked to rather
+      # than only what they did not. It runs when an install above failed, which is what a
+      # reintroduced remote dependency does, because that is the run whose tally a reader needs;
+      # it is skipped only when the proxy never started, where there is no log to read. The step
+      # is behind no proxy itself - it reaches nothing - and it stops the proxy, whose liveness
+      # the kill also confirms: a proxy that had died would have failed the installs first.
       - name: Count what the installs asked the proxy for
+        if: always() && steps.proxy.outcome == 'success'
         env:
           PROXY_PID: ${{ steps.proxy.outputs.pid }}
         run: |
@@ -4309,22 +4316,17 @@ jobs:
             sub(/:[0-9]*$/, "", target)
             print $2, target
           }' "$log")
+          refused=$(printf '%s\n' "$seen" | grep -c '^504 ' || true)
           passed=$(printf '%s\n' "$seen" | grep -c '^pass ' || true)
-          reached=""
-          for host in ${FAULT_HOSTS//,/ }; do
-            count=$(printf '%s\n' "$seen" | grep -c -x -F "504 $host" || true)
-            echo "$host: $count request(s) refused"
-            if [ "$count" != 0 ]; then
-              reached="$reached $host=$count"
-            fi
-          done
+          echo "requests the proxy refused: $refused, by host:"
+          printf '%s\n' "$seen" | sed -n 's/^504 //p' | sort | uniq -c | sed 's/^/  /'
           echo "requests the proxy passed through: $passed, by host:"
           printf '%s\n' "$seen" | sed -n 's/^pass //p' | sort | uniq -c | sed 's/^/  /'
           # Not under `set -e`: a proxy that is already gone must not abort the step before it
           # has printed its verdict, and a proxy that died early would have failed the installs.
           kill "$PROXY_PID" || echo "the proxy was no longer running when this step stopped it"
-          if [ -n "$reached" ]; then
-            echo "::error::the frozen install reached the old proof-sdk route through the proxy:$reached; a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"
+          if [ "$refused" != 0 ]; then
+            echo "::error::the frozen install reached the old proof-sdk route through the proxy $refused time(s); a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"
             grep -E '^ci-fault-proxy: 504 ' "$log" | sed 's/^/  /'
             exit 1
           fi
@@ -4332,7 +4334,7 @@ jobs:
             echo "::error::the proxy passed no request through while the two installs ran; the cold install fetches every package from registry.npmjs.org, so a zero here means the installs did not reach the proxy at all and their silence about the three hosts proves nothing"
             exit 1
           fi
-          echo "no request for $FAULT_HOSTS: every byte of the proof editor's upstream sources came out of the checkout"
+          echo "no request for $FAULT_HOSTS or any subdomain of one: every byte of the proof editor's upstream sources came out of the checkout"
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
