@@ -816,6 +816,40 @@ func parseQueryInt(query url.Values, field string, min, max int) (value int, pre
 	return parsed, true, true
 }
 
+// parseQueryBool reads one query parameter as true or false, as parseQueryInt reads one as an
+// integer: present is false when the request carried no value the route reads, and a value that
+// is neither "true" nor "false" is present with valid false, so each route writes its own code
+// and message around it. The two routes that read such a parameter read it differently, and
+// both readings are carried here rather than either being changed: trim cuts the value's
+// surrounding whitespace before it is read, which search's ?keywords_only= does and GET
+// /api/v1/projects/{key}/related does not, and readFirst reads the parameter as url.Values.Get
+// does - the first value, however many were sent, and a blank one as no value at all - which
+// that related route does where search refuses a repeated or a blank one.
+func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value, present, valid bool) {
+	values, ok := query[field]
+	if !ok {
+		return false, false, false
+	}
+	first := values[0]
+	if trim {
+		first = strings.TrimSpace(first)
+	}
+	if readFirst {
+		if first == "" {
+			return false, false, false
+		}
+	} else if len(values) != 1 {
+		return false, true, false
+	}
+	switch first {
+	case "false":
+		return false, true, true
+	case "true":
+		return true, true, true
+	}
+	return false, true, false
+}
+
 // The codes writeHandlerError answers a document it cannot read or serve and an unclassified
 // failure with, which a comment's or ask's single read also carries as anchor_block_error
 // (anchorBlock).
