@@ -412,6 +412,11 @@ type server struct {
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
 	slowWrites sync.Map
+	// slowWriteRuns is the slowWriteRecord of each route the slow-write test hook has delayed a
+	// run of, by the same "METHOD path" slowWrites uses. A disarm takes the route out of
+	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
+	// hook did before and since.
+	slowWriteRuns sync.Map
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -1565,37 +1570,65 @@ func (s *server) readyPool() (*store.Pool, error) {
 	return s.deps.Store.Pool, nil
 }
 
-// requireOpenIssue takes the issue's owner lock and returns its lifecycle status, rejecting
-// mutations after completion without a second issue query. The read is the statement after the
-// lock, sent with it, so it sees a close the lock's previous holder committed while this one
-// waited (store.LockOwnerAndRead).
-func (s *server) requireOpenIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
-	return issueOpenStatus(ctx, key, lockedOwnerRead(tx))
+// lockIssue takes the issue's owner lock and returns its lifecycle status, closed or not. It is
+// the lock requireOpenOwnerStatus takes, without the closed refusal, for the writes a closed
+// issue still takes: a message, its deliveries and the agent's reply to one. The read is the
+// statement after the lock, sent with it, so it sees a close the lock's previous holder
+// committed while this one waited (store.LockOwnerAndRead).
+func (s *server) lockIssue(ctx context.Context, tx pgx.Tx, key string) (string, error) {
+	status, _, err := issueStatus(ctx, key, lockedOwnerRead(tx))
+	return status, err
 }
 
-// issueOpenStatusRead reads an issue's lifecycle status and whether it is open.
-const issueOpenStatusRead = `select status, closed_at is null from issues where key = $1`
+// issueStatusRead reads an issue's lifecycle status and whether it is open.
+const issueStatusRead = `select status, closed_at is null from issues where key = $1`
 
-// issueOpenStatus is that read and its refusal, made through read: under the issue's owner lock
-// for the check that decides (requireOpenIssue), through the pool for the check a comment makes
-// before its transaction opens, which refuses exactly what the locked check will.
-func issueOpenStatus(ctx context.Context, key string, read ownerRead) (string, error) {
+// issueStatus is that read made through read: under the issue's owner lock for the check that
+// decides (lockIssue, ownerStatus), and through the pool for the check a comment makes before
+// its transaction opens, which reads exactly what the locked check will. It refuses nothing:
+// each write that a closed issue refuses decides that from open.
+func issueStatus(ctx context.Context, key string, read ownerRead) (string, bool, error) {
 	var status string
 	var open bool
-	err := read(ctx, store.IssueOwner(key), issueOpenStatusRead, []any{key}, &status, &open)
-	return refuseClosedIssue(status, open, err)
+	if err := read(ctx, store.IssueOwner(key), issueStatusRead, []any{key}, &status, &open); err != nil {
+		return "", false, err
+	}
+	return status, open, nil
 }
 
-// refuseClosedIssue is the refusal of issueOpenStatusRead's answer: err as the read returned it, a
-// closed issue's ISSUE_CLOSED, else the issue's status.
-func refuseClosedIssue(status string, open bool, err error) (string, error) {
-	if err != nil {
-		return "", err
+// closedWrite says, of one write that takes the owner's lock through ownerStatus, whether a
+// closed issue takes it. A closed issue still takes a comment that is not a suggestion, a
+// message, their deliveries and an agent's reply to one (takenWhenClosed); every other write that
+// asks here -- an ask, a suggestion, an upload, a document edit and a named version (before the
+// document service is called), a handoff, a review, an action on an existing comment -- is
+// refusedWhenClosed. The writes that read the issue row for themselves never reach this and
+// refuse on their own: a claim (issue_claim.go), a PATCH outside a closed issue's allow-list
+// (issue_patch.go), a check result, which a closed issue takes for an after_merge or
+// default_branch check (results.go), and a document rebuild with supplied markdown
+// (artifact_rebuild.go), which the document service refuses with docs.ErrIssueClosed
+// (docs/rebuild.go; writeHandlerError turns it into the same 409 ISSUE_CLOSED).
+type closedWrite bool
+
+const (
+	takenWhenClosed   closedWrite = false
+	refusedWhenClosed closedWrite = true
+)
+
+// errIssueClosed is the refusal of a write that a closed issue does not take.
+var errIssueClosed error = errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
+
+// refuseClosed is the one place the writes that take the owner's lock through ownerStatus refuse
+// a closed owner: the locked checks (requireOpenOwnerStatus, lockCommentOwner, lockedComment) and
+// the pooled pre-check a comment with mentions and an upload make before their transaction opens
+// (refuseOwnerBeforeResolving) all decide here. It is not every closed-issue refusal the API
+// makes: closedWrite names the writes that decide for themselves. open is what the owner's row
+// read (ownerStatus, issueStatus): an issue is open until it closed, and a project document
+// always is.
+func refuseClosed(open bool, write closedWrite) error {
+	if write == refusedWhenClosed && !open {
+		return errIssueClosed
 	}
-	if !open {
-		return "", errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
-	}
-	return status, nil
+	return nil
 }
 
 // A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a

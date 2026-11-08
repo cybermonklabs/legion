@@ -244,7 +244,17 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		// skip either way. It carries the period as well, which the skip above cannot: that one
 		// has no lease and so no boundary read. A test reading two processes' logs can then tell
 		// a skip of this period from a skip of the next.
-		slog.Info("dispatch duty: leased pass skipped", "lease", name, servedPeriod(boundary))
+		//
+		// It carries the tick's own due beside the period, which the period alone cannot give:
+		// the period is periodBoundary of this very due, so it already tells a tick of one
+		// period from a tick of the next, but it says nothing about where inside that period
+		// the tick fell. Two processes ticking minutes apart inside one period write the same
+		// period, and the stagger between them is what a reader of two processes' logs needs
+		// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go). Neither line is
+		// written at the moment its tick was due - this one after the lease and the period
+		// read, the line below after the whole pass - so the moment the line carries is not
+		// that stagger either (INFRA-1492).
+		slog.Info("dispatch duty: leased pass skipped", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 		return false
 	}
 	pass(ctx)
@@ -268,8 +278,12 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 	// leaves the next honest pass in the next period, so a reader counting passes over a whole
 	// run cannot tell two passes of one period - which the lease forbids - from one pass each of
 	// two periods, which it allows; the period here is what tells them apart
-	// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go).
-	slog.Info("dispatch duty: leased pass ran", "lease", name, servedPeriod(boundary))
+	// (requireLeasedOncePerPeriod, cmd/dispatch/multiprocess_test.go). The tick's own due is
+	// beside it for where inside that period the tick fell, which the period cannot say: two
+	// processes ticking minutes apart inside one period write the same period, and this line is
+	// written when the pass ends rather than when the tick was due, so its own moment does not
+	// say it either (INFRA-1492).
+	slog.Info("dispatch duty: leased pass ran", "lease", name, tickDue(due, boundary), servedPeriod(boundary))
 	return true
 }
 
@@ -283,6 +297,19 @@ func servedPeriod(boundary time.Time) slog.Attr {
 		return slog.Attr{}
 	}
 	return slog.String("period", boundary.UTC().Format(time.RFC3339Nano))
+}
+
+// tickDue is the log attribute naming the moment a tick was due, and nothing at all for a pass
+// with no period, which is also a pass with no due: Exclusive's periodless callers pass the zero
+// time for it (duty.WokenLoop.attempt, delivery's consumer bind), so a line would read
+// due=0001-01-01T00:00:00Z and say the tick was due at the zero instant. It is judged by the
+// same boundary servedPeriod is, so the two attributes are always written together or not at
+// all, and formatted as that one is, so a reader compares them without converting a zone.
+func tickDue(due time.Time, boundary time.Time) slog.Attr {
+	if boundary.IsZero() {
+		return slog.Attr{}
+	}
+	return slog.String("due", due.UTC().Format(time.RFC3339Nano))
 }
 
 // periodServed answers the aligned start of the period this tick was due in (periodBoundary of

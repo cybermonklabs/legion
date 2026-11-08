@@ -44,10 +44,12 @@ func (g *gatedProjectMark) ProjectMark(ctx context.Context, artifactID, markID s
 	return g.API.ProjectMark(ctx, artifactID, markID, record, actor)
 }
 
-// A close committed while a comment waited for the issue's owner lock refuses the comment: the
-// comment reads the issue in the statement after the lock, whose snapshot holds the close. Read in
-// the lock's own statement, the issue would be the row as it stood before the wait, and the
-// comment would land on a closed issue.
+// A close committed while a write waited for the issue's owner lock refuses that write: it reads
+// the issue in the statement after the lock, whose snapshot holds the close. Read in the lock's
+// own statement, the issue would be the row as it stood before the wait, and the write would land
+// on a closed issue. The write is an ask, one of the writes a closed issue refuses
+// (refuseClosed, refusedWhenClosed): a comment and a message it takes, so neither would say
+// whether the close was seen.
 func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	// The seeded spec's settlement takes the owner lock this test holds; keep it out of the queue.
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -70,8 +72,8 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 	}
 	responses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments",
-			map[string]any{"body": "Written while the issue closed."}, "alice")
+		responses <- dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks",
+			map[string]any{"question": "Opened while the issue closed?"}, "alice")
 	}()
 	waitForDatabaseLocks(t, closer, 1)
 	if err := closer.Commit(context.Background()); err != nil {
@@ -80,14 +82,14 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 
 	response := awaitResponse(t, responses)
 	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"code":"ISSUE_CLOSED"`) {
-		t.Fatalf("comment that waited out the close: status=%d body=%s, want 409 ISSUE_CLOSED", response.Code, response.Body.String())
+		t.Fatalf("ask that waited out the close: status=%d body=%s, want 409 ISSUE_CLOSED", response.Code, response.Body.String())
 	}
-	// The close changed the issue row; the refused comment changed nothing at all: no comment, no
-	// event, no thread row.
+	// The close changed the issue row; the refused ask changed nothing at all: no ask, no event,
+	// no part row.
 	after := databaseFingerprint(t, database)
 	delete(before, "issues")
 	delete(after, "issues")
-	assertUnchanged(t, "a comment refused for a close it waited out", before, after)
+	assertUnchanged(t, "an ask refused for a close it waited out", before, after)
 }
 
 // A person marking a thread read while a session's reply to it is in its read phase waits for that

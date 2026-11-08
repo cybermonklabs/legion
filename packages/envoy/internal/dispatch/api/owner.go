@@ -101,7 +101,14 @@ func (s *server) requireOpenOwner(ctx context.Context, tx pgx.Tx, owner owner) e
 // (store.LockOwner), and the write it guards would land on a closed owner. The two go in one round
 // trip (store.LockOwnerAndRead).
 func (s *server) requireOpenOwnerStatus(ctx context.Context, tx pgx.Tx, owner owner) (*string, error) {
-	return ownerOpenStatus(ctx, owner, lockedOwnerRead(tx))
+	status, open, err := ownerStatus(ctx, owner, lockedOwnerRead(tx))
+	if err != nil {
+		return nil, err
+	}
+	if err := refuseClosed(open, refusedWhenClosed); err != nil {
+		return nil, err
+	}
+	return status, nil
 }
 
 func ownerInvalid() error {
@@ -130,22 +137,28 @@ func pooledOwnerRead(q queryer) ownerRead {
 	}
 }
 
-// ownerOpenStatus is the refusal table an owner gets, spelled once for both the check that
-// decides and the one that only spares work: an owner naming neither an issue nor a document,
-// an issue that is closed, a document that does not exist. The two differ in read alone, so both
-// refuse exactly the same.
-func ownerOpenStatus(ctx context.Context, owner owner, read ownerRead) (*string, error) {
+// ownerStatus is the refusal table an owner gets, spelled once for both the check that decides
+// and the one that only spares work: an owner naming neither an issue nor a document, or a
+// document that does not exist. It answers an issue owner's status and whether that issue is
+// open - a project document is always open - and leaves refusing a closed issue to each write
+// that does. The check that decides reads under the owner's lock (lockedOwnerRead), the one made
+// before any transaction opens reads through the pool (pooledOwnerRead); the two differ in read
+// alone, so both refuse exactly the same.
+func ownerStatus(ctx context.Context, owner owner, read ownerRead) (*string, bool, error) {
 	if (owner.IssueKey == nil) == (owner.ArtifactID == nil) {
-		return nil, ownerInvalid()
+		return nil, false, ownerInvalid()
 	}
 	if owner.IssueKey != nil {
-		status, err := issueOpenStatus(ctx, *owner.IssueKey, read)
+		status, open, err := issueStatus(ctx, *owner.IssueKey, read)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return &status, nil
+		return &status, open, nil
 	}
-	return nil, refuseMissingArtifact(read(ctx, store.ArtifactOwner(*owner.ArtifactID), unlinkedArtifactRead, []any{*owner.ArtifactID}, new(bool)))
+	if err := refuseMissingArtifact(read(ctx, store.ArtifactOwner(*owner.ArtifactID), unlinkedArtifactRead, []any{*owner.ArtifactID}, new(bool))); err != nil {
+		return nil, false, err
+	}
+	return nil, true, nil
 }
 
 // unlinkedArtifactRead reads a row for a document no issue owns.
@@ -160,18 +173,22 @@ func refuseMissingArtifact(err error) error {
 	return err
 }
 
-// refuseClosedOwnerBeforeResolving answers, from the pool and locking nothing, the refusal
-// requireOpenOwnerStatus will make under the owner's lock. A comment that mentions anyone
-// resolves every mention against the Envoy listener before its transaction opens, and an owner
-// that does not exist or is already closed refuses the comment whatever the listener says, so
-// a request that cannot be written costs no listener call at all; an upload to an issue is refused
-// so before its body is spooled (refuseUploadToAClosedIssue). The locked check still decides; this
-// one only spares the work, and takes no lock of its own so a write on a busy owner waits for that
-// lock once rather than twice.
-func (s *server) refuseClosedOwnerBeforeResolving(ctx context.Context, owner owner) error {
+// refuseOwnerBeforeResolving answers, from the pool and locking nothing, the refusal the locked
+// owner check will make (lockCommentOwner, requireOpenOwnerStatus). A comment that mentions
+// anyone resolves every mention against the Envoy listener before its transaction opens, and an
+// owner that does not exist - or, for a write a closed issue refuses, is already closed - refuses
+// the write whatever the listener says, so a request that cannot be written costs no listener
+// call at all; an upload to an issue is refused so before its body is spooled
+// (refuseUploadToAClosedIssue). The locked check still decides; this one only spares the work,
+// and takes no lock of its own so a write on a busy owner waits for that lock once rather than
+// twice.
+func (s *server) refuseOwnerBeforeResolving(ctx context.Context, owner owner, write closedWrite) error {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	_, err := ownerOpenStatus(ctx, owner, pooledOwnerRead(s.deps.Store.Pool))
-	return err
+	_, open, err := ownerStatus(ctx, owner, pooledOwnerRead(s.deps.Store.Pool))
+	if err != nil {
+		return err
+	}
+	return refuseClosed(open, write)
 }

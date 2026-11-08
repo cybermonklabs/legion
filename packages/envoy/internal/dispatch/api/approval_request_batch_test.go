@@ -122,13 +122,14 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 	return response
 }
 
-// One approval request on a document with no request open costs twenty-two round trips, counted
-// as the issue read's are (roundTrips): one for each statement it runs on its own and one for
-// each batch, whatever that batch holds. The first eight read the coverage the answer reports,
-// before the request's transaction opens (approvalCoverage); the fourteen after them are the
-// transaction itself, and all but two of those are reads: this route's writes are queued and
-// sent as one batch before the commit, which is what holds its transaction id to its database
-// work (INFRA-636). In the order it sends them:
+// One approval request on a document with no request open costs at most twenty-two round trips,
+// counted as the issue read's are (roundTrips): one for each statement it runs on its own and one
+// for each batch, whatever that batch holds. The budget is a ceiling, and the enumeration below
+// is where it goes today: the first eight read the coverage the answer reports, before the
+// request's transaction opens (approvalCoverage); the fourteen after them are the transaction
+// itself, and all but two of those are reads: this route's writes are queued and sent as one
+// batch before the commit, which is what holds its transaction id to its database work
+// (INFRA-636). In the order it sends them:
 //
 //  1. the artifact row the coverage is read for (loadArtifact);
 //  2. a batch of 3: that artifact's versions, its latest review and its open approval request
@@ -172,7 +173,7 @@ func countedApprovalRequest(t *testing.T, handler http.Handler, artifactID strin
 // the per-route window test measures that window, and this test bounds what the route sends
 // around it. The one-phase route sent thirty-four, its write statements each a round trip of
 // its own between the reads.
-func TestApprovalRequestsCostTwentyTwoRoundTrips(t *testing.T) {
+func TestApprovalRequestsCostAtMostTwentyTwoRoundTrips(t *testing.T) {
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
@@ -193,10 +194,14 @@ func TestApprovalRequestsCostTwentyTwoRoundTrips(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("request approval: status=%d body=%s", response.Code, response.Body.String())
 	}
-	const want = 22
-	if len(counted) != want {
-		t.Fatalf("the approval request made %d round trips, want %d:\n%s",
-			len(counted), want, strings.Join(roundTripLines(counted), "\n"))
+	// A ceiling, not an equality: the round trips are counted through helpers several other
+	// requests share, so an exact count reds this row for a change that sends one round trip
+	// fewer and costs nothing. What the name states is the cost bound, and the enumeration above
+	// says where the twenty-two go.
+	const ceiling = 22
+	if len(counted) > ceiling {
+		t.Fatalf("the approval request made %d round trips, want at most %d:\n%s",
+			len(counted), ceiling, strings.Join(roundTripLines(counted), "\n"))
 	}
 }
 

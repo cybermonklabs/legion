@@ -17,19 +17,41 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// lockedComment is the prologue of every comment mutation: read the comment, take its owner's lock
-// and refuse a closed owner, then read it again in a statement after that lock, so the mutation
-// decides on the comment as the lock's previous holder left it. It takes no row lock: every writer
-// of a comment holds its owner's lock, so the comment holds still until this transaction ends.
+// lockedComment is the prologue of every change to an existing comment - resolve, reopen, edit,
+// accept, reject: read the comment, take its owner's lock and refuse a closed owner, then read it
+// again in a statement after that lock, so the mutation decides on the comment as the lock's
+// previous holder left it. It takes no row lock: every writer of a comment holds its owner's
+// lock, so the comment holds still until this transaction ends.
 func (s *server) lockedComment(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
-	unlockedComment, err := s.loadComment(ctx, tx, id)
+	open, err := s.lockOwnerOfComment(ctx, tx, id)
 	if err != nil {
 		return model.Comment{}, err
 	}
-	if err := s.requireOpenOwner(ctx, tx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID)); err != nil {
+	if err := refuseClosed(open, refusedWhenClosed); err != nil {
 		return model.Comment{}, err
 	}
 	return s.loadComment(ctx, tx, id)
+}
+
+// lockedCommentForDelivery is the same prologue for a comment's mention delivery and the
+// mentioned agent's reply to it, which a closed issue still takes: it takes the owner's lock in
+// the same order without the closed refusal.
+func (s *server) lockedCommentForDelivery(ctx context.Context, tx pgx.Tx, id string) (model.Comment, error) {
+	if _, err := s.lockOwnerOfComment(ctx, tx, id); err != nil {
+		return model.Comment{}, err
+	}
+	return s.loadComment(ctx, tx, id)
+}
+
+// lockOwnerOfComment reads the comment and locks its owner, answering whether that owner is
+// open.
+func (s *server) lockOwnerOfComment(ctx context.Context, tx pgx.Tx, id string) (bool, error) {
+	unlockedComment, err := s.loadComment(ctx, tx, id)
+	if err != nil {
+		return false, err
+	}
+	_, open, err := ownerStatus(ctx, ownerOf(unlockedComment.IssueKey, unlockedComment.ArtifactID), lockedOwnerRead(tx))
+	return open, err
 }
 
 func (s *server) resolveComment(w http.ResponseWriter, r *http.Request) {
