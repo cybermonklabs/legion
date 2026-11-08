@@ -302,13 +302,13 @@ func failingRuns(logs Logs, checks []checkContext) []string {
 }
 
 // jobLogReads is how many of a removal's failing jobs have their logs read at once. One read is
-// bounded at githubrest.JobLogTimeout, a minute, and by nothing else: the merge row that reads
-// them hands these reads a context off its own deadline, since a 54 MB log cannot be read inside
-// the row's 30 seconds (the daemon's readyMerge). Read one after another, three failing jobs —
-// an ordinary matrix shape — would hold the row three minutes; read at once they cost about one
-// read instead, and the limit is what holds a merge group with dozens of failing jobs to eight
-// reads of GitHub open at a time, and so to eight rings of githubrest.JobLogTail, rather than one
-// per job.
+// bounded at the log client's own time bound (githubrest.JobLogTimeBound), a minute in
+// production, and by nothing else: the merge row that reads them hands these reads a context off
+// its own deadline, since a 54 MB log cannot be read inside the row's 30 seconds (the daemon's
+// readyMerge). Read one after another, three failing jobs — an ordinary matrix shape — would hold
+// the row three minutes; read at once they cost about one read instead, and the limit is what
+// holds a merge group with dozens of failing jobs to eight reads of GitHub open at a time, and so
+// to eight rings of githubrest.JobLogTail, rather than one per job.
 const jobLogReads = 8
 
 // jobFailures is what the log of Actions job id says failed, written as the end of that run's own
@@ -332,7 +332,7 @@ func jobFailures(logs Logs, id int64) string {
 	case errors.Is(err, githubrest.ErrJobLogTooLong):
 		return unread(fmt.Sprintf("since its log passed the %d MiB this read takes", githubrest.JobLogBound>>20))
 	case errors.Is(err, githubrest.ErrJobLogSlow):
-		return unread(fmt.Sprintf("since the read passed its %s bound", githubrest.JobLogTimeout))
+		return unread(fmt.Sprintf("since the read passed its %s bound", logs.Client.JobLogTimeBound()))
 	case err != nil:
 		return unread(fmt.Sprintf("since the fetch of its log failed: %v", err))
 	}

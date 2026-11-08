@@ -120,7 +120,8 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	}
 	// The log of each job a removal found failing is read off this row's deadline, which is the
 	// one place the row hands the log client down: context.WithoutCancel takes the row's 30
-	// seconds off those reads and each read puts its own bound on top (githubrest.JobLogTimeout),
+	// seconds off those reads and each read puts its own bound on top (the log client's
+	// githubrest.Client.JobLogTimeBound, a minute in production),
 	// because a read the row's deadline cuts reports "could not read" for exactly the logs this
 	// reads — job 128558893568 of this repository is 54,330,939 bytes. Holding the row that long
 	// costs the issue's lifecycle lane and nothing else: the removal path arms nothing while a

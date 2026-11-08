@@ -47,7 +47,7 @@ import (
 // and logStatus answers every such read with that HTTP status instead (403 is the Actions read a
 // deployment's App may never have been granted). logFill answers the read with that many bytes
 // before the log, which a log past githubrest.JobLogBound is made of, and logDelay holds the
-// answer open for that long, which a read past githubrest.JobLogTimeout waits out. logReads
+// answer open for that long, which a read past the log client's time bound waits out. logReads
 // counts the job logs read.
 type github struct {
 	mu                             sync.Mutex
@@ -224,8 +224,8 @@ const (
 // serveJobLog answers the log of the Actions job job names ("{id}/logs") as GitHub does: the
 // status the fake refuses every log read with, else the log it holds for that job, written after
 // logFill bytes of filler and logDelay of waiting, which is how a log past githubrest.JobLogBound
-// and a read past githubrest.JobLogTimeout are made. A job the fake holds no log for is GitHub's
-// 404, as a check run no Actions job backs would answer.
+// and a read past the log client's time bound are made. A job the fake holds no log for is
+// GitHub's 404, as a check run no Actions job backs would answer.
 func (g *github) serveJobLog(t *testing.T, w http.ResponseWriter, r *http.Request, job string) {
 	t.Helper()
 	id, err := strconv.ParseInt(strings.TrimSuffix(job, "/logs"), 10, 64)
@@ -1103,9 +1103,9 @@ func stamped(log string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-// logBound is what the row proving a read past the time bound lowers githubrest.JobLogTimeout to
-// while it runs: the production bound is a minute, and a row that waited it out would cost every
-// run of this suite that minute, for a value that is not what the row proves.
+// logBound is the time bound the row proving a read past it builds its own log client with
+// (githubrest.Client's JobLogTimeout): the production bound is a minute, and a row that waited it
+// out would cost every run of this suite that minute, for a value that is not what the row proves.
 const logBound = 50 * time.Millisecond
 
 // The runs a removal names say what failed in each of them: the daemon reads the end of each
@@ -1115,7 +1115,7 @@ const logBound = 50 * time.Millisecond
 // read; the "✘" rows that runner prints as it goes are not, since they stand in the middle of a
 // stream this read only reaches the end of. A log the daemon could not read says so and which way
 // it could not — the end states no test name, the body passed githubrest.JobLogBound, the read
-// passed githubrest.JobLogTimeout, the fetch failed, or GitHub refused the read because this
+// passed the log client's time bound, the fetch failed, or GitHub refused the read because this
 // deployment's App was never granted GitHub's optional Actions read — and keeps the run link the
 // notice carries today. No read of a log holds a removal up or fails the row: every case here is
 // still the removal it was. The log of a check that passed is never read, and the names reach the
@@ -1125,9 +1125,9 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 		name string
 		// log is what the fake answers for the failing job, status the HTTP status it refuses
 		// every log read with, fill how many bytes it writes before the log, and delay how long
-		// it holds the answer open. bound is what the row lowers githubrest.JobLogTimeout to
-		// while it runs, so a read that has to pass that bound waits a moment rather than the
-		// minute production allows.
+		// it holds the answer open. bound is the time bound the row's own log client is built
+		// with, so a read that has to pass that bound waits a moment rather than the minute
+		// production allows.
 		log    string
 		status int
 		fill   int
@@ -1178,11 +1178,6 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 			wants: []string{"integration (failure, " + failedRun + ")", "its log names TestTheQueueTakesTheEntryOut"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.bound > 0 {
-				production := githubrest.JobLogTimeout
-				githubrest.JobLogTimeout = tc.bound
-				t.Cleanup(func() { githubrest.JobLogTimeout = production })
-			}
 			reason := "failed_checks"
 			if tc.conflict {
 				reason = "merge_conflict"
@@ -1192,6 +1187,7 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 				jobLogs:   map[int64]string{failingJob: tc.log},
 				logStatus: tc.status, logFill: tc.fill, logDelay: tc.delay}
 			client, logs := clients(t, g)
+			logs.Client.JobLogTimeout = tc.bound
 			_, err := Submit(context.Background(), client, logs, ghrepo.MustParse("acme/widgets"), 42, "head", true, keeping("head"))
 			var runs []string
 			var failed *MergeFailed

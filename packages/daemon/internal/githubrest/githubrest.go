@@ -34,6 +34,11 @@ func RepositoryAPI(endpoint string, repository ghrepo.Repository) string {
 type Client struct {
 	Token string
 	API   string
+	// JobLogTimeout is how long one of this client's JobLog reads takes before it gives up.
+	// Zero, which is what every client in the tree is built with, is DefaultJobLogTimeout, the
+	// production bound; JobLogTimeBound answers the one in force, and a test that would
+	// otherwise wait that bound out sets this field on its own client.
+	JobLogTimeout time.Duration
 }
 
 // Get reads path under the client's REST base into into. An answer other than 2xx is an *Answer.

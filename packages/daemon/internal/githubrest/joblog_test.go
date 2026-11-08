@@ -89,15 +89,14 @@ func TestAJobLogReadFollowsGitHubsRedirectToBlobStorage(t *testing.T) {
 }
 
 // Each way the read ends with no log is told apart from the others, so the caller says which it
-// was: a body past JobLogBound, a read past JobLogTimeout, GitHub refusing the read because the
-// installation was never granted its optional Actions read (a 403 that is no rate limit), and
-// every other answer as the *Answer any refused REST call is, a 403 that is GitHub's rate limit
-// among them, since that one is the token's budget and not the grant.
+// was: a body past JobLogBound, a read past the client's time bound, GitHub refusing the read
+// because the installation was never granted its optional Actions read (a 403 that is no rate
+// limit), and every other answer as the *Answer any refused REST call is, a 403 that is GitHub's
+// rate limit among them, since that one is the token's budget and not the grant.
 //
-// The row that proves the time bound lowers it to a moment for the length of itself and puts it
-// back: what that row proves is that a read past the bound is told apart from the others, never
-// what the bound's value is, and waiting the production minute out would cost every run of this
-// suite a minute.
+// The row that proves the time bound sets a moment as the bound of its own client: what that row
+// proves is that a read past the bound is told apart from the others, never what the bound's
+// value is, and waiting the production minute out would cost every run of this suite a minute.
 func TestAJobLogReadSaysWhyItReadNoLog(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -108,8 +107,8 @@ func TestAJobLogReadSaysWhyItReadNoLog(t *testing.T) {
 		status int
 		// limited is the rate limit the *Answer must carry.
 		limited bool
-		// bound is what the row lowers JobLogTimeout to for the length of itself, so a read
-		// that has to pass that bound waits a moment rather than the minute production allows.
+		// bound is the time bound the row's own client is built with, so a read that has to
+		// pass that bound waits a moment rather than the minute production allows.
 		bound time.Duration
 	}{
 		{name: "a body past the byte bound", answer: func(w http.ResponseWriter, r *http.Request) {
@@ -136,14 +135,9 @@ func TestAJobLogReadSaysWhyItReadNoLog(t *testing.T) {
 			want:   ErrJobLogSlow},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.bound > 0 {
-				production := JobLogTimeout
-				JobLogTimeout = tc.bound
-				t.Cleanup(func() { JobLogTimeout = production })
-			}
 			server := httptest.NewServer(http.HandlerFunc(tc.answer))
 			defer server.Close()
-			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}
+			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets", JobLogTimeout: tc.bound}
 			tail, err := client.JobLog(context.Background(), 7)
 			if tail != "" {
 				t.Fatalf("JobLog kept %d bytes of a read that answered no log", len(tail))
