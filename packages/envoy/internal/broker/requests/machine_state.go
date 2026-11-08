@@ -637,7 +637,7 @@ type newRequest struct {
 	id, enrollmentID, reason, state, approver, rulesVersion, sessionID, recordID string
 	lifetime                                                                     *int
 	decisions                                                                    []SecretDecision
-	// denials are the denied names the policy named a reason for (evaluation.denials), which
+	// denials are the denied names a reason was named for (evaluation.denials), which
 	// decisionDetail turns into the row's decision_detail, as it does unexplained: whether some
 	// other name was denied with no reason to name.
 	denials     []denial
@@ -660,7 +660,7 @@ func (r newRequest) names() []string {
 }
 
 // decisionDetail is the row's decision_detail, which Create also answers as the request's own
-// Detail: for a denied request, each denied name the policy named a reason for as
+// Detail: for a denied request, each denied name a reason was named for as
 // "<NAME>: <reason>", several joined with "; " in the request's own name order, and the fixed
 // text of every deny the policy cannot name whenever one occurred, last, so such a refusal reads
 // as it always has and a session told to ask again with a reason is not left to find that its

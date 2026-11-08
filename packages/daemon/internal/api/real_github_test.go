@@ -161,12 +161,13 @@ printf '%s\0%s\0%s\0' "$implement_app_id" "$implement_app_secret" "$command"`
 	return liveProofApp{fields[0], fields[1], fields[2]}, nil
 }
 
-// proveLiveProofApps proves apps, the very block the gated proofs act with, against GitHub as every
-// stage proof does: it writes apps as legion.yaml's `github_apps` block to work/github-apps.yaml and
-// runs the lib's own check_github_apps on that file, so the implement App's token command must
-// release that App's own token (GraphQL viewer, then GET /apps/<slug>) with the write permission
-// its role needs, `contents`, which the review App does not hold. It returns the lib's notes, and
-// on a refusal the lib's reason, which names the App by role and id and never a token.
+// proveLiveProofApps proves implement, the App the gated proofs act as, against GitHub as every
+// stage proof does: it writes implement as legion.yaml's `github_apps` block to
+// work/github-apps.yaml and runs the lib's own check_github_apps on that file, so the implement
+// App's token command must release that App's own token (GraphQL viewer, then GET /apps/<slug>)
+// with the write permission its role needs, `contents`, which the review App does not hold. It
+// returns the lib's notes, and on a refusal the lib's reason, which names the App by role and id
+// and never a token.
 func proveLiveProofApps(environ []string, work string, implement config.GitHubApp) (notes string, err error) {
 	// A JSON string is a YAML double-quoted scalar, as the lib's own write_github_apps quotes it.
 	id, _ := json.Marshal(implement.AppID)
