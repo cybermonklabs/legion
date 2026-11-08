@@ -83,11 +83,11 @@ func newConversationHistory(cfg config.Config, p plan, st *store.Store, environ 
 			return nil
 		}
 		if open == nil {
-			root, _, err := ompdirs.ProfileRoot(tmux.PaneEnvironment(environ, cfg.StateDir), cfg.StateDir)
+			sessions, err := ompdirs.SessionsDir(tmux.PaneEnvironment(environ, cfg.StateDir), cfg.StateDir)
 			if err != nil {
-				return fmt.Errorf("resolve the panes' Oh My Pi profile root: %w", err)
+				return fmt.Errorf("resolve the panes' Oh My Pi sessions directory: %w", err)
 			}
-			if err := backfill.Files(ctx, agenthistory.OMPSessionsDir(root)); err != nil {
+			if err := backfill.Files(ctx, sessions); err != nil {
 				return err
 			}
 		}

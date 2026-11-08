@@ -230,8 +230,8 @@ type roleSend struct {
 	// handed to a stopped Legion agent's daemon (noHolder, handOffToLegion), which is how the
 	// daemon's own notices keep their 404 and its outbox row its retry.
 	optedOut bool
-	arrived time.Time
-	holder  string
+	arrived  time.Time
+	holder   string
 	// holderState is the state the holder's own record put it in at the resolution that named
 	// it, carried so the 200 can say it (GET /v1/roles/<role> says it the same way). A 200 is
 	// answered only for a holder a resolution read live, so that is what it carries there.

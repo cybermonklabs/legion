@@ -1,7 +1,6 @@
 package tmux
 
 import (
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -52,28 +51,13 @@ func (l ompLauncher) Launch(spec runtime.SpawnSpec, _ Host) (string, []string, e
 // Marker is "omp", which the invocation in an Oh My Pi pane's command line names.
 func (ompLauncher) Marker() string { return "omp" }
 
-// SessionsDir is where Oh My Pi, started under env in workDir, keeps its sessions (getSessionsDir,
-// @oh-my-pi/pi-utils src/dirs.ts): `sessions` under the agent directory, `<config root>/agent`,
-// except where an XDG data root holds the profile (ompdirs.ProfileRoot), which flattens the
-// `agent/` prefix to `$XDG_DATA_HOME/omp[/profiles/<name>]/sessions`. A pane's environment never
-// holds PI_CODING_AGENT_DIR, which would move the agent directory itself: the daemon's allow-list
-// does not carry it and runtime.PaneVariableRefusal refuses it as a pane variable. A launch prefix
-// that sets a profile is not read here, as ompdirs says of its own reads.
+// SessionsDir is where Oh My Pi, started under env in workDir, keeps its sessions
+// (ompdirs.SessionsDir). A pane's environment never holds PI_CODING_AGENT_DIR, which would move the
+// agent directory itself: the daemon's allow-list does not carry it and
+// runtime.PaneVariableRefusal refuses it as a pane variable. A launch prefix that sets a profile is
+// not read here, as ompdirs says of its own reads.
 func (ompLauncher) SessionsDir(_ runtime.SpawnSpec, _ Host, env map[string]string, workDir string) (string, error) {
-	root, profile, err := ompdirs.ProfileRoot(env, workDir)
-	if err != nil {
-		return "", err
-	}
-	if data := env["XDG_DATA_HOME"]; data != "" {
-		xdg := filepath.Join(data, "omp")
-		if profile != "" {
-			xdg = filepath.Join(xdg, "profiles", profile)
-		}
-		if root == xdg {
-			return filepath.Join(root, "sessions"), nil
-		}
-	}
-	return filepath.Join(root, "agent", "sessions"), nil
+	return ompdirs.SessionsDir(env, workDir)
 }
 
 // agentMarkers are the markers of launchers, sorted, and the harnesses they run as one phrase, in

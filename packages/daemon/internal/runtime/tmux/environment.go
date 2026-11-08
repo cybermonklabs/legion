@@ -98,6 +98,11 @@ func checkPaneEnv(env map[string]string, providerKeys []string) error {
 		switch {
 		case !runtime.IsEnvName(name):
 			return fmt.Errorf("tmux runtime: pane variable %q is not an environment variable name", name)
+		case why != "" && runtimeOwned[name]:
+			// A session-placing name the runtime sets itself only under a session database
+			// (OMP_SESSION_STORAGE, OMP_SESSION_SQL_DSN_FILE) is refused for what it places,
+			// whatever store this daemon runs.
+			return fmt.Errorf("tmux runtime: pane variable %s: %s", name, why)
 		case name == "PATH" || runtimeOwned[name] || controllerOwned[name]:
 			return fmt.Errorf("tmux runtime: pane variable %s is one the runtime sets on every pane itself", name)
 		case isIdentity:

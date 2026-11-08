@@ -236,7 +236,3 @@ func parseTitle(title string) (role claim.Role, issue, why string) {
 	}
 	return claim.Role(named), key, ""
 }
-
-// OMPSessionsDir is where an Oh My Pi whose profile root (ompdirs.ProfileRoot) is root keeps its
-// sessions.
-func OMPSessionsDir(root string) string { return filepath.Join(root, "agent", "sessions") }
