@@ -1166,7 +1166,7 @@ jobs:
               # OIDC issuer it trusts, and the seeding step that logs its service in and enrols its
               # pods: the packages `go list -deps ./cmd/broker ./cmd/dev-oidc-issuer
               # ./internal/broker/brokertest/requestseed` lists in packages/envoy beyond the
-              # Dispatch server's, which e2e/run-broker.sh:95 builds in one go build.
+              # Dispatch server's, which e2e/run-broker.sh builds in one `go build`.
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
@@ -2019,7 +2019,7 @@ jobs:
   # package to check that it holds every row. The order is the point: the read fails a row the
   # package does not hold, so the copy for this change runs first. The ci_images filter selects
   # this job, and names the files that decide what its two steps do: the rows, the two scripts,
-  # the module both scripts read a reference with, the crane action and this file. The gate's
+  # the module every reader of a row goes through, the crane action and this file. The gate's
   # other half reads the whole tree, and is a step of lint, which runs on every change: a file
   # that names a third-party registry again can be any file, and this filter names few of them.
   # This job is the one copy path: it runs on a pull request and on a merge group, which is every
@@ -4240,8 +4240,9 @@ jobs:
     # whatever their `if:`: its workflow-level block (the build's packages: write, and the
     # actions: read and checks: write of its ci-ok-report step) and its `attest` job's id-token
     # and attestations: write. That `attest` job runs whenever the build pushed, whatever the
-    # event, a pull request's run included, because this branch's push order has a pull
-    # request's run push the image the rows then pin (browser-image.yaml's `attest` job says why).
+    # event, a pull request's run included, because the two-push order AGENTS.md describes has
+    # a pull request's run push the image the rows then pin (browser-image.yaml's `attest` job
+    # says why).
     permissions:
       contents: read
       packages: write

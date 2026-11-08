@@ -542,14 +542,11 @@ gate_excusals: list[str] = []
 gate_matches: dict[tuple[str, str, str, str], set[str]] = {}
 
 
-def excused_gate_terms(
-    workflow: Path, job_name: str | None
-) -> dict[str, tuple[str, str, str, str]]:
+def excused_gate_terms(workflow: Path, job_name: str) -> dict[str, tuple[str, str, str, str]]:
     """The gate terms PINNED_IMAGE_GATES admits for this holder, by their text with runs of
-    whitespace collapsed. Empty for a holder no entry names, and for one whose job this check
-    cannot name — so a gate is excused only where a reviewer wrote down the job it is in."""
-    if job_name is None:
-        return {}
+    whitespace collapsed. Empty for a holder no entry names — so a gate is excused only where a
+    reviewer wrote down the workflow and the job it is in. The job is always known: a job's
+    `if:` is read under its own name and a step's under the job it is a step of."""
     return {
         " ".join(entry[2].split()): entry
         for entry in PINNED_IMAGE_GATES
@@ -915,7 +912,7 @@ def unwrap(expression: str) -> str:
 def gate_outputs(
     condition: str,
     modes: dict[str, str | None],
-    excused_terms: dict[str, tuple[str, str, str, str]] | None = None,
+    excused_terms: dict[str, tuple[str, str, str, str]],
 ) -> tuple[list[tuple[str, str]], set[str], bool, list[tuple[str, str, str, str]]]:
     """(job, output) for each paths-filter output an `if:` is gated on, the trigger events it
     admits, and whether it skips a draft.
@@ -948,10 +945,9 @@ def gate_outputs(
     conjuncts = [unwrap(part) for part in split_top(unwrap(condition), "&&")]
     # An excused conjunct is out of the reading altogether, the filters clause included: it is
     # neither a filter this job is gated on nor a term to refuse.
-    excused_here = excused_terms or {}
     kept = []
     for part in conjuncts:
-        entry = excused_here.get(" ".join(part.split()))
+        entry = excused_terms.get(" ".join(part.split()))
         if entry is None:
             kept.append(part)
         else:
@@ -1032,8 +1028,8 @@ def gating_filters(
     workflow: Path,
     describe: str,
     holder: dict,
-    modes: dict[str, str | None] | None = None,
-    job_name: str | None = None,
+    modes: dict[str, str | None] | None,
+    job_name: str,
 ) -> tuple[list[tuple[str, PathsFilter, str]], set[str]]:
     """The dorny/paths-filter filters an `if:` is gated on, each with the refusal its narrowing
     term earns ("" when the output hands the filter's value unnarrowed), and the trigger events
@@ -1046,7 +1042,9 @@ def gating_filters(
     one that runs on every change. So is a draft term under a trigger that does not build the
     head once the draft is marked ready (the comment above NEUTRAL). `job_name` is the job the
     `if:` decides — the holder itself for a job, the job it is a step of for a step — and is
-    what a PINNED_IMAGE_GATES entry is keyed to beside the workflow and the term."""
+    what a PINNED_IMAGE_GATES entry is keyed to beside the workflow and the term. It and `modes`
+    carry no default, because every caller has both to hand and a gate read without the job it
+    is in could excuse no term at all."""
     document = documents[workflow]
     condition = str(holder.get("if", ""))
     try:

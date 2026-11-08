@@ -351,7 +351,7 @@ check "names the row and both digests" \
 check "names the reference it copied" "$(contains "$out" "This copy read docker.io/oven/bun:1.3.14@$BUN")"
 check "and says what to do" "$(contains "$out" 're-run the ci-images job')"
 
-echo "case: the gate's check 8 before the copy, and after it"
+echo "case: the gate's rule 9 before the copy, and after it"
 # ci.yaml's ci-images job runs this script and then the gate's package mode, in that order,
 # because that mode reads which rows the package holds. Here the stand-in package holds every
 # row of .github/ci-images.yaml but the last one this script copies.

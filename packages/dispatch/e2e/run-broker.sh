@@ -36,13 +36,13 @@ set -euo pipefail
 # the shard and alone jobs of .github/workflows/dispatch-browser.yaml run in a container with
 # no Go toolchain, and that file's binaries job builds the three for them.
 #
-# It serves one directory only, packages/envoy/out/dispatch-e2e-broker under this checkout:
-# e2e/real-broker.ts runs requestseed out of that path alone, resolved against its own module
-# and from no variable, so a caller that hands over any other directory gets the two binaries
-# this script execs from it and a row that seeds a request still fails on the fixed path. The
-# check below refuses a handed-over directory that holds no requestseed, but it reads nothing
-# about the fixed path, so it catches a directory missing the binary and not one in the wrong
-# place.
+# It serves one directory only, packages/envoy/out/dispatch-e2e-broker under this checkout, and
+# the check below refuses every other one: e2e/real-broker.ts runs requestseed out of that path
+# alone, resolved against its own module and from no variable, so a run handed any other
+# directory would exec the two binaries this script runs from it and then fail the first row
+# that seeds a request, on a path nobody named. Saying that in this header was not enough - a
+# trap written down is still a trap - so the value is refused here, at the start of the run,
+# where the name that is wrong is still in hand.
 #
 # DATABASE_URL is the Dispatch suite's own database, which e2e/seed.ts truncates; the broker never
 # touches it, and runs instead in a database of its own on the same server, <that database>_broker,
@@ -63,8 +63,9 @@ e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 # This script execs exactly one of broker and dev-oidc-issuer per invocation and never runs
 # requestseed: e2e/real-broker.ts runs that one itself, out of
 # packages/envoy/out/dispatch-e2e-broker, the fixed path the build below writes to and the one
-# the shard and alone jobs download the binaries into, which is why the check below asks a
-# directory handed over here for requestseed too.
+# the shard and alone jobs download the binaries into. That is why the check below asks a
+# handed-over directory for requestseed too, and why it refuses a directory that is not that
+# one.
 # Unset, the build below is this checkout's, as it always was: a developer's machine and an
 # issue pod set this no more than they set DISPATCH_E2E_SERVER_BIN. The build is skipped only
 # when the caller hands the directory over, never on a comparison of what is newer than what: a
@@ -73,6 +74,17 @@ e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 prebuilt_bin="${DISPATCH_E2E_BROKER_BIN_DIR:-}"
 if [ -n "$prebuilt_bin" ]; then
   [[ "$prebuilt_bin" == /* ]] || prebuilt_bin="$PWD/$prebuilt_bin"
+  # The one directory this variable serves, resolved the way e2e/real-broker.ts resolves it:
+  # against this script's own place in the checkout, never against the caller's directory. Both
+  # sides go through `cd <dir> && pwd -P`, so a trailing slash, a `..` and a symlinked checkout
+  # compare as the one path they name, and a value naming anywhere else is refused here rather
+  # than in the first row that seeds a request, minutes later and nowhere near its cause.
+  served="$e2e_dir/../../envoy/out/dispatch-e2e-broker"
+  handed=$(cd "$prebuilt_bin" 2>/dev/null && pwd -P) || handed=""
+  if [ -z "$handed" ] || [ "$handed" != "$(cd "$served" 2>/dev/null && pwd -P)" ]; then
+    echo "run-broker.sh: DISPATCH_E2E_BROKER_BIN_DIR=$DISPATCH_E2E_BROKER_BIN_DIR is not packages/envoy/out/dispatch-e2e-broker of this checkout, the one directory it serves: e2e/real-broker.ts runs requestseed out of that path alone, so a row that seeds a request would fail there whatever this script exec'd from somewhere else" >&2
+    exit 2
+  fi
   for binary in broker dev-oidc-issuer requestseed; do
     if [ ! -x "$prebuilt_bin/$binary" ]; then
       echo "run-broker.sh: DISPATCH_E2E_BROKER_BIN_DIR=$DISPATCH_E2E_BROKER_BIN_DIR holds no executable $binary" >&2

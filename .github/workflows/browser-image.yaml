@@ -29,10 +29,11 @@ on:
 # this repo takes no fork pull requests), so it carries only what the push path needs. The
 # attestation's `id-token` and `attestations: write` belong to the `attest` job below alone,
 # which runs on the run that pushed, whatever its event — a pull request's run included, since
-# this branch's three-push design has a pull-request run push the image the rows then pin. A
-# pull request runs its own head's copy of this file, so a head that widens that `if:` attests
-# what its own run pushed and nothing else; the attestation names that run, its workflow and
-# its ref, which is what the verify command above the `attest` job reads.
+# the two-push order AGENTS.md describes has the push that changes any part of the build recipe
+# build and push the image, and a later push move the row's `digest:` onto it. A pull request
+# runs its own head's copy of this file, so a head that widens that `if:` attests what its own
+# run pushed and nothing else; the attestation names that run, its workflow and its ref, which
+# is what the verify command above the `attest` job reads.
 #
 # `actions: read` and `checks: write` are the scopes of the build's ci-ok report, which runs on
 # every call; GitHub refuses a caller that grants less than this block declares.
@@ -50,11 +51,12 @@ jobs:
     # Playwright base fetched. Its steps, as that job ran them: 1 s set-up, 7 s checkout, 1 s
     # crane, 0 s row, 0 s decide, 9 s buildx, 0 s login, 47 s build and push, 0 s tag and 1 s
     # record (one step here now), 2 s the second checkout, 0 s the ci-ok report, 6 s the post
-    # steps. One step carries a budget of its own, the build, at 47 s x 1.15 = 54 s -> 1 min ->
-    # the two-minute floor; the job's is that budget plus the measured maximum of every step
-    # without one, 77 - 47 = 30 s, rounded up: 2 min + 30 s -> 3 min. A run whose row already
-    # names a served digest skips the buildx, login and build steps and their post steps, 61 s
-    # of that sample, and is left with about 16 s of work.
+    # steps — 74 s of steps inside the 77 s the job took whole. One step carries a budget of
+    # its own, the build, at 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor; the job's is
+    # that budget plus the measured maximum of every step without one, the other 74 - 47 = 27 s,
+    # rounded up: 2 min + 27 s -> 3 min. A run whose row already names a served digest skips
+    # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
+    # with about 13 s of work.
     timeout-minutes: 3
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
@@ -430,9 +432,11 @@ jobs:
   # gate on the build step above, a run builds only when it is pushing, and a run that pushed
   # nothing has nothing of its own to attest — the digest it reports is the one the row already
   # names, which the run that pushed it attested then. The event is not what decides this, and
-  # it cannot be: under this branch's three-push design the image every row pins is pushed by a
-  # PULL REQUEST's run, so a job that skipped on `pull_request` would leave the pinned image
-  # with no attestation at all, which is what the event test that stood here did.
+  # it cannot be: under the two-push order AGENTS.md describes — the push that changes any part
+  # of the build recipe builds and pushes the image, and a later push moves the row's `digest:`
+  # onto what that build pushed — the image every row pins is pushed by a PULL REQUEST's run,
+  # so a job that skipped on `pull_request` would leave the pinned image with no attestation at
+  # all, which is what the event test that stood here did.
   #
   # SO THE ATTESTATION OF A CI IMAGE NAMES THE BRANCH WHOSE RUN BUILT IT, NOT main. The
   # certificate names this workflow and the ref the run carried — `refs/pull/<n>/merge` for the

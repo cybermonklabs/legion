@@ -2091,7 +2091,8 @@ the dashboard there (`scripts/e2e/dispatch-two-builds.sh`). `DISPATCH_E2E_BROKER
 same for the real secrets broker: a directory holding `broker`, `dev-oidc-issuer` and
 `requestseed` that the caller built, which `e2e/run-broker.sh` execs instead of building them
 from this checkout, and which it refuses when any of the three is not executable there. It
-serves one directory only, `packages/envoy/out/dispatch-e2e-broker` under this checkout, because
+serves one directory only, `packages/envoy/out/dispatch-e2e-broker` under this checkout, and
+refuses every other by name before anything starts, because
 `e2e/real-broker.ts` runs `requestseed` out of that path alone, resolved against its own module
 and from no variable; its one caller, the `shard` and `alone` jobs of
 `.github/workflows/dispatch-browser.yaml`, downloads that file's `binaries` job's artifact into

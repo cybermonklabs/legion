@@ -3,9 +3,12 @@ reference, the repository a row names with Docker Hub's implicit `library/` writ
 kind of row it is, the tag that kind and its digest give it, and, for a row this repository
 builds, the hash of the whole recipe its image is built from.
 
-check-ci-images.sh, mirror-ci-images.sh, check-playwright-version.sh and the `row` step of
-.github/workflows/browser-image.yaml import it from the repository they work on, running
-`PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3` from that repository's root. One
+check-ci-images.sh, mirror-ci-images.sh, check-bun-version.sh and check-playwright-version.sh,
+and the `row` and `record` steps of .github/workflows/browser-image.yaml, import it from the
+repository they work on, running `PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3`
+from that repository's root. The `row` step reads which row is built from the Dockerfile and
+hashes the whole build recipe with recipe_sha256, the hash the gate's rule 10 reads back out of
+the published image's label; the `record` step takes that image's tag from row_tag. One
 module, because the gate and the copy must read a row the same way: a row the gate counts as the
 library/golang row and the copy did not would escape the copy's Go check, and a row one reader
 counts as built and another as copied would be `crane copy`'d from a Dockerfile or held to an

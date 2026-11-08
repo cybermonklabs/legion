@@ -6,8 +6,9 @@
 # .github/workflows/browser-image.yaml builds and publishes it, and .github/ci-images.yaml holds
 # its row: `built: .github/docker/browser.Dockerfile` where a copied row holds `upstream:`, with
 # the digest the two `container:` jobs of .github/workflows/dispatch-browser.yaml pin, `shard`
-# (:180) and `alone` (:645). ci.yaml declares no `container:` of its own: it reaches those jobs
-# by calling that workflow.
+# and `alone`. They are named and not numbered: a line number in another file goes stale at the
+# next edit there, and a job name is what a reader greps for anyway. ci.yaml declares no
+# `container:` of its own: it reaches those jobs by calling that workflow.
 #
 # The base bakes the browsers and every host package they need under /ms-playwright, with
 # PLAYWRIGHT_BROWSERS_PATH pointing at it, and its Playwright version is the one bun.lock

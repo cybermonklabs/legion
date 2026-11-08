@@ -79,7 +79,10 @@ images:
     tag: nats-2.15.1-alpine-2ae57dfb
     digest: sha256:2ae57dfba3063d5e25fecb75256118c0882a1a2d2cf7d0fba17a7c701df956f6
 
-  # The S3-compatible server the dispatch and envoy-go jobs start: tests3.Image.
+  # The S3-compatible server the envoy-go job starts: tests3.Image. No dispatch job starts it:
+  # a job inside a container cannot start a container it could reach, so
+  # .github/docker/browser.Dockerfile's `weed` stage copies /usr/bin/weed out of this image and
+  # the shard job of .github/workflows/dispatch-browser.yaml starts that baked binary instead.
   - upstream: docker.io/chrislusf/seaweedfs:3.97
     tag: seaweedfs-3.97-bb05d66d
     digest: sha256:bb05d66d2963b1cc48073190781c3dd29e2c4c88a2ae2986bf58e38c86d89c6e

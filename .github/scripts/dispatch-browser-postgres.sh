@@ -42,8 +42,15 @@
 #               and the figure the provider records for itself can be held against them.
 #
 # It runs the same sequence the lanes' provider runs (packages/dispatch/e2e/harness-postgres.ts),
-# with this image's PostgreSQL 18 - /usr/lib/postgresql/18/bin, the DISPATCH_E2E_PG_BIN both
-# browser steps export - on port 55432, which no lane uses: the lanes take ports the OS chooses.
+# with this image's PostgreSQL 18 on port 55432, which no lane uses: the lanes take ports the OS
+# chooses. It calls `initdb`, `pg_ctl` and `psql` by name: .github/docker/browser.Dockerfile
+# appends the version directory to PATH and asserts all three are found at build time, so this
+# script writes no version directory of its own and a PostgreSQL major moving in that file moves
+# it here with no edit. The two browser steps still export DISPATCH_E2E_PG_BIN, which is the
+# harness's binaries provider's own input - a directory, not a PATH lookup - and is no part of
+# what this script reads; it could not read it in any case, since that export happens inside a
+# later step's `run:`.
+#
 # Everything it writes goes under a directory of its own in $RUNNER_TEMP and is removed again,
 # so the checkout stays clean and nothing is left for the suite to find.
 #
@@ -66,23 +73,22 @@ case "$lanes" in '' | *[!0-9]* | 0) usage "$@" ;; esac
 # The user every step of the calling job runs as, this script's own process included.
 id
 
-bin=/usr/lib/postgresql/18/bin
 work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/pg-reading"
 rm -rf "$work"
 mkdir -p "$work/template"
 start=$(date +%s.%N)
-"$bin/initdb" -D "$work/template/pgdata" -U postgres --auth=trust --no-sync -E UTF8 > /dev/null
+initdb -D "$work/template/pgdata" -U postgres --auth=trust --no-sync -E UTF8 > /dev/null
 after_initdb=$(date +%s.%N)
-"$bin/pg_ctl" -D "$work/template/pgdata" -l "$work/template/postgres.log" \
+pg_ctl -D "$work/template/pgdata" -l "$work/template/postgres.log" \
   -o "-p 55432 -h 127.0.0.1 -k $work/template" -w start > /dev/null
 url="postgres://postgres@127.0.0.1:55432/postgres?sslmode=disable"
-"$bin/psql" "$url" -v ON_ERROR_STOP=1 -c 'create database dispatch_e2e' > /dev/null
+psql "$url" -v ON_ERROR_STOP=1 -c 'create database dispatch_e2e' > /dev/null
 lane="postgres://postgres@127.0.0.1:55432/dispatch_e2e?sslmode=disable"
-"$bin/psql" "$lane" -v ON_ERROR_STOP=1 -c 'create extension vector' > /dev/null
-"$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 -c 'select version()'
-"$bin/psql" "$lane" -XAt -v ON_ERROR_STOP=1 \
+psql "$lane" -v ON_ERROR_STOP=1 -c 'create extension vector' > /dev/null
+psql "$lane" -XAt -v ON_ERROR_STOP=1 -c 'select version()'
+psql "$lane" -XAt -v ON_ERROR_STOP=1 \
   -c "select 'vector ' || extversion from pg_extension where extname = 'vector'"
-"$bin/pg_ctl" -D "$work/template/pgdata" -m fast -w stop > /dev/null
+pg_ctl -D "$work/template/pgdata" -m fast -w stop > /dev/null
 after_template=$(date +%s.%N)
 # One copy per lane the caller named, as the provider makes one per Playwright worker.
 lane_number=0
