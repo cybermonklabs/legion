@@ -37,6 +37,7 @@ For each spec, ask, comment and message:
 - Write in `skill://asd-ste100`'s strict mode.
 - Write about the current design, never the person or how people reached it, and never quote or upload their words.
 - Link each source where the person wrote it, each id whole. With no link, state the design.
+- Cite a person's words as evidence of their taste, never as a ruling that settles the question: an answer given once is not a standing rule, so state the design and the reason it fits. A commit attributed to a person is not their decision, because agents commit the work.
 - In a spec, cite code by file and symbol, never a line number: it goes stale at the next edit.
 - A sentence citing a gate passing (test, review, check) also says what the pass does not show: "Tests pass: a wrong verdict, not a missing one."
 - Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).

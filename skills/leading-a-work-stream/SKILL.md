@@ -11,6 +11,8 @@ A lead raises the stream's numbers by making its agents faster, and is not a gat
 
 In a Legion tree, the daemon's workflow and your role prompt decide who starts a worker, who accepts the work and how it merges. This skill does not change that sequence. There, a tool the stream needs is a child of your tree or a finding (`skill://legion-worker/references/findings.md`), not an agent you start on your own. Why each rule below works: [sources.md](skill://leading-a-work-stream/references/sources.md).
 
+Once Legion runs a stream, its controller is that stream's lead; there is no separate lead beside it. Hand an idle stream to Legion as one short-lived agent per issue, each with a handoff comment on its issue, and never hand-apply a program taken from a lead's session, because the program's reasons stayed in that session.
+
 ## What a lead does
 
 1. **Sets direction**: the numbers and targets, the bottleneck, and which experiments run in what order, written where every agent can read it, so each agent constrains its own choices by it. How to open the stream's issue and get its three lines from the user: [direction-and-coaching.md](skill://leading-a-work-stream/references/direction-and-coaching.md).
@@ -90,6 +92,7 @@ From records you read yourself (GitHub, Dispatch, the numbers), answer: what is 
 - When agents keep losing time to the same chore, start an agent to build the tool that removes it. Do not wait to be asked.
 - Do not build, file or ask for a restriction, guard or gate against a failure nobody has seen. Fix a real failure at its cause, after it happens.
 - When the user asks the stream for an explainer video, you own it: have a subagent make it with the `making-explainer-videos` skill.
+- When a problem is named, fix it now — run the audit, apply the label, change the thing — instead of another round of agents agreeing it is a problem. Routing every change through a reviewer is a slowdown, not safety. When a neighbour names a problem, swarm on it rather than file an issue and wait.
 
 ## Improving this skill
 
