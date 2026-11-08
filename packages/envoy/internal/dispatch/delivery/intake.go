@@ -908,7 +908,8 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // acknowledges it and holds that acknowledgement for the stop only where the bus refused it
 // (acknowledgeOrHold): a malformed envelope has nothing to retry, and a route error (a failed
 // GitHub call, or that deadline passing) is caught up by the next reconcile pass rather than by
-// NATS redelivery -- see the package doc comment. The deadline is what makes intakeAckWait a
+// NATS redelivery -- see the package doc comment. One route error is not, and is the second
+// case below. The deadline is what makes intakeAckWait a
 // bound rather than a hope: without it one stuck GitHub call could hold an in-flight slot past
 // the ack wait and have the message redelivered underneath it. An envelope route does not handle
 // (an empty payload, or a kind route sends to no handler) is acknowledged and nothing else: no
@@ -921,7 +922,21 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // reconcile. Its writes are the upserts reconcile makes too, so redoing what had in fact
 // finished just before the stop gave it up writes the same facts again.
 //
-// Both answers go through the delivery rather than straight to NATS, and for one reason: the
+// The other message it does not acknowledge is one whose pull request's head row could not be
+// stored at all (ErrHeadNotStored, handlePullRequestEnvelope): no reconcile pass catches that
+// up, because the passes read the rows that exist (ListStalePullRequestHeads), so an
+// acknowledged envelope loses that pull request's head for good and with it every
+// `before_merge` result measured against it. It is handed straight back to NATS rather than
+// through the delivery (redeliverAfter): the hold giveBack takes is for the stop, and this
+// message wants redelivering now, to this same process, which still holds the durable and
+// still routes that key to the one goroutine it is on. The delay is what keeps a failure that
+// repeats from spinning: the write is the same write each time, so asking again within the
+// second would buy nothing and spend the consumer's in-flight slots doing it. The write is
+// idempotent (both its statements are `on conflict … do update`), so a redelivery of an
+// envelope whose write had in fact landed writes the same pair again.
+//
+// The stop's two answers go through the delivery rather than straight to NATS, and for one
+// reason: the
 // stop a connection event runs begins with the link down, where the bus refuses a publish. A
 // hand-back the delivery holds until the stop has a live connection and makes it then
 // (giveBack); an acknowledgement is made at once and held only where the bus refused it
@@ -931,10 +946,17 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // calls deliver.
 func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	msg, handling := message.msg, d.handling
+	// handBack is set by the one route error NATS must redeliver, which the deferred answer
+	// below reads: every other path acknowledges.
+	handBack := false
 	defer func() {
 		if handling.Err() != nil {
 			slog.Warn("dispatch delivery: the intake stopped before the event's handling finished; handing it back", "subject", msg.Subject)
 			d.giveBack(msg)
+			return
+		}
+		if handBack {
+			redeliverAfter(msg, headWriteRedeliverAfter)
 			return
 		}
 		d.acknowledgeOrHold(msg)
@@ -960,6 +982,11 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	case errors.Is(err, errMalformedPayload):
 		slog.Error("dispatch delivery: decode envelope payload", "subject", msg.Subject, "error", err)
 		return
+	case errors.Is(err, ErrHeadNotStored):
+		slog.Warn("dispatch delivery: a pull request's head row was not stored; handing the envelope back",
+			"subject", msg.Subject, "redeliver_after", headWriteRedeliverAfter, "error", err)
+		handBack = true
+		return
 	case err != nil:
 		slog.Warn("dispatch delivery: process event", "subject", msg.Subject, "error", err)
 		return
@@ -968,6 +995,24 @@ func (in *Intake) deliver(d *intakeDelivery, message intakeMessage) {
 	}
 	if err := RecordEventAt(ctx, in.pool); err != nil {
 		slog.Error("dispatch delivery: record event freshness", "error", err)
+	}
+}
+
+// headWriteRedeliverAfter is how long NATS waits before handing back an envelope whose pull
+// request's head row could not be stored (deliver). It is not zero because the write that
+// failed is the same write each time: a plain Nak would have the server redeliver at once, and
+// a database that is refusing writes would then spin the consumer against it, with four such
+// envelopes holding every in-flight slot it has (intakeMaxAckPending). Ten seconds is short
+// beside the five minutes of the reconcile this message cannot wait for, and long enough that
+// a hundred redeliveries of one envelope cost a quarter of an hour rather than a second.
+var headWriteRedeliverAfter = 10 * time.Second
+
+// redeliverAfter hands msg back to the server for redelivery in after, logging a Nak that
+// fails: the ack wait (intakeAckWait) then redelivers it, later than asked but not never.
+func redeliverAfter(msg *natsgo.Msg, after time.Duration) {
+	if err := msg.NakWithDelay(after); err != nil {
+		slog.Error("dispatch delivery: hand a message back for redelivery",
+			"subject", msg.Subject, "delay", after, "error", err)
 	}
 }
 
