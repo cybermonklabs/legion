@@ -3428,113 +3428,34 @@ jobs:
       # and so is internal/integration, which the integration step below tests. The pattern is
       # built in .github/scripts/ci_job_reads.py from the same list those jobs' own steps are built
       # from, so what this step leaves out and what the lane runs cannot drift apart. What is left
-      # is the rest of the module less the routes package and pmdoc, the two longest packages of
-      # it (the API's and the documents service's) now among the ones the lane runs, so its 20
-      # minutes are ample.
+      # is the rest of the module less the routes package, the two longest packages of it (the
+      # API's and the documents service's) now among the ones the lane runs, so its 20 minutes
+      # are ample.
       # The long poles lead the list. `go test` starts the packages in the order its arguments
       # name, so a package that starts late ends the step late however little it is waiting for:
       # measured in run 42469495554, pmdoc started about 95 s into the step and ended it 91 s
       # after any other package finished, while every other long package was done 90 s earlier.
-      # Leading with the longest overlaps the longest one with the rest, which is what
+      # Leading with the six longest overlaps the longest one with the rest, which is what
       # longest-first scheduling buys, and the order is read back from the step's own -json
       # (dispatch://INFRA-1075).
-      #
-      # internal/dispatch/pmdoc is in no list here: this step runs it as three `go test` calls of
-      # its own, started in the background before the foreground list and waited for after it.
-      # The package took 334 s of this step's 355 s in run 42484046283, and those 334 s are the
-      # sum of two halves rather than the longer of them. Its twelve measured tests - the ones
-      # that time a call by this process's own CPU time (internal/cputest, through
-      # linear_test.go's cpuTimeOf and processCPUTime) - ran one after another to 290.7 s, and
-      # only then did the package's 44 s of parallel tests start, because Go starts a package's
-      # parallel tests once every test that does not call t.Parallel has finished. None of the
-      # measured ones calls it, and none may: cputest.Process reads RUSAGE_SELF, this whole
-      # process's CPU, so a test computing beside a measured call is counted into that call
-      # (internal/cputest/cputest.go:18-20). Three processes keep that rule while the two halves
-      # overlap: the heaviest measured test (134.5 s of the 290.7 s) alone, the other eleven
-      # (about 156 s together) beside it, and the package's 362 other tests, its parallel tail
-      # among them, beside both. Each call writes a `go test -json` stream of its own, which the
-      # upload step below publishes with the foreground list's and
-      # .github/scripts/go-test-times.py reads as a directory; the step replays each of the four
-      # to the log the way it replays one (a green call's package result lines, a red call's
-      # whole stream) and exits non-zero if any of the four failed.
-      #
-      # A measured test that fell into the third call by mistake would still be measured safely:
-      # it calls no t.Parallel, so Go runs it in that process's serial phase, where no parallel
-      # test of the package is running. What the partition check before the calls prevents is the
-      # other mistake - a test of the package in none of the three, and so in no run at all. It
-      # lists the package (`go test -list '.*'`) and each of the three patterns, and fails the
-      # step naming the difference unless the two -run sets are disjoint, are together exactly
-      # the set the third call's -skip names, and, with the rest of the package, are exactly its
-      # list. That rest is computed in the shell because `go test -list` applies -run but not
-      # -skip (measured: a `-list '.*' -skip '^(TestParseIsLinearInATableOfEscapedPipes)$'` lists
-      # that test), so the third call's own set cannot be listed directly. Every pattern is an
-      # anchored alternation of whole names, built in .github/scripts/ci_job_reads.py from the one
-      # list of measured tests it holds (PMDOC_MEASURED), so no pattern can miss a test or reach
-      # a second one whose name begins with one of them.
-      # The list it holds the three to is the package's `Test` functions alone: `go test -list`
-      # prints its benchmarks as well, which no run of this job starts, and its fuzz targets,
-      # whose seed corpora the third call runs, since a pattern of `Test` names matches no
-      # `Fuzz` one.
       - name: Unit test envoy Go package
         run: |
           mkdir -p "$RUNNER_TEMP/go-test-json"
-          pmdoc=./internal/dispatch/pmdoc/
-          heaviest='^(TestBareURLShapesParseAndRenderLinearly)$'
-          others='^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$'
-          measured='^(TestALateCallFinishingAfterItsTestDoesNotPanicHelper|TestAMissedDeadlineLeavesTheCollectorAsItWas|TestBareURLShapesParseAndRenderLinearly|TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedInTime|TestHeavyBodiesAtTheBlockCapParseInTimeProportionalToTheirLength|TestHeavyBodiesAtTheBodyCapParseAndEncodeInTimeProportionalToTheirLength|TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText|TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly|TestParseIsLinearInATableOfEscapedPipes|TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds|TestUnclosedRawHTMLShapesParseAndRenderLinearly|TestUpdateIsLinearInTheBlockCount)$'
-          listed() { go test -count=1 -list "$1" "$pmdoc" | grep '^Test' | sort; }
-          all=$(listed '.*')
-          in_heaviest=$(listed "$heaviest")
-          in_others=$(listed "$others")
-          in_measured=$(listed "$measured")
-          in_run=$(printf '%s\n%s\n' "$in_heaviest" "$in_others" | grep '^Test' | sort)
-          unmeasured=$(comm -23 <(printf '%s\n' "$all") <(printf '%s\n' "$in_measured"))
-          overlap=$(comm -12 <(printf '%s\n' "$in_heaviest") <(printf '%s\n' "$in_others"))
-          union=$(printf '%s\n%s\n' "$in_measured" "$unmeasured" | grep '^Test' | sort -u)
-          if [ -z "$in_heaviest" ] || [ -z "$in_others" ] || [ -z "$unmeasured" ] || [ -n "$overlap" ] || [ "$in_run" != "$in_measured" ] || [ "$union" != "$all" ]; then
-            printf 'the three pmdoc calls do not partition the package: %s heaviest + %s other measured + %s unmeasured, %s listed\n' "$(grep -c . <<<"$in_heaviest")" "$(grep -c . <<<"$in_others")" "$(grep -c . <<<"$unmeasured")" "$(grep -c . <<<"$all")"
-            printf 'in both -run calls: %s\n' "${overlap:-none}"
-            printf 'in a -run call and not skipped by the third: %s\n' "$(comm -23 <(printf '%s\n' "$in_run") <(printf '%s\n' "$in_measured"))"
-            printf 'skipped by the third call and in no -run call: %s\n' "$(comm -13 <(printf '%s\n' "$in_run") <(printf '%s\n' "$in_measured"))"
-            printf 'listed and in no call: %s\n' "$(comm -23 <(printf '%s\n' "$all") <(printf '%s\n' "$union"))"
-            printf 'in a call and not listed: %s\n' "$(comm -13 <(printf '%s\n' "$all") <(printf '%s\n' "$union"))"
-            exit 1
-          fi
-          printf 'pmdoc partition: %s heaviest + %s other measured + %s unmeasured = %s listed\n' "$(grep -c . <<<"$in_heaviest")" "$(grep -c . <<<"$in_others")" "$(grep -c . <<<"$unmeasured")" "$(grep -c . <<<"$all")"
-          go test -json -count=1 -timeout 20m -run "$heaviest" "$pmdoc" > "$RUNNER_TEMP/go-test-json/unit-pmdoc-heaviest.json" &
-          heaviest_pid=$!
-          go test -json -count=1 -timeout 20m -run "$others" "$pmdoc" > "$RUNNER_TEMP/go-test-json/unit-pmdoc-others.json" &
-          others_pid=$!
-          go test -json -count=1 -parallel 12 -timeout 20m -skip "$measured" "$pmdoc" > "$RUNNER_TEMP/go-test-json/unit-pmdoc-unmeasured.json" &
-          unmeasured_pid=$!
-          lead="github.com/sjawhar/envoy/cmd/dispatch-seed
+          lead="github.com/sjawhar/envoy/internal/dispatch/pmdoc
+          github.com/sjawhar/envoy/cmd/dispatch-seed
           github.com/sjawhar/envoy/internal/dispatch/outbox
           github.com/sjawhar/envoy/internal/pgmigrate
           github.com/sjawhar/envoy/cmd/dispatch
           github.com/sjawhar/envoy/cmd/broker"
           s=0
-          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$|/internal/dispatch/pmdoc$' | grep -vxF "$lead")
+          rest=$(go list ./... | grep -Ev '/integration|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$|/internal/dispatch/routes$' | grep -vxF "$lead")
           printf '%s\n%s\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -timeout 20m > "$RUNNER_TEMP/go-test-json/unit.json" || s=$?
-          heaviest_status=0
-          wait "$heaviest_pid" || heaviest_status=$?
-          others_status=0
-          wait "$others_pid" || others_status=$?
-          unmeasured_status=0
-          wait "$unmeasured_pid" || unmeasured_status=$?
-          replay() {
-            if [ "$2" -eq 0 ]; then
-              jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/$1"
-            else
-              jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/$1"
-            fi
-          }
-          replay unit.json "$s"
-          replay unit-pmdoc-heaviest.json "$heaviest_status"
-          replay unit-pmdoc-others.json "$others_status"
-          replay unit-pmdoc-unmeasured.json "$unmeasured_status"
-          for status in "$s" "$heaviest_status" "$others_status" "$unmeasured_status"; do
-            [ "$status" -eq 0 ] || exit "$status"
-          done
+          if [ "$s" -eq 0 ]; then
+            jq -rj 'select(.Action == "build-output" or (.Action == "output" and .Test == null)) | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
+          else
+            jq -rj 'select(.Action == "build-output" or .Action == "output") | .Output' "$RUNNER_TEMP/go-test-json/unit.json"
+          fi
+          exit $s
         working-directory: packages/envoy
       # The routes package alone, on the second service: DISPATCH_TEST_DATABASE_URL names 5433
       # here and nowhere else, so the only transactions its horizon waits on are its own tests'.
