@@ -93,6 +93,11 @@ func TestAJobLogReadFollowsGitHubsRedirectToBlobStorage(t *testing.T) {
 // installation was never granted its optional Actions read (a 403 that is no rate limit), and
 // every other answer as the *Answer any refused REST call is, a 403 that is GitHub's rate limit
 // among them, since that one is the token's budget and not the grant.
+//
+// The row that proves the time bound lowers it to a moment for the length of itself and puts it
+// back: what that row proves is that a read past the bound is told apart from the others, never
+// what the bound's value is, and waiting the production minute out would cost every run of this
+// suite a minute.
 func TestAJobLogReadSaysWhyItReadNoLog(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -103,6 +108,9 @@ func TestAJobLogReadSaysWhyItReadNoLog(t *testing.T) {
 		status int
 		// limited is the rate limit the *Answer must carry.
 		limited bool
+		// bound is what the row lowers JobLogTimeout to for the length of itself, so a read
+		// that has to pass that bound waits a moment rather than the minute production allows.
+		bound time.Duration
 	}{
 		{name: "a body past the byte bound", answer: func(w http.ResponseWriter, r *http.Request) {
 			block := strings.Repeat("x", 64<<10)
@@ -123,11 +131,16 @@ func TestAJobLogReadSaysWhyItReadNoLog(t *testing.T) {
 		{name: "a job GitHub does not have", answer: func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 		}, status: http.StatusNotFound},
-		{name: "a read past the time bound", answer: func(w http.ResponseWriter, r *http.Request) {
-			<-r.Context().Done()
-		}, want: ErrJobLogSlow},
+		{name: "a read past the time bound", bound: 50 * time.Millisecond,
+			answer: func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() },
+			want:   ErrJobLogSlow},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.bound > 0 {
+				production := JobLogTimeout
+				JobLogTimeout = tc.bound
+				t.Cleanup(func() { JobLogTimeout = production })
+			}
 			server := httptest.NewServer(http.HandlerFunc(tc.answer))
 			defer server.Close()
 			client := Client{Token: "token", API: server.URL + "/repos/acme/widgets"}

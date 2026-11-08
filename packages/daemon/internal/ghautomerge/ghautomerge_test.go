@@ -81,12 +81,18 @@ type github struct {
 
 // updatedAt is the fake pull request's default last change on GitHub, baseBranch and baseOid are
 // the branch it merges into and the commit that branch is at, and absent is how the fake records
-// an input the mutation it serves does not pass.
+// an input the mutation it serves does not pass. queueBuiltAhead is the baseCommit an entry
+// behind another carries: the commit GitHub's merge queue built for the entry ahead, whose
+// parent is the base branch's tip, and which is no pull request's head — the fixture is the one
+// measured 2026-11-08 00:43:57Z on cybermonklabs/legion, where entry 2 (#2859) carried
+// b66b78d6d9f3, the queue's build for entry 1 (#2234, head 7c4463b8ac8b) on main's tip
+// 1f46e1cc76f4, and no pull request had b66b78d6d9f3 as its head.
 const (
-	updatedAt  = "2026-10-16T05:00:00Z"
-	baseBranch = "main"
-	baseOid    = "a2679f2e"
-	absent     = "<absent>"
+	updatedAt       = "2026-10-16T05:00:00Z"
+	baseBranch      = "main"
+	baseOid         = "a2679f2e"
+	queueBuiltAhead = "b66b78d6d9f3"
+	absent          = "<absent>"
 )
 
 // submitted is the enable or merge the fake records for #42 at head. Both inputs of the squash
@@ -413,14 +419,16 @@ func (g *github) serve(t *testing.T) string {
 	return server.URL
 }
 
-// clients are the two clients the merge path calls the fake with: GitHub's GraphQL route, which
-// the pull request is read and changed on, and the REST base of acme/widgets, which a failing
-// job's log is read under. One server answers both, as GitHub's one API root does.
-func clients(t *testing.T, g *github) (githubrest.Client, githubrest.Client) {
+// clients are the two the merge path calls the fake with: GitHub's GraphQL route, which the pull
+// request is read and changed on, and the REST base of acme/widgets with the context its reads
+// run under (Logs), which a failing job's log is read with. One server answers both, as GitHub's
+// one API root does. The test's own context is the reads' here, where the daemon gives them one
+// off its merge row's deadline (the daemon's readyMerge).
+func clients(t *testing.T, g *github) (githubrest.Client, Logs) {
 	t.Helper()
 	root := g.serve(t)
 	return githubrest.Client{Token: "token", API: githubrest.GraphQLAPI(root)},
-		githubrest.Client{Token: "token", API: githubrest.RepositoryAPI(root, ghrepo.MustParse("acme/widgets"))}
+		Logs{Ctx: t.Context(), Client: githubrest.Client{Token: "token", API: githubrest.RepositoryAPI(root, ghrepo.MustParse("acme/widgets"))}}
 }
 
 // The fake answers a document that declares a variable it never uses, or uses one it never
@@ -1095,6 +1103,11 @@ func stamped(log string) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
+// logBound is what the row proving a read past the time bound lowers githubrest.JobLogTimeout to
+// while it runs: the production bound is a minute, and a row that waited it out would cost every
+// run of this suite that minute, for a value that is not what the row proves.
+const logBound = 50 * time.Millisecond
+
 // The runs a removal names say what failed in each of them: the daemon reads the end of each
 // failing job's log and names the tests it states failed with the first line stating one, so the
 // tree the merge queue ejected reads the cause instead of fetching and grepping a merge-group log
@@ -1111,12 +1124,15 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		// log is what the fake answers for the failing job, status the HTTP status it refuses
-		// every log read with instead, fill how many bytes it writes before the log, and delay
-		// how long it holds the answer open.
+		// every log read with, fill how many bytes it writes before the log, and delay how long
+		// it holds the answer open. bound is what the row lowers githubrest.JobLogTimeout to
+		// while it runs, so a read that has to pass that bound waits a moment rather than the
+		// minute production allows.
 		log    string
 		status int
 		fill   int
 		delay  time.Duration
+		bound  time.Duration
 		// conflict reads the removal as the queue's conflict, which the daemon submits once
 		// more, rather than as the failed merge every other case is.
 		conflict bool
@@ -1152,15 +1168,21 @@ func TestTheFailingRunsNameWhatEachJobsLogSaysFailed(t *testing.T) {
 			wants: []string{"could not read its failing tests", "GitHub refused the log",
 				"never granted GitHub's optional Actions read"}},
 		{name: "a log past the byte bound", log: goLog, fill: githubrest.JobLogBound + 1,
-			wants:  []string{"could not read its failing tests", "passed the 16 MiB this read takes"},
+			wants:  []string{"could not read its failing tests", "passed the 160 MiB this read takes"},
 			absent: []string{"as failing"}},
-		{name: "a read past the time bound", log: goLog, delay: githubrest.JobLogTimeout + 2*time.Second,
-			wants:  []string{"could not read its failing tests", "the read passed its 10s bound"},
+		{name: "a read past the time bound", log: goLog, bound: logBound, delay: time.Second,
+			wants: []string{"could not read its failing tests",
+				fmt.Sprintf("the read passed its %s bound", logBound)},
 			absent: []string{"as failing"}},
 		{name: "a conflict removal whose commit carries a failing run", log: goLog, conflict: true,
 			wants: []string{"integration (failure, " + failedRun + ")", "its log names TestTheQueueTakesTheEntryOut"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.bound > 0 {
+				production := githubrest.JobLogTimeout
+				githubrest.JobLogTimeout = tc.bound
+				t.Cleanup(func() { githubrest.JobLogTimeout = production })
+			}
 			reason := "failed_checks"
 			if tc.conflict {
 				reason = "merge_conflict"
@@ -1278,9 +1300,9 @@ func TestAnUnmergeableEntryIsAWaitCarryingTheQueuesOwnState(t *testing.T) {
 		{name: "built on the base branch's tip",
 			g:    &github{head: "head", mergeState: "UNKNOWN", queueRequired: true, queued: true, queueState: "UNMERGEABLE", queueBase: baseOid},
 			want: Armed{QueueState: "UNMERGEABLE", QueueBase: baseOid, BaseName: baseBranch, BaseTip: baseOid}},
-		{name: "built on an entry queued ahead of it",
-			g:    &github{head: "head", mergeState: "UNKNOWN", queueRequired: true, queued: true, queueState: "UNMERGEABLE", queueBase: "entry-ahead"},
-			want: Armed{QueueState: "UNMERGEABLE", QueueBase: "entry-ahead", BaseName: baseBranch, BaseTip: baseOid}},
+		{name: "built on the commit the queue made for the entry ahead, which is no pull request's head",
+			g:    &github{head: "head", mergeState: "UNKNOWN", queueRequired: true, queued: true, queueState: "UNMERGEABLE", queueBase: queueBuiltAhead},
+			want: Armed{QueueState: "UNMERGEABLE", QueueBase: queueBuiltAhead, BaseName: baseBranch, BaseTip: baseOid}},
 		{name: "on another base branch, while GitHub reports the pull request clean",
 			g: &github{head: "head", mergeState: "CLEAN", queueRequired: true, queued: true, queueState: "UNMERGEABLE", queueBase: "release-tip",
 				baseName: "release", baseTip: "release-tip"},

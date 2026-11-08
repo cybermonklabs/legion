@@ -135,6 +135,19 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 		number, repo, after.AutoMergeRequest != nil, after.MergeQueueEntry != nil)
 }
 
+// Logs is how the log of a job that failed in the merge queue is read (removal): Client is the
+// installation's repository REST base (githubrest.RepositoryAPI), the one route a job's log
+// lives on, and Ctx the context those reads run under, which is deliberately not the context the
+// submission's own GraphQL calls use. The caller gives the reads a budget of their own, since
+// they are the one call here that can outlast a merge row's: the daemon's row bounds its calls at
+// 30 seconds, and no read of a 54 MB log finishes inside them (the daemon's readyMerge). Ctx is
+// required; a Logs without one fails every read it makes, which a removal reports in the run's
+// own line and nowhere else (jobFailures).
+type Logs struct {
+	Ctx    context.Context
+	Client githubrest.Client
+}
+
 // Submit asks GitHub to merge pull request number of repo at head, the head an accepted READY
 // named, through github, a GraphQL client. It reads GitHub first and then asks keep for the READY
 // head the record still awaits, so a READY withdrawn or left between the two submits nothing. A
@@ -173,10 +186,10 @@ func Disarm(ctx context.Context, github githubrest.Client, repo ghrepo.Repositor
 // Any other failure, an HTTP or network one included, is returned as it is, for the row to retry.
 //
 // github is GitHub's GraphQL route, which the pull request is read and changed on, and logs the
-// same installation's repository REST base (githubrest.RepositoryAPI), which the log of a run
-// that failed in the merge queue is read under (removal): the removal a failing log belongs to
-// says what failed, and a log the daemon cannot read holds up nothing.
-func Submit(ctx context.Context, github, logs githubrest.Client, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
+// same installation's repository REST base with the context its reads run under (Logs), which
+// the log of a run that failed in the merge queue is read with (removal): the removal a failing
+// log belongs to says what failed, and a log the daemon cannot read holds up nothing.
+func Submit(ctx context.Context, github githubrest.Client, logs Logs, repo ghrepo.Repository, number int, head string, armed bool, keep Keep) (Outcome, error) {
 	answer, err := readRepository(ctx, github, repo, number)
 	if err != nil {
 		return "", err
@@ -336,7 +349,13 @@ type Armed struct {
 	// arm alone, or an entry GitHub made after the read.
 	QueueState string
 	// QueueBase is the commit the merge queue built the entry's merge on, and is empty where the
-	// read found no entry or the queue had built nothing for it yet.
+	// read found no entry or the queue had built nothing for it yet. For an entry behind another
+	// it is the commit the queue built for the entry ahead, whose own parent is the base branch's
+	// tip — never that entry's pull-request head. Measured 2026-11-08 00:43:57Z on this
+	// repository: main stood at 1f46e1cc76f4, entry 1 was #2234 AWAITING_CHECKS on baseCommit
+	// 1f46e1cc76f4, and entry 2 was #2859 UNMERGEABLE on baseCommit b66b78d6d9f3, which is no
+	// pull request's head — #2234's head was 7c4463b8ac8b — but the commit the queue built for
+	// #2234, carrying its title and the one parent 1f46e1cc76f4.
 	QueueBase string
 	// BaseName is the branch the pull request merges into, as the same read named it.
 	BaseName string
@@ -359,7 +378,9 @@ func (a *Armed) Routine() bool { return true }
 // (QueueState UNMERGEABLE) while it has built that entry on the tip of the pull request's own
 // base branch (QueueBase, BaseTip, both from the one read): the one state in which nothing ahead
 // of the entry in the queue can be what the queue cannot merge, so the head itself is. An entry
-// the queue has built nothing for yet answers false, as every other state does.
+// with something ahead of it carries the commit the queue built for the entry ahead instead,
+// which is the base branch's tip with that entry's merge on top and so never equal to the tip. An
+// entry the queue has built nothing for yet answers false, as every other state does.
 func (a *Armed) UnmergeableOnBaseTip() bool {
 	return a.QueueState == "UNMERGEABLE" && a.QueueBase != "" && a.QueueBase == a.BaseTip
 }
@@ -582,9 +603,14 @@ type pullRequest struct {
 }
 
 // mergeQueueEntry is the pull request's place in its base's merge queue: when GitHub enqueued it,
-// the state the queue has it in (QUEUED, AWAITING_CHECKS, MERGEABLE, UNMERGEABLE, LOCKED), and the
-// commit the queue built its merge on, nil until the queue has built one. An entry at all says the
-// pull request is queued, whatever its state, which is what armed answers.
+// the state the queue has it in (QUEUED, AWAITING_CHECKS, MERGEABLE, UNMERGEABLE, LOCKED), and
+// baseCommit, the commit the queue built this entry's merge on, nil until the queue has built
+// one. For the first entry that commit is the base branch's own tip; for an entry behind another
+// it is the commit the queue built for the entry ahead, whose parent is that tip — it is no pull
+// request's head, and reading it as one would name the wrong commit in every notice. Measured
+// 2026-11-08 00:43:57Z on this repository: entry 2, #2859, carried baseCommit b66b78d6d9f3, which
+// is the queue's own build for entry 1 (#2234, head 7c4463b8ac8b) on main's tip 1f46e1cc76f4. An
+// entry at all says the pull request is queued, whatever its state, which is what armed answers.
 type mergeQueueEntry struct {
 	EnqueuedAt time.Time `json:"enqueuedAt"`
 	State      string    `json:"state"`

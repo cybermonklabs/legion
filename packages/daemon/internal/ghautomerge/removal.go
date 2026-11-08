@@ -95,10 +95,12 @@ const moreChecks = `query MergeGroupContexts($owner: String!, $name: String!, $o
 // not by the removal alone. A timeline that shows no removal since the last arm is behind the
 // read of the pull request (Disappeared).
 //
-// logs is the repository's REST base (githubrest.RepositoryAPI), which the log of each failing
-// job is read under, where github is GitHub's GraphQL route: the two are the same installation
-// token on the same API root, and a job's log lives on neither of the other's routes.
-func removal(ctx context.Context, github, logs githubrest.Client, repo ghrepo.Repository, number int, head, mergeState string) error {
+// logs is the repository's REST base with the context its reads run under (Logs), which the log
+// of each failing job is read with, where github is GitHub's GraphQL route: the two are the same
+// installation token on the same API root, and a job's log lives on neither of the other's
+// routes. The logs' context is the caller's own, off the merge row's deadline, since a read of a
+// 54 MB log cannot finish inside it (the daemon's readyMerge).
+func removal(ctx context.Context, github githubrest.Client, logs Logs, repo ghrepo.Repository, number int, head, mergeState string) error {
 	var answer struct {
 		Viewer struct {
 			Login string `json:"login"`
@@ -140,7 +142,7 @@ func removal(ctx context.Context, github, logs githubrest.Client, repo ghrepo.Re
 			if err != nil {
 				return err
 			}
-			if failing := failingRuns(ctx, logs, checks); item.Reason == "failed_checks" || len(failing) > 0 {
+			if failing := failingRuns(logs, checks); item.Reason == "failed_checks" || len(failing) > 0 {
 				failed, runs = item, failing
 				continue
 			}
@@ -165,7 +167,7 @@ func removal(ctx context.Context, github, logs githubrest.Client, repo ghrepo.Re
 		// none either.
 		removed := &Removed{Number: number, Head: head, Actor: other.actor(), Reason: other.removalReason(), Detail: other.detail(),
 			Queue: other.Type == "RemovedFromMergeQueueEvent", ByGitHub: self != "" && other.actor() == self, At: other.CreatedAt,
-			Runs: failingRuns(ctx, logs, other.BeforeCommit.page())}
+			Runs: failingRuns(logs, other.BeforeCommit.page())}
 		if removed.Queue && other.Reason == "merge_conflict" {
 			return &ConflictRemoval{Removal: *removed, MergeState: mergeState}
 		}
@@ -264,7 +266,7 @@ func (t *timelineItem) detail() string {
 // The logs are read at once, jobLogReads at a time, each line written into the place its check
 // has among checks, so the lines read in the order the checks came whatever order the reads
 // finish in.
-func failingRuns(ctx context.Context, logs githubrest.Client, checks []checkContext) []string {
+func failingRuns(logs Logs, checks []checkContext) []string {
 	lines := make([]string, len(checks))
 	var group errgroup.Group
 	group.SetLimit(jobLogReads)
@@ -280,7 +282,7 @@ func failingRuns(ctx context.Context, logs githubrest.Client, checks []checkCont
 				url = check.CheckSuite.WorkflowRun.URL
 			}
 			group.Go(func() error {
-				lines[i] = fmt.Sprintf("%s (%s, %s)%s", check.Name, result, url, jobFailures(ctx, logs, check.JobID))
+				lines[i] = fmt.Sprintf("%s (%s, %s)%s", check.Name, result, url, jobFailures(logs, check.JobID))
 				return nil
 			})
 		case "StatusContext":
@@ -300,12 +302,13 @@ func failingRuns(ctx context.Context, logs githubrest.Client, checks []checkCont
 }
 
 // jobLogReads is how many of a removal's failing jobs have their logs read at once. One read is
-// bounded at githubrest.JobLogTimeout, ten seconds, a third of the whole budget the merge row
-// that reads them runs under (the daemon's autoMergeTimeout): three failing jobs — an ordinary
-// matrix shape — read one after another would spend all of it, the row's context would end and
-// the removal would never be told. Read at once they cost about one read rather than their sum,
-// and the limit is what holds a merge group with dozens of failing jobs to eight reads of GitHub
-// open at a time rather than one per job.
+// bounded at githubrest.JobLogTimeout, a minute, and by nothing else: the merge row that reads
+// them hands these reads a context off its own deadline, since a 54 MB log cannot be read inside
+// the row's 30 seconds (the daemon's readyMerge). Read one after another, three failing jobs —
+// an ordinary matrix shape — would hold the row three minutes; read at once they cost about one
+// read instead, and the limit is what holds a merge group with dozens of failing jobs to eight
+// reads of GitHub open at a time, and so to eight rings of githubrest.JobLogTail, rather than one
+// per job.
 const jobLogReads = 8
 
 // jobFailures is what the log of Actions job id says failed, written as the end of that run's own
@@ -317,12 +320,12 @@ const jobLogReads = 8
 // gives no job id for is no Actions job and has no log, so its line is left as it is, and no
 // failure of this read ever fails the removal it belongs to: each is told in the line and nowhere
 // else.
-func jobFailures(ctx context.Context, logs githubrest.Client, id int64) string {
+func jobFailures(logs Logs, id int64) string {
 	if id == 0 {
 		return ""
 	}
 	unread := func(why string) string { return ": the daemon could not read its failing tests, " + why }
-	tail, err := logs.JobLog(ctx, id)
+	tail, err := logs.Client.JobLog(logs.Ctx, id)
 	switch {
 	case errors.Is(err, githubrest.ErrJobLogForbidden):
 		return unread("since GitHub refused the log: this deployment's App was never granted GitHub's optional Actions read")

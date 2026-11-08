@@ -111,12 +111,27 @@ func (r *outbox) autoMergeDisable(ctx context.Context, row record.OutboxRow, pay
 // mergeWaitWarn tells the architect once that the merge is still waiting (merge-waiting,
 // rememberWait), and the row waits on.
 func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload record.ReadyMerge) error {
+	lane := ctx
 	ctx, cancel := context.WithTimeout(ctx, autoMergeTimeout)
 	defer cancel()
 	github, logs, repo, err := r.graphQL(ctx, row.Issue)
 	if err != nil {
 		return err
 	}
+	// The log of each job a removal found failing is read off this row's deadline, which is the
+	// one place the row hands the log client down: context.WithoutCancel takes the row's 30
+	// seconds off those reads and each read puts its own bound on top (githubrest.JobLogTimeout),
+	// because a read the row's deadline cuts reports "could not read" for exactly the logs this
+	// reads — job 128558893568 of this repository is 54,330,939 bytes. Holding the row that long
+	// costs the issue's lifecycle lane and nothing else: the removal path arms nothing while a
+	// read runs, and the reads go eight at a time (ghautomerge's jobLogReads), so a removal costs
+	// about one read's wall time rather than the sum of its logs'. A cancellation of the daemon
+	// itself must still stop them, which the row's context no longer carries once its deadline is
+	// off it, so the lane's own cancellation is carried across.
+	reads, stopReads := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopReads()
+	defer context.AfterFunc(lane, stopReads)()
+	jobLogs := ghautomerge.Logs{Ctx: reads, Client: logs}
 	// The record ends the row only when it awaits no READY head or has applied a close: a close
 	// GitHub shows first leaves the row waiting for the record (ghautomerge.Lagging).
 	keep := func(ctx context.Context) (string, error) {
@@ -130,9 +145,16 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 	// the same head, with nothing armed: it is built here, where keep is, so the decision that
 	// makes it takes the submission rather than the four values it is made of.
 	resubmit := func(ctx context.Context) (ghautomerge.Outcome, error) {
-		return ghautomerge.Submit(ctx, github, logs, repo, payload.Number, payload.Head, false, keep)
+		return ghautomerge.Submit(ctx, github, jobLogs, repo, payload.Number, payload.Head, false, keep)
 	}
-	outcome, err := ghautomerge.Submit(ctx, github, logs, repo, payload.Number, payload.Head, payload.Armed, keep)
+	outcome, err := ghautomerge.Submit(ctx, github, jobLogs, repo, payload.Number, payload.Head, payload.Armed, keep)
+	// A submission that read a removal's logs can come back with the row's budget spent on a read
+	// rather than on the row's own calls, so what the answer calls for — the fact that sends the
+	// issue back, the marks, the further submission — takes that budget again, off the lane: a
+	// removal the daemon spent a minute reading is recorded rather than retried for ever.
+	cancel()
+	ctx, cancel = context.WithTimeout(lane, autoMergeTimeout)
+	defer cancel()
 	// The queue's conflict removal is decided before the arms below, since what the row does with
 	// it — a further submission, a wait for GitHub's merge state, or the end of the row — is read
 	// off that decision's own answer, which those arms then handle as any other.
@@ -184,10 +206,14 @@ func (r *outbox) readyMerge(ctx context.Context, row record.OutboxRow, payload r
 // the queue reports the entry UNMERGEABLE (armed.QueueState) while it has built that entry on the
 // tip of the pull request's own base branch (armed.QueueBase, armed.BaseTip, both from the one
 // read). An entry built on that tip has nothing ahead of it in the queue to blame — no earlier
-// entry's merge is in it — so what is left is the head conflicting with the base. Every other
-// state (QUEUED, AWAITING_CHECKS, MERGEABLE, LOCKED, and one this daemon does not know), an entry
-// the queue has built nothing for yet, and an entry built on anything but the base branch's tip
-// do nothing at all: they neither write the marks nor clear them, since the queue rebuilds its
+// entry's merge is in it — so what is left is the head conflicting with the base. An entry behind
+// another carries the commit the merge queue built for the entry ahead instead, whose parent is
+// the base branch's tip and which is no pull request's head: measured 2026-11-08 00:43:57Z on
+// this repository, entry 2 (#2859, UNMERGEABLE) carried baseCommit b66b78d6d9f3, the queue's own
+// build for entry 1 (#2234, head 7c4463b8ac8b) on main's tip 1f46e1cc76f4. Every other state
+// (QUEUED, AWAITING_CHECKS, MERGEABLE, LOCKED, and one this daemon does not know), an entry the
+// queue has built nothing for yet, and an entry built on anything but the base branch's tip do
+// nothing at all: they neither write the marks nor clear them, since the queue rebuilds its
 // entries as it merges what stands before them and a state read in the middle of that decides
 // nothing. GitHub's mergeable and mergeStateStatus say nothing here and are never read for it:
 // while an entry is queued GitHub answers UNKNOWN for both, which is what left a conflicting pull
