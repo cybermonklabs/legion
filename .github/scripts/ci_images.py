@@ -1,6 +1,7 @@
 """How this repository reads .github/ci-images.yaml: the grammar of a container image
 reference, the repository a row names with Docker Hub's implicit `library/` written out, the
-kind of row it is, and the tag that kind and its digest give it.
+kind of row it is, the tag that kind and its digest give it, and, for a row this repository
+builds, the hash of the whole recipe its image is built from.
 
 check-ci-images.sh, mirror-ci-images.sh, check-playwright-version.sh and the `row` step of
 .github/workflows/browser-image.yaml import it from the repository they work on, running
@@ -11,8 +12,9 @@ counts as built and another as copied would be `crane copy`'d from a Dockerfile 
 upstream tag it has not got.
 """
 
+import hashlib
 import re
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 # ---------------------------------------------------------------- reference grammar
 HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]+)?")
@@ -115,3 +117,55 @@ def row_tag(kind: str, source: str, digest: str) -> str:
     _, path, carried, _ = upstream_parts(source)
     parts = [part for part in (path.rpartition("/")[2], carried, short) if part]
     return "-".join(parts)
+
+
+# ---------------------------------------------------------------- a built row's build recipe
+def recipe_sha256(dockerfile: str, workflow: str) -> str:
+    """The sha256 of the whole recipe a `built:` row's image is built from: every file of the
+    build context directory, which is the directory the Dockerfile sits in, and the workflow
+    file that runs the build. Both paths are relative to the repository root, which is where
+    every reader of this runs.
+
+    Each file is folded in as its path and the sha256 of its bytes, in the order those paths
+    sort, so a byte changed in any of them moves the hash, and so do a file added to the
+    context and a file renamed inside it — both of which change what the build receives while
+    every file it reads today stays as it was.
+
+    Both halves are in it because both decide the bytes that get pushed. The Dockerfile and
+    every other file of the context, because the build reads them: a `COPY` takes a context
+    file into the image, and a context file no `COPY` names today is one the next edit of the
+    Dockerfile can name. The workflow, because the build is more than its Dockerfile: its
+    `labels:`, `outputs:`, `platforms:`, `provenance:` and build-args, the pin of the action
+    that runs the build and the pin of the BuildKit image it runs in each decide what the push
+    leaves in the package while no file of the context has moved.
+
+    One function, and three readers of it: .github/workflows/browser-image.yaml hashes the
+    recipe to decide whether this head's image is the published one, stamps the hash it got
+    into the image it pushes as the legion.browser-image.source-sha256 label, and rule 10 of
+    .github/scripts/check-ci-images.sh reads that label back out of the published image and
+    holds it equal to this same hash. Two copies of the rule would differ on the first change
+    neither reader covered alike: the build would push an image its own gate then refuses, or
+    the gate would pass a row whose image was built from something else.
+
+    A tree holding no such Dockerfile raises rather than hashing what is there: the walk of a
+    directory that is not there yields nothing, and the hash of nothing is a perfectly good
+    hash of the wrong recipe."""
+    source = Path(dockerfile)
+    if not source.is_file():
+        raise FileNotFoundError(
+            f"{dockerfile} is not a file of this tree, so there is no build recipe to hash"
+        )
+    context = sorted(
+        (path for path in source.parent.rglob("*") if path.is_file()),
+        key=lambda path: path.as_posix(),
+    )
+    folded = hashlib.sha256()
+    for path in (*context, Path(workflow)):
+        # The path and the bytes both, each closed by a NUL: a hash folding bytes alone would
+        # not move when two context files swapped names, and the file's own digest is what
+        # keeps one file's bytes from running into the next one's.
+        folded.update(path.as_posix().encode())
+        folded.update(b"\0")
+        folded.update(hashlib.sha256(path.read_bytes()).hexdigest().encode())
+        folded.update(b"\0")
+    return folded.hexdigest()

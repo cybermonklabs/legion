@@ -515,17 +515,27 @@ PINNED_IMAGE_GATES: list[tuple[str, str, str, str]] = [
         "steps.decide.outputs.publish == 'true'",
         "that job's decide step reads the image at the digest .github/ci-images.yaml's row "
         "pins and compares its legion.browser-image.source-sha256 label with the sha256 of "
-        ".github/docker/browser.Dockerfile as this tree holds it, and the term is false only "
-        "where the two are equal — that is, only where the package already serves, under the "
-        "digest every consumer pins, an image built from this very input. What the trigger "
-        "exists to guarantee, that a change to a build input produces the image the row pins, "
-        "is therefore already true wherever the build is skipped, and this gate cannot hide a "
-        "changed input, because the input's own hash is the thing it reads. The other half of "
-        "the argument is rule 10 of .github/scripts/check-ci-images.sh: it refuses a `built:` "
-        "row whose published image carries any other sha256 than the tree's Dockerfile, so a "
-        "head whose Dockerfile moved while its build was skipped — a read of the registry that "
-        "answered wrongly, say — is refused by that gate rather than merging quietly. Any "
-        "failure of that read leaves the term true and the build runs.",
+        "this build's whole recipe as this tree holds it — every file of the build context "
+        "directory .github/docker and .github/workflows/browser-image.yaml itself, hashed by "
+        ".github/scripts/ci_images.py's recipe_sha256 — and the term is false only where the "
+        "two are equal, that is, only where the package already serves, under the digest every "
+        "consumer pins, an image built from this very recipe. Every path ci.yaml's "
+        "`browser_image` filter selects that can change the image's bytes is therefore inside "
+        "what the term reads: the filter names .github/docker/**, which is the context "
+        "directory, and .github/workflows/browser-image.yaml, which holds the build step, its "
+        "`labels:`, `outputs:`, `platforms:`, `provenance:` and build-args and the pins of the "
+        "action and of the BuildKit image it runs in. The filter's third path, "
+        ".github/workflows/ci.yaml, is the file the filter itself lives in: it decides whether "
+        "this job runs and hands it one input, ci-ok-changes, which reaches the ci-ok report "
+        "and nothing the build receives. What the trigger exists to guarantee, that a change "
+        "to a build input produces the image the row pins, is therefore already true wherever "
+        "the build is skipped, and this gate cannot hide a changed input, because the hash of "
+        "every input is the thing it reads. The other half of the argument is rule 10 of "
+        ".github/scripts/check-ci-images.sh: it refuses a `built:` row whose published image "
+        "carries any other sha256 than the tree's recipe, so a head whose recipe moved while "
+        "its build was skipped — a read of the registry that answered wrongly, say — is "
+        "refused by that gate rather than merging quietly. Any failure of that read leaves "
+        "the term true and the build runs.",
     ),
 ]
 gate_excusals: list[str] = []

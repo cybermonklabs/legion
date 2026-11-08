@@ -1330,10 +1330,16 @@ GATES = [
                                    f"{at('ci-images', PACKAGE_STEP)} reads each row's digest"),
         (".github/scripts/mirror-ci-images.sh", f"{at('ci-images', COPY_STEP)} runs it"),
         (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
-        (".github/scripts/ci_images.py", "both scripts read a row's upstream with it"),
-        (".github/docker/browser.Dockerfile", f"{at('ci-images', PACKAGE_STEP)} hashes it, and refuses the "
-                                              f"built row whose published image carries another Dockerfile's "
-                                              f"sha256 in its legion.browser-image.source-sha256 label"),
+        (".github/scripts/ci_images.py", "every reader of a row goes through it, the recipe hash "
+                                         "rule 10 compares among them"),
+        (".github/docker/**", f"{at('ci-images', PACKAGE_STEP)} hashes every file of the build "
+                              f"context, which is this directory, and refuses the built row whose "
+                              f"published image carries another recipe's sha256 in its "
+                              f"legion.browser-image.source-sha256 label"),
+        (".github/workflows/browser-image.yaml", f"the other half of that recipe: "
+                                                 f"{at('ci-images', PACKAGE_STEP)} hashes this file "
+                                                 f"too, since its labels, outputs, platforms and "
+                                                 f"action pins decide the bytes the build pushes"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
     ) + CI_SELF),
 ]

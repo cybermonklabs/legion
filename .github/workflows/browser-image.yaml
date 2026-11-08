@@ -157,24 +157,39 @@ jobs:
           print(f"digest={built[0]['digest'] if built else ''}")
           PY
           )
-          # The Dockerfile's own bytes, which the build below writes into the image as a label and
-          # the decision below compares against the label the package carries.
-          source=$(sha256sum .github/docker/browser.Dockerfile | cut -d ' ' -f 1)
+          # The build recipe's own bytes, which the build below writes into the image as a label
+          # and the decision below compares against the label the package carries. The recipe is
+          # the whole of what decides those bytes: every file of the build context directory and
+          # this workflow file, whose `labels:`, `outputs:`, `platforms:`, `provenance:` and
+          # action pin are as much of the build as the Dockerfile is. The rule is
+          # .github/scripts/ci_images.py's recipe_sha256, which rule 10 of
+          # .github/scripts/check-ci-images.sh reads the published image's label with, so the
+          # hash this run stamps and the hash that gate demands cannot drift apart. A second
+          # hashing rule here — `sha256sum` over the Dockerfile alone, which is what stood here —
+          # left every other part of the recipe out: a change to this file's build step selected
+          # the job through ci.yaml's `browser_image` filter and then built nothing, because the
+          # published label still matched the one file the hash covered.
+          # Assigned first, never `echo "…=$(…)"`, for the reason this step's first comment gives.
+          source=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts python3 -c '
+          from ci_images import recipe_sha256
+
+          print(recipe_sha256(".github/docker/browser.Dockerfile", ".github/workflows/browser-image.yaml"))
+          ')
           {
             printf '%s\n' "$row"
             echo "source=$source"
           } | tee -a "$GITHUB_OUTPUT"
 
       # Both halves of this decide it, and neither alone would. The row's digest alone would leave
-      # an edited Dockerfile unbuilt, because the row still names a digest the package serves, so
+      # an edited recipe unbuilt, because the row still names a digest the package serves, so
       # a change to what the image holds would publish nothing and every job pinning that row
       # would keep running the old image. The label alone would republish an image the row does
       # not yet name, because the package can hold a digest no row points at — the one an earlier
       # push's build pushed, whose row lands in a later push — and this build would push those
       # same bytes again on every run until the row caught up. So this publishes unless the row
-      # names a digest AND the image at that digest carries this Dockerfile's own sha256 in its
-      # legion.browser-image.source-sha256 label. This answer decides the build and not only the
-      # push: the three steps below it run on `publish=true` and on nothing else.
+      # names a digest AND the image at that digest carries this build recipe's own sha256 in
+      # its legion.browser-image.source-sha256 label. This answer decides the build and not only
+      # the push: the three steps below it run on `publish=true` and on nothing else.
       # crane reads that label anonymously, before the login step below: the package is public
       # (.github/ci-images.yaml says why). Any failure of that read — a digest the package does
       # not hold, an image with no such label, a registry that answered with an error — leaves
@@ -194,9 +209,9 @@ jobs:
             carried=$(crane config "$REGISTRY@$ROW_DIGEST" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
             if [ "$carried" = "$SOURCE" ]; then
               publish=false
-              why="$REGISTRY@$ROW_DIGEST, the digest this row names, was built from this Dockerfile ($SOURCE), so there is nothing to push"
+              why="$REGISTRY@$ROW_DIGEST, the digest this row names, was built from this recipe ($SOURCE), so there is nothing to push"
             elif [ -n "$carried" ]; then
-              why="$REGISTRY@$ROW_DIGEST was built from Dockerfile $carried, and this head's is $SOURCE"
+              why="$REGISTRY@$ROW_DIGEST was built from recipe $carried, and this head's is $SOURCE"
             else
               why="$REGISTRY@$ROW_DIGEST carries no legion.browser-image.source-sha256 label this read could get at"
             fi
@@ -230,22 +245,23 @@ jobs:
 
       # This step runs only on a run that is going to push, which is the whole of what the
       # decision above computes: where the row names a digest and the image at that digest
-      # carries this Dockerfile's own sha256, the package already serves the bytes this build
+      # carries this build recipe's own sha256, the package already serves the bytes this build
       # would make, so building them again fetches Playwright's base and 52 MB from Ubuntu's
       # apt mirror to produce an image nothing would push (measured: job 128574128282 of run
       # 42429205771, `publish=false … so there is nothing to push` and `apt-get update` in the
       # same log). That put the mirror back in front of the required ci-ok check, which is the
       # failure this image exists to remove, so the gate is on the build itself and not on the
       # push alone. The steady state of this job is therefore no build at all: a run builds when
-      # the Dockerfile's bytes are not the bytes the pinned image was built from, and does
-      # nothing otherwise.
+      # the recipe's bytes are not the bytes the pinned image was built from, and does nothing
+      # otherwise.
       #
       # .github/scripts/check-image-trigger-paths.sh refuses a build gated by anything it cannot
       # evaluate against a path filter, because a build a trigger does not cover is a commit no
       # pin can name. This term is the one exception that check holds as data, keyed to this
       # workflow, this job and this exact text, in its PINNED_IMAGE_GATES list; the argument for
-      # it is written there, and the short of it is that the term reads the input's own hash, so
-      # it cannot hide a changed input, and rule 10 of .github/scripts/check-ci-images.sh
+      # it is written there, and the short of it is that the term reads the hash of the recipe
+      # itself — the build context directory and this workflow — so every path the trigger
+      # selects is a path the term reads, and rule 10 of .github/scripts/check-ci-images.sh
       # refuses a row whose published image was built from other bytes. The filter that decides
       # whether this job runs at all is ci.yaml's `browser_image`, which that check still reads
       # and still holds to every file this build receives.
@@ -277,10 +293,12 @@ jobs:
           platforms: linux/amd64
           provenance: false
           # This one label and no other, in particular no org.opencontainers.image.revision and no
-          # version: a label that moves with the commit would give an unchanged Dockerfile a new
+          # version: a label that moves with the commit would give an unchanged recipe a new
           # image digest on every run, so every run would push an image no row names, and the
           # decision above — which reads this very label back out of the package — could never
-          # answer that there is nothing to do.
+          # answer that there is nothing to do. The value is the recipe hash the row step
+          # computed, which covers this step's own inputs, so a change to any of them moves the
+          # label and this run pushes.
           labels: legion.browser-image.source-sha256=${{ steps.row.outputs.source }}
           # A build cannot know its digest before it pushes, so it pushes untagged, by digest,
           # and the step below gives the pushed digest the tag .github/ci-images.yaml's rule
@@ -431,9 +449,25 @@ jobs:
   # here names an attestation this repository never makes, so it refused every one of them. That
   # a CI image's attestation names a branch is acceptable HERE and nowhere else: this image is a
   # CI input, pinned by digest in a row of .github/ci-images.yaml that main must contain before
-  # any job runs it, and the gates on that row — rule 9 and rule 10 of
-  # .github/scripts/check-ci-images.sh — are what hold the pinned digest to the Dockerfile main
-  # holds. AGENTS.md's rule that an image is accepted only at a revision main contains is about
+  # any job runs it.
+  #
+  # WHAT THE GATES ON THAT ROW PROVE IS NARROWER THAN IT LOOKS. Rule 9 and rule 10 of
+  # .github/scripts/check-ci-images.sh hold the row to an image the package serves whose
+  # PUBLISHING RUN STAMPED THIS RECIPE'S HASH into it. That catches the mistake those rules
+  # exist for — a row left behind at the digest an older recipe was built into, which every
+  # consumer would keep running while this tree describes another image — and it is a mistake,
+  # not an attack. It establishes nothing about where the bytes came from: the label is written
+  # by the run that publishes, and on a pull request that run is the PULL REQUEST'S OWN COPY of
+  # this workflow, which can stamp whatever hash it likes into whatever image it builds. The
+  # certificate is the one part of this a workflow edit cannot write, so a reviewer who sees a
+  # `built:` row's digest move reads it by hand — the verify command above with `--format json`
+  # added — and compares two things: the commit its certificate's `sourceRepositoryDigest`
+  # names is the head whose review moved this row, and .github/docker/browser.Dockerfile and
+  # this workflow AT THAT COMMIT are the files this tree holds. AGENTS.md's "Container images"
+  # item carries that same check, and a gate that reads the attestation's source commit itself
+  # is a design decision for the architect, not something these two rules do today.
+  #
+  # AGENTS.md's rule that an image is accepted only at a revision main contains is about
   # the worker and Envoy images a deployment runs, which no pull request's run may publish.
   #
   # Any repository can call this public reusable workflow, but such an attestation names the

@@ -1853,7 +1853,8 @@ jobs:
               - '.github/scripts/mirror-ci-images.sh'
               - '.github/scripts/check-ci-images.sh'
               - '.github/scripts/ci_images.py'
-              - '.github/docker/browser.Dockerfile'
+              - '.github/docker/**'
+              - '.github/workflows/browser-image.yaml'
               - '.github/actions/install-crane/**'
               - '.github/workflows/ci.yaml'
 
