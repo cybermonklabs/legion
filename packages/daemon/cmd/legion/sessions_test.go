@@ -363,8 +363,10 @@ func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
 
 	// The sessions directory is the walk's first no-follow component: a legion-v10.0.0 deployment
 	// left it writable by every agent, so one of them could put a link in its place and the copy
-	// would read a file off the volume. The link stands for the directory the agent's own sits
-	// in, so its target holds the session file one level deeper than the cases above.
+	// would read a file off the volume. The link stands one level higher than in the cases above,
+	// so the same ../outside resolves from the volume itself and names a directory beside it
+	// rather than one on it; that is where the planted file goes, under the agent's own directory
+	// the link now stands in place of.
 	t.Run("the sessions directory itself", func(t *testing.T) {
 		for _, target := range []struct {
 			name string
@@ -376,7 +378,7 @@ func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
 				return outside
 			}},
 			{"relative target", func(t *testing.T, r *sessionsImportRig) string {
-				hold(t, filepath.Join(r.volume, "outside", directory))
+				hold(t, filepath.Join(filepath.Dir(r.volume), "outside", directory))
 				return filepath.Join("..", "outside")
 			}},
 		} {
