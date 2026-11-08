@@ -57,9 +57,16 @@ e2e_port="${DISPATCH_E2E_PORT:-8777}"
 broker_port="${REAL_BROKER_PORT:-0}"
 e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 
-# The three binaries the broker's harness needs, read here rather than below because the path is
-# made absolute against the caller's directory and this script changes to packages/envoy before
-# it uses it; the header above says what DISPATCH_E2E_BROKER_BIN_DIR holds and who sets it.
+# The one directory this script serves: the build below writes the three binaries into it, a
+# handed-over DISPATCH_E2E_BROKER_BIN_DIR must name it, and the fake secrets file is written in
+# it. It is resolved to an absolute path here because the check of that variable runs before the
+# `cd` to packages/envoy below, and one name for the directory is all the script needs.
+work="$(cd "$e2e_dir/../../envoy" && pwd)/out/dispatch-e2e-broker"
+
+# The three binaries the broker's harness needs, read here rather than below because a relative
+# value is made absolute against the caller's directory, which this script leaves for
+# packages/envoy further down; the header above says what DISPATCH_E2E_BROKER_BIN_DIR holds and
+# who sets it.
 # This script execs exactly one of broker and dev-oidc-issuer per invocation and never runs
 # requestseed: e2e/real-broker.ts runs that one itself, out of
 # packages/envoy/out/dispatch-e2e-broker, the fixed path the build below writes to and the one
@@ -74,19 +81,19 @@ e2e_dir="$(cd "$(dirname "$0")" && pwd)"
 prebuilt_bin="${DISPATCH_E2E_BROKER_BIN_DIR:-}"
 if [ -n "$prebuilt_bin" ]; then
   [[ "$prebuilt_bin" == /* ]] || prebuilt_bin="$PWD/$prebuilt_bin"
-  # The one directory this variable serves, resolved the way e2e/real-broker.ts resolves it:
-  # against this script's own place in the checkout, never against the caller's directory. Both
-  # sides go through `cd <dir> && pwd -P`, so a trailing slash, a `..` and a symlinked checkout
-  # compare as the one path they name, and a value naming anywhere else is refused here rather
-  # than in the first row that seeds a request, minutes later and nowhere near its cause.
-  served="$e2e_dir/../../envoy/out/dispatch-e2e-broker"
+  # The handed-over value against `$work`, which is resolved the way e2e/real-broker.ts resolves
+  # that directory: against this script's own place in the checkout, never against the caller's
+  # directory. Both sides go through `cd <dir> && pwd -P`, so a trailing slash, a `..` and a
+  # symlinked checkout compare as the one path they name, and a value naming anywhere else is
+  # refused here rather than in the first row that seeds a request, minutes later and nowhere
+  # near its cause.
   handed=$(cd "$prebuilt_bin" 2>/dev/null && pwd -P) || handed=""
-  if [ -z "$handed" ] || [ "$handed" != "$(cd "$served" 2>/dev/null && pwd -P)" ]; then
+  if [ -z "$handed" ] || [ "$handed" != "$(cd "$work" 2>/dev/null && pwd -P)" ]; then
     echo "run-broker.sh: DISPATCH_E2E_BROKER_BIN_DIR=$DISPATCH_E2E_BROKER_BIN_DIR is not packages/envoy/out/dispatch-e2e-broker of this checkout, the one directory it serves: e2e/real-broker.ts runs requestseed out of that path alone, so a row that seeds a request would fail there whatever this script exec'd from somewhere else" >&2
     exit 2
   fi
   for binary in broker dev-oidc-issuer requestseed; do
-    if [ ! -x "$prebuilt_bin/$binary" ]; then
+    if [ ! -x "$work/$binary" ]; then
       echo "run-broker.sh: DISPATCH_E2E_BROKER_BIN_DIR=$DISPATCH_E2E_BROKER_BIN_DIR holds no executable $binary" >&2
       exit 2
     fi
@@ -150,12 +157,8 @@ cd "$e2e_dir/../../envoy"
 # out/ is ignored, so nothing built here is tracked. The work directory is made whether or not
 # this run builds: the fake secrets file below is written in it, and with the binaries handed
 # over it is the only thing this script still writes there.
-work=out/dispatch-e2e-broker
 mkdir -p "$work"
-if [ -n "$prebuilt_bin" ]; then
-  bin="$prebuilt_bin"
-else
-  bin="$work"
+if [ -z "$prebuilt_bin" ]; then
   flock "$work/.build.lock" go build -o "$work/" ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed
 fi
 
@@ -163,7 +166,7 @@ if [ "$mode" = issuer ]; then
   # One client, the broker's, whose secret the issuer reads from the file once at its start. An
   # authorization with nobody queued signs alice in, so every sign-in that reaches the issuer ends
   # with a person; her hd claim is signin_domain, the domain the broker requires.
-  exec "$bin/dev-oidc-issuer" \
+  exec "$work/dev-oidc-issuer" \
     --code-flow "$signin_client=$signin_secret_file" \
     --sign-in-as "alice@$signin_domain"
 fi
@@ -193,14 +196,8 @@ env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
 # rename is atomic within the directory, and the server's host and port differ by lane, so each
 # lane now writes and reads a file of its own and a re-run overwrites it rather than leaving
 # another behind.
-#
-# It is written under `$work` and not under `$bin`: with the binaries handed over, `$bin` is the
-# absolute directory DISPATCH_E2E_BROKER_BIN_DIR names, so `$PWD/$bin` would name a path that
-# does not exist, which is how run 42456166455 ended every container leg at `line 200`. `$work`
-# is this script's own relative directory, and with the binaries handed over it resolves to the
-# very directory they were downloaded into, so one name serves both paths.
 fake_secrets_lane="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
-fake_secrets_file="$PWD/$work/fake-secrets-$broker_database-$fake_secrets_lane.json"
+fake_secrets_file="$work/fake-secrets-$broker_database-$fake_secrets_lane.json"
 (
   umask 077
   cat >"$fake_secrets_file.$$.tmp" <<EOF
@@ -259,4 +256,4 @@ exec env \
   XDG_CACHE_HOME=/nonexistent \
   XDG_CONFIG_HOME=/nonexistent \
   XDG_DATA_HOME=/nonexistent \
-  "$bin/broker"
+  "$work/broker"

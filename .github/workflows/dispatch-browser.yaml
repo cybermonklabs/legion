@@ -98,10 +98,10 @@ jobs:
   # condition here could only hold back a run its caller had asked for.
   binaries:
     runs-on: ubuntu-24.04
-    # Measured over three dispatched runs of this branch, jobs 128520516081 (83 s),
-    # 128528093378 (84 s) and 128528969380 (69 s), whose build steps took 45, 52 and 56 s. No
-    # step here carries a budget, so the rule in this file's head gives this job the measured
-    # maximum of every step, 84 s, rounded up: two minutes. The figure below is larger than that
+    # Measured over three dispatched runs, jobs 128520516081 (83 s), 128528093378 (84 s) and
+    # 128528969380 (69 s), whose build steps took 45, 52 and 56 s. No step here carries a
+    # budget, so the rule in this file's head gives this job the measured maximum of every
+    # step, 84 s, rounded up: two minutes. The figure below is larger than that
     # on purpose and is not that arithmetic. Every run of that sample restored the Go cache; a
     # run that misses it builds four commands cold, which the planner measured at 3m37s for
     # ./cmd/dispatch alone, and two minutes would cancel it. So the budget carries the cold build
@@ -222,10 +222,10 @@ jobs:
     # is gone, and the steps the container brought - its own `Initialize containers`, the
     # artifact download, the PostgreSQL reading and the file store's start and wait - have a
     # reading of their own at last. It is the jobs API over every containerised leg of this job
-    # that has run at this head, eight legs of two runs at 99bdf09cf435: the full lane's four
-    # shards in workflow_dispatch run 42444713653 of dispatch-browser-nightly.yaml and the
-    # pull-request lane's four shards in CI run 42444698197. The maximum each step reached over
-    # those eight legs, in seconds:
+    # that has run at 99bdf09cf435, eight legs of two runs: the full lane's four shards in
+    # workflow_dispatch run 42444713653 of dispatch-browser-nightly.yaml and the pull-request
+    # lane's four shards in CI run 42444698197. The maximum each step reached over those eight
+    # legs, in seconds:
     #
     #   step                                                 max
     #   Set up job                                             2
@@ -259,11 +259,10 @@ jobs:
     # above the sum of the step budgets, as this file's head says a job budget is, and it is now
     # a measurement rather than what was left over from a step that no longer runs.
     #
-    # The rows behind those seconds were the suite of the head those runs measured. Listed at
-    # this head, after the forward merges of main, the suite holds 1,200 rows: 1,145 in the
-    # eight projects the full lane's four shards run, of which 1,058 are in the two the
-    # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
-    # job runs.
+    # The rows behind those seconds were the suite of the head those runs measured. Listed again
+    # after the forward merges of main, the suite holds 1,200 rows: 1,145 in the eight projects
+    # the full lane's four shards run, of which 1,058 are in the two the pull-request lane
+    # runs. The remaining 55 are the three `-alone` projects', which the alone job runs.
     timeout-minutes: 12
     strategy:
       fail-fast: false
@@ -616,10 +615,10 @@ jobs:
     # it runs in the image, for the reason the shard job's head gives: the 22-minute Playwright
     # install step the old figure was the sum of is gone, and the steps the container brought
     # have a reading of their own at last. It is the jobs API over every leg of this job that
-    # has run at this head, the three legs of the full lane in workflow_dispatch run
-    # 42444713653 of dispatch-browser-nightly.yaml at 99bdf09cf435; the pull-request lane of
-    # that head, CI run 42444698197, still runs none. The maximum each step reached over those
-    # three legs, in seconds:
+    # has run at 99bdf09cf435, the three legs of the full lane in workflow_dispatch run
+    # 42444713653 of dispatch-browser-nightly.yaml; the pull-request lane of that head, CI run
+    # 42444698197, still runs none. The maximum each step reached over those three legs, in
+    # seconds:
     #
     #   step                                                 max
     #   Set up job                                             1
@@ -871,8 +870,8 @@ jobs:
     # `if: failure()` upload below still runs, which a cancelled job skips.
     #
     # The move into this workflow changed none of that: the job runs the same steps on the same
-    # machine, and this head's full-lane run, 42316487530, falls inside every figure above - 9 s
-    # install, 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
+    # machine, and full-lane run 42316487530 falls inside every figure above - 9 s install,
+    # 191 s dashboard, 12 s sign-in, 96 s in the steps without a budget, 313 s whole.
     timeout-minutes: 13
     services:
       postgres:
@@ -998,12 +997,12 @@ jobs:
     needs: [binaries, shard, alone, multiprocess]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
-    # The budget is measured. This job ran 27 s on the pull-request lane of this head
-    # (42334424798) and 22 s on its full lane (42316487530); over the twelve merge jobs of this
-    # branch's ten ci.yaml runs the maximum is 37 s, on the green second attempt of 42328655988.
-    # No step here carries a budget of its own, so by the rule in this file's head the job's
-    # budget is that maximum: 37 x 1.15 = 43 s, which the rule's two-minute floor raises to
-    # 2 min.
+    # The budget is measured. This job ran 27 s on one head's pull-request lane (42334424798)
+    # and 22 s on that head's full lane (42316487530); over the twelve merge jobs of the ten
+    # ci.yaml runs of the branch that added it the maximum is 37 s, on the green second attempt
+    # of 42328655988. No step here carries a budget of its own, so by the rule in this file's
+    # head the job's budget is that maximum: 37 x 1.15 = 43 s, which the rule's two-minute
+    # floor raises to 2 min.
     #
     # What that sample does not hold: no browser step failed in any of those runs, so no blob
     # report in them carries a failed row's trace, and the download, the merge and reading

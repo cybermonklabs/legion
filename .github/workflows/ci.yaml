@@ -1901,10 +1901,12 @@ jobs:
             # ci.yaml's ci-images job: the copy (.github/scripts/mirror-ci-images.sh, through the
             # crane .github/actions/install-crane installs) and the package mode of
             # .github/scripts/check-ci-images.sh, which reads ghcr.io. These files are what
-            # decides what those two steps do, .github/docker/browser.Dockerfile among them:
-            # that mode hashes it and holds the built row's published image to the hash. The
-            # gate's other half reads the whole tree and is a step of lint, which runs on every
-            # change.
+            # decides what those two steps do, the built row's whole build recipe among them:
+            # that mode hashes the recipe - the browser Dockerfile's own path, every file of
+            # .github/docker and .github/workflows/browser-image.yaml, folded by the
+            # recipe_sha256 of .github/scripts/ci_images.py - and holds the built row's
+            # published image to that hash. The gate's other half reads the whole tree and is a
+            # step of lint, which runs on every change.
             ci_images:
               - '.github/ci-images.yaml'
               - '.github/scripts/mirror-ci-images.sh'
