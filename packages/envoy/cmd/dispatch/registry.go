@@ -27,8 +27,9 @@ const deregisterTimeout = 5 * time.Second
 // first read (store.Pool.healthPool, MinConns 0), so whichever read comes first dials, and at
 // boot that read is this one, under the thirty seconds below. Without the probe the cold read is
 // the first /healthz a prober makes instead, which pays the dial inside those two seconds and
-// answers 503. TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm reads that
-// first /healthz once and requires 200 with db true.
+// answers 503 whenever the dial outlasts them, as a loaded database's can (dispatch://INFRA-985).
+// TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm dials three seconds late,
+// reads that first /healthz once, and requires 200 with db true.
 //
 // Thirty seconds fits under every deploy clock that acts on a slow boot. On GKE, where production
 // runs, the one that waits for this process is its startup probe, and it is generous: ten seconds

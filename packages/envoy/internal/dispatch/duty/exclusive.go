@@ -241,10 +241,10 @@ func Exclusive(ctx context.Context, leases Leases, name string, due time.Time, p
 		// The line a lease held elsewhere writes too, and for the same reason: this tick would be
 		// the pass some process has already made of this period, and the loops' tests count one
 		// skip either way. It carries the period as well, which the skip above cannot: that one
-		// has no lease and so no boundary read. Those tests only count these lines and parse
-		// nothing on them (countLease, cmd/dispatch/multiprocess_test.go); the period is on the
-		// line for a person reading two processes' logs, who can then tell a skip of this period
-		// from a skip of the next.
+		// has no lease and so no boundary read. Those tests only count these lines and read
+		// neither the period nor the due off them (countLease, cmd/dispatch/multiprocess_test.go);
+		// the period is on the line for a person reading two processes' logs, who can then tell a
+		// skip of this period from a skip of the next.
 		//
 		// It carries the tick's own due beside the period, which the period alone cannot give:
 		// the period is periodBoundary of this very due, so it already tells a tick of one

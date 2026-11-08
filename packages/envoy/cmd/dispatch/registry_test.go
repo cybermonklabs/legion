@@ -13,7 +13,7 @@ import (
 // bootProbeDialDelay is how late slowPostgres lets each of the process's connections reach
 // Postgres in the row below. It is half again store.healthProbeTimeout's two seconds, so the
 // boot's own cold dial cannot fit inside that warm bound however the machine is loaded, and the
-// boot pays it three times over: measured at this head through a counting proxy, over three runs,
+// boot pays it three times over: measured through a counting proxy (INFRA-1810), over three runs,
 // the connections arrive in three rounds, each round waiting on the one before it. The shared
 // pool's one connection comes first, at 0.03-0.04 s, and carries every sequential boot step; ten
 // more open together once it is up, at 3.50-3.59 s; seven or eight more once those are up, at
