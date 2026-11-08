@@ -705,7 +705,7 @@ func (r *claimCompactionLive) heldSummaryOutlastsTheTimeout() {
 	// is refused through both doors, and so is a second compaction, each in its own words.
 	time.Sleep(2 * r.cfg.WorkerRPCTimeout)
 	r.refusedThroughBothDoors("a fresh session asked for while the compaction runs", freshSessionDoors, token, r.refusing, claim.RoleTester,
-		http.StatusConflict, "CLAIM_IN_A_TURN", "a fresh session would cut that turn off, so ask again after the turn ends")
+		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, a fresh session would cut that turn off")
 	r.refusedThroughBothDoors("a second compaction while the first runs", compactDoors, token, r.refusing, claim.RoleTester,
 		http.StatusConflict, "CLAIM_IN_A_TURN", "is being compacted already")
 
@@ -788,7 +788,7 @@ func (r *claimCompactionLive) everyRefusalGetsItsMessage() {
 		return r.claim(tester).State == string(supervise.StateWorking)
 	})
 	r.refusedThroughBothDoors("a worker in a turn of its own", compactDoors, tester, r.refusing, claim.RoleTester,
-		http.StatusConflict, "CLAIM_IN_A_TURN", "a compaction would abort that turn, so ask again after the turn ends")
+		http.StatusConflict, "CLAIM_IN_A_TURN", "is stored working: if a turn of it is running, a compaction would abort that turn")
 	stand.releaseTurn()
 	r.await(string(tester)+"'s turn to end", 2*time.Minute, func() bool {
 		return r.claim(tester).State != string(supervise.StateWorking)

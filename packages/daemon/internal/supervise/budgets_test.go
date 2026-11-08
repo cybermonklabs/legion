@@ -80,11 +80,19 @@ func TestAnAgentThatDiesWithWorkOutstandingIsFailedAtTheLimit(t *testing.T) {
 // a claim back is the next report of the same process: the runtimes stop watching a process once
 // they have reported it gone, so that report is the sweep's (the daemon's reconcileOrphans).
 //
-// The rows are the two the second charge decides. Over a claim's first death it only miscounts;
-// over the death its budget would run out on it fails the worker, in the very window both
-// recovery doors read such a claim in and promise the relaunch to (Claim.ProcessGone, api's
-// refuseProcessGone). The negative control is the charge made again: the second row's claim
-// then comes out failed, with its deaths at the limit, for one dead process.
+// The rows are the three the second charge decides. Over a claim's first death it only
+// miscounts; over the death its budget would run out on it fails the worker, in the very window
+// both recovery doors read such a claim in and promise the relaunch to (Claim.ProcessGone,
+// api's refuseProcessGone). The negative control for those two is the charge made again: the
+// second row's claim then comes out failed, with its deaths at the limit, for one dead process.
+//
+// The third row is the death that had nothing to charge, which is as much a decision made as a
+// death charged (died): a claim working a turn of its own with no task owes none, so chargeDeath
+// counts nothing, and the task queued while that claim stands over its dead process arrived
+// after the process died. Charged at the next report of it, that death would be counted against
+// a task the process never had, and the claim would be one death nearer to failing for a crash
+// it never had under that task. The negative control is a record kept only where a death was
+// counted: the third row's claim then comes back from the sweep's second report carrying one.
 func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 	limit := testLimits().LaunchFailures
 	for _, row := range []struct {
@@ -92,14 +100,25 @@ func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 		// before is how many deaths the claim's task already carries when the one below is
 		// reported twice.
 		before int
+		// task is whether the claim holds the task its process dies in the turn of. A claim
+		// that holds none is charged nothing for that death, and the one it is given after the
+		// refusal is a task the dead process never had.
+		task bool
 	}{
-		{"the claim's first death", 0},
-		{"the death its budget would run out on", limit - 2},
+		{"the claim's first death", 0, true},
+		{"the death its budget would run out on", limit - 2, true},
+		{"a death with nothing to charge, and a task given after it", 0, false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			deaths := row.before
+			if row.task {
+				deaths++
+			}
 			h := newHarness(t)
 			h.reach(StateReady)
-			h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			if row.task {
+				h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			}
 			h.must(StreamTurnStart{Claim: testToken})
 			for range row.before {
 				h.observe(runtime.Gone)
@@ -119,22 +138,94 @@ func TestADeathReportedAgainOverTheKeptProcessIsChargedOnce(t *testing.T) {
 			}
 
 			h.wantState(StateWorking)
-			h.wantBudgets(Budgets{Deaths: row.before + 1})
+			h.wantBudgets(Budgets{Deaths: deaths})
 			if got := h.claim(); got.Locator == nil || *got.Locator != dead || !got.ProcessGone {
 				t.Fatalf("the refused claim records %+v with ProcessGone %v, want the dead process it kept, %+v, reported gone",
 					got.Locator, got.ProcessGone, dead)
 			}
+			if !row.task {
+				h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+			}
 
 			// The sweep reports that same process again, which raises the relaunch the refusal
-			// left owing. It is the one death the claim has already been charged for.
+			// left owing. It is the one death the claim has already made its decision for.
 			store.failing = false
 			h.must(gone)
 
 			h.wantState(StateLaunching)
-			h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: row.before + 1})
+			h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: deaths})
 			h.relaunched()
 		})
 	}
+}
+
+// A death charged before a daemon restart is charged no second time after it. The claim is the
+// one both recovery doors are read over: working in the store, standing over the process a
+// report found dead, with the relaunch that would replace it refused and nothing but the
+// daemon's own orphan sweep to bring it back (Claim.ProcessGone). A restart builds its machine
+// again from the store alone, so what that store holds of the death already charged is the
+// whole of what the sweep's first report after the restart reads (Claim.DeathCharged, died).
+//
+// The walk charges the claim's deaths up to one below the limit, so the row measures the end
+// the second charge brings rather than a count: charged again, this claim is failed for a crash
+// loop it never had — in the window it is waiting to be relaunched out of — and its task is left
+// for a person to find. The negative control is the record kept in memory alone: the claim then
+// comes out of the restart failed, with its deaths at the limit, for one dead process.
+//
+// The uncertain pass is what puts the charged count in the store before the restart. The window
+// this claim stands in is written by no step of its own — the refusal keeps the claim exactly as
+// it stands and a parked relaunch writes nothing until its turn — so the claim is written by
+// whatever decision comes next, and the commonest of those is the sweep's own next pass finding
+// a runtime that cannot answer (judge's uncertain verdict). This daemon writes the charge with
+// the count where it charges it, so the pass changes nothing for it; the release before it wrote
+// neither, and the pass is what leaves that release a stored count to charge a second death
+// against.
+func TestADeathChargedBeforeARestartIsNotChargedAgainAfterIt(t *testing.T) {
+	limit := testLimits().LaunchFailures
+	h := newHarness(t)
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "the task"})
+	h.must(StreamTurnStart{Claim: testToken})
+	for range limit - 2 {
+		h.observe(runtime.Gone)
+		h.relaunched()
+		h.must(StreamTurnStart{Claim: testToken})
+	}
+
+	// The death below is the claim's last before the limit, and the lifecycle recheck the store
+	// will not answer refuses the relaunch it raises: the claim is left working over its dead
+	// process, which is where the restart finds it.
+	dead := h.locator()
+	store := &unansweredCheckLaunchStore{memStore: h.store, failing: true}
+	h.m.deps.Store = store
+	gone := RuntimeObservation{Observation: runtime.Observation{Locator: dead, Kind: runtime.Gone, At: h.clock.Now()}}
+	if err := h.handle(gone); err == nil {
+		t.Fatal("the relaunch the death raised was taken, want the lifecycle recheck's refusal of it")
+	}
+	h.wantState(StateWorking)
+	h.wantBudgets(Budgets{Deaths: limit - 1})
+
+	// The sweep's next pass reaches a runtime that cannot answer for that same process.
+	h.observe(runtime.Uncertain)
+	stored := h.store.load(testToken)
+	if stored.Budgets.Deaths != limit-1 || !stored.DeathCharged {
+		t.Fatalf("the stored claim carries %d deaths with DeathCharged %v, want %d with the charge recorded: the restart reads this and nothing else",
+			stored.Budgets.Deaths, stored.DeathCharged, limit-1)
+	}
+
+	h.restart()
+	if restored := h.claim(); restored.State != StateWorking || restored.Locator == nil || *restored.Locator != dead {
+		t.Fatalf("the restored claim is %s recording %+v, want it working over the dead process %+v",
+			restored.State, restored.Locator, dead)
+	}
+
+	// The sweep's first report after the restart is the second report of that one death: it
+	// raises the relaunch the refusal left owing, and charges no death for it.
+	h.must(gone)
+
+	h.wantBudgets(Budgets{LaunchFailures: 1, Deaths: limit - 1})
+	h.wantState(StateLaunching)
+	h.relaunched()
 }
 
 // A death whose take-back write the store refused is charged at the report that does take the

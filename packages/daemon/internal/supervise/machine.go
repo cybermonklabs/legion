@@ -220,8 +220,29 @@ type Claim struct {
 	// process died under a park is answered by the launch rather than by this (relaunchWaits).
 	//
 	// What the next report of that same process is charged, and what it can end in, is died's
-	// (deathCharged).
+	// (DeathCharged).
 	ProcessGone bool
+	// DeathCharged is whether the death of the process this claim records has been charged, or
+	// found to have nothing to charge: the decision died makes for one dead process, and the
+	// record that keeps a second report of that same process from being charged a second death.
+	// The rule it keeps is written where it is applied (died); what leaves a claim to be
+	// reported twice is ProcessGone's two windows above.
+	//
+	// It is durable, and it is the one of these marks that is: a restart restores the claim a
+	// refused or parked relaunch left standing over its dead process, and the sweep's first
+	// report of that process after the restart is the second report of a death this record
+	// says was charged. Read from memory alone it was charged again, which walks the claim to
+	// the deaths limit and fails the worker for one dead process, in the very window the claim
+	// is waiting to be relaunched out of (dispatch://INFRA-956, round 23). Every write of it is
+	// made where the decision it records is made, because the windows that leave such a claim
+	// are the windows where nothing else writes the claim at all: died writes the charge with
+	// the count it charged, and the report that finds the process running again writes the
+	// clear (judge, reportedProcess).
+	//
+	// It is of the process the claim records, as ProcessGone is, and goes with it: letGo clears
+	// it with the process it is about, and the claim written there records no process for a
+	// later report to be about.
+	DeathCharged bool
 	// PluginContract is the contract the current registration declared: 0 means no contract has
 	// been recorded, which every claim has at the first boot on this release. It is set whenever a
 	// registration records Session/SessionFile/CapabilityHash (register, reregister).
@@ -862,19 +883,10 @@ type Machine struct {
 	//
 	// It is memory only, as compacting is: a restart has had no report of any claim's process
 	// and reads one stored working as a claim whose agent it asks where it is (askFirst,
-	// askTurnOver), which ends such a turn without it.
+	// askTurnOver), which ends such a turn without it. What was charged for that process's
+	// death is the claim's own and durable, because a restart must not charge it again
+	// (Claim.DeathCharged).
 	processGone bool
-	// deathCharged is whether died has made the charge decision for the death of the process
-	// the claim records — charged it, or found nothing to charge (chargeDeath). died sets it
-	// where it reaches that decision, and the rule it keeps — one dead process is one death,
-	// however often the process is reported gone — is written there. It is cleared wherever
-	// processGone is, by a report that found the process running and by letGo with the process
-	// it is about (reportedProcess), so it is never read of a process the claim no longer
-	// records.
-	//
-	// It is memory only, as processGone is: a restart has charged nothing for the process of
-	// any claim it reads back.
-	deathCharged bool
 	// previous is the incarnation the claim last ran and no longer records — stopped by a
 	// suspension, retired, failed on, or found dead — which every launch of the same session hands
 	// the runtime to wait out until one starts. letGo is the one way a process gets here. It is
@@ -1858,7 +1870,7 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // a death at all (displaced).
 //
 // One dead process is one death, however often the runtime reports that process gone. The report
-// that reaches the charge below makes the charge decision and records it (deathCharged), and a
+// that reaches the charge below makes the charge decision and writes it (Claim.DeathCharged), and a
 // later report of that same process is charged nothing: it raises the relaunch the charged
 // report's was refused at, or fails the claim where its launch budget runs out. What leaves a
 // claim to be reported twice is a step that wrote nothing of it — the take-back above that the
@@ -1879,13 +1891,20 @@ func (m *Machine) stopPrevious(ctx context.Context) error {
 // read it as a death already had — and a claim whose take-back write fails every time would
 // relaunch for ever, with the deaths limit that bounds a crash loop never reached.
 //
+// The record outlives the daemon that made it, which is why it is the claim's and written here:
+// the restart that reads such a claim back has charged nothing of its own, and the sweep's first
+// report of its process would be the second report of this death charged a second time. The two
+// numbers that decide a crash loop are therefore written together, the charge and the deaths it
+// charged, so a claim restored from the store is charged exactly what the daemon before it
+// charged (Claim.DeathCharged).
+//
 // This is the one judgement that the agent behind the claim's Envoy session has ended, so it is
 // where the session's clean stop is sent (sessionGone): a connection closing is not — a daemon
 // restart closes every stream while the agents run on — and the probe that reaches here is what
 // tells the two apart.
 func (m *Machine) died(ctx context.Context, observation runtime.Observation) error {
 	m.log.Warn("supervise: process died", "incarnation", m.claim.Locator.Incarnation, "observed", string(observation.Kind),
-		"detail", observation.Detail, "chargedBefore", m.deathCharged)
+		"detail", observation.Detail, "chargedBefore", m.claim.DeathCharged)
 	m.sessionGone()
 	if err := m.interrupted(ctx, "the process died in the task's turn", observation.OutOfMemory); err != nil {
 		return err
@@ -1893,12 +1912,23 @@ func (m *Machine) died(ctx context.Context, observation runtime.Observation) err
 	if m.held != nil {
 		return m.endHeld(ctx)
 	}
-	charge := !m.deathCharged
-	m.deathCharged = true
-	if charge && m.chargeDeath() {
+	if m.claim.DeathCharged {
+		return m.relaunchAfterFailure(ctx)
+	}
+	m.claim.DeathCharged = true
+	if m.chargeDeath() {
 		return m.fail(ctx, "deaths with work outstanding ran out")
 	}
-	return m.relaunchAfterFailure(ctx)
+	// The decision and the count it charged are written here, before the relaunch, because
+	// every window that leaves this claim to be reported again writes nothing of it: the
+	// lifecycle's refusal of the relaunch below keeps the claim exactly as it stands
+	// (relaunchRefused), and a relaunch the wake pacing parks writes nothing until its turn
+	// comes (launchNow). A write the store would not take is owed and logged where it fails,
+	// and the claim's next decision makes it good (owes); the relaunch goes on under it, since
+	// a death that left the claim standing for want of a write would be a worse answer to an
+	// outage than a charge written late — and a launch that does run clears the charge with
+	// the process it replaces anyway (letGo).
+	return errors.Join(m.persist(ctx), m.relaunchAfterFailure(ctx))
 }
 
 // sessionGone tells the daemon to stop the Envoy session this claim recorded, now that no process
@@ -2031,8 +2061,11 @@ func (m *Machine) retire(ctx context.Context) error {
 // rather than by turnEnded, so nothing is left to read it, and a later turn must never end
 // naming the delivery of a turn that died with its process. What the runtime last reported of
 // that process goes with it too, and what was charged for its death with that (processGone,
-// deathCharged): the claim records no process for a report to be about, and the one the next
-// launch starts has been reported nothing and charged nothing.
+// Claim.DeathCharged): the claim records no process for a report to be about, and the one the
+// next launch starts has been reported nothing and charged nothing. The clear of the charge
+// reaches the store with the write every caller of this makes of the claim it leaves — the
+// launch that records the new process, the suspension, the retirement, the failure — so no
+// stored charge ever outlives the process it was made for.
 func (m *Machine) letGo() {
 	m.disarmAll()
 	m.relaunch = nil
@@ -2043,7 +2076,7 @@ func (m *Machine) letGo() {
 	m.unseenTurn = false
 	m.turnsDelivery = ""
 	m.compacting = nil
-	m.processGone, m.deathCharged = false, false
+	m.processGone, m.claim.DeathCharged = false, false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
 		m.revoke(*enrollment)
 	}
@@ -2085,10 +2118,18 @@ func (m *Machine) letGo() {
 // read that launch first and a launch that runs clears the record with the process it lets go
 // (api's relaunchWaits, launchNow, letGo).
 //
-// What that record is read for, and the separate record of the charge that keeps one dead
-// process to one death, are written where each is applied (Claim.ProcessGone, died).
+// What that record is read for is written where it is applied (Claim.ProcessGone). The separate
+// record of the charge that keeps one dead process to one death is durable, so a report that
+// clears it is written here, before the guard below: the claim's process is running, the charge
+// standing in the store is of a death that is over, and the window this guard drops is one
+// where nothing else writes the claim (Claim.DeathCharged, died). A write the store would not
+// take ends the report, which the next one of the same process repeats.
 func (m *Machine) judge(ctx context.Context, observation runtime.Observation, alive func(context.Context) error, again TimerKind, after time.Duration) error {
-	m.reportedProcess(observation.Kind)
+	if m.reportedProcess(observation.Kind) {
+		if err := m.persist(ctx); err != nil {
+			return err
+		}
+	}
 	if m.launchWaits() {
 		m.log.Info("supervise: an observation of the process a waiting launch replaces decides nothing; its turn replaces that process",
 			"incarnation", observation.Locator.Incarnation, "observed", string(observation.Kind),
@@ -2140,16 +2181,19 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 // A runtime that could not answer says nothing either way, so an uncertain verdict leaves what
 // the last answer found standing until one comes (judge's uncertain verdict, probe).
 //
-// Such a verdict clears what was charged for that process's death with it (deathCharged): the
-// process is running, so the death a later report of it finds is a death of its own. Here and
-// letGo are the only two places either record is cleared.
-func (m *Machine) reportedProcess(kind runtime.ObservationKind) {
+// Such a verdict clears what was charged for that process's death with it (Claim.DeathCharged),
+// and reports that it did so, for judge to write: the process is running, so the death a later
+// report of it finds is a death of its own. Here and letGo are the only two places either
+// record is cleared.
+func (m *Machine) reportedProcess(kind runtime.ObservationKind) (clearedCharge bool) {
 	switch kind {
 	case runtime.Gone, runtime.NotRecordedProcess:
 		m.processGone = true
 	case runtime.Alive, runtime.StaleAddress:
-		m.processGone, m.deathCharged = false, false
+		clearedCharge = m.claim.DeathCharged
+		m.processGone, m.claim.DeathCharged = false, false
 	}
+	return clearedCharge
 }
 
 // probe asks the runtime about the claim's process now and judges the answer. A claim can reach
@@ -2337,6 +2381,9 @@ func NormalizeClaim(c *Claim) *Enrollment {
 		c.SuspendedBy = ""
 	}
 	if c.Locator == nil {
+		// The charge is of the process the claim records, so a claim that records none carries
+		// none: whatever the next launch starts has been charged nothing (DeathCharged, letGo).
+		c.DeathCharged = false
 		return ClearEnrollment(c)
 	}
 	return nil

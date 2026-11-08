@@ -606,7 +606,7 @@ func TestAFreshSessionIsRefusedForAClaimInATurn(t *testing.T) {
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
-				string(token)+" is in a turn: a fresh session would cut that turn off, so ask again after the turn ends")
+				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
 			if after := h.stored(token); after.Session != "ses_implementer" || after.State != supervise.StateWorking {
 				t.Errorf("the refused claim is %s recording session %q, want it working on the session it had", after.State, after.Session)
 			}
@@ -701,7 +701,7 @@ func TestAFreshSessionRefusedForATurnThatStartedUnderItHoldsNoSuspension(t *test
 				t.Fatalf("start the turn under the route: %v", race.failed)
 			}
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
-				string(token)+" is in a turn: a fresh session would cut that turn off, so ask again after the turn ends")
+				inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
 			if c := m.Claim(); c.State != supervise.StateWorking || c.SuspensionHeld || c.Session != "ses_implementer" {
 				t.Fatalf("the refused claim is %s recording session %q, suspension held %t; want it working on the session it had with none held",
 					c.State, c.Session, c.SuspensionHeld)
@@ -752,7 +752,8 @@ func TestAFreshSessionRefusesTheControllersOwnClaim(t *testing.T) {
 
 // A fresh session is refused for a claim no launch has registered yet: its suspension would be
 // held for the agent it is still waiting for, and the request would answer long after the claim
-// moved on.
+// moved on. The refusal says the claim is launching and which states a fresh session does
+// reach, and names no moment the launch will bring (api's freshSession, askAgainLater).
 func TestAFreshSessionIsRefusedForAClaimWhoseLaunchIsInFlight(t *testing.T) {
 	h := freshSessionHarness(t, &phaseRestarter{})
 	token, _ := h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
@@ -762,7 +763,8 @@ func TestAFreshSessionIsRefusedForAClaimWhoseLaunchIsInFlight(t *testing.T) {
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
-	assertFailure(t, recorder, http.StatusConflict, claimUnsettled)
+	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
+		unsettledRefusal(token, supervise.StateLaunching, wantFreshSessionReaches))
 }
 
 // The controller's door refuses a grant that is not the controller's, as every controller route

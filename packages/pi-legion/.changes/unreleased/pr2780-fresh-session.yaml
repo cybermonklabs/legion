@@ -12,10 +12,13 @@ body: |-
   controller asks again once that cause is gone. It is the
   same daemon operation `legion claims retry --fresh-session` runs for an operator, called through
   the controller's own grant. A new session loses everything the old one held, and the daemon
-  refuses a claim in a turn, and one left working over a process the daemon's last report of it
-  found gone, which waits for the relaunch the next report of that process raises
+  refuses a claim it records as working, which may be in a turn, and one left working over a
+  process the daemon's last report of it found gone, whose relaunch has not run and which is in
+  no turn
   (`CLAIM_IN_A_TURN`); a claim between states — one queued, one whose launch is in flight, and one
-  left working under a relaunch the wake pacing parked, whose turn comes by itself
-  (`CLAIM_UNSETTLED`); a claim a suspension is held over, which waits for that hold's end and
+  left working under a relaunch the wake pacing parked
+  (`CLAIM_UNSETTLED`); a claim a suspension is held over, which
   takes the first of those two codes where the daemon records it working and the second where it
-  does not; and the role `controller`.
+  does not; and the role `controller`. Each refusal says what the claim is doing when it is
+  given and which operation reaches each state, and names no turn, hold, report or relaunch to
+  come.

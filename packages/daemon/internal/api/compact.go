@@ -79,13 +79,14 @@ const compactInstructions = "Write the summary as text. " +
 	"Drop the full text of a file you read and the full output of a command that passed."
 
 // compactOp is the compaction in the words its own refusals name it by, which both of its doors
-// give: the role `controller` the controller's door may not name (claimCompact), and the claim
-// whose turn a compaction would abort (refuseState). The type is the two recoveries' own
-// (controllerOp, freshsession.go).
+// give: the role `controller` the controller's door may not name (claimCompact), the claim
+// whose turn a compaction would abort, and the states a compaction does reach (refuseState).
+// The type is the two recoveries' own (controllerOp, freshsession.go).
 var compactOp = controllerOp{
 	name:             "a compaction",
 	notTheController: "the controller does not compact its own session",
 	cutsTheTurn:      "a compaction would abort that turn",
+	reaches:          "A compaction reaches a claim whose agent is ready or idle",
 }
 
 // claimCompact is the controller's door onto the compaction (compact). The effect is the
@@ -145,11 +146,12 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     names what does start it, which the claim's role decides: fresh_session for every
 //     workflow role, and the daemon's controller keeper for the project's own controller, which
 //     fresh_session refuses (startsAgainName);
-//   - a claim in a turn is refused because a compaction aborts whatever turn its session is
-//     running and that turn may be the one that ends the run of provider errors; the refusal
-//     names the compaction, so a controller told to compact first is not told to ask for a
-//     fresh session instead (refuseInATurn). A claim already being compacted is in no turn, so
-//     it is told so in its own words: the compaction in flight is what it waits for;
+//   - a claim stored working is refused because a compaction aborts whatever turn its session
+//     is running and that turn may be the one that ends the run of provider errors; the
+//     refusal says the claim is stored working, which is all the record says of it, and names
+//     the compaction, so a controller told to compact first is not told to ask for a fresh
+//     session instead (refuseInATurn). A claim already being compacted is in no turn, so it is
+//     told so in its own words;
 //   - a claim a suspension is held over waits for that hold's end rather than for anything the
 //     compaction could do, and it is refused in whatever state the hold found it: working,
 //     still coming up under a hold held for its launch, and ready or idle under a stop the
@@ -159,12 +161,12 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 //     answers the hold at both doors (supervise's compactStart);
 //   - a claim between states has no settled agent to ask: one queued, one with a launch in
 //     flight, and one stored working under a launch the daemon's wake pacing parks, which is
-//     told that the launch's turn comes by itself (claimUnsettled, refuseParkedRelaunch);
+//     told of that launch (claimUnsettled, refuseParkedRelaunch);
 //   - a claim stored working whose process the runtime's last report found gone has no agent to
 //     ask either, and no launch coming for it: the relaunch that was to replace that process
 //     did not run, and the claim was left over it (supervise.Claim.ProcessGone, which states
-//     the windows that leave one). It is told what does come for it rather than the turn's end
-//     a claim in a turn is told to wait for (refuseProcessGone);
+//     the windows that leave one). It is told that, rather than being left with the sentence a
+//     claim stored working takes (refuseProcessGone);
 //   - a claim whose role runs on the Claude Code backend has no Oh My Pi session to compact at
 //     all, and it is the one refusal this route makes itself, since no state of the claim says
 //     which harness it runs. Which harness a role runs on is the daemon's configuration rather
@@ -235,14 +237,14 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactProcessGone):
 		// The claim lost its process under the compaction, so the compaction's end gave it back
-		// nothing and sent it nothing. What starts it again is its own path's — a relaunch for a
-		// claim the daemon relaunches, an operator's retry or resume for one its death failed or
-		// a held suspension stopped — and the task it owes goes then. The answer says so in the
-		// daemon's own words: what Oh My Pi made of such a compaction is in the machine's log,
+		// nothing and sent it nothing, and the answer says that and stops there. What starts
+		// the claim again is its own path's, and what becomes of the owed task goes with it
+		// (supervise.ErrCompactProcessGone, where both are written): neither is a thing this
+		// answer promises. What Oh My Pi made of such a compaction is in the machine's log,
 		// where no model's words reach the caller's next prompt (reasonBound).
 		s.log.Warn("api: the claim lost its process while its session was being compacted", "claim", token)
 		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s lost its process while its session was being compacted; it was not given back, and the task it owes goes when its agent runs again", token))
+			"%s lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	case errors.Is(err, supervise.ErrCompactSuspended):
 		// The compaction ran, and the end of it found a suspension held over the claim: the
@@ -250,11 +252,11 @@ func (s *server) compact(w http.ResponseWriter, r *http.Request, m *supervise.Ma
 		// My Pi started under the compaction and the hold waits for that turn's end. The claim
 		// was given back to neither its agent nor its task, so the caller is told that rather
 		// than a recovery that landed. What becomes of the owed task is the hold's own, written
-		// once on supervise.ErrCompactSuspended, and the caller acts on none of it: what it
-		// asked for did not happen, and the claim's own state says what it is now.
+		// once on supervise.ErrCompactSuspended, and the answer carries none of it: what the
+		// caller asked for did not happen, and the claim's own state says what it is now.
 		s.log.Warn("api: a suspension held over the claim ended its compaction", "claim", token)
 		writeFailure(w, http.StatusConflict, compactionFailed, fmt.Sprintf(
-			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. What becomes of that task is the hold's own", token))
+			"%s's session was compacted, and a suspension held over the claim ended that compaction rather than the claim coming back: it was not given back, and the task it owes was not sent. %s", token, askAgainLater))
 		return CompactResponse{}, false
 	default:
 		var refused *supervise.RefusedError
@@ -311,7 +313,7 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 		return refuseHeldSuspension(w, token, state, view.Role, compactOp)
 	case state == supervise.StateWorking && view.Compacting:
 		writeFailure(w, http.StatusConflict, claimInATurn, fmt.Sprintf(
-			"%s is being compacted already: wait for that compaction to end", token))
+			"%s is being compacted already. %s. %s", token, compactOp.reaches, askAgainLater))
 	case state == supervise.StateWorking:
 		return refuseWorkingClaim(w, token, view, compactOp)
 	case startsAgain(state):
@@ -320,8 +322,7 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 			token, state, startsAgainName(view.Role)))
 	default:
 		writeFailure(w, http.StatusConflict, claimUnsettled, fmt.Sprintf(
-			"%s is %s: a compaction reaches a claim whose agent is ready or idle; ask again when %s is one of those",
-			token, state, token))
+			"%s is %s. %s. %s", token, state, compactOp.reaches, askAgainLater))
 	}
 	return false
 }

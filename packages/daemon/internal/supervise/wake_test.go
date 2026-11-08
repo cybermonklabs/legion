@@ -1401,8 +1401,8 @@ func workingOverTheProcessItsRefusedRelaunchKept(t *testing.T) (*harness, runtim
 // (reportedProcess), so the refusal writes nothing for it.
 //
 // The negative control is the record reverted (reportedProcess's gone verdict dropped): both
-// recovery doors then answer such a claim "is in a turn, ask again after the turn ends", which
-// is a wait that never comes for it, in the one window those recoveries exist for.
+// recovery doors then answer such a claim "is in a turn", which it is not, in the one window
+// those recoveries exist for.
 func TestARelaunchRefusedAtItsTurnLeavesTheClaimRecordingWhatBecameOfItsProcess(t *testing.T) {
 	h, dead := workingOverTheProcessItsRefusedRelaunchKept(t)
 
@@ -1486,7 +1486,7 @@ func TestWhatTheRuntimeLastReportedOfTheKeptProcessGoesWithEveryPathThatChangesI
 //
 // The negative control is the record put back behind the guard (judge's launchWaits): the
 // claim then reports its process running after a death the park dropped, and both recovery
-// doors answer it "in a turn, ask again after the turn ends" until the next sweep.
+// doors answer it "in a turn" until the next sweep.
 func TestADeathReportedWhileALaunchWaitsItsTurnIsRecordedForTheClaimItMayLeave(t *testing.T) {
 	h := pacedHarness(t, wakeRate)
 	h.reach(StateWorking)

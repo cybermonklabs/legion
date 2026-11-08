@@ -495,9 +495,9 @@ func TestACompactionWhoseRelaunchWaitsItsTurnLeavesTheOwedTaskToThatTurn(t *test
 // reportedProcess): state, the compaction in flight, the suspension held and the wake waiting
 // are the rest of what either door reads of a working claim (api's refuseState, freshSession),
 // and a claim genuinely in a turn reads the same in all four, so the fifth is the whole of
-// what tells the two apart. Without it both doors answer such a claim "is in a turn, ask again
-// after the turn ends", which is the wait that never comes — the turn is over, its process
-// gone, and what raises the next relaunch is the next report of that process.
+// what tells the two apart. Without it both doors answer such a claim "is in a turn", which it
+// is not — the turn is over, its process gone, and what raises the next relaunch is the next
+// report of that process.
 //
 // This case was TestAParkedRelaunchRefusedAtItsTurnRecordsNothingThatTellsItFromATurn, which
 // held that nothing of the claim told the two apart: that is the gap this round closes, so the

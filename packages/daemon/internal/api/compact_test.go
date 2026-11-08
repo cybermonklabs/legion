@@ -222,7 +222,7 @@ func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused
 	refused := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/retry", RetryRequest{FreshSession: true})
 
 	wantFreshSessionRefusal(t, refused, http.StatusConflict, claimInATurn,
-		string(token)+" is in a turn: a fresh session would cut that turn off, so ask again after the turn ends")
+		inATurnRefusal(token, "a fresh session would cut that turn off", wantFreshSessionReaches))
 	if after := h.stored(token); after.Session != "ses_implementer" {
 		t.Errorf("the refused claim records session %q, want the session it had", after.Session)
 	}
@@ -247,8 +247,8 @@ func waitForCompacting(t *testing.T, h *harness, token claim.Token) {
 	t.Fatalf("%s never reported itself being compacted", token)
 }
 
-// A second compaction of a claim already being compacted is refused: the compaction in flight is
-// what it waits for.
+// A second compaction of a claim already being compacted is refused, and the refusal says what
+// the claim is doing rather than what that compaction in flight will do.
 func TestASecondCompactionOfAClaimBeingCompactedIsRefused(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := readyImplementer(t, h)
@@ -263,7 +263,7 @@ func TestASecondCompactionOfAClaimBeingCompactedIsRefused(t *testing.T) {
 	second := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
 	wantFreshSessionRefusal(t, second, http.StatusConflict, claimInATurn,
-		string(token)+" is being compacted already: wait for that compaction to end")
+		string(token)+" is being compacted already. "+wantCompactionReaches+". "+wantAskAgainLater)
 	release()
 	<-answered
 }
@@ -287,7 +287,7 @@ func TestACompactionRefusedForAClaimInATurnNamesTheCompaction(t *testing.T) {
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimInATurn,
-				string(token)+" is in a turn: a compaction would abort that turn, so ask again after the turn ends")
+				inATurnRefusal(token, "a compaction would abort that turn", wantCompactionReaches))
 		})
 	}
 }
@@ -327,12 +327,12 @@ func TestACompactionOfAReadyClaimUnderAHeldSuspensionIsNotTaken(t *testing.T) {
 
 // suspendedCompactionRefusal is the sentence the compaction gives a claim a held suspension's
 // end took in place of its agent (api's compact, supervise.ErrCompactSuspended). It says what
-// the caller asked for and did not get, and leaves the owed task to the hold: what each hold
-// does with that task is written once, on supervise.ErrCompactSuspended.
+// the caller asked for and did not get, and nothing of the owed task beyond its not being
+// sent: what each hold does with that task is written once, on supervise.ErrCompactSuspended.
 func suspendedCompactionRefusal(token claim.Token) string {
 	return string(token) + "'s session was compacted, and a suspension held over the claim ended that " +
 		"compaction rather than the claim coming back: it was not given back, and the task it owes " +
-		"was not sent. What becomes of that task is the hold's own"
+		"was not sent. " + wantAskAgainLater
 }
 
 // A suspension that arrives while the session is being compacted is held for the compaction's
@@ -435,7 +435,7 @@ func TestACompactionThatEndedIntoATurnUnderAHeldSuspensionSaysTheClaimWasNotGive
 // it, the turn then ends as any other does, and what the caller is left with is an idle claim
 // the compaction reaches. A caller told to ask again once the claim is suspended waits for that
 // state for as long as the claim runs, in the one window the compaction exists to recover from,
-// so the refusal tells it to ask again once the claim is no longer working.
+// so the refusal names no end of the hold and names the door for each state instead.
 func TestAStartDropsTheDaemonsHoldAndTheIdleClaimItLeavesIsCompacted(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := suspensionHeldOverATurnByTheDaemon(t, h)
@@ -637,8 +637,7 @@ func TestACompactionRefusedForAClaimThatIsNotReadyNamesWhatIsWrong(t *testing.T)
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
 	wantFreshSessionRefusal(t, recorder, http.StatusConflict, claimUnsettled,
-		string(token)+" is registered: a compaction reaches a claim whose agent is ready or idle; ask again when "+
-			string(token)+" is one of those")
+		unsettledRefusal(token, supervise.StateRegistered, wantCompactionReaches))
 }
 
 // A ready claim whose shim is not connected is the one refusal the take writes itself: the
@@ -703,9 +702,9 @@ func TestACompactionWhoseEndTheStoreWouldNotWriteAnswersTheStoreFailure(t *testi
 
 // A claim that loses its process while its session is being compacted is sent nothing by the
 // compaction's end: that end reaches a claim the relaunch has moved past, so it decides nothing.
-// The answer says the claim was not given back and leaves the owed task to the moment its agent
-// runs again, where a compaction reported as run would have the CLI say the task had gone again
-// when nothing had sent it.
+// The answer says the claim was not given back and its owed task was not sent, and says nothing
+// of when that task goes, where a compaction reported as run would have the CLI say the task
+// had gone again when nothing had sent it.
 func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := idleOnTheLadder(t, h)
@@ -722,7 +721,7 @@ func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.
 	release()
 
 	wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed,
-		string(token)+" lost its process while its session was being compacted; it was not given back, and the task it owes goes when its agent runs again")
+		string(token)+" lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. "+wantAskAgainLater)
 	settled(h, token)
 	if prompts := conn.Prompts(); len(prompts) != 0 {
 		t.Fatalf("the connection was sent %#v, want nothing: the compaction's end reached a claim its relaunch had moved past", prompts)

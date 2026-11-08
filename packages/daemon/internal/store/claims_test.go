@@ -390,6 +390,32 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// What the daemon charged for the death of the process a claim records round-trips: a restart
+// builds every claim from this table and has charged nothing of its own, so a claim restored
+// without this is charged a second death for the one dead process it stands over, which walks
+// it to the deaths limit and fails the worker in the window it is waiting to be relaunched out
+// of (supervise.Claim.DeathCharged, INFRA-956). It round-trips with the deaths it charged,
+// which the same write carries.
+func TestWhatAClaimsDeathWasChargedRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-deathcharged")
+	want.State = supervise.StateWorking
+	want.DeathCharged = true
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	// The launch that replaces that process clears it with the process it lets go (supervise's
+	// letGo), and the claim it writes records a process charged nothing.
+	want.DeathCharged = false
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
 // The round a claim left is a column of its own, and it is read back exactly as it was written:
 // the daemon decides from it what the pod of a round took with it when it went, and a restart
 // has nothing else to read that from (INFRA-484). It round-trips independently of the round the

@@ -1,0 +1,23 @@
+-- 20261108165219_claim_death_charged.up.sql — what the daemon has already charged for the death
+-- of the process a claim records, so a restart charges it no second time (INFRA-956).
+--
+-- claims.death_charged is supervise.Claim.DeathCharged: the decision supervise's died made for
+-- the process the claim still records — the death charged, or nothing found to charge — written
+-- with the deaths it charged, in the same statement. One dead process is one death however often
+-- the runtime reports that process gone, and the report that is read again is the daemon's own
+-- orphan sweep, over a claim a refused or parked relaunch left standing over its dead process.
+-- The release this upgrades from kept that decision in memory, so the sweep's first report after
+-- a restart charged the death a second time: two deaths for one dead process, which walks the
+-- claim to the deaths limit and fails the worker in the very window the claim is waiting to be
+-- relaunched out of.
+--
+-- False for every row the table already holds, and nothing backfills it. There is nothing to read
+-- a backfill from: the release this upgrades from recorded the charge nowhere, and false is
+-- exactly what that release's own restart read. A claim upgraded in that window is charged one
+-- more death than it owes, once, as it would have been without this column; every death charged
+-- by this release is written with it.
+--
+-- A claim that records no process carries false, because the charge goes with the process it was
+-- made for (supervise's letGo), and so does a claim whose process a later report found running
+-- again: that process is alive, so the death a report of it finds next is a death of its own.
+alter table claims add column death_charged boolean not null default false;
