@@ -2894,15 +2894,16 @@ It publishes to:
   delete nothing. `HostPermissions` and `DispatchPermissions` hold it through those same base
   entries; `SessionPermissions` does not, so a session holding that set alone reads what it missed
   only through the listener;
-- for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`,
-  `envoy_ci_state` and `envoy_listener` (the machine's delivery lease and the delivery state its
-  listeners share, `packages/envoy/cmd/listener/README.md`), the calls nats.go's key-value store
-  makes: the info, create and update of the bucket's stream `KV_<bucket>`, its direct and stream
-  message gets, writes to its keys, and its watchers' consumer create and delete and their
-  flow-control replies. The update is the raise a start, or the listener's keeper every 30
-  seconds after, sends when it finds a bucket with fewer copies than `ENVOY_NATS_REPLICAS`;
-  neither writes fewer copies than it found, and a grant without it makes that raise time out
-  after 10 seconds with `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`.
+- for each key-value bucket, `envoy_interests`, `envoy_roles`, `envoy_sessions`, `legion_agents`
+  (the Legion agent registry), `envoy_ci_state` and `envoy_listener` (the machine's delivery lease
+  and the delivery state its listeners share, `packages/envoy/cmd/listener/README.md`), the calls
+  nats.go's key-value store makes: the info, create and update of the bucket's stream
+  `KV_<bucket>`, its direct and stream message gets, writes to its keys, and its watchers'
+  consumer create and delete and their flow-control replies. The update is the raise a start, or
+  the listener's keeper every 30 seconds after, sends when it finds a bucket with fewer copies
+  than `ENVOY_NATS_REPLICAS`; neither writes fewer copies than it found, and a grant without it
+  makes that raise time out after 10 seconds with
+  `raise KV_<bucket>: ENVOY_NATS_REPLICAS=<n>: context deadline exceeded`.
   The writes are `$KV.<bucket>.>` for every bucket but `envoy_listener`, where they are
   the machine's own keys alone: its lease `$KV.envoy_listener.lease.listener-<m>`, the
   clean-hand-back marks of its stopping pods
@@ -2915,7 +2916,11 @@ It publishes to:
   `GET /v1/roles/<role>` on any listener answers a lapsed holder's `last_seen` out of that
   session's record, whichever machine it registered through. A listener whose grant lacks
   `envoy_listener` logs an ERROR naming it and delivers without a lease, as its machine's only
-  deliverer;
+  deliverer; one whose grant lacks `legion_agents`, an image newer than the release that applied
+  its grant, serves everything else and answers 503 on the registry routes (`/v1/legion/agents`)
+  while it retries the open in the background (1 s doubling to 1 min, and at once after each NATS
+  reconnect), so the routes serve once the grant reaches it, by a reload or a reconnect, without
+  a restart;
 - `$JS.API.STREAM.PURGE.KV_envoy_interests`, which the interest bucket's delete-marker collection
   sends.
 

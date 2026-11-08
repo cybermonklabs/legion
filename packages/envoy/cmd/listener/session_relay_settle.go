@@ -20,10 +20,12 @@ const (
 	// ack floor move past it once nothing below it is held. A frame the grace ends without a
 	// done is in doubt (relayFrameInDoubtLine), whether or not the session answered it received:
 	// received says the client decoded the frame, not that its host wrote the message, so only
-	// done says the session took it and no done is coming. The successor's restart then sends
-	// again every frame above the ack floor, each under its own event id: the one in doubt, and
-	// any the session answered done above a frame still held (the README's "When a session can
-	// see a message twice").
+	// done says the session took it and no done is coming. Each frame left in doubt goes back to
+	// the server at once, with the rest of what the run held (sessionRelays.release), so the
+	// successor is delivered it as soon as it pulls rather than after the consumer's ack wait.
+	// The successor then sends again every frame above the ack floor, each under its own event
+	// id: the one in doubt, and any the session answered done above a frame still held (the
+	// README's "When a session can see a message twice").
 	//
 	// The pod taking a released holder's lease over waits relayFormerSettle, this grace and a
 	// margin, before it restarts a session's consumer at its ack floor (sessionRelays.relay),
@@ -47,15 +49,16 @@ const (
 	relaySettlePoll = 10 * time.Millisecond
 )
 
-// endFrames ends the frames one pull left outstanding. A relay the term's end stopped settles
-// them first (settleStoppedFrames); any other end - a retry, a pause, a reconnect - forgets them
-// at once, since the relay itself goes on and restarts at the session's ack floor.
-func (m *sessionRelays) endFrames(ctx context.Context, run *relayRun) {
+// endFrames ends the frames one pull left outstanding and hands them back to its caller. A relay
+// the term's end stopped settles them first (settleStoppedFrames); any other end - a retry, a
+// pause, a reconnect - forgets them at once, since the relay itself goes on and restarts at the
+// session's ack floor. A cancelled run gives what this returns back to the server
+// (sessionRelays.release); one that ended for a reason of its own leaves it to its ack wait.
+func (m *sessionRelays) endFrames(ctx context.Context, run *relayRun) []*relayFrame {
 	if ctx.Err() != nil && !m.owned.Load() {
-		m.settleStoppedFrames(run)
-		return
+		return m.settleStoppedFrames(run)
 	}
-	m.forget(run)
+	return m.forget(run)
 }
 
 // settleStoppedFrames gives the frames a stopped relay has outstanding - those it has had no
@@ -64,20 +67,28 @@ func (m *sessionRelays) endFrames(ctx context.Context, run *relayRun) {
 // its message acked here, and the consumer's ack floor moves past that message once nothing
 // below it is held. A frame the grace ends without a done is in doubt, a frame the session
 // answered received included: received says the client decoded the frame, not that its host
-// wrote the message, so nothing says the session took it, and one line names it. The pod taking
-// over, which waits relayFormerSettle before it restarts the consumer, sends again every frame
-// above the ack floor, each under its own event id (the README's "When a session can see a
-// message twice").
-func (m *sessionRelays) settleStoppedFrames(run *relayRun) {
+// wrote the message, so nothing says the session took it, and one line names it.
+//
+// It takes those frames off the run and hands them back, for the run to return to the server
+// (sessionRelays.release): the successor is delivered each of them at once rather than after the
+// consumer's ack wait, and each under its own event id, so a message in doubt is seen at most
+// once more (the README's "When a session can see a message twice"). A frame answered done
+// inside the grace left the run at that answer (onReply), so it is acked and not among these:
+// no frame is both acked and naked. The pod taking over waits relayFormerSettle, which is this
+// grace and a margin, before it restarts the consumer, so it pulls only once the grace has
+// ended and what the grace returned is waiting for it.
+func (m *sessionRelays) settleStoppedFrames(run *relayRun) []*relayFrame {
 	deadline := time.Now().Add(relaySettleGrace)
 	for m.outstanding(run) > 0 && time.Now().Before(deadline) {
 		time.Sleep(relaySettlePoll)
 	}
-	for _, frame := range m.forget(run) {
+	inDoubt := m.forget(run)
+	for _, frame := range inDoubt {
 		item := frame.envelope()
 		m.logger.DeliveryLog(slog.LevelWarn, relayFrameInDoubtLine, run.sessionID, item.Topic, item.EventID, "retrying",
 			slog.String("subject", frame.subject), slog.Uint64("stream_seq", frame.streamSeq))
 	}
+	return inDoubt
 }
 
 // relayFrameInDoubtLine is the line settleStoppedFrames logs for each frame a term's end leaves

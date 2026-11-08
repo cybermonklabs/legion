@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -459,24 +460,37 @@ func TestRestartAtFloorWithAMessageAwaitingAnAckCreatesTheConsumerAgain(t *testi
 	requireNoMessage(t, again, 300*time.Millisecond)
 }
 
-// waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
-// floor: an ack is a publish the server answers nothing to.
-func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string, floor uint64) {
+// waitUntil polls ready every 20 ms until it reports true, and fails the test after 5 s naming
+// want, which is what the caller waited for, and the reading ready last took. One bound serves
+// every caller: each waits on a state that follows a publish the server answers nothing to -- an
+// ack, a nak, a delivery -- so the state arrives a moment after the call that caused it rather
+// than with it, and the server it arrives at is in this process.
+func waitUntil(t *testing.T, want string, ready func() (bool, string)) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for {
+		done, got := ready()
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("waited 5s for %s; %s", want, got)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitForAckFloor waits for the server to have taken the acks that bring sessionID's ack floor to
+// floor.
+func waitForAckFloor(t *testing.T, consumers *SessionConsumers, sessionID string, floor uint64) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("the ack floor of %s to reach %d", sessionID, floor), func() (bool, string) {
 		info, err := consumers.Info(context.Background(), sessionID)
 		if err != nil {
 			t.Fatalf("info: %v", err)
 		}
-		if info.AckFloor.Stream == floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the ack floor stayed %d, want %d", info.AckFloor.Stream, floor)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return info.AckFloor.Stream == floor, fmt.Sprintf("it stayed %d", info.AckFloor.Stream)
+	})
 }
 
 // A restart whose floor lies below the stream's first sequence, the messages after the floor gone
@@ -786,6 +800,146 @@ func TestNakWithDelayRedelivers(t *testing.T) {
 	if again := next(t, pull); again.StreamSeq != seq || again.Delivered != 2 {
 		t.Fatalf("after the NAK got seq %d delivery %d, want %d delivery 2", again.StreamSeq, again.Delivered, seq)
 	}
+}
+
+// waitForAckPending waits for sessionID's consumer to hold want messages awaiting an ack and
+// answers the info that read it.
+func waitForAckPending(t *testing.T, consumers *SessionConsumers, sessionID string, want int) *jetstream.ConsumerInfo {
+	t.Helper()
+	var info *jetstream.ConsumerInfo
+	waitUntil(t, fmt.Sprintf("the consumer of %s to hold %d messages awaiting an ack", sessionID, want), func() (bool, string) {
+		read, err := consumers.Info(context.Background(), sessionID)
+		if err != nil {
+			t.Fatalf("info: %v", err)
+		}
+		info = read
+		return info.NumAckPending == want, fmt.Sprintf("it holds %d", info.NumAckPending)
+	})
+	return info
+}
+
+// Release gives the server back, at once, every message the pull holds that its caller never
+// read: the next pull of that consumer is delivered both of them straight away, each as a second
+// delivery, rather than after SessionConsumerAckWait. Stop in its place drops them, and the next
+// pull waits out that ack wait for them. A returned message is still awaiting an ack -- a nak
+// schedules a redelivery, it does not undo the delivery it answers -- so the consumer holds
+// nothing for an ack only once the next owner has taken and acked them, which is the state this
+// row ends on. The order the two come back in is the server's, not this row's to assert: with no
+// pull request that still has interest, the server's first redelivery attempt puts that message
+// behind the other in its redelivery queue. A relay's next owner is pulling by then, and one that
+// is not restarts the consumer at its ack floor (RestartAtFloor), which is where stream order
+// comes from.
+func TestReleaseReturnsTheMessagesThePullHoldsUnread(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_released"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	var stored []uint64
+	for i := range 3 {
+		stored = append(stored, publishStored(t, owner, agent, strconv.Itoa(i)))
+	}
+	pull := pullSession(t, consumers, session)
+	first := next(t, pull)
+	if first.StreamSeq != stored[0] {
+		t.Fatalf("the first message is %d, want %d", first.StreamSeq, stored[0])
+	}
+	if err := first.Ack(); err != nil {
+		t.Fatalf("ack %d: %v", first.StreamSeq, err)
+	}
+	// One pull request asks for a whole batch, so the server delivered all three: the two this
+	// row never read sit unread in the pull's queue, and they are what the consumer awaits.
+	held := waitForAckPending(t, consumers, session, 2)
+	t.Logf("before Release the consumer has NumWaiting %d and NumAckPending %d", held.NumWaiting, held.NumAckPending)
+	if returned, err := pull.Release(); returned != 2 || err != nil {
+		t.Fatalf("Release returned %d messages, %v; want the two the pull held unread and no error", returned, err)
+	}
+	again := pullSession(t, consumers, session)
+	back := map[uint64]uint64{}
+	for range stored[1:] {
+		msg := next(t, again)
+		back[msg.StreamSeq] = msg.Delivered
+		if err := msg.Ack(); err != nil {
+			t.Fatalf("ack %d: %v", msg.StreamSeq, err)
+		}
+	}
+	if len(back) != 2 || back[stored[1]] != 2 || back[stored[2]] != 2 {
+		t.Fatalf("after Release the next pull got %v, want %d and %d back, each as a second delivery", back, stored[1], stored[2])
+	}
+	released := waitForAckPending(t, consumers, session, 0)
+	t.Logf("once the next pull has acked both, the consumer has NumWaiting %d (that pull's own request) and NumAckPending %d", released.NumWaiting, released.NumAckPending)
+}
+
+// waitForQueued waits for pull to hold want messages its caller has not read, which is the state
+// Release gives them back from. The server reporting them delivered is a moment ahead of it: the
+// pull's inbox subscription queues each message when nats.go hands it over.
+func waitForQueued(t *testing.T, pull *SessionPull, want int) {
+	t.Helper()
+	waitUntil(t, fmt.Sprintf("the pull of consumer %s to hold %d messages unread", pull.name, want), func() (bool, string) {
+		pull.mu.Lock()
+		held := len(pull.queue)
+		pull.mu.Unlock()
+		return held == want, fmt.Sprintf("it holds %d", held)
+	})
+}
+
+// A hand-over that could not reach the server at all says so, rather than reporting a whole
+// hand-over while every message it held went out with the connection. On a connection that is
+// closed the drain of the pull's inbox subscription fails, and nats.go throws away what it had
+// buffered there unread; the naks of what the pull itself holds fail with it. Both halves are
+// named: Detach reports the drain, and Release reports that drain together with the naks and
+// counts nothing returned, so the caller's hand-over line cannot claim messages reached the
+// server that never left the process.
+func TestAHandOverOnAClosedConnectionReportsTheDrainAndTheNaksThatFailed(t *testing.T) {
+	owner, consumers := sessionConsumersOnStream(t)
+	ctx := context.Background()
+	const session = "ses_closed"
+	agent := contracts.AgentSubject(session)
+	if _, err := consumers.Ensure(ctx, session, []string{agent}, 0); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	for i := range 3 {
+		publishStored(t, owner, agent, strconv.Itoa(i))
+	}
+	// A connection of this row's own, on the test's account: closing it ends no other row's
+	// pull and no cleanup of the connection sessionConsumersOnStream hands out.
+	mine, err := ConnectSessionConsumers([]string{testnats.URL(t)})
+	if err != nil {
+		t.Fatalf("connect a session consumers connection of this row's own: %v", err)
+	}
+	t.Cleanup(mine.Close)
+	pull, err := mine.Pull(ctx, session)
+	if err != nil {
+		t.Fatalf("pull %s: %v", session, err)
+	}
+	// The first Next sends the pull request, which asks for a whole batch, and reads the first
+	// of the three messages the server delivers for it; the other two are queued in the pull,
+	// which is what Release has to return.
+	next(t, pull)
+	waitForQueued(t, pull, 2)
+	mine.Close()
+
+	detachErr := pull.Detach()
+	if detachErr == nil {
+		t.Fatal("Detach on a closed connection reported nothing, while nats.go threw away every message the pull's inbox held unread")
+	}
+	if !strings.Contains(detachErr.Error(), "could not be drained") {
+		t.Fatalf("Detach reported %q, want it naming the drain that failed", detachErr)
+	}
+	returned, err := pull.Release()
+	if returned != 0 {
+		t.Fatalf("Release returned %d messages on a closed connection, want none: no nak of it reached the server", returned)
+	}
+	if err == nil {
+		t.Fatal("Release on a closed connection reported nothing, so its caller would log a whole hand-over")
+	}
+	if !strings.Contains(err.Error(), "could not be drained") || !strings.Contains(err.Error(), "could not return 2 of the messages it held") {
+		t.Fatalf("Release reported %q, want it naming both the drain that failed and the two naks that failed", err)
+	}
+	t.Logf("Detach reported: %v", detachErr)
+	t.Logf("Release reported: %v", err)
 }
 
 // A session the stream holds no consumer for: its info, a restart of it and a pull of it all

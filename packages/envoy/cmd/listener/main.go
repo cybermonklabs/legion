@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/ghrename"
+	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/session"
@@ -42,6 +43,9 @@ type listenerDeps struct {
 	client   *bus.Client
 	registry *store.Registry
 	sessions *session.SessionRegistry
+	// legionAgents is the Legion agent registry the /v1/legion/agents routes serve, or why it is
+	// unavailable. It keeps no cache, so it is in no list of caches.
+	legionAgents *legionAgentRegistry
 	// ciStore is nil on a listener that mounts no GitHub webhook route, the one route that uses it.
 	ciStore *cistore.Store
 	// roleLane is the role lane's own client (bus.ConnectRoleLane), nil in a test that builds the
@@ -1515,11 +1519,21 @@ func main() {
 	}
 	sessionCacheReadyCancel()
 
+	// The Legion agent registry (internal/legionagents) keeps no cache: every read is a read of its
+	// bucket, so it joins no warm-up or self-health. A listener that cannot open the bucket (a
+	// missing grant is the usual cause) logs one ERROR and serves on, its registry routes answering
+	// 503 while it retries the open in the background, with a backoff and at once after a reconnect
+	// (legionAgentRegistry). Its reconnect hook runs after the caches' rewatch, and moves its bucket
+	// handle onto a connection the bus dialled to replace a closed one; its drain hook ends the retry.
+	legionAgents := openLegionAgentRegistry(client.Conn, logger, legionagents.WithReplicas(cfg.NATSReplicas), legionagents.WithLogger(logger.Slog()))
+
 	// KV watchers are not bus subscriptions: tie them to the connection, so a disconnect stops each
 	// copy following its bucket, every recovered connection reads each bucket again, and the drain
 	// ends them before the connection's own.
 	caches := listenerCaches(registry, sessions, ciStore)
 	hookListenerKVWatchers(client, caches)
+	client.AddReconnectHook(legionAgents.reconnect)
+	client.AddDrainHook(legionAgents.close)
 
 	ledger := newDeliveryLedger(deliveryLease, cfg.MachineID, deliveryHandlingLimit)
 
@@ -1774,18 +1788,19 @@ func main() {
 	}
 
 	ready := &listenerDeps{
-		client:     client,
-		roleLane:   roleLaneClient,
-		consumers:  delivery,
-		registry:   registry,
-		sessions:   sessions,
-		ciStore:    ciStore,
-		caches:     caches,
-		receiver:   receiver,
-		streamName: bus.Stream,
-		wakes:      wakes,
-		delivery:   &deliveryConfig,
-		confirmed:  dedupe.New(10 * time.Minute),
+		client:       client,
+		roleLane:     roleLaneClient,
+		consumers:    delivery,
+		registry:     registry,
+		sessions:     sessions,
+		legionAgents: legionAgents,
+		ciStore:      ciStore,
+		caches:       caches,
+		receiver:     receiver,
+		streamName:   bus.Stream,
+		wakes:        wakes,
+		delivery:     &deliveryConfig,
+		confirmed:    dedupe.New(10 * time.Minute),
 
 		sendsToUnresponsive: sendsToUnresponsive,
 	}
@@ -1907,14 +1922,14 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// 12.25 s when the flush (1 s) and the release (2 s) both run to their bounds and leave that
 	// floor past the cap. The relays' own settle is not in that sum: the term's end only cancels
 	// them, and step 3 below waits for it. This budget bounds none of those waits: it is how
-	// long this shutdown
-	// waits for the receive stop. Past it the shutdown goes on to the relays and the HTTP stop
-	// with no time left, then to the NATS drains below and os.Exit(1), while the hand-back may
-	// still be running. The listener's own shutdown, not the runtime's kill, cuts that hand-back
-	// off: client.Drain ends the subscription of a hand-back still lingering or draining, and
-	// os.Exit(1) ends only a mark write still in flight on the lease's own connection. So a
-	// longer grace period in the runtime keeps no mark, and the next holder then settles at its
-	// 7 s cap, as it does after any stop that wrote none. HTTP keeps serving meanwhile.
+	// long this shutdown waits for the receive stop. Past it the shutdown goes on to the relays
+	// and the HTTP stop with no time left, then to the NATS drains below and os.Exit(1), while
+	// the hand-back may still be running. The listener's own shutdown, not the runtime's kill,
+	// cuts that hand-back off: client.Drain ends the subscription of a hand-back still lingering
+	// or draining, and os.Exit(1) ends only a mark write still in flight on the lease's own
+	// connection. So a longer grace period in the runtime keeps no mark, and the next holder
+	// then settles at its 7 s cap, as it does after any stop that wrote none. HTTP keeps serving
+	// meanwhile.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	loops.receiver.Stop(shutdownCtx)
@@ -1923,9 +1938,10 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// stopped first gives the frame it had unanswered relaySettleGrace (0.75 s) to be answered
 	// and acks it (sessionRelays.settleStoppedFrames), so the pod taking over does not publish
 	// it again; this step waits for that, out of what the receive stop left of the budget, and
-	// is cut short with a warning when nothing is left. The messages the relays hold unacked
-	// are delivered again once their ack wait runs out, to whichever pod of this machine
-	// receives the durable then.
+	// is cut short with a warning when nothing is left. Each relay then returns to the server,
+	// with a nak, every message it still holds (sessionRelays.release), the frames the settle
+	// left in doubt among them, so the pod of this machine that receives the durable next is
+	// delivered them at once rather than after their ack wait.
 	parts.relays.stop(shutdownCtx)
 
 	// 4. HTTP server — stop accepting new requests, drain in-flight, within what is left of the

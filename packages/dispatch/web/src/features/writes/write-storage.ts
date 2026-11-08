@@ -292,6 +292,12 @@ export class WriteStorage {
     this.#unload = unload;
   }
 
+  /** Whether leaving no longer asks for `write`: one Dispatch has refused is the reader's to
+   *  retry or discard rather than one still out, and a quiet one is never shown at all. */
+  static #settled(write: Pick<KeptWrite, "presentation" | "state">): boolean {
+    return write.state.status === "refused" || write.presentation === "quiet";
+  }
+
   /** Keeps `write` under its key, replacing what was kept there. One the storage refuses to write
    *  (full, or refused the page) removes what was kept under its key before rather than leaving
    *  it to stand for it, so a reload never resumes a state the write has left - a write the reader
@@ -305,7 +311,19 @@ export class WriteStorage {
       // The write is still made; only its reload is lost.
       this.#remove(name);
     }
-    this.#confirm(write.key, write.state.status === "refused" || write.presentation === "quiet");
+    this.#confirm(write.key, WriteStorage.#settled(write));
+  }
+
+  /** Keeps nothing of `write`, and confirms leaving while it is out all the same: an upload
+   *  whose file this browser did not keep, which no record may name, since a record naming a
+   *  file that is not there is one a reload drops with nothing shown and nothing sent. What was
+   *  kept under its key before goes, as it does for a write the storage refuses. A page with no
+   *  storage at all has always behaved this way for every write. It takes the three fields it
+   *  reads rather than a whole record, since its caller has no reason to build one. */
+  keepNothing(write: Pick<KeptWrite, "key" | "presentation" | "state">): void {
+    if (this.#retired) return;
+    this.#remove(`${ENTRY_PREFIX}${write.key}`);
+    this.#confirm(write.key, WriteStorage.#settled(write));
   }
 
   /** Drops the write kept under `key`: it landed, or the reader dropped its refusal. */
