@@ -993,9 +993,15 @@ func negativelyAcknowledge(msg *natsgo.Msg) {
 // handlePullRequestEnvelope processes one `kind:"pr"` envelope. Every action — opened,
 // synchronize, reopened, edited and closed — records the pull request's head first
 // (recordPullRequestHead, pull_request_heads.go), for any author and any repository, since a
-// check result is measured against that head. A head write that fails is logged and the merge
-// handling goes on: the two writes are independent, and the reconcile's own pass repairs the
-// head. Only a merge (action "closed", merged "true") does anything for the delivery timeline
+// check result is measured against that head. A head write that could not be made at all is
+// the one failure this hands the envelope back for (delivery.ErrHeadNotStored): nothing else
+// repairs a head row that was never stored, since the reconcile's passes read the rows that
+// exist, and both statements behind that write are `on conflict … do update`, so the
+// redelivery writes the same pair. Every other failure of it — a read of GitHub the App
+// refused, a rate limit the attribution hit — is logged and the merge handling goes on, as
+// before: the row is written either way or the reconcile's own pass reads it again, and
+// handing every rate-limited envelope back would spend the whole limit over again.
+// Only a merge (action "closed", merged "true") does anything for the delivery timeline
 // after that; its author and excluded-repository checks run on the envelope's own fields, so a
 // merge by anyone outside the population costs no GitHub call of its own. It reports whether
 // it stored the pull request's delivery row: a head write is not one, and neither is a row it
@@ -1015,6 +1021,9 @@ func (in *Intake) handlePullRequestEnvelope(ctx context.Context, settings Delive
 	if headErr != nil {
 		slog.Warn("dispatch delivery: record a pull request's head",
 			"repo", repoFull, "number", number, "error", headErr)
+		if errors.Is(headErr, ErrHeadNotStored) {
+			return false, headErr
+		}
 	}
 	if payload["action"] != "closed" || payload["merged"] != "true" {
 		return false, nil

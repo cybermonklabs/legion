@@ -434,10 +434,36 @@ func cannotSeeRepository(err error) bool {
 
 // readBranchCommit is what branch_commits holds for one commit of one branch, and whether it
 // holds anything at all.
+//
+// The row is keyed by the lowercased repository, here and in writeBranchCommit, which are the
+// only two statements over this table: a third added later keys it the same way or it reads
+// and writes rows nobody else can find. One repository reaches the table under two spellings.
+// A merge's seed carries GitHub's own (`Acme/Widgets`), since refs.CanonicalRepo gives a
+// caller's spelling back unchanged where no rename is recorded, while the results read asks
+// under the lowercased name repo_projects stores (api's canonicalRepo, through
+// currencyReader.repositoryOf), so a table holding both spellings would answer `older` for
+// good for every `after_merge` result of a repository whose owner writes their name with
+// capitals — the squash-merged, branch-deleted case the seed exists for above all
+// (UpsertPullRequestHead).
+//
+// It is lowercased on the way in rather than compared with `lower(repo)`, which is how
+// HeadStoredAt meets the same split one table over, because the two tables are in different
+// positions. pull_request_heads is a table of the release before this one, holding rows under
+// GitHub's spelling already and an index built on `(lower(repo), head_sha)` to read them by;
+// branch_commits is new in this unreleased change and holds no row in any deployment, so it
+// can be keyed once instead. One spelling per row is what keeps its primary key
+// (repo, branch, sha) the whole of its identity: two spellings would make two rows the
+// writer's `on conflict` could not fold together, and a case-insensitive read of them would
+// want a functional index — a migration — where this wants none, since `repo = lower($1)` is
+// an exact lookup on the primary key.
+//
+// The branch is not lowercased with it. Git's branch names are case-sensitive, so `Release`
+// and `release` are two branches and a compare read of one says nothing about the other.
 func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, sha string) (BranchCommit, bool, error) {
 	var answer BranchCommit
 	err := pool.QueryRow(ctx, `
-		select on_branch, checked_at from branch_commits where repo = $1 and branch = $2 and sha = $3
+		select on_branch, checked_at from branch_commits
+		where repo = lower($1) and branch = $2 and sha = $3
 	`, repoFull, branch, sha).Scan(&answer.OnBranch, &answer.CheckedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return BranchCommit{}, false, nil
@@ -448,11 +474,17 @@ func readBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, s
 	return answer, true, nil
 }
 
-// writeBranchCommit records GitHub's answer about one commit of one branch.
-func writeBranchCommit(ctx context.Context, pool *store.Pool, repoFull, branch, sha string, onBranch bool, now time.Time) error {
-	_, err := pool.Exec(ctx, `
+// writeBranchCommit records GitHub's answer about one commit of one branch, under the
+// lowercased repository readBranchCommit reads by: the one key this table has, and the reason
+// it has one, are that comment's.
+//
+// It takes an Execer rather than the pool, so the same statement runs on the pool for a
+// compare read's answer (CommitOnBranch) and inside a transaction for a merge's permanent yes,
+// which commits with the head row it was learned from or not at all (UpsertPullRequestHead).
+func writeBranchCommit(ctx context.Context, db Execer, repoFull, branch, sha string, onBranch bool, now time.Time) error {
+	_, err := db.Exec(ctx, `
 		insert into branch_commits (repo, branch, sha, on_branch, checked_at)
-		values ($1, $2, $3, $4, $5)
+		values (lower($1), $2, $3, $4, $5)
 		on conflict (repo, branch, sha) do update set on_branch = excluded.on_branch, checked_at = excluded.checked_at
 	`, repoFull, branch, sha, onBranch, now)
 	if err != nil {

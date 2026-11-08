@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -76,6 +77,17 @@ func PullRequestHeadState(action string, merged bool) string {
 	return "closed"
 }
 
+// ErrHeadNotStored marks a failure to write a pull request's head row, as against a failure to
+// attribute one: the first is a write that can simply be made again, and nothing else in
+// Dispatch repairs a head row that was never stored — the reconcile's passes read the rows
+// that exist (ListStalePullRequestHeads), so a row no write ever made is offered to nothing.
+// The `pull_request` envelope's handler tests for it and hands the envelope back for delivery
+// rather than acking it, since both of the statements behind it are `on conflict … do update`
+// and a redelivery writes the same pair (Intake.handlePullRequestEnvelope). A read of GitHub
+// the App refused is not this: it is answered by the reconcile's own next pass, and handing
+// every rate-limited envelope back would spend the whole limit over again.
+var ErrHeadNotStored = errors.New("the pull request's head row was not stored")
+
 // UpsertPullRequestHead writes one pull request's head row. An event older than the one the row
 // already holds changes nothing: GitHub redelivers and the reconcile reads concurrently, so the
 // row keeps the newest `updated_at` either has seen rather than whichever write landed last.
@@ -124,11 +136,76 @@ func PullRequestHeadState(action string, merged bool) string {
 // GitHub's merge proves the fact whatever order the events arrive in. The time recorded is
 // time.Now() rather than a clock threaded through every caller of this function, which would
 // buy nothing: a yes never goes stale, so checked_at only records when the fact was learned
-// and no reader measures a yes against it. A failed write is logged at Warn and does not fail
-// the upsert, exactly as branch.go logs its own failed writes: the row is a cache, and the
-// head row is the fact worth failing for.
+// and no reader measures a yes against it.
+//
+// The head row and that seed are written in one transaction, so the two land together or
+// neither does and the caller is told. branch.go logs its own failed writes and carries on,
+// which is right for every answer it writes: those are answers a compare read can earn again a
+// moment later. This one can never be earned again — the paragraph above is the whole argument
+// that nothing proves it once the base branch is gone — so a seed lost behind a Warn line
+// leaves every `after_merge` result of that issue reading `older` for good, with the merged
+// head row stored beside it as if all was well. Failing the write instead puts that in front
+// of the caller: the reconcile logs it and leaves the row for its next pass
+// (reconcilePullRequestHeads), and the results read's read-through hands it back to the route
+// (ReadThroughCommitPulls). Both statements are `on conflict … do update`, so a write made
+// again writes the same pair and costs nothing.
+//
+// A write with nothing to pair — an open pull request, a merge whose base branch or merge
+// commit nobody read — runs its one statement on the pool as it always did. A transaction
+// around a single statement buys nothing and costs a round trip at each end, and every caller
+// of this function makes far more writes of that shape than of the other.
+//
+// Every error this function answers is ErrHeadNotStored: nothing of the pair was written, and
+// the caller may write the same pair again.
 func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullRequestHead) error {
-	_, err := pool.Exec(ctx, `
+	if head.State != "merged" || head.BaseRef == "" || head.MergeCommitSHA == "" {
+		return upsertHeadRow(ctx, pool, head)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("%w: open the write of the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+	}
+	// The rollback runs on a context of its own, not the caller's: the caller's is cancelled
+	// exactly when the rollback matters — a webhook consumer shutting down mid-write, a results
+	// read whose browser went away — and pgx answers a rollback on a cancelled context by
+	// destroying the connection instead of returning it to the pool, which leaves a backend on
+	// the database for as long as the process lives (api/duplicates.go makes the same argument
+	// for its own read). A commit that already ran absorbs this one (store.Pool's trackedTx).
+	defer func() {
+		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), headWriteRollback)
+		defer cancel()
+		_ = tx.Rollback(rollback)
+	}()
+	if err := upsertHeadRow(ctx, tx, head); err != nil {
+		return err
+	}
+	if err := writeBranchCommit(ctx, tx, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
+		return fmt.Errorf("%w: %w", ErrHeadNotStored, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("%w: store the head of %s#%d with its merge commit's branch: %w", ErrHeadNotStored, head.Repo, head.Number, err)
+	}
+	return nil
+}
+
+// headWriteRollback bounds the rollback of that transaction, which runs on a context of its
+// own and so is bounded by nothing else. Two seconds is longer than the one statement each
+// rollback here can be undoing and far inside any caller's own patience.
+const headWriteRollback = 2 * time.Second
+
+// Execer is what a write in this package needs of its connection: the pool, or a transaction
+// already open on it, which the head row and the branch answer its merge seeds are written
+// inside (UpsertPullRequestHead). It is the write side of Querier (groups.go), which the reads
+// of this package take for the same reason.
+type Execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// upsertHeadRow is the head row's own statement, which UpsertPullRequestHead's doc comment
+// explains in full: it is here, on an Execer, so that one statement runs on the pool where it
+// is the whole write and inside the transaction where the merge's branch answer goes with it.
+func upsertHeadRow(ctx context.Context, db Execer, head PullRequestHead) error {
+	_, err := db.Exec(ctx, `
 		insert into pull_request_heads (
 			repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source,
 			title, url, event_at, checked_at, attribution_rule
@@ -158,13 +235,7 @@ func UpsertPullRequestHead(ctx context.Context, pool *store.Pool, head PullReque
 		head.AttributionComplete, AttributionRuleVersion,
 	)
 	if err != nil {
-		return fmt.Errorf("store the head of %s#%d: %w", head.Repo, head.Number, err)
-	}
-	if head.State == "merged" && head.BaseRef != "" && head.MergeCommitSHA != "" {
-		if err := writeBranchCommit(ctx, pool, head.Repo, head.BaseRef, head.MergeCommitSHA, true, time.Now()); err != nil {
-			slog.Warn("dispatch: record a merge commit on its base branch", "repo", head.Repo,
-				"number", head.Number, "branch", head.BaseRef, "commit", head.MergeCommitSHA, "error", err)
-		}
+		return fmt.Errorf("%w: store the head of %s#%d: %w", ErrHeadNotStored, head.Repo, head.Number, err)
 	}
 	return nil
 }

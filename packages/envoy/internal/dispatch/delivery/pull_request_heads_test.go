@@ -1291,6 +1291,113 @@ func TestAMergeRecordsItsMergeCommitOnItsBaseBranch(t *testing.T) {
 	}
 }
 
+// A merge recorded under GitHub's own spelling of a repository is answered for the lowercased
+// name the results read asks under. GitHub spells an owner and a repository as their owners do
+// (`Acme/Widgets`) and refs.CanonicalRepo hands a caller's own spelling back where no rename is
+// recorded, while the results read asks under the name repo_projects stores (api's
+// canonicalRepo); branch_commits is keyed by one lowercased name so that the two meet
+// (readBranchCommit). Without it, every squash-merged issue of a repository whose owner writes
+// their name with capitals would read `older` for good once its base branch was deleted, which
+// is the case the seed exists for.
+func TestAMergeRecordedUnderGitHubsSpellingIsAnsweredForTheLowercasedName(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	const base = "integration/138"
+	merged := PullRequestHead{
+		Repo: "Acme/Widgets", Number: 94, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		BaseRef: base, State: "merged", AttributionSource: "none", Title: "A change",
+		URL: "https://github.com/Acme/Widgets/pull/94", MergeCommitSHA: mergeCommit,
+	}
+	if err := UpsertPullRequestHead(ctx, pool, merged); err != nil {
+		t.Fatalf("store the head of a merged pull request: %v", err)
+	}
+
+	// The answer is read through the production path, with a compare read that refuses every
+	// question: the base branch of such a merge is deleted, so a read that reaches GitHub at
+	// all is the failure this test is about, whatever GitHub would then say.
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	branches := &Branches{}
+	answer := branches.CommitOnBranch(ctx, pool, fake.newTestClient(), "acme/widgets", base, mergeCommit, time.Now())
+	if answer != BranchCarries {
+		t.Fatalf("the merge commit on %s, asked for under the lowercased name = %v, want %v", base, answer, BranchCarries)
+	}
+	if spent := compares.Load(); spent != 0 {
+		t.Fatalf("compare reads spent on a commit the merge itself answered for = %d, want 0", spent)
+	}
+}
+
+// branchCommitsMigration is the migration that creates branch_commits, which
+// withoutBranchCommits replays to put the table back.
+const branchCommitsMigration = 20261107234701
+
+// withoutBranchCommits drops branch_commits for the length of one test, so a write of it fails
+// the way a write fails, and puts it back afterwards.
+//
+// Dropping it is contained: deliveryTestPool migrates and truncates the database
+// DISPATCH_TEST_DATABASE_URL names, which is one run's own and holds nothing another run or
+// the server reads. It is put back by this test rather than by the next one's harness, since
+// that harness's Migrate skips every version schema_migrations already records: forgetting the
+// version and migrating again creates the table exactly as the migration does, where a `create
+// table` written out here would be a second copy of it to keep in step.
+func withoutBranchCommits(t *testing.T, ctx context.Context, pool *store.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(ctx, "drop table branch_commits"); err != nil {
+		t.Fatalf("drop branch_commits: %v", err)
+	}
+	t.Cleanup(func() {
+		// The test's own context is cancelled before its cleanups run, so the repair takes one
+		// that is not (context.WithoutCancel).
+		repair := context.WithoutCancel(ctx)
+		if _, err := pool.Exec(repair, "delete from schema_migrations where version = $1::bigint", branchCommitsMigration); err != nil {
+			t.Fatalf("forget the branch_commits migration: %v", err)
+		}
+		if err := (&store.Store{Pool: pool}).Migrate(repair); err != nil {
+			t.Fatalf("put branch_commits back: %v", err)
+		}
+	})
+}
+
+// A merge whose branch seed cannot be written stores no head row and says so. The seed is the
+// one fact nothing can prove later (UpsertPullRequestHead), so a head row stored beside a lost
+// seed would leave every `after_merge` result of that issue reading `older` for good behind a
+// log line nobody reads: the two go in one transaction, and the caller is handed the error to
+// make of what it will.
+func TestAMergeWhoseBranchSeedCannotBeWrittenStoresNoHead(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	withoutBranchCommits(t, ctx, pool)
+	merged := PullRequestHead{
+		Repo: "acme/widgets", Number: 95, HeadSHA: landedCommit, HeadRef: "legion/INFRA-1691",
+		BaseRef: "integration/138", State: "merged", AttributionSource: "none", Title: "A change",
+		URL: "https://github.com/acme/widgets/pull/95", MergeCommitSHA: mergeCommit,
+	}
+	if err := UpsertPullRequestHead(ctx, pool, merged); err == nil {
+		t.Fatal("storing a merged head whose branch seed could not be written = nil, want that write's error")
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `
+		select count(*) from pull_request_heads where repo = $1 and number = $2
+	`, merged.Repo, merged.Number).Scan(&rows); err != nil {
+		t.Fatalf("count the stored heads of %s#%d: %v", merged.Repo, merged.Number, err)
+	}
+	if rows != 0 {
+		t.Fatalf("stored heads of %s#%d after the failed write = %d, want none: the pair lands together or not at all",
+			merged.Repo, merged.Number, rows)
+	}
+
+	// A write with nothing to pair runs its one statement on the pool and opens no transaction,
+	// so the table being gone costs it nothing at all.
+	open := merged
+	open.Number, open.State, open.MergeCommitSHA = 96, "open", ""
+	if err := UpsertPullRequestHead(ctx, pool, open); err != nil {
+		t.Fatalf("store the head of an open pull request, which seeds no branch answer: %v", err)
+	}
+}
+
 // A branch GitHub cannot answer a compare read about is not asked about again at once. A base
 // branch deleted when its pull request merged is the ordinary case here, and a compare read
 // against it answers 404; without the hold, every result commit measured against that branch
