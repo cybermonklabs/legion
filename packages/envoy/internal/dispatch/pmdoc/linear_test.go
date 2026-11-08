@@ -334,7 +334,7 @@ func TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds(t *testing.T) {
 // rendering is, whose parse no element limit stops.
 func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
 	const header, row = "| a |\n| --- |\n", "`\\|`\n"
-	growsLinearly(t, "parsing a table of `\\|` cells", []int{16 << 10, 256 << 10, 1 << 20}, growthAllowance, func(size int) (time.Duration, error) {
+	growsLinearly(t, "parsing a table of `\\|` cells", ladderSizes, growthAllowance, func(size int) (time.Duration, error) {
 		markdown := header + strings.Repeat(row, (size-len(header))/len(row))
 		return cpuTimeOf(again(func() {
 			if _, err := ParseRendering(markdown); err != nil {
@@ -364,18 +364,17 @@ func TestParseIsLinearInATableOfEscapedPipes(t *testing.T) {
 // is timed up to renderFullTarget, as TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText
 // times a render.
 func TestBareURLShapesParseAndRenderLinearly(t *testing.T) {
-	sizes := []int{16 << 10, 256 << 10, 1 << 20}
 	for _, shape := range []string{
 		"_www.a", "-www.x_", `(https://-a.b\`, ".www.a&", ".www", "www.", `www\.`, `www\.a `, "HTTP://a ", ` "'https://-a.b`, `(""www.a_`, ` ".www.a`,
 		";https://-a.b", "x;www.a_", `\*https://-a`, "&amp;https://-a.", "éhttps://-a.", `http\://-a.`, `www\.a_`, `x"www.a_`, ";;", `\*`, ";a_a@", "é+a@b-", `www\.a@`,
 	} {
-		readsAndWritesLinearly(t, "", shape, "", sizes)
+		readsAndWritesLinearly(t, "", shape, "", ladderSizes)
 	}
 	for _, shape := range []struct{ opener, closer string }{
 		{"&lt;!-- a@b.cc ", "-->"}, {"&lt;?x;https://a.bc/ ", "?>"}, {"&lt;!X a@b.cc ", ">"}, {"&lt;![CDATA[ a@b.cc ", "]]>"},
 		{`&lt;a b="x;a@b.cc `, `">`}, {`&lt;a b='&lt;a c="x;a@b.cc `, `'>`},
 	} {
-		readsAndWritesLinearly(t, "", shape.opener, shape.closer, sizes)
+		readsAndWritesLinearly(t, "", shape.opener, shape.closer, ladderSizes)
 	}
 	readsAndWritesLinearly(t, unreadableRun, "lorem ipsum ", "", []int{renderFullTarget / 16, renderFullTarget})
 }
@@ -410,12 +409,11 @@ func TestBareURLShapesParseAndRenderLinearly(t *testing.T) {
 // a caller's write of a mebibyte of them is refused for the elements they make, which the
 // read-back counts none of.
 func TestUnclosedRawHTMLShapesParseAndRenderLinearly(t *testing.T) {
-	sizes := []int{16 << 10, 256 << 10, 1 << 20}
 	for _, form := range []struct{ head, shape string }{
 		{"p ", "<!a"}, {"p ", "<!A"}, {"", "x <!a\n"},
 		{"p ", "<!--"}, {"p ", "<?"}, {"p ", "<![CDATA["},
 	} {
-		readsAndWritesLinearly(t, form.head, form.shape, "", sizes)
+		readsAndWritesLinearly(t, form.head, form.shape, "", ladderSizes)
 	}
 }
 
