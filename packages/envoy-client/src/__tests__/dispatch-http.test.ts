@@ -795,11 +795,11 @@ describe("DispatchClient", () => {
   // unclosed tags freezes the session: a quadratic pass takes seconds on tens of kilobytes. The
   // row's own 5 s limit is that bound, and nothing here reads a clock. It sits between the row and
   // the defect it catches, so an idle machine catches it as well as a busy one: measured in a
-  // 2-CPU pod, dropping tags one at a time over the whole body costs this row 35.8 s with no load
-  // at all and 153 to 225 s under 16 busy loops (8 x nproc), where the row itself costs 0.03 s
-  // idle and 0.60 s at most under those loops. The limit is a bound on work, not a hang guard, and
-  // it stays on the row rather than taking the suite's 30 s default, which the defect's idle cost
-  // would pass.
+  // 2-CPU pod, dropping tags one at a time over the whole body costs this row 33.0 to 36.1 s with
+  // no load at all and 153 to 225 s under 16 busy loops (8 x nproc), where the row itself costs
+  // 0.03 s idle and 0.60 s at most under those loops. The limit is a bound on work, not a hang
+  // guard, and it stays on the row rather than taking the suite's 30 s default, which the
+  // defect's idle cost would pass.
   test("builds the excerpt of a megabyte of unclosed tags in bounded time", async () => {
     const megabyte = 1 << 20;
     // The last three hold the client's bearer, "secret", everywhere, or almost everywhere.
@@ -936,7 +936,7 @@ describe("DispatchClient", () => {
   // piece. Each distinct piece is searched once, and the row's own 2 s limit is what says so
   // without reading a clock. It sits between the row and the defect it catches, so an idle machine
   // catches it as well as a busy one: measured in a 2-CPU pod, a search per piece costs this row
-  // 9.0 s with no load at all and 75 to 151 s under 16 busy loops (8 x nproc), where the row
+  // 8.82 s with no load at all and 75 to 151 s under 16 busy loops (8 x nproc), where the row
   // itself costs 0.01 s idle and 0.19 s at most under those loops. The limit is a bound on work,
   // not a hang guard, and it stays on the row rather than taking the suite's 30 s default, which
   // the defect's idle cost would pass.
@@ -960,7 +960,7 @@ describe("DispatchClient", () => {
 
     expect(message).toContain('("[redacted]")');
     expect(message).not.toContain("xxxxxxxx");
-  }, 30_000);
+  }, 2_000);
 
   // A body of nothing but markup is not empty, and an agent told it was would look for a gateway
   // that sent nothing. The answer gives the body's size in bytes and says none of it reads as
