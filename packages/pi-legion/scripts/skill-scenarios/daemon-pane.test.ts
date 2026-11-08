@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { DAEMON_MODULE, RIG_GH_TOKEN, workerPane } from "./daemon-pane";
+import { DAEMON_MODULE, RIG_GH_TOKEN, runDaemonPane, workerPane } from "./daemon-pane";
 
 // Every row below asks the daemon's own functions for a pane environment, which `go run` compiles
 // and runs, so a host with no go runs none of them.
@@ -207,6 +207,24 @@ test.skipIf(skip)(
       ghPath: path.join(scriptBin, "gh"),
     }).env;
     expect(named.LEGION_GH_PATH).toBe(path.join(scriptBin, "gh"));
+  },
+  600_000
+);
+
+// The phase a worker runs in is the daemon's own: the first phase of the transition table
+// workflow.RoleFor gives the role, with the word of the handoff record that phase ends with, and
+// a role the table gives no phase is an error rather than an empty answer. daemon-standin.ts
+// reads both from this command, so a wrong answer there would seed every run's phase wrongly.
+test.skipIf(skip)(
+  "phase names the phase a role works and the handoff word it ends with",
+  () => {
+    expect(runDaemonPane(DAEMON_MODULE, ["phase", "implementer"])).toBe(
+      "implementing\nimplement\n"
+    );
+    expect(runDaemonPane(DAEMON_MODULE, ["phase", "tester"])).toBe("testing\ntest\n");
+    expect(() => runDaemonPane(DAEMON_MODULE, ["phase", "nobody"])).toThrow(
+      '"nobody" works no phase'
+    );
   },
   600_000
 );
