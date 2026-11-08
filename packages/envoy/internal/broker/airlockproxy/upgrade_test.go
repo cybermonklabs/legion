@@ -819,8 +819,9 @@ func TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst(t *testing.T) {
 
 // TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut holds the cut's own window
 // open over the whole proxy: serveBound, the hijack, and the join httputil.ReverseProxy runs,
-// which is where the frame that must not cross would cross. The three rows above drive the
-// same proxy but let the close finish, so the window between the close_notify the command
+// which is where the frame that must not cross would cross. The three
+// TestAJoinedConnectionIsClosed rows before TestTheCloseOfAJoinedConnectionCutsTheCommandsSideFirst
+// drive the same proxy but let the close finish, so the window between the close_notify the command
 // reads as the end of the stream and the close of the socket under it is never held open:
 // they read that the frames stop, which a connection whose socket has already gone also
 // reads. The row below holds that socket open with a Close of its own, and makes the read
@@ -886,8 +887,9 @@ func TestAJoinedConnectionIsClosedCarryingNoFrameWrittenAfterTheCut(t *testing.T
 	release()
 
 	// The proxy writes a call's line after proxy.ServeHTTP has returned, so the join is over
-	// and nothing more can cross it, and the service's own answer has returned with it: what
-	// the service holds now is all it will ever hold.
+	// and nothing more can cross it. The service's own answer returns once the proxy has
+	// closed its connection to the service, which waitDone waits for: what the service holds
+	// then is all it will ever hold.
 	r.logs.callsAtLeast(t, 1)
 	stand.waitDone(t)
 	if frames := stand.read(); !slices.Equal(frames, []string{carried}) {

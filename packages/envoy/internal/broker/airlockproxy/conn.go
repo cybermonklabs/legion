@@ -181,8 +181,9 @@ func (c *cutConn) Read(b []byte) (int, error) {
 	}
 	n, err := c.Conn.Read(b)
 	if c.stopped.Load() {
-		// The read was in flight when the cut was decided, so these bytes were written
-		// after the command could learn the stream had ended: they are dropped.
+		// The read was in flight when the cut was decided, so these bytes may hold a frame
+		// the command wrote after it was told the stream had ended. They are dropped
+		// whatever they hold, a frame written before the cut included.
 		return 0, errCut
 	}
 	return n, err
