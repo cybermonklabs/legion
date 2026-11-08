@@ -1,28 +1,34 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import * as os from "node:os";
+import { chmod, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdog";
+import { call } from "@legion/pi-shared/test/omp-harness";
 import {
-  type Block,
-  type Cleanup,
-  call,
-  messageStream,
-  ompRoot,
-  type Request,
-  refusingNats,
-  serveStandin,
-  spawnRpc,
-  writeStandinProfile,
-} from "@legion/pi-shared/test/omp-harness";
-import { STALL_RESTART_MESSAGE } from "../src/stall-abort";
-import {
-  STALL_WATCH_ENTRY,
-  type StallEvidenceProcess,
-  type StallEvidenceRecord,
-  type StallWatchRecord,
-} from "../src/stall-evidence";
-import { stallExitsFile } from "../src/stall-exits";
+  ARCHITECT_TOPIC,
+  BOUND_MS,
+  childOf,
+  cleanup,
+  conversation,
+  DEADLINE_MS,
+  exitsFile,
+  ISSUE,
+  kernelOf,
+  lastMessage,
+  ofKind,
+  QUIET_MS,
+  ROLE,
+  runs,
+  SHELL_DEADLINE_MS,
+  STEER_TEXT,
+  STEP_MS,
+  type StallPane,
+  scratchDir,
+  skip,
+  startPane,
+  stepOf,
+  WARM_CELL,
+  warmedWedge,
+} from "../test/stall-watchdog-pane";
 
 // The stall watch's ladder on the real Oh My Pi (INFRA-1274's `k6`): a worker whose tool call
 // stops, carried through the three steps of `@legion/pi-shared/stall-watchdog` by this package's
@@ -79,529 +85,10 @@ import { stallExitsFile } from "../src/stall-exits";
 //     here"). Nothing of the plugin is replaced, and everything else in those cases is the real
 //     thing — the real worker exits, the real counter file is written and read back by the
 //     relaunch, and the real notice reaches the listener.
-const omp = process.env.LEGION_TEST_OMP;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = omp === undefined && !onActions;
 
-/** The binary the case runs against; throws on GitHub Actions without it. */
-function setup(): string {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  return omp;
-}
-
-const PROJECT = "watch";
-const ROLE = "implementer";
-const TREE = "WATCH-1";
-const ISSUE = "WATCH-2";
-
-/** The daemon's assignment, sent as the RPC prompt. Every turn of the pane's own conversation
- * carries it, which is what tells a turn from a side request. */
-const ASSIGNMENT = `Implement ${ISSUE}. WATCH-ROLE-ASSIGNMENT.`;
-
-/** Who a phase worker's stuck call is told about: the tree's architect, on the role topic
- * `roleToken` builds (`packages/contracts/src/legion-roles.ts`). */
-const ARCHITECT_TOPIC = `notifications.role.legion-${PROJECT}-${TREE.toLowerCase()}-architect`;
-
-/** The bound for a call no deadline judges (`LEGION_STALL_CALL_BOUND_MS`): six seconds, so a
- * wedged cell is overdue one sweep after it starts rather than four hours later. */
-const BOUND_MS = 6_000;
-
-/** The gap between the ladder's steps (`LEGION_STALL_STEP_MS`): four seconds, so each step lands
- * on the sweep after the one before it. */
-const STEP_MS = 4_000;
-
-/** How long a case waits for something the pane owes it before failing: the pane's boot and the
- * three steps of the ladder, each a 5-second sweep apart. */
-const DEADLINE_MS = 120_000;
-
-/** How long a case watches for something that must not happen: the bound, two of the plugin's
- * 5-second sweeps, and a margin. */
-const QUIET_MS = BOUND_MS + 12_000;
-
-const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
 });
-
-/** A Messages request's whole conversation, as one string to find texts in. */
-function conversation(request: Request): string {
-  return JSON.stringify(request.body.messages ?? null);
-}
-
-/** A Messages request's last message, which is what started the turn it answers. */
-function lastMessage(request: Request): string {
-  const messages = Array.isArray(request.body.messages) ? request.body.messages : [];
-  return JSON.stringify(messages.at(-1) ?? null);
-}
-
-/**
- * Whether a process is still running, asked of `/proc` rather than read from a log line. A
- * process the kernel holds as a zombie has ended and is waiting for its parent to reap it, which
- * a signal of 0 still answers for: a cell that was killed while looping never reaps the child the
- * first step ended, so the state letter is what says the child is gone.
- */
-async function runs(pid: number): Promise<boolean> {
-  if (!Number.isInteger(pid) || pid <= 0) throw new Error(`${pid} is no process to ask about`);
-  let stat: string;
-  try {
-    stat = await readFile(`/proc/${pid}/stat`, "utf8");
-  } catch {
-    return false;
-  }
-  // `/proc/<pid>/stat` holds the executable's name in parentheses, which may itself hold spaces
-  // and parentheses, and the state letter is the field after the last of them.
-  return (
-    stat
-      .slice(stat.lastIndexOf(")") + 1)
-      .trim()
-      .charAt(0) !== "Z"
-  );
-}
-
-/** A directory of this case's own: the claim's state directory, or where a cell writes the pid of
- * the child it started. */
-async function scratchDir(name: string): Promise<string> {
-  const directory = await mkdtemp(path.join(os.tmpdir(), `legion-watch-${name}-`));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
-  return directory;
-}
-
-/** The counter file one claim counts its own stall exits in, under `stateDir`. */
-function exitsFile(stateDir: string): string {
-  return stallExitsFile(stateDir, { kind: "phase-worker", role: ROLE, tree: TREE, issue: ISSUE });
-}
-
-/**
- * The cell a case wedges its turn with. It waits three seconds before it starts its child, so the
- * host's `tool_execution_start` has reached the plugin and the child is a process rule 2 can see
- * (measurement 2); with `goOn` it keeps running after that child has died, which is what carries
- * the ladder to its second step, and without it the cell is waiting on the child and returns the
- * moment the first step ends it.
- */
-function wedgeCell(pidFile: string, options: { readonly goOn: boolean }) {
-  return [
-    "import pathlib, subprocess, time",
-    "time.sleep(3)",
-    'p = subprocess.Popen(["/bin/sleep", "3000"])',
-    `pathlib.Path(${JSON.stringify(pidFile)}).write_text(str(p.pid))`,
-    "print('the child is', p.pid)",
-    ...(options.goOn
-      ? ["while True:", "    time.sleep(0.5)"]
-      : ["p.wait()", "print('the child is gone')"]),
-  ].join("\n");
-}
-
-/** The cell that warms this session's `eval` kernel: a call of its own that starts the kernel and
- * returns, so the kernel is older than every call made after it (measurement 2). */
-const WARM_CELL = call("eval", {
-  language: "py",
-  code: "print('the kernel is ready')",
-  timeout: 600,
-});
-
-/**
- * The turns of a case whose kernel must outlive the call that wedges: the warming cell, then the
- * wedging cell, then `then` for every turn after. The warming cell is what keeps the first step
- * about the cell's own child. A kernel the wedged call itself started is a descendant of the agent
- * that started inside that call, so rule 2 of `src/stall-recovery.ts` is right to take it — and on
- * a host slower than this one to start `python3`, takes it, ending the cell with it (measurement
- * 2). A case about what becomes of the cell must therefore be a case whose kernel is older.
- */
-function warmedWedge(
-  pidFile: string,
-  options: { readonly goOn: boolean },
-  then: string
-): (index: number) => readonly Block[] {
-  return (index) => {
-    if (index === 1) return [WARM_CELL];
-    if (index === 2) {
-      return [call("eval", { language: "py", code: wedgeCell(pidFile, options), timeout: 600 })];
-    }
-    return [{ type: "text", text: then }];
-  };
-}
-
-/** The daemon's state with the issue past this pane's phase: the reviewer works it now, so the
- * phase-stall follow-up (`src/phase-stall.ts`) has no reminder for this role and every turn a case
- * sees is one it asked for. */
-const MOVED_ON = {
-  daemon: {
-    project: PROJECT.toUpperCase(),
-    schemaVersion: 1,
-    boots: 1,
-    firstBootAt: "2026-10-30T14:03:27Z",
-    startedAt: "2026-10-31T09:15:02Z",
-  },
-  admission: { cap: 1, active: [TREE], waiting: [], blocked: [] },
-  issues: {
-    [ISSUE]: {
-      key: ISSUE,
-      generation: 1,
-      phase: "reviewing",
-      status: "in_progress",
-      repo: "acme/widgets",
-      defaultBranch: "main",
-      workers: {},
-    },
-  },
-  pendingStatusWrites: [],
-  heldOutboxRows: [],
-  strandedClaims: [],
-  capabilities: [],
-  repositories: {
-    owners: ["acme"],
-    mapped: [{ repo: "acme/widgets", default: true }],
-    refused: [],
-    withoutWebhookApp: [],
-    caches: [],
-  },
-  settings: { max_fix_attempts: 3, worker_boot_timeout_seconds: 120 },
-  consumers: [],
-};
-
-/**
- * The one-handler extension the last step's cases load beside the plugin. `abort` is not an own
- * property of the session context: it lives on the object every context is made from, so dropping
- * it there leaves every extension of that run — this plugin included — with the host
- * `src/stall-abort.ts` documents, the one whose `ctx.abort()` is not a function. The plugin's own
- * second step still runs; it fails for the host's reason and the ladder goes on to the step that
- * ends the process.
- */
-const NO_ABORT_EXTENSION = `export default function noAbort(pi) {
-  pi.on("session_start", (_event, context) => {
-    const host = Object.getPrototypeOf(context);
-    if (host !== null && Object.getOwnPropertyDescriptor(host, "abort") !== undefined) {
-      Object.defineProperty(host, "abort", { value: undefined, configurable: true });
-    }
-  });
-}
-`;
-
-/** What the steering delivery below carries, and what the pane's answer to it must contain, so a
- * case can find the turn the steer started among the pane's own. */
-const STEER_TEXT = "WATCH-STEER: your architect asks how the work is going.";
-
-/**
- * The one-handler extension a steering case loads beside the plugin. It sends one steering
- * delivery as the call whose arguments carry `marker` begins — the case's wedging call — with the
- * options an Envoy role delivery is sent with
- * (`pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })` in
- * `packages/pi-envoy/extensions/envoy.ts`), so what lands on the running turn is what a message
- * from this worker's architect lands as. Nothing of the plugin is replaced: this extension only
- * does what the listener's delivery would have done had this case run a NATS of its own.
- */
-const steerExtension = (
-  text: string,
-  marker: string
-): string => `export default function steer(pi) {
-  let sent = false;
-  pi.on("tool_execution_start", (event) => {
-    if (sent || !JSON.stringify(event.args ?? {}).includes(${JSON.stringify(marker)})) return;
-    sent = true;
-    pi.sendMessage(${JSON.stringify(text)}, { deliverAs: "steer", triggerTurn: false });
-  });
-}
-`;
-
-/** How one pane differs from the others. */
-interface PaneOptions {
-  /** The scratch root's prefix. */
-  readonly name: string;
-  /** `LEGION_STATE_DIR`: where this claim's stall exit count lives, shared by its launches. */
-  readonly stateDir: string;
-  /** Answers turn `index` (1 for the first) of the pane's own conversation. */
-  readonly reply: (index: number, request: Request) => readonly Block[];
-  /** Loads the extension above, so the host has no `abort()` and the ladder reaches its last
-   * step. A pane that loads it may end its own process, which `until` then expects. */
-  readonly denyAbort?: boolean;
-  /** Loads the steering extension above: `text` is delivered as the call whose arguments carry
-   * `when` begins. */
-  readonly steer?: { readonly text: string; readonly when: string };
-}
-
-/** One running pane, and what a case may ask of it. */
-interface StallPane {
-  /** Every request the stand-in served: the gateway's, the daemon's and the listener's. */
-  readonly requests: Request[];
-  /** The turns of the pane's own conversation, in order. */
-  readonly turns: () => Request[];
-  /** Every `POST /v1/messages/publish` the pane made: the stuck call's notice, and the notice
-   * that the ladder stopped short of a step. */
-  readonly publishes: () => Record<string, unknown>[];
-  /** This launch's stall-watch records, in the order its transcript holds them. */
-  readonly records: () => Promise<StallWatchRecord[]>;
-  /** The text of each message the worker sent its own session to start the work again. */
-  readonly restarts: () => Promise<string[]>;
-  /** Every RPC frame omp printed, in order: what the host says it did, beside what the plugin
-   * recorded that it did. */
-  readonly frames: () => Record<string, unknown>[];
-  /** The status omp exited with, once it has. */
-  readonly exited: Promise<number>;
-  /** Whether omp is still running. */
-  readonly running: () => boolean;
-  /** Polls `probe` until it answers, failing on `what` at the deadline. */
-  until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
-}
-
-/**
- * Starts one Legion phase-worker pane on the real Oh My Pi: pi-envoy's extension and this
- * package's, the role's `LEGION_*` environment against a stand-in that is the model gateway, the
- * daemon's claim, grant, state and activity routes and the Envoy listener, and the three stall
- * numbers set low. Nothing here takes a NATS delivery, so the Envoy extension is given an address
- * that refuses every connection (`refusingNats`). A side request — the run-end self-check, a
- * routing hint — is answered at once with one word, since none of them is a turn; a turn of the
- * pane's own conversation is answered from `reply`.
- */
-async function startPane(options: PaneOptions): Promise<StallPane> {
-  const binary = setup();
-  const registered: Record<string, unknown> = JSON.parse(
-    await readFile(
-      path.resolve(import.meta.dir, "../../contracts/fixtures/daemon-api/register.json"),
-      "utf8"
-    )
-  );
-  const { root, home, workspace, sessions } = await ompRoot(
-    binary,
-    `legion-${options.name}-`,
-    cleanup
-  );
-
-  const turns: Request[] = [];
-  let sides = 0;
-  let grants = 0;
-  const { requests, base } = serveStandin(cleanup, (url, body) => {
-    if (url.pathname === "/anthropic/v1/messages") {
-      const request: Request = { path: url.pathname, body };
-      const own =
-        conversation(request).includes("WATCH-ROLE-ASSIGNMENT") &&
-        !lastMessage(request).includes("<btw>");
-      if (!own) {
-        sides += 1;
-        return new Response(
-          messageStream([{ type: "text", text: "PROCEEDING" }], `side_${sides}`),
-          {
-            headers: { "content-type": "text/event-stream" },
-          }
-        );
-      }
-      turns.push(request);
-      return new Response(
-        messageStream(options.reply(turns.length, request), `msg_${turns.length}`),
-        { headers: { "content-type": "text/event-stream" } }
-      );
-    }
-    if (url.pathname.startsWith("/anthropic/")) return Response.json({ data: [] });
-    if (url.pathname === "/legion/v1/claims/register") {
-      return Response.json({
-        ...registered,
-        claimToken: `legion-${PROJECT}-${ISSUE.toLowerCase()}-${ROLE}`,
-        tree: TREE,
-        issue: ISSUE,
-        role: ROLE,
-        generation: 1,
-        secret: `${PROJECT}-secret`,
-      });
-    }
-    if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/claims/activity") return new Response(null, { status: 204 });
-    if (url.pathname === "/legion/v1/state") return Response.json(MOVED_ON);
-    if (url.pathname === "/legion/v1/grants") {
-      grants += 1;
-      return Response.json({
-        grantId: `${PROJECT}-grant-${grants}`,
-        expiresAt: "2099-01-01T00:00:00Z",
-      });
-    }
-    if (url.pathname.startsWith("/legion/")) {
-      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
-    }
-    if (url.pathname === "/v1/messages/publish") {
-      // The listener's answer to a publish it took: an envelope, which the client parses before it
-      // answers the worker (`EnvelopeSchema`, packages/contracts/src/envelope.ts).
-      const key = String(body.idempotency_key ?? "");
-      return Response.json({
-        event_id: `evt-${key}`,
-        source: "agent",
-        source_event_id: key,
-        topic: String(body.topic ?? ""),
-        dedupe_key: `publish.${key}`,
-        issued_at: 1,
-        payload_summary: "a worker has a tool call that has not returned",
-        trace_id: `trace-${key}`,
-      });
-    }
-    // The Envoy listener: registration, the role claim, and any read answer with an interest.
-    return Response.json({
-      session_id: typeof body.session_id === "string" ? body.session_id : "",
-      machine_id: `${PROJECT}-machine`,
-      dir: workspace,
-      topics: [],
-    });
-  });
-  await writeStandinProfile(home, base);
-
-  const extensions = [
-    path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
-    path.resolve(import.meta.dir, "legion.ts"),
-  ];
-  if (options.denyAbort === true) {
-    const file = path.join(root, "no-abort.ts");
-    await writeFile(file, NO_ABORT_EXTENSION);
-    extensions.push(file);
-  }
-  if (options.steer !== undefined) {
-    const file = path.join(root, "steer.ts");
-    await writeFile(file, steerExtension(options.steer.text, options.steer.when));
-    extensions.push(file);
-  }
-  // The `eval` kernel is written under this pane's own TMPDIR, as it is under a pod's, rather than
-  // into the machine's shared /tmp.
-  const temporary = path.join(root, "tmp");
-  await mkdir(temporary, { recursive: true });
-
-  const frames: Record<string, unknown>[] = [];
-  const rpc = spawnRpc(
-    binary,
-    {
-      extensions,
-      home,
-      workspace,
-      sessions,
-      env: {
-        TMPDIR: temporary,
-        ENVOY_URL: base,
-        ENVOY_NATS_URL: refusingNats(cleanup),
-        LEGION_DAEMON_URL: base,
-        LEGION_ROLE: ROLE,
-        LEGION_TREE: TREE,
-        LEGION_ISSUE: ISSUE,
-        LEGION_GENERATION: "1",
-        LEGION_PROJECT: PROJECT,
-        LEGION_BOOT_TOKEN: `${PROJECT}-boot`,
-        LEGION_STATE_DIR: options.stateDir,
-        LEGION_WORKSPACE: workspace,
-        LEGION_STALL_CALL_GRACE_MS: "1000",
-        LEGION_STALL_CALL_BOUND_MS: String(BOUND_MS),
-        LEGION_STALL_STEP_MS: String(STEP_MS),
-      },
-      onFrame: (frame) => frames.push(frame as Record<string, unknown>),
-    },
-    cleanup
-  );
-  // The stream closing is how a case learns the pane ended itself; the rejection is handled here,
-  // so a case reads `exited` and `running` rather than racing a promise.
-  rpc.closed.catch(() => undefined);
-  let running = true;
-  void rpc.exited.then(() => {
-    running = false;
-  });
-  rpc.send({ type: "prompt", message: ASSIGNMENT });
-
-  /** This launch's transcript entries of `customType`. The file is appended to as the session
-   * runs, so a case reads it while the pane is still running — and after it has ended itself. */
-  const entries = async (customType: string): Promise<Record<string, unknown>[]> => {
-    const files = (await readdir(sessions, { recursive: true })).filter((file) =>
-      file.endsWith(".jsonl")
-    );
-    if (files.length !== 1) return [];
-    return (await readFile(path.join(sessions, files[0] ?? ""), "utf8"))
-      .split("\n")
-      .filter(Boolean)
-      .map((line): unknown => JSON.parse(line))
-      .flatMap((entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        "customType" in entry &&
-        entry.customType === customType
-          ? [entry as Record<string, unknown>]
-          : []
-      );
-  };
-
-  const pane: StallPane = {
-    requests,
-    turns: () => turns,
-    publishes: () =>
-      requests
-        .filter((request) => request.path === "/v1/messages/publish")
-        .map((request) => request.body),
-    records: async () =>
-      (await entries(STALL_WATCH_ENTRY)).map((entry) => entry.data as StallWatchRecord),
-    restarts: async () =>
-      (await entries(STALL_RESTART_MESSAGE)).map((entry) => String(entry.content ?? "")),
-    frames: () => frames,
-    exited: rpc.exited,
-    running: () => running,
-    async until(what, probe) {
-      const deadline = Date.now() + DEADLINE_MS;
-      for (;;) {
-        const value = await probe();
-        if (value !== undefined) return value;
-        if (options.denyAbort !== true && !running) {
-          throw new Error(`omp exited while this case waited for ${what}`);
-        }
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-        // A poll, because what is awaited is a line in a transcript the pane writes and a request
-        // it makes, neither of which this process can be woken by.
-        await Bun.sleep(100);
-      }
-    },
-  };
-  await pane.until("the pane's registration with the Envoy listener", () =>
-    requests.find((request) => request.path === "/v1/interests/subscribe")
-  );
-  return pane;
-}
-
-/** The pid the pane's cell wrote to `pidFile`, once it has; the case ends that process at
- * cleanup, so no `sleep` of a case outlives its run. */
-async function childOf(pane: StallPane, pidFile: string): Promise<number> {
-  const pid = await pane.until("the pid of the child the cell started", async () => {
-    try {
-      const read = Number(await readFile(pidFile, "utf8"));
-      return Number.isInteger(read) && read > 0 ? read : undefined;
-    } catch {
-      return undefined;
-    }
-  });
-  cleanup.push(async () => {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // The step under test ended it, which is what most of these cases are about.
-    }
-  });
-  return pid;
-}
-
-/** The records of one kind this launch wrote. */
-function ofKind<K extends StallWatchRecord["kind"]>(
-  records: readonly StallWatchRecord[],
-  kind: K
-): Extract<StallWatchRecord, { kind: K }>[] {
-  return records.filter(
-    (record): record is Extract<StallWatchRecord, { kind: K }> => record.kind === kind
-  );
-}
-
-/** The step of `kind` this launch recorded, if it has recorded one. */
-function stepOf(
-  records: readonly StallWatchRecord[],
-  step: "end-processes" | "abort-turn" | "exit-process"
-) {
-  return ofKind(records, "step").find((record) => record.step === step);
-}
-
-/** This session's `eval` kernel, as the evidence found it in the agent's tree: the one process
- * whose command is the Python runner (`STALL_TOOL_RUNNERS`, `src/stall-recovery.ts`). */
-function kernelOf(evidence: StallEvidenceRecord): StallEvidenceProcess {
-  if (!evidence.tree.read) throw new Error(`the tree was not read: ${evidence.tree.reason}`);
-  const kernel = evidence.tree.processes.find((process) =>
-    process.command.includes("omp-python-runner-")
-  );
-  if (kernel === undefined) throw new Error("no `eval` kernel was in the agent's tree");
-  return kernel;
-}
 
 test.skipIf(skip)(
   "a cell that ends when its child dies: the call is judged from its execution start, the evidence names the child, the owner is told, and the first step ends the child with no abort sent",
@@ -961,7 +448,7 @@ test.skipIf(skip)(
 );
 
 test.skipIf(skip)(
-  "a steering delivery into the turn a wedged cell holds open takes nothing out of the watch's book, and the run's non-terminal end reaches no extension as one",
+  "a steering delivery into the turn a wedged cell holds open takes nothing out of the watch's book, and the entry closes the run's calls at an end an extension could have told apart",
   async () => {
     const state = await scratchDir("steer-state");
     const pidFile = path.join(await scratchDir("steer-pid"), "child.pid");
@@ -1004,62 +491,95 @@ test.skipIf(skip)(
         .map((frame) => frame.isTerminal)
     ).toContain(false);
 
-    // **And no extension can read that flag.** The entry closes the turn's calls on every run
-    // end, a non-terminal one included, because the host hands an extension none of it: measured
-    // here on 2026-11-08, an `agent_end` handler's event carries `type`, `messages` and
-    // `willContinue` alone, with `willContinue` undefined on the non-terminal end and on the
-    // terminal one alike, while the RPC frames of the same two ends read `isTerminal` false and
-    // true. Closing is also what this watch wants: a call of a run that has ended is not the
-    // next turn's, and a ladder judging it would abort the turn the host is running now
-    // (`legion.ts`'s `agent_end` handler, and the case in `legion.test.ts` that drives
-    // `willContinue`).
+    // **And the close at that end is a choice.** An extension is told which end it is: the host
+    // answers `ctx.hasPendingMessages()` true at the non-terminal end and false at the terminal
+    // one that follows, which is what this pane's own steering extension records. The entry
+    // reads none of it and closes the run's calls at either end, because the host writes every
+    // call's `tool_execution_end` before a run's `turn_end` and `agent_end` — so no call of the
+    // run is open at that point — and because the turn after it is a turn of its own, which a
+    // ladder judging the ended run's calls would abort (`legion.ts`'s `agent_end` handler, and
+    // the case in `legion.test.ts` that drives `willContinue`).
+    const ends = await pane.until("the two run ends this session reported", async () => {
+      const seen = await pane.agentEnds();
+      return seen.length >= 2 ? seen : undefined;
+    });
+    expect(ends.map((end) => end.pendingMessages)).toEqual([true, false]);
     expect(pane.running()).toBe(true);
   },
   DEADLINE_MS + 60_000
 );
 
 test.skipIf(skip)(
-  "a foreground shell call the host backgrounds leaves the watch's book with the host's own end, while the command it started runs on",
+  "a shell call the host backgrounds leaves the watch's book with the host's own end, past the moment its own deadline would have had it judged, while the process it started runs on",
   async () => {
     const state = await scratchDir("background-state");
-    const pidFile = path.join(await scratchDir("background-pid"), "shell.pid");
+    const pidFile = path.join(await scratchDir("background-pid"), "child.pid");
     const pane = await startPane({
       name: "stall-background",
       stateDir: state,
+      // Three things make this case able to fail, and each is here for that alone. **The
+      // steer**, because a plain shell call is backgrounded on its own only after about a
+      // minute, and the watch judges such a call by the deadline its arguments declare plus the
+      // grace: a case long enough to hold the host's minute must declare a deadline longer than
+      // itself, and then no sweep could judge the call whether the watch had closed it or not.
+      // Steered, the host backgrounds it at once and the short deadline below falls inside the
+      // case. **A raised bound**, so the only rule in play is that deadline and the cell below
+      // is judged by nothing. **And a cell that never returns**, because no sweep judges
+      // anything while the host reports the session idle (`src/stall-watchdog.ts`), which a
+      // worker that has answered and stopped is: without it this case would be empty whatever
+      // the watch held.
+      steer: { text: STEER_TEXT, when: "legion-watch-background-pid" },
+      boundMs: 600_000,
       reply: (index) =>
         index === 1
           ? [
               call("bash", {
                 command: `echo $$ > ${JSON.stringify(pidFile)}; while true; do sleep 0.5; done`,
-                timeout: 600,
+                timeout: SHELL_DEADLINE_MS / 1_000,
               }),
             ]
-          : [{ type: "text", text: "Noted." }],
+          : [
+              call("eval", {
+                language: "py",
+                code: ["import time", "while True:", "    time.sleep(0.5)"].join("\n"),
+                timeout: 600,
+              }),
+            ],
     });
     const shell = await childOf(pane, pidFile);
 
-    // What the host does with a foreground shell command that does not return: about a minute in
-    // it backgrounds the command and ends the call itself, with no error and the job still
-    // running (measurement 1 in `@legion/pi-shared/stall-watchdog`'s header, driven here).
+    // What the host does with a shell command that does not return: it backgrounds the command
+    // and ends the call itself, with no error and the job still running (measurement 1 and
+    // measurement 5 in `@legion/pi-shared/stall-watchdog`'s header).
     const end = await pane.until("the host's own end of the call", () =>
       pane.frames().find((frame) => frame.type === "tool_execution_end")
     );
     expect(end.isError).toBe(false);
     expect(end.result).toMatchObject({ details: { async: { state: "running" } } });
+    // The command the call started is running at that end, which is the whole of what makes
+    // the closed record worth a case; the host kills the job itself at the deadline below, so
+    // this is read here rather than at the end of the case.
+    expect(await runs(shell)).toBe(true);
 
-    // So a backgrounded call is a closed call in this watch's book, and its command's process
+    // So a backgrounded call is a closed call in this watch's book, and the process it started
     // lives on outside it. That is the right record and not a gap: the agent is no longer parked
     // in that call — the host freed its turn and handed it the job — and the ladder's steps would
     // end the processes of a call nobody is waiting on and abort a turn that is working. What the
     // agent does next is a call of its own with a clock of its own, and a session that then goes
     // quiet altogether is the daemon's backstop to end, not this watch's.
-    const after = await pane.until("the turn that answers the backgrounded call", () =>
-      pane.turns().at(1)
-    );
-    expect(conversation(after)).toContain("Backgrounded");
+    //
+    // The wait is what makes the emptiness mean something: the call declared its own deadline,
+    // so a record still open would be overdue a grace later and written up by the next
+    // 5-second sweep. This waits past that moment and several sweeps beyond it. Driven: with
+    // every close of the entry cut — `executionEnded`, `resultDelivered` and the `turnEnded`
+    // of both `turn_end` and `agent_end` — this case is red, the sweep writing the evidence
+    // and the ladder's steps for the backgrounded `bash` call. Cutting the two closing by id
+    // alone leaves it green, and that is the system rather than the case: the host ends the
+    // turn immediately after it backgrounds the call, so the turn's own close takes the record
+    // either way. No live case can hold one of these four alone.
+    await Bun.sleep(SHELL_DEADLINE_MS + QUIET_MS);
     expect(await pane.records()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
-    expect(await runs(shell)).toBe(true);
     expect(pane.running()).toBe(true);
   },
   DEADLINE_MS + 60_000

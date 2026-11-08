@@ -448,8 +448,10 @@ export default function legionExtension(pi: PiApi): void {
   // is the daemon's backstop to end. A plain (non-`pty`) shell command that does not return is
   // backgrounded about a minute in, or at once when a steering message reaches the turn; its
   // `tool_execution_end` carries no error and a job still running, this watch writes nothing for
-  // it, and the command's process runs on (driven for the minute route in
-  // `legion-stall-watchdog-omp.test.ts`).
+  // it, and the command's process runs on (driven for the steered route in
+  // `legion-stall-watchdog-omp.test.ts`, which is the one a case can hold: the call declares a
+  // deadline the sweep would judge it by, and a case that waited out the host's own minute
+  // would have to declare a deadline longer than itself and could then fail at nothing).
   pi.on("tool_execution_end", async (event, context) => {
     if (subagentEvent(context)) return;
     stallWatch?.executionEnded(event);

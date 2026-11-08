@@ -6996,16 +6996,15 @@ describe("the stall watch the plugin's entry arms", () => {
     await callStarts(pane);
 
     // The other road of the same handler: a run of this session that is not the last, because
-    // the host has something to go on with — a steering delivery it took while the turn ran, a
-    // background job's follow-up. `willContinue` is the whole of what an `agent_end` handler is
-    // given about that, and on this pin it is given nothing at all: measured on 2026-11-08
-    // (`legion-stall-watchdog-omp.test.ts`), the event carries `type`, `messages` and
-    // `willContinue`, with no `isTerminal` — that is the RPC frame's own field — and
-    // `willContinue` undefined on the non-terminal end and the terminal one alike. The entry
-    // closes the run's calls either way, which is what this case holds and what this watch
-    // wants: the turn after it is a turn of its own with calls of its own, so a ladder still
-    // judging this one's would end the processes of a call nobody waits on and abort the turn
-    // the host is running now.
+    // the host has something to go on with — a background job's follow-up, which arrives with
+    // `willContinue` and `awaitingAsyncWork` set, or a steering delivery it took while the turn
+    // ran, at whose end `ctx.hasPendingMessages()` is true. The entry reads neither and closes
+    // the run's calls at either end, which is what this case holds. That is a choice and not
+    // the host's doing: it is right because the host writes every call's `tool_execution_end`
+    // before a run's `turn_end` and `agent_end`, so no call of the run is open at this point,
+    // and because the turn after it is a turn of its own — a ladder still judging the ended
+    // run's calls would end the processes of a call nobody waits on and abort the turn the host
+    // is running now.
     await hook(pane.handlers, "agent_end")(
       { willContinue: true, messages: [{ role: "assistant", stopReason: "stop" }] },
       pane.context

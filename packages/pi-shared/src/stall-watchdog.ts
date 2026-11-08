@@ -80,23 +80,25 @@ import type { StallLimits } from "./stall-limits";
  *    plugin cannot read it. Under Kubernetes the count lives in the pod's own `LEGION_STATE_DIR`,
  *    so a pod replacement resets it while the daemon's death budget is not reset.
  * 5. **A message steered into a running turn takes no judged call out of this book** (measured
- *    2026-11-08 on the same binary; the `eval` half driven in
+ *    2026-11-08 on the same binary; the `eval` half and the plain-`bash` half driven in
  *    `legion-stall-watchdog-omp.test.ts`, the `pty: true` half by hand). A delivery sent as
  *    `pi.sendMessage(…, { deliverAs: "steer", triggerTurn: false })`, which is how an Envoy role
  *    message reaches a worker, arrives while the turn is parked in a call and leaves that call
  *    the turn's: an `eval` cell and a `pty: true` shell call each ran on with no end frame of
  *    their own, and the cell was judged, told and recovered as it would have been with no
  *    delivery at all. A plain (non-`pty`) `bash` call is the exception, and one this watch never
- *    judges anyway (item 1): a steer backgrounds it at once rather than at the minute. What the
- *    delivery does change is the end of the run the ladder's abort then makes: the host has the
- *    steered message to go on with, so its RPC `agent_end` frame reads `isTerminal` false and
- *    another turn follows. The run's calls are closed at that end whichever it was, because the
- *    host writes every call's `tool_execution_end` before a run's `turn_end` and `agent_end`, so
- *    none of them is open there. An extension could tell the ends apart — a background job's
- *    follow-up arrives with `willContinue` and `awaitingAsyncWork` set, and
- *    `ctx.hasPendingMessages()` is true at a steered run's non-terminal end — and this watch
- *    reads neither on purpose, since the turn after it is a turn of its own with calls of its
- *    own.
+ *    judges anyway (item 1): a steer backgrounds it at once rather than at the minute, and that
+ *    is the route the live case of a backgrounded call drives, since a call backgrounded at once
+ *    can declare a deadline short enough that a record left open would be judged inside the
+ *    case. What the delivery does change is the end of the run the ladder's abort then makes:
+ *    the host has the steered message to go on with, so its RPC `agent_end` frame reads
+ *    `isTerminal` false and another turn follows. The run's calls are closed at that end
+ *    whichever it was, because the host writes every call's `tool_execution_end` before a run's
+ *    `turn_end` and `agent_end`, so none of them is open there. An extension could tell the
+ *    ends apart — a background job's follow-up arrives with `willContinue` and
+ *    `awaitingAsyncWork` set, and `ctx.hasPendingMessages()` is true at a steered run's
+ *    non-terminal end — and this watch reads neither on purpose, since the turn after it is a
+ *    turn of its own with calls of its own.
  */
 
 /** How the host clamps a deadline a call's arguments declare: `0` disables it, and any other
