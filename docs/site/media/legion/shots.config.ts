@@ -4,7 +4,7 @@
 // hands the first to Legion; each shot's `prepare` then makes the next move the Legion daemon, its
 // agents or the human makes (`journey.ts`), so the shots follow the issue in order, then the
 // controller's daily report, which takes the project's next key.
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 import { dispatchApi, expect } from "../harness";
 import type { ShotSet } from "../shot-runner";
@@ -122,11 +122,21 @@ async function headerOnTop(page: Page): Promise<void> {
   await expect(page.getByTestId("issue-header")).toBeInViewport({ ratio: 1 });
 }
 
-/** The header's details rail scrolls sideways and lists the issue's links last, so at a desktop
- *  width the pull request sits past the rail's right edge, where it is still "visible" to a
- *  check. This scrolls the rail to it and waits for the link to be wholly on screen. */
+/** The panel's Development section, which holds the issue's repository, its components, the
+ *  issues it waits on and its links out of Dispatch (dispatch://INFRA-1196 R11): the identity
+ *  block has no metadata rail for them any more. */
+const developmentSection = (page: Page): Locator =>
+  page.getByTestId("issue-margin").locator('[data-margin-section="development"]');
+/** The pull request Legion opened, as the Development section's `Links` row draws it: the
+ *  number, then the pull request's title or the repository it is in. */
+const pullRequestLink = (page: Page): Locator =>
+  developmentSection(page).getByText(`#${SAVED_CART.pullRequest.number}`, { exact: true });
+
+/** The panel lists the issue's links under the margin's own cards, so at a desktop width the
+ *  pull request can sit below the fold. This scrolls the panel to it and waits for the link to
+ *  be wholly on screen. */
 async function pullRequestInView(page: Page): Promise<void> {
-  const link = page.getByTestId("issue-header").getByText(`#${SAVED_CART.pullRequest.number}`);
+  const link = pullRequestLink(page);
   await link.scrollIntoViewIfNeeded();
   await expect(link).toBeInViewport({ ratio: 1 });
 }
@@ -217,7 +227,7 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "status-events",
-      alt: "The issue after the phases ran: Retro in its header beside the pull request link, #42, and its Activity tab newest first: the Legion daemon's status updates, the architect's acceptance, one update from the implementer, and alice's approval of the spec.",
+      alt: "The issue after the phases ran: Retro in its identity block, the pull request linked as #42 in the panel's Development section, and its activity under the tree, newest first: the Legion daemon's status updates and the architect's acceptance.",
       route: activity,
       viewport: "desktop",
       theme: "light",
@@ -229,7 +239,7 @@ const legion: ShotSet<LegionJourney> = {
         await accept(journey, SAVED_CART);
       },
       ready: async (page) => {
-        await expect(page.getByTestId("issue-header").getByText("#42")).toBeVisible();
+        await expect(pullRequestLink(page)).toBeVisible();
         await expect(page.getByRole("list", { name: "Issue activity" })).toContainText(
           "updated the issue"
         );
@@ -241,15 +251,15 @@ const legion: ShotSet<LegionJourney> = {
     },
     {
       id: "pull-request",
-      alt: "The issue header with the pull request Legion opened, linked as #42.",
+      alt: "The issue page's Development section, where the pull request Legion opened is linked as #42, beside the repository it is in.",
       route: (journey) => `/issues/${journey.key}`,
       viewport: "desktop",
       theme: "light",
       ready: async (page) => {
-        await expect(page.getByTestId("issue-header").getByText("#42")).toBeVisible();
+        await expect(pullRequestLink(page)).toBeVisible();
       },
       steps: pullRequestInView,
-      element: (page) => page.getByTestId("issue-header"),
+      element: developmentSection,
     },
     {
       id: "ready",
