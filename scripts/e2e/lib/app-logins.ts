@@ -96,9 +96,12 @@ const outputLimit = 1 << 20;
  * `agent-secrets` waits 30 minutes for a decision by default. */
 const commandLimitMs = 35 * 60 * 1000;
 /** How long the command's output may go on after the command itself has exited, before the run
- * gives up on a descendant that is holding the pipes open. It bounds the wall-clock time after
- * the exit that this process does not spend blocked writing that output on: the relay writes
- * synchronously, and a caller that is behind holds one write for as long as it stays behind. */
+ * gives up on a descendant that is holding the pipes open. What it bounds is the time since the
+ * exit that this process does not spend blocked writing that output on: the relay writes
+ * synchronously, so a caller that is behind holds one write for as long as it stays behind, and
+ * one 300,008-byte line relayed into a pipe whose reader slept eight seconds blocked for those
+ * eight seconds. Every time the bound is made of — the exit, the blocked time, and each re-arm
+ * of its timer — is read from performance.now(), the clock no step of the wall clock moves. */
 const drainLimitMs = 5000;
 /** The GitHub token forms, which a command's stderr may carry and no log or error may. */
 const tokenPattern = /(gh[opsur]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})/g;
@@ -203,8 +206,7 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
   let stderrBytes = 0;
   let pendingLine = "";
   /** How long this process has spent blocked in its own relay writes, which the drain bound
-   * below does not count against the command. It and the bound's other durations are read from
-   * performance.now(), the clock no step of the wall clock moves. */
+   * below does not count against the command. */
   let blockedMs = 0;
   const relayLine = (line: string) => {
     const clean = redactTokens(line);
@@ -245,24 +247,21 @@ async function runTokenCommand(field: string, command: string): Promise<string> 
     }
   })();
   // The command's own process may exit while a descendant that left its process group still
-  // holds the pipes open, which the group kill cannot reach: the run gives the streams
-  // drainLimitMs after the exit to end, and fails rather than wait on them past it. What the
-  // bound counts is the wall-clock time since the exit that this process does not spend blocked
-  // writing the output on: the relay writes this process's stderr synchronously, so a caller
-  // that is behind holds one write for as long as it stays behind, and one 300,008-byte line
-  // relayed into a pipe whose reader slept eight seconds blocked for those eight seconds. Only
-  // the blocked time after the exit is added. A block that ended before the exit has already
-  // pushed the exit itself out by its own length, since the continuation below runs only once
-  // the loop is free, and adding it a second time would hand the descendant another stall to
-  // hold the pipes in: that line written before the exit, against the same eight-second reader,
-  // was failed at 21 seconds where the bound it is held to is 13. What the bound does not count
-  // is the output itself, the escaped descendant's among it, so a descendant that prints while
-  // it holds the pipes open is failed at the bound like a silent one. The one wait this leaves
-  // unbounded is a caller that stays behind for good, which commandLimitMs cannot end: its
-  // timer cannot run while a write holds the thread (writeAll's own comment), and a 3-second
-  // limit against a reader that slept 15 seconds fired at 15, once the reader woke. It ends a
-  // caller that is slow but still reading, between its writes; a caller that stops reading
-  // holds the write, and the run, until the job's own timeout.
+  // holds the pipes open, which the group kill cannot reach: the run holds the streams to
+  // drainLimitMs, measured as that constant defines it, and fails rather than wait on them past
+  // it. Only the blocks after the exit are given back, because the bound runs from the exit as
+  // the continuation below reads it: a block that ended before that read is no part of the
+  // bound, and one that is still running at the exit delays that read itself by the rest of it.
+  // Giving back a block from before the exit as well would hand the descendant another stall to
+  // hold the pipes in: a 300,002-byte line written before the exit, against a reader that slept
+  // eight seconds, was failed at 21 seconds where the bound it is held to is 13. What the bound
+  // does not count is the output itself, the escaped descendant's among it, so a descendant that
+  // prints while it holds the pipes open is failed at the bound like a silent one. The one wait
+  // this leaves unbounded is a caller that stays behind for good, which commandLimitMs cannot
+  // end: its timer cannot run while a write holds the thread (writeAll's own comment), and a
+  // 3-second limit against a reader that slept 15 seconds fired at 15, once the reader woke. It
+  // ends a caller that is slow but still reading, between its writes; a caller that stops
+  // reading holds the write, and the run, until the job's own timeout.
   const status = await child.exited;
   const exitedAt = performance.now();
   /** What blockedMs held at the exit, which the bound below subtracts so that only the blocks

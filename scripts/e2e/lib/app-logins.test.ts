@@ -106,11 +106,8 @@ ${then}`;
 // A failure names the App it could not read by its role and app id, on one line of stderr.
 const namesApp = (role: string, id: string) => new RegExp(`\\b${role} App\\b.*\\bapp_id ${id}\\b`);
 
-/**
- * Ends the process whose pid the file holds, and answers whether that process was still running.
- * A command that escapes its caller's session outlives the run that started it, so the test that
- * starts one has it write its pid down and ends it here.
- */
+/** Ends the process whose pid the file holds, and answers whether that process was still
+ * running. */
 function endRecordedProcess(pidFile: string): boolean {
   if (!existsSync(pidFile)) return false;
   const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
@@ -123,6 +120,27 @@ function endRecordedProcess(pidFile: string): boolean {
     // Already gone: nothing to end.
     return false;
   }
+}
+
+/**
+ * Runs `body` against a pid file of its own, `name` under `dir`, ends whatever process that file
+ * names once `body` is over, and asserts that the process was still running. A command that
+ * escapes its caller's session outlives the run that started it, so a row that starts one has it
+ * write down the pid it ends up with and ends it here; a descendant that ended before the run
+ * did would leave the row proving nothing.
+ */
+async function withEscapedDescendant(
+  name: string,
+  body: (pidFile: string) => Promise<void>
+): Promise<void> {
+  const pidFile = join(dir, name);
+  let wasRunning = false;
+  try {
+    await body(pidFile);
+  } finally {
+    wasRunning = endRecordedProcess(pidFile);
+  }
+  expect(wasRunning).toBe(true);
 }
 
 describe("app-logins.ts", () => {
@@ -298,24 +316,17 @@ describe("app-logins.ts", () => {
   }, 30_000);
 
   test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
-    // The descendant leaves the token command's session, so nothing app-logins does ends it: it
-    // records the pid it ends up with — `sh` prints its own, then becomes the `sleep` through
-    // `exec` — and this test ends it once the run it must outlive is over.
-    const pidFile = join(dir, "escaped.pid");
-    const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
-    const started = Date.now();
-    let wasRunning = false;
-    try {
+    // The pid the descendant records is the one it ends up with: `sh` prints its own, then
+    // becomes the `sleep` through `exec`, so what the row ends is what held the output open for
+    // the whole drain.
+    await withEscapedDescendant("escaped.pid", async (pidFile) => {
+      const escaped = `setsid sh -c 'echo $$ >${pidFile}; exec sleep 60' >&2 & exit 0`;
+      const started = Date.now();
       const { code, stderr } = await run(config(app("101", escaped), app("202")));
       expect(code).toBe(1);
       expect(stderr).toContain("still held its output open");
       expect(Date.now() - started).toBeLessThan(30_000);
-    } finally {
-      wasRunning = endRecordedProcess(pidFile);
-    }
-    // The descendant held the output open for the whole drain: a descendant that ended before the
-    // run did would leave the row proving nothing.
-    expect(wasRunning).toBe(true);
+    });
   }, 30_000);
 
   // The same shape with a descendant that prints while it holds the pipes open: its output is
@@ -329,25 +340,18 @@ describe("app-logins.ts", () => {
     // then exits. `setsid` puts the loop outside every process group the helper kills, and the
     // helper's own exit does not stop it (measured: it was still writing into the socket
     // `Bun.spawn` gave the command ten seconds later). It counts its writes rather than looping
-    // for ever, so a run that never reaches the `finally` still ends it, as the silent row's
+    // for ever, so a run that never reaches the cleanup still ends it, as the silent row's
     // `sleep 60` ends itself; thirty seconds is six times the bound it must not push out.
-    const pidFile = join(dir, "escaped-writing.pid");
-    const escaped =
-      `setsid sh -c 'echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do printf x >&2; sleep 1;` +
-      " i=$((i + 1)); done' >&2 & exit 3";
-    const started = Date.now();
-    let wasRunning = false;
-    try {
+    await withEscapedDescendant("escaped-writing.pid", async (pidFile) => {
+      const escaped =
+        `setsid sh -c 'echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do printf x >&2; sleep 1;` +
+        " i=$((i + 1)); done' >&2 & exit 3";
+      const started = Date.now();
       const { code, stderr } = await run(config(app("101", escaped), app("202")));
       expect(code).toBe(1);
       expect(stderr).toContain("still held its output open");
       expect(Date.now() - started).toBeLessThan(20_000);
-    } finally {
-      wasRunning = endRecordedProcess(pidFile);
-    }
-    // The descendant wrote for the whole drain: one that ended before the run did would leave the
-    // row proving nothing.
-    expect(wasRunning).toBe(true);
+    });
   }, 25_000);
 
   // The drain bound must not count this process's own blocked writes, which the relay's
@@ -390,17 +394,14 @@ describe("app-logins.ts", () => {
   test("a reader that falls behind before the exit does not buy an escaped descendant a second stall", async () => {
     // A bound of its own: the row holds a reader for eight seconds on purpose and then waits out
     // the five the drain gives the descendant, with room for the twenty-one this row refuses.
-    // The descendant leaves the token command's session, so nothing app-logins does ends it: it
-    // records the pid it ends up with — `sh` prints its own, then becomes the `sleep` through
-    // `exec` — and this row ends it once the run it must outlive is over.
-    const pidFile = join(dir, "escaped-before-exit.pid");
-    const escaped =
-      `printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'echo $$ >${pidFile}; exec sleep 40'` +
-      " >&2 & exit 3";
-    const path = config(app("101", escaped), app("202"));
-    const started = Date.now();
-    let wasRunning = false;
-    try {
+    // The pid the descendant records is the one it ends up with: `sh` prints its own, then
+    // becomes the `sleep` through `exec`.
+    await withEscapedDescendant("escaped-before-exit.pid", async (pidFile) => {
+      const escaped =
+        `printf 'a%0300000d\\n' 0 >&2; sleep 3; setsid sh -c 'echo $$ >${pidFile}; exec sleep 40'` +
+        " >&2 & exit 3";
+      const path = config(app("101", escaped), app("202"));
+      const started = Date.now();
       const printed = await behindReader(
         `  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
   echo "exit=$?"`,
@@ -410,16 +411,11 @@ describe("app-logins.ts", () => {
       expect(printed).toContain("still held its output open");
       expect(printed.split("\n")).toContain("exit=1");
       // Thirteen seconds is the stall the exit waits out plus the five the drain bound gives;
-      // twenty-one is that stall counted a second time, as a bound measured from the spawn counts
-      // it. The window takes the first and refuses the second.
+      // twenty-one is that stall counted a second time, as a bound that gave back every block
+      // since the spawn counts it. The window takes the first and refuses the second.
       expect(elapsed, `${elapsed} ms`).toBeGreaterThan(11_000);
       expect(elapsed, `${elapsed} ms`).toBeLessThan(17_000);
-    } finally {
-      wasRunning = endRecordedProcess(pidFile);
-    }
-    // The descendant held the pipes open past the exit: one that ended before the run did would
-    // leave the row proving nothing.
-    expect(wasRunning).toBe(true);
+    });
   }, 30_000);
 
   test("output that is no release, an expired token, or no installation is refused without quoting it", async () => {
@@ -480,6 +476,7 @@ describe("app-logins.ts", () => {
     const path = join(dir, `legion-${++configs}.yaml`);
     writeFileSync(path, `github_apps:\n  implement:\n${app("101")}\n`);
     const one = Bun.spawn(["bun", script, "--roles", "implement", path, standIn], {
+      env: { PATH: process.env.PATH ?? "", HOME: home },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -492,7 +489,10 @@ describe("app-logins.ts", () => {
     expect(code).toBe(0);
     expect(JSON.parse(stdout)).toEqual({ implement: "example-implement[bot]" });
     for (const roles of ["merger", "implement,implement", ""]) {
-      const bad = Bun.spawnSync(["bun", script, "--roles", roles, path], { stderr: "pipe" });
+      const bad = Bun.spawnSync(["bun", script, "--roles", roles, path], {
+        env: { PATH: process.env.PATH ?? "", HOME: home },
+        stderr: "pipe",
+      });
       expect(bad.exitCode).toBe(2);
       expect(bad.stderr.toString()).toContain("usage:");
     }
