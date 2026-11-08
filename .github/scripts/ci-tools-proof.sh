@@ -1,0 +1,664 @@
+#!/usr/bin/env bash
+# The rig of .github/workflows/ci.yaml's `tool-fallback` job, the live proof that every tool
+# install of this repository reads the second source .github/ci-tools.yaml names when the first
+# source does not serve the bytes, and that no unverified byte is ever installed
+# (dispatch://INFRA-1873).
+# That job is this script's only caller, and it is this script's own exercise: every verb below
+# either prints a reading the job is judged on or refuses the job itself, so a rig that
+# misbehaves is a job that fails, and the job runs on every change that touches what it proves
+# (the `tool_fallback` filter of the `changes` job names this file among them).
+# A second source nothing exercises rots, and this repository's own principle is that testing
+# means booting and running it, so the rig is part of the proof rather than a test beside it.
+#
+# THE VERBS, in the order the job runs them.
+#
+#   origin-start
+#       Writes a small python3 HTTP origin to $RUNNER_TEMP/ci-tools-proof/origin.py, starts it on
+#       127.0.0.1 at a port the kernel picks, and writes `github=`, `ghcr=` and `npm=` to
+#       $GITHUB_OUTPUT, the three base URLs a case hands .github/scripts/ci-tools.sh through its
+#       CI_TOOLS_GITHUB_BASE, CI_TOOLS_GHCR_BASE and CI_TOOLS_NPM_BASE seams.
+#       The origin serves the three routes those seams reach — a release asset, a ghcr blob with
+#       the pull token before it, and an npm tarball — from the payload `stage` wrote, and it
+#       decides for every request, from the control file `corrupt` writes, whether to serve the
+#       row whole or with its last byte changed.
+#       It logs every path it serves, the row it belongs to and whether it corrupted it.
+#
+#   stage
+#       Fetches the correct bytes of every row a case serves, through
+#       .github/scripts/ci-tools.sh itself, into $RUNNER_TEMP/ci-tools-proof/payload/.
+#       It runs before the fault starts, while the network is whole, because these are the bytes
+#       the origin stands in with once no real source answers.
+#       It prints each file with its size and its sha256, and refuses the job naming the row
+#       when a fetch or a digest does not come out right.
+#
+#   start-fault --hosts <list>
+#       Starts .github/scripts/ci-fault-proxy.py --mode fail over those hosts, waits for its
+#       port, and writes `proxy=http://127.0.0.1:<port>` to $GITHUB_OUTPUT, which the job then
+#       puts into $GITHUB_ENV as every spelling of the proxy variables.
+#       Its log is $RUNNER_TEMP/ci-tools-proof/fault.log.
+#
+#   probe <faulted host>
+#       The pair that reads the fault before any install meets it: one request through the proxy
+#       to that host, which the proxy must refuse with HTTP 504, and one to that same name under
+#       the reserved `.invalid` suffix (RFC 2606), which the proxy must answer itself with HTTP
+#       502, having failed to resolve a name nobody owns and no resolver answers for.
+#       Both are printed as they were read, each with the proxy's own log line for it, and the
+#       verb fails naming which of the two was wrong.
+#       The second reading is what catches a bypass: a request that never reached the proxy
+#       leaves no line in its log, whatever carried it past.
+#
+#   corrupt [row…]
+#       Writes the control file the origin reads, with those rows or with none, and prints what
+#       it wrote.
+#       It also marks where both logs stand, so the `report` after it prints the lines of its own
+#       case and of no other.
+#       Every case calls it, the cases that corrupt nothing included: the control file is one
+#       file for the whole job, and a case that did not empty it would read the case before it.
+#
+#   report <case> --outcome <the step's outcome> --expect <fail|pass>
+#          [--expect-source <name>] [--expect-untried <name>]
+#       Prints the case, the outcome the install step reached, the lines the origin logged for
+#       this case and the lines the fault proxy logged for it, and then decides the case.
+#       It is this verb, and not the install step, that passes or fails the job: every install
+#       step of a case carries `continue-on-error: true`, so the job reads each case rather than
+#       stopping at the first install that refuses.
+#       It fails when the outcome is not the expected one, when `--expect-source` names a source
+#       this case's reading does not, and when `--expect-untried` names a source the origin
+#       served for this case's row after all.
+#
+# HOW `--expect-source` IS READ.
+# A composite action writes its refusal to the job's log, and no later step can read that log, so
+# the source a refusal named is read from what the origin served instead.
+# Each route is one source: /github/ is `github-release`, /ghcr/ is `ghcr-mirror`, /npm/ is
+# `npm`, and the origin's log says which route served this case's row.
+# A case whose primary is the faulted real host asks the origin's github route for nothing, so
+# `--expect-source github-release` is read as the same statement the other way round: the origin
+# served neither second source for this row, so the bytes the step refused came from the primary
+# path and from nowhere else.
+#
+# Everything this script writes lives under $RUNNER_TEMP/ci-tools-proof/ (under $TMPDIR off a
+# runner), so one directory holds the whole rig and the job's own temporary files are elsewhere.
+#
+# Run from anywhere; the repository root is derived from this script's own path.
+set -euo pipefail
+shopt -s inherit_errexit
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+root=$(cd "$script_dir/../.." && pwd)
+work="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ci-tools-proof"
+payload="$work/payload"
+control="$work/corrupt"
+origin_log="$work/origin.log"
+fault_log="$work/fault.log"
+fault_state="$work/fault.state"
+mark="$work/mark"
+
+# The rows a case installs, which are the rows `stage` fetches the correct bytes of.
+# The two other bun rows are the same binary for another runner (.github/ci-tools.yaml says so),
+# and no case installs them, so nothing would serve their payload.
+STAGED_ROWS="crane changie mise jj bun-linux-x64"
+
+# RFC 2606's reserved suffix, which `probe` hangs on the faulted host to make its control.
+# Nobody owns a name under it and no resolver answers for one, so only the proxy can answer a
+# request for it, and a request made around the proxy reads as nothing at all.
+RESERVED_SUFFIX=".invalid"
+
+# The bound in seconds each of the probe's two requests gets.
+# Both answers are the proxy's own and immediate, so this is spent only where nothing answers at
+# all, which is the reading the probe refuses the job for.
+PROBE_BOUND=15
+
+# shellcheck source=.github/scripts/ci-tools.sh
+. "$root/.github/scripts/ci-tools.sh"
+
+die() {
+  echo "::error::ci-tools-proof: $*" >&2
+  exit 1
+}
+
+note() {
+  printf 'ci-tools-proof: %s\n' "$*"
+}
+
+# wait_for_file <file> <what it is>: the port file a server writes by rename, waited for rather
+# than raced. Thirty seconds, in tenths, which is longer than either server takes to bind.
+wait_for_file() {
+  local file=$1 what=$2 waited=0
+  while [ ! -s "$file" ]; do
+    sleep 0.1
+    waited=$((waited + 1))
+    [ "$waited" -lt 300 ] || die "$what reported no port in 30 s"
+  done
+}
+
+# ---------------------------------------------------------------- origin-start
+
+# write_origin: the origin program, in the directory the whole rig writes to.
+# It reads .github/ci-tools.yaml once, at startup, to learn which row each route is about: the
+# manifest cannot change while the job runs, and the one thing that does change between cases —
+# which rows are served corrupted — is the control file, read on every request.
+write_origin() {
+  cat > "$work/origin.py" <<'PY'
+"""The three sources .github/scripts/ci-tools.sh reads, served from one local origin.
+
+Routes, each the one a seam of that helper reaches:
+
+  GET /github/<any path>/<file>                  the payload of that file name
+  GET /ghcr/token?service=...&scope=...          {"token":"proof"}
+  GET /ghcr/v2/<path>/blobs/sha256:<digest>      the payload of the row that digest pins
+  GET /npm/<package>/-/<file>.tgz                the payload of that file name
+
+Every request is decided by the control file, read again each time: a row named in it is served
+with its last byte changed, and a row not named in it is served whole. Each request is logged
+with the row it belongs to and whether it was corrupted.
+"""
+
+import http.server
+import json
+import os
+import re
+import socketserver
+import sys
+from pathlib import Path
+
+import yaml
+
+manifest, payload, control, logfile, portfile = (Path(argument) for argument in sys.argv[1:6])
+
+document = yaml.safe_load(manifest.read_text()) or {}
+ROWS = document.get("tools") or []
+GHCR_BLOB = re.compile(r"^/ghcr/v2/(?P<path>.+)/blobs/sha256:(?P<digest>[0-9a-f]{64})$")
+NPM_TARBALL = re.compile(r"^/npm/(?P<package>.+)/-/(?P<file>[^/]+\.tgz)$")
+
+
+def basenames(row):
+    """The file names a release asset of this row is served under: its primary's and its
+    mirror_from's, which are one name where the row holds both and they agree."""
+    return {str(row.get(field) or "").rsplit("/", 1)[-1] for field in ("primary", "mirror_from")} - {""}
+
+
+def resolve(path):
+    """The row this request is about and the payload file it is served from, or (None, None)."""
+    if path.startswith("/github/"):
+        name = path.split("?", 1)[0].rsplit("/", 1)[-1]
+        for row in ROWS:
+            if name in basenames(row):
+                return row, name
+        return None, None
+    blob = GHCR_BLOB.match(path.split("?", 1)[0])
+    if blob:
+        for row in ROWS:
+            if row.get("digest") == blob.group("digest"):
+                return row, "sha256:" + blob.group("digest")
+        return None, None
+    tarball = NPM_TARBALL.match(path.split("?", 1)[0])
+    if tarball:
+        for row in ROWS:
+            if row.get("npm_package") == tarball.group("package"):
+                return row, tarball.group("file")
+    return None, None
+
+
+def corrupted_rows():
+    """The rows this request must serve with their last byte changed, read again for every
+    request: one origin serves every case of the job, and a case says what it wants here."""
+    if not control.exists():
+        return set()
+    return set(control.read_text().split())
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/ghcr/token"):
+            self.answer(200, json.dumps({"token": "proof"}).encode() + b"\n", "-", "no")
+            return
+        row, name = resolve(self.path)
+        if row is None:
+            self.answer(404, b"ci-tools-proof: no row of the manifest is served at this path\n", "-", "no")
+            return
+        file = payload / name
+        if not file.is_file():
+            self.answer(404, b"ci-tools-proof: the rig staged no payload for this row\n", row["name"], "no")
+            return
+        body = file.read_bytes()
+        corrupt = row["name"] in corrupted_rows()
+        if corrupt:
+            # The last byte, changed: the smallest edit that moves the sha256 of the whole file,
+            # and the one that leaves an archive's own framing alone until the digest is read.
+            body = body[:-1] + bytes([body[-1] ^ 0x01])
+        self.answer(200, body, row["name"], "yes" if corrupt else "no")
+
+    def answer(self, status, body, row, corrupt):
+        with open(logfile, "a") as log:
+            log.write(f"GET {self.path} row={row} corrupt={corrupt} status={status} bytes={len(body)}\n")
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Content-Type", "application/octet-stream")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        """The log above is the one this rig reads, one line per request and in its own words."""
+
+
+class Origin(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+with Origin(("127.0.0.1", 0), Handler) as server:
+    port = server.server_address[1]
+    temporary = f"{portfile}.{os.getpid()}.tmp"
+    with open(temporary, "w") as handle:
+        handle.write(f"{port}\n")
+    os.replace(temporary, portfile)
+    server.serve_forever()
+PY
+}
+
+origin_start() {
+  [ "$#" -eq 0 ] || die "origin-start takes no argument, and this call gave $#"
+  mkdir -p "$payload"
+  : > "$control"
+  write_origin
+  local port_file="$work/origin.port"
+  rm -f "$port_file"
+  python3 "$work/origin.py" "$root/.github/ci-tools.yaml" "$payload" "$control" "$origin_log" "$port_file" \
+    > "$work/origin.stderr" 2>&1 &
+  wait_for_file "$port_file" "the origin"
+  local base
+  base="http://127.0.0.1:$(cat "$port_file")"
+  if [ -n "${GITHUB_OUTPUT:-}" ]; then
+    {
+      echo "github=$base/github"
+      echo "ghcr=$base/ghcr"
+      echo "npm=$base/npm"
+    } >> "$GITHUB_OUTPUT"
+  fi
+  note "the origin serves $base/github, $base/ghcr and $base/npm, and logs to $origin_log"
+}
+
+# ---------------------------------------------------------------- stage
+
+# payload_names <row>: every file name the origin serves this row's bytes under, one per line.
+# A release asset is served under its own file name, a ghcr blob under the digest its URL names,
+# and an npm package under the tarball name the registry serves it as.
+payload_names() {
+  local row=$1 primary mirror_from second package version
+  primary=$(ci_tools_field "$row" primary)
+  second=$(ci_tools_field "$row" second_source)
+  {
+    [ -z "$primary" ] || printf '%s\n' "${primary##*/}"
+    if [ "$second" = ghcr ]; then
+      mirror_from=$(ci_tools_field "$row" mirror_from)
+      [ -z "$mirror_from" ] || printf '%s\n' "${mirror_from##*/}"
+      printf 'sha256:%s\n' "$(ci_tools_digest "$row")"
+    else
+      package=$(ci_tools_field "$row" npm_package)
+      version=$(ci_tools_field "$row" version)
+      printf '%s-%s.tgz\n' "${package##*/}" "$version"
+    fi
+    # A row whose `primary` is its `mirror_from` names one file twice, and the origin serves one
+    # file: the name is printed once, in the order the names were written.
+  } | awk '!seen[$0]++'
+}
+
+# describe <file>: the one line `stage` prints per payload, which is what a reader checks the
+# origin against.
+describe() {
+  local file=$1 size read_back
+  size=$(wc -c < "$file")
+  read_back=$(sha256sum -- "$file")
+  printf '  %s: %s bytes, sha256 %s\n' "${file##*/}" "$size" "${read_back%% *}"
+}
+
+# pack_npm <row> <binary> <tarball>: the binary as the npm registry serves it, a gzipped tar whose
+# one member is the row's `npm_member`, so the helper's own `tar -xzO` of it reads the same bytes
+# it reads from the registry.
+pack_npm() {
+  local row=$1 binary=$2 tarball=$3 member staging
+  member=$(ci_tools_field "$row" npm_member)
+  staging="$work/pack-$row"
+  rm -rf "$staging"
+  mkdir -p "$staging/$(dirname "$member")"
+  cp -- "$binary" "$staging/$member"
+  tar -czf "$tarball" -C "$staging" "$member"
+  rm -rf "$staging"
+}
+
+stage() {
+  [ "$#" -eq 0 ] || die "stage takes no argument, and this call gave $#"
+  mkdir -p "$payload"
+  local row primary digest file name read_back failures=""
+  for row in $STAGED_ROWS; do
+    note "staging $row"
+    primary=$(ci_tools_field "$row" primary)
+    digest=$(ci_tools_digest "$row")
+    file="$work/staged-$row"
+    rm -f "$file"
+    # The row's own path: the helper tries the primary where the row has one, and reads the
+    # second source alone where a third party fetches the primary bytes.
+    if [ -n "$primary" ]; then
+      ci_tools_fetch "$row" "$file" || { failures="$failures $row"; continue; }
+    else
+      ci_tools_fetch_fallback "$row" "$file" || { failures="$failures $row"; continue; }
+    fi
+    while read -r name; do
+      case $name in
+        *.tgz)
+          pack_npm "$row" "$file" "$payload/$name"
+          # The round trip, because the origin serves this tarball and the helper reads the
+          # member out of it: a pack that did not come back as the pinned bytes is this rig's
+          # own defect and must not read as the install's.
+          read_back=$(tar -xzOf "$payload/$name" "$(ci_tools_field "$row" npm_member)" | sha256sum)
+          [ "${read_back%% *}" = "$digest" ] ||
+            die "$row: the tarball this rig packed holds ${read_back%% *}, not the pinned $digest"
+          ;;
+        *) cp -- "$file" "$payload/$name" ;;
+      esac
+      describe "$payload/$name"
+    done < <(payload_names "$row")
+    rm -f "$file"
+  done
+  [ -z "$failures" ] ||
+    die "no correct bytes for$failures, so the origin cannot stand in for their source; the copy of every ghcr row is filled by .github/scripts/mirror-ci-tools.sh in the ci-images job this job needs"
+  note "the payload the origin serves is $payload"
+}
+
+# ---------------------------------------------------------------- start-fault
+
+start_fault() {
+  local hosts=""
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --hosts)
+        hosts=$2
+        shift 2
+        ;;
+      *) die "start-fault: unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$hosts" ] || die "start-fault: --hosts is required"
+  mkdir -p "$work"
+  local port_file="$work/fault.port"
+  rm -f "$port_file" "$fault_log"
+  : > "$fault_log"
+  python3 "$root/.github/scripts/ci-fault-proxy.py" --mode fail --hosts "$hosts" \
+    --port 0 --port-file "$port_file" > "$fault_log" 2>&1 &
+  wait_for_file "$port_file" "the fault proxy"
+  local proxy
+  proxy="http://127.0.0.1:$(cat "$port_file")"
+  {
+    echo "proxy=$proxy"
+    echo "hosts=$hosts"
+  } > "$fault_state"
+  [ -z "${GITHUB_OUTPUT:-}" ] || echo "proxy=$proxy" >> "$GITHUB_OUTPUT"
+  note "the fault proxy is $proxy, answering HTTP 504 for $hosts and passing every other host on"
+}
+
+# ---------------------------------------------------------------- probe
+
+# through_proxy <url>: one request made the way an install makes its own, over https and with
+# the proxy variables and nothing else, printed as `<status> <seconds>`.
+# The status is the proxy's own answer, read from whichever field of curl carries it: a refused
+# CONNECT leaves `%{http_code}` at 000 and puts the proxy's status in `%{http_connect}`
+# (measured with curl 8.14.1: `--proxy <this proxy> https://github.com/` reads http_code 000 and
+# http_connect 504), while a plain request carries it in `%{http_code}`.
+# A request nothing answered at all reads 000 in both, which is the reading that says it never
+# reached the proxy.
+# Its failure is the reading rather than a fault of this script, so curl's own exit status is
+# consumed here.
+through_proxy() {
+  local url=$1 proxy reading code connect seconds
+  proxy=$(sed -n 's/^proxy=//p' "$fault_state")
+  reading=$(http_proxy="$proxy" https_proxy="$proxy" HTTP_PROXY="$proxy" HTTPS_PROXY="$proxy" \
+    no_proxy="" NO_PROXY="" curl -sS --max-time "$PROBE_BOUND" \
+    -o /dev/null -w '%{http_code} %{http_connect} %{time_total}' "$url" 2>/dev/null || true)
+  reading=${reading:-000 000 0}
+  read -r code connect seconds <<<"$reading"
+  [ "$code" != 000 ] || code=$connect
+  printf '%s %s\n' "${code:-000}" "${seconds:-0}"
+}
+
+# proxy_line_after <line count>: the line the proxy wrote for the request just made, or nothing
+# where it wrote none.
+# The line lands a moment after the answer it belongs to, so it is waited for rather than missed;
+# a request that never reached the proxy leaves none however long this waits.
+proxy_line_after() {
+  local skip=$1 waited=0 line=""
+  while [ -z "$line" ] && [ "$waited" -lt 50 ]; do
+    line=$(awk -v skip="$skip" 'NR > skip { print; exit }' "$fault_log")
+    [ -n "$line" ] || sleep 0.1
+    waited=$((waited + 1))
+  done
+  printf '%s\n' "$line"
+}
+
+# what_it_read <status> <seconds>: one reading, in the words a person reading the run counts it in.
+what_it_read() {
+  if [ "$1" = 000 ]; then
+    printf 'no answer at all, after %ss' "$2"
+  else
+    printf 'HTTP %s, after %ss' "$1" "$2"
+  fi
+}
+
+probe() {
+  [ "$#" -eq 1 ] || die "probe takes the faulted host and nothing else, and this call gave $#"
+  [ -f "$fault_state" ] || die "probe: no fault proxy was started"
+  local faulted=$1 control_host="$1$RESERVED_SUFFIX" problems=0
+  local before reading code seconds line
+
+  note "the probe through the fault proxy, before any install meets it"
+
+  before=$(wc -l < "$fault_log")
+  reading=$(through_proxy "https://$faulted/")
+  code=${reading%% *}
+  seconds=${reading##* }
+  line=$(proxy_line_after "$before")
+  echo "  the faulted host $faulted read $(what_it_read "$code" "$seconds")"
+  echo "  the proxy's own line for it: ${line:-none at all}"
+  if [ "$code" != 504 ]; then
+    echo "::error::ci-tools-proof: the faulted reading was wrong. This proxy answers HTTP 504 for $faulted, so the request must be refused with one; it read $(what_it_read "$code" "$seconds"). A faulted host that answers is the proxy bypassed: read no_proxy and NO_PROXY in this job's environment, since either one set to a star sends every host past the proxy." >&2
+    problems=$((problems + 1))
+  fi
+  if [ -z "$line" ]; then
+    echo "::error::ci-tools-proof: the faulted reading was wrong: the proxy logged no line for the request to $faulted, so that request was never made through it at all." >&2
+    problems=$((problems + 1))
+  fi
+
+  before=$(wc -l < "$fault_log")
+  reading=$(through_proxy "https://$control_host/")
+  code=${reading%% *}
+  seconds=${reading##* }
+  line=$(proxy_line_after "$before")
+  echo "  the unfaulted host $control_host read $(what_it_read "$code" "$seconds")"
+  echo "  the proxy's own line for it: ${line:-none at all}"
+  if [ "$code" != 502 ]; then
+    echo "::error::ci-tools-proof: the unfaulted reading was wrong. $control_host is off this proxy's --hosts, so the proxy must answer it itself — HTTP 502, the answer it gives for a name nothing resolves — rather than fault it; it read $(what_it_read "$code" "$seconds"). Nothing answering at all is the request going nowhere near the proxy, and a 504 is the fault reaching a host it was never given." >&2
+    problems=$((problems + 1))
+  fi
+  if [ -z "$line" ]; then
+    echo "::error::ci-tools-proof: the unfaulted reading was wrong: the proxy logged no line for the request to $control_host, so that request was never made through it at all." >&2
+    problems=$((problems + 1))
+  fi
+
+  [ "$problems" -eq 0 ] || exit 1
+  echo "  the pair reads as it must, so every install below meets the fault rather than the host"
+}
+
+# ---------------------------------------------------------------- corrupt
+
+corrupt() {
+  mkdir -p "$work"
+  local row
+  for row in "$@"; do
+    ci_tools_field "$row" digest > /dev/null ||
+      die "corrupt: '$row' is no row of .github/ci-tools.yaml"
+  done
+  printf '%s\n' "$*" > "$control"
+  # Where both logs stand now, so the `report` of this case prints its own lines and no earlier
+  # case's. Every case calls this verb, so every case has a mark of its own.
+  {
+    printf 'origin=%s\n' "$([ -f "$origin_log" ] && wc -l < "$origin_log" || echo 0)"
+    printf 'fault=%s\n' "$([ -f "$fault_log" ] && wc -l < "$fault_log" || echo 0)"
+  } > "$mark"
+  if [ "$#" -eq 0 ]; then
+    note "the origin now serves every row whole"
+  else
+    note "the origin now serves $* with the last byte changed, and every other row whole"
+  fi
+}
+
+# ---------------------------------------------------------------- report
+
+# case_row <case>: the row a case is about, read from the case's own name.
+# A case is named `<row>-primary` or `<row>-second-source`, and a name no row carries is the
+# first row of that family, which is how `bun` names the x64 row every runner of this job takes.
+case_row() {
+  local name=$1 row
+  row=${name%-primary}
+  row=${row%-second-source}
+  if ci_tools_field "$row" digest > /dev/null 2>&1; then
+    printf '%s\n' "$row"
+    return 0
+  fi
+  case $row in
+    bun) printf 'bun-linux-x64\n' ;;
+    *) die "report: the case '$name' names no row of .github/ci-tools.yaml" ;;
+  esac
+}
+
+# case_lines <log> <key>: the lines that log gained since this case's `corrupt` marked it.
+case_lines() {
+  local log=$1 key=$2 skip
+  skip=$(sed -n "s/^$key=//p" "$mark")
+  [ -f "$log" ] || return 0
+  awk -v skip="${skip:-0}" 'NR > skip' "$log"
+}
+
+# origin_served <route> <row>: whether the origin served that row's bytes on that route for this
+# case, which is what says a source answered.
+# The lines are read into a variable first: `grep -q` ends at its first match, and a pipeline
+# into it under pipefail can answer with the writer's broken pipe rather than with grep's match.
+origin_served() {
+  local lines
+  lines=$(case_lines "$origin_log" origin)
+  grep -qE "^GET $1[^ ]* row=$2 corrupt=(yes|no) status=200" <<<"$lines"
+}
+
+# route_of <source>: the origin route one source serves, read from either spelling a case writes
+# — the name a refusal of .github/scripts/ci-tools.sh carries, or the manifest's own
+# `second_source` word.
+route_of() {
+  case $1 in
+    github-release | github) printf '/github/\n' ;;
+    ghcr-mirror | ghcr) printf '/ghcr/\n' ;;
+    npm) printf '/npm/\n' ;;
+    *) die "report: '$1' is no source this rig serves (github-release, ghcr-mirror or npm)" ;;
+  esac
+}
+
+report() {
+  [ "$#" -ge 1 ] || die "report takes a case name and its expectations"
+  local name=$1 outcome="" expect="" expect_source="" expect_untried=""
+  shift
+  while [ "$#" -gt 0 ]; do
+    case $1 in
+      --outcome)
+        outcome=$2
+        shift 2
+        ;;
+      --expect)
+        expect=$2
+        shift 2
+        ;;
+      --expect-source)
+        expect_source=$2
+        shift 2
+        ;;
+      --expect-untried)
+        expect_untried=$2
+        shift 2
+        ;;
+      *) die "report: unknown argument '$1'" ;;
+    esac
+  done
+  [ -n "$outcome" ] || die "report: --outcome is required"
+  case $expect in
+    fail | pass) ;;
+    *) die "report: --expect is fail or pass, and this call gave '${expect:-nothing}'" ;;
+  esac
+  [ -f "$mark" ] ||
+    die "report: the case '$name' called no corrupt verb, so this rig cannot tell its lines from another case's"
+  local row wanted problems=0
+  row=$(case_row "$name")
+  if [ "$expect" = fail ]; then
+    wanted=failure
+  else
+    wanted=success
+  fi
+
+  local served asked
+  served=$(case_lines "$origin_log" origin)
+  asked=$(case_lines "$fault_log" fault)
+  note "case $name, on row $row: the install step's outcome was $outcome, and this case expects it to $expect"
+  echo "  what the origin served for this case:"
+  if [ -n "$served" ]; then
+    sed 's/^/    /' <<<"$served"
+  else
+    echo "    nothing: no source of this case was the origin"
+  fi
+  echo "  what the fault proxy logged for this case:"
+  if [ -n "$asked" ]; then
+    sed 's/^/    /' <<<"$asked"
+  else
+    echo "    nothing: this case asked no faulted host"
+  fi
+
+  if [ "$outcome" != "$wanted" ]; then
+    echo "::error::ci-tools-proof: case $name: the install step's outcome is $outcome, and this case is the proof that the install reaches $wanted: read the step's own log above for what it did instead." >&2
+    problems=$((problems + 1))
+  fi
+  if [ -n "$expect_source" ]; then
+    local route
+    route=$(route_of "$expect_source")
+    if [ "$route" = /github/ ]; then
+      # The primary of this case is the faulted real host or a binary a third party installed, so
+      # the origin's github route serves nothing for it. What says the bytes came from the
+      # primary path is then that neither second source served this row.
+      if ! origin_served /github/ "$row" && { origin_served /ghcr/ "$row" || origin_served /npm/ "$row"; }; then
+        echo "::error::ci-tools-proof: case $name: this case is the refusal of the bytes $expect_source served, and the origin served a second source for $row above, so the step read another source than the one this case is about." >&2
+        problems=$((problems + 1))
+      fi
+    elif ! origin_served "$route" "$row"; then
+      echo "::error::ci-tools-proof: case $name: this case is the refusal of the bytes $expect_source served, and the origin served nothing for $row on its $route route, so the step never read that source." >&2
+      problems=$((problems + 1))
+    fi
+  fi
+  if [ -n "$expect_untried" ]; then
+    local untried
+    untried=$(route_of "$expect_untried")
+    if origin_served "$untried" "$row"; then
+      echo "::error::ci-tools-proof: case $name: the origin served $row on its $untried route, and this case is the rule that it must not: a digest mismatch is a supply-chain signal and never a reason to read another source." >&2
+      problems=$((problems + 1))
+    fi
+  fi
+
+  [ "$problems" -eq 0 ] || exit 1
+  echo "  the case reads as it must"
+}
+
+verb=${1:-}
+[ "$#" -ge 1 ] ||
+  die "usage: $(basename "$0") <origin-start|stage|start-fault|probe|corrupt|report> [argument…]"
+shift
+case $verb in
+  origin-start) origin_start "$@" ;;
+  stage) stage "$@" ;;
+  start-fault) start_fault "$@" ;;
+  probe) probe "$@" ;;
+  corrupt) corrupt "$@" ;;
+  report) report "$@" ;;
+  *) die "'$verb' is no verb of this rig (origin-start, stage, start-fault, probe, corrupt, report)" ;;
+esac

@@ -764,6 +764,15 @@ FOLD_CHECK_STEP = "Check every changelog fragment renders"
 CHECK_STEP = "Check every CI filter matches every file its job reads"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
+TOOL_COPY_STEP = "Fill the copy of every tool asset the package does not hold"
+# The steps of the tool-fallback job the reads below cite. The job is one long drive of
+# .github/scripts/ci-tools-proof.sh, so each file it reads is read at a step with a name.
+TOOL_BLOB_STEP = "Check the package holds the blob of every mirrored row"
+TOOL_ROWS_STEP = "Print every row beside the two call sites that read its digest"
+TOOL_STAGE_STEP = "Stage the correct bytes of every row a case serves, before the fault"
+TOOL_FAULT_STEP = "Start the fault in front of GitHub's release assets"
+TOOL_JJ_BYTE_STEP = "Change the last byte of the jj binary inside mise's install directory"
+TOOL_BUN_BYTE_STEP = "Change the last byte of the installed Bun"
 
 # docs-pages.yaml builds and publishes main's site in a workflow of its own (its header says why),
 # so its on.push.paths stands in for the docs filter on main.
@@ -804,6 +813,9 @@ GATES = [
          "HEAD_SHA and HEAD_MESSAGE to the push payload's head"),
         (".github/ci-images.yaml", f"{at('test', 'Test the CI image mirror')}: mirror-ci-images.test.sh:322-351 builds "
                                    "its ordering fixture from the repository's own rows"),
+        (".github/ci-tools.yaml", f"{at('test', 'Test the tool manifest check')}: check-ci-tools.test.sh:468-474 runs "
+                                  f"the gate over this repository's own tree, and {at('test', 'Test the tool fetch helper')}: "
+                                  "ci-tools.test.sh:388-393 reads a row's digest out of the repository's own manifest"),
         (".github/e2e-scripts.json", f"{at('test', 'Test the e2e proof selector')}: select-e2e-proofs.test.sh runs the "
                                      "selector over the repository's own list"),
         ("scripts/third-party-notices.test.ts", at("test", "Test third-party notices")),
@@ -1353,8 +1365,9 @@ GATES = [
                 for name, path in PUSH_WORKFLOWS.items()))
       + setup_go("ci-filters", f"{DAEMON}/go.mod") + CI_SELF),
 
-    # The ci-images job: the copy, and the package mode of the image gate, which reads ghcr.io.
-    # These are the files that decide what those two steps do. The gate's tree mode is a step of
+    # The ci-images job: the image copy, the package mode of the image gate, which reads
+    # ghcr.io, and the tool copy, which fills the second source of every tool install. These are
+    # the files that decide what those three steps do. The image gate's tree mode is a step of
     # lint, which runs on every change, and no filter gates it.
     gate("ci_images", "ci-images", reads=reads(
         (".github/ci-images.yaml", f"{at('ci-images', COPY_STEP)} copies the rows it holds, and "
@@ -1362,7 +1375,42 @@ GATES = [
         (".github/scripts/mirror-ci-images.sh", f"{at('ci-images', COPY_STEP)} runs it"),
         (".github/scripts/check-ci-images.sh", f"{at('ci-images', PACKAGE_STEP)} runs it"),
         (".github/scripts/ci_images.py", "both scripts read a row's upstream with it"),
+        (".github/ci-tools.yaml", f"{at('ci-images', TOOL_COPY_STEP)} fills the copy of every ghcr row it holds"),
+        (".github/scripts/mirror-ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)} runs it"),
+        (".github/scripts/ci-tools.sh", f"{at('ci-images', TOOL_COPY_STEP)}: the filler reads a row's fields and "
+                                        "its seams the way that helper does, and the copy it fills is what the "
+                                        "helper then reads"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
+    ) + CI_SELF),
+
+    # The tool-fallback job: the live proof that every tool install reads the second source
+    # .github/ci-tools.yaml names when the first one does not serve the bytes. It runs no go
+    # command, so the gate is its reads alone: the manifest, the fetch helper, the filler and
+    # the gate beside it, the rig and the fault proxy it drives, the four actions it installs
+    # through, and the two files a row's version is pinned in.
+    gate("tool_fallback", "tool-fallback", reads=reads(
+        (".github/ci-tools.yaml", f"{at('tool-fallback', TOOL_BLOB_STEP)} reads the digest of every ghcr row, and "
+                                  f"{at('tool-fallback', TOOL_ROWS_STEP)} reads every row"),
+        (".github/scripts/ci-tools.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)}: the rig fetches each row's correct "
+                                        "bytes through it, and the two steps above source it for a row's fields"),
+        (".github/scripts/ci-tools-proof.sh", f"{at('tool-fallback', TOOL_STAGE_STEP)} runs it, as every other step "
+                                              "of this job that drives the proof does; this job is its only caller"),
+        (".github/scripts/ci-fault-proxy.py", f"{at('tool-fallback', TOOL_FAULT_STEP)}: the rig starts it in front "
+                                              "of GitHub's release assets"),
+        (".github/scripts/mirror-ci-tools.sh", f"{at('tool-fallback', TOOL_BLOB_STEP)} refuses a row that script has "
+                                               "not filled, and states the rule that is the opposite of its own"),
+        (".github/scripts/check-ci-tools.sh", f"{at('tool-fallback', TOOL_ROWS_STEP)} prints the one literal both "
+                                              "paths are held to, which that gate holds every row and every call "
+                                              "site of the tree to"),
+        (".github/actions/install-crane/**", at("tool-fallback", "./.github/actions/install-crane")),
+        (".github/actions/install-changie/**", at("tool-fallback", "./.github/actions/install-changie")),
+        (".github/actions/install-jj/**", at("tool-fallback", "./.github/actions/install-jj")),
+        (".github/actions/setup-bun/**", at("tool-fallback", "./.github/actions/setup-bun")),
+        (f"{DAEMON}/docker/worker.Dockerfile", f"{at('tool-fallback', TOOL_JJ_BYTE_STEP)} reads ARG JJ_TOOL to ask "
+                                               "mise where it installed jj, and .github/actions/install-jj reads "
+                                               "that ARG and the mise row's own pin from the same file"),
+        (".bun-version", f"{at('tool-fallback', TOOL_BUN_BYTE_STEP)} reads the pinned version out of it, and "
+                         ".github/actions/setup-bun installs the Bun it pins"),
     ) + CI_SELF),
 ]
 
