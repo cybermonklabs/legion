@@ -1227,14 +1227,15 @@ A file whose first line is exactly `-- pgmigrate:non-transactional` runs outside
 The loader accepts that marker only on one non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` statement, parsed as PostgreSQL parses it; UNIQUE indexes, multiple statements and other commands refuse the whole set.
 The runner owns and closes that connection and holds the session-level advisory lock on the same migration key through the build and its separate version insert, excluding transactional runners and schema-version readers too.
 If recording the version fails after a successful build, the next boot safely repeats the idempotent statement.
-An existing INVALID index is not success: the runner refuses with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command to run outside a transaction after investigating the failed build, then retry.
-It does not drop that index automatically.
+An INVALID index of the migration's own index name, on the table the migration builds on, is the runner's own leftover, from a build its lock bound cancelled or a boot that was killed mid-build: the runner drops it with `drop index concurrently if exists`, logged at WARN, and builds the index again, so one failed build no longer stops every later boot.
+Any other relation of that name in the schema is refused with a schema-qualified `DROP INDEX CONCURRENTLY` recovery command: an index of that name on another table, valid or INVALID, and a relation that is no index at all, because `IF NOT EXISTS` skips on any relation of that name and the index would never be built on the target table.
+An index of another name, INVALID or not, is neither dropped nor refused.
 The broker's all-in-one-transaction runner refuses a marked file before applying any migration.
 
 Every migration's lock waits are bounded at five seconds (`pgmigrate.LockTimeout`), set after the runner's advisory lock: transaction-local in `pgmigrate.Exec`, or session-local and restored on return in `pgmigrate.ExecNonTransactional`.
 A migration queued behind a long transaction gives up instead of holding every read and write of its table behind its request.
 The runner then rolls the transaction back or closes the owned connection, holds nothing for two seconds (`pgmigrate.LockTimeoutRetryPause`) so queued requests run, and tries again, up to three attempts (`pgmigrate.LockTimeoutAttempts`, `pgmigrate.RetryLockTimeouts`).
-A failed concurrent build may leave an INVALID index, which the next attempt refuses rather than skipping it as already built.
+A failed concurrent build may leave an INVALID index of the migration's own name, which the next attempt drops and builds again; the drop is bounded by the same five seconds and watched the same way, so a drop queued behind a lock is a timed-out attempt like any other.
 Each timed-out attempt is logged at WARN.
 A migration that times out on every attempt fails the boot; it has then held its table's reads and writes for at most three waits of five seconds.
 The failure names the migration, the lock it wanted, the sessions it was queued behind with each one's diagnosis (as the census's refusals carry it, "Pre-deploy census" below), and a `pg_stat_activity` query for the sessions holding the lock;

@@ -206,7 +206,8 @@ func (s *Store) createVersionTable(ctx context.Context, widen bool) error {
 
 // applyMigration applies one migration, trying it again while its lock wait outlasts
 // lock_timeout, up to pgmigrate.LockTimeoutAttempts times, holding nothing between attempts.
-// A concurrent build's retry first refuses any INVALID index the previous attempt left.
+// A concurrent build's retry first drops an INVALID index of the migration's own name the
+// previous attempt left on the migration's own table, then builds the index again.
 // A migration that times out on every attempt fails the runner and boot with it.
 func (s *Store) applyMigration(ctx context.Context, migration pgmigrate.Migration) error {
 	return pgmigrate.RetryLockTimeouts(ctx, migration.Name, func(ctx context.Context) error {

@@ -1323,6 +1323,7 @@ Everything the load needs comes from that pool, `onLoadDocument`'s issue read in
 The migration runner takes one more connection outside the shared pool.
 `pgmigrate.Exec` sets a transactional migration's `lock_timeout` to `pgmigrate.LockTimeout` (five seconds), after the runner's advisory lock; `pgmigrate.ExecNonTransactional` sets and restores the session setting for a marked single concurrent index build.
 The marked mode holds the session-level advisory lock on the same key until its separate version insert, then closes its owned connection; ordinary migrations keep their transaction-level lock and atomic version record.
+The marked mode also owns the leftover of a build that failed: an INVALID index of the migration's own index name on the table it builds on is dropped with `drop index concurrently if exists`, logged at WARN, and built again, while any other relation of that name in the schema is refused and an index of another name is left alone.
 While either mode runs, its shared lock watch reads `pg_locks` for the migration backend every 200 ms on a connection opened at its first reading:
 from that backend's own configuration (`pgx.Conn.Config`), signed in first through the pool's `BeforeConnect` when the pool has one (the broker's RDS IAM token minter, since the backend's own token may be older than a token lasts).
 It closes when the migration ends, so a migration faster than one reading dials nothing.
