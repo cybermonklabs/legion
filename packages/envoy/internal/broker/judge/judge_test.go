@@ -7,6 +7,7 @@ package judge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -302,12 +304,13 @@ func TestAnApprovalTheRequestMachineRefusedStillRecordsItsVerdict(t *testing.T) 
 }
 
 // TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes: the person who decides the request
-// today answered while the judge was reading, so the judge's own approval lands on a request
-// that is already terminal. That is the ordinary end of a race the judge is built to lose, and
-// the deployment's alarms read the broker's ERROR lines, so it leaves none, and the row it
-// writes carries no error either — "error" is the model call's own failure, and nothing failed
-// here. A refusal of any other kind is a judge that reached a request it should not have, and
-// that does raise one, naming the record a person has to look at.
+// today answered while the judge was reading, or its operator withheld the name, so the judge's
+// own approval lands on a request the decision transaction refuses. That is the ordinary end of
+// a race the judge is built to lose, and the deployment's alarms read the broker's ERROR lines,
+// so it leaves none, and the row it writes carries no error either — "error" is the model call's
+// own failure, and nothing failed here. A refusal of any other kind is a judge that reached a
+// request it should not have, and that does raise one, naming the record a person has to look
+// at.
 func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 	for _, c := range []struct {
 		refusal   error
@@ -315,6 +318,9 @@ func TestALostRaceRaisesNoErrorLineAndEveryOtherRefusalDoes(t *testing.T) {
 	}{
 		{requests.ErrTerminal, false},
 		{requests.ErrExpired, false},
+		// The withheld guard currentPolicyAdmits makes for the judge alone: the
+		// operator took the name back from the session while the model was answering.
+		{fmt.Errorf("%w: AIRLOCK_JUDGED_TOKEN is withheld from this session", record.ErrNotApprover), false},
 		{errors.New("the grant could not be written"), true},
 	} {
 		t.Run(c.refusal.Error(), func(t *testing.T) {
