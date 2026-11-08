@@ -3,11 +3,11 @@ name: Dispatch browser suite
 # Every browser job of the Dispatch suite, in one place. ci.yaml's dispatch-browser job calls it
 # with the pull-request lane on a pull request that carries no `full-ci` label and the full lane
 # on everything else, and the nightly workflow calls it with the full lane. The rows are spread
-# over four shard machines, the three `-alone` projects get a machine each, and one merge job
+# over four shard machines, the four `-alone` projects get a machine each, and one merge job
 # joins what they wrote into a single report and publishes the run's flake rate.
 #
 # Two lanes, one input. `pull-request` runs the two projects a pull request is held to, `chromium`
-# and `iphone`; `full` runs all eight parallel projects, the three `-alone` ones and the
+# and `iphone`; `full` runs all eight parallel projects, the four `-alone` ones and the
 # two-process job. So an unlabelled pull request pays for the rows that answer it, and the merge
 # queue, a labelled pull request, a workflow_dispatch and the nightly run pay for the rest, each
 # of which has the wall time for them.
@@ -146,10 +146,11 @@ jobs:
     # the step already holds.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed at
-    # this head, after the forward merges of main, the suite holds 1,200 rows: 1,145 in the
-    # eight projects the full lane's four shards run, of which 1,058 are in the two the
-    # pull-request lane runs. The remaining 55 are the three `-alone` projects', which the alone
-    # job runs.
+    # this head, after the forward merges of main, the suite holds 1,378 rows: 1,322 in the
+    # eight projects the full lane's four shards run, of which 1,221 are in the two the
+    # pull-request lane runs. The remaining 56 are the four `-alone` projects', which the alone
+    # job runs - 19, 17 and 17 of the three engine legs and 3 of `iphone-alone`, the rows
+    # `clockRows` names.
     timeout-minutes: 33
     strategy:
       fail-fast: false
@@ -349,11 +350,11 @@ jobs:
               ;;
           esac
           # Why the projects are named at all: Playwright shards top-level projects only, and the
-          # three `-alone` projects name every other project in their `dependencies`
+          # four `-alone` projects name every other project in their `dependencies`
           # (e2e/playwright.config.ts), so a shard over the whole list would shard `webkit-alone`
           # alone and run every other project whole in all four shards. Naming the eight parallel
           # projects with `--project` leaves the `-alone` ones out of the run, so every project
-          # left is top-level and every one of them shards. The alone job runs those three.
+          # left is top-level and every one of them shards. The alone job runs those four.
           #
           # `list` beside `blob`: the blob reporter prints nothing, and this leg's row count is
           # read from the list reporter's `Running N tests using M workers` line, which the merge
@@ -428,7 +429,7 @@ jobs:
   alone:
     if: inputs.lane == 'full'
     runs-on: ubuntu-24.04
-    # The three projects whose rows are read from the wall clock, one machine each. Each runs with
+    # The four projects whose rows are read from the wall clock, one machine each. Each runs with
     # one worker and `--no-deps`, so nothing else is on the machine while it measures. The full
     # lane alone: a pull request runs no clock row, since a shard job's machine cannot hold one
     # still enough to measure.
@@ -451,14 +452,22 @@ jobs:
     #   every other step summed                             74             72            82
     #   the whole job                                      219            217           259
     #
+    # `iphone-alone` has no reading of this job yet, because its three rows reached it from the
+    # shard legs. What they cost there, contended four lanes wide, is run 42485503469: the
+    # 28-section measurement 34.3 s, the 140-section one 1.2 min and the timer row 1.3 min, 184 s
+    # summed. That is the number the browser step's budget below is built on, and it is an
+    # over-estimate of this leg, since the contention those three rows were moved away from is in
+    # it; the first full-lane run of this head replaces it with a reading of its own.
+    #
     # Those install readings are of the reduced package list this head installed before
     # dispatch://INFRA-1506 (cybermonklabs/legion#2888) put Playwright's whole list back, and
     # before the apt archive cache the two steps above the install restore, so they bound
     # nothing now. Those two steps came after that run as well, so the "every other step summed"
     # row holds neither of them.
     #
-    # The rule is in this file's head. The browser step's maximum is webkit-alone's 141 s, so
-    # 141 x 1.15 = 162 s -> 3 min. The install step keeps its 22 minutes, which is
+    # The rule is in this file's head. The browser step's maximum is `iphone-alone`'s 184 s, from
+    # the contended reading above, so 184 x 1.15 = 212 s -> 4 min. The install step keeps its
+    # 22 minutes, which is
     # .github/scripts/playwright-install.sh's retry arithmetic rather than a measured maximum,
     # for the reason that file's head gives.
     #
@@ -483,24 +492,24 @@ jobs:
     # 23:13:54 with the install step starting at 23:14:00, so those 482 MB landed inside 6 s and
     # this cache's 114 MB are under that. They are counted here as 7 s on top of the 82 s row.
     #
-    # So the job budget is the install step's 1320 s, the browser step's 180 s and 89 s of every
-    # other step summed: 1589 s -> 27 min.
+    # So the job budget is the install step's 1320 s, the browser step's 240 s and 89 s of every
+    # other step summed: 1649 s -> 28 min.
     #
     # The 114 MB cold draw is still a tail rather than a cost of this job: it is paid once per
     # cache key, on the first run after a Playwright upgrade or an image roll, and it is the same
     # class of tail as the shard job's 627 s apt stall. It is accounted in this pull request's
     # body, cited to dispatch://INFRA-1443. What this budget costs instead: a leg that is going to
-    # fail its install holds a runner for up to 27 min before it says so.
+    # fail its install holds a runner for up to 28 min before it says so.
     #
-    # Three legs of one run is a thin reading, and these are the projects whose rows are read
+    # Four legs of one run is a thin reading, and these are the projects whose rows are read
     # from the wall clock, so a slower machine moves them further than it moves a parallel row.
     # The 15 per cent the rule adds is what carries that, and a leg that outran it fails the
     # browser step by name, which is a reading of its own.
-    timeout-minutes: 27
+    timeout-minutes: 28
     strategy:
       fail-fast: false
       matrix:
-        project: [chromium-alone, firefox-alone, webkit-alone]
+        project: [chromium-alone, firefox-alone, webkit-alone, iphone-alone]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -565,18 +574,22 @@ jobs:
       - name: Install the lane's Playwright browsers
         timeout-minutes: 22
         run: |
-          # One engine, this leg's: each project of the matrix runs one browser and its name is
-          # that browser with `-alone` after it (chromium-alone is Desktop Chrome,
-          # firefox-alone Desktop Firefox and webkit-alone Desktop Safari,
-          # e2e/playwright.config.ts), so the engine is the name with that suffix cut off. Which
-          # engines a whole lane needs is the shard job's business, which runs that lane. The
-          # apt list the script installs does not narrow with this: it stays the three-engine
-          # list, for the reason the script's head gives.
-          engine="${{ matrix.project }}"
+          # One engine, this leg's. Three of the four projects are named for the browser they run
+          # with `-alone` after it (chromium-alone is Desktop Chrome, firefox-alone Desktop
+          # Firefox and webkit-alone Desktop Safari, e2e/playwright.config.ts), so the engine is
+          # the name with that suffix cut off. `iphone-alone` is the iPhone 13 device with
+          # `browserName: "chromium"`, as the `iphone` project is, so it is named here rather
+          # than derived. Which engines a whole lane needs is the shard job's business, which
+          # runs that lane. The apt list the script installs does not narrow with this: it stays
+          # the three-engine list, for the reason the script's head gives.
+          case "${{ matrix.project }}" in
+            iphone-alone) engine=chromium ;;
+            *) engine="${{ matrix.project }}"; engine="${engine%-alone}" ;;
+          esac
           # The script is reached through $GITHUB_WORKSPACE, the checkout root GitHub sets,
           # because this step's working-directory is packages/dispatch - which is what the
           # `bunx` inside it needs, to resolve this suite's Playwright.
-          "$GITHUB_WORKSPACE/.github/scripts/playwright-install.sh" "${engine%-alone}"
+          "$GITHUB_WORKSPACE/.github/scripts/playwright-install.sh" "$engine"
         working-directory: packages/dispatch
       - name: Browser-test dispatch dashboard (${{ matrix.project }})
         # `bun run e2e` builds the SPA itself, which would rebuild it a second time in this job.
@@ -594,13 +607,16 @@ jobs:
         # these projects' rows are read from the wall clock, and three other lanes on the machine
         # would be in the reading.
         #
-        # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: every spec these
-        # legs run is a clock spec, and no clock spec uploads or downloads anything.
-        # chromium-alone runs both (`clockSpecs`: heavy-bodies and nested-directive, named at
+        # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
+        # legs run uploads or downloads anything. chromium-alone runs both clock specs
+        # (`clockSpecs`: heavy-bodies and nested-directive, named at
         # e2e/playwright.config.ts:200 and taken by that project at :389), firefox-alone and
-        # webkit-alone run heavy-bodies alone (:397, :409). And e2e/run.ts:126-130 makes no lane
+        # webkit-alone run heavy-bodies alone (:397, :409), and iphone-alone runs the three rows
+        # of large-documents.e2e.ts that `clockRows` names - the two measurements and the timer
+        # row, each of which seeds its document through the API and reads it. And
+        # e2e/run.ts:126-130 makes no lane
         # bucket at one worker. A container serving nothing would be charged to the very reading
-        # these rows exist for. A clock spec that later uploads fails here by name rather than
+        # these rows exist for. A row that later uploads fails here by name rather than
         # quietly.
         #
         # The memory and CPU sampler both this job and the shard job run is
@@ -612,7 +628,7 @@ jobs:
         # run directory and this leg's blob report, which is what the upload steps below read:
         # a file this step wrote into the checkout would leave it dirty afterwards. The blob
         # report goes beside the list reporter's output, so a green run reports what it ran too.
-        timeout-minutes: 3
+        timeout-minutes: 4
         run: |
           # $RUNNER_TEMP holds everything this step writes, the run directory of e2e/run.ts
           # (mkdtempSync in os.tmpdir(), :183) among it, which is what the upload steps below

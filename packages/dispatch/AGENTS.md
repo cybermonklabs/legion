@@ -1690,8 +1690,13 @@ and `iphone`, split over four
 shard machines, each leg running `--shard=N/4` with four workers.
 A merge group, a pull request carrying `full-ci`, a `workflow_dispatch` and the nightly
 (`.github/workflows/dispatch-browser-nightly.yaml`)
-run the `full` lane: all eight parallel projects over those same four shards, the three `-alone`
+run the `full` lane: all eight parallel projects over those same four shards, the four `-alone`
 projects each on a machine of its own with `--no-deps` and one worker, and the two-process job.
+So the three rows of `e2e/large-documents.e2e.ts` the spec's targets are read from, which
+`iphone-alone` holds (`clockRows` in `e2e/playwright.config.ts`), are measured by the merge group
+and the nightly rather than by an unlabelled pull request's own run, for the reason that
+selector gives: a row that differs from itself by three seconds between two attempts on one
+runner is measuring the runner, and a shard machine running four lanes is that runner.
 Each shard leg exports the worker count and the pgvector digest on the browser step's own command
 line rather than in an `env:`, for the reason that step's comment gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
@@ -1710,7 +1715,7 @@ samplers, run from `packages/dispatch` with a Postgres provider the lanes above 
 `DISPATCH_E2E_WORKERS=4 bun e2e/run.ts -- bunx playwright test --config e2e/playwright.config.ts --project=chromium --project=iphone --shard=1/4`.
 The `full` lane's leg names all eight parallel projects in place of those two.
 A local run retries nothing; CI retries a failed row once
-(`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the three `-alone`
+(`retries: process.env.CI ? 1 : 0` in `e2e/playwright.config.ts`), except in the four `-alone`
 projects and the two-process project, which set `retries: 0` of their own: a row whose claim is a
 wall-clock time has nothing to gain from a second attempt, and the two-process job writes no blob
 report, so a retried row there would be published nowhere.

@@ -1111,7 +1111,7 @@ jobs:
               - 'scripts/e2e/lib/**'
               - *omp_install
             # The browser suite (dispatch-browser), which .github/workflows/dispatch-browser.yaml
-            # holds: the shards, the three `-alone` projects, the two-process job and the merge
+            # holds: the shards, the four `-alone` projects, the two-process job and the merge
             # job. Every entry is something a browser row reads: the dashboard and its contracts,
             # the Dispatch server its harness builds, and the two workflow files that hold the
             # steps. The retired `dispatch` job's filter also held three fixture sets whose only
@@ -2948,14 +2948,14 @@ jobs:
           job-status: ${{ job.status }}
 
   # Every browser row of the Dispatch suite, which .github/workflows/dispatch-browser.yaml
-  # holds: the shard legs, the three `-alone` projects a machine each, the two-process job and
+  # holds: the shard legs, the four `-alone` projects a machine each, the two-process job and
   # the merge job that joins their reports into one and posts this job's ci-ok report.
   #
   # Two lanes, and which run pays for which. A pull request without the label `full-ci` runs
   # `pull-request`, the two projects a change is held to (chromium and iphone), so such a run
   # proves those two rows and no more - it is not the run that proves the suite before main.
   # Every other run - the merge group, a workflow_dispatch and a pull request carrying `full-ci`
-  # - runs `full`: every project, the three `-alone` ones and the two-process job. So the merge
+  # - runs `full`: every project, the four `-alone` ones and the two-process job. So the merge
   # group is where a change meets the whole suite before it lands, and the nightly
   # (.github/workflows/dispatch-browser-nightly.yaml, which calls the same file with the full
   # lane, from main) runs it again on main's tip.

@@ -309,8 +309,8 @@ for (const row of rows) {
     browser,
   }, testInfo) => {
     test.skip(
-      testInfo.project.name !== "iphone",
-      "the measurement set-up is the iphone project's viewport, touch and Chromium"
+      testInfo.project.name !== "iphone-alone",
+      "the measurement set-up is the iphone viewport, touch and Chromium, and the number is read from the wall clock, so it runs in `iphone-alone` with the machine to itself (e2e/playwright.config.ts's `clockRows`)"
     );
     test.setTimeout(row.timeoutMs);
     // The document the run measures is the one this module spells, so a change to the generator
