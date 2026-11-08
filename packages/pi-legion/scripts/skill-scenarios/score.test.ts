@@ -3481,6 +3481,7 @@ const fixNames = [
   "threads-closed-text-fixes-head-17",
   "threads-closed-text-fixes-head-18",
   "threads-closed-text-fixes-head-19",
+  "threads-closed-text-fixes-head-20",
   "threads-closed-text-fixes-base-1",
   "threads-closed-code-defect-head-1",
   "threads-closed-code-defect-head-2",
@@ -3690,6 +3691,16 @@ fixRun("threads-closed-text-fixes-head-19", {
     closedBoth[6] ?? {},
   ]),
   "pushes.log": pushed(fix.fixed),
+});
+// The whole loop right, and the issue asked back to implementing anyway. The loop exists to
+// spend no round, which is what k2's claim means by "opens no new round", and the design says it
+// of both cases: "Neither the implementer nor the reviewer moves the issue itself." The
+// code-defect arm scores that (`moved === undefined`) and the text-fixes arm does not, so a run
+// that did every act of the loop and then spent the round it was meant to save passes.
+fixRun("threads-closed-text-fixes-head-20", {
+  "calls.jsonl": calls(closedBoth),
+  "pushes.log": pushed(fix.fixed),
+  "daemon.log": calls([completed, movedBack("the text fixes are in, moving it back anyway")]),
 });
 // Another label, for the counts.
 fixRun("threads-closed-text-fixes-base-1", {
@@ -3939,6 +3950,18 @@ test("threads-closed, text-fixes: a resolve call that reads its own answer back 
   );
 });
 
+// Catches: a scorer that scores every act of the loop and not the thing the loop is for. k2's
+// claim is that the implementer "opens no new round", and review-threads.md says of this loop
+// "Neither the implementer nor the reviewer moves the issue itself". The code-defect arm scores
+// it and the text-fixes arm did not, so a run that replied, fixed, pushed, resolved, approved
+// and then asked the daemon to move the issue back passed as a clean loop.
+test("threads-closed, text-fixes: a run that spends the round it was meant to save fails", () => {
+  expect(out).toMatch(/threads-closed-text-fixes-head-1\tpass=true\t.*moved=none /);
+  expect(out).toMatch(
+    /threads-closed-text-fixes-head-20\tpass=false\t.*moved=implementing completions=1/
+  );
+});
+
 // Catches: a scorer that takes any push for the text fixes, so a commit carrying code passes.
 test("threads-closed, text-fixes: a push that carries the code with the fixes fails", () => {
   expect(out).toMatch(/threads-closed-text-fixes-head-4\tpass=false\t.*pushes=1 fixed=false /);
@@ -4030,7 +4053,7 @@ test("threads-closed, code-defect: the message to the architect passes, the text
   expect(out).toMatch(
     /threads-closed-code-defect-head-3\tpass=false\t.*told=true moved=implementing/
   );
-  expect(out).toContain("threads-closed:text-fixes\thead\t6/16\t0/16\t2\t0\n");
+  expect(out).toContain("threads-closed:text-fixes\thead\t6/17\t0/17\t2\t0\n");
   expect(out).toContain("threads-closed:text-fixes\tbase\t1/1\t0/1\t0\t0\n");
   expect(out).toContain("threads-closed:code-defect\thead\t2/5\t0/5\t1\t0\n");
 });
