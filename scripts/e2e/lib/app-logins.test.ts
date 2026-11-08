@@ -280,6 +280,25 @@ describe("app-logins.ts", () => {
     expect(last.slice(-40)).toBe(failure.slice(-40));
   });
 
+  // The relay write sits inside the `for await` over the child's stderr, so an `EPIPE` it let out
+  // would reject that loop's promise, leave runTokenCommand through its `Promise.all`, and reach
+  // the `catch` that writes its diagnosis to the same dead descriptor and throws again: a caller
+  // that stopped reading stderr would get a stack trace and the wrong exit code where the helper
+  // promises the logins and exit 0, and lib/github-apps.sh's check_github_apps reads both.
+  test("a caller that stopped reading stderr still gets the logins and exit 0", async () => {
+    const relayed = `printf 'relayed\\n' >&2; cat ${join(dir, "release-101.json")}`;
+    const child = Bun.spawn(["bun", script, config(app("101", relayed), app("202")), standIn], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    // The read end is closed before the child has finished starting, let alone written: every
+    // write the helper makes to fd 2 from here on meets a reader that is gone.
+    await child.stderr.cancel();
+    const [stdout, code] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout).implement).toBe("example-implement[bot]");
+  });
+
   test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
     const escaped = "setsid sleep 60 >&2 & exit 0";
     const started = Date.now();
