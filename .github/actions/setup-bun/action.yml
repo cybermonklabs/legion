@@ -18,6 +18,12 @@ description: >-
   the third step checks the installed binary's sha256 against the row .github/ci-tools.yaml holds
   for this runner's Bun, whichever source served the bytes — oven-sh/setup-bun verifies no
   checksum of its own.
+  Both source words come from that row, through `ci_tools_source_name`, so this action writes
+  none of its own and a row that moves to another second source moves every line that names it.
+
+  A refusal leaves no tool behind: ~/.bun/bin is on this job's PATH from the first step, so the
+  third step removes the bun and the bunx there before it exits, and no later step of the job
+  runs a binary this action refused.
 
   A run off main passes no-cache, so only a run on main saves: an entry a pull request writes is
   readable by no other pull request. ci.yaml runs on no push, so the entry comes from the
@@ -75,10 +81,11 @@ runs:
           revision=$("$HOME/.bun/bin/bun" --revision) || revision=
         fi
         if [ -n "$revision" ] && [ "${revision%%+*}" = "$pinned" ]; then
-          source=github-release
+          # The release asset oven-sh/setup-bun fetched, which is every row's primary.
+          source=$(ci_tools_source_name "$row" primary)
           echo "setup-bun: the release asset served Bun $pinned, so this step installs nothing"
         else
-          source=npm
+          source=$(ci_tools_source_name "$row" second)
           echo "setup-bun: no Bun $pinned at $HOME/.bun/bin/bun, so the second source serves it"
           mkdir -p "$HOME/.bun/bin"
           # The fetch's own destination, so the 107 MB binary is written once and not three
@@ -102,4 +109,15 @@ runs:
           exit 1
         fi
         echo "setup-bun: checking $bun"
-        ci_tools_verify "${{ steps.bun-second-source.outputs.row }}" "$bun" "${{ steps.bun-second-source.outputs.source }}"
+        # The one check this action cannot run before the install: the bytes it must hold are
+        # the ones oven-sh/setup-bun already put at ~/.bun/bin, and that action puts ~/.bun/bin
+        # on the job's PATH itself, before it downloads them. A refused binary left there is one
+        # a later step of the same job runs — .github/workflows/dispatch-browser.yaml runs
+        # `bunx playwright merge-reports` in a step whose `if:` is `always()` — so the refusal
+        # takes the binary away. ci_tools_verify leaves the file where it is, by design, and
+        # this is the call site that owns it.
+        if ! ci_tools_verify "${{ steps.bun-second-source.outputs.row }}" "$bun" "${{ steps.bun-second-source.outputs.source }}"; then
+          rm -f "$HOME/.bun/bin/bun" "$HOME/.bun/bin/bunx"
+          echo "::error::setup-bun: the refused bun is removed, with the bunx beside it, from $HOME/.bun/bin, which is on this job's PATH, so no later step of this job runs the binary this step refused." >&2
+          exit 1
+        fi

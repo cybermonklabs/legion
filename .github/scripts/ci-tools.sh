@@ -19,6 +19,11 @@
 # `ghcr-mirror` or `npm`. A failure leaves no file at the destination, so a call site that checks
 # the exit status never runs a half-written or unverified file, and one that does not check it
 # finds nothing to run.
+# Those three words are the whole vocabulary, and a row's own `second_source` is written in them,
+# so a line, a refusal and the manifest say one word for one source. A call site takes the word
+# from the row with ci_tools_source_name below and writes none of its own: a row that moved to
+# another source while an action held the old word would name a service that served no byte of
+# what it installed.
 #
 # THIS FILE IS SOURCED, NEVER EXECUTED. It defines functions, declares the empty cache those
 # functions keep a read manifest row in, reads nothing and fetches nothing at load, and it is
@@ -33,8 +38,12 @@
 # THE PUBLIC FUNCTIONS.
 #
 #   ci_tools_field <row> <field>          one field of that row of the manifest, and the
-#                                         manifest's own `registry` under that name.
+#                                         manifest's own `registry` under that name. A field
+#                                         the manifest leaves null reads as an empty string.
 #   ci_tools_digest <row>                 that row's pinned digest.
+#   ci_tools_source_name <row>
+#                   <primary|second>      the one word that source is named by, for a call site
+#                                         that must write no source word of its own.
 #   ci_tools_rows [<second source>]       every row's name, in the manifest's own order, and
 #                                         only the rows whose second source is that word where
 #                                         the argument is given.
@@ -132,10 +141,15 @@ if row is None:
         f"::error::ci-tools: {want}: {path} holds no row of that name (it holds: {held})\n"
     )
     raise SystemExit(1)
-registry = document.get("registry", "")
+registry = document.get("registry") or ""
 print(f"registry\t{registry}")
+# A field the manifest leaves null reads as an empty string, which is the reading
+# .github/scripts/check-ci-tools.sh already has of `primary:` with no value and the reading
+# every caller here is written for. Python's own `None` would reach a caller as the word None:
+# an install would fetch the URL `None` through the whole retry ladder before it read the
+# second source, and the filler would ask tar for the member `None`.
 for field, value in row.items():
-    print(f"{field}\t{value}")
+    print(f"{field}\t{'' if value is None else value}")
 PY
   ) || return 1
   ci_tools__row_cache[$key]=$ci_tools__row_fields
@@ -169,6 +183,52 @@ ci_tools_field() {
   local value
   ci_tools__read value "$1" "$2" || return 1
   printf '%s\n' "$value"
+}
+
+# ci_tools_source_name <row> <primary|second>: the one word that source of that row is named by,
+# which is the word its log line and its refusal say.
+# It is what .github/actions/install-jj and .github/actions/setup-bun read their two source words
+# from, so no action holds a source word of its own and a row that moves to another second source
+# moves every sentence about it with one edit.
+#
+# `second` is the row's own `second_source`, and a word that is not one of the three this
+# repository writes is refused rather than printed: the three are the whole vocabulary, and an
+# unknown one would reach a log line and a refusal as the name of a service nobody can look up.
+# This is the vocabulary and not the list of sources a fetch can read, which is the case in
+# ci_tools__second_source below: `github-release` is a word a line may say and not a second
+# source any row has.
+#
+# `primary` is `github-release` for every row, because every row's primary is a GitHub release
+# asset: this helper fetches it for crane, changie and mise, and a third party fetches it for jj
+# (mise) and for Bun (oven-sh/setup-bun), which is why those rows carry an empty `primary`. The
+# row is read all the same, so a call site that names no row of the manifest is refused here
+# rather than printing a word about a tool this file knows nothing of.
+ci_tools_source_name() {
+  if [ "$#" -ne 2 ]; then
+    ci_tools__error "ci_tools_source_name takes a row and primary or second, and this call gave $#"
+    return 1
+  fi
+  local row=$1 which=$2 second
+  ci_tools__row "$row" || return 1
+  case "$which" in
+    primary)
+      printf '%s\n' github-release
+      ;;
+    second)
+      ci_tools__read second "$row" second_source || return 1
+      case "$second" in
+        github-release | ghcr-mirror | npm) printf '%s\n' "$second" ;;
+        *)
+          ci_tools__error "$row: the manifest's second_source is '$second', and the sources this repository names are github-release, ghcr-mirror and npm"
+          return 1
+          ;;
+      esac
+      ;;
+    *)
+      ci_tools__error "ci_tools_source_name reads the primary or the second source of a row, and this call asked for '$which'"
+      return 1
+      ;;
+  esac
 }
 
 # ci_tools_digest <row>: that row's pinned digest.
@@ -250,10 +310,21 @@ ci_tools__tempfile() {
 # `--fail` is what keeps a 504's body out of <file>, `--retry 7 --retry-all-errors` rides out a
 # flap of the service, and `--max-time` bounds one attempt, so a hung attempt becomes the exit
 # code that sends the caller to the second source.
+#
+# `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
+# may start: an attempt already running when the minute is over still finishes under
+# `--max-time`, and curl starts no attempt after it.
+# Without it a host that hangs costs the whole ladder — eight attempts of `--max-time` 60 s plus
+# a back-off of 1, 2, 4, 8, 16, 32 and 64 s, about 127 s — which is about ten minutes for one
+# row, while many jobs of .github/workflows/ci.yaml carry `timeout-minutes: 10`.
+# A row that cannot be fetched inside a minute is the outage the second source exists for, and
+# the second source gets the rest of the job's time.
+# This issue's tester measured both ladders against a source that refuses at once: 4 attempts in
+# 15 s with the bound, 8 attempts in 127 s without it.
 ci_tools__curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --max-time "$max_time" -o "$file" "$@" "$url"
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
 }
 
 # ci_tools_github_url <url>: that URL with the CI_TOOLS_GITHUB_BASE seam in place of its
@@ -415,20 +486,17 @@ ci_tools__second_source() {
   local second source fetch max_time file report status=0
   ci_tools__read second "$row" second_source || return 1
   ci_tools__read max_time "$row" max_time || return 1
-  # One decision: the source a line and a refusal name, and the function that reads it. A third
-  # source added to one of the two and forgotten in the other would leave an empty temporary file
-  # for the digest check to refuse, which is the wrong refusal for the wrong reason.
+  # The row's own word is the source a line and a refusal name, so nothing here translates it,
+  # and this case decides one thing: which function reads that source. A source word the
+  # manifest carries and this file has no reader for is refused here rather than left to fetch
+  # nothing, since an empty temporary file would be refused by the digest check instead, which
+  # is the wrong refusal for the wrong reason.
+  source=$second
   case "$second" in
-    ghcr)
-      source=ghcr-mirror
-      fetch=ci_tools__fetch_ghcr
-      ;;
-    npm)
-      source=npm
-      fetch=ci_tools__fetch_npm
-      ;;
+    ghcr-mirror) fetch=ci_tools__fetch_ghcr ;;
+    npm) fetch=ci_tools__fetch_npm ;;
     *)
-      ci_tools__error "$row: the manifest's second_source is '$second', and this file serves ghcr and npm"
+      ci_tools__error "$row: the manifest's second_source is '$second', and this file reads ghcr-mirror and npm"
       return 1
       ;;
   esac

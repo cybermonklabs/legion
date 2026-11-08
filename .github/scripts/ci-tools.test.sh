@@ -10,20 +10,23 @@
 # the kernel picks, serving a directory this file builds: `github/…` for the release asset,
 # `ghcr/token` and `ghcr/v2/…/blobs/sha256:…` for the package copy, and `npm/@scope/…tgz` for the
 # npm package. The case points the helper's four seams (CI_TOOLS_MANIFEST, CI_TOOLS_GITHUB_BASE,
-# CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE) at that origin and at a fixture manifest of three rows,
-# one per source kind: a ghcr row with a primary, a ghcr row without one (jj's shape, where mise
-# fetches the primary bytes), and an npm row (Bun's shape). The origin writes every path it is
-# asked for to a log, which is how a case says where a run went and, for the mismatch case, where
-# it did not go.
+# CI_TOOLS_GHCR_BASE, CI_TOOLS_NPM_BASE) at that origin and at a fixture manifest of five rows:
+# a ghcr-mirror row with a primary, a ghcr-mirror row without one (jj's shape, where mise fetches
+# the primary bytes), an npm row (Bun's shape), a row whose `primary:` the manifest leaves null,
+# and a row whose `second_source` is a word this repository does not write. The origin writes
+# every path it is asked for to a log, which is how a case says where a run went and, for the
+# mismatch case, where it did not go.
 #
 # Every run of the helper is `bash -euo pipefail -c 'source …'`, the shell a GitHub `run:` step
 # has, because the file under test is sourced into such a shell and carries no `set` of its own.
 #
-# CURL_HOME: the helper gives curl `--retry 7 --retry-all-errors`, whose backoff is 1, 2, 4 … 64
-# seconds, so each case where a source refuses would sleep about 127 seconds before curl gave up.
-# The cases give curl a home whose .curlrc sets `retry-max-time = 1`, which bounds that sleep and
-# changes nothing else: a CI runner sets no CURL_HOME, so the pinned retry budget is what runs
-# there.
+# THE CURL ON THESE CASES' PATH: the helper pins `--retry 7 --retry-all-errors` with
+# `--retry-max-time 60`, so each case where a source refuses would sleep up to a minute before
+# curl gave up. The cases put a curl of their own first on PATH, a two-line script that runs the
+# real curl with `--retry-max-time 1` appended after the helper's own arguments, which curl reads
+# as the last word on that option. It bounds the sleep and changes nothing else. A .curlrc cannot
+# do it, because curl reads its configuration file before the command line and the helper's own
+# bound would win. A CI runner sees neither, so the pinned ladder is what runs there.
 #
 # Run from anywhere: .github/scripts/ci-tools.test.sh
 # CI runs it in ci.yaml's test job.
@@ -48,10 +51,18 @@ REGISTRY_PATH=example/fixture/ci
 
 manifest="$work/ci-tools.yaml"
 runner_temp="$work/runner-temp"
-mkdir -p "$runner_temp" "$work/payloads" "$work/dest" "$work/curl"
-printf 'retry-max-time = 1\n' > "$work/curl/.curlrc"
+mkdir -p "$runner_temp" "$work/payloads" "$work/dest" "$work/bin"
 
-# The three payloads, one per fixture row, and a copy of each with one byte changed. Nothing is
+# The curl the cases run, first on their PATH: the real one with `--retry-max-time 1` after the
+# arguments the helper wrote, which is the bound the header above explains.
+real_curl=$(command -v curl)
+cat > "$work/bin/curl" <<SH
+#!/usr/bin/env bash
+exec "$real_curl" "\$@" --retry-max-time 1
+SH
+chmod 0755 "$work/bin/curl"
+
+# The three payloads, one per source kind, and a copy of each with one byte changed. Nothing is
 # pulled: each digest below is read off the bytes this file just wrote.
 printf 'the bytes a release asset would hold\n' > "$work/payloads/tarred"
 printf 'jj, the binary inside a release tarball\n' > "$work/payloads/jjlike"
@@ -96,7 +107,7 @@ tools:
     digest: $TARRED
     digest_of: the fixture's release tarball, whole
     primary: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 7
     mirror_from: https://github.com/example/tarred/releases/download/v1.0.0/tarred.tar.gz
     mirror_member: ""
@@ -105,7 +116,7 @@ tools:
     digest: $JJLIKE
     digest_of: the binary inside the fixture's release tarball
     primary: ""
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 7
     mirror_from: https://github.com/example/jjlike/releases/download/v2.0.0/jjlike.tar.gz
     mirror_member: ./jjlike
@@ -118,6 +129,27 @@ tools:
     max_time: 7
     npm_package: "@fixture/packaged"
     npm_member: package/bin/packaged
+  # A row whose `primary:` the manifest leaves null, which is how a reader finds Python's own
+  # `None` where an empty string belongs. Its bytes are the tarred row's, so the copy the origin
+  # already holds serves it.
+  - name: nullprimary
+    version: 4.0.0
+    digest: $TARRED
+    digest_of: the fixture's release tarball, whole
+    primary:
+    second_source: ghcr-mirror
+    max_time: 7
+    mirror_from: https://github.com/example/nullprimary/releases/download/v4.0.0/nullprimary.tar.gz
+    mirror_member: ""
+  # A row whose second source is a word this repository does not write, which no reader of a
+  # source word may print.
+  - name: oddsource
+    version: 5.0.0
+    digest: $TARRED
+    digest_of: the fixture's release tarball, whole
+    primary: ""
+    second_source: s3
+    max_time: 7
 YAML
 
 # The origin: a directory server that writes every path it is asked for, served or not, to a log.
@@ -192,7 +224,7 @@ run() {
     CI_TOOLS_GITHUB_BASE="$base/github" \
     CI_TOOLS_GHCR_BASE="$base/ghcr" \
     CI_TOOLS_NPM_BASE="$base/npm" \
-    CURL_HOME="$work/curl" \
+    PATH="$work/bin:$PATH" \
     RUNNER_TEMP="$runner_temp" \
     bash -euo pipefail -c 'source "$1"; "$2" "${@:3}"' bash "$helper" "$@" 2>&1)
   status=$?
@@ -366,11 +398,64 @@ check "and prints nothing" "$(is "$out" "")"
 run ci_tools_digest crane
 check "an unknown row fails" "$(is "$status" 1)"
 check "naming the row and what the manifest holds" \
-  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name (it holds: jjlike, packaged, tarred)$")"
+  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name (it holds: jjlike, nullprimary, oddsource, packaged, tarred)$")"
 run ci_tools_field tarred npm_package
 check "a field this row does not carry fails" "$(is "$status" 1)"
 check "naming the row and the field" \
   "$(contains "$out" "^::error::ci-tools: tarred: this row of the manifest carries no field 'npm_package'")"
+
+echo "case: a field the manifest leaves null"
+# `primary:` with no value is a row whose primary bytes a third party fetches, and it reads as
+# an empty string. Python's own `None` would reach the caller as the word None: the fetch would
+# take that word for a URL and spend the whole retry ladder on it before it read the second
+# source, and the filler would ask tar for a member of that name.
+origin null-primary
+dest="$work/dest/null-primary"
+run ci_tools_field nullprimary primary
+check "the field is empty" "$(is "$out" "")"
+check "and reading it exits 0" "$(is "$status" 0)"
+run ci_tools_fetch nullprimary "$dest"
+check "the fetch exits 0" "$(is "$status" 0)"
+check "the destination holds the bytes" "$(is "$(digest_of "$dest")" "$TARRED")"
+check "and the line names the second source" \
+  "$(contains "$out" "^ci-tools: nullprimary: ghcr-mirror served the bytes, sha256 $TARRED$")"
+check "nothing is said of a primary this row has not" \
+  "$(is "$(contains "$out" 'github-release')" false)"
+check "no release asset was asked for" "$(is "$(asked_for "$log" "/github/")" false)"
+check "and the blob the digest names was" \
+  "$(is "$(asked_for "$log" "/ghcr/v2/$REGISTRY_PATH/blobs/sha256:$TARRED")" true)"
+check "and no temporary file is left" "$(is "$(temporary_files)" "")"
+
+echo "case: ci_tools_source_name"
+# The one reader of a source word: .github/actions/install-jj and .github/actions/setup-bun take
+# both of theirs from here, so a row that moved to another second source cannot leave an action
+# naming a service that served no byte of what it installed.
+# These cases read the manifest and no source, so the base is a port nothing listens on.
+base="http://127.0.0.1:1"
+run ci_tools_source_name tarred primary
+check "the primary of a row that holds one is github-release" "$(is "$out" "github-release")"
+run ci_tools_source_name packaged primary
+check "and so is the primary of a row a third party fetches" "$(is "$out" "github-release")"
+run ci_tools_source_name tarred second
+check "the second source is the row's own word" "$(is "$out" "ghcr-mirror")"
+run ci_tools_source_name packaged second
+check "for an npm row too" "$(is "$out" "npm")"
+run ci_tools_source_name oddsource second
+check "a word that is none of the three fails" "$(is "$status" 1)"
+check "naming the row, the word and the three" \
+  "$(contains "$out" "^::error::ci-tools: oddsource: the manifest's second_source is 's3', and the sources this repository names are github-release, ghcr-mirror and npm$")"
+run ci_tools_source_name tarred both
+check "a mode that is neither primary nor second fails" "$(is "$status" 1)"
+check "naming what the call asked for" \
+  "$(contains "$out" "^::error::ci-tools: ci_tools_source_name reads the primary or the second source of a row, and this call asked for 'both'$")"
+run ci_tools_source_name tarred
+check "one argument fails" "$(is "$status" 1)"
+check "saying what it takes" \
+  "$(contains "$out" "^::error::ci-tools: ci_tools_source_name takes a row and primary or second, and this call gave 1$")"
+run ci_tools_source_name crane primary
+check "a row the manifest does not hold fails" "$(is "$status" 1)"
+check "naming that row" \
+  "$(contains "$out" "^::error::ci-tools: crane: $manifest holds no row of that name")"
 
 echo "case: ci_tools_verify holds a file this run did not fetch to its row"
 run ci_tools_verify tarred "$work/payloads/tarred" ghcr-mirror

@@ -83,7 +83,7 @@ tools:
     digest: $TOOL
     digest_of: the release tarball, whole
     primary: $TOOL_URL
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 60
     mirror_from: $TOOL_URL
     mirror_member: ""
@@ -93,7 +93,7 @@ tools:
     digest: $MISE
     digest_of: the release tarball, whole
     primary: $MISE_URL
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 60
     mirror_from: $MISE_URL
     mirror_member: ""
@@ -103,7 +103,7 @@ tools:
     digest: $JJ
     digest_of: the binary inside the release tarball
     primary: ""
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 60
     mirror_from: $JJ_URL
     mirror_member: ./jj
@@ -232,7 +232,7 @@ YAML
 run_gate "$root"
 check "fails" "$(is "$status" 1)"
 check "names the row and the two sources the helper serves" \
-  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves ghcr and npm")"
+  "$(contains "$out" "the elsewhere row's second_source is s3, and .github/scripts/ci-tools.sh serves ghcr-mirror and npm")"
 
 echo "case: rule 1 — a primary that does not hold the row's version"
 root=$(fixture shape-primary-version)
@@ -243,7 +243,7 @@ cat >> "$root/.github/ci-tools.yaml" <<YAML
     digest: $BUN
     digest_of: the release tarball, whole
     primary: https://github.com/example/tool/releases/download/v4.4.3/adrift-4.4.3.tar.gz
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/example/tool/releases/download/v4.4.4/adrift-4.4.4.tar.gz
     mirror_member: ""

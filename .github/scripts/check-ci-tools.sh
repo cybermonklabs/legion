@@ -19,11 +19,12 @@
 #
 #   1. Shape.
 #      Every row carries `name`, `version`, `digest`, `digest_of`, `primary`, `second_source` and
-#      `max_time`, a `ghcr` row carries `mirror_from` and `mirror_member` as well, and an `npm`
-#      row carries `npm_package` and `npm_member`.
+#      `max_time`, a `ghcr-mirror` row carries `mirror_from` and `mirror_member` as well, and an
+#      `npm` row carries `npm_package` and `npm_member`.
 #      `digest` is 64 lower-case hex characters, written bare, because that one literal goes into
 #      a `sha256sum` line and into a ghcr blob URL alike.
-#      Two rows never share a name, and `second_source` is `ghcr` or `npm`.
+#      Two rows never share a name, and `second_source` is `ghcr-mirror` or `npm`, the words
+#      .github/scripts/ci-tools.sh names those sources by in every line and every refusal.
 #      A row's `primary`, where it is not empty, holds the row's `version`, and so does its
 #      `mirror_from`: a row whose version and URL disagree installs one version and pins another.
 #
@@ -126,7 +127,9 @@ NPM_FIELDS = ("npm_package", "npm_member")
 # A field whose value may be empty: `primary` on a row whose bytes a third party fetches, and
 # `mirror_member` on a row that pushes an archive whole.
 MAY_BE_EMPTY = {"primary", "mirror_member"}
-SECOND_SOURCES = ("ghcr", "npm")
+# The words a row writes its second source as, which are the words the helper's own lines and
+# refusals say.
+SECOND_SOURCES = ("ghcr-mirror", "npm")
 DIGEST = re.compile(r"[0-9a-f]{64}")
 
 # The npm registry, which is CI_TOOLS_NPM_BASE's default in the helper: this gate compares a URL
@@ -205,7 +208,7 @@ registry = document.get("registry")
 if not isinstance(registry, str) or not registry.strip():
     fatal(
         f"{CI_TOOLS}:{key_line(document, 'registry')}: this file names no registry:, and every "
-        f"ghcr row's copy lives in that package"
+        f"ghcr-mirror row's copy lives in that package"
     )
 registry = registry.strip()
 rows = document.get("tools")
@@ -246,7 +249,7 @@ for row in rows:
             f"{one_line(second)}, and {HELPER} serves {' and '.join(SECOND_SOURCES)}."
         )
         continue
-    wanted = COMMON_FIELDS + (GHCR_FIELDS if second == "ghcr" else NPM_FIELDS)
+    wanted = COMMON_FIELDS + (GHCR_FIELDS if second == "ghcr-mirror" else NPM_FIELDS)
     missing = [field for field in wanted if field not in row]
     if missing:
         problems.append(

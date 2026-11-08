@@ -14,8 +14,8 @@
 # `ARG JJ_TOOL` of that same file for jj,
 # and .bun-version for the three bun rows.
 # .github/scripts/check-ci-tools.sh is the gate that holds a row to its pin and to this file's
-# shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr row from ci.yaml's
-# `ci-images` job, the one copy path this repository has.
+# shape, and .github/scripts/mirror-ci-tools.sh fills the copy of each ghcr-mirror row from
+# ci.yaml's `ci-images` job, the one copy path this repository has.
 #
 # Raising a tool is two commits, as .github/ci-images.yaml already requires.
 # The new version's row goes in first, and the pin and the call sites stay where they are, so the
@@ -43,8 +43,8 @@
 # That is what those rows pin, and the check runs on the primary path too: an install that got its
 # bytes from the third party verifies the same digest as one that got them from the second source.
 
-# The package every ghcr copy lives in: the one .github/ci-images.yaml publishes, which is public
-# and which a job pulls with no login (sjawhar/legion#2512).
+# The package every ghcr-mirror copy lives in: the one .github/ci-images.yaml publishes, which is
+# public and which a job pulls with no login (sjawhar/legion#2512).
 registry: ghcr.io/cybermonklabs/legion/ci
 
 tools:
@@ -61,17 +61,19 @@ tools:
     digest_of: the release tarball go-containerregistry_Linux_x86_64.tar.gz, whole
     # The URL the primary path fetches, empty where a third party fetches the bytes for us.
     primary: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
-    # Where the bytes come from when the primary does not serve them: `ghcr` for a copy in the
-    # package `registry:` names, `npm` for the npm registry.
-    second_source: ghcr
+    # Where the bytes come from when the primary does not serve them: `ghcr-mirror` for a copy in
+    # the package `registry:` names, `npm` for the npm registry.
+    # It is the one word every log line and every refusal of that source says, so a row that
+    # moves to another source moves every sentence about it with one edit.
+    second_source: ghcr-mirror
     # The per-attempt bound in seconds the helper gives curl. One attempt that hangs past a minute
     # is the outage the second source answers, so every row carries 60.
     max_time: 60
-    # ghcr rows only. The URL .github/scripts/mirror-ci-tools.sh fetches the bytes from to fill the
-    # copy. It is the row's `primary` wherever the primary is the asset itself.
+    # ghcr-mirror rows only. The URL .github/scripts/mirror-ci-tools.sh fetches the bytes from to
+    # fill the copy. It is the row's `primary` wherever the primary is the asset itself.
     mirror_from: https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz
-    # ghcr rows only. The tar member to take out of `mirror_from`'s archive before the digest is
-    # checked and the bytes are pushed, or "" to push the archive whole.
+    # ghcr-mirror rows only. The tar member to take out of `mirror_from`'s archive before the
+    # digest is checked and the bytes are pushed, or "" to push the archive whole.
     mirror_member: ""
 
   # changie, which renders the changelog. .github/actions/install-changie installs it.
@@ -80,7 +82,7 @@ tools:
     digest: eab168c8287a6e91912e1c02e5260911232d945bfd3c89d8a0e1ace6bb7b6161
     digest_of: the release tarball changie_1.26.0_linux_amd64.tar.gz, whole
     primary: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_amd64.tar.gz
     mirror_member: ""
@@ -93,7 +95,7 @@ tools:
     digest: 0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
     digest_of: the release tarball mise-v2026.8.12-linux-x64.tar.gz, whole
     primary: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/jdx/mise/releases/download/v2026.8.12/mise-v2026.8.12-linux-x64.tar.gz
     mirror_member: ""
@@ -111,7 +113,7 @@ tools:
     digest: fe32ffcd64432000027c87030af074eb48e55181ca389e09d3ab4b44200aba7a
     digest_of: the jj binary itself, the 24424232-byte `./jj` member of the release tarball
     primary: ""
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/sjawhar/jj/releases/download/v0.45.1-sami.20260910-043938/jj-v0.45.1-sami.20260910-043938-x86_64-unknown-linux-musl.tar.gz
     mirror_member: ./jj

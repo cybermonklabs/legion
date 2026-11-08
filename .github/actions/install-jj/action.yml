@@ -17,6 +17,12 @@ description: >-
   path installed it, so a jj that mise fetched from the GitHub release asset is held to the same
   literal as one the second source served. That second source is a copy of the binary itself in
   the package .github/ci-tools.yaml names, read when mise cannot reach the release asset.
+  Both source words come from that row too, through `ci_tools_source_name`, so this action writes
+  none of its own and a row that moves to another second source moves every line that names it.
+
+  A refusal leaves no tool behind: the check runs on the binary where mise or the second source
+  put it, and ~/.local/bin/jj — which is on PATH for every later step of the job — is written
+  only after it passes.
 runs:
   using: composite
   steps:
@@ -58,15 +64,25 @@ runs:
         fi
         if "$HOME/.local/bin/mise" install "$jj_tool"; then
           # mise fetched the bytes from the GitHub release asset, so that is the source named.
-          source=github-release
-          install -m 0755 "$("$HOME/.local/bin/mise" x "$jj_tool" -- sh -c 'command -v jj')" "$HOME/.local/bin/jj"
+          source=$(ci_tools_source_name jj primary)
+          # The binary is held to the row where mise put it, and copied to ~/.local/bin/jj only
+          # after that passes. ~/.local/bin is on $GITHUB_PATH from the step above, so a binary
+          # written there before the check is one a later step of this job runs whatever this
+          # step then exits with.
+          installed=$("$HOME/.local/bin/mise" x "$jj_tool" -- sh -c 'command -v jj')
+          echo "mise installed $jj_tool at $installed"
+          ci_tools_verify jj "$installed" "$source"
+          install -m 0755 "$installed" "$HOME/.local/bin/jj"
         else
           echo "mise did not install $jj_tool; reading the second source .github/ci-tools.yaml names"
-          source=ghcr-mirror
+          source=$(ci_tools_source_name jj second)
+          # ci_tools_fetch_fallback verified the digest before it put the bytes at this path and
+          # leaves nothing there when it refuses, so this check reads what that fetch allowed and
+          # the copy to ~/.local/bin/jj again happens only after it passes.
           ci_tools_fetch_fallback jj "$RUNNER_TEMP/jj"
+          ci_tools_verify jj "$RUNNER_TEMP/jj" "$source"
           install -m 0755 "$RUNNER_TEMP/jj" "$HOME/.local/bin/jj"
           rm -f "$RUNNER_TEMP/jj"
         fi
         echo "$jj_tool: $HOME/.local/bin/jj"
-        ci_tools_verify jj "$HOME/.local/bin/jj" "$source"
         "$HOME/.local/bin/jj" --version

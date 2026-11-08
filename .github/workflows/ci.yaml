@@ -2169,7 +2169,7 @@ jobs:
           registry=$(ci_tools_field crane registry)
           path=${registry#*/}
           token=$(ci_tools_ghcr_token)
-          rows=$(ci_tools_rows ghcr)
+          rows=$(ci_tools_rows ghcr-mirror)
           cold=""
           for row in $rows; do
             digest=$(ci_tools_digest "$row")
@@ -2360,7 +2360,7 @@ jobs:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the crane-primary case
-        run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --expect fail --expect-source github-release --expect-untried ghcr
+        run: .github/scripts/ci-tools-proof.sh report crane-primary --outcome ${{ steps.crane-primary.outcome }} --expect fail --expect-source github-release --expect-untried ghcr-mirror
 
       # Case 2 of 8: crane's second source serves one byte changed, after the primary — the real
       # host, which the fault holds — did not serve them at all.
@@ -2388,7 +2388,7 @@ jobs:
           CI_TOOLS_GHCR_BASE: ${{ steps.origin.outputs.ghcr }}
 
       - name: Read the changie-primary case
-        run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --expect fail --expect-source github-release --expect-untried ghcr
+        run: .github/scripts/ci-tools-proof.sh report changie-primary --outcome ${{ steps.changie-primary.outcome }} --expect fail --expect-source github-release --expect-untried ghcr-mirror
 
       # Case 4 of 8: changie's second source serves one byte changed.
       - name: Corrupt changie for its second-source case

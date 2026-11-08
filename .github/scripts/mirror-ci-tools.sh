@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fills the copy of every `second_source: ghcr` row of .github/ci-tools.yaml in the package that
-# file's `registry:` names.
+# Fills the copy of every `second_source: ghcr-mirror` row of .github/ci-tools.yaml in the
+# package that file's `registry:` names.
 # An hour of 504s on GitHub's release assets holds every merge of this repository, because each
 # of those installs reads one source and has nowhere else to go (dispatch://INFRA-1873).
 # The copy in the package is the second source those installs read, and this script is what puts
@@ -33,7 +33,7 @@
 # ci.yaml's ci-images job holds `packages: write` and sets both variables, and a run with either
 # of them empty is refused before it reads anything.
 #
-# WHAT IT DOES WITH EACH ghcr ROW, IN ORDER.
+# WHAT IT DOES WITH EACH ghcr-mirror ROW, IN ORDER.
 #
 #   1. It asks the package for the row's blob, and for the tag that names it.
 #      A blob the package holds under a tag that resolves is `held`, and nothing is pushed.
@@ -64,8 +64,8 @@
 # An `npm` row needs no copy of ours, and this run prints one line per such row and reads
 # nothing for it.
 #
-# It prints exactly one of `held`, `filled` or `cold` per ghcr row, one line per npm row, and one
-# summary line at the end that counts each.
+# It prints exactly one of `held`, `filled` or `cold` per ghcr-mirror row, one line per npm row,
+# and one summary line at the end that counts each.
 #
 # THE THREE SEAMS, each read with a default, so a CI job sets none of them. They are
 # .github/scripts/ci-tools.sh's own names, so one reader learns one set:
@@ -157,8 +157,12 @@ fields = (
     "max_time",
 )
 print(registry)
+# A field the manifest leaves null reads as an empty string, as it does through
+# .github/scripts/ci-tools.sh: `mirror_member:` with no value is a row that pushes its archive
+# whole, and Python's own `None` would reach this run as the word None and be asked of tar as
+# the member to take out.
 for row in rows:
-    print("\x1f".join(str(row.get(field, "")) for field in fields))
+    print("\x1f".join("" if row.get(field) is None else str(row.get(field)) for field in fields))
 PY
 )
 
@@ -311,7 +315,7 @@ cold=0
 uncopied=0
 while IFS=$'\x1f' read -r name second digest version from member max_time; do
   [ -n "$name" ] || continue
-  if [ "$second" != ghcr ]; then
+  if [ "$second" != ghcr-mirror ]; then
     echo "none $name needs no copy: its second source is $second, which serves the bytes itself"
     uncopied=$((uncopied + 1))
     continue
@@ -410,4 +414,4 @@ while IFS=$'\x1f' read -r name second digest version from member max_time; do
   filled=$((filled + 1))
   rm -f -- "$asset" "$work/$name.member"
 done <<<"$rows"
-echo "$held ghcr row(s) held, $filled filled, $cold cold, and $uncopied row(s) that need no copy"
+echo "$held ghcr-mirror row(s) held, $filled filled, $cold cold, and $uncopied row(s) that need no copy"

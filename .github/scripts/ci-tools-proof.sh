@@ -299,7 +299,7 @@ payload_names() {
   second=$(ci_tools_field "$row" second_source)
   {
     [ -z "$primary" ] || printf '%s\n' "${primary##*/}"
-    if [ "$second" = ghcr ]; then
+    if [ "$second" = ghcr-mirror ]; then
       mirror_from=$(ci_tools_field "$row" mirror_from)
       [ -z "$mirror_from" ] || printf '%s\n' "${mirror_from##*/}"
       printf 'sha256:%s\n' "$(ci_tools_digest "$row")"
@@ -371,7 +371,7 @@ stage() {
     rm -f "$file"
   done
   [ -z "$failures" ] ||
-    die "no correct bytes for$failures, so the origin cannot stand in for their source; the copy of every ghcr row is filled by .github/scripts/mirror-ci-tools.sh in the ci-images job this job needs"
+    die "no correct bytes for$failures, so the origin cannot stand in for their source; the copy of every ghcr-mirror row is filled by .github/scripts/mirror-ci-tools.sh in the ci-images job this job needs"
   note "the payload the origin serves is $payload"
 }
 
@@ -599,13 +599,13 @@ origin_served() {
   grep -qE "^GET $1[^ ]* row=$2 corrupt=(yes|no) status=200" <<<"$lines"
 }
 
-# route_of <source>: the origin route one source serves, read from either spelling a case writes
-# — the name a refusal of .github/scripts/ci-tools.sh carries, or the manifest's own
+# route_of <source>: the origin route one source serves, read from the one word that source has
+# — the name a refusal of .github/scripts/ci-tools.sh carries, which is also the manifest's own
 # `second_source` word.
 route_of() {
   case $1 in
-    github-release | github) printf '/github/\n' ;;
-    ghcr-mirror | ghcr) printf '/ghcr/\n' ;;
+    github-release) printf '/github/\n' ;;
+    ghcr-mirror) printf '/ghcr/\n' ;;
     npm) printf '/npm/\n' ;;
     *) die "report: '$1' is no source this rig serves (github-release, ghcr-mirror or npm)" ;;
   esac

@@ -27,10 +27,14 @@
 # symlink puts at the fixture root, and it reads the manifest at the default path under that
 # root.
 #
-# CURL_HOME: the script gives curl `--retry 7 --retry-all-errors`, whose backoff is 1, 2, 4 … 64
-# seconds, so the case whose asset does not answer would sleep about 127 seconds. The cases give
-# curl a home whose .curlrc sets `retry-max-time = 1`, which bounds that sleep and changes nothing
-# else: a CI runner sets no CURL_HOME, so the pinned retry budget is what runs there.
+# THE CURL ON THESE CASES' PATH: the script fetches through .github/scripts/ci-tools.sh, which
+# pins `--retry 7 --retry-all-errors` with `--retry-max-time 60`, so the case whose asset does
+# not answer would sleep up to a minute. The cases put a curl of their own first on PATH, a
+# two-line script that runs the real curl with `--retry-max-time 1` appended after the arguments
+# the helper wrote, which curl reads as the last word on that option. It bounds the sleep and
+# changes nothing else. A .curlrc cannot do it, because curl reads its configuration file before
+# the command line and the helper's own bound would win. A CI runner sees neither, so the pinned
+# ladder is what runs there.
 #
 # Run from anywhere: .github/scripts/mirror-ci-tools.test.sh
 # CI runs it in ci.yaml's test job.
@@ -55,8 +59,16 @@ REGISTRY_PATH=example/fixture/ci
 ACTOR=fixture-actor
 
 runner_temp="$work/runner-temp"
-mkdir -p "$runner_temp" "$work/payloads" "$work/curl"
-printf 'retry-max-time = 1\n' > "$work/curl/.curlrc"
+mkdir -p "$runner_temp" "$work/payloads" "$work/bin"
+
+# The curl the cases run, first on their PATH: the real one with `--retry-max-time 1` after the
+# arguments the helper wrote, which is the bound the header above explains.
+real_curl=$(command -v curl)
+cat > "$work/bin/curl" <<SH
+#!/usr/bin/env bash
+exec "$real_curl" "\$@" --retry-max-time 1
+SH
+chmod 0755 "$work/bin/curl"
 
 # digest_of <file>: the sha256 the manifest writes bare.
 digest_of() { sha256sum -- "$1" | awk '{ print $1 }'; }
@@ -253,7 +265,7 @@ row() {
     digest: $WHOLE
     digest_of: the fixture's release tarball, whole
     primary: $WHOLE_URL
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 7
     mirror_from: $WHOLE_URL
     mirror_member: ""
@@ -266,7 +278,7 @@ YAML
     digest: $INNER
     digest_of: the binary inside the fixture's release tarball
     primary: ""
-    second_source: ghcr
+    second_source: ghcr-mirror
     max_time: 7
     mirror_from: $INNER_URL
     mirror_member: ./inner
@@ -347,7 +359,7 @@ run_mirror() {
     CI_TOOLS_GITHUB_BASE="$base/github" \
     GITHUB_ACTOR="$ACTOR" \
     GITHUB_TOKEN=fixture-password \
-    CURL_HOME="$work/curl" \
+    PATH="$work/bin:$PATH" \
     RUNNER_TEMP="$runner_temp" \
     "$@" "$root/.github/scripts/mirror-ci-tools.sh" 2>&1)
   status=$?
@@ -368,7 +380,7 @@ printf 'a manifest\n' > "$state/manifests/$WHOLE_TAG"
 run_mirror
 check "exits 0" "$(is "$status" 0)"
 check "holds the row" "$(contains "$out" "^held whole sha256:$WHOLE ($WHOLE_TAG)$")"
-check "counts it" "$(contains "$out" '^1 ghcr row(s) held, 0 filled, 0 cold, and 0 row(s) that need no copy$')"
+check "counts it" "$(contains "$out" '^1 ghcr-mirror row(s) held, 0 filled, 0 cold, and 0 row(s) that need no copy$')"
 check "asked for a pull,push token" \
   "$(contains "$(cat "$log")" "^GET token service=ghcr.io&scope=repository:$REGISTRY_PATH:pull,push$")"
 check "read the blob and the tag" \
@@ -397,7 +409,7 @@ fixture fills-the-row whole
 run_mirror
 check "exits 0" "$(is "$status" 0)"
 check "fills the row" "$(contains "$out" "^filled whole sha256:$WHOLE ($WHOLE_TAG)$")"
-check "counts it" "$(contains "$out" '^0 ghcr row(s) held, 1 filled, 0 cold, and 0 row(s) that need no copy$')"
+check "counts it" "$(contains "$out" '^0 ghcr-mirror row(s) held, 1 filled, 0 cold, and 0 row(s) that need no copy$')"
 check "read the release asset" \
   "$(is "$(requests 'GET asset')" "GET asset /$WHOLE_ASSET ")"
 check "pushed the layer, then the config, then the manifest" \
@@ -465,7 +477,7 @@ check "warns beside it" \
   "$(contains "$out" "^::warning::mirror-ci-tools: whole has no second source yet, because $WHOLE_URL did not answer this run")"
 check "says each install keeps the source it has" \
   "$(contains "$out" 'Each install of this tool keeps the single source it has today')"
-check "counts it" "$(contains "$out" '^0 ghcr row(s) held, 0 filled, 1 cold, and 0 row(s) that need no copy$')"
+check "counts it" "$(contains "$out" '^0 ghcr-mirror row(s) held, 0 filled, 1 cold, and 0 row(s) that need no copy$')"
 check "pushes nothing" "$(is "$(requests PUT)$(requests POST)" "")"
 check "and left no temporary file" "$(is "$(temporary_files)" "")"
 
@@ -498,7 +510,7 @@ run_mirror
 check "exits 0" "$(is "$status" 0)"
 check "says the row needs no copy" \
   "$(contains "$out" '^none packaged needs no copy: its second source is npm, which serves the bytes itself$')"
-check "counts it" "$(contains "$out" '^0 ghcr row(s) held, 0 filled, 0 cold, and 1 row(s) that need no copy$')"
+check "counts it" "$(contains "$out" '^0 ghcr-mirror row(s) held, 0 filled, 0 cold, and 1 row(s) that need no copy$')"
 check "and reads nothing for it" "$(is "$(requests HEAD)$(requests 'GET asset')" "")"
 
 echo "case: a run with no GITHUB_TOKEN"
