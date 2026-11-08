@@ -3387,49 +3387,34 @@ func TestABurstOfConcurrentLiveWritesStaysUnderThePodsMemory(t *testing.T) {
 		t.Logf("%d of the writes the server answered 200 it answered past their caller's %s deadline; the line above gives each one's two clocks", late, liveWriteDeadline)
 	}
 
-	// The slots the writes' forks held, which is what made them wait, and what the budget did
-	// with the rooms of the documents written cold: a publish over this fill opens none (docs'
-	// publishedWithoutARoom), and the settlement each such write leaves owed opens one in its
-	// turn and gives it back, which the budget closes as soon as that settlement is done with it
-	// since the browsers of the fill hold it full (closeIfOpenedOverBudget, sweepRooms).
+	// What the pod's copy pool did under the burst, and what the budget did with the rooms of the
+	// documents written cold: a publish over this fill opens none (docs' publishedWithoutARoom),
+	// and the settlement each such write leaves owed opens one in its turn and gives it back,
+	// which the budget closes as soon as that settlement is done with it since the browsers of
+	// the fill hold it full (closeIfOpenedOverBudget, sweepRooms).
 	//
-	// How many of the burst's writes apply is the pod's to decide and not this drive's: at the
-	// calibration the pod's whole pool is one slot, each fork holds what its own copy costs for
-	// seconds, and every caller's request is answered 503 once it has spent the server's wait
-	// bound queued behind them (docs.WriteWaitBound), so the burst's applied count is what fits
-	// in that bound - four here, and thirteen when the writes waited for the client's own minute
-	// instead, both measured while every fork took a whole slot whatever it weighed
-	// (dispatch://INFRA-179). The settlement's opening is therefore proven beside the burst
-	// rather than inside it, by one cold write of its own below, which applies because nothing
-	// contends with it; what the burst itself holds is that the forks queued and that every
-	// write was answered.
-	holds := loadSlotHolds(t, window)
-	logLoadSlots(t, "the burst of concurrent live writes", holds)
+	// Neither is asserted here, and the measurements say why. The pool is no longer what these
+	// writes wait for: weighed at its own cost a fork of a mebibyte takes 42,493,360 bytes of the
+	// calibration's 600,000,000-byte pool, fourteen at a time, and over this burst not one holder
+	// waited the tenth of a second a grant's release is logged at (docs' loadSlotLogged) - what
+	// the writes wait for is the write limit at the request's entry, and then the two processors.
+	// And how many of the burst's writes apply is the pod's to decide and not this drive's: a
+	// caller is answered 503 once its request has spent the server's bound (docs.WriteWaitBound,
+	// docs.WriteRequestBound), so the applied count is what the pod finishes inside it - 14 to 17
+	// of the 320 here, against 4 while every fork took a whole slot whatever it weighed - which
+	// of those are cold varies run to run, and whether the budget is still full when their
+	// settlements run varies with it, so an assertion here on the settlement's opening is an
+	// assertion about the timing of a burst: it read four closes in one run of this head and none
+	// in the next. The opening itself is held where it can be held exactly, over a budget a test
+	// keeps full (docs, TestAWritePublishesIntoNoRoomWhileTheBudgetHasNoOpeningForOne).
+	//
+	// What the burst itself holds is what it is for: every write answered, applied or 503, every
+	// refused document unchanged, the person's typing and the ordinary read beside it, and the
+	// pod's memory under its limit.
+	logLoadSlots(t, "the burst of concurrent live writes", loadSlotHolds(t, window))
 	t.Logf("the room budget closed %d rooms the server's own work opened over it and swept %d unused rooms during the burst",
 		len(serverOpenedCloseLine.FindAllString(window, -1)), len(budgetCloseLine.FindAllString(window, -1)))
-	if len(holds) == 0 {
-		t.Errorf("the server logged no holder of a load grant that waited for one, want the forks of the writes that queued behind the pod's %d-byte pool", int64(worstCaseLoadSlotBytesForTest))
-	}
 
-	// One cold write over the same fill, on its own: it is answered 200, its publish opens no
-	// room, and the settlement it leaves owed takes the budget's one opening in its turn and is
-	// closed out of it again, which is the mechanism the burst above cannot time.
-	alone := memory.projectDocumentCopies(t, sourceID, 1)[0]
-	aloneMark := len(server.output.String())
-	aloneCtx, cancelAlone := context.WithTimeout(context.Background(), liveWriteDeadline)
-	answeredAlone, aloneErr := server.editWithin(aloneCtx, alone, find, with)
-	cancelAlone()
-	if aloneErr != nil || answeredAlone.status != http.StatusOK {
-		t.Fatalf("the one cold write over the fill was answered %d (%v), want 200: nothing contends with it, so the wait bound cannot refuse it",
-			answeredAlone.status, aloneErr)
-	}
-	memory.waitForSettled(t, alone)
-	aloneWindow := server.output.String()[aloneMark:]
-	opened := len(serverOpenedCloseLine.FindAllString(aloneWindow, -1))
-	t.Logf("the one cold write over the fill: applied, and the budget closed %d rooms the server's own work opened over it", opened)
-	if opened == 0 {
-		t.Errorf("the room budget closed no room the server's own work opened over it after a cold write settled over a full fill, want the one its settlement took the budget's opening for: either the settlement loaded no room or that room was never charged to the budget")
-	}
 	for _, measured := range []struct {
 		step string
 		peak podPeak
