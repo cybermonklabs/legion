@@ -143,10 +143,8 @@ func liveProofImplementAppFrom(lib string, environ []string) (implement liveProo
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 source "$1"
 require_app_inputs implement
-role=implement
-id=${role}_app_id secret=${role}_app_secret
-command=$(app_token_command "${!secret}")
-printf '%s\0%s\0%s\0' "${!id}" "${!secret}" "$command"`
+command=$(app_token_command "$implement_app_secret")
+printf '%s\0%s\0%s\0' "$implement_app_id" "$implement_app_secret" "$command"`
 	stdout, stderr, runErr := runGitHubAppsLib(lib, environ, script)
 	if runErr != nil {
 		return liveProofApp{}, fmt.Errorf("%s refused the App inputs (%v): %s", lib, runErr, stderr)
@@ -169,10 +167,10 @@ printf '%s\0%s\0%s\0' "${!id}" "${!secret}" "$command"`
 // release that App's own token (GraphQL viewer, then GET /apps/<slug>) with the write permission
 // its role needs, `contents`, which the review App does not hold. It returns the lib's notes, and
 // on a refusal the lib's reason, which names the App by role and id and never a token.
-func proveLiveProofApps(environ []string, work string, apps config.GitHubApps) (notes string, err error) {
+func proveLiveProofApps(environ []string, work string, implement config.GitHubApp) (notes string, err error) {
 	// A JSON string is a YAML double-quoted scalar, as the lib's own write_github_apps quotes it.
-	id, _ := json.Marshal(apps.Implement.AppID)
-	command, _ := json.Marshal(apps.Implement.TokenCommand)
+	id, _ := json.Marshal(implement.AppID)
+	command, _ := json.Marshal(implement.TokenCommand)
 	block := "github_apps:\n" + fmt.Sprintf("  implement:\n    app_id: %s\n    token_command: %s\n", id, command)
 	if err := os.WriteFile(filepath.Join(work, "github-apps.yaml"), []byte(block), 0o600); err != nil {
 		return "", err
@@ -220,7 +218,7 @@ func realGitHubApps(t *testing.T) config.GitHubApps {
 	apps := config.GitHubApps{
 		Implement: config.GitHubApp{AppID: implement.id, TokenCommand: implement.tokenCommand},
 	}
-	notes, err := proveLiveProofApps(os.Environ(), t.TempDir(), apps)
+	notes, err := proveLiveProofApps(os.Environ(), t.TempDir(), apps.Implement)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,10 +229,10 @@ func realGitHubApps(t *testing.T) config.GitHubApps {
 // TestLiveProofAppsReadTheLib proves liveProofImplementApp, ungated: with no input set it answers exactly
 // the implement App the lib's default_implement_app_* assignments hold, each set input replaces
 // its value, and a malformed or empty input is refused naming the input and never its value.
-// What it asserts of the lib's defaults is the implement pair alone. The lib still holds the
-// review pair as well, because six shell scripts read both roles, but liveProofImplementApp no longer
-// names the review role, so the lib's review defaults are no longer this proof's business;
-// scripts/e2e/lib/app-logins.test.ts proves them.
+// What it asserts of the lib's defaults is the implement pair alone, and it asserts the implement
+// App's token command asks the broker for that App's secret with the owner, repositories and
+// read-only narrowing the daemon's environment names. The lib's review defaults are
+// scripts/e2e/lib/app-logins.test.ts's business.
 func TestLiveProofAppsReadTheLib(t *testing.T) {
 	inputs := liveProofAppInputs
 	base := make([]string, 0, len(os.Environ()))
@@ -293,7 +291,6 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := `{"installations":{"acme":{"installation_id":1,"token":"ghs_stub","expires_at":"2026-11-03T13:00:00Z"}}}`
-	role, app := "implement", implement
 	secret := "EXAMPLE_IMPLEMENT_APP"
 	for _, ask := range []struct {
 		owner, repos, readOnly, args string
@@ -305,15 +302,15 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		{"acme", "", "1", secret + " --ttl 12h --reason=legion-live-proof-github-app-token --github-owner acme --github-read-only -- sh -c printf %s \"$" + secret + "\""},
 	} {
 		args := filepath.Join(t.TempDir(), "args")
-		run := exec.Command("sh", "-c", app.tokenCommand)
+		run := exec.Command("sh", "-c", implement.tokenCommand)
 		run.Env = append(with(), "PATH="+stub+string(os.PathListSeparator)+os.Getenv("PATH"), "STUB_VALUE="+release, "STUB_ARGS="+args,
 			"LEGION_GITHUB_OWNER="+ask.owner, "LEGION_GITHUB_REPOS="+ask.repos, "LEGION_GITHUB_READ_ONLY="+ask.readOnly)
 		got, err := run.Output()
 		if err != nil || string(got) != release {
-			t.Errorf("the %s App's token command for owner %q repositories %q read-only %q printed %q (err %v), want the release", role, ask.owner, ask.repos, ask.readOnly, got, err)
+			t.Errorf("the implement App's token command for owner %q repositories %q read-only %q printed %q (err %v), want the release", ask.owner, ask.repos, ask.readOnly, got, err)
 		}
 		if seen, _ := os.ReadFile(args); strings.TrimSpace(string(seen)) != ask.args {
-			t.Errorf("the %s App's token command for owner %q repositories %q read-only %q ran agent-secrets %q, want %q", role, ask.owner, ask.repos, ask.readOnly, strings.TrimSpace(string(seen)), ask.args)
+			t.Errorf("the implement App's token command for owner %q repositories %q read-only %q ran agent-secrets %q, want %q", ask.owner, ask.repos, ask.readOnly, strings.TrimSpace(string(seen)), ask.args)
 		}
 	}
 
@@ -395,7 +392,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		apps := config.GitHubApps{
 			Implement: config.GitHubApp{AppID: implement.id, TokenCommand: implement.tokenCommand},
 		}
-		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept), work, apps); err != nil {
+		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept), work, apps.Implement); err != nil {
 			t.Fatalf("a GitHub that agrees: %v", err)
 		}
 		if _, stderr, err := runGitHubAppsLib(githubAppsLib, with(), `set -euo pipefail
@@ -411,7 +408,7 @@ write_github_apps implement`, want); err != nil {
 		if len(got) == 0 || !bytes.Equal(got, lib) {
 			t.Errorf("the token check read\n%s\nwant the block the lib writes for the same Apps\n%s", got, lib)
 		}
-		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept, "STUB_REFUSE=1"), t.TempDir(), apps); err == nil || !strings.Contains(err.Error(), "answered another id") {
+		if _, err := proveLiveProofApps(append(with(), path, "STUB_KEEP="+kept, "STUB_REFUSE=1"), t.TempDir(), apps.Implement); err == nil || !strings.Contains(err.Error(), "answered another id") {
 			t.Errorf("a GitHub that refuses: err = %v, want the checker's refusal", err)
 		}
 	})

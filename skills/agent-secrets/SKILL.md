@@ -110,7 +110,7 @@ Your transcript keeps everything a command prints.
   reads the placeholder's shape and not the value's:
 
   ```sh
-  agent-secrets NAME -- sh -c 'echo "${#NAME}"; case "$NAME" in ghp_*) echo prefix-ok;; *) echo prefix-no;; esac'
+  agent-secrets NAME --reason 'check the shape of this credential' -- sh -c 'echo "${#NAME}"; case "$NAME" in ghp_*) echo prefix-ok;; *) echo prefix-no;; esac'
   ```
 
 - Compare two values only as equal or not equal. Never print, slice or diff their characters.

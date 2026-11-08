@@ -11,15 +11,15 @@ import (
 	"strings"
 )
 
-// agentSecretsBlockReason is secretsBlocked's logic: the five broker inputs every secrets-* check
-// needs (the production broker's URL, the email of the run's operator on it, the automatic rule's
-// dummy value's hash, the checkout's agent-secrets binary, and the token file the script mints
-// from LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the run logs in with as the daemon does), named
-// for whichever are unset. Empty means the run is not blocked.
-func agentSecretsBlockReason(url, operator, autoSHA, bin, tokenFile string) string {
+// agentSecretsBlockReason is secretsBlocked's logic: the four broker inputs every secrets-* check
+// needs (the production broker's URL, the automatic rule's dummy value's hash, the checkout's
+// agent-secrets binary, and the token file the script mints from
+// LEGION_E2E_AGENT_SECRETS_ACCOUNT, which the run logs in with as the daemon does), named for
+// whichever are unset. Empty means the run is not blocked.
+func agentSecretsBlockReason(url, autoSHA, bin, tokenFile string) string {
 	var missing []string
 	for name, value := range map[string]string{
-		"LEGION_E2E_AGENT_SECRETS_URL": url, "LEGION_E2E_AGENT_SECRETS_OPERATOR": operator,
+		"LEGION_E2E_AGENT_SECRETS_URL":         url,
 		"LEGION_E2E_AGENT_SECRETS_AUTO_SHA256": autoSHA, "LEGION_E2E_AGENT_SECRETS_BIN": bin,
 		"LEGION_E2E_AGENT_SECRETS_ACCOUNT": tokenFile,
 	} {
@@ -31,7 +31,7 @@ func agentSecretsBlockReason(url, operator, autoSHA, bin, tokenFile string) stri
 		return ""
 	}
 	slices.Sort(missing)
-	return "no broker for this run: " + strings.Join(missing, ", ") + " unset (the production broker with Plan D's rules, a ServiceAccount its BROKER_SERVICE_LOGINS names, and the run's operator on that broker, supply them)"
+	return "no broker for this run: " + strings.Join(missing, ", ") + " unset (the production broker with Plan D's rules and a ServiceAccount its BROKER_SERVICE_LOGINS names supply them)"
 }
 
 // shellJoin quotes args for a POSIX shell -c string, the way (*liveRig).agentSecrets builds the

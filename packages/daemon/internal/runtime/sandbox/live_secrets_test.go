@@ -35,7 +35,7 @@ func secretsBlocked(r *liveRig) string {
 	if r.secretsBlockReason != "" {
 		return r.secretsBlockReason
 	}
-	return agentSecretsBlockReason(r.env.agentSecretsURL, r.env.agentSecretsOperator, r.env.agentSecretsAutoSHA, r.env.agentSecretsBin, r.env.agentSecretsTokenFile)
+	return agentSecretsBlockReason(r.env.agentSecretsURL, r.env.agentSecretsAutoSHA, r.env.agentSecretsBin, r.env.agentSecretsTokenFile)
 }
 
 // ensureEnrolled enrolls c's running role process unless the harness already did for this
@@ -319,9 +319,9 @@ const anyoneApprover = "anyone"
 // request time, naming no issue), and the approver that pick produced is a single owner, not
 // anyoneApprover — LEGION_E2E_APPROVAL is human tier under one owner no person holds, so its card
 // sits on that owner's page alone and on no signed-in person's. The step then cancels the request
-// it made and reads it back cancelled: it waits for nobody, prompts nobody, and leaves no pending
-// card behind on the production broker.
-func (r *liveRig) checkSecretsApprovalAsk() error {
+// it made and reads it back cancelled, and a failing assertion cancels it too: it waits for
+// nobody, prompts nobody, and leaves no pending card behind on the production broker.
+func (r *liveRig) checkSecretsApprovalAsk() (rerr error) {
 	worker := r.claim("worker")
 	if err := r.ensureRunning(worker); err != nil {
 		return err
@@ -345,6 +345,26 @@ func (r *liveRig) checkSecretsApprovalAsk() error {
 	if err := json.Unmarshal([]byte(out), &pending); err != nil || pending.State != "pending" || pending.RecordID == nil || *pending.RecordID == "" {
 		return fmt.Errorf("pending request %q, want state pending with a non-empty record_id", out)
 	}
+	// From here the request exists, so every path settles it: the assertions below are the very
+	// regressions this step exists to catch, and a request left pending puts a card on a person's
+	// page until it expires. The success path cancels and reads the request back cancelled, which
+	// clears this fallback.
+	settledByCheck := false
+	defer func() {
+		if settledByCheck {
+			return
+		}
+		out, code, stderr, err := r.agentSecrets(worker, "cancel", pending.RequestID)
+		if err == nil && code == 0 {
+			return
+		}
+		failed := fmt.Errorf("cancelling request %s on the way out: exit %d: %s%s (%v); the request is still pending until it expires", pending.RequestID, code, out, stderr, err)
+		if rerr == nil {
+			rerr = failed
+			return
+		}
+		rerr = fmt.Errorf("%w (and %w)", rerr, failed)
+	}()
 	if pending.Approver == nil || *pending.Approver == "" {
 		return fmt.Errorf("pending request %s names no approver; a pending human-tier request waits on one", pending.RequestID)
 	}
@@ -355,6 +375,7 @@ func (r *liveRig) checkSecretsApprovalAsk() error {
 	if out, code, stderr, err := r.agentSecrets(worker, "cancel", pending.RequestID); err != nil || code != 0 {
 		return fmt.Errorf("cancelling request %s: exit %d: %s%s (%v)", pending.RequestID, code, out, stderr, err)
 	}
+	settledByCheck = true
 	out, code, stderr, err = r.agentSecrets(worker, "status", pending.RequestID, "--json")
 	if err != nil || code != 0 {
 		return fmt.Errorf("status %s after the cancel: exit %d %s (%v)", pending.RequestID, code, stderr, err)

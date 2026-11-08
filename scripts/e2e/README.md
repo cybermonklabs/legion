@@ -1483,14 +1483,9 @@ Each item below names an input and its default, then what it means.
 - `LEGION_E2E_AGENT_SECRETS_URL` — unset (the `secrets-*` checks report `SKIPPED-BLOCKED`)
 
   the agent-secrets broker the run enrolls pods with
-  — the **production** broker (Plan D, the broker design's AWS deployment plan), never a development slot (below)
-
-- `LEGION_E2E_AGENT_SECRETS_OPERATOR` — unset
-
-  the email of the person running the stage on the broker.
-  The run asks nothing of them: the value's only effect is that the `secrets-*` checks run at all, and every one of them reports `SKIPPED-BLOCKED` while it is unset.
-  The stage is unattended.
-  `secrets-approval-ask` makes one request for `LEGION_E2E_APPROVAL`, asserts the approver the broker names for it is that secret's single owner and not the shared marker `anyone`, and then cancels its own request, so no card waits on a person and none is left behind.
+  — the **production** broker (Plan D, the broker design's AWS deployment plan), never a development slot (below).
+  The `secrets-*` checks run only when this input, `LEGION_E2E_AGENT_SECRETS_ACCOUNT` and `LEGION_E2E_AGENT_SECRETS_AUTO_SHA256` are all set, and each one of them left unset holds every `secrets-*` check at `SKIPPED-BLOCKED`.
+  The stage is unattended: `secrets-approval-ask` makes one request for `LEGION_E2E_APPROVAL`, asserts the approver the broker names for it is that secret's single owner and not the shared marker `anyone`, and then cancels its own request, so no card waits on a person and none is left behind.
   The run's own broker login asks no one either: it logs in as the daemon does, with a token for `LEGION_E2E_AGENT_SECRETS_ACCOUNT`
 
 - `LEGION_E2E_AGENT_SECRETS_ACCOUNT` — unset
