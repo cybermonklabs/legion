@@ -134,11 +134,6 @@ func (l Locking) RetryLockTimeouts(ctx context.Context, migration string, attemp
 	}
 }
 
-// RetryLockTimeouts is DefaultLocking's, for a runner that applies production's discipline.
-func RetryLockTimeouts(ctx context.Context, migration string, attempt func(context.Context) error) error {
-	return DefaultLocking.RetryLockTimeouts(ctx, migration, attempt)
-}
-
 // Exec is how a runner applies one migration's statements in tx. It first sets tx's lock_timeout
 // to l's timeout, so every migration a runner applies is bounded whatever the migration's file
 // says, and then runs the statements while a watch reads what tx's backend waits for. A runner

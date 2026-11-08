@@ -8,4 +8,5 @@ body: |-
   holds many pools in one process; the document service carries its own logger, cold-read
   timeout and task-progress retry waits as fields; `api.Deps.CallerRecheck`
   separates how often a caller is re-resolved from the socket heartbeat; and the Dispatch and
-  broker test harnesses reuse a migrated database rather than cloning one per test.
+  broker test harnesses share one migrated template across test processes, each test still
+  taking a clone of its own, where every process migrated a template of its own before.

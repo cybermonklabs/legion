@@ -341,7 +341,9 @@ func buildTemplate(ctx context.Context, admin *pgxpool.Pool, name string) error 
 // It runs under the template lock, which no other build holds, so every such database is finished
 // with.
 func dropStaleBuilds(ctx context.Context, admin *pgxpool.Pool) error {
-	rows, err := admin.Query(ctx, "select datname from pg_database where datname like $1", buildingPrefix+"%")
+	// starts_with rather than `like $1 || '%'`: each `_` of the prefix is a LIKE wildcard, and
+	// what this query selects is dropped with (force) on a server that may hold other databases.
+	rows, err := admin.Query(ctx, "select datname from pg_database where starts_with(datname, $1)", buildingPrefix)
 	if err != nil {
 		return fmt.Errorf("look for half-built templates: %w", err)
 	}

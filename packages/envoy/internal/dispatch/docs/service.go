@@ -156,7 +156,12 @@ type Service struct {
 	// maxUpdateItems, whose comment states the rule; a test lowers it, and the server's, before
 	// any room opens (shrinkPendingItems).
 	maxPendingItems int
-	// logger is where the service and the replicas it keeps write their lines. Nil is the
+	// logger is where the lines a test reads are written: every site a parallel test of this
+	// package asserts on goes through s.log(), and a method holding s writes its lines that way
+	// rather than through slog directly. A few of the package's own lines still go to the
+	// process default - the free functions that hold no service, New's own lines before the
+	// service exists, and a handful of *Service methods whose only readers are serial tests -
+	// and a line added beside them should move to s.log() with them. Nil is the
 	// package's default logger, read at each line rather than at New, so a test that captures
 	// the default logger after it built its service still sees them (log). A test that must
 	// read its own service's lines beside other tests sets one of its own instead, since
