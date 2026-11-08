@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -968,7 +971,16 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 				time.Sleep(30 * time.Millisecond)
 				committed := make(chan error, 1)
 				committing = true
-				go func() { committed <- ledger.Commit(ctx) }()
+				go func() {
+					// The park is the hook of TestAWedgedCommitReportsRatherThanWedgingTheSuite,
+					// which runs this case in a child process of the test binary: the commit of
+					// the trial it names never returns, which is the write wedged before
+					// tx.Commit that this case exists to catch.
+					if parked, named := parkedCommitTrial(); named && parked == trial {
+						select {}
+					}
+					committed <- ledger.Commit(ctx)
+				}()
 				select {
 				case err := <-committed:
 					committing = false
@@ -1012,6 +1024,60 @@ func TestAWriteSurvivesItsIssueClosingAsItPublishes(t *testing.T) {
 					hungTrial, trials, hungCommitReturned, hungCloseReturned, goroutinesIn("consumeSuppressedPersistence"))
 			}
 		})
+	}
+}
+
+// parkedCommitEnv names the trial of TestAWriteSurvivesItsIssueClosingAsItPublishes whose commit
+// is to park and never return, which only the child process of the test below sets.
+const parkedCommitEnv = "DOCS_RESIDENCY_PARK_COMMIT_TRIAL"
+
+// parkedCommitTrial is the trial parkedCommitEnv names, and whether it names one.
+func parkedCommitTrial() (int, bool) {
+	value, set := os.LookupEnv(parkedCommitEnv)
+	if !set {
+		return 0, false
+	}
+	trial, err := strconv.Atoi(value)
+	return trial, err == nil
+}
+
+// A write whose commit never returns is the defect TestAWriteSurvivesItsIssueClosingAsItPublishes
+// exists to catch, and the case must report it and end rather than hold its package's cleanup:
+// storetest.Open closes the pool in a cleanup Go runs before it prints the subtest's result
+// (storetest.go:90), and the pool's Close waits for every connection in use, so a transaction
+// left open there costs the whole run its deadline - 60 minutes of envoy-go-race-docs, 29 of
+// envoy-go-docs-finalizers - and prints no --- FAIL line at all. This runs the case in a child
+// process of this test binary with one trial's commit parked for good and requires the child to
+// print the case's own --- FAIL line inside a deadline of its own.
+func TestAWedgedCommitReportsRatherThanWedgingTheSuite(t *testing.T) {
+	if os.Getenv(storetest.DatabaseURLEnv) == "" {
+		t.Skip(storetest.DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
+	}
+	if _, parked := parkedCommitTrial(); parked {
+		t.Skip("the child process runs the case, not this test")
+	}
+	// The parked trial's own guard takes thirty seconds (the commit's ten, ten more for a late
+	// commit, ten for the close), so this deadline leaves a minute above it for the trial's
+	// setup and for a loaded runner.
+	const childDeadline = 90 * time.Second
+	command := exec.Command(os.Args[0],
+		"-test.run=^TestAWriteSurvivesItsIssueClosingAsItPublishes$/^20_paragraphs$",
+		"-test.timeout="+childDeadline.String())
+	command.Env = append(os.Environ(), parkedCommitEnv+"=0")
+	started := time.Now()
+	output, err := command.CombinedOutput()
+	took := time.Since(started).Round(time.Millisecond)
+	if err == nil {
+		t.Fatalf("the case passed in %v with trial 0's commit parked, so the park reached no trial:\n%s", took, output)
+	}
+	if strings.Contains(string(output), "panic: test timed out") {
+		t.Fatalf("the case held its package's cleanup to the child's %v deadline (%v) instead of reporting the wedged commit:\n%s", childDeadline, took, output)
+	}
+	if !strings.Contains(string(output), "--- FAIL: TestAWriteSurvivesItsIssueClosingAsItPublishes") {
+		t.Fatalf("the child printed no --- FAIL line for the case in %v:\n%s", took, output)
+	}
+	if !strings.Contains(string(output), "never returned from its commit") {
+		t.Fatalf("the child failed in %v for something other than the parked commit:\n%s", took, output)
 	}
 }
 
