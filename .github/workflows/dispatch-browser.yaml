@@ -932,9 +932,11 @@ jobs:
         # through Playwright's own Node resolution (the shard job's step of the same name).
         run: bun run build
         working-directory: packages/contracts
-      - name: Build the Dispatch server
+      - name: Build the Dispatch server for the embedder lane
         # run-server.sh builds it too, inside the harness's boot wait; built here, the server
-        # finds it current and starts in seconds.
+        # finds it current and starts in seconds. The name carries the lane because
+        # .github/scripts/check-ci-filters.sh names a step of this workflow by its own name, and
+        # the multiprocess job above has a step that builds the same binary.
         run: go build -o ./dispatch-e2e ./cmd/dispatch
         working-directory: packages/envoy
       - name: Install Playwright Chromium

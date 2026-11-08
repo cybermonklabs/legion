@@ -172,6 +172,7 @@ def at_docs(step):
 # dispatch-browser.yaml that holds the step.
 BROWSER_JOB = "dispatch-browser"
 BROWSER_SHARD, BROWSER_ALONE, BROWSER_MP, BROWSER_MERGE = "shard", "alone", "multiprocess", "merge"
+BROWSER_EMBEDDER = "embedder"
 BROWSER_SITE_SELF = reads((BROWSER_SITE, "the browser suite reads the definition of the steps it runs"))
 
 
@@ -727,6 +728,8 @@ BROWSER_ALONE_SPECS = "Browser-test dispatch dashboard (${{ matrix.project }})"
 BROWSER_MP_SPECS = "Browser-test dispatch dashboard against two server processes"
 BROWSER_MP_SIGNIN = "Browser-test a sign-in across two server processes"
 BROWSER_MP_BUILD = "Build the Dispatch server"
+BROWSER_EMBEDDER_BUILD = "Build the Dispatch server for the embedder lane"
+BROWSER_EMBEDDER_SPECS = "Browser-test the bar's two tiers against a counting embedder"
 BROWSER_INSTALL = "Install the lane's Playwright browsers"
 BROWSER_APT_KEY = "Compute the apt archive cache key"
 BROWSER_MERGE_STEP = "Merge the legs' blob reports into one report"
@@ -1010,9 +1013,15 @@ GATES = [
         pinned_step(BROWSER_MP, BROWSER_MP_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
             (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
         ], workflow=BROWSER_SITE),
+        # The embedder job builds it once for the same reason, and names its step for its own
+        # lane because this check looks a step up by name across the workflow.
+        pinned_step(BROWSER_EMBEDDER, BROWSER_EMBEDDER_BUILD, ENVOY, "go build -o ./dispatch-e2e ./cmd/dispatch", [
+            (ENVOY, ["./cmd/dispatch"], "go build -o ./dispatch-e2e ./cmd/dispatch", {"mode": "build"}),
+        ], workflow=BROWSER_SITE),
     ], reads=reads(
         ("packages/dispatch/**", f"{at_browser(BROWSER_SHARD_SPECS)}, {at_browser(BROWSER_ALONE_SPECS, BROWSER_ALONE)}, "
-         f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)} and {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} run the suite, "
+         f"{at_browser(BROWSER_MP_SPECS, BROWSER_MP)}, {at_browser(BROWSER_MP_SIGNIN, BROWSER_MP)} and "
+         f"{at_browser(BROWSER_EMBEDDER_SPECS, BROWSER_EMBEDDER)} run the suite, "
          f"{at_browser('Build dispatch dashboard')} builds the SPA the rows read, and "
          f"{at_browser(BROWSER_MERGE_STEP, BROWSER_MERGE)} merges their reports, in packages/dispatch"),
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
