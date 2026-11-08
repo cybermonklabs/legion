@@ -247,9 +247,11 @@
 #      How many times a step runs one call, and what this check can see of it. Rule 8
 #      multiplies a call by the loops and the function calls it resolves, which are the three
 #      kinds listed next; where a loop it did read writes no count it refuses the site rather
-#      than guessing; and every shape it reads as neither a loop nor a call leaves the call
-#      counted once. It is no shell parser, so the list of what it counts once, below the
-#      three, is as much this rule as the list of what it multiplies.
+#      than guessing; every shape it reads as neither a loop nor a call leaves the call counted
+#      once; and a few shapes it reads as a loop with the wrong count, so the call is multiplied
+#      by a number that is not the step's. It is no shell parser, so the list of what it counts
+#      once or miscounts, below the three, is as much this rule as the list of what it
+#      multiplies.
 #
 #        * each loop around the call, and each loop around that loop. A call in a three-pass
 #          loop inside a two-pass loop runs six times, and reading the inner loop alone would
@@ -287,25 +289,29 @@
 #      at least one call of itself, whatever the run finds for it to do, and a figure under
 #      that floor is refused naming the site and the floor.
 #
-#      WHAT IT COUNTS ONCE, which is the other half of this rule and the half a reader is owed
-#      plainly. A shape this check reads as neither a loop nor a call of a function is no
-#      refusal: the call is counted once, the budget is judged against that one figure, and a
-#      step whose real cost is several ladders passes. Each shape below was driven at
-#      398ee1e88c83 as a step at `timeout-minutes: 6` around a 300 s call, in a scratch tree,
-#      and none of them is in this tree: review round 3 of dispatch://INFRA-1545 read every
-#      step and every script of it with this check's own parser and found no instance.
+#      WHAT IT COUNTS ONCE OR MISCOUNTS, which is the other half of this rule and the half a
+#      reader is owed plainly. A shape this check reads as neither a loop nor a call of a
+#      function is no refusal: the call is counted once, the budget is judged against that one
+#      figure, and a step whose real cost is several ladders passes. Each shape below was
+#      driven at 398ee1e88c83 in a scratch tree as a step around a 300 s call, and each is
+#      priced under its real cost; none of them is in this tree: review round 3 of
+#      dispatch://INFRA-1545 read every step and every script of it with this check's own
+#      parser and found no instance.
 #
-#        * two loops written on one line: a loop is keyed by the line it sits on, so the
-#          second overwrites the first and the call is multiplied by the wrong one of the two
-#          (a five-pass loop's call, with a three-pass loop after it on its line, is 900 s and
-#          not 1500 s). A loop opened on the line of an `if`, as in
-#          `if true; then for a in 1 2; do`, is not read either, and its call counts once.
+#        * two loops written on one line: a loop is keyed by the line it sits on, so only one
+#          of them is read. In a sequence the later loop's count prices a call in the earlier
+#          one (a five-pass loop's call, with a three-pass loop after it on its line, is 900 s
+#          and not 1500 s); nested, one loop's count stands for both (`for a in 1 2; do for b
+#          in 1 2; do` around a 300 s call is 600 s and not 1200 s). A loop opened on the line
+#          of an `if`, as in `if true; then for a in 1 2; do`, is not read at all, and its call
+#          counts once.
 #        * a call of a function that this check finds only where the function's name is the
 #          first word of its command: a function called as the condition of an `if` inside a
-#          loop, one called behind an assignment prefix such as `GH_HOST=x`, and one called
-#          inside a one-line `for x in a b c; do fetch; done`. A function written in the
-#          `function name { … }` or `function name() { … }` form is not read as a function at
-#          all. In each case the retried call inside the function is counted once.
+#          loop, one called behind an assignment prefix such as `GH_HOST=x`, one called
+#          inside a one-line `for x in a b c; do fetch; done`, and one called through a
+#          variable such as `"$fn"`. A function written in the `function name { … }` or
+#          `function name() { … }` form is not read as a function at all. In each case the
+#          retried call inside the function is counted once.
 #        * a function that calls itself: counted once, because a reading that cannot see the
 #          second call cannot price it.
 #        * a script run through another program rather than by its own path, such as an
@@ -313,7 +319,8 @@
 #        * a `for ((i = 0; i < ${#name[@]}; i++))` over an array the body writes as words this
 #          check takes literally: `($var)` and `(a{1,2,3})` are one word each, so the loop is
 #          one pass; and an element assignment such as `name[2]=c` is not read, so the count is
-#          the words written at the array's definition alone.
+#          the words written at the array's definition alone (two words and a third assigned
+#          later is 600 s and not 900 s).
 #        * one script that two of a step's paths reach, counted once, because the `seen` set
 #          is shared across a step's scripts. That set exists to stop a cycle, and this is the
 #          same mechanism read from the other side.
@@ -322,8 +329,9 @@
 #      directly, not through a function, as the condition of an `if` inside a loop or behind an
 #      assignment prefix such as `GH_HOST=x`, and a loop written on its own line inside an
 #      `if`, are each multiplied by their loop. A
-#      `for x in` over `"${name[@]}"`, `$var` or a brace expansion, and a
-#      `for ((…; i < ${#name[@]}; …))` over an array `mapfile` fills, are loops whose passes
+#      `for x in` over any `"${name[@]}"`, a literal array's included, over `$var` or over a
+#      brace expansion, and a `for ((…; i < ${#name[@]}; …))` over an array that `mapfile` fills
+#      or `name+=(…)` extends, are loops whose passes
 #      this check cannot read, and are refused, as the paragraph below that begins "A step
 #      whose budget reaches a loop" says.
 #
@@ -594,9 +602,9 @@ LADDER_FLOOR = 120
 CURL_FIRST_WAIT = 1
 CURL_WAIT_CEILING = 600
 # Rule 8's arithmetic, the worst case of one retried call of the shared helper: it sleeps 10,
-# 20, 40 and 80 seconds between its five attempts. What curl waits between its own attempts is
-# no constant of this file, because `--retry-delay` and `--retry-max-time` each rewrite those
-# waits; curl_ladder reads them off the call and computes the ladder from there.
+# 20, 40 and 80 seconds between its five attempts. The total curl waits between its own attempts
+# is no constant, because `--retry-delay` and `--retry-max-time` each rewrite those waits:
+# curl_waits reads those options off the call, and curl_ladder computes the ladder from them.
 HELPER_WAIT = 150
 # What a job allows a step when the job writes no `timeout-minutes` of its own, read off
 # GitHub's own documentation ("Workflow syntax for GitHub Actions", `jobs.<job_id>.timeout-
@@ -1448,7 +1456,8 @@ class Call:
 
 class Uncounted:
     """One thing a step waits for that this check can put no figure on: a retried call, or a
-    script the body runs, inside a loop whose passes it can neither read nor find declared.
+    script the body runs, inside a loop whose passes it cannot read, and for which no
+    DeclaredArithmetic entry writes the seconds.
     `what` is the verb, or the script's path; `one` is what one of them costs, left None for a
     script, whose arithmetic is read when the refusal is written."""
 
@@ -2423,8 +2432,9 @@ for site in sites:
 # attempt's own error reaches the log before the runner's kill does. A call is counted once for
 # each time the step runs it — every pass of every loop around it, every call of the function
 # holding it, and the loops around those calls — and a step reaching a loop whose passes this
-# check can neither read nor find declared is told about that loop in place of a comparison: a
-# sum short by one of its loops would send the step's author to the wrong line.
+# check cannot read, and for which no DeclaredArithmetic entry writes the seconds, is told about
+# that loop in place of a comparison: a sum short by one of its loops would send the step's
+# author to the wrong line.
 
 
 def script_arithmetic(path: str, seen: set[str]) -> int | None:
@@ -2459,8 +2469,9 @@ def action_arithmetic(path: str, seen: set[str]) -> int | None:
 
 for budget in budgets:
     # One `seen` for the whole step: the script its `run:` calls, the action it uses and that
-    # action's own scripts are one reading set, and a file two of those paths reach is one file
-    # the step runs once.
+    # action's own scripts are one reading set, so a file two of those paths reach is read, and
+    # counted, once, though the step runs it twice: the header's list of what rule 8 counts once
+    # names it.
     seen: set[str] = set()
     cost = budget.cost
     for target, call in sorted(budget.scripts.items()):
