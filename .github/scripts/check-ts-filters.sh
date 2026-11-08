@@ -41,8 +41,10 @@
 # A file is held to the filter as workflow_paths.PathsFilter reads it, under the
 # predicate-quantifier the changes job declares that filter under, over the filter's patterns
 # with its anchors flattened into the list that names them - the patterns and the quantifier
-# both from the engine of check-ci-filters.sh (ci_filter_coverage.changes_filters) rather than
-# this check reading that step a second way. It read the patterns as GitHub's `paths` instead
+# both from the engine of check-ci-filters.sh (ci_filter_coverage.changes_filters, which reads
+# every paths-filter step of the job, and the job declares its filters in two of them) rather
+# than this check reading those steps a second way. It read the patterns as GitHub's `paths`
+# instead
 # until rule 17 of check-ci-filters.sh began writing into most filters the `!` patterns that
 # keep a job off the Go test files it does not read, and refused a covered filter that had one,
 # because GitHub's `paths` takes the last pattern that matches while dorny/paths-filter's
@@ -114,7 +116,10 @@ def listed(project: str) -> list | None:
 
 
 document = yaml.safe_load((engine.REPO / engine.WORKFLOW).read_text())
-filters, quantifiers = engine.changes_filters(document, problems)
+# changes_filters reads every dorny/paths-filter step of the changes job, which declares its
+# filters in two of them (ci.yaml's `changes` job says why), so both strings are covered here;
+# the steps a filter is declared in are rule 19's, not this check's.
+filters, quantifiers, _steps = engine.changes_filters(document, problems)
 
 for name, project, why in PROGRAMS:
     patterns = filters.get(name)

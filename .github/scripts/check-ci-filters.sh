@@ -265,6 +265,36 @@
 #      check-image-trigger-paths.sh judges with the image's build context). The write mode
 #      writes the block into the on.push.paths of a PUSH_WORKFLOWS workflow as well, since
 #      rule 8 holds that list equal to its filter and a hand would have to copy it otherwise.
+#  18. a dorny/paths-filter step of the changes job whose `filters` string is within 32,768
+#      bytes of 131,072, naming the step, the size and the cap. Actions hands a step's input to
+#      the action as one environment variable, INPUT_FILTERS, and Linux caps one environment
+#      string at MAX_ARG_STRLEN, 131,072 bytes: a block above that does not make the action
+#      filter badly, it stops the job from starting at all, with `An error occurred trying to
+#      start process '.../node24/bin/node' ... Argument list too long` and no filter output for
+#      any job of the run. That is what one run gave (dispatch://INFRA-1413, pull request
+#      #2945): the whole block in one step measured 137,498 bytes of this branch's text once
+#      rule 17's 520 generated `!` patterns were written into it (137,494 when that issue
+#      measured it), against 76,669 bytes on main. The cure is that the changes job declares
+#      its filters in two paths-filter steps rather than one - 77,794 and 62,209 bytes today -
+#      and this rule is what keeps the next filter from growing one of
+#      them back over the cap: it fails here, on the pull request that writes it, rather than
+#      on a runner. The margin is a quarter of the cap, which leaves the longer of the two
+#      20,510 bytes to grow in and covers many times over the 14 bytes of `INPUT_FILTERS=` the
+#      kernel counts beside the value. Every rule above reads the filters of all those steps as
+#      one set, since that is what the job's outputs hand on; a group an anchor names that
+#      filters of both steps share is written out in both, because a YAML anchor reaches no
+#      further than the string it is in, and the two copies must be the same patterns under the
+#      same quantifier or this rule's own refusal names both steps,
+#  19. an output of the changes job reading `steps.<id>.outputs.<name>` where <id> is no step of
+#      the job, or is a paths-filter step that does not declare filter <name>, or where <name>
+#      is declared in two paths-filter steps, naming the output, the reference and the step that
+#      does declare the filter. With the filters split over two steps (rule 18) an output names
+#      the step its own filter is in, and one naming the other step is empty on every run, which
+#      reads as a filter that never matched: the job it gates would be skipped on every change
+#      it selects, and nothing else here would say so. A reference to a step that is no
+#      paths-filter step carries no filter and is held only to being a step of the job: that is
+#      the step merging the two steps' verdicts into the `filter_verdicts` output
+#      .github/scripts/ci-ok.jq reads as one object.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of

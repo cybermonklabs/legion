@@ -22,9 +22,11 @@
 # DAEMON_RACE_PACKAGES names,
 # ci_job_reads.py's WORKSPACES must name exactly the workspaces of the root package.json, and no
 # workflow but ci.yaml may run on a merge group, the job TAG_RUNS pairs with a tag step that
-# passes -run must have a filter covering every file the tag step's filter covers, and each gate
+# passes -run must have a filter covering every file the tag step's filter covers, each gate
 # filter must hold exactly the generated `!` patterns that keep it off the Go test files its job
-# does not read, which the write mode writes.
+# does not read, which the write mode writes, no paths-filter step's filters string may come
+# near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in, and
+# every output of the changes job must name the paths-filter step its own filter is declared in.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
@@ -1826,8 +1828,12 @@ READS = (
 )
 
 doc = yaml.safe_load(Path(sys.argv[1]).read_text())
-step = next(s for s in doc["jobs"]["changes"]["steps"] if s.get("id") == "filter")
-filters = yaml.safe_load(step["with"]["filters"])
+# Both paths-filter steps of the changes job: it declares its filters in two of them (rule 18),
+# and a group both write out is the same patterns in each (rule 19), so one dict holds the lot.
+filters = {}
+for step in doc["jobs"]["changes"]["steps"]:
+    if str(step.get("uses", "")).startswith("dorny/paths-filter"):
+        filters.update(yaml.safe_load(step["with"]["filters"]))
 
 
 def flat(entry):
@@ -2208,6 +2214,93 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the list and says nothing computes its block" \
   "$(contains "$out" '::error file=.github/workflows/ci.yaml::site has a generated block, and it is no filter of a gate this check computes a read set for')"
+
+# Rules 18 and 19: the changes job declares its filters in more than one dorny/paths-filter step,
+# because Actions hands each `filters` input to the action as one environment variable and Linux
+# caps one of those at 131,072 bytes. Every rule above reads the steps as one set of filters,
+# each output names the step its own filter is in, and a group both strings need is written out
+# in both, since a YAML anchor reaches no further than the string it is in.
+
+# second_step <root>: the fixture's image and site filters moved into a second paths-filter step,
+# with the group they share written out again there and the image output naming that step.
+second_step() {
+  local root=$1
+  replace "$root/.github/workflows/ci.yaml" \
+    $'            image:\n              - \'docs/**\'\n            site:\n              - *workspace\n              - \'docs/**\'\n  app:' \
+    $'      - uses: dorny/paths-filter@v4\n        id: second\n        with:\n          predicate-quantifier: some-with-excludes\n          filters: |\n            workspace: &workspace\n              - \'go.work\'\n              - \'mod/go.mod\'\n            image:\n              - \'docs/**\'\n            site:\n              - *workspace\n              - \'docs/**\'\n  app:'
+  replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+    '      image: ${{ steps.second.outputs.image }}'
+}
+
+echo "case: filters declared in two paths-filter steps of the changes job"
+root=$(fixture two-filter-steps)
+second_step "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and rule 8 reads the site filter out of the second step" \
+  "$(contains "$out" "every PUSH_WORKFLOWS workflow's on.push.paths equals its filter (1)")"
+
+echo "case: an output naming a step that does not declare its filter"
+root=$(fixture output-wrong-step)
+second_step "$root"
+replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.second.outputs.image }}' \
+  '      image: ${{ steps.filter.outputs.image }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the output, the reference and the step that does declare the filter" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.filter.outputs.image, and filter image is declared in step second, not in filter, so the output is empty on every run")"
+
+echo "case: an output naming a step the changes job does not have"
+root=$(fixture output-absent-step)
+replace "$root/.github/workflows/ci.yaml" '      image: ${{ steps.filter.outputs.image }}' \
+  '      image: ${{ steps.absent.outputs.image }}'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the output and the step the job has not got" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads steps.absent.outputs.image, and the job has no step absent, so the output is empty on every run")"
+
+echo "case: a filter an output reads declared in two paths-filter steps"
+root=$(fixture filter-in-two-steps)
+second_step "$root"
+replace "$root/.github/workflows/ci.yaml" $'            app:\n              - \'.github/workflows/ci.yaml\'' \
+  $'            image:\n              - \'docs/**\'\n            app:\n              - \'.github/workflows/ci.yaml\''
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both steps and says one verdict is written for nothing" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's output image reads filter image, which paths-filter steps filter and second both declare")"
+
+echo "case: a group the two steps write out differently"
+root=$(fixture group-drifted)
+second_step "$root"
+replace "$root/.github/workflows/ci.yaml" $'            workspace: &workspace\n              - \'go.work\'\n              - \'mod/go.mod\'\n            image:' \
+  $'            workspace: &workspace\n              - \'mod/go.mod\'\n            image:'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names both steps and says the two do not agree" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::filter workspace is declared in paths-filter steps filter and second of the changes job, and the two do not say the same thing')"
+
+echo "case: a paths-filter step whose filters string comes near the cap the kernel puts on it"
+# The padding is one pattern the filter already has, repeated: rule 9 reads a filter's patterns
+# deduplicated, so the only thing the copies add is bytes. image is the filter EXCLUDED names, so
+# no read set is held to it either, and the step fails on its size alone.
+root=$(fixture filters-too-long)
+pad=$(printf "              - 'docs/**'\n%.0s" $(seq 7200))
+replace "$root/.github/workflows/ci.yaml" $'            image:\n              - \'docs/**\'' \
+  "            image:"$'\n'"$pad"
+size=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$root/.github/workflows/ci.yaml" <<'PY'
+import sys, yaml
+document = yaml.safe_load(open(sys.argv[1]))
+step = next(s for s in document["jobs"]["changes"]["steps"] if "dorny" in str(s.get("uses", "")))
+print(len(step["with"]["filters"].encode()))
+PY
+)
+check "the fixture's string is over the margin" "$(is "$((size >= 131072 - 32768))" 1)"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the step, the size and the cap" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::the changes job's paths-filter step filter passes a filters string of $size bytes, within 32768 bytes of the 131072-byte cap Linux puts on the INPUT_FILTERS environment variable")"
+check "and says what to do about it" \
+  "$(contains "$out" 'move filters of it into another paths-filter step of the job')"
 
 echo "case: the slow-suite list a reader is given names the jobs the label gates"
 # AGENTS.md's "The slow test suites run in the merge queue, not on a pull-request push" item is

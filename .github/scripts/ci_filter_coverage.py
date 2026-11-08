@@ -516,29 +516,98 @@ def flatten(value) -> list:
     return []
 
 
+# Rule 18's numbers. Linux caps one environment variable's whole `NAME=value` string at
+# MAX_ARG_STRLEN, 131,072 bytes, and Actions hands a step's `filters` input to the action as
+# INPUT_FILTERS, so a filters string near that is a `changes` job that cannot start at all.
+# The margin is a quarter of the cap: it leaves the longest string of ci.yaml today, 77,794
+# bytes, 20,510 bytes to grow in before this check refuses it, and the 14 bytes of the
+# `INPUT_FILTERS=` the kernel counts beside the value are inside it many times over.
+ARG_STRLEN = 131072
+FILTERS_MARGIN = 32768
+FILTERS_LIMIT = ARG_STRLEN - FILTERS_MARGIN
+
+
 def changes_filters(document: dict, problems: list) -> tuple:
-    """The filters the changes job declares, with the quantifier each was declared under. It
-    reads ci.yaml alone, and no workflow ci.yaml calls: the changes job and its paths-filter
-    steps are ci.yaml's, and a called file is reached only through a caller job the changes job
-    already gates."""
-    filters, quantifiers = {}, {}
+    """The filters the changes job declares, with the quantifier each was declared under and the
+    steps that declare it. It reads ci.yaml alone, and no workflow ci.yaml calls: the changes job
+    and its paths-filter steps are ci.yaml's, and a called file is reached only through a caller
+    job the changes job already gates.
+
+    Every paths-filter step of the job is read, since the filters are declared in more than one
+    (rule 18, and ci.yaml's `changes` job says why). A group both steps write out is one filter
+    here, as it is to dorny/paths-filter: the two must be the same patterns under the same
+    quantifier, and a name an output of the job reads may be in one step only (rule 19,
+    check_output_steps)."""
+    filters, quantifiers, holders = {}, {}, defaultdict(list)
     steps = ((document.get("jobs") or {}).get("changes") or {}).get("steps") or []
     for step in steps:
         if not str(step.get("uses", "")).startswith("dorny/paths-filter"):
             continue
         options = step.get("with") or {}
+        declared = str(options.get("filters", ""))
+        size = len(declared.encode())
+        if size >= FILTERS_LIMIT:
+            problems.append(f"::error file={WORKFLOW}::the changes job's paths-filter step {step.get('id')} passes "
+                            f"a filters string of {size} bytes, within {FILTERS_MARGIN} bytes of the {ARG_STRLEN}-byte "
+                            f"cap Linux puts on the INPUT_FILTERS environment variable Actions hands the action; "
+                            f"move filters of it into another paths-filter step of the job")
         quantifier = str(options.get("predicate-quantifier", "some"))
         if quantifier not in PathsFilter.QUANTIFIERS:
             problems.append(f"::error file={WORKFLOW}::the changes job's paths-filter step {step.get('id')} has "
                             f"predicate-quantifier {quantifier}, which this check does not model")
             continue
-        for name, value in (yaml.safe_load(str(options.get("filters", ""))) or {}).items():
+        for name, value in (yaml.safe_load(declared) or {}).items():
+            patterns = flatten(value)
             if name in filters:
-                problems.append(f"::error file={WORKFLOW}::filter {name} is defined in two paths-filter steps")
-            filters[name], quantifiers[name] = flatten(value), quantifier
+                if patterns != filters[name] or quantifier != quantifiers[name]:
+                    problems.append(f"::error file={WORKFLOW}::filter {name} is declared in paths-filter steps "
+                                    f"{holders[name][0]} and {step.get('id')} of the changes job, and the two do not "
+                                    f"say the same thing; a group written out in both steps must be the same "
+                                    f"patterns under the same quantifier in each")
+            else:
+                filters[name], quantifiers[name] = patterns, quantifier
+            holders[name].append(str(step.get("id", "")))
     if not filters:
         problems.append(f"::error file={WORKFLOW}::no changes job with a dorny/paths-filter step")
-    return filters, quantifiers
+    return filters, quantifiers, dict(holders)
+
+
+# A `steps.<id>.outputs.<name>` of an output of the changes job: which step's verdict it hands on.
+STEP_OUTPUT_REF = re.compile(r"steps\.([A-Za-z0-9_-]+)\.outputs\.([A-Za-z0-9_-]+)")
+
+
+def check_output_steps(document: dict, holders: dict, problems: list) -> None:
+    """Rule 19: every `steps.<id>.outputs.<name>` an output of the changes job hands on must name
+    the paths-filter step that declares filter <name>, and a filter an output reads must be
+    declared in one step alone. A reference to a step that is no paths-filter step carries no
+    filter (the step that merges the two steps' verdicts) and is held only to being a step of the
+    job."""
+    job = (document.get("jobs") or {}).get("changes") or {}
+    steps = job.get("steps") or []
+    ids = [str(s.get("id", "")) for s in steps if s.get("id")]
+    filter_ids = {str(s.get("id", "")) for s in steps
+                  if str(s.get("uses", "")).startswith("dorny/paths-filter")}
+    for output, expression in (job.get("outputs") or {}).items():
+        for step_id, name in STEP_OUTPUT_REF.findall(str(expression)):
+            if step_id not in ids:
+                problems.append(f"::error file={WORKFLOW}::the changes job's output {output} reads "
+                                f"steps.{step_id}.outputs.{name}, and the job has no step {step_id}, so the output "
+                                f"is empty on every run")
+            elif step_id not in filter_ids:
+                continue
+            elif name not in holders:
+                problems.append(f"::error file={WORKFLOW}::the changes job's output {output} reads "
+                                f"steps.{step_id}.outputs.{name}, and no paths-filter step of the job declares a "
+                                f"filter {name}, so the output is empty on every run")
+            elif step_id not in holders[name]:
+                problems.append(f"::error file={WORKFLOW}::the changes job's output {output} reads "
+                                f"steps.{step_id}.outputs.{name}, and filter {name} is declared in step "
+                                f"{holders[name][0]}, not in {step_id}, so the output is empty on every run")
+            elif len(holders[name]) > 1:
+                problems.append(f"::error file={WORKFLOW}::the changes job's output {output} reads filter {name}, "
+                                f"which paths-filter steps {' and '.join(holders[name])} both declare, so the output "
+                                f"hands on one step's verdict and the other's is written for nothing; declare a "
+                                f"filter an output reads in one step")
 
 
 GATE_REF = re.compile(r"needs\.changes\.outputs\.([A-Za-z0-9_-]+)")
@@ -1713,23 +1782,39 @@ def closed(blocks: dict, path: str, problems: list) -> dict:
     return blocks
 
 
-def filter_blocks(lines: list, problems: list) -> dict:
-    """Per key of the changes job's `filters: |` block - every gate filter and every group an
-    anchor names - where its list ends in ci.yaml's text and which of its lines are a generated
-    block."""
-    keys = [i for i, line in enumerate(lines) if FILTERS_KEY.match(line)]
-    if len(keys) != 1:
-        problems.append(f"::error file={WORKFLOW}::{len(keys)} `filters: |` blocks, where this check reads the one "
-                        f"the changes job's paths-filter step declares its filters in")
-        return {}
-    body = range(keys[0] + 1, len(lines))
-    outer = indent_of(lines[keys[0]])
+def one_filter_block(lines: list, key: int) -> dict:
+    """Per key of the one `filters: |` block whose line is `key`, where its list ends in the
+    text and which of its lines are a generated block."""
+    body = range(key + 1, len(lines))
+    outer = indent_of(lines[key])
     stop = next((i for i in body if lines[i].strip() and indent_of(lines[i]) <= outer), len(lines))
-    inner = min((indent_of(lines[i]) for i in range(keys[0] + 1, stop) if lines[i].strip()), default=0)
-    starts = [i for i in range(keys[0] + 1, stop)
+    inner = min((indent_of(lines[i]) for i in range(key + 1, stop) if lines[i].strip()), default=0)
+    starts = [i for i in range(key + 1, stop)
               if FILTER_KEY.match(lines[i]) and indent_of(lines[i]) == inner]
-    blocks = {FILTER_KEY.match(lines[start]).group(2): list_block(lines, range(start + 1, end), Block())
-              for start, end in zip(starts, starts[1:] + [stop])}
+    return {FILTER_KEY.match(lines[start]).group(2): list_block(lines, range(start + 1, end), Block())
+            for start, end in zip(starts, starts[1:] + [stop])}
+
+
+def filter_blocks(lines: list, problems: list) -> dict:
+    """Per key of the changes job's `filters: |` blocks - every gate filter and every group an
+    anchor names - where its list ends in ci.yaml's text and which of its lines are a generated
+    block. The job declares its filters in more than one such block (rule 18), so every one of
+    them is read; a group both of them write out is one key here, the first, since rule 17 gives
+    a generated block to a gate filter alone and a gate filter is in one step (rule 19)."""
+    keys = [i for i, line in enumerate(lines) if FILTERS_KEY.match(line)]
+    if not keys:
+        problems.append(f"::error file={WORKFLOW}::no `filters: |` block, where this check reads the ones the "
+                        f"changes job's paths-filter steps declare their filters in")
+        return {}
+    blocks: dict = {}
+    for key in keys:
+        for name, block in one_filter_block(lines, key).items():
+            if name not in blocks:
+                blocks[name] = block
+            elif blocks[name].begin >= 0 or block.begin >= 0:
+                problems.append(f"::error file={WORKFLOW}::{name} is written in two `filters: |` blocks and one of "
+                                f"them holds a generated block, which belongs to the one gate filter it is computed "
+                                f"for; delete the block, or declare {name} in one step")
     return closed(blocks, WORKFLOW, problems)
 
 
@@ -1846,10 +1931,11 @@ def main() -> int:
     # helpers: by the time main() runs, this module is loaded whole.
     import ci_workflow_rules as rules
 
-    filters, quantifiers = changes_filters(document, problems)
+    filters, quantifiers, holders = changes_filters(document, problems)
     files = repo_files()
     unreduced = check_table(documents, data, filters, set(files), problems)
     check_ci_ok(documents, problems)
+    check_output_steps(document, holders, problems)
     rules.check_push_conditions(documents, problems)
     rules.check_rerun_guard(document, problems)
     rules.check_cache_round_trip(documents, problems)
