@@ -468,6 +468,7 @@ func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc nat
 		return fmt.Errorf("open Envoy JetStream: %w", natsauth.WithLastError(err, conn))
 	}
 	w.log.Info("legion workflow boot stage", "stage", "intake")
+	logIntakeHandlerLimit(ctx, w.log, cfg)
 	heard, err := w.heardAtBoot(ctx)
 	if err != nil {
 		conn.Close()
@@ -779,6 +780,9 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		// recorded while the daemon was down (catchUpAwaiting).
 		if boot {
 			if err := w.holdForCatchUp(scoped, tx); err != nil {
+				return err
+			}
+			if err := w.releaseParkedClaims(scoped, tx, scope); err != nil {
 				return err
 			}
 		}

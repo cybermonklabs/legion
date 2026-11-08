@@ -680,7 +680,37 @@ package api
 // says. main held 54 at the forward merge that renumbered this entry, b5482068c554; read main's
 // own number again at the next merge rather than from this line.)
 //
-// 56: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
+// 56: dispatch://INFRA-1480 -- `api.StrandedClaim.state` on `GET /legion/v1/state` may now be
+// `retired` as well as `suspended` and `failed`, because `workflow.Stranded` now reports a retired
+// claim that owns the phase its issue's worker works: only a start of that phase relaunches such a
+// claim, and no rule the daemon runs queues that start by itself, so nothing will wake it. A plugin
+// before 56 parses `strandedClaims[].state` with a strict enum of two values and refuses the whole
+// state body for a third, and every worker's `read_record` goes through that parse. The route
+// authenticates nobody, so a caller from a pod whose claims record a contract below 56 is served
+// the report without its retired entries (api's stateFor, withoutRetiredStranded), as a caller
+// below 49 is served it without the memory group. Dropping those entries, rather than serving
+// them, is the only choice that keeps such a pod able to read the state at all: the value is the
+// claim's own state and there is no older value to put in its place, and one retired entry refuses
+// the whole body, which takes every role's `read_record` in that pod with it. Such a pod is served
+// a report missing its retired entries until the pod is replaced, and that window is the one the
+// plugin pair already bounds: the boot gate and `legion probe-image` refuse a daemon and a plugin
+// that declare different contracts, so the only reader below 56 is a pod of the contract before
+// this one still being replaced. The same change adds three fields to the operator claim view's
+// pending delivery (api.DeliveryView): `sendFailures`, `lastSendFailureAt` and `lastSendError`,
+// how many sends of the task failed, when the last one failed and the error it failed with. They
+// need no gate, because no plugin calls the operator routes. This change adds one store migration,
+// for those three columns, named for the UTC moment it was written, since the numbered series is
+// closed. (This branch has been renumbered three times, which is what a hand-allocated serial
+// costs: 51, then 53 when main reached 52, then 55 when main reached 54, and 56 now that main
+// carries 55 — INFRA-1272's gated steps, merged as #2848 while this branch stood approved at
+// its own 55. So it takes the number above every number main declares, as the collision note
+// says, and that number was read from main at this merge rather than assumed. Two other open
+// branches declare 55 as well: whichever merges after another takes the next free number, and
+// the number is read again at every forward merge, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 57: INFRA-1100 -- the issue record of `GET /legion/v1/state` gains `waitingLine`, where the
 // issue stands in `admission.waiting`: its `place`, 1 at the front of the line, and the `length`
 // of that list at this read (`api.WaitingLineView`). It is present only for an issue the list
 // names, so a slot holder and an issue the line does not carry have no such key, and the wire
@@ -688,10 +718,17 @@ package api
 // holds it: `admission.blocked` names what holds it, and a member a Dispatch link blocks stands
 // in the line and has its place like every other member.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 56 is served the issues without the field (api's stateFor, withoutWaitingLine),
-// as a caller below 55 is served them without the gated steps, one below 53 a body with no wakes
-// waiting, one below 51 the issues without the admission's trees and each issue's tree, one below
-// 49 without the memory draw and one below 46 without the claim views' update rounds; the six
-// compose, and every reader from 56 on takes the field as optional. A plugin at 55 reads the
-// state with a strict schema that knows no `waitingLine` and refuses the whole body for it.
-const DaemonAPIVersion = 56
+// contract below 57 is served the issues without the field (api's stateFor, withoutWaitingLine),
+// as a caller below 56 is served the stranded report without its retired entries, one below 55
+// the issues without the gated steps, one below 53 a body with no wakes waiting, one below 51
+// the issues without the admission's trees and each issue's tree, one below 49 without the
+// memory draw and one below 46 without the claim views' update rounds; the seven compose, and
+// every reader from 57 on takes the field as optional. A plugin at 56 reads the state with a
+// strict schema that knows no `waitingLine` and refuses the whole body for it.
+// (This branch declared 56 while main held 55. main then landed INFRA-1480 at 56, and
+// @sjawhar/pi-legion 18.32.1 was released declaring that 56 with none of these shapes, so this
+// branch takes the number above it, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. main held 56 at the forward merge that renumbered this entry, 7c7e6e9b; read main's own
+// number again at the next merge rather than from this line.)
+const DaemonAPIVersion = 57

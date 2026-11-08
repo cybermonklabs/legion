@@ -281,7 +281,7 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	for i, issue := range waiting {
 		projected.Admission.Waiting[i] = issue.Key
 	}
-	// Each issue the line names carries its own place in it (contract 56), counted from 1 at the
+	// Each issue the line names carries its own place in it (contract 57), counted from 1 at the
 	// front, beside the length of the list it stands in. Nothing is filtered out: a member a
 	// Dispatch link blocks stands in the line and takes its place like every other member, and
 	// what holds it is `admission.blocked` beside this. An issue of another project is in no

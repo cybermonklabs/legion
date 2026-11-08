@@ -64,7 +64,7 @@ parent's check: a child's pull request never makes a parent check's result curre
 that carries part of a parent's requirement proves it with a check on the child's own
 Verification document whose `serves` names that requirement. Nothing in the tree builds on the parent's own merge, because that
 merge comes last: a child that waits for it waits forever, so work another child builds on is a
-first-wave child of its own. While the approved head does not carry those merges, or the result of
+child of its own, in a repository of its own or with a deploy of its own. While the approved head does not carry those merges, or the result of
 a check in another repository is older than the close of a child it needs, leave
 the issue in `accepting` until each of those children has closed (`child-closed`) or been parked
 for good (`child-status`). Move a parked child's criterion to other work first; never downgrade
@@ -187,13 +187,13 @@ The merge closes the issue: when GitHub reports the pull request merged while th
   `linger_hours` with every member suspended. The linger's end, the tree's last step, waits until
   every member's open production check has closed.
 
-Nothing of the production check is yours. Its record lives on the pull request alone, since
-Dispatch refuses a write on a closed issue. A defect it finds is never an issue the checking role
-files: a clear defect goes to the controller, and any other is a `dispatch ask`. `read_record`
-shows a closed issue's open check (`check`: the pull request, the merge commit, the role the
-check records as the one that works it, the looks, what woke the last one, and `nextWakeAt`, when
-the next look is due — the time the checking agent named for itself on a `pending`, the retry of
-a look nobody reported, or the check's own bound where neither stands).
+Nothing of the production check is yours. Its record is the pull request and the result of the
+issue's `after_merge` check, whether or not the issue is closed. A defect it finds is never an
+issue the checking role files: a clear defect goes to the controller, and any other is a
+`dispatch ask`. `read_record` shows a closed issue's open check (`check`: the pull request, the
+merge commit, the role the check records as the one that works it, the looks, what woke the last
+one, and `nextWakeAt`, when the next look is due — the time the checking agent named for itself on
+a `pending`, the retry of a look nobody reported, or the check's own bound where neither stands).
 
 ## Hand-over at a root's linger
 
@@ -204,7 +204,10 @@ child that never started is handed over too, carrying no run, whatever held it a
 waits in the line for a slot and for any unfinished blocker, and its architect starts as a fresh
 root and registers its own spec. Only a child that finished, was parked or was never released
 stays. The child stays its own tree; reopening the old root does not take it back. Park a child
-with `park_child` before then when its work should stop with the root.
+with `park_child` before then when its work should stop with the root. A root that is parked
+rather than closed hands over only a child at `awaiting_merge` whose pull request is still open,
+since the daemon re-admits no parked root and only that child's own new READY arms the merge the
+park disarmed; park that child too when its merge should wait with the root.
 
 If you are that child's architect:
 

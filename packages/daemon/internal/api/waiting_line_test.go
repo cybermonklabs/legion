@@ -124,7 +124,7 @@ func TestTheWaitingLinePlaceIsStrippedBelowItsContract(t *testing.T) {
 // waitingLineContract is the contract whose entry in version.go added the field, and this
 // daemon's own contract is never below it: a caller at this contract is served the place.
 func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
-	const addedWaitingLine = 56
+	const addedWaitingLine = 57
 	if waitingLineContract != addedWaitingLine {
 		t.Fatalf("waitingLineContract = %d, want %d, the contract whose entry in version.go added each waiting issue's place in the line",
 			waitingLineContract, addedWaitingLine)

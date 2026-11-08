@@ -420,7 +420,7 @@ type Issue struct {
 	// asks one question of one gate still takes.
 	GatedSteps []GatedStepView `json:"gatedSteps,omitempty"`
 	Slot       *SlotView       `json:"slot,omitempty"`
-	// WaitingLine is where this issue stands in `admission.waiting` (contract 56). It is present
+	// WaitingLine is where this issue stands in `admission.waiting` (contract 57). It is present
 	// only for an issue that list names, and absent for a slot holder and for every other issue
 	// the list does not name.
 	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
@@ -828,14 +828,28 @@ func StrandedMoves() []StrandedMove {
 //   - StrandedWorkflowStart, a failed phase worker: the retry of its held phase — its architect's
 //     retry_or_escalate, or the operator's retry (`legion claims retry`, which applies the same
 //     retry) — since a failed claim ignores resume and deliver.
+//   - StrandedWorkflowStart, a retired claim, whatever its role: only a workflow start relaunches
+//     one, since the operator's retry refuses a claim that has not failed and a retired claim
+//     ignores resume and deliver. A start of its phase sends it the retry the daemon's own start
+//     executor makes of a retired claim, so the move is the act that queues such a start: the
+//     architect's retry_or_escalate of a held phase, a transition into the phase, or the tree's
+//     close and re-admission for an architect, whose tree's admission is the only start of it.
+//
+// The retired case is read before every other, because a claim released and then retired keeps
+// `suspendedBy: released` on its row and SuspendersOfOperatorClaims copies that value whatever the
+// state: read as released, it would name a pod coming back from a wake, and nothing is coming
+// back. For the same reason the released case asks for the suspended state itself rather than for
+// anything that has not failed.
 func (c StrandedClaim) Move(suspendedBy string) StrandedMove {
-	failed := c.State == string(supervise.StateFailed)
+	state := supervise.ClaimState(c.State)
 	switch {
-	case !failed && suspendedBy == string(supervise.SuspendedByReleased):
+	case state == supervise.StateRetired:
+		return StrandedWorkflowStart
+	case state == supervise.StateSuspended && suspendedBy == string(supervise.SuspendedByReleased):
 		return StrandedReleasedNoResume
-	case failed && c.Role == claim.RoleArchitect:
+	case state == supervise.StateFailed && c.Role == claim.RoleArchitect:
 		return StrandedRetry
-	case failed:
+	case state == supervise.StateFailed:
 		return StrandedWorkflowStart
 	case c.Role == claim.RoleArchitect:
 		return StrandedResume

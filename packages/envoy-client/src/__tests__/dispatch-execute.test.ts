@@ -1,5 +1,5 @@
-import { afterAll, describe, expect, test } from "bun:test";
-import { rmSync, writeFileSync } from "node:fs";
+import { describe, expect, test } from "bun:test";
+import { writeFileSync } from "node:fs";
 import * as path from "node:path";
 import {
   type Artifact,
@@ -18,8 +18,8 @@ import {
   DISPATCH_EVENT_BODY_MAX,
   DISPATCH_ITEM_BLOCKS,
 } from "@legion/contracts/dispatch-tools";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
-import { removeTemporaryDirectories, temporaryDirectory } from "../../test/temp-dir";
 import { bearerCredential } from "../bearer";
 import { cliRefusals } from "../dispatch-cli";
 import type { ExecFn } from "../dispatch-cwd";
@@ -41,7 +41,7 @@ import { renderSessionAnswersList } from "../session-answers";
 import { ToolInputError } from "../tool-input-errors";
 import { fakeSearchResponse } from "./fake-search-response";
 
-afterAll(removeTemporaryDirectories);
+const makeDirectory = temporaryDirectories("dispatch-execute");
 
 function response(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -762,7 +762,7 @@ describe("executeDispatchTool", () => {
       "anchor",
       "images",
     ] as const;
-    const pictureDirectory = temporaryDirectory("dispatch-ask-images-");
+    const pictureDirectory = makeDirectory("ask-images");
     const picture = path.join(pictureDirectory, "shot.png");
     writeFileSync(picture, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]));
     type Field = (typeof fields)[number];
@@ -882,7 +882,6 @@ describe("executeDispatchTool", () => {
       if (request === undefined) throw new Error(`dispatch_ask did not create an ask for ${field}`);
       testCase.assert(request);
     }
-    rmSync(pictureDirectory, { recursive: true, force: true });
   });
   test("prefills an omitted issue from a native LEGION_ISSUE without resolving cwd repo", async () => {
     const requests: string[] = [];
@@ -3496,11 +3495,13 @@ describe("executeDispatchTool", () => {
 
     expect(result).toEqual({
       text: [
-        'Not created: "Global search across issues and documents" looks like a duplicate.',
+        'Not created: "Global search across issues and documents" is a near copy of an open issue.',
         "LEGION-12 [triage] Global search across issues and documents → http://dispatch.test/issues/LEGION-12",
-        "Reference the existing issue, or run dispatch issue again with --force after reading it.",
+        "Read each issue above. If one is the same work, fold this into it by the duplicate rule of skill://dispatch-first.",
+        "If none is, run dispatch issue again with --force, and write in the new issue's spec why it is not each issue named here.",
       ].join("\n"),
       details: { duplicates: candidates },
+      refused: true,
     });
   });
 
@@ -4829,7 +4830,7 @@ describe("executeDispatchTool", () => {
           fetchImpl,
         })
       ).rejects.toThrow(
-        /status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes because a closed issue refuses messages, comments, and artifacts/
+        /status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note/
       );
     }
   });
@@ -4861,11 +4862,15 @@ describe("executeDispatchTool", () => {
   });
 
   /**
-   * Records every request; the messages route and the PATCH answer with the given responses. This
+   * Records every request; the messages route and the PATCH answer with the given responses, and
+   * the issue read before the update answers `closedAt` (null: the issue is open). This
    * Dispatch runs the keyed layer: its own answers (JSON) echo the request's key and its /healthz
    * says `idempotency_keys`, so a write that fails without an answer of Dispatch's own is resent.
    */
-  function closingServer(answers: { message: () => Response; patch: () => Response }) {
+  function closingServer(
+    answers: { message: () => Response; patch: () => Response },
+    closedAt: string | null = null
+  ) {
     const requests: Array<{ method: string; pathname: string; body?: unknown }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const pathname = new URL(String(url)).pathname;
@@ -4892,7 +4897,8 @@ describe("executeDispatchTool", () => {
         return response({
           key: "ACME-175",
           title: "x",
-          status: "retro",
+          status: closedAt === null ? "retro" : "done",
+          closed_at: closedAt,
           labels: [],
           route: null,
           external_links: [],
@@ -4962,16 +4968,46 @@ describe("executeDispatchTool", () => {
 
   test("dispatch_issue_update leaves the issue open when the reason cannot be posted", async () => {
     const server = closingServer({
-      message: () => refusal(409, "ISSUE_CLOSED", "issue is closed"),
+      message: () => refusal(403, "FORBIDDEN", "token may not write to ACME"),
       patch: () => {
         throw new Error("the close must not be sent");
       },
     });
 
     await expect(closeCall(server.fetchImpl)).rejects.toThrow(
-      "ISSUE_CLOSED: issue is closed; the reason was not posted, so the close was not sent"
+      "FORBIDDEN: token may not write to ACME; the reason was not posted, so the close was not sent"
     );
     expect(server.requests.map(({ method }) => method)).toEqual(["GET", "POST"]);
+  });
+
+  // A closed issue takes messages, so posting the reason first no longer stops at an issue that
+  // is already closed: the executor refuses the second close itself, before anything is posted.
+  test("dispatch_issue_update refuses to close an issue already closed, posting nothing", async () => {
+    const server = closingServer(
+      {
+        message: () => {
+          throw new Error("the reason must not be posted");
+        },
+        patch: () => {
+          throw new Error("the close must not be sent");
+        },
+      },
+      "2026-10-20T12:00:00Z"
+    );
+
+    const refused = await closeCall(server.fetchImpl).catch((error: unknown) => error);
+
+    expect(refused).toMatchObject({
+      name: "DispatchServiceError",
+      code: "ISSUE_CLOSED",
+      status: 409,
+    });
+    expect((refused as Error).message).toBe(
+      "ISSUE_CLOSED: issue is closed; ACME-175 closed at 2026-10-20T12:00:00Z, so the reason was not posted and the close was not sent"
+    );
+    expect(server.requests.map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([
+      "GET /api/v1/issues/ACME-175",
+    ]);
   });
 
   const gatewayPage = (status: number, statusText: string) =>
@@ -9736,7 +9772,7 @@ describe("executeDispatchTool", () => {
     ).rejects.toThrow(`project is not a project key: ${PROJECT_KEY_RULE}`);
   });
   test("uploads a relative artifact path from the Dispatch process cwd", async () => {
-    const cwd = temporaryDirectory("dispatch-execute-");
+    const cwd = makeDirectory();
     writeFileSync(path.join(cwd, "artifact.txt"), "artifact from Dispatch cwd");
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -9751,30 +9787,26 @@ describe("executeDispatchTool", () => {
       throw new Error(`unexpected request: ${new URL(request.url).pathname}`);
     };
 
-    try {
-      const result = await executeDispatchTool({
-        tool: "dispatch_artifact",
-        args: { issue: "DSP-42", name: "artifact.txt", path: "artifact.txt" },
-        cwd,
-        host: "omp",
-        config,
-        env: {},
-        exec: repoExec("owner/repo"),
-        fetchImpl: fetchImpl as typeof fetch,
-      });
+    const result = await executeDispatchTool({
+      tool: "dispatch_artifact",
+      args: { issue: "DSP-42", name: "artifact.txt", path: "artifact.txt" },
+      cwd,
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
 
-      expect(result.details).toMatchObject({ issue: "DSP-42", artifact: "artifact-42" });
-      expect(requests).toHaveLength(1);
-      const sent = requests[0]?.init ?? {};
-      const form = await new Response(sent.body, {
-        headers: sent.headers as Record<string, string>,
-      }).formData();
-      const file = form.get("file");
-      expect(file).toBeInstanceOf(Blob);
-      expect(await (file as Blob).text()).toBe("artifact from Dispatch cwd");
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
+    expect(result.details).toMatchObject({ issue: "DSP-42", artifact: "artifact-42" });
+    expect(requests).toHaveLength(1);
+    const sent = requests[0]?.init ?? {};
+    const form = await new Response(sent.body, {
+      headers: sent.headers as Record<string, string>,
+    }).formData();
+    const file = form.get("file");
+    expect(file).toBeInstanceOf(Blob);
+    expect(await (file as Blob).text()).toBe("artifact from Dispatch cwd");
   });
 
   test("uploads inline artifact content as JSON", async () => {
@@ -12160,6 +12192,133 @@ describe("executeDispatchTool", () => {
     } finally {
       issue.resolve(issueResponse);
     }
+  });
+
+  // The controller's weekly audit counts the week's overrides with `dispatch read --issue <KEY>`
+  // and reads them off the `issue.created` line of its `Events:` block
+  // (`skills/legion-controller/references/weekly-audit.md`, "The week's forced creates"). The
+  // issues the refusal named ride on that event as `forced.past`, so the line has to name them:
+  // without them the count the audit reports cannot be made from the commands it gives, and no
+  // other command of the CLI prints the field.
+  test("names the issues a forced create went past on its issue.created line", async () => {
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42") {
+        return response({
+          key: "DSP-42",
+          title: "Dispatch issue",
+          status: "open",
+          route: null,
+          open_asks: [],
+          children: [],
+          last_seq: 1,
+        });
+      }
+      if (target.pathname === "/api/v1/issues/DSP-42/events") {
+        return response([
+          {
+            seq: 1,
+            type: "issue.created",
+            issue_key: "DSP-42",
+            actor: {
+              kind: "session",
+              id: "s1",
+              origin: { session_title: "Legion implementer · INFRA-1160" },
+            },
+            created_at: "2026-09-09T00:01:00Z",
+            payload: {
+              key: "DSP-42",
+              status: "triage",
+              forced: { past: ["DSP-7", "DSP-9"] },
+            },
+          },
+        ]);
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: "dispatch://DSP-42/log" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text).toBe(
+      [
+        "Key: DSP-42",
+        "Events:",
+        "- #1 issue.created · session s1 (Legion implementer · INFRA-1160) · 2026-09-09T00:01:00Z · status triage · forced past DSP-7, DSP-9",
+      ].join("\n")
+    );
+  });
+
+  // A forced create whose near-copy check never answered carries `forced` with an empty `past`,
+  // and the weekly audit reports those apart from the overrides
+  // (`skills/legion-controller/references/weekly-audit.md`, "The week's forced creates"). It is
+  // the only record of such a create, so the line says so in words: printing the plain status
+  // line would make it read as a create nobody forced, and the audit's count cannot be made.
+  test("tells a forced create whose near-copy check did not answer from an unforced one", async () => {
+    const createdLine = async (forced: { past: string[] } | undefined): Promise<string> => {
+      const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+        const target = new URL(String(url));
+        if (target.pathname === "/api/v1/issues/DSP-42") {
+          return response({
+            key: "DSP-42",
+            title: "Dispatch issue",
+            status: "open",
+            route: null,
+            open_asks: [],
+            children: [],
+            last_seq: 1,
+          });
+        }
+        if (target.pathname === "/api/v1/issues/DSP-42/events") {
+          return response([
+            {
+              seq: 1,
+              type: "issue.created",
+              issue_key: "DSP-42",
+              actor: {
+                kind: "session",
+                id: "s1",
+                origin: { session_title: "Legion implementer · INFRA-1160" },
+              },
+              created_at: "2026-09-09T00:01:00Z",
+              payload: {
+                key: "DSP-42",
+                status: "triage",
+                ...(forced === undefined ? {} : { forced }),
+              },
+            },
+          ]);
+        }
+        throw new Error(`unexpected request: ${target.pathname}`);
+      };
+
+      const result = await executeDispatchTool({
+        tool: "dispatch_read",
+        args: { ref: "dispatch://DSP-42/log" },
+        cwd: "/workspace",
+        host: "omp",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+      return result.text.split("\n").at(-1) ?? "";
+    };
+
+    const created =
+      "- #1 issue.created · session s1 (Legion implementer · INFRA-1160) · 2026-09-09T00:01:00Z · status triage";
+    expect(await createdLine({ past: [] })).toBe(
+      `${created} · forced, the near-copy check did not answer`
+    );
+    expect(await createdLine(undefined)).toBe(created);
   });
 
   test("reads recent events from a Dispatch log reference, each with the head of its text", async () => {

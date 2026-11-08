@@ -1,4 +1,5 @@
 import { MessageType } from "@hocuspocus/provider";
+import type { ParagraphReading } from "@legion/proof-editor/reading";
 import {
   type Browser,
   expect,
@@ -8,6 +9,7 @@ import {
   type WebSocketRoute,
 } from "@playwright/test";
 import { createDecoder, readVarUint } from "lib0/decoding";
+import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
@@ -59,8 +61,33 @@ export function actionBar(page: Page): Locator {
   return page.locator(".dispatch-action-bar");
 }
 
+/** Presses one of the selection bar's actions, once the bar is where a press can reach it. The
+ * bar is `position: fixed` and `dispatch-action-bar.ts` places it beside the selection, so a
+ * selection outside the viewport puts the bar outside it too - and Playwright's "scroll into
+ * view" moves nothing for a fixed element, so such a click only retries until the row's budget
+ * ends and reports a button that would not take a press. The wait fails by naming the bar
+ * instead, which is the thing that did not arrive. */
 export async function barAction(page: Page, label: "Comment" | "Suggest" | "Ask"): Promise<void> {
+  await expect(actionBar(page)).toBeInViewport();
   await actionBar(page).getByRole("button", { exact: true, name: label }).click();
+}
+
+/** Opens the Inbox or the Agents page by the sidebar's own link, and waits for the heading the
+ *  application gives that page, so a navigation that did not happen fails by naming the page
+ *  that never opened rather than by whatever the row reaches for next.
+ *
+ *  The link, not the `g i` and `g a` chords: the keymap drops a half-typed chord one second
+ *  after its first key (`CHORD_TIMEOUT_MS`, `web/src/features/shell/keymap.ts`), and the two
+ *  keys of a chord are two round trips to the engine — on the Agents page, measured in WebKit on
+ *  an idle machine, 281-382 ms of that second passes between the `g` and the `i`. A loaded lane
+ *  lands the second key after the chord is gone, where `i` on its own opens the inbox peek and
+ *  the reader never leaves the page. A link carries no such deadline. */
+export async function openFromSidebar(page: Page, name: "Agents" | "Inbox"): Promise<void> {
+  await page
+    .getByRole("navigation", { name: "Navigation" })
+    .getByRole("link", { name: new RegExp(`^${name}`) })
+    .click();
+  await expect(page.getByRole("heading", { exact: true, level: 1, name })).toBeVisible();
 }
 
 /** The comment composer: on a document page, the margin's, which a selection-bar action opens. */
@@ -106,6 +133,14 @@ export async function selectEditorText(page: Page, quote: string): Promise<void>
   await actionBar(page).waitFor({ state: "visible" });
 }
 
+/** Selects `quote` as `selectEditorText` does, without waiting for the selection bar: for a row
+ *  whose assertion is the bar itself. It reads all of the editor's text, a read-only one's (a
+ *  closed issue's document, where no caret can enter) included. `selectTextIn` is the same for a
+ *  quote inside one element of an editable document. */
+export function selectEditorQuote(page: Page, quote: string): Promise<void> {
+  return setEditorRange(page, { anyText: true, extent: "whole", quote });
+}
+
 /** Puts the caret directly before or after the first occurrence of `quote` among the text a caret
  * can enter, the way a click there does: a quote that also stands in `contenteditable="false"`
  * chrome, such as a block's banner, or that a collaborator's cursor label splits, is found where
@@ -128,11 +163,14 @@ export function selectTextIn(page: Page, scope: Locator, quote: string): Promise
 
 /** Over, before or after the first occurrence of `quote`, or the end of the last text a caret can
  * enter: a collaborator's cursor label and an atom's text sit in `contenteditable="false"`. */
-type EditorRange = { extent: "whole" | "before" | "after"; quote: string } | { extent: "end" };
+type EditorRange =
+  | { anyText?: boolean; extent: "whole" | "before" | "after"; quote: string }
+  | { extent: "end" };
 
 /** Sets the page's selection and dispatches the selectionchange ProseMirror's DOMObserver reads, so
  * the editor takes the selection before this returns. Every target is found only in the text a
- * caret can enter, inside `scope` when one is given, else the whole editor. Without that read,
+ * caret can enter (any text, for `anyText`), inside `scope` when one is given, else the whole
+ * editor. Without that read,
  * ProseMirror's focus handler (prosemirror-view `handlers.focus`) writes the editor's own selection
  * back to the page 20 ms after focus and undoes a caret placed in between. */
 async function setEditorRange(page: Page, target: EditorRange, scope?: Locator): Promise<void> {
@@ -152,11 +190,11 @@ async function setEditorRange(page: Page, target: EditorRange, scope?: Locator):
     } else {
       // Reads the text nodes as one text, so a quote another mark's span splits is found as
       // readily as one a single node holds, and maps the quote's two ends back to their nodes.
-      const { extent, quote } = target;
+      const { anyText, extent, quote } = target;
       const runs: { node: Node; start: number; end: number }[] = [];
       let text = "";
       for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
-        if (node.parentElement?.isContentEditable !== true) continue;
+        if (anyText !== true && node.parentElement?.isContentEditable !== true) continue;
         const start = text.length;
         text += node.textContent ?? "";
         runs.push({ end: text.length, node, start });
@@ -237,14 +275,9 @@ export function conversationThreadScope(page: Page, project: string, turn: Locat
   return project === "iphone" ? page.getByRole("dialog", { name: "Thread" }) : turn;
 }
 
-/** One paragraph of a reading: its whole text, with runs of whitespace collapsed, and the text of
- *  each `<em>`, `<strong>` and `<del>` in it, in document order. */
-export interface ParagraphReading {
-  emphasized: string[];
-  strong: string[];
-  struck: string[];
-  text: string;
-}
+/** One paragraph of a reading, from the one definition (`@legion/proof-editor/reading`): the
+ *  type a spec passes `expectParagraphReadings`, and the type the fixture table stores. */
+export type { ParagraphReading };
 
 /** Asserts the paragraphs `view` draws read as `reading`, the whole table at once, so a failure
  *  reports every row's reading. */
@@ -270,42 +303,6 @@ export async function expectParagraphReadings(
       )
     )
     .toEqual(reading);
-}
-
-/** Opens the comment's thread in the Conversation and asserts `read` of the body the engine drew
- *  there, `read` being given the body's `.dispatch-markdown` view. A spec whose rows are not
- *  `ParagraphReading`s passes its own reader. */
-export async function expectCommentBody(
-  page: Page,
-  issueKey: string,
-  commentId: string,
-  project: string,
-  read: (view: Locator) => Promise<void>
-): Promise<void> {
-  await page.goto(`/issues/${issueKey}/conversation`);
-  // A collapsed card previews the body inline; the expanded thread draws its paragraphs, in
-  // place on a wide screen and in the Thread sheet on a phone.
-  const turn = page.locator(`[data-turn="comment:${commentId}"]`);
-  await turn.getByRole("button", { name: "Expand thread" }).click();
-  const thread = conversationThreadScope(page, project, turn);
-  await read(thread.locator(".dispatch-markdown"));
-  // The engine drew the body: no literal-text fallback stands in for it.
-  await expect(turn.locator("[data-markdown-fallback]")).toHaveCount(0);
-  await expect(thread.locator("[data-markdown-fallback]")).toHaveCount(0);
-}
-
-/** Opens the comment's thread in the Conversation and asserts the engine drew its body as
- *  `reading`. */
-export function expectCommentReading(
-  page: Page,
-  issueKey: string,
-  commentId: string,
-  project: string,
-  reading: ParagraphReading[]
-): Promise<void> {
-  return expectCommentBody(page, issueKey, commentId, project, (view) =>
-    expectParagraphReadings(view, reading)
-  );
 }
 
 /** The Conversation's All / Open / Closed control, the one filter over its cards. It starts on
@@ -347,6 +344,27 @@ export function countDocumentSockets(page: Page, documentId?: string): () => num
     }
   });
   return () => count;
+}
+
+/** Every fact this poll waits on lands in milliseconds: Playwright's default 100/250/500/1000
+ *  ladder would first see it a quarter-second late. */
+const PROBE = { intervals: [50, 50, 100, 200, 500] };
+
+/** Spends the document socket's reconnect draw - a uniform [0, RECONNECT_SPREAD_MS) set at the
+ *  previous open (`web/src/features/doc/connection.ts`) - on the page's own clock, until the page
+ *  holds `count` document sockets, as `countDocumentSockets` counts them. What armed the draw may
+ *  not have reached the page when the first jump lands, so the jump repeats. */
+export async function reconnectedSockets(
+  page: Page,
+  sockets: () => number,
+  count: number
+): Promise<void> {
+  await expect
+    .poll(async () => {
+      await page.clock.fastForward(RECONNECT_SPREAD_MS);
+      return sockets();
+    }, PROBE)
+    .toBe(count);
 }
 
 /** Document sockets the tab still holds open: one per live document, never one per visit. */
