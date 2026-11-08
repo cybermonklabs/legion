@@ -1541,6 +1541,58 @@ func TestACompareReadRefusedOnTheDefaultBranchHoldsNothing(t *testing.T) {
 	}
 }
 
+// A refusal of the repository's own default branch holds nothing where the caller spelled that
+// branch out either, and not only where it passed DefaultBranch. An `after_merge` walk asks
+// about the branch the issue merged into and then about the default branch
+// (api/results_currency.go, measuredBranches), and for an issue merged the ordinary way those
+// two steps are one branch under two names; a hold taken under the spelled-out name would
+// answer the default-branch step from it without a read, and every `default_branch` result of
+// the repository, and every `after_merge` result of it no stored row answers, would read
+// unknown for five minutes over one commit the repository does not hold.
+//
+// The first ask is also the cold cache this walk starts from: nothing has resolved
+// acme/widgets' default branch when the named refusal is taken, so a hold is written under
+// `main` that only the ask resolving that name can recognise. That ask must spend a compare
+// read of its own, and must leave the entry nothing will ever read again deleted; the third
+// ask, under the name again and with the default branch resolved by now, must take no hold at
+// all.
+func TestARefusalUnderTheDefaultBranchsOwnNameHoldsNothing(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	var compares atomic.Int64
+	fake := newFakeGitHub(t)
+	fake.handle("GET /repos/acme/widgets", func(w http.ResponseWriter, _ *http.Request) {
+		mustEncode(t, w, map[string]any{"full_name": "acme/widgets", "default_branch": "main"})
+	})
+	fake.handle("GET /repos/acme/widgets/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
+		compares.Add(1)
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"message":"Not Found"}`)
+	})
+	client := fake.newTestClient()
+	branches := &Branches{}
+	asked := time.Now()
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "main", mergeCommit, asked); answer != BranchUnseen {
+		t.Fatalf("a commit GitHub answers 404 about, asked for under the default branch's own name = %v, want %v", answer, BranchUnseen)
+	}
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", DefaultBranch, unaskedCommit, asked); answer != BranchUnseen {
+		t.Fatalf("another commit of that branch, asked for as the default branch = %v, want %v", answer, BranchUnseen)
+	}
+	if got := compares.Load(); got != 2 {
+		t.Fatalf("compare reads = %d, want one for each commit: a refusal under the default branch's own name holds nothing", got)
+	}
+	if got := len(branches.compares); got != 0 {
+		t.Fatalf("hold entries once the default branch's name is resolved = %d, want none: the entry the cold cache left is deleted as the name is recognised", got)
+	}
+
+	if answer := branches.CommitOnBranch(ctx, pool, client, "acme/widgets", "main", landedCommit, asked); answer != BranchUnseen {
+		t.Fatalf("a third commit under the name, the default branch resolved by now = %v, want %v", answer, BranchUnseen)
+	}
+	if got := compares.Load(); got != 3 {
+		t.Fatalf("compare reads once the default branch is resolved = %d, want one for each commit: the branch is held under neither of its names", got)
+	}
+}
+
 // A compare read that is slow to be refused must not hold a pair a quicker read has been
 // answered about meanwhile. The refusal is the older fact however the two returned, and the
 // answer is the newer one: GitHub can see the branch again, and a hold taken after it would
