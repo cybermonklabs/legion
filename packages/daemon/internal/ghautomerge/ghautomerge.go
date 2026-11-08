@@ -179,15 +179,18 @@ func (f FailingRun) String() string {
 // DISPATCH_BLOCK_UNITS, 32,000 UTF-16 units (packages/contracts), naming it; the daemon then
 // tells the architect its message was refused, which is the failure this bound exists to spare
 // it. One job's line is bounded in itself (failingTestsNamed, failureLineUnits): some 2,400
-// units of names and prose as the read writes them, 22,092 once they are quoted, which is the
-// count a Dispatch post is measured in, and at most 608 more for the run's own name, result
-// and link, each cut to failureLineUnits runes and the mark of the cut here
-// (FailingRun.String). A merge group a broken base fails across twenty jobs names twenty such
-// lines. Sixteen thousand holds every removal's runs to half that block, which leaves the
-// sentence they stand in, and the prose around it, the other half. The one line this bound
-// gives way to is the first run's, which is named however long it is: a first line at that
-// quoted worst case writes some 22,700 units and every run after it is counted, so a removal's
-// runs stay inside the block whichever way they run.
+// units of names and prose as the read writes them, and 22,103 once they are quoted — 22,121
+// with the tail that counts the names it did not state — which is the count a Dispatch post is
+// measured in. The run's own name, result and link are cut here and never quoted
+// (FailingRun.String), so each costs at most 2 × failureLineUnits + 1 = 401 units, a rune
+// outside the BMP, an emoji in a check's name among them, being two UTF-16 units, which is
+// 3 × 401 + 5 = 1,208 for the three of them with the " (", ", " and ")" around them. A merge
+// group a broken base fails across twenty jobs names twenty such lines. Sixteen thousand holds
+// every removal's runs to half that block, which leaves the sentence they stand in, and the
+// prose around it, the other half. The one line this bound gives way to is the first run's,
+// which is named however long it is: a first line of that quoted worst case runs to
+// 22,121 + 1,208 = 23,329 units and every run after it is counted, so a removal's runs stay
+// inside the block whichever way they run.
 const failingRunsUnits = 16000
 
 // FailingRuns is runs as every removal that carries them names them, and as the daemon's own

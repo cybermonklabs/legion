@@ -404,7 +404,9 @@ func TestTheFailingRunsLineSaysWhatEachJobsLogStatesFailed(t *testing.T) {
 // block Dispatch holds a post to, which Dispatch refuses whole (INFRA-1442). The first run is
 // named whatever its own line costs: a removal that named none would say nothing of what failed.
 func TestARemovalNamesItsRunsUpToABoundAndCountsTheRest(t *testing.T) {
-	// Each line is the worst a job's line runs to: ten cut names and a cut first failure line.
+	// Each line is the worst unquoted shape a job's line runs to: ten cut names and a cut first
+	// failure line, none of them needing a quote. The quoted worst case is far longer, and what
+	// it costs this bound is read below.
 	line := func(i int) FailingRun {
 		return FailingRun{Name: fmt.Sprintf("integration-%02d", i), Result: "failure", URL: failedRun,
 			Log: ": its log names " + strings.Repeat(cutLine(strings.Repeat("x", failureLineUnits+1))+", ", failingTestsNamed) +
@@ -436,10 +438,12 @@ func TestARemovalNamesItsRunsUpToABoundAndCountsTheRest(t *testing.T) {
 		t.Fatalf("two runs are named %q, want both of them, \"; \" between", joined)
 	}
 	// The first run is named whole however long its own line is (FailingRuns), which is the one
-	// promise the bound on the rest has to give way to. The shapes measured here come nowhere
-	// near that far — ten cut names and a cut first failure line are some 2,400 units as the
-	// read writes them, and 22,092 where every one of them needed quoting (failureLineUnits) —
-	// so the run this reads the promise with is built past failingRunsUnits on purpose.
+	// promise the bound on the rest has to give way to, and a job's line can reach past that
+	// bound: the unquoted shape above is some 2,400 units as the read writes it, while the same
+	// ten names and first failure line quoted are 22,103 (failureLineUnits), which is past
+	// failingRunsUnits — that is why the promise exists. No fixture here is built that way,
+	// since it would prove the promise and nothing else, so the run this reads it with is built
+	// past failingRunsUnits directly.
 	huge := FailingRun{Name: "integration-00", Result: "failure", URL: failedRun,
 		Log: ": its log names " + strings.Repeat("x", failingRunsUnits) + " as failing"}
 	if one := FailingRuns([]FailingRun{huge}); one != huge.String() {

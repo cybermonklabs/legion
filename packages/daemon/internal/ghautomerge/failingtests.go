@@ -193,29 +193,35 @@ const (
 //
 // What holds one job's line is not the shapes it happens to carry but the rule it is written
 // to: every string of GitHub's in it passes through cutLine exactly once (jobFailures). A line
-// that names tests is then at most failingTestsNamed names of failureLineUnits runes, one
-// first failure line of failureLineUnits, and the fixed prose holding them — some 2,400 units
-// as the read writes them — and a line that could not read the log is one cut reason and one
-// fixed sentence, whatever GitHub answered the read with.
+// that names tests is then at most failingTestsNamed names, one first failure line, the ", "
+// between the names and the fixed prose holding them — some 2,400 units as the read writes
+// them — and a line that could not read the log is one cut reason and one fixed sentence,
+// whatever GitHub answered the read with.
 //
 // That 2,400 is counted before the quoting, and what a message carries is what the quoting
-// makes of it: a name is quoted where it is not plain text (quoteName) and the first failure
-// line always (the %q in jobFailures), both of them after the cut. Go's quoting writes one
-// unprintable rune as an escape of up to ten characters ("\U000e0001"), so a string of
-// failureLineUnits runes is at most 10 × failureLineUnits + 2 = 2,002 units once quoted. One
-// job's line is then at most ten such names (20,020), the ", " between them (9 × 2 = 18), one
-// first failure line (2,002) and the fixed prose holding them (52: 16 units before the names
-// and 36 before the first failure line), which is 22,092 units, a dozen more where the names
-// it did not state are counted after them ("and 12 more"). That is the quoted count, the one
-// Dispatch measures a block in, and it leaves some 9,900 of the 32,000 units one block takes.
-// It also stands above failingRunsUnits, the bound a removal's runs are held to, so a removal
-// carrying a line of that shape names it as its first run, which is never cut short, and
-// counts the rest.
+// makes of it, so the bound is stated as a rule per string rather than as a total that a later
+// cut or a new string would leave wrong: a name is quoted where it is not plain text
+// (quoteName) and the first failure line always (the %q in jobFailures), both of them after
+// the cut, and cutLine returns failureLineUnits runes and the mark of the cut, so a cut string
+// is failureLineUnits + 1 runes. Go's quoting writes one unprintable rune as an escape of up
+// to ten characters ("\U000e0001") and the mark at one unit, so one quoted string is at most
+// 10 × failureLineUnits + 3 units, and one job's line at most failingTestsNamed + 1 of those
+// with the ", " between the names and the fixed prose (52 units: 16 before the names and 36
+// before the first failure line). At today's numbers each of those strings is
+// 10 × 200 + 1 + 2 = 2,003 units and the line is 10 × 2,003 + 18 + 2,003 + 52 = 22,103, some
+// 22,121 where the names it did not state are counted after them ("and 12 more" at eight
+// digits). That is the count Dispatch measures a block in, and it leaves about a third of the
+// 32,000 one block takes.
+//
+// It also stands above failingRunsUnits, the bound a removal's runs are held to, which is the
+// one case that bound gives way in: a line of that shape is named whole where it is the
+// removal's first run and counted, with every run after it, where it is not (FailingRuns).
 //
 // No log measured here comes near that, since a name of ordinary text is quoted at two units
 // or not at all: the longest shape measured, the browser row of 141 characters browserLog
 // carries, holds one job's line under 1,800 units, ten of it and a first failure line cut to
-// 200. How many such lines one removal names is bounded in its turn (failingRunsUnits).
+// failureLineUnits. How many such lines one removal names is bounded in its turn
+// (failingRunsUnits).
 const (
 	failingTestsNamed = 10
 	failureLineUnits  = 200
