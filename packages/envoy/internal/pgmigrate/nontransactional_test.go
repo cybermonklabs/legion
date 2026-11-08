@@ -116,36 +116,42 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	}
 }
 
-// indexState reads one relation of the given name: its oid, whether it is an index, whether that
-// index is valid and the table it is on.
-func indexState(t *testing.T, ctx context.Context, conn *pgx.Conn, name string) (oid uint32, isIndex bool, valid bool, table string) {
+// relation is one relation of pg_class as indexState read it: its oid, whether it is an index,
+// whether that index is valid and the table it is on. The zero relation is no relation of that
+// name at all, since pg_class never gives a relation oid 0.
+type relation struct {
+	OID   uint32
+	Index bool
+	Valid bool
+	Table string
+}
+
+// indexState reads the one relation of the given name in the public schema, the zero relation
+// when there is none.
+func indexState(t *testing.T, ctx context.Context, conn *pgx.Conn, name string) relation {
 	t.Helper()
+	var got relation
 	var kind string
 	var indisvalid *bool
 	var onTable *string
 	err := conn.QueryRow(ctx, `select c.oid, c.relkind, i.indisvalid, t.relname from pg_class c
 		left join pg_index i on i.indexrelid = c.oid
 		left join pg_class t on t.oid = i.indrelid
-		where c.relname = $1 and c.relnamespace = 'public'::regnamespace`, name).Scan(&oid, &kind, &indisvalid, &onTable)
+		where c.relname = $1 and c.relnamespace = 'public'::regnamespace`, name).Scan(&got.OID, &kind, &indisvalid, &onTable)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return relation{}
+	}
 	if err != nil {
 		t.Fatalf("read relation %s: %v", name, err)
 	}
+	got.Index = kind == "i"
 	if indisvalid != nil {
-		valid = *indisvalid
+		got.Valid = *indisvalid
 	}
 	if onTable != nil {
-		table = *onTable
+		got.Table = *onTable
 	}
-	return oid, kind == "i", valid, table
-}
-
-func relationMissing(t *testing.T, ctx context.Context, conn *pgx.Conn, name string) bool {
-	t.Helper()
-	var n int
-	if err := conn.QueryRow(ctx, "select count(*) from pg_class where relname = $1 and relnamespace = 'public'::regnamespace", name).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n == 0
+	return got
 }
 
 func indexMigration() Migration {
@@ -154,16 +160,17 @@ func indexMigration() Migration {
 
 // leaveInvalidIndex leaves a real INVALID index of the given name on the given table, the way a
 // failed concurrent build does: a UNIQUE concurrent build over duplicate rows fails at once.
-func leaveInvalidIndex(t *testing.T, ctx context.Context, conn *pgx.Conn, name, table, column string) {
+func leaveInvalidIndex(t *testing.T, ctx context.Context, conn *pgx.Conn, name, table, column string) relation {
 	t.Helper()
 	if _, err := conn.Exec(ctx, "create unique index concurrently "+name+" on "+table+" ("+column+")"); err == nil {
 		t.Fatalf("unique index %s accepted duplicate rows", name)
 	}
-	oid, isIndex, valid, on := indexState(t, ctx, conn, name)
-	if !isIndex || valid || on != table {
-		t.Fatalf("fixture %s: oid=%d index=%v valid=%v on=%s, want an INVALID index on %s", name, oid, isIndex, valid, on, table)
+	got := indexState(t, ctx, conn, name)
+	if want := (relation{OID: got.OID, Index: true, Table: table}); got.OID == 0 || got != want {
+		t.Fatalf("fixture %s = %+v, want an INVALID index on %s", name, got, table)
 	}
-	t.Logf("fixture: pg_index %s oid=%d indisvalid=%v on=%s", name, oid, valid, on)
+	t.Logf("fixture: pg_index %s = %+v", name, got)
+	return got
 }
 
 // A build the runner itself started and lost to lock_timeout leaves an INVALID index of the
@@ -192,12 +199,13 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 		attempts++
 		err := ExecNonTransactional(ctx, conn, migration, nil)
 		if attempts == 1 {
-			oid, isIndex, valid, on := indexState(t, ctx, conn, "things_kind")
-			if !isIndex || valid || on != "things" {
-				t.Fatalf("first attempt left oid=%d index=%v valid=%v on=%s, want an INVALID index on things", oid, isIndex, valid, on)
+			got := indexState(t, ctx, conn, "things_kind")
+			// The oid is the leftover's, read here and compared after the rebuild.
+			if want := (relation{OID: got.OID, Index: true, Table: "things"}); got != want {
+				t.Fatalf("after attempt 1: things_kind = %+v, want %+v", got, want)
 			}
-			t.Logf("after attempt 1: pg_index things_kind oid=%d indisvalid=%v on=%s; error %v", oid, valid, on, err)
-			leftover = oid
+			t.Logf("after attempt 1: things_kind = %+v; error %v", got, err)
+			leftover = got.OID
 			if rollback := tx.Rollback(ctx); rollback != nil {
 				t.Fatal(rollback)
 			}
@@ -210,12 +218,12 @@ func TestExecNonTransactionalRebuildsAfterATimedOutBuild(t *testing.T) {
 	if attempts != 2 {
 		t.Fatalf("attempts = %d, want 2", attempts)
 	}
-	oid, isIndex, valid, on := indexState(t, ctx, conn, "things_kind")
-	if !isIndex || !valid || on != "things" {
-		t.Fatalf("things_kind: oid=%d index=%v valid=%v on=%s, want a valid index on things", oid, isIndex, valid, on)
+	got := indexState(t, ctx, conn, "things_kind")
+	if want := (relation{OID: got.OID, Index: true, Valid: true, Table: "things"}); got != want {
+		t.Fatalf("things_kind = %+v, want %+v", got, want)
 	}
-	if oid == leftover {
-		t.Fatalf("things_kind oid %d is the leftover's: it was revalidated, not rebuilt", oid)
+	if got.OID == leftover {
+		t.Fatalf("things_kind oid %d is the leftover's: it was revalidated, not rebuilt", got.OID)
 	}
 }
 
@@ -227,28 +235,34 @@ func TestExecNonTransactionalDropsTheLeftoverOfAKilledBuild(t *testing.T) {
 	if _, err := conn.Exec(ctx, "create table things (kind text); insert into things values ('same'), ('same')"); err != nil {
 		t.Fatal(err)
 	}
-	leaveInvalidIndex(t, ctx, conn, "things_kind", "things", "kind")
-	leftover, _, _, _ := indexState(t, ctx, conn, "things_kind")
+	leftover := leaveInvalidIndex(t, ctx, conn, "things_kind", "things", "kind")
 	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
 		t.Fatalf("ExecNonTransactional = %v, want nil after dropping its own leftover", err)
 	}
-	oid, isIndex, valid, on := indexState(t, ctx, conn, "things_kind")
-	if !isIndex || !valid || on != "things" {
-		t.Fatalf("things_kind: oid=%d index=%v valid=%v on=%s, want a valid index on things", oid, isIndex, valid, on)
+	got := indexState(t, ctx, conn, "things_kind")
+	if want := (relation{OID: got.OID, Index: true, Valid: true, Table: "things"}); got != want {
+		t.Fatalf("things_kind = %+v, want %+v", got, want)
 	}
-	if oid == leftover {
-		t.Fatalf("things_kind oid %d is the leftover's: it was revalidated, not rebuilt", oid)
+	if got.OID == leftover.OID {
+		t.Fatalf("things_kind oid %d is the leftover's: it was revalidated, not rebuilt", got.OID)
 	}
 }
 
 // The runner drops only an index that is its own: its name, on its own table. Anything else of
-// that name is a relation it did not build, and it refuses, naming DROP INDEX CONCURRENTLY.
+// that name is a relation it did not build, and it refuses, naming the relation and the way out
+// that relation leaves: another table's index can be dropped concurrently, a table cannot.
 func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
-	refusal := func(t *testing.T, conn *pgx.Conn) {
+	// Every refusal names the relation; the remedy is each case's own, so the subtest brings it.
+	refusal := func(t *testing.T, conn *pgx.Conn, remedy ...string) {
 		t.Helper()
 		err := ExecNonTransactional(context.Background(), conn, indexMigration(), nil)
-		if err == nil || !strings.Contains(err.Error(), "things_kind") || !strings.Contains(err.Error(), "DROP INDEX CONCURRENTLY") {
-			t.Fatalf("ExecNonTransactional = %v, want a refusal naming things_kind and DROP INDEX CONCURRENTLY", err)
+		if err == nil || !strings.Contains(err.Error(), "things_kind") {
+			t.Fatalf("ExecNonTransactional = %v, want a refusal naming things_kind", err)
+		}
+		for _, want := range remedy {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("refusal %q does not carry %q", err, want)
+			}
 		}
 	}
 	t.Run("an INVALID index of the migration's name on another table", func(t *testing.T) {
@@ -258,11 +272,10 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 			create table others (kind text); insert into others values ('same'), ('same')`); err != nil {
 			t.Fatal(err)
 		}
-		leaveInvalidIndex(t, ctx, conn, "things_kind", "others", "kind")
-		refusal(t, conn)
-		oid, isIndex, valid, on := indexState(t, ctx, conn, "things_kind")
-		if !isIndex || valid || on != "others" {
-			t.Fatalf("things_kind: oid=%d index=%v valid=%v on=%s, want the INVALID index on others untouched", oid, isIndex, valid, on)
+		before := leaveInvalidIndex(t, ctx, conn, "things_kind", "others", "kind")
+		refusal(t, conn, "is an INVALID index on another table", `DROP INDEX CONCURRENTLY "public"."things_kind"`)
+		if got := indexState(t, ctx, conn, "things_kind"); got != before {
+			t.Fatalf("things_kind = %+v, want the INVALID index on others untouched (%+v)", got, before)
 		}
 	})
 	t.Run("a valid index of the migration's name on another table", func(t *testing.T) {
@@ -272,12 +285,13 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 			create table others (kind text); create index things_kind on others (kind)`); err != nil {
 			t.Fatal(err)
 		}
-		oid, isIndex, valid, on := indexState(t, ctx, conn, "things_kind")
-		t.Logf("fixture: pg_index things_kind oid=%d index=%v indisvalid=%v on=%s", oid, isIndex, valid, on)
-		refusal(t, conn)
-		oid, isIndex, valid, on = indexState(t, ctx, conn, "things_kind")
-		if !isIndex || !valid || on != "others" {
-			t.Fatalf("things_kind: oid=%d index=%v valid=%v on=%s, want the valid index on others untouched", oid, isIndex, valid, on)
+		before := indexState(t, ctx, conn, "things_kind")
+		if want := (relation{OID: before.OID, Index: true, Valid: true, Table: "others"}); before.OID == 0 || before != want {
+			t.Fatalf("fixture things_kind = %+v, want a valid index on others", before)
+		}
+		refusal(t, conn, "is a VALID index on another table", `DROP INDEX CONCURRENTLY "public"."things_kind"`)
+		if got := indexState(t, ctx, conn, "things_kind"); got != before {
+			t.Fatalf("things_kind = %+v, want the valid index on others untouched (%+v)", got, before)
 		}
 	})
 	t.Run("a non-index relation of the migration's name", func(t *testing.T) {
@@ -286,11 +300,13 @@ func TestExecNonTransactionalRefusesAnIndexItDidNotBuild(t *testing.T) {
 		if _, err := conn.Exec(ctx, "create table things (kind text); create table things_kind (x int)"); err != nil {
 			t.Fatal(err)
 		}
-		oid, isIndex, valid, on := indexState(t, ctx, conn, "things_kind")
-		t.Logf("fixture: relation things_kind oid=%d index=%v indisvalid=%v on=%q", oid, isIndex, valid, on)
-		refusal(t, conn)
-		if relationMissing(t, ctx, conn, "things_kind") {
-			t.Fatal("the refusal removed the table things_kind")
+		before := indexState(t, ctx, conn, "things_kind")
+		if want := (relation{OID: before.OID}); before.OID == 0 || before != want {
+			t.Fatalf("fixture things_kind = %+v, want a plain table of its own oid", before)
+		}
+		refusal(t, conn, `relkind "r"`, "Rename or remove")
+		if got := indexState(t, ctx, conn, "things_kind"); got != before {
+			t.Fatalf("things_kind = %+v, want the table things_kind still there (%+v)", got, before)
 		}
 	})
 }
@@ -303,24 +319,23 @@ func TestExecNonTransactionalLeavesAnIndexOfAnotherNameAlone(t *testing.T) {
 	if _, err := conn.Exec(ctx, "create table things (kind text, other text); insert into things values ('a', 'same'), ('b', 'same')"); err != nil {
 		t.Fatal(err)
 	}
-	leaveInvalidIndex(t, ctx, conn, "things_other", "things", "other")
-	other, _, _, _ := indexState(t, ctx, conn, "things_other")
+	other := leaveInvalidIndex(t, ctx, conn, "things_other", "things", "other")
 	if err := ExecNonTransactional(ctx, conn, indexMigration(), nil); err != nil {
 		t.Fatalf("ExecNonTransactional = %v, want nil: the INVALID index is not the migration's", err)
 	}
-	oid, isIndex, valid, on := indexState(t, ctx, conn, "things_kind")
-	if !isIndex || !valid || on != "things" {
-		t.Fatalf("things_kind: oid=%d index=%v valid=%v on=%s, want a valid index on things", oid, isIndex, valid, on)
+	got := indexState(t, ctx, conn, "things_kind")
+	if want := (relation{OID: got.OID, Index: true, Valid: true, Table: "things"}); got != want {
+		t.Fatalf("things_kind = %+v, want %+v", got, want)
 	}
-	leftOid, leftIsIndex, leftValid, leftOn := indexState(t, ctx, conn, "things_other")
-	if leftOid != other || !leftIsIndex || leftValid || leftOn != "things" {
-		t.Fatalf("things_other: oid=%d index=%v valid=%v on=%s, want the INVALID index (oid %d) untouched", leftOid, leftIsIndex, leftValid, leftOn, other)
+	if left := indexState(t, ctx, conn, "things_other"); left != other {
+		t.Fatalf("things_other = %+v, want the INVALID index untouched (%+v)", left, other)
 	}
 }
 
 // The DROP of the runner's own leftover takes locks too. One that outlasts lock_timeout must come
-// back as a *LockTimeoutError, so RetryLockTimeouts runs the whole attempt again.
-func TestExecNonTransactionalRetriesADropThatTimesOut(t *testing.T) {
+// back as a *LockTimeoutError, which is what RetryLockTimeouts finds with errors.As and retries,
+// and it must be the drop's own: the error carries the wrapping only the drop adds.
+func TestExecNonTransactionalReportsADropTimeoutAsALockTimeoutError(t *testing.T) {
 	ctx := context.Background()
 	url := testpg.URL(t)
 	conn := connect(t, ctx, url)
@@ -343,7 +358,7 @@ func TestExecNonTransactionalRetriesADropThatTimesOut(t *testing.T) {
 	if !errors.As(err, &timedOut) {
 		t.Fatalf("ExecNonTransactional = %v, want a *LockTimeoutError from the DROP of the leftover", err)
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "drop") {
-		t.Fatalf("error %q does not say the DROP of the leftover timed out", err)
+	if !strings.HasPrefix(err.Error(), "drop the INVALID index") {
+		t.Fatalf("error %q is not the one the DROP of the leftover wraps; it came from elsewhere", err)
 	}
 }

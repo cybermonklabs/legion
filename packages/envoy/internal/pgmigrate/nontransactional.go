@@ -65,12 +65,12 @@ func concurrentIndex(sql string) (index indexStatement, err error) {
 
 // ExecNonTransactional runs a marked, single concurrent index build on an idle connection.
 // Its caller must hold the runner's session-level advisory lock until the version is recorded,
-// then close the connection: the build and that record cannot be one transaction. A failed build
-// may leave an INVALID index of the migration's own name on the migration's own table; the next
-// attempt drops that leftover with DROP INDEX CONCURRENTLY and builds the index again, so a
-// timed-out or killed build does not stop every later boot. A relation of that name that is not
-// an index on the target table is refused instead, because the runner did not build it and
-// IF NOT EXISTS would skip over it.
+// then close the connection: the build and that record cannot be one transaction. A build that
+// failed, or one still running, leaves an INVALID index of the migration's own name on the
+// migration's own table; the next attempt drops that leftover with DROP INDEX CONCURRENTLY and
+// builds the index again, so a timed-out or killed build does not stop every later boot. A
+// relation of that name that is not an index on the target table is refused instead, because the
+// runner did not build it and IF NOT EXISTS would skip over it.
 // The session lock_timeout is bounded exactly as Exec's transaction-local setting is, restored
 // on return, and the same lock watch diagnoses failures, the drop's as well as the build's.
 // signIn has Exec's meaning.
@@ -107,47 +107,66 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 			err = errors.Join(err, fmt.Errorf("migration %s: restore lock_timeout: %w", migration.Name, restore))
 		}
 	}()
+	if err := dropOwnLeftover(ctx, conn, migration, index, target, signIn); err != nil {
+		return err
+	}
+	return execWatched(ctx, conn, migration, signIn)
+}
+
+// dropOwnLeftover reads the one relation of the index's name in the target table's schema and
+// decides from the catalog alone. An INVALID index of that name on the target table is the
+// runner's own leftover: it drops it, so the build that follows makes it again. A valid index of
+// that name on that table is the index this migration builds, already built, and the build's
+// IF NOT EXISTS skips over it. Any other relation of that name is one the runner did not build,
+// and it is refused. An index of another name is neither dropped nor refused.
+// The caller must have bounded the session's lock_timeout already: the drop takes locks too.
+func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, target string, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	// At most one relation of the index's name exists in the target table's schema, since
 	// Postgres keeps relation names distinct within a schema. A relation that is no index has
 	// no pg_index row, so coalesce reads its indisvalid and its table as false.
 	var schema, relkind string
 	var valid, onTarget bool
-	err = conn.QueryRow(ctx, `select n.nspname, c.relkind, coalesce(i.indisvalid, false),
+	err := conn.QueryRow(ctx, `select n.nspname, c.relkind, coalesce(i.indisvalid, false),
 			coalesce(i.indrelid = to_regclass($1), false)
 		from pg_class c join pg_namespace n on n.oid = c.relnamespace
 		left join pg_index i on i.indexrelid = c.oid
 		where c.relname = $2 and c.relnamespace =
 			(select relnamespace from pg_class where oid = to_regclass($1))`, target, index.Idxname).
 		Scan(&schema, &relkind, &valid, &onTarget)
-	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	if errors.Is(err, pgx.ErrNoRows) {
 		// Nothing of that name: the build has everything to do.
-	case err != nil:
-		return fmt.Errorf("migration %s: check for a relation named %s: %w", migration.Name, index.Idxname, err)
-	default:
-		qualified := pgx.Identifier{schema, index.Idxname}.Sanitize()
-		isIndexOnTarget := relkind == "i" && onTarget
-		switch {
-		case isIndexOnTarget && valid:
-			// The index this migration builds, already built: the build skips it.
-		case isIndexOnTarget:
-			slog.Warn("pgmigrate: dropping the INVALID index a failed concurrent build left, then building it again",
-				"migration", migration.Name, "index", qualified, "table", target)
-			drop := Migration{Name: migration.Name, SQL: "drop index concurrently if exists " + qualified, NonTransactional: true}
-			// Alone on the connection: Postgres refuses DROP INDEX CONCURRENTLY inside a
-			// transaction block. execWatched reports a drop cancelled by lock_timeout as a
-			// *LockTimeoutError, which RetryLockTimeouts finds with errors.As through this
-			// wrapping and runs the whole attempt again.
-			if err := execWatched(ctx, conn, drop, signIn); err != nil {
-				return fmt.Errorf("drop the INVALID index %s left by a failed concurrent build: %w", qualified, err)
-			}
-		case relkind != "i":
-			return fmt.Errorf("migration %s: %s is a relation of relkind %q, not a plain index the runner can DROP INDEX CONCURRENTLY; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename or remove that relation, then retry the migration", migration.Name, qualified, relkind, target)
-		case valid:
-			return fmt.Errorf("migration %s: index %s is a VALID index on another table; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename it, or run DROP INDEX CONCURRENTLY %s outside a transaction if it is unwanted, then retry the migration", migration.Name, qualified, target, qualified)
-		default:
-			return fmt.Errorf("migration %s: index %s is INVALID but is on another table, so it is not this migration's to drop; investigate it, run DROP INDEX CONCURRENTLY %s outside a transaction if it is unwanted, then retry the migration", migration.Name, qualified, qualified)
-		}
+		return nil
 	}
-	return execWatched(ctx, conn, migration, signIn)
+	if err != nil {
+		return fmt.Errorf("migration %s: check for a relation named %s: %w", migration.Name, index.Idxname, err)
+	}
+	qualified := pgx.Identifier{schema, index.Idxname}.Sanitize()
+	switch {
+	case relkind != "i":
+		// DROP INDEX CONCURRENTLY refuses a relation that is no index, so the remedy here is
+		// the operator's own.
+		return fmt.Errorf("migration %s: %s is a relation of relkind %q, not a plain index the runner can DROP INDEX CONCURRENTLY; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename or remove that relation, then retry the migration", migration.Name, qualified, relkind, target)
+	case !onTarget:
+		// On another table, VALID or INVALID alike: the runner did not build it, so it is not
+		// this migration's to drop.
+		validity := "an INVALID"
+		if valid {
+			validity = "a VALID"
+		}
+		return fmt.Errorf("migration %s: index %s is %s index on another table, so it is not this migration's to drop; the build's IF NOT EXISTS would skip over it and the index would never be built on %s. Rename it, or run DROP INDEX CONCURRENTLY %s outside a transaction if it is unwanted, then retry the migration", migration.Name, qualified, validity, target, qualified)
+	case valid:
+		// The index this migration builds, already built: the build skips it.
+		return nil
+	}
+	slog.Warn("pgmigrate: dropping an INVALID index of this migration's own name, then building it again",
+		"migration", migration.Name, "index", qualified, "table", target)
+	drop := Migration{Name: migration.Name, SQL: "drop index concurrently if exists " + qualified, NonTransactional: true}
+	// Alone on the connection: Postgres refuses DROP INDEX CONCURRENTLY inside a transaction
+	// block. execWatched reports a drop cancelled by lock_timeout as a *LockTimeoutError, which
+	// RetryLockTimeouts finds with errors.As through this wrapping and runs the whole attempt
+	// again.
+	if err := execWatched(ctx, conn, drop, signIn); err != nil {
+		return fmt.Errorf("drop the INVALID index %s of this migration's own name, left by a build that failed or is still running: %w", qualified, err)
+	}
+	return nil
 }
