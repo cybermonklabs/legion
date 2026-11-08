@@ -41,56 +41,45 @@ expect.extend(reportableJestDomMatchers());
 (globalThis as unknown as { jest: typeof jest }).jest = jest;
 
 // Two budgets, because a 2-core pod with its cores busy is slower than either default and a suite
-// that waits on the machine reports as a defect of the change under test.
+// that waits on the machine reports as a defect of the change under test. One of the two is a
+// flag of `package.json`'s test scripts rather than a line of this file, and both are explained
+// here, since this file is what every `web/src` test loads.
 //
-// Bun's default per-test deadline is 5000 ms. The lane test of
-// `e2e/__tests__/harness-lanes.test.ts` ("the Playwright config refuses a --workers that is not
-// the lane count") fails at it on a 2-core pod, where it reads 4.45 s idle and 6.55 s loaded.
-// The suite's slowest test, `row-configurations.test.ts`'s "no row runs twice in one
-// configuration", reads 13.83 s loaded. 30 s is the round number above twice that reading, and it
-// is kept as small as that rule allows, because every hung test costs the whole budget on CI as
-// well as in a pod.
-// This line is not dependable on its own, measured here and by this issue's tester: a run of
-// this directory started by hand can lose the deadline, and the loss takes the whole run. A
-// 6 s probe test in `web/src/__tests__` ends "this test timed out after 5000ms" three times
-// of three under `bun test web/src/__tests__` with two scratch files in the directory, and
-// passes with one, so no file count explains it; the same probe passes alone, under
-// `--parallel`, and under `--timeout 30000`. What file of a run keeps the deadline and what
-// file loses it did not reproduce the same way twice, so this comment claims no boundary. So
-// `package.json` carries `--timeout 30000` on both command lines that run tests: the `test:web`
-// script for `web/src`, and the `e2e/__tests__` run beside it, which loads no preload at all,
-// so there the flag is the only deadline those files get. It reached every file in every run
-// mode measured and cuts no larger deadline a file sets for itself (MarkdownBody 54 pass,
-// harness-lanes 8 pass). A run of one file still gets the deadline from this line. The two
-// numbers are one budget and move together.
-jest.setTimeout(30_000);
-
-// Testing Library's default `asyncUtilTimeout` is 1000 ms, which a loaded run of this suite
-// passes while a page is still rendering: it failed `settings.test.tsx`'s own heading wait and
-// `mermaid-diagrams.test.tsx`'s draw in 13 of 30 loaded runs, each time a different row, which
-// is why the budget is the suite's and not a deadline per row. 10 s is above every per-call
-// budget this tree keeps but one, and a third of the per-test deadline, so a wait that runs out
-// reports as the wait that failed and names what it waited for, rather than as a bare test
-// timeout. The slowest test of a loaded run that drives no subprocess reads 5.80 s whole.
+// The per-test deadline is `--timeout 30000`, carried by both command lines that run tests: the
+// `test:web` script for `web/src`, and the `bun test --parallel e2e/__tests__` run beside it.
+// Bun's own default is 5000 ms, which the lane test of `e2e/__tests__/harness-lanes.test.ts`
+// ("the Playwright config refuses a --workers that is not the lane count") fails on a 2-core
+// pod, where it reads 4.45 s idle and 6.55 s loaded; the suite's slowest test,
+// `row-configurations.test.ts`'s "no row runs twice in one configuration", reads 13.83 s loaded.
+// 30 s is the round number above twice that reading, and it is kept as small as that rule
+// allows, because every hung test costs the whole budget on CI as well as in a pod. The flag
+// carries it rather than a `jest.setTimeout` here, for two measured reasons: a preload's
+// deadline is not dependable, since a 6 s probe in a directory run started by hand ended "this
+// test timed out after 5000ms" three times of three with two scratch files beside it and passed
+// with one, and what file of a run kept it and what file lost it did not reproduce the same way
+// twice; and the `e2e/__tests__` lane loads no preload at all, so there the flag is the only
+// deadline those files get. It cuts no larger deadline a file sets for itself (MarkdownBody
+// 54 pass, harness-lanes 8 pass).
+//
+// The wait budget is the line below. Testing Library's default `asyncUtilTimeout` is 1000 ms,
+// which a loaded run of this suite passes while a page is still rendering: it failed
+// `settings.test.tsx`'s own heading wait and `mermaid-diagrams.test.tsx`'s draw in 13 of 30
+// loaded runs, each time a different row, which is why the budget is the suite's and not a
+// deadline per row. 10 s is above every per-call budget this tree keeps but one, and a third of
+// the per-test deadline, so a wait that runs out reports as the wait that failed and names what
+// it waited for, rather than as a bare test timeout. The slowest test of a loaded run that
+// drives no subprocess reads 5.80 s whole.
 //
 // Under `jest.useFakeTimers()` the same budget is 10 s of *fake* time, not of the machine's:
 // Testing Library advances the held clock by its polling interval until the wait succeeds or the
 // deadline passes, so a wait that does not succeed now moves that clock ten times as far as it
-// did. No row of this suite changes verdict for it: the 21 files that install a clock and wait
-// were green before this budget and are green after it, and a wait that used to succeed cannot
-// start failing because it is given longer. What the longer advance can do is let a wait succeed
-// that used to give up - a product timer it now reaches - so what the suite gives up with it is
-// the old second as a bound: a held-clock `waitFor` no longer catches a slowdown that stays
-// under 10 s of fake time, and a failing one reports ten times slower.
-//
-// This budget needs no flag of its own: measured with the deadline held off by
-// `--timeout 30000`, a `waitFor` that never passes ran about 10 s rather than the 1 s default in
-// every shape tried, the serial directory run among them, so `configure` from a preload reaches
-// every file where `jest.setTimeout` does not.
-//
-// dispatch://INFRA-1405 and dispatch://INFRA-1505 (cybermonklabs/legion#2884 and #2894) set
-// these same two budgets at these same two numbers in this same file. This is the one copy, kept
-// by the second of them to merge, and it carries both trees' measurements.
+// did. No row of this suite changes verdict for it: the files that install a clock and wait -
+// 21 of them when dispatch://INFRA-1405 measured this on its own tree, about twice that in the
+// merged one - were green before this budget and are green after it, and a wait that used to
+// succeed cannot start failing because it is given longer. What the longer advance can do is let
+// a wait succeed that used to give up - a product timer it now reaches - so what the suite gives
+// up with it is the old second as a bound: a held-clock `waitFor` no longer catches a slowdown
+// that stays under 10 s of fake time, and a failing one reports ten times slower.
 configure({ asyncUtilTimeout: 10_000 });
 
 // Unit tests have no Dispatch server to answer GET /api/v1/schema/blocks, so the session cache

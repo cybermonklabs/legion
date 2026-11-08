@@ -379,14 +379,8 @@ describe("Mermaid diagrams", () => {
   /** Opens or closes one block's source as a reader does, by clicking `Mermaid source`.
    *  happy-dom gives a clicked `summary` its activation behaviour after the click's own
    *  listeners have run, so this records the click and then flips the `details`, which fires
-   *  `toggle`, as a browser does; when `toggle` fires is what differs, and has a case below.
-   *  `user` is the caller's: a row holding the clock still passes `userOnFakeClock()`, since
-   *  user-event's own waits move the clock the row installed, where a real-clock user's wait
-   *  would never end. */
-  const clickTheSummary = async (
-    figure: Element,
-    user: UserEvent = userEvent.setup()
-  ): Promise<void> => {
+   *  `toggle`, as a browser does; when `toggle` fires is what differs, and has a case below. */
+  const clickTheSummary = async (user: UserEvent, figure: Element): Promise<void> => {
     const summary = disclosureIn(figure)?.querySelector("summary");
     if (summary == null) throw new Error("The drawn block has no Mermaid source summary.");
     await user.click(summary);
@@ -404,7 +398,7 @@ describe("Mermaid diagrams", () => {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
       const first = disclosureIn(figuresIn(view.container)[0]);
       expect(first?.open).toBe(false);
-      await clickTheSummary(figuresIn(view.container)[0], user);
+      await clickTheSummary(user, figuresIn(view.container)[0]);
       expect(first?.open).toBe(true);
       // A whole task of the page's own timers, so a `toggle` queued as the HTML specification
       // queues it has run by the repaint below; the ordering has a case of its own below.
@@ -431,7 +425,7 @@ describe("Mermaid diagrams", () => {
     const view = render(<MarkdownBody markdown={diagram} />);
     try {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
-      await clickTheSummary(figuresIn(view.container)[0], user);
+      await clickTheSummary(user, figuresIn(view.container)[0]);
       // A task, as above, so the opening is written down whenever the head runs `toggle`.
       await tick(10);
     } finally {
@@ -451,12 +445,13 @@ describe("Mermaid diagrams", () => {
   // opened, and the source they did open is theirs again wherever it comes back.
   test("an edited source draws closed, and the source the reader opened comes back open", async () => {
     await warmMarkdownRenderer();
+    const user = userEvent.setup();
     const first = fence("sequenceDiagram\n  Alice->>Bob: First");
     const edited = fence("sequenceDiagram\n  Alice->>Bob: Edited");
     const view = render(<MarkdownBody markdown={first} />);
     try {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(1));
-      await clickTheSummary(figuresIn(view.container)[0]);
+      await clickTheSummary(user, figuresIn(view.container)[0]);
       expect(openIn(view.container)).toEqual([true]);
 
       view.rerender(<MarkdownBody markdown={edited} />);
@@ -492,7 +487,7 @@ describe("Mermaid diagrams", () => {
     const filling = render(<MarkdownBody markdown={sources.map(fence).join("\n")} />);
     try {
       await waitFor(() => expect(figuresIn(filling.container)).toHaveLength(32));
-      for (const figure of figuresIn(filling.container)) await clickTheSummary(figure, user);
+      for (const figure of figuresIn(filling.container)) await clickTheSummary(user, figure);
       expect(openIn(filling.container)).toEqual(sources.map(() => true));
       // A task, as above, so every opening is written down whenever the head runs `toggle`.
       await tick(10);
@@ -509,7 +504,7 @@ describe("Mermaid diagrams", () => {
       );
       expect(openIn(view.container)).toEqual([true, true]);
 
-      await clickTheSummary(figuresIn(view.container)[1], user);
+      await clickTheSummary(user, figuresIn(view.container)[1]);
       expect(openIn(view.container)).toEqual([true, false]);
       await tick(10);
       view.rerender(<MarkdownBody markdown={`Lead, and more of it:\n\n${beside}`} />);
@@ -536,7 +531,7 @@ describe("Mermaid diagrams", () => {
     const view = render(<MarkdownBody markdown={`Lead:\n\n${body}`} />);
     try {
       await waitFor(() => expect(figuresIn(view.container)).toHaveLength(33));
-      for (const figure of figuresIn(view.container)) await clickTheSummary(figure, user);
+      for (const figure of figuresIn(view.container)) await clickTheSummary(user, figure);
       expect(openIn(view.container)).toEqual(sources.map(() => true));
       // A task, as above, so every opening is written down whenever the head runs `toggle`.
       await tick(10);

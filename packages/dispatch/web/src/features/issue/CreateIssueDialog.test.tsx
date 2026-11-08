@@ -42,14 +42,12 @@ function CurrentRoute(): ReactNode {
   return <output data-testid="current-route">{location.pathname}</output>;
 }
 
-/** The dialog, its project list and its related-item check answered here. `user` is the
- *  caller's: a row holding the clock still passes `userOnFakeClock()`, since user-event's own
- *  waits move the clock the row installed, where a real-clock user's wait would never end. */
+/** The dialog, its project list and its related-item check answered here. */
 function renderDialog(
+  user: UserEvent,
   create: (input: CreateIssueInput) => Promise<Issue>,
   path = "/",
-  onClose = () => {},
-  user: UserEvent = userEvent.setup()
+  onClose = () => {}
 ) {
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   // Every row types a title, so the dialog's related-item check is answered here instead of
@@ -87,6 +85,7 @@ test("preselects the route's project, submits title and spec, and opens the crea
   const calls: CreateIssueInput[] = [];
   let closed = 0;
   const view = renderDialog(
+    userEvent.setup(),
     async (input) => {
       calls.push(input);
       return issue(input, "OPS-7");
@@ -123,7 +122,7 @@ test("preselects the route's project, submits title and spec, and opens the crea
 // one, so the dialog keeps the draft, says why, and Retry asks again.
 test("a refused create keeps the dialog and draft, shows the server message, and retries", async () => {
   let attempts = 0;
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     attempts += 1;
     if (attempts === 1) {
       throw new ApiError(409, { code: "PROJECT_LOCKED", error: "the project is being moved" });
@@ -161,6 +160,7 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
   let attempts = 0;
   let closed = 0;
   const view = renderDialog(
+    userOnFakeClock(),
     async () => {
       attempts += 1;
       throw new ApiError(409, { code: "KEY_COMMITTED", error: "already made" });
@@ -168,8 +168,7 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
     "/",
     () => {
       closed += 1;
-    },
-    userOnFakeClock()
+    }
   );
   try {
     await screen.findByRole("combobox", { name: "Project" });
@@ -200,7 +199,7 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
 
 test("a possible duplicate names the candidate and Create anyway forces the create", async () => {
   const calls: CreateIssueInput[] = [];
-  const view = renderDialog(async (input) => {
+  const view = renderDialog(userEvent.setup(), async (input) => {
     calls.push(input);
     if (input.force !== true) {
       throw new ApiError(409, {

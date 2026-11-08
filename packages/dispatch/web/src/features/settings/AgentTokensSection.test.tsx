@@ -242,13 +242,8 @@ function madeAt(id: string, name: string, offsetMs: number): AgentToken {
 /** The Settings token section, its mint answered `409 KEY_COMMITTED` and its list then read as
  *  `listed`; the list read before the press holds those of `listed` made before it, which the page
  *  tells apart from the lost mint's by id. `confirmAnswers` answers each `window.confirm` in
- *  turn. `user` is the caller's: a row holding the clock still passes `userOnFakeClock()`, since
- *  user-event's own waits move the clock the row installed. */
-async function mintLostWith(
-  listed: AgentToken[],
-  confirmAnswers: boolean[] = [],
-  user: UserEvent = userEvent.setup()
-) {
+ *  turn. */
+async function mintLostWith(user: UserEvent, listed: AgentToken[], confirmAnswers: boolean[] = []) {
   const now = Date.now();
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed.filter((made) => Date.parse(made.created_at) <= now))
@@ -308,7 +303,7 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
   jest.useFakeTimers();
   const older = madeAt("older", "reviewer", -86_400_000);
   const lost = madeAt("lost", "reviewer", 60_000);
-  const page = await mintLostWith([lost, older, token], [false, true], userOnFakeClock());
+  const page = await mintLostWith(userOnFakeClock(), [lost, older, token], [false, true]);
 
   try {
     expect(screen.getByTestId("landed-without-answer").textContent).toBe(
@@ -350,7 +345,7 @@ test("a mint answered KEY_COMMITTED offers the one token made since the press, c
 test("a lost mint with no token made since the press says so and revokes nothing", async () => {
   const older = madeAt("older", "reviewer", -86_400_000);
   const revoked = { ...madeAt("revoked", "reviewer", 60_000), revoked_at: "2099-01-01T00:00:00Z" };
-  const page = await mintLostWith([older, revoked, token]);
+  const page = await mintLostWith(userEvent.setup(), [older, revoked, token]);
 
   try {
     expect(
@@ -377,7 +372,7 @@ test("a lost mint with no token made since the press says so and revokes nothing
 test("a lost mint with several tokens made since the press lists them and revokes the one picked", async () => {
   const first = madeAt("first", "reviewer", 60_000);
   const second = madeAt("second", "reviewer", 120_000);
-  const page = await mintLostWith([first, second, token], [true]);
+  const page = await mintLostWith(userEvent.setup(), [first, second, token], [true]);
 
   try {
     expect(
