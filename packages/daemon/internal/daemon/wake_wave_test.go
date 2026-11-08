@@ -954,7 +954,9 @@ func TestADisplacedWaveOfLaunchesGoesOutAtTheOperatorsPace(t *testing.T) {
 	rt := newWaveRuntime(clock)
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
-	testwait.Eventually(t, "every re-adopted claim to be supervised", func() bool {
+	// Paced, for awaitWave's reason: the condition reads the daemon's whole state while that
+	// daemon is adopting forty claims, so a hundred asks a second would compete with the work.
+	testwait.EventuallyEvery(t, time.Minute, 100*time.Millisecond, "every re-adopted claim to be supervised", func() bool {
 		return len(d.state().Issues) == waveSize
 	})
 	if launched := rt.launches(); len(launched) != 0 {
@@ -998,7 +1000,9 @@ func TestWithNoPacingTheDisplacedWaveGoesOutInOneTick(t *testing.T) {
 	rt := newWaveRuntime(clock)
 
 	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
-	testwait.Eventually(t, "every re-adopted claim to be supervised", func() bool {
+	// Paced, for awaitWave's reason: the condition reads the daemon's whole state while that
+	// daemon is adopting forty claims, so a hundred asks a second would compete with the work.
+	testwait.EventuallyEvery(t, time.Minute, 100*time.Millisecond, "every re-adopted claim to be supervised", func() bool {
 		return len(d.state().Issues) == waveSize
 	})
 

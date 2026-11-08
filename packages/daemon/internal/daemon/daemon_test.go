@@ -709,7 +709,9 @@ func TestTheStateNamesTheWakeThePacingHoldsUntilItRuns(t *testing.T) {
 	launched := rt.CallsOf("Spawn")[0].Spec.Claim
 	var held api.WakeWaiting
 	var startedAt time.Time
-	testwait.Eventually(t, "the state to name the wake the pacing holds", func() bool {
+	// Paced: the condition reads the daemon's whole state, which is the one shape this package
+	// pays for at ten milliseconds (testwait.EventuallyEvery).
+	testwait.EventuallyEvery(t, time.Minute, 100*time.Millisecond, "the state to name the wake the pacing holds", func() bool {
 		state := d.state()
 		if len(state.WakesWaiting) != 1 {
 			return false
