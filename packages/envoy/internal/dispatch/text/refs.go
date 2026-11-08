@@ -38,6 +38,16 @@ const ComponentIDPattern = `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
 
 var componentIDPattern = regexp.MustCompile(ComponentIDPattern)
 
+// roleTokenPattern is a role as a reference names one, `dispatch://role/<token>`: the charset a
+// `role:<token>` delivery route is written in (model.ParseRoute).
+var roleTokenPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// personLoginPattern is a person as a reference names one, `dispatch://person/<login>`: their
+// email lowercased, the stored form of a login (model.CanonicalLogin) and the form a person's
+// owner tag is written in (policy.ValidPersonOwner). A login written any other way - with an
+// upper-case letter, or without a domain - is no login Dispatch holds, so it names nobody.
+var personLoginPattern = regexp.MustCompile(`^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$`)
+
 func hasControl(value string) bool {
 	return strings.ContainsFunc(value, unicode.IsControl)
 }
@@ -60,8 +70,11 @@ func IsSessionID(value string) bool {
 }
 
 // Ref is a parsed Dispatch target. ID is the issue key for issue references,
-// an artifact slug for artifacts, the item identifier for asks and comments, and
-// the component id for components. Project is set instead of IssueKey for
+// an artifact slug for artifacts, the item identifier for asks and comments,
+// the component id for components, and the party's own name - a session id, a role token or a
+// login - for the three parties (Kind "session", "role" and "person"), which name a reader
+// rather than a record and are the kinds the graph stores nothing for (refs.TargetOf).
+// Project is set instead of IssueKey for
 // unlinked project-document references and for components, and Session instead of
 // both for an artifact an agent's conversation owns (`agent/<session id>/artifact/<slug>`).
 // Document is the slug of the project document an ask or a comment is written on
@@ -213,8 +226,9 @@ func trimReference(raw string) string {
 
 // parseDispatch reads a `dispatch://` reference, without its scheme, by the grammar the dashboard's
 // `parseDispatchReference` reads: a slug as written, an `@v` version, an agent's session id as
-// written, an item id decoded as `itemSegment` decodes it, and a `#b-` block of a document, an
-// ask, a comment or a message as parseBlock reads it. A reference holding a control character
+// written, an item id decoded as `itemSegment` decodes it, a `#b-` block of a document, an
+// ask, a comment or a message as parseBlock reads it, and the three parties, `agent/<session
+// id>`, `role/<token>` and `person/<login>`. A reference holding a control character
 // names nothing.
 func parseDispatch(value string) (Ref, bool) {
 	if hasControl(value) {
@@ -246,7 +260,27 @@ func parseDispatch(value string) (Ref, bool) {
 		return Ref{}, false
 	}
 	if key == "agent" {
+		if session, _, owns := strings.Cut(tail, "/"); !owns {
+			// The session alone is the agent itself; anything under it is what its conversation
+			// owns, which is a document and nothing else.
+			if !IsSessionID(session) {
+				return Ref{}, false
+			}
+			return Ref{Kind: "session", ID: session}, true
+		}
 		return parseAgentArtifact(tail)
+	}
+	if key == "role" {
+		if !roleTokenPattern.MatchString(tail) {
+			return Ref{}, false
+		}
+		return Ref{Kind: "role", ID: tail}, true
+	}
+	if key == "person" {
+		if !personLoginPattern.MatchString(tail) {
+			return Ref{}, false
+		}
+		return Ref{Kind: "person", ID: tail}, true
 	}
 	if !projectKeyPattern.MatchString(key) || !found {
 		return Ref{}, false
@@ -339,7 +373,9 @@ const MaxTargetBytes = 2048
 // id>` (`comment/<uuid>#b2`, a lowercase kind no issue key, project or `agent/` can be); a
 // component's `<project>/<id>` node address; and an ask's, a comment's or a message's id. A
 // document's version and a block's pin are not part of it: a pinned and an unpinned reference to
-// one block are one target.
+// one block are one target. A party's id is its own name, and the graph stores no edge under it
+// (refs.TargetOf): it is read only to hold a party reference to the same bound as any other
+// (targetFits).
 func TargetID(ref Ref) string {
 	switch ref.Kind {
 	case "artifact":

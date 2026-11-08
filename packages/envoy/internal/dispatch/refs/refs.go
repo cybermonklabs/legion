@@ -211,13 +211,17 @@ func scanTargets(rows pgx.Rows, err error) ([]Target, error) {
 }
 
 // TargetOf is the graph target a parsed reference names, the kind and id refs and graph_edges
-// store an edge to it under; an external URL names none. A block of a comment, of a message or
+// store an edge to it under; an external URL names none, and neither does a party - an agent's
+// session, a role or a person. A party is a reader, not a record: the graph holds no node for
+// one, so no write stores an edge to one (refTargets drops it) and no read addresses one
+// (api.parseReferencesQuery refuses it). A block of a comment, of a message or
 // of an ask — a part of its question, its options and its answer — is stored under its item's
 // block kind, comment_block, message_block or ask_block (ItemKind.BlockKind), not block: a build
 // that predates item blocks skips a kind it does not know (resolveNodes), where it would count a
 // block row and resolve it through document_blocks.
 func TargetOf(ref text.Ref) (Target, bool) {
-	if ref.Kind == "url" {
+	switch ref.Kind {
+	case "url", "session", "role", "person":
 		return Target{}, false
 	}
 	kind := ref.Kind

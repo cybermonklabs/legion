@@ -146,7 +146,12 @@ export function linkifyDispatchRefs(root: HTMLElement, { cited, facts }: Referen
   for (const textNode of candidates) {
     const value = textNode.data;
     const found = readTextReferences(value, facts).references.filter(
-      (reference) => reference.reference !== undefined && cited.has(reference.reference)
+      (reference) =>
+        reference.reference !== undefined &&
+        cited.has(reference.reference) &&
+        // A reference no page opens - a person, whom nothing in Dispatch shows - stays the
+        // words its author wrote: there would be nothing behind the link.
+        (reference.route === undefined || buildReferencePath(reference.route) !== "")
     );
     if (found.length === 0) {
       continue;
@@ -228,7 +233,14 @@ export function collectReferenceAnchors(
       }
       continue;
     }
-    anchor.setAttribute("href", buildReferencePath(route));
+    const path = buildReferencePath(route);
+    if (path === "") {
+      // A reference no page opens - a person - is its words, as one that cites nothing is:
+      // there is nothing to click through to and no record to preview.
+      anchor.replaceWith(document.createTextNode(text));
+      continue;
+    }
+    anchor.setAttribute("href", path);
     const reference = buildDispatchReference(route);
     anchor.setAttribute("data-dispatch-ref", reference);
     anchor.replaceChildren();

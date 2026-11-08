@@ -609,16 +609,12 @@ test("agent references keep the dispatch://KEY/log grammar for the conversation"
     key: "CORE-1",
     kind: "conversation",
   });
-  expect(buildDispatchReference({ key: "CORE-1", kind: "conversation" })).toBe(
-    "dispatch://CORE-1/log"
-  );
 });
 
 test("the activity tab owns its path, its reference and its short form", () => {
   const route = { key: "CORE-1", kind: "activity" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/activity")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/activity");
   expect(shortForm(route)).toBe("CORE-1 activity");
   expect(parseIssuePath("/issues/CORE-1/activity")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/activity"));
@@ -631,7 +627,6 @@ test("the collaborators tab owns its path, its reference and its short form", ()
   const route = { key: "CORE-1", kind: "collaborators" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/collaborators")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/collaborators");
   expect(shortForm(route)).toBe("CORE-1 collaborators");
   expect(parseIssuePath("/issues/CORE-1/collaborators")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/collaborators"));
@@ -647,7 +642,6 @@ test("the verification tab owns its path, its reference and its short form", () 
   const route = { key: "CORE-1", kind: "verification" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/verification")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/verification");
   expect(shortForm(route)).toBe("CORE-1 verification");
   expect(parseIssuePath("/issues/CORE-1/verification")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/verification"));
@@ -663,13 +657,31 @@ test("the plan tab owns its path, its reference and its short form", () => {
   const route = { key: "CORE-1", kind: "plan" as const };
 
   expect(parseDispatchReference("dispatch://CORE-1/plan")).toEqual(route);
-  expect(buildDispatchReference(route)).toBe("dispatch://CORE-1/plan");
   expect(shortForm(route)).toBe("CORE-1 plan");
   expect(parseIssuePath("/issues/CORE-1/plan")).toEqual(route);
   expect(buildIssuePath(route)).toBe(browserPath("issues/CORE-1/plan"));
   expect(
     referenceRouteFromHref("https://dispatch.test/issues/CORE-1/plan", "https://dispatch.test")
   ).toEqual(route);
+});
+
+// The seven forms a tab was once written as - `dispatch://CORE-1/verification` and its six
+// siblings - are no reference the server reads: only `spec`, `artifact/<slug>`, `ask/<id>`,
+// `comment/<id>` and `message/<id>` follow an issue key in the grammar both readers read. A tab
+// is written as the issue it is a view of, which is what it resolves to anyway.
+test.each([
+  "verification",
+  "plan",
+  "activity",
+  "children",
+  "artifacts",
+  "collaborators",
+] as const)("the %s tab is written as its issue", (kind) => {
+  expect(buildDispatchReference({ key: "CORE-1", kind })).toBe("dispatch://CORE-1");
+});
+
+test("the conversation, read as `log` and `conversation` alike, is written as its issue", () => {
+  expect(buildDispatchReference({ key: "CORE-1", kind: "conversation" })).toBe("dispatch://CORE-1");
 });
 
 // The Decisions tab is a view of the issue's decisions.md: its page is the tab's own route, and
@@ -811,7 +823,6 @@ test("an agent artifact names a session that holds no slash, query, fragment or 
     "dispatch://agent//artifact/shot-png",
     "dispatch://agent/ses-1/artifact/Shot-png",
     "dispatch://agent/ses-1/artifact/shot-png@v0",
-    "dispatch://agent/ses-1",
   ]) {
     expect(parseDispatchReference(reference)).toBeUndefined();
   }
@@ -819,6 +830,68 @@ test("an agent artifact names a session that holds no slash, query, fragment or 
     expect(parseAgentArtifactPath(path)).toBeUndefined();
   }
   expect(parseAgentArtifactPath("/agents/ses-1/artifacts/shot-png", "?v=0")).toBeUndefined();
+});
+
+test("an agent, a role and a person are the three parties a reference names", () => {
+  const agent = { kind: "agent-session" as const, session: "ses-1" };
+  expect(parseDispatchReference("dispatch://agent/ses-1")).toEqual(agent);
+  expect(buildDispatchReference(agent)).toBe("dispatch://agent/ses-1");
+  expect(buildReferencePath(agent)).toBe("/agents/ses-1/live");
+  expect(referenceTargetKind(agent)).toBe("session");
+  expect(shortForm({ ...agent, session: "0123456789abcdef" })).toBe("agent/session:01234567…");
+
+  const role = { kind: "role" as const, role: "reviewer" };
+  expect(parseDispatchReference("dispatch://role/reviewer")).toEqual(role);
+  expect(buildDispatchReference(role)).toBe("dispatch://role/reviewer");
+  expect(buildReferencePath(role)).toBe("/agents?role=reviewer");
+  expect(referenceTargetKind(role)).toBe("role");
+  expect(shortForm(role)).toBe("role/reviewer");
+
+  // No page shows a person, so their path is the empty one: a caller draws the words rather
+  // than a link to nowhere.
+  const person = { kind: "person" as const, login: "alice@example.com" };
+  expect(parseDispatchReference("dispatch://person/alice@example.com")).toEqual(person);
+  expect(buildDispatchReference(person)).toBe("dispatch://person/alice@example.com");
+  expect(buildReferencePath(person)).toBe("");
+  expect(referenceTargetKind(person)).toBe("person");
+  expect(shortForm(person)).toBe("person/alice@example.com");
+});
+
+// A party is named as it is stored: a session id as written, a role token in the charset a
+// `role:` delivery route takes, and a login as the lowercased email the people table holds.
+test("a party written any other way names nobody", () => {
+  for (const reference of [
+    "dispatch://agent",
+    "dispatch://agent/",
+    "dispatch://role",
+    "dispatch://role/",
+    "dispatch://role/Reviewer",
+    "dispatch://role/sre_oncall",
+    "dispatch://person",
+    "dispatch://person/alice",
+    "dispatch://person/Alice@example.com",
+    "dispatch://person/alice@example",
+  ]) {
+    expect(parseNodeReference(reference)).toBeUndefined();
+  }
+});
+
+test("a component of a project's architecture opens the pane that shows it", () => {
+  const component = { id: "dispatch-server", kind: "component" as const, project: "CORE" };
+  expect(parseDispatchReference("dispatch://CORE/component/dispatch-server")).toEqual(component);
+  expect(buildDispatchReference(component)).toBe("dispatch://CORE/component/dispatch-server");
+  expect(buildReferencePath(component)).toBe(
+    "/projects/CORE/architecture?component=dispatch-server"
+  );
+  expect(referenceTargetKind(component)).toBe("component");
+  expect(shortForm(component)).toBe("CORE/component/dispatch-server");
+  for (const reference of [
+    "dispatch://CORE/component/",
+    "dispatch://CORE/component/-web",
+    "dispatch://CORE/component/Dispatch_Server",
+  ]) {
+    expect(parseNodeReference(reference)).toBeUndefined();
+  }
 });
 
 test("an artifact of an agent's conversation is referenced under its session", () => {

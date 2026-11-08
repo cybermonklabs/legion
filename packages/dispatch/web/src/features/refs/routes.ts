@@ -65,7 +65,25 @@ export type AgentArtifactRoute = {
   slug: string;
   version?: number;
 };
-export type DispatchReferenceRoute = IssueRoute | ProjectDocumentRoute | AgentArtifactRoute;
+/** A component of a project's architecture, `dispatch://<PROJECT>/component/<id>`, shown on the
+ *  project's Architecture tab. */
+export type ComponentRoute = { kind: "component"; project: string; id: string };
+/**
+ * A party a reference names: the agent whose session id it carries, the role a token names, or
+ * the person a login names. A party is a reader rather than a record, so the reference graph
+ * stores no node and no edge for one (Go's `refs.TargetOf`), and a person has no page at all
+ * (`buildReferencePath`).
+ */
+export type PartyRoute =
+  | { kind: "agent-session"; session: string }
+  | { kind: "role"; role: string }
+  | { kind: "person"; login: string };
+export type DispatchReferenceRoute =
+  | IssueRoute
+  | ProjectDocumentRoute
+  | AgentArtifactRoute
+  | ComponentRoute
+  | PartyRoute;
 /**
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
@@ -176,7 +194,9 @@ type PlainIssueRoute = Extract<IssueRoute, { kind: PlainIssueTab }>;
 
 /** Whether the route is one of those tabs, narrowing it for the builders below and leaving the
  *  rest of the union to the arms that follow. */
-function isPlainIssueRoute(route: DispatchRoute | AgentArtifactRoute): route is PlainIssueRoute {
+function isPlainIssueRoute(
+  route: DispatchRoute | DispatchReferenceRoute
+): route is PlainIssueRoute {
   return PLAIN_ISSUE_TABS.some((tab) => tab === route.kind);
 }
 
@@ -202,6 +222,15 @@ const agentArtifactReferencePattern = new RegExp(
   "u"
 );
 const agentArtifactPathPattern = /^\/agents\/([^/]+)\/artifacts\/([^/]+)$/;
+/** A component's reference after `dispatch://<PROJECT>/`: the component id, the lowercase slug
+ *  the server reads (`text.ComponentIDPattern`). */
+const componentReferencePattern = /^component\/([a-z0-9](?:[a-z0-9-]*[a-z0-9])?)$/;
+/** A role's token, the charset a `role:<token>` delivery route is written in (the server's
+ *  `model.ParseRoute`). */
+const roleTokenOnlyPattern = /^[a-z0-9-]+$/;
+/** A person's login: their email lowercased, the stored form of a login (the server's
+ *  `model.CanonicalLogin`). A login written any other way names nobody Dispatch holds. */
+const personLoginOnlyPattern = /^[a-z0-9._%+'-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 /** One machine's page: `/machines/<machine>`, the machine name as one percent-encoded segment. */
 const machinePathPattern = /^\/machines\/([^/]+)$/;
 
@@ -211,7 +240,9 @@ export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 /** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
 const legacyLogReferencePattern = /^log$/;
 
-export function isProjectRoute(route: DispatchRoute | AgentArtifactRoute): route is ProjectRoute {
+export function isProjectRoute(
+  route: DispatchRoute | DispatchReferenceRoute
+): route is ProjectRoute {
   return (
     route.kind === "project" ||
     route.kind === "architecture" ||
@@ -398,12 +429,31 @@ export function parseNodeReference(value: string): DispatchReferenceRoute | unde
   }
   if (key === "agent") {
     const artifact = target?.match(agentArtifactReferencePattern);
-    return artifact === null || artifact === undefined
-      ? undefined
-      : agentArtifactRoute(artifact[1] ?? "", artifact[2] ?? "", artifact[3]);
+    if (artifact !== null && artifact !== undefined) {
+      return agentArtifactRoute(artifact[1] ?? "", artifact[2] ?? "", artifact[3]);
+    }
+    // The session on its own is the agent itself; everything under it is what that agent's
+    // conversation owns, which is a document and nothing else.
+    return target !== undefined && isSessionId(target)
+      ? { kind: "agent-session", session: target }
+      : undefined;
+  }
+  if (key === "role") {
+    return target !== undefined && roleTokenOnlyPattern.test(target)
+      ? { kind: "role", role: target }
+      : undefined;
+  }
+  if (key === "person") {
+    return target !== undefined && personLoginOnlyPattern.test(target)
+      ? { kind: "person", login: target }
+      : undefined;
   }
   if (!projectKeyOnlyPattern.test(key) || target === undefined) {
     return undefined;
+  }
+  const component = target.match(componentReferencePattern);
+  if (component !== null) {
+    return { id: component[1] ?? "", kind: "component", project: key };
   }
   const document = target.match(projectArtifactReferencePattern);
   const itemID = document?.[4] === undefined ? undefined : decodedSegment(document[4]);
@@ -525,6 +575,10 @@ export function buildMachinePath(host: string): string {
 /** The `?machine=` the Agents page filters on, named once here so the page reading it
  *  (`useAgentMachine`) and the links building it cannot drift apart. */
 export const AGENTS_MACHINE_PARAM = "machine";
+
+/** The `?role=` the Agents page narrows to, the page a `dispatch://role/<token>` reference
+ *  opens (`buildReferencePath`), named here beside the filter it stands with. */
+export const AGENTS_ROLE_PARAM = "role";
 
 /** The Agents page narrowed to one machine, `/agents?machine=<host>`: the link a machine's own
  *  page sends a reader to its sessions by. */
@@ -679,10 +733,22 @@ export function composerReferences(
 }
 
 export function buildDispatchReference(route: DispatchReferenceRoute): string {
-  if (route.kind === "agent-artifact") {
-    return `dispatch://agent/${route.session}/artifact/${encodeURIComponent(route.slug)}${
-      route.version === undefined ? "" : `@v${route.version}`
-    }`;
+  switch (route.kind) {
+    case "agent-artifact":
+      return `dispatch://agent/${route.session}/artifact/${encodeURIComponent(route.slug)}${
+        route.version === undefined ? "" : `@v${route.version}`
+      }`;
+    // A party is written as it is read, its name needing no encoding: a session id carries none
+    // of the characters a reference ends at, a role token is `[a-z0-9-]` and a login is a
+    // lowercased email.
+    case "agent-session":
+      return `dispatch://agent/${route.session}`;
+    case "role":
+      return `dispatch://role/${route.role}`;
+    case "person":
+      return `dispatch://person/${route.login}`;
+    case "component":
+      return `dispatch://${route.project}/component/${route.id}`;
   }
   const target = "block" in route ? route.block : undefined;
   const block =
@@ -701,13 +767,12 @@ export function buildDispatchReference(route: DispatchReferenceRoute): string {
   if (route.kind === "spec") {
     return `${issue}/spec${block}`;
   }
-  if (isPlainIssueRoute(route)) {
-    return `${issue}/${route.kind}`;
-  }
-  // The conversation keeps the `log` spelling every reference written before the Activity tab
-  // existed used; activity, newer, is spelled as its own path is.
-  if (route.kind === "conversation") {
-    return `${issue}/log`;
+  // An issue's tabs are the issue: the grammar lets only `spec`, `artifact/…`, `ask/…`,
+  // `comment/…` and `message/…` follow an issue key, so the seven forms this once wrote -
+  // verification, plan, activity, children, artifacts, collaborators and the conversation's
+  // `log` - were references the server refused to read.
+  if (isPlainIssueRoute(route) || route.kind === "conversation") {
+    return issue;
   }
   if (route.kind === "decisions") {
     return `${issue}/artifact/${DECISIONS_DOCUMENT_SLUG}`;
@@ -865,8 +930,17 @@ export function documentItemPath(
  * (`useMarkdownHeadline`) writes in its place. Mirrors `buildDispatchReference`'s shape without
  * the `dispatch://` scheme, so it reads like a second, shorter reference. */
 export function shortForm(route: DispatchReferenceRoute): string {
-  if (route.kind === "agent-artifact") {
-    return `agent/${shortSessionId(route.session)}/${route.slug}`;
+  switch (route.kind) {
+    case "agent-artifact":
+      return `agent/${shortSessionId(route.session)}/${route.slug}`;
+    case "agent-session":
+      return `agent/${shortSessionId(route.session)}`;
+    case "role":
+      return `role/${route.role}`;
+    case "person":
+      return `person/${route.login}`;
+    case "component":
+      return `${route.project}/component/${route.id}`;
   }
   const target = "block" in route ? route.block : undefined;
   const block =
@@ -909,9 +983,24 @@ export function shortForm(route: DispatchReferenceRoute): string {
  *  summary is read (`useReferencePath`), and until then a pinned block of the spec opens the live
  *  spec at the block. */
 export function buildReferencePath(route: DispatchReferenceRoute, specSlug?: string): string {
-  if (route.kind === "agent-artifact") {
-    const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
-    return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
+  switch (route.kind) {
+    case "agent-artifact": {
+      const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
+      return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
+    }
+    case "agent-session":
+      return `/agents/${encodeURIComponent(route.session)}/live`;
+    case "role":
+      return `/agents?${new URLSearchParams({ [AGENTS_ROLE_PARAM]: route.role })}`;
+    case "component": {
+      // The pane's own `?component=` state (`features/architecture/ArchitecturePage.tsx`).
+      const architecture = buildProjectPath({ kind: "architecture", project: route.project });
+      return `${architecture}?component=${encodeURIComponent(route.id)}`;
+    }
+    // Nothing shows a person, so there is no page to open: the empty path is the answer a
+    // caller acts on, drawing the reference as words rather than as a link.
+    case "person":
+      return "";
   }
   const path = isProjectRoute(route) ? buildProjectPath(route) : buildIssuePath(route);
   const target = "block" in route ? route.block : undefined;

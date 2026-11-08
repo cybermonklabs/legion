@@ -30,7 +30,9 @@ export interface DispatchTextReferenceRow {
   questions?: Readonly<Record<string, string>>;
   /** The ask, comment, message and document block ids that exist, each to its reference. */
   items?: Readonly<Record<string, string>>;
-  /** What the server indexes. */
+  /** What a reader of the text extracts, in order of first appearance. Not what the server
+   *  indexes: a party - an agent's session, a role or a person - is extracted and never stored,
+   *  the graph holding no node for one (Go's `refs.TargetOf`). */
   refs: readonly string[];
   /** What a renderer links, which is none inside code or a link; omitted, it is `refs`. */
   links?: readonly string[];
@@ -164,6 +166,54 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   // A page whose session id decodes to a character that ends a reference names nothing: no
   // reference could carry that id, and Dispatch refuses it as an owner.
   { body: "See https://dispatch.test/agents/a%7Cb/artifacts/shot-png here.", refs: [] },
+  // The three parties a text names: the agent at a session id, the role at its token and the
+  // person at their login. Each is read and shown, and the graph stores none of them, so a
+  // party reference is cited and never indexed. The agent's own address is the session alone;
+  // the longer form under it is still the document its conversation owns.
+  {
+    body: "Both dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551 and its dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png here.",
+    refs: [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png",
+    ],
+  },
+  {
+    body: "See [the agent](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551).",
+    refs: ["dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"],
+  },
+  // A role is its token, the charset a `role:` delivery route takes (`model.ParseRoute`).
+  { body: "Waiting on dispatch://role/reviewer today.", refs: ["dispatch://role/reviewer"] },
+  { body: "See [the reviewer](dispatch://role/reviewer).", refs: ["dispatch://role/reviewer"] },
+  // A person is their login, the lowercased email `model.CanonicalLogin` stores. No page shows
+  // a person, so a renderer links neither form.
+  {
+    body: "Asked dispatch://person/alice@example.com today.",
+    refs: ["dispatch://person/alice@example.com"],
+    links: [],
+  },
+  {
+    body: "See [the owner](dispatch://person/alice@example.com).",
+    refs: ["dispatch://person/alice@example.com"],
+    links: [],
+  },
+  // A party written another way names nobody: a role token or a login holding an upper-case
+  // letter is no token and no login as they are stored, a login is an email, and a party with
+  // no name at all is nothing.
+  {
+    body: "Neither dispatch://role/Reviewer nor dispatch://role/sre_oncall names a role.",
+    refs: [],
+  },
+  {
+    body: "Neither dispatch://person/Alice@example.com nor dispatch://person/alice names a person.",
+    refs: [],
+  },
+  { body: "No party: dispatch://agent, dispatch://role and dispatch://person here.", refs: [] },
+  // A component of a project's architecture, the one node a project owns beside its documents.
+  {
+    body: "Owned by dispatch://CORE/component/dispatch-server here.",
+    refs: ["dispatch://CORE/component/dispatch-server"],
+  },
+  { body: "No component: dispatch://CORE/component/Dispatch_Server here.", refs: [] },
   // A picture's address is read through the image syntax that shows it.
   {
     body: "![shot.png](dispatch://LEGION-1/artifact/shot-png@v1)",
@@ -308,8 +358,8 @@ const WRITTEN: readonly DispatchTextReferenceRow[] = [
   // Every other kind of target is bounded the same way, at MAX_REFERENCE_TARGET_BYTES (2048) bytes
   // and one byte past it: an issue's key (its number counted in groups `9NNNN`), an issue's spec
   // (`<key>/spec`), a project's document (`<project>/<slug>`), an agent's upload
-  // (`agent/<session id>/<slug>`), an ask's id and a message's. A component's `<project>/<id>` is
-  // bounded so too (Go's `text` tests it); the dashboard reads no component reference.
+  // (`agent/<session id>/<slug>`), an ask's id and a message's. A component's `<project>/<id>`
+  // and a party's own name are bounded so too (Go's `text` tests the lengths).
   {
     body: "dispatch://CORE-190001900029000390004900059000690007900089000990010900119001290013900149001590016900179001890019900209002190022900239002490025900269002790028900299003090031900329003390034900359003690037900389003990040900419004290043900449004590046900479004890049900509005190052900539005490055900569005790058900599006090061900629006390064900659006690067900689006990070900719007290073900749007590076900779007890079900809008190082900839008490085900869008790088900899009090091900929009390094900959009690097900989009990100901019010290103901049010590106901079010890109901109011190112901139011490115901169011790118901199012090121901229012390124901259012690127901289012990130901319013290133901349013590136901379013890139901409014190142901439014490145901469014790148901499015090151901529015390154901559015690157901589015990160901619016290163901649016590166901679016890169901709017190172901739017490175901769017790178901799018090181901829018390184901859018690187901889018990190901919019290193901949019590196901979019890199902009020190202902039020490205902069020790208902099021090211902129021390214902159021690217902189021990220902219022290223902249022590226902279022890229902309023190232902339023490235902369023790238902399024090241902429024390244902459024690247902489024990250902519025290253902549025590256902579025890259902609026190262902639026490265902669026790268902699027090271902729027390274902759027690277902789027990280902819028290283902849028590286902879028890289902909029190292902939029490295902969029790298902999030090301903029030390304903059030690307903089030990310903119031290313903149031590316903179031890319903209032190322903239032490325903269032790328903299033090331903329033390334903359033690337903389033990340903419034290343903449034590346903479034890349903509035190352903539035490355903569035790358903599036090361903629036390364903659036690367903689036990370903719037290373903749037590376903779037890379903809038190382903839038490385903869038790388903899039090391903929039390394903959039690397903989039990400904019040290403904049040590406904079040800",
     refs: [
@@ -823,6 +873,17 @@ const IN_CODE: readonly (readonly [written: string, inCode: string])[] = [
     "See `dispatch://CORE-1/spec#b-5da04f23-4c71` here.",
   ],
   ["See dispatch://CORE-1/spec#b-5DA04F23 here.", "See `dispatch://CORE-1/spec#b-5DA04F23` here."],
+  // The three parties, each in a code span: cited there as every other address is, linked
+  // nowhere, so a person's twin links nothing for the second reason as well.
+  [
+    "Both dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551 and its dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png here.",
+    "Both `dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551` and its `dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png` here.",
+  ],
+  ["Waiting on dispatch://role/reviewer today.", "Waiting on `dispatch://role/reviewer` today."],
+  [
+    "Asked dispatch://person/alice@example.com today.",
+    "Asked `dispatch://person/alice@example.com` today.",
+  ],
 ];
 
 /** The row that writes `written` in code: its own facts, its own `refs`, and no links. The

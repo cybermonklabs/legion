@@ -186,6 +186,67 @@
     "refs": []
   },
   {
+    "body": "Both dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551 and its dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png here.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png"
+    ]
+  },
+  {
+    "body": "See [the agent](dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551).",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551"
+    ]
+  },
+  {
+    "body": "Waiting on dispatch://role/reviewer today.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "See [the reviewer](dispatch://role/reviewer).",
+    "refs": [
+      "dispatch://role/reviewer"
+    ]
+  },
+  {
+    "body": "Asked dispatch://person/alice@example.com today.",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": []
+  },
+  {
+    "body": "See [the owner](dispatch://person/alice@example.com).",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": []
+  },
+  {
+    "body": "Neither dispatch://role/Reviewer nor dispatch://role/sre_oncall names a role.",
+    "refs": []
+  },
+  {
+    "body": "Neither dispatch://person/Alice@example.com nor dispatch://person/alice names a person.",
+    "refs": []
+  },
+  {
+    "body": "No party: dispatch://agent, dispatch://role and dispatch://person here.",
+    "refs": []
+  },
+  {
+    "body": "Owned by dispatch://CORE/component/dispatch-server here.",
+    "refs": [
+      "dispatch://CORE/component/dispatch-server"
+    ]
+  },
+  {
+    "body": "No component: dispatch://CORE/component/Dispatch_Server here.",
+    "refs": []
+  },
+  {
     "body": "![shot.png](dispatch://LEGION-1/artifact/shot-png@v1)",
     "refs": [
       "dispatch://LEGION-1/artifact/shot-png@v1"
@@ -1720,5 +1781,27 @@
     ],
     "links": [],
     "grammar": true
+  },
+  {
+    "body": "Both `dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551` and its `dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png` here.",
+    "refs": [
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551",
+      "dispatch://agent/01a1058e-f14f-7684-87eb-3dc885955551/artifact/shot-png"
+    ],
+    "links": []
+  },
+  {
+    "body": "Waiting on `dispatch://role/reviewer` today.",
+    "refs": [
+      "dispatch://role/reviewer"
+    ],
+    "links": []
+  },
+  {
+    "body": "Asked `dispatch://person/alice@example.com` today.",
+    "refs": [
+      "dispatch://person/alice@example.com"
+    ],
+    "links": []
   }
 ]

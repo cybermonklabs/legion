@@ -324,6 +324,13 @@ export function prefetchReference(queryClient: QueryClient, route: DispatchRefer
       });
       return;
     }
+    case "agent-session":
+    case "role":
+    case "person":
+    case "component":
+      // A party is a reader, not a record, and a component is drawn by the pane that shows it:
+      // there is no read behind either to warm.
+      return;
     default: {
       const query = issueQuery(route.key);
       void queryClient
@@ -393,12 +400,7 @@ export function useReferenceData(
   // no issue, document, ask, comment or message read behind it.
   const record = route !== undefined && itemOfBlock(route) !== undefined ? undefined : route;
   const issueRoute =
-    route === undefined ||
-    route.kind === "agent-artifact" ||
-    route.kind === "document" ||
-    blockReference !== undefined
-      ? undefined
-      : route;
+    route === undefined || !("key" in route) || blockReference !== undefined ? undefined : route;
   // An ask, comment or message under an issue shows only its own record.
   const summaryKey =
     issueRoute === undefined ||

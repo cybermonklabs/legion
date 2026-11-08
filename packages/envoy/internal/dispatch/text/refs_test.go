@@ -658,7 +658,8 @@ func TestExtractParsesComponentReferences(t *testing.T) {
 // An artifact an agent's conversation owns is addressed under the session id, as written, with an
 // optional version, inside a picture's syntax as anywhere else; its dashboard page names the same
 // artifact, and writing the reference back from what was parsed reads the same artifact again. An
-// id holding a `/`, `?`, `#` or whitespace, or an empty one, names nothing.
+// id holding a `/`, `?`, `#` or whitespace, or an empty one, names nothing. (The session on its
+// own is the agent, a party, which the shared text table holds both readers to.)
 func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 	const server = "https://dispatch.example"
 	want := Ref{Kind: "artifact", Session: "01a1058e-f14f", ID: "shot-png"}
@@ -687,7 +688,8 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 		"dispatch://agent/abc/artifact/Shot-png",
 		"dispatch://agent/abc/artifact/shot-png@v0",
 		"dispatch://agent/abc/artifact/shot-png/comment/c1",
-		"dispatch://agent/abc",
+		"dispatch://agent",
+		"dispatch://agent/",
 		server + "/agents/a%2Fb/artifacts/shot-png",
 		server + "/agents/a%20b/artifacts/shot-png",
 		server + "/agents/abc/artifacts/shot-png?v=0",

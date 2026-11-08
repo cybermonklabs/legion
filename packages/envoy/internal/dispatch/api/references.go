@@ -89,6 +89,8 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ref = resolved
+		// The whole id of a prefix, under the same kind: parseReferencesQuery has already
+		// refused every kind TargetOf stores nothing for, so this one names a node.
 		target, _ := refs.TargetOf(ref)
 		query.Kind, query.ID = target.Kind, target.ID
 	}
@@ -478,8 +480,13 @@ func parseReferencesQuery(r *http.Request, serverURL string) (refs.Query, text.R
 		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q is not a dispatch:// reference to an issue, document, block, ask, comment, message, or component", raw)
 	}
 	// The node as graph_edges stores it: an ask's part and a comment's or message's block under
-	// its storage kind.
-	target, _ := refs.TargetOf(ref)
+	// its storage kind. A party - an agent's session, a role or a person - is stored under
+	// nothing: the graph holds no node for one (refs.TargetOf), so there is no edge of it to
+	// read in either direction.
+	target, stored := refs.TargetOf(ref)
+	if !stored {
+		return refs.Query{}, text.Ref{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%q names a %s, which the reference graph holds no node for", raw, ref.Kind)
+	}
 	query := refs.Query{Direction: direction, Kind: target.Kind, ID: target.ID}
 	if kinds := strings.TrimSpace(values.Get("kind")); kinds != "" {
 		linkKinds := pmdoc.LinkKinds()
