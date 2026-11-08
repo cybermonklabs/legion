@@ -333,11 +333,14 @@ type Config struct {
 	// account (system:serviceaccount:<namespace>:<name>, named exactly: there is no wildcard) logs in
 	// as the one service its entry names and is given once; one service may have several accounts,
 	// one per machine. A namespace's default account is refused, since every pod there that names
-	// no account runs as it, and so is an account BROKER_SERVICES binds for a service's pods, since
-	// every such pod holds a token for it. Keyed by account, each answering its service. A token
-	// whose subject is not listed is refused, and a credential an account's login issued stops
-	// authenticating once its entry is gone. Needs BROKER_K8S_OIDC_ISSUER, whose tokens it trusts.
-	// Unset, no service logs in with a token.
+	// no account runs as it. An account BROKER_SERVICES binds for a service's pods may be listed
+	// here as well, which is a pod of that account enrolling itself: every such pod holds a token
+	// for the account, so each of them logs the service in, and what keeps one of them from
+	// enrolling another is enroll.Service.podUnderTokenLogin, which gives such a login the one pod
+	// whose token made it and answers ErrPodSelfEnrollOnly for any other pod UID. Keyed by account,
+	// each answering its service. A token whose subject is not listed is refused, and a credential
+	// an account's login issued stops authenticating once its entry is gone. Needs
+	// BROKER_K8S_OIDC_ISSUER, whose tokens it trusts. Unset, no service logs in with a token.
 	ServiceLogins map[string]string
 	// BROKER_K8S_OIDC_ISSUER: the issuer of the Kubernetes service-account tokens pods enroll
 	// with. Set it with BROKER_K8S_OIDC_AUDIENCE, or neither, in which case no pod can enroll.
@@ -1284,10 +1287,16 @@ func Load(getenv func(string) string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	// An account BROKER_SERVICES already binds may be listed here too, and a deployment that
+	// does so is saying that a pod of that service's own account logs the service in with its
+	// own projected token and enrols itself: what theorem-labs/agent-infra's session pods do
+	// with agent-secrets enroll --pod. Load refused that pair, because every pod of the account
+	// holds a token for it and so every one of them could log in as the service. What holds the
+	// narrowing is enroll.Service.podUnderTokenLogin, not this loader: a login whose token
+	// proves the login's own account enrols the one pod whose token made it (Credential.PodUID)
+	// and is ErrPodSelfEnrollOnly for any other pod UID, whatever BROKER_SERVICES binds the
+	// account to (internal/broker/enroll/enroll.go, pod_self_enroll_test.go).
 	for _, entry := range logins {
-		if name, bound := cfg.ServicesByAccount[entry.subject]; bound {
-			return Config{}, fmt.Errorf("BROKER_SERVICE_LOGINS names %s, the account BROKER_SERVICES binds for %q's pods, got %q: every such pod holds a token for it and would log in as %s; log the service in with an account of its own that no pod it enrolls runs as", entry.subject, name, entry.text, entry.service)
-		}
 		if cfg.ServiceLogins == nil {
 			cfg.ServiceLogins = map[string]string{}
 		}

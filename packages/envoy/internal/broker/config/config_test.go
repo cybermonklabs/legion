@@ -1093,19 +1093,12 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "system:serviceaccount:x:y") {
 		t.Errorf("BROKER_SERVICE_LOGINS naming one account twice: err = %v, want a refusal naming the account", err)
 	}
-	// A namespace's default account proves nothing, as BROKER_SERVICES refuses it, and the account
-	// BROKER_SERVICES binds for a service's pods is one every such pod holds a token for, so neither
-	// logs a service in.
+	// A namespace's default account proves nothing, as BROKER_SERVICES refuses it, so it logs no
+	// service in.
 	e = withIssuer()
 	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=system:serviceaccount:legion-system:default"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SERVICE_LOGINS") || !strings.Contains(err.Error(), "default service account") {
 		t.Errorf("BROKER_SERVICE_LOGINS naming a default account: err = %v, want a refusal naming the setting and the default account", err)
-	}
-	e = withIssuer()
-	e["BROKER_SERVICES"] = "legion-daemon=system:serviceaccount:legion:legion-worker"
-	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=system:serviceaccount:legion-system:legion-daemon-a legion-daemon=system:serviceaccount:legion:legion-worker"
-	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_SERVICE_LOGINS") || !strings.Contains(err.Error(), `"legion-daemon=system:serviceaccount:legion:legion-worker"`) || !strings.Contains(err.Error(), "BROKER_SERVICES") {
-		t.Errorf("BROKER_SERVICE_LOGINS naming the pods' account: err = %v, want a refusal naming the entry and BROKER_SERVICES", err)
 	}
 	e = withIssuer()
 	e["BROKER_SERVICES"] = "legion-daemon=system:serviceaccount:legion:legion-worker"
@@ -1117,6 +1110,32 @@ func TestLoadReadsTheServiceLogins(t *testing.T) {
 	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=system:serviceaccount:legion-system:legion-daemon-a"
 	if _, err := Load(env(e)); err == nil || !strings.Contains(err.Error(), "BROKER_K8S_OIDC_ISSUER") {
 		t.Errorf("BROKER_SERVICE_LOGINS with no token issuer: err = %v, want a refusal naming BROKER_K8S_OIDC_ISSUER", err)
+	}
+}
+
+// TestLoadTakesOneAccountInBothServiceLists pins that a deployment may name one ServiceAccount in
+// BROKER_SERVICES and in BROKER_SERVICE_LOGINS, which is a pod of a bound account enrolling itself
+// (agent-secrets enroll --pod): Load fills both maps from that pair rather than refusing it. What
+// the refusal protected is enroll.Service.podUnderTokenLogin's to hold: it gives such a login the
+// one pod whose token made it and answers ErrPodSelfEnrollOnly for every other pod of the account
+// (internal/broker/enroll/pod_self_enroll_test.go).
+func TestLoadTakesOneAccountInBothServiceLists(t *testing.T) {
+	const account = "system:serviceaccount:legion:agent-session"
+	e := validEnv()
+	e["BROKER_K8S_OIDC_ISSUER"] = "https://oidc.eks.example.invalid/id/EXAMPLE"
+	e["BROKER_K8S_OIDC_AUDIENCE"] = "agent-secrets"
+	e["BROKER_SERVICES"] = "legion-daemon=" + account
+	e["BROKER_SERVICE_LOGINS"] = "legion-daemon=" + account
+	cfg, err := Load(env(e))
+	if err != nil {
+		t.Fatalf("Load(one account in both service lists) = %v, want no refusal", err)
+	}
+	want := map[string]string{account: "legion-daemon"}
+	if !maps.Equal(cfg.ServicesByAccount, want) {
+		t.Errorf("ServicesByAccount = %v, want %v", cfg.ServicesByAccount, want)
+	}
+	if !maps.Equal(cfg.ServiceLogins, want) {
+		t.Errorf("ServiceLogins = %v, want %v", cfg.ServiceLogins, want)
 	}
 }
 

@@ -163,6 +163,31 @@ func TestAPodsOwnLoginEnrolsItsOwnPodAlone(t *testing.T) {
 	}
 }
 
+// TestAnAccountInBothListsEnrolsItsOwnPodAlone: a session pod runs as an account that
+// BROKER_SERVICE_LOGINS lists and BROKER_SERVICES binds for the service's pods, the pair
+// config.Load takes now, so every such pod logs the service in and enrols itself. The binding
+// does not widen that login: podUnderTokenLogin reads the login's own account first, so the same
+// pod asking for another pod UID of the account is ErrPodSelfEnrollOnly and never allowed as a
+// pod its service launches.
+func TestAnAccountInBothListsEnrolsItsOwnPodAlone(t *testing.T) {
+	r := newPodRig(t)
+	r.svc.ServicesByAccount[selfAccount] = podLoginService
+	cred := r.login(t, selfAccount, "pod-uid-self")
+
+	enr, err := r.enroll(t, cred, selfAccount, "pod-uid-self")
+	if err != nil || enr.Subject == nil || *enr.Subject != selfAccount {
+		t.Fatalf("Create(its own pod) = %+v, %v; want a new enrollment with subject %s", enr, err, selfAccount)
+	}
+
+	other, err := r.enroll(t, cred, selfAccount, "pod-uid-other")
+	if !errors.Is(err, ErrPodSelfEnrollOnly) {
+		t.Fatalf("Create(another pod of its own account) = %+v, %v; want ErrPodSelfEnrollOnly", other, err)
+	}
+	if got := r.rows(t, "pod-uid-other"); got != 0 {
+		t.Fatalf("enrollments naming pod-uid-other = %d, want none", got)
+	}
+}
+
 // TestEveryPodOfAnAccountHoldsItsOwnLoginAtOnce: several pods run as one self-enrolling account at
 // the same time, so each holds a machine login of its own, with its own key and its own pod, and
 // one pod's login never takes another's over. Each enrols its own pod and is refused the other's.
@@ -361,9 +386,10 @@ func TestALauncherStillEndsItsOwnEnrollments(t *testing.T) {
 	}
 }
 
-// TestASelfEnrolledPodEndsNoOtherPodsEnrollment: the service a self-enrolling account logs in as
-// binds no pod account, so one session pod can never end another's enrollment, whichever of them
-// logged in last. This is what keeps the replaced-launcher rule to launchers.
+// TestASelfEnrolledPodEndsNoOtherPodsEnrollment: the account these session pods run as is one
+// BROKER_SERVICES binds to nothing, so no service launches them and one session pod can never
+// end another's enrollment, whichever of them logged in last. This is what keeps the
+// replaced-launcher rule to launchers; the account BROKER_SERVICES does bind is the test below.
 func TestASelfEnrolledPodEndsNoOtherPodsEnrollment(t *testing.T) {
 	// Two session pods hold two logins at once only on the schema of the release after this
 	// one (newPerPodRig).
@@ -380,6 +406,48 @@ func TestASelfEnrolledPodEndsNoOtherPodsEnrollment(t *testing.T) {
 	}
 	if r.revoked(t, mine.ID.String()) {
 		t.Fatalf("enrollment %s ended, want it untouched", mine.ID)
+	}
+}
+
+// TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment: an account BROKER_SERVICE_LOGINS
+// lists and BROKER_SERVICES binds for the service's pods — the pair config.Load takes now —
+// makes every session pod of that account both a login of the service and a pod that service
+// launches, so the launcher relation holds between any two of them and, left at that, either
+// could end the other's enrollment. Which pod of its own account a login reaches is decided by
+// the pod UID, the rule podUnderTokenLogin applies at Create, so sameLauncher is false for a
+// self-enrolment and the second pod is refused the first's enrollment. The half that keeps
+// working: the credential that made the enrollment still ends it.
+func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
+	// Two session pods hold two logins at once only on the schema of the release after this
+	// one (newPerPodRig).
+	r := newPerPodRig(t)
+	r.svc.ServicesByAccount[selfAccount] = podLoginService
+	ctx := context.Background()
+	first := r.login(t, selfAccount, "pod-uid-both-one")
+	mine, err := r.enroll(t, first, selfAccount, "pod-uid-both-one")
+	if err != nil {
+		t.Fatalf("Create(the first session pod's own enrollment) = %v", err)
+	}
+	second := r.login(t, selfAccount, "pod-uid-both-two")
+	if enr, err := r.enroll(t, second, selfAccount, "pod-uid-both-two"); err != nil {
+		t.Fatalf("Create(the second session pod's own enrollment) = %+v, %v", enr, err)
+	}
+
+	if err := r.svc.Revoke(ctx, second, mine.ID.String(), "launcher:"+second.ID.String()); !errors.Is(err, ErrNotEnrollingCredential) {
+		t.Fatalf("Revoke(another session pod's enrollment) = %v, want ErrNotEnrollingCredential", err)
+	}
+	if r.revoked(t, mine.ID.String()) {
+		t.Fatalf("enrollment %s ended, want it untouched", mine.ID)
+	}
+	if got := r.rows(t, "pod-uid-both-one"); got != 1 {
+		t.Fatalf("enrollments naming pod-uid-both-one = %d, want its one live enrollment", got)
+	}
+
+	if err := r.svc.Revoke(ctx, first, mine.ID.String(), "launcher:"+first.ID.String()); err != nil {
+		t.Fatalf("the pod ends the enrollment its own credential made: %v", err)
+	}
+	if !r.revoked(t, mine.ID.String()) {
+		t.Fatalf("enrollment %s is still live, want it ended by the credential that made it", mine.ID)
 	}
 }
 

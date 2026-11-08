@@ -187,10 +187,14 @@ token, and no person approves it. `BROKER_SERVICE_LOGINS` lists which ServiceAcc
 as which service, whitespace-separated `<service>=<service account>` entries, for example
 `BROKER_SERVICE_LOGINS=legion-daemon=system:serviceaccount:legion-system:legion-daemon-legion`,
 one entry per daemon. Each account is named exactly, with no wildcard, and logs in as the one
-service its entry names. The broker refuses to start on an entry naming a namespace's `default`
-account, which every pod in that namespace whose spec names no account runs as, or an account
-`BROKER_SERVICES` binds for a service's pods, which every such pod holds a token for: either would
-let a pod log in as the daemon. The broker verifies the token as it verifies a pod's, against
+service its entry names.
+The broker refuses to start on an entry naming a namespace's `default` account, which every pod in
+that namespace whose spec names no account runs as, so any pod there could log in as the daemon.
+An account `BROKER_SERVICES` binds for a service's pods may be listed here as well, which is a pod
+of that account logging the service in to enrol itself (`agent-secrets enroll --pod`).
+Every pod of such an account holds a token for it and so logs the service in, and each login
+enrols the one pod whose token made it: any other pod UID is refused `403 POD_SELF_ENROLL_ONLY`.
+The broker verifies the token as it verifies a pod's, against
 `BROKER_K8S_OIDC_ISSUER` and `BROKER_K8S_OIDC_AUDIENCE`, so the setting needs both, and refuses a
 token that lives longer than an hour from its issue (`exp` minus `iat`, beside a minute of skew) as
 `TOKEN_TOO_LONG_LIVED`: give the daemon's projected token an `expirationSeconds` of at most 3600,

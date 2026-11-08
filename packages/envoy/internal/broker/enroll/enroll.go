@@ -1495,14 +1495,24 @@ func (s *Service) launches(service *string, podAccount string) bool {
 // Legion daemon pod end the enrollments its predecessor made, since a machine login is per pod
 // and the new pod holds a credential of its own.
 //
-// It gives a pod that enrolled itself nothing: the service a self-enrolling account logs in as
-// binds no pod account, so launches is false for every such enrollment and one session pod can
-// never end another's. It gives nothing across services either, and nothing to a credential a
-// person approved, which carries no subject. enrolledLoginSubject, enrolledLoginService and
-// enrolledPodAccount are the enrolling credential's subject and service and the enrollment's own
-// verified pod account, each nil where the row has none.
+// A pod of an account that BROKER_SERVICE_LOGINS lists and BROKER_SERVICES binds for its
+// service's pods — the pair config.Load takes now — enrols itself, and this gives it nothing:
+// where the enrollment's own pod account is the login's own subject account, which pod of that
+// account the login reaches is decided by the pod UID and never by the launcher relation, the
+// rule podUnderTokenLogin applies at Create, so this answers false there and one session pod can
+// never end another's enrollment
+// (TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment). It gives nothing across services
+// either, and nothing to a credential a person approved, which carries no subject.
+// enrolledLoginSubject, enrolledLoginService and enrolledPodAccount are the enrolling
+// credential's subject and service and the enrollment's own verified pod account, each nil where
+// the row has none.
 func (s *Service) sameLauncher(cred Credential, enrolledLoginSubject, enrolledLoginService, enrolledPodAccount *string) bool {
 	if cred.Operator != nil || cred.Subject == nil || enrolledLoginSubject == nil || enrolledPodAccount == nil {
+		return false
+	}
+	// A pod of the login's own account: that is the pod enrolling itself, which its pod UID
+	// decides (podUnderTokenLogin), so no launcher relation reaches it.
+	if *enrolledPodAccount == *cred.Subject {
 		return false
 	}
 	if *enrolledLoginSubject != *cred.Subject {
@@ -1554,9 +1564,10 @@ func machineCredential(cred Credential) bool {
 // its previous pods made with nothing able to end it. sameLauncher gives the new credential its
 // predecessor's pods and no others, since it takes the same ServiceAccount logging in and the
 // pod's own account being one BROKER_SERVICES binds to that login's service — the launcher
-// relation POD_NOT_LAUNCHED reads at Create. A service that binds no account, which is every
-// service whose pods enrol themselves, gives its logins nothing here: no such pod can end
-// another's enrollment. An
+// relation POD_NOT_LAUNCHED reads at Create. A pod that enrolled itself is no launcher, whatever
+// BROKER_SERVICES binds its account to: sameLauncher is false where the enrollment's own pod
+// account is the login's own subject account, so a session pod of an account both settings name
+// ends its own enrollment and no other pod's. An
 // enrollment neither rule reaches — a service login a person approved before token logins, or
 // the daemon's credential before someone revoked it — ends when its pod stops renewing, one lease
 // (BROKER_LEASE_SECONDS) after its renewer stops, or at once when a person revokes that credential
