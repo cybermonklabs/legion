@@ -64,11 +64,24 @@ const NO_DOCUMENT = new DispatchServiceError(
 const CALLER_TMPDIR = process.env.TMPDIR;
 const SUITE_TMP = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), "gate-suite-")));
 process.env.TMPDIR = SUITE_TMP;
+// A hang guard, not a bound on the work: the hook removes the suite's own TMPDIR tree and puts
+// the caller's TMPDIR back, and what can hang is that removal on a loaded host's filesystem.
+// Measured on this two-CPU pod with a timer round the body: 1.74 ms to 2.50 ms over 5 idle runs
+// of one row, and 266.82 ms to 299.98 ms (median 288.67 ms) over 3 idle runs of the whole file,
+// whose tree it has to remove; under 240 busy loops (120 per CPU, the rung that reddens this
+// file) 3.43 ms to 461.07 ms over 10 runs, median 83.54 ms, where the span charged to the hook
+// reached 1050.38 ms. Bun's unwritten 5 s default for a hook is what failed a correct run of
+// this file at that load twice in 20, at 15887.94 ms and 11035.86 ms, under its generic wording
+// "a beforeEach/afterEach hook timed out": under that load the process is starved far past what
+// a hook's body costs. Six times that worst is 95 s, past the ceiling a guard may take here, so
+// this takes 60_000: 3.8 times the worst a hook of this file was charged, and well inside the
+// pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a removal that never
+// returns still reddens with this file named instead of cancelling the job, which names nothing.
 afterAll(() => {
   fs.rmSync(SUITE_TMP, { recursive: true, force: true });
   if (CALLER_TMPDIR === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = CALLER_TMPDIR;
-});
+}, 60_000);
 /**
  * Directories named as the gate's old snapshots were (`askgate-` and six characters): the gate
  * reads each file in place now and writes no copy of one, which the suite's last test holds.
@@ -80,9 +93,20 @@ const snapshotDirs = () =>
  * the marker each one took: a test that never ends its call would otherwise leave it behind.
  */
 const callEnders: Array<() => Promise<void>> = [];
+// A hang guard, not a bound on the work: what can hang is one call's end, which releases the
+// marker that call took. Measured on this two-CPU pod with a timer round the body: 0.00 ms to
+// 1.57 ms over the 25 invocations of 5 idle runs, and 0.00 ms to 3.07 ms over the 1377 of 3 idle
+// runs of the whole file; under 240 busy loops (120 per CPU, the rung that reddens this file)
+// 0.00 ms to 498.65 ms over the 50 invocations of 10 runs, median 0.53 ms. Bun's unwritten 5 s
+// default is what failed a correct run at that load twice in 20, at 15887.94 ms and 11035.86 ms,
+// charged to a hook of this file as "a beforeEach/afterEach hook timed out", so the load starves
+// the process far past what this body costs. Six times that worst is 95 s, past the ceiling a
+// guard may take here, so this takes 60_000: 3.8 times that worst, and well inside the pi-envoy
+// job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a call end that never returns still
+// reddens with this file named instead of cancelling the job, which names nothing.
 afterEach(async () => {
   for (const end of callEnders.splice(0)) await end();
-});
+}, 60_000);
 
 /** One marker the gate minted, as the CLI reads it: its file name and its JSON. */
 type MintedMarker = {
@@ -1820,7 +1844,18 @@ console.log(JSON.stringify(args, null, 2));
         argsDigest: createHash("sha256").update(JSON.stringify(args)).digest("hex"),
       },
     ]);
-  });
+    // A hang guard, not a bound on the work: what can hang here is the dry run, a real
+    // `dispatch` subprocess the gate spawns through bash, or the charter and rules calls the
+    // harness answers. The row's own cost, read from bun's junit reporter on this two-CPU pod:
+    // 46.69 / 50.39 / 74.84 ms (min/median/max over 5 idle runs), and 1226.63 / 7224.30 /
+    // 18111.41 ms over 60 runs under 240 busy loops, 120 per CPU, the rung that reddens this
+    // file. Bun's unwritten 5 s default, which this row carried, sat inside that loaded cost and
+    // failed a correct run 7 times in 10, at 5125.67 ms to 6316.73 ms. Six times the worst of
+    // those 60 runs is 108_669 ms, rounded up to the 120_000 ceiling a guard may take here: 6.6
+    // times that worst, and well inside the pi-envoy job's timeout-minutes: 10
+    // (.github/workflows/ci.yaml), so a dry run or a model call that never returns reddens with
+    // this test named instead of cancelling the job, which names nothing.
+  }, 120_000);
   // The literal one-line grammar: one `dispatch ask`, its question a quoted word.
   const ONE_LINE_ASK = "dispatch ask --issue X-1 --question 'Ship the release today?'";
   test("a one-line dispatch ask opens a new ask, so its bash call gets the rules call beside the charter call", async () => {
@@ -5699,7 +5734,18 @@ describe("askgate.ts, the entry", () => {
 // path, and the real CLI (`runDispatchCli`, with a fake Dispatch) checks the marker and posts.
 describe("a marker the gate mints, checked by the real dispatch CLI", () => {
   const work = fs.realpathSync(fs.mkdtempSync(path.join(tmpdir(), "askgate-real-cli-")));
-  afterAll(() => fs.rmSync(work, { recursive: true, force: true }));
+  // A hang guard, not a bound on the work: the hook removes the tree this describe staged for
+  // the real CLI — its bin, its store and everything the CLI wrote there — and what can hang is
+  // that removal on a loaded host's filesystem. Measured on this two-CPU pod with a timer round
+  // the body: 7.15 ms to 8.84 ms over 5 idle runs, and 32.58 ms to 2083.55 ms (median
+  // 630.84 ms) over 10 runs under 240 busy loops (120 per CPU, the rung that reddens this file):
+  // the one hook of this file whose loaded worst is within six times of bun's unwritten 5 s
+  // default, which is why it is named here and the file's three cheaper scoped hooks are not.
+  // Six times the worst a hook of this file was charged at that load (15887.94 ms) is 95 s, past
+  // the ceiling a guard may take here, so this takes 60_000: 29 times this hook's own worst, and
+  // well inside the pi-envoy job's timeout-minutes: 10 (.github/workflows/ci.yaml), so a removal
+  // that never returns still reddens with this file named instead of cancelling the job.
+  afterAll(() => fs.rmSync(work, { recursive: true, force: true }), 60_000);
   const bin = path.join(work, "bin");
   fs.mkdirSync(bin);
   const entry = path.join(import.meta.dir, "..", "..", "..", "envoy-client", "bin", "dispatch.ts");
@@ -5781,7 +5827,23 @@ describe("a marker the gate mints, checked by the real dispatch CLI", () => {
     expect(posted.sent).toEqual([{ path: "/api/v1/issues/DSP-1/artifacts", body: BRIEF }]);
     // The marker is spent: the same call again is refused.
     expect((await post(command, g.store)).code).toBe(1);
-  }, 30_000);
+    // A hang guard, not a bound on the work: what can hang here is the dry run or the post, each
+    // a real `dispatch` subprocess this describe stages and the gate spawns through bash, and
+    // the model calls the harness answers between them. The row's own cost, read from bun's
+    // junit reporter on this two-CPU pod: 386.83 / 410.62 / 449.38 ms (min/median/max over 5
+    // idle runs), and 3331.80 / 10469.35 / 20906.97 ms over 20 runs under 96 busy loops, 48 per
+    // CPU. The 30_000 it replaces sat inside that loaded cost and failed a correct run 7 times
+    // in 10, at 30011.27 ms to 30723.57 ms. Six times the worst of those 20 runs is 125_442 ms,
+    // past the 120_000 a guard may take here, so this takes that ceiling: 5.7 times that worst,
+    // and 5.4 times the worst of the 20 further runs at that load this limit was then soaked
+    // over, 20 of them green at 22378.01 ms and under. It is well inside the pi-envoy job's
+    // timeout-minutes: 10 (.github/workflows/ci.yaml), so a dry run or a post that never returns
+    // reddens with this test named instead of cancelling the job, which names nothing. The row's
+    // remaining load ceiling is the gate's own, not this one: at 120 busy loops per CPU the row
+    // fails inside the gate's own DRY_RUN_TIMEOUT_MS, because a real `dispatch` subprocess
+    // cannot finish in 20 s on a host that starved — 12 of 20 runs there, charged 47494.61 ms
+    // to 52948.38 ms — which no per-test limit can guard.
+  }, 120_000);
 
   // The independent review at 6fd926853, its blocker: the CLI takes a bare issue key only as the
   // first argument after the subcommand (`dispatch-command.ts`), so a dry run that put `--dry-run`

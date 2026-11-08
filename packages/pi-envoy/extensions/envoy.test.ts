@@ -16479,8 +16479,16 @@ console.log(JSON.stringify(args));
     // of this package.
     expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(2_000);
     // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
-    // waits for a drain that never returns.
-  }, 30_000);
+    // waits for a drain that never returns. The row's own cost, read from bun's junit reporter on
+    // this two-CPU pod: 1_265 / 1_281 / 1_285 ms (min/median/max over 5 idle runs), and
+    // 2_104 / 9_888 / 22_970 ms over the 60 runs of three campaigns under 96 busy loops, 48 per
+    // CPU. Six times that worst is 137_819 ms, past the 120_000 a guard may take here, so this
+    // takes that ceiling: 5.2 times the worst of those runs, where the 30_000 it replaces sat
+    // inside the loaded cost itself and failed a correct run at 30_297.51 ms. It stays well
+    // inside the pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml), so a drain
+    // that never returns reddens with this test named instead of cancelling the job, which
+    // names nothing.
+  }, 120_000);
 
   test("starts NATS drain while listener deregistration is still pending", async () => {
     const deletion = Promise.withResolvers<Response>();
@@ -16622,8 +16630,12 @@ console.log(JSON.stringify(args));
     );
     await subscribing;
     // A hang guard rather than a budget: what can hang here is a `session_shutdown` handler that
-    // waits out a registration that never settles.
-  }, 30_000);
+    // waits out a registration that never settles. Measured as the row above: 570 / 578 / 627 ms
+    // (min/median/max over 5 idle runs) and 5_922 / 13_072 / 19_279 ms over 20 runs under 96 busy
+    // loops, 48 per CPU. The old 30_000 sat inside six times that worst loaded cost, so this row
+    // is raised too: 120_000 is six times 19_279 ms (115_673 ms), rounded up, and still well
+    // inside the pi-envoy job's `timeout-minutes: 10` (.github/workflows/ci.yaml).
+  }, 120_000);
 
   // A `/new`, a fork or a branch mints a new id, and nothing heartbeats the old one from then on:
   // left registered it reads as live, and then as unresponsive, for an hour of peers' sends.
