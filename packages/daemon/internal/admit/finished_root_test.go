@@ -686,7 +686,7 @@ func TestAStrandedMidRunChildHandedToLegionByAPersonCarriesItsState(t *testing.T
 }
 
 // A root a person sets todo again while its tree lingers is re-admitted, and its mid-run children
-// resume in its new run where they stood (startMidPhaseChildren). The end of the closed generation's
+// resume in its new run where they stood (startMidPhaseMembers). The end of the closed generation's
 // linger hands none of them over: the reopen wins, and the two never both act on one child. The
 // close that lingers the tree over running children is a person's — a merged root's waits for the
 // rest of its tree (the workflow's closeMerged).

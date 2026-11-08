@@ -5658,8 +5658,12 @@ func (s *Service) room(name string) *roomState {
 }
 
 // recordActor makes actor a pending author of room's next version, and its latest editor, as a
-// landed browser edit does: a durable pending author, written under the document's advisory lock
-// (AppendUpdatesWithCredit), and the room's latest edit source.
+// landed browser edit does. Under the document's advisory lock (AppendUpdatesWithCredit) it makes
+// the writes such an append makes: a durable pending author, and a pending-settlement row saying
+// the document owes a settlement from that edit and naming actor as its latest edit source
+// (updateOwedStatement). It then names actor on the room's record, where a
+// settlement on this process reads the source while that row stands. A test staging a document
+// that owes no settlement deletes the row after this call (clearPendingSettlementRow).
 func (s *Service) recordActor(t *testing.T, room string, actor model.Actor) {
 	t.Helper()
 	ctx := context.Background()
@@ -5674,8 +5678,17 @@ func (s *Service) recordActor(t *testing.T, room string, actor model.Actor) {
 	if err := upsertPendingAuthors(ctx, tx, room, pendingAuthorsAt(map[string]model.Actor{actorKey(actor): actor}, 0)); err != nil {
 		t.Fatalf("record %s as a pending author: %v", actor.ID, err)
 	}
+	var owed owedUpdates
+	owed.credit(&actor, actor.Kind == "user")
+	statement, err := updateOwedStatement(room, owed)
+	if err != nil {
+		t.Fatalf("the statement recording %s's edit as owed: %v", actor.ID, err)
+	}
+	if err := statement.exec(ctx, tx); err != nil {
+		t.Fatalf("record the document as owing a settlement from %s's edit: %v", actor.ID, err)
+	}
 	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit %s as a pending author: %v", actor.ID, err)
+		t.Fatalf("commit %s's recorded edit: %v", actor.ID, err)
 	}
 	state := s.lockState(room)
 	// Every recorder of an edit source moves creditSeq (creditContentChange, Ledger.creditRooms),
