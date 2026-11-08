@@ -4,7 +4,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
-import type { Artifact, Event, IssueDetails } from "../../api/types";
+import type { Artifact, DispatchEvent, IssueDetails } from "../../api/types";
 import type { AgentPart } from "../refs/AgentName";
 import { ActivityLine } from "./ActivityLine";
 import { activityDescription } from "./activity-model";
@@ -18,6 +18,8 @@ const uploaded: Artifact = {
   name: "cu-update-2026-09-15.md",
   primary: false,
   project: "OPS",
+  ref_key: "OPS-52/cu-update-2026-09-15-md",
+  session_id: null,
   slug: "cu-update-2026-09-15-md",
   versions: [],
 };
@@ -39,6 +41,8 @@ const issue: IssueDetails = {
       name: "spec.md",
       primary: true,
       project: "OPS",
+      ref_key: "OPS-52/spec",
+      session_id: null,
       slug: "spec",
       versions: [],
     },
@@ -60,7 +64,10 @@ const issue: IssueDetails = {
   progress: { tasks: null, children: null },
   parent: null,
   blocked_by: [],
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   priority: null,
   project: "OPS",
   rank: "U",
@@ -80,7 +87,7 @@ const base = {
   notify: false,
 } as const;
 
-function renderLine(event: Event, description: readonly AgentPart[]) {
+function renderLine(event: DispatchEvent, description: readonly AgentPart[]) {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -104,7 +111,7 @@ function renderLine(event: Event, description: readonly AgentPart[]) {
 // The description comes from `activityDescription` itself, so each row holds the model and the
 // line to the same contract: the artifact is a part of its own and the link is that part.
 test("an added artifact's name links to the artifact", () => {
-  const event: Event = {
+  const event: DispatchEvent = {
     ...base,
     id: 4,
     payload: { artifact: uploaded },
@@ -123,7 +130,7 @@ test("an added artifact's name links to the artifact", () => {
 });
 
 test("a saved version's name links to that version once the issue's artifacts are known", async () => {
-  const event: Event = {
+  const event: DispatchEvent = {
     ...base,
     id: 5,
     payload: {
@@ -155,7 +162,7 @@ test("a saved version's name links to that version once the issue's artifacts ar
 // words hold the name but whose parts do not links nothing, and one whose part names an
 // artifact links that name alone, however often the words around it repeat it.
 test("an artifact's link comes from its own part, not from the sentence's text", () => {
-  const event: Event = {
+  const event: DispatchEvent = {
     ...base,
     id: 4,
     payload: { artifact: uploaded },
@@ -187,7 +194,7 @@ test("an artifact's link comes from its own part, not from the sentence's text",
 // names it too, and the first occurrence of the name is the quoted one. The link is the
 // artifact's own part, so it lands on the artifact and the quoted name stays words.
 test("an artifact's link lands on the artifact though the quote beside it names it too", async () => {
-  const event: Event = {
+  const event: DispatchEvent = {
     ...base,
     id: 4,
     payload: { artifact: uploaded },
@@ -227,6 +234,8 @@ test("a quoted question is drawn as Markdown rather than as its source", async (
     payload: {
       anchor: null,
       answer: null,
+      artifact_id: null,
+      block_id: null,
       author: base.actor,
       created_at: "2026-09-15T00:00:00Z",
       edited_at: null,
@@ -242,7 +251,7 @@ test("a quoted question is drawn as Markdown rather than as its source", async (
     },
     seq: 8,
     type: "ask.opened",
-  } as Event;
+  } as DispatchEvent;
   const { cleanup, view } = renderLine(event, activityDescription(event));
 
   try {
@@ -255,7 +264,7 @@ test("a quoted question is drawn as Markdown rather than as its source", async (
 });
 
 test("a comment activity keeps its view link", () => {
-  const event: Event = {
+  const event: DispatchEvent = {
     ...base,
     id: 6,
     payload: {
@@ -276,7 +285,7 @@ test("a comment activity keeps its view link", () => {
     },
     seq: 6,
     type: "comment.created",
-  } as Event;
+  } as DispatchEvent;
   const { cleanup } = renderLine(event, ["commented on spec.md"]);
 
   try {
@@ -309,7 +318,7 @@ test("an agent the line names links to its live conversation", () => {
     },
     seq: 7,
     type: "issue.claimed",
-  } as Event;
+  } as DispatchEvent;
   const { cleanup, view } = renderLine(event, ["took the claim from ", { actor: holder }]);
 
   try {

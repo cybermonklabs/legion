@@ -1,7 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { DELIVERY_DUPLICATE_WINDOW_MS } from "@legion/contracts/dispatch-constants";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAgentStates } from "../../__tests__/send-answers";
@@ -16,6 +17,7 @@ import type {
   UserAgentStates,
 } from "../../api/types";
 import { BroadcastPage } from "./BroadcastPage";
+import { messageDeliveryFields } from "./delivery-fixture";
 
 const agents: Agent[] = [
   {
@@ -28,16 +30,17 @@ const agents: Agent[] = [
     open_asks: 0,
     roles: [],
     session_id: "planner-session",
+    state: "live",
     title: "Planner",
   },
 ];
 
 function attempt(overrides: Partial<MessageDelivery>): MessageDelivery {
   return {
+    ...messageDeliveryFields(),
     attempt: 1,
     created_at: new Date().toISOString(),
     delivery: "steer",
-    duplicate: false,
     envelope_id: null,
     error: null,
     message_id: "message-1",
@@ -60,11 +63,13 @@ function broadcast(deliveries: MessageDelivery[]): BroadcastRead {
         message: {
           author: { id: "alice", kind: "user" },
           body: "Report status.",
+          broadcast_id: "broadcast-1",
           created_at: new Date().toISOString(),
           deliveries,
           id: "message-1",
           in_reply_to: null,
           issue_key: null,
+          reply_block: null,
           target: "session:planner-session",
         },
         replies: [],
@@ -120,11 +125,13 @@ function threadMessage(id: string, author: Message["author"], body: string): Mes
   return {
     author,
     body,
+    broadcast_id: null,
     created_at: new Date().toISOString(),
     deliveries: [],
     id,
     in_reply_to: "message-1",
     issue_key: null,
+    reply_block: null,
     target: null,
   };
 }
@@ -133,7 +140,7 @@ function threadMessage(id: string, author: Message["author"], body: string): Mes
  *  own follow-up between them. */
 function answeredBroadcast(): BroadcastRead {
   const read = broadcast([attempt({ envelope_id: "e1", state: "sent" })]);
-  const [recipient] = read.recipients;
+  const [recipient] = read.recipients ?? [];
   if (recipient === undefined) throw new Error("the fixture has no recipient");
   const session = { id: "planner-session", kind: "session" } as const;
   return {
@@ -262,7 +269,8 @@ test("a pending attempt nobody is carrying offers a same-mode retry and no mode 
           "Nobody is carrying this send. Retry uses Send again, which cannot deliver it twice unless the session restarted since it was sent."
       )
     ).toBeTruthy();
-    fireEvent.click(within(row).getByRole("button", { name: "Retry" }));
+    const user = userEvent.setup();
+    await user.click(within(row).getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(page.createMessageDelivery).toHaveBeenCalledWith("message-1", "steer", keyedAttempt)
     );
@@ -281,7 +289,7 @@ test("a stranded send older than the duplicate window is not promised a single d
   const page = renderBroadcast(broadcast([aged]));
   try {
     const row = await screen.findByRole("article", { name: "Planner" });
-    expect(within(row).queryByText(/cannot deliver it twice/)).toBeNull();
+    expect(within(row).queryByText(/cannot deliver it twice/)).not.toBeInTheDocument();
     expect(within(row).getByText(/may deliver it twice/)).toBeTruthy();
     expect(within(row).getByRole("button", { name: "Retry" })).toBeTruthy();
   } finally {
@@ -317,7 +325,8 @@ test("a delivered recipient offers nothing", async () => {
     const heading = within(row).getByRole("heading", { level: 3 });
     const recipient = heading.querySelector('[data-agent-name="planner-session"]');
     expect(recipient?.getAttribute("data-agent-state")).toBe("running");
-    expect(within(heading).getByRole("link", { name: "Planner" }).getAttribute("href")).toBe(
+    expect(within(heading).getByRole("link", { name: "Planner" })).toHaveAttribute(
+      "href",
       "/agents/planner-session/live"
     );
     // textContent, never the elements: a failed toEqual on DOM nodes serialises the whole tree
@@ -342,7 +351,7 @@ test("the broadcast's body and a recipient's answer render as Markdown blocks, l
   const listed: BroadcastRead = {
     ...read,
     body: "Three things:\n\n1. **Stop** the deploy\n2. Check `deploy.yml`",
-    recipients: read.recipients.map((recipient) => ({
+    recipients: (read.recipients ?? []).map((recipient) => ({
       ...recipient,
       replies: [threadMessage("answer-1", session, "Done:\n\n- stopped\n- *green*")],
     })),

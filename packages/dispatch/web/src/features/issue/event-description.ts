@@ -1,16 +1,16 @@
-import type { Event } from "../../api/types";
+import type { DispatchEvent } from "../../api/types";
 import { capabilityLabel } from "../conversation/delivery";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 /** An event's line in the Pinned tab, as `AgentPart`s: an agent it names keeps its identity
  *  until `EventBody` draws it through `AgentName`, and a question it quotes is a part of its
  *  own, drawn as the Markdown its author wrote rather than as that source. */
-export function eventDescription(event: Event): AgentPart[] {
+export function eventDescription(event: DispatchEvent): AgentPart[] {
   const description = describe(event);
   return typeof description === "string" ? [description] : description;
 }
 
-function describe(event: Event): string | AgentPart[] {
+function describe(event: DispatchEvent): string | AgentPart[] {
   switch (event.type) {
     case "project.created":
       return `Project created: ${event.payload.name}`;

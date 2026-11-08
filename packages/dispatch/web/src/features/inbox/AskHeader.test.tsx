@@ -35,6 +35,8 @@ const asker = {
 const ask: Ask = {
   anchor: null,
   answer: null,
+  artifact_id: null,
+  block_id: null,
   author: asker,
   created_at: "2026-09-10T09:00:00Z",
   edited_at: null,

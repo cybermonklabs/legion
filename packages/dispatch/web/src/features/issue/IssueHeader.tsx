@@ -73,6 +73,7 @@ import { GitHubLink } from "./GitHubLink";
 import { gatedStepEntries } from "./gated-steps";
 import { IssueComponentsLine } from "./IssueComponentsLine";
 import { IssueLabels } from "./IssueLabels";
+import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
@@ -275,7 +276,7 @@ export function IssueHeader({
   const statusSaving = updateIssue.isPending && updateIssue.variables?.status !== undefined;
   const pendingStatus = statusSaving ? updateIssue.variables?.status : undefined;
   const selectableStatuses = isClosed ? issueStatuses : openIssueStatuses;
-  const openAsks = issue.open_asks.filter((ask) => ask.state === "open");
+  const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -528,7 +529,7 @@ export function IssueHeader({
           <PriorityEditor
             disabled={isClosed || updateIssue.isPending}
             issueKey={issue.key}
-            priority={issue.priority}
+            priority={issuePriority(issue.priority)}
             write={priorityWrite}
           />
           <AssigneeControl
@@ -648,7 +649,7 @@ export function IssueHeader({
             <span className="font-medium">Labels:</span>
             <IssueLabels
               disabled={isClosed}
-              labels={issue.labels}
+              labels={issue.labels ?? []}
               onSave={(labels) => labelsMutation.mutateAsync(labels)}
               project={issue.project}
               saving={labelsMutation.isPending}
@@ -700,7 +701,10 @@ export function IssueHeader({
                 </Link>
               )}
               <button
-                aria-label={issue.parent === null ? "Set parent issue" : "Edit parent issue"}
+                // The name starts with the word on the button - "None" or "Edit" - because a
+                // name that does not contain the visible text leaves the control out of reach
+                // of a voice user (WCAG 2.5.3, axe's `label-content-name-mismatch`).
+                aria-label={issue.parent === null ? "None, set parent issue" : "Edit parent issue"}
                 className={`inline-flex min-h-11 max-w-[14ch] shrink-0 items-center rounded-full px-3 py-2 text-left text-sm outline-none focus-visible:ring-2 xl:px-2 ${surfaceMutedStrongBg} ${textSecondaryOnSurface} ${textSecondaryHoverToPrimary} ${focusVisibleRing}`}
                 disabled={isClosed}
                 onClick={() => setParentEditing(true)}
@@ -722,7 +726,7 @@ export function IssueHeader({
             resolvedRepo={issue.resolved_repo}
           />
           <IssueComponentsLine issue={issue} />
-          {issue.external_links.map((link) => (
+          {(issue.external_links ?? []).map((link) => (
             <div className="flex shrink-0 items-center" key={link.url}>
               <GitHubLink link={link} />
             </div>

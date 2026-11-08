@@ -1730,7 +1730,12 @@ describe("EnvoyClient", () => {
   });
 
   // The deadline is AbortSignal.timeout's, on the platform's clock, which no fake timer moves: the
-  // case holds the request until its signal aborts and checks that a short deadline gave up first.
+  // case holds the request until its signal aborts and the row reads no clock to see that a short
+  // deadline gave up first. The request it must not wait for never answers at all, and the client's
+  // own replay deadline is 10 s, so a client that ignored the caller's 50 ms deadline would wait
+  // that out. The row's 5 s limit is what catches it, and it stays on the row below the suite's
+  // 30 s default for exactly that reason. It has 11 times the 0.45 s the row costs at most under
+  // 16 busy loops (8 x nproc) in a 2-CPU pod, in a whole-suite run and with this file alone alike.
   test("gives up a replay at the deadline its caller names", async () => {
     const client = createEnvoyClient({
       baseUrl: "http://listener",
@@ -1742,7 +1747,6 @@ describe("EnvoyClient", () => {
         return aborted.promise;
       },
     });
-    const started = performance.now();
     const failure = await client
       .replay({
         sessionID: "ses_a",
@@ -1751,8 +1755,7 @@ describe("EnvoyClient", () => {
       })
       .catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(Error);
-    expect(performance.now() - started).toBeLessThan(5_000);
-  });
+  }, 5_000);
 });
 
 describe("newClientInstanceID", () => {

@@ -41,7 +41,8 @@ along:
   `pod` enrollment also shows its worker slot when it has one.
 - **Session the request names (its own unsigned claim, not verified)**: shown only when the request
   names a session other than its enrollment's. The enrollment above is the one the broker checked.
-- **Reason**: the `--reason` the agent gave, shown as plain text.
+- **Reason**: the `--reason` the agent gave, shown as plain text. Every request you see here has
+  one: a request with no reason is denied before anyone is asked to approve it.
 - **Lasts once approved**: how long the grant would last from the moment you approve: the `--ttl`
   the agent asked for; when it named none, **15 minutes** if any secret is human tier and
   **12 hours** otherwise, or **until the session ends** for a secret tagged

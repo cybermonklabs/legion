@@ -638,7 +638,7 @@ test("API client sends the documented method and JSON body for mutations", async
   });
 });
 
-test("API client sends comment edits and reopen actions to their endpoints", async () => {
+test("API client sends comment edits to their endpoint, and the reopen with no body at all", async () => {
   const stub = stubFetch();
   const api = createApiClient(stub.fetch);
 
@@ -650,7 +650,11 @@ test("API client sends comment edits and reopen actions to their endpoints", asy
     ["POST", "/api/v1/comments/comment-1/reopen"],
   ]);
   expect(JSON.parse(stub.requests[0]?.body as string)).toEqual({ body: "Revised comment" });
-  expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({});
+  // `POST /api/v1/comments/{id}/reopen` takes no request body: the route reads the person from
+  // the caller's own credential (`comment_actions.go`), so the document declares none for it and
+  // the client sends none, which leaves the request without a body and without a Content-Type.
+  expect(stub.requests[1]?.body).toBeUndefined();
+  expect(stub.requests[1]?.init?.headers).not.toHaveProperty("Content-Type");
 });
 
 test("API client sends repository project mapping requests to their settings routes", async () => {
@@ -774,11 +778,11 @@ test("API client encodes list filters and artifact version query parameters", as
     status: "in progress",
     parent: "CORE-1",
     updated_since: "2026-09-10T12:00:00Z",
-    labels: ["frontend", "docs"],
+    label: ["frontend", "docs"],
   });
   await api.getIssueEvents("CORE-1", { after: 3, limit: 20 });
   await api.getIssueEvents("CORE-1", { before: 40, order: "desc" });
-  await api.getIssueEvents("CORE-1", { ids: ["42", "10"] });
+  await api.getIssueEvents("CORE-1", { ids: "42,10" });
   await api.listComments("CORE-1", "spec");
 
   expect(stub.requests.map(({ path }) => path)).toEqual([
@@ -1272,6 +1276,8 @@ const CLIENT_PLUMBING = new Set([
   "post",
   "put",
   "remove",
+  "read",
+  "patch",
 ]);
 
 /** The one write Dispatch's keyed layer does not take, and so the one the page makes outside the
@@ -1293,8 +1299,11 @@ test("every write method of the client goes through the one keyed path", async (
   const stub = stubFetch(() => Response.json({}));
   const api = createApiClient(stub.fetch);
   const told: string[] = [];
-  /** Stands for any argument: a path segment, a JSON body, and a press's bounds. */
+  /** Stands for any argument: a path segment, a JSON body, an artifact's owner, and a press's
+   *  bounds. `issue` names the owner an upload's three routes are picked by, so the census
+   *  reaches one of them rather than building a path with no owner in it. */
   const anything = Object.assign(new String("owner/repo"), {
+    issue: "CORE-1",
     key: "census-key",
     login: "alice",
     sent: (request: { method: string; path: string }) =>

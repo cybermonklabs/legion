@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: the field's own change, the Ctrl/Cmd+Enter pairs, and the presses on controls a refusal already holds, none of which user-event has a form for
 import { fireEvent, type RenderResult, render, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import type { Agent, Ask, AskRead, Comment, CreateCommentInput } from "../../api/types";
 import { AskCard } from "./AskCard";
@@ -26,12 +28,14 @@ const planner: Agent = {
   open_asks: 0,
   roles: [],
   session_id: "A",
+  state: "live",
   title: "Planner",
 };
 
 let whoAmI: Mock<typeof api.whoAmI>;
 let getReferences: Mock<typeof api.getReferences>;
 let listAgents: Mock<typeof api.listAgents>;
+let getIssueSubscribers: Mock<typeof api.getIssueSubscribers>;
 
 beforeEach(() => {
   whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
@@ -41,21 +45,27 @@ beforeEach(() => {
   });
   getReferences = spyOn(api, "getReferences").mockResolvedValue({
     edges: [],
-    node: { id: "ask-1", kind: "ask" },
+    node: graphNode({ id: "ask-1", kind: "ask" }),
   });
   listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  // The card's own header reads the issue's subscribers, and a read nothing answers fails the
+  // file (`__tests__/network.ts`): no row here is about subscribers, so the list is empty.
+  getIssueSubscribers = spyOn(api, "getIssueSubscribers").mockResolvedValue([]);
 });
 
 afterEach(() => {
   whoAmI.mockRestore();
   getReferences.mockRestore();
   listAgents.mockRestore();
+  getIssueSubscribers.mockRestore();
 });
 
 function ask(overrides: Partial<Ask> = {}): Ask {
   return {
     anchor: null,
     answer: null,
+    artifact_id: null,
+    block_id: null,
     author: { id: "session-1", kind: "session" },
     created_at: "2026-10-08T00:00:00Z",
     edited_at: null,
@@ -128,6 +138,8 @@ async function pickMention(
   text: string,
   option: string
 ): Promise<void> {
+  // The field's own `change` and a press on a picker option: user-event has no form that writes
+  // the draft's text without retyping the `@` the picker is already standing over.
   fireEvent.change(field, { target: { value: text } });
   const listbox = await view.findByRole("listbox", { name: "Mention suggestions" });
   fireEvent.click(within(listbox).getByRole("option", { name: option }));
@@ -171,12 +183,14 @@ test("Ask back posts the picked session as a mention, which the answer refuses t
     expect(answer.hasAttribute("disabled")).toBe(false);
     expect(answer.getAttribute("title")).toBe(ANSWER_MENTION_REFUSAL);
     expect(shownReason(answer)).toBe(ANSWER_MENTION_REFUSAL);
+    // A press on a control the refusal already holds, which user-event will not perform.
     fireEvent.click(answer);
     // Ctrl/Cmd+Enter submits the form without passing through the button, and is refused too.
     fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
     fireEvent.keyDown(field, { key: "Enter", metaKey: true });
     expect(answered).toEqual([]);
 
+    // A press on a refused Ask back.
     fireEvent.click(view.getByRole("button", { name: "Ask back" }));
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]).toEqual({
@@ -215,6 +229,8 @@ test("opening the ask's @ picker reads the registry again, so a session started 
   try {
     const field = (await view.findByLabelText("Your answer")) as HTMLTextAreaElement;
     expect(listAgents).not.toHaveBeenCalled();
+    // The field's own `change`, which is how this row puts the `@` in without the picker's
+    // keystroke handling: user-event has no form that writes text and stops there.
     fireEvent.change(field, { target: { value: "Ask @" } });
     const listbox = await view.findByRole("listbox", { name: "Mention suggestions" });
     expect(within(listbox).getByRole("option", { name: "Planner" })).toBeDefined();
@@ -250,6 +266,7 @@ test("a draft whose box closes and opens again still posts its picked mention", 
     expect(second.getByRole("list", { name: "Mention targets" }).textContent).toContain(
       "session:A"
     );
+    // A press on a refused Ask back.
     fireEvent.click(second.getByRole("button", { name: "Ask back" }));
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]?.mentions).toEqual([{ target: "session:A" }]);
@@ -282,11 +299,14 @@ test("the reply box under an answered ask posts the picked session as a mention"
     expect(send.hasAttribute("disabled")).toBe(false);
     expect(send.getAttribute("title")).toBe(EMPTY_DRAFT_REFUSAL);
     expect(shownReason(send)).toBe(EMPTY_DRAFT_REFUSAL);
+    // A press on a refused Send and the Ctrl+Enter that bypasses the button, both of which
+    // user-event will not perform on a control it reads as unpressable.
     fireEvent.click(send);
     fireEvent.keyDown(field, { ctrlKey: true, key: "Enter" });
     expect(posted).toEqual([]);
 
     await pickMention(view, field, "Over to @", "Planner");
+    // The same press again, now that the draft names a session: still a refused control.
     fireEvent.click(send);
     await waitFor(() => expect(posted).toHaveLength(1));
     expect(posted[0]).toEqual({
@@ -328,6 +348,7 @@ test("an empty answer area refuses Answer and Ask back, sends nothing, and keeps
     expect(shownReason(askBack)).toBe(EMPTY_DRAFT_REFUSAL);
     for (const button of [answer, askBack]) {
       button.focus();
+      // A press on a control the refusal already holds, with the focus the loop just set.
       fireEvent.click(button);
       expect(document.activeElement).toBe(button);
     }
@@ -362,6 +383,8 @@ test("Answer with it anyway refuses a draft another card put a mention in", asyn
     const fields = (await view.findAllByLabelText("Your answer")) as HTMLTextAreaElement[];
     const [asking, other] = fields;
     if (asking === undefined || other === undefined) throw new Error("expected two answer boxes");
+    // The box's own text and a press on a refused control, in the one task the row measures:
+    // user-event has no form for either.
     fireEvent.change(asking, { target: { value: "How does this fit the release plan?" } });
     fireEvent.click(view.getAllByRole("button", { name: "Answer" })[0] as HTMLElement);
     const choice = await view.findByRole("group", { name: "Question-shaped answer" });
@@ -372,6 +395,8 @@ test("Answer with it anyway refuses a draft another card put a mention in", asyn
     expect(anyway.getAttribute("aria-disabled")).toBe("true");
     expect(anyway.getAttribute("title")).toBe(ANSWER_MENTION_REFUSAL);
     expect(shownReason(anyway)).toBe(ANSWER_MENTION_REFUSAL);
+    // A press on a control the refusal already holds: user-event refuses to click what it reads
+    // as unpressable, and the press is the whole of what this row proves.
     fireEvent.click(anyway);
     expect(answered).toEqual([]);
   } finally {

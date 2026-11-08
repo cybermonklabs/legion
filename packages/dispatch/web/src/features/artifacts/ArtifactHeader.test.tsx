@@ -29,6 +29,8 @@ const artifact: Artifact = {
   name: "spec.md",
   primary: true,
   project: "CORE",
+  ref_key: "CORE-1/spec",
+  session_id: null,
   slug: "spec",
   versions: [],
 };

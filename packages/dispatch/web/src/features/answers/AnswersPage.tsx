@@ -139,7 +139,9 @@ export function AnswersPage(): ReactNode {
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
   const answers = useInfiniteQuery({
     getNextPageParam: (last: MyAnswersResponse) =>
-      last.offset + last.rows.length < last.total ? last.offset + last.rows.length : undefined,
+      last.offset + (last.rows ?? []).length < last.total
+        ? last.offset + (last.rows ?? []).length
+        : undefined,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
     queryKey: ["me", "answers"],
@@ -149,7 +151,7 @@ export function AnswersPage(): ReactNode {
   if (answers.isError) {
     return <p className={dangerText}>Could not load your answers: {answers.error.message}</p>;
   }
-  const rows = answers.data.pages.flatMap((page) => page.rows);
+  const rows = answers.data.pages.flatMap((page) => page.rows ?? []);
   // The card belongs to the ask, under the first answer row that names it: after a change that is
   // the new answer's row, so the card the person is looking at stays mounted where they are. A
   // reply the person wrote on the same ask can sort above it, and is never the card's row.

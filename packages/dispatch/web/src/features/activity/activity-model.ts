@@ -1,4 +1,4 @@
-import type { Actor, Event } from "../../api/types";
+import type { Actor, DispatchEvent } from "../../api/types";
 import { type AgentPart, askResolutionParts } from "../refs/AgentName";
 
 export function dateKey(iso: string): string {
@@ -36,12 +36,12 @@ function sameActor(left: Actor, right: Actor): boolean {
  *  `ActivityLine` draws it through `AgentName`, the artifact a line is about is the part
  *  `ActivityLine` links, and a question it quotes is a part of its own, drawn as the Markdown
  *  its author wrote rather than as that source. */
-export function activityDescription(event: Event, previousStatus?: string): AgentPart[] {
+export function activityDescription(event: DispatchEvent, previousStatus?: string): AgentPart[] {
   const description = describe(event, previousStatus);
   return typeof description === "string" ? [description] : description;
 }
 
-function describe(event: Event, previousStatus: string | undefined): string | AgentPart[] {
+function describe(event: DispatchEvent, previousStatus: string | undefined): string | AgentPart[] {
   switch (event.type) {
     case "project.created":
       return `created project ${event.payload.key}`;
@@ -210,14 +210,14 @@ export type ActivityItem =
       at: string;
       author: Actor;
       description: AgentPart[];
-      event: Event;
+      event: DispatchEvent;
       seq: number;
     }
   | { kind: "day-divider"; id: string; date: string; label: string }
   | { kind: "unread-divider"; id: "unread-divider" };
 
 export interface ActivityInput {
-  events: Event[];
+  events: DispatchEvent[];
   /** `user_issue_state.last_read_seq`; the Conversation is its only writer. */
   lastReadSeq: number;
   /** Local YYYY-MM-DD. */

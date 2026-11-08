@@ -1,13 +1,15 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { type ReactNode, useEffect, useState } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { ApiError, api } from "../../api/client";
-import type { Ask, Comment, IssueAskRow, IssueDetails } from "../../api/types";
+import type { Ask, AskRead, Comment, IssueAskRow, IssueDetails } from "../../api/types";
 import type { RetypeOutcome } from "../doc/editor";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
 import { Margin } from "./Margin";
@@ -58,6 +60,29 @@ function askRow(ask: Ask): IssueAskRow {
     ...ask,
     last_reply: null,
   };
+}
+
+/** An ask's thread with nothing on it: no reply, no rewording, no answer, no follower. */
+const emptyAskThread = {
+  answers: [],
+  claimant: null,
+  edits: [],
+  followers: [],
+  replies: [],
+  route: null,
+  route_holder: null,
+  route_status: null,
+  route_status_reason: null,
+} satisfies Omit<AskRead, "ask">;
+
+/** The thread each margin ask card reads for its own ask (`GET /api/v1/asks/{id}`): the ask as
+ *  the test has it, and nothing else on it. */
+function answerAskThreads(...asks: Ask[]) {
+  return spyOn(api, "getAsk").mockImplementation(async (id) => {
+    const ask = asks.find((candidate) => candidate.id === id);
+    if (ask === undefined) throw new Error(`no fixture ask ${id}`);
+    return { ...emptyAskThread, ask };
+  });
 }
 
 const markComposerAnchor = { artifact: "artifact-1", mark_id: "m-1", quote: "selected" };
@@ -163,6 +188,7 @@ afterEach(() => {
 });
 
 test("clicking a document mark opens its thread in the margin and stays on the document", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -191,14 +217,16 @@ test("clicking a document mark opens its thread in the margin and stays on the d
 
   try {
     await screen.findByTestId(`margin-comment-${comment.id}`);
-    fireEvent.click(screen.getByRole("tab", { name: "Pinned" }));
-    fireEvent.click(screen.getByRole("button", { name: "Focus mark" }));
+    await user.click(screen.getByRole("tab", { name: "Pinned" }));
+    await user.click(screen.getByRole("button", { name: "Focus mark" }));
     await waitFor(() => {
-      expect(screen.getByRole("tab", { name: "Comments" }).getAttribute("aria-selected")).toBe(
+      expect(screen.getByRole("tab", { name: "Comments" })).toHaveAttribute(
+        "aria-selected",
         "true"
       );
       // Re-query: expanding the thread remounts the card.
-      expect(screen.getByTestId(`margin-comment-${comment.id}`).getAttribute("aria-current")).toBe(
+      expect(screen.getByTestId(`margin-comment-${comment.id}`)).toHaveAttribute(
+        "aria-current",
         "true"
       );
     });
@@ -211,6 +239,7 @@ test("clicking a document mark opens its thread in the margin and stays on the d
 });
 
 test("focusItemForMark opens the matching thread in the compact sheet", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -237,15 +266,15 @@ test("focusItemForMark opens the matching thread in the compact sheet", async ()
   try {
     // The shut sheet draws no card (`MarginSheet`'s `covered`), so the focus is what puts this
     // comment's card on the screen - which is what the row is about.
-    expect(screen.queryByTestId(`margin-comment-${comment.id}`)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Focus mark" }));
+    expect(screen.queryByTestId(`margin-comment-${comment.id}`)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Focus mark" }));
     await waitFor(() => {
       const phoneThread = screen.queryByRole("dialog", { name: "Thread" });
       const focusedCard = (phoneThread === null ? screen : within(phoneThread)).getByTestId(
         `margin-comment-${comment.id}`
       );
-      expect(focusedCard.getAttribute("aria-current")).toBe("true");
-      expect(screen.getByTestId("margin-sheet").getAttribute("data-expanded")).toBe("true");
+      expect(focusedCard).toHaveAttribute("aria-current", "true");
+      expect(screen.getByTestId("margin-sheet")).toHaveAttribute("data-expanded", "true");
     });
   } finally {
     view.unmount();
@@ -255,6 +284,7 @@ test("focusItemForMark opens the matching thread in the compact sheet", async ()
 
 // A closed issue refuses an ask, so an unsent ask compose ends when its issue closes.
 test("Margin hides an open ask composer when its issue closes", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -280,7 +310,7 @@ test("Margin hides an open ask composer when its issue closes", async () => {
 
   try {
     await screen.findByText("No comments, asks, or suggestions on this document.");
-    fireEvent.click(screen.getByRole("button", { name: "Open ask composer" }));
+    await user.click(screen.getByRole("button", { name: "Open ask composer" }));
     await screen.findByRole("form", { name: "Comment composer" });
 
     act(() => {
@@ -291,7 +321,7 @@ test("Margin hides an open ask composer when its issue closes", async () => {
     });
 
     await waitFor(() =>
-      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull()
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
     );
   } finally {
     view.unmount();
@@ -301,6 +331,7 @@ test("Margin hides an open ask composer when its issue closes", async () => {
 // A closed issue takes a comment, so an unsent comment compose stays open when its issue closes,
 // offers no Suggest or Ask, and sends.
 test("Margin keeps an open comment composer when its issue closes, and it sends", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -313,6 +344,14 @@ test("Margin keeps an open comment composer when its issue closes, and it sends"
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
+  // The send refetches the issue, its inbox and its comments; each answers the seeded set, and
+  // the refetch comes after the close, so the issue it answers is the closed one.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue({
+    ...issue,
+    closed_at: "2026-09-09T01:00:00Z",
+  });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -325,7 +364,7 @@ test("Margin keeps an open comment composer when its issue closes, and it sends"
   );
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const open = await screen.findByRole("form", { name: "Comment composer" });
     expect(within(open).getByRole("button", { name: "Suggest" })).toBeTruthy();
     act(() => {
@@ -337,8 +376,9 @@ test("Margin keeps an open comment composer when its issue closes, and it sends"
     await waitFor(() => expect(screen.queryByRole("button", { name: "Suggest" })).toBeNull());
     const composer = screen.getByRole("form", { name: "Comment composer" });
     expect(within(composer).queryByRole("button", { name: "Ask" })).toBeNull();
-    fireEvent.change(within(composer).getByLabelText("Comment"), { target: { value: "closed" } });
-    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByLabelText("Comment"));
+    await user.paste("closed");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(screen.getByLabelText("First composer outcome").textContent).toBe("saved");
@@ -347,10 +387,14 @@ test("Margin keeps an open comment composer when its issue closes, and it sends"
   } finally {
     view.unmount();
     createComment.mockRestore();
+    getIssue.mockRestore();
+    getInbox.mockRestore();
+    listComments.mockRestore();
   }
 });
 
 test("Margin hides an open composer when navigating to a different artifact", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -378,12 +422,12 @@ test("Margin hides an open composer when navigating to a different artifact", as
 
   try {
     await screen.findByText("No comments, asks, or suggestions on this document.");
-    fireEvent.click(screen.getByRole("button", { name: "Open ask composer" }));
+    await user.click(screen.getByRole("button", { name: "Open ask composer" }));
     await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.click(screen.getByRole("button", { name: "Open second issue" }));
+    await user.click(screen.getByRole("button", { name: "Open second issue" }));
 
     await waitFor(() =>
-      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull()
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
     );
   } finally {
     view.unmount();
@@ -396,6 +440,7 @@ test("Margin hides an open composer when navigating to a different artifact", as
 });
 
 test("Margin surfaces and retries a failed fetch for the issue's asks", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -406,6 +451,7 @@ test("Margin surfaces and retries a failed fetch for the issue's asks", async ()
   queryClient.setQueryData(["inbox"], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], [comment]);
+  const getAsk = answerAskThreads(anchoredAsk);
   const listIssueAsks = spyOn(api, "listIssueAsks")
     .mockRejectedValueOnce(new Error("offline"))
     .mockResolvedValue([askRow(anchoredAsk)]);
@@ -421,17 +467,19 @@ test("Margin surfaces and retries a failed fetch for the issue's asks", async ()
 
   try {
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Could not load this document's asks.");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(alert).toHaveTextContent("Could not load this document's asks.");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await screen.findByTestId("ask-ask-1");
     expect(listIssueAsks).toHaveBeenCalledTimes(2);
   } finally {
     view.unmount();
     listIssueAsks.mockRestore();
+    getAsk.mockRestore();
   }
 });
 
 test("Margin puts an unanchored open ask under Needs you and sends its answer", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -453,6 +501,12 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
+  // The answer refetches the issue, its asks and the inbox. The inbox lists open asks, and this
+  // one has just been answered, so it is no longer in it.
+  const getAsk = answerAskThreads(unanchoredAsk);
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
   const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -469,14 +523,14 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
     const needsYou = await marginAskCard(unanchoredAsk.id, "needs-you");
     expect(await within(needsYou).findByText(unanchoredAsk.question)).toBeTruthy();
     expect(within(needsYou).getAllByRole("time")).toHaveLength(1);
-    expect(within(needsYou).queryByLabelText("Your answer")).toBeNull();
+    expect(within(needsYou).queryByLabelText("Your answer")).not.toBeInTheDocument();
     expect(
       within(needsYou).getByText("Add a note or answer in your own words", { exact: true })
     ).toBeTruthy();
     const shipOption = await within(needsYou).findByRole("radio", { name: "Ship" });
-    fireEvent.click(shipOption);
+    await user.click(shipOption);
     expect((shipOption as HTMLInputElement).checked).toBe(true);
-    fireEvent.click(within(needsYou).getByRole("button", { name: "Answer" }));
+    await user.click(within(needsYou).getByRole("button", { name: "Answer" }));
     await waitFor(() =>
       expect(answerAsk).toHaveBeenCalledWith(
         unanchoredAsk.id,
@@ -490,6 +544,10 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
   } finally {
     view.unmount();
     answerAsk.mockRestore();
+    getAsk.mockRestore();
+    getIssue.mockRestore();
+    getInbox.mockRestore();
+    listIssueAsks.mockRestore();
   }
 });
 
@@ -497,6 +555,7 @@ test("Margin puts an unanchored open ask under Needs you and sends its answer", 
 // card is the one the reader was in, with whatever they had started in it (`threads.e2e.ts` types
 // a reply there), rather than a fresh mount of it.
 test("Margin moves an answered anchored ask out of Needs you in place, without the live event feed", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -520,6 +579,10 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   queryClient.setQueryData(["comments", issue.key], []);
   const answerAsk = spyOn(api, "answerAsk").mockResolvedValue(answeredAsk);
   const refetched = Promise.withResolvers<IssueAskRow[]>();
+  const getAsk = answerAskThreads(anchoredAsk);
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  // The inbox lists open asks, and this one has just been answered.
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockImplementation(() => refetched.promise);
   // The count this row reads is the one beside `Review`, which only the compact sheet draws.
   // A shut sheet draws no card (`MarginSheet`'s `covered`), so the reader opens it first.
@@ -535,10 +598,10 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
   );
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Open review panel (1 open ask)" }));
+    await user.click(screen.getByRole("button", { name: "Open review panel (1 open ask)" }));
     const needsYou = await marginAskCard(anchoredAsk.id, "needs-you");
-    fireEvent.click(await within(needsYou).findByRole("radio", { name: "Ship" }));
-    fireEvent.click(within(needsYou).getByRole("button", { name: "Answer" }));
+    await user.click(await within(needsYou).findByRole("radio", { name: "Ship" }));
+    await user.click(within(needsYou).getByRole("button", { name: "Answer" }));
     await waitFor(() =>
       expect(answerAsk).toHaveBeenCalledWith(
         anchoredAsk.id,
@@ -553,7 +616,9 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
     const answered = await within(needsYou).findByTestId(`ask-${anchoredAsk.id}`);
 
     await act(async () => refetched.resolve([askRow(answeredAsk)]));
-    await waitFor(() => expect(screen.queryByRole("heading", { name: "Needs you" })).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Needs you" })).not.toBeInTheDocument()
+    );
     expect(screen.getByRole("button", { name: "Close review panel (0 open asks)" })).toBeTruthy();
     const decided = await marginAskCard(anchoredAsk.id, "decided");
     expect(decided).toBe(needsYou);
@@ -563,10 +628,14 @@ test("Margin moves an answered anchored ask out of Needs you in place, without t
     answerAsk.mockRestore();
     listIssueAsks.mockRestore();
     restoreMatchMedia();
+    getAsk.mockRestore();
+    getIssue.mockRestore();
+    getInbox.mockRestore();
   }
 });
 
 test("a reply typed into an answered ask's thread survives leaving the Comments tab and back", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -596,6 +665,9 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
     route_status_reason: null,
     replies: [],
   });
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  // The inbox lists open asks, and this one has just been answered.
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([askRow(answeredAsk)]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
@@ -609,23 +681,21 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
 
   try {
     await screen.findByRole("heading", { name: "Needs you" });
-    fireEvent.click(screen.getByRole("radio", { name: "Ship" }));
-    fireEvent.click(screen.getByRole("button", { name: "Answer" }));
+    await user.click(screen.getByRole("radio", { name: "Ship" }));
+    await user.click(screen.getByRole("button", { name: "Answer" }));
     const field = await screen.findByRole("textbox", { name: "Reply" });
-    field.focus();
-    fireEvent.change(field, { target: { value: "Draft survives" } });
+    await user.click(field);
+    await user.paste("Draft survives");
 
     // The Comments tab unmounts every ask card while another tab shows; a draft typed into one
     // belongs to the ask, not to that mounted field, and picks back up when the tab returns.
-    fireEvent.click(screen.getByRole("tab", { name: "Pinned" }));
+    await user.click(screen.getByRole("tab", { name: "Pinned" }));
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Pinned" }).getAttribute("aria-selected")).toBe("true")
+      expect(screen.getByRole("tab", { name: "Pinned" })).toHaveAttribute("aria-selected", "true")
     );
-    fireEvent.click(screen.getByRole("tab", { name: "Comments" }));
+    await user.click(screen.getByRole("tab", { name: "Comments" }));
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Comments" }).getAttribute("aria-selected")).toBe(
-        "true"
-      )
+      expect(screen.getByRole("tab", { name: "Comments" })).toHaveAttribute("aria-selected", "true")
     );
     const moved = screen.getByRole("textbox", { name: "Reply" }) as HTMLTextAreaElement;
     // A fresh field - the tab switch really remounted the card - still carries the draft.
@@ -636,6 +706,8 @@ test("a reply typed into an answered ask's thread survives leaving the Comments 
     answerAsk.mockRestore();
     getAsk.mockRestore();
     listIssueAsks.mockRestore();
+    getIssue.mockRestore();
+    getInbox.mockRestore();
   }
 });
 
@@ -663,7 +735,9 @@ test("Margin leaves an unanchored root out of document review", async () => {
 
   try {
     await waitFor(() =>
-      expect(screen.queryByTestId(`margin-comment-${unanchoredRootComment.id}`)).toBeNull()
+      expect(
+        screen.queryByTestId(`margin-comment-${unanchoredRootComment.id}`)
+      ).not.toBeInTheDocument()
     );
   } finally {
     view.unmount();
@@ -692,7 +766,9 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
       text: "Because it is precise.",
       user: "alice",
     },
+    artifact_id: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-10T00:00:00Z",
     edited_at: null,
     id: "ask-answered",
@@ -717,7 +793,9 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
       version: 1,
     },
     answer: null,
+    artifact_id: null,
     author: { id: "session-1", kind: "session" },
+    block_id: null,
     created_at: "2026-09-10T00:02:00Z",
     edited_at: null,
     id: "ask-open",
@@ -736,6 +814,7 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
   queryClient.setQueryData(["inbox"], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
+  const getAsk = answerAskThreads(answeredAsk, openAsk);
   const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([
     askRow(answeredAsk),
     askRow(openAsk),
@@ -753,8 +832,8 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
   try {
     const card = await screen.findByTestId(`ask-${answeredAsk.id}`);
     expect(listIssueAsks).toHaveBeenCalledWith(issue.key, "all");
-    expect(card.textContent).toContain("Answered by alice");
-    await waitFor(() => expect(card.textContent).toContain("Because it is precise."));
+    expect(card).toHaveTextContent("Answered by alice");
+    await waitFor(() => expect(card).toHaveTextContent("Because it is precise."));
     expect(
       Array.from(
         screen
@@ -765,6 +844,7 @@ test("a viewer who mounts after the answer sees the answered anchored ask", asyn
   } finally {
     view.unmount();
     listIssueAsks.mockRestore();
+    getAsk.mockRestore();
   }
 });
 
@@ -823,7 +903,7 @@ test("a reply to an ask renders exactly once in the margin, not also as a standa
     await screen.findByTestId("ask-ask-1");
     await screen.findByTestId(`thread-${anchoredAsk.id}`);
     await waitFor(() => expect(screen.getAllByText("Any blockers first?")).toHaveLength(1));
-    expect(screen.queryByTestId(`margin-comment-${askReply.id}`)).toBeNull();
+    expect(screen.queryByTestId(`margin-comment-${askReply.id}`)).not.toBeInTheDocument();
   } finally {
     view.unmount();
     getAsk.mockRestore();
@@ -831,6 +911,7 @@ test("a reply to an ask renders exactly once in the margin, not also as a standa
 });
 
 test("composeForMark opens the composer with the mark anchor and resolves when it saves", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -843,6 +924,10 @@ test("composeForMark opens the composer with the mark anchor and resolves when i
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
   const createComment = spyOn(api, "createComment").mockResolvedValue(undefined as never);
+  // The send refetches the issue, its inbox and its comments; each answers the seeded set.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -855,23 +940,28 @@ test("composeForMark opens the composer with the mark anchor and resolves when i
   );
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const composer = await screen.findByRole("form", { name: "Comment composer" });
     expect(within(composer).getByText("selected")).toBeTruthy();
-    fireEvent.change(within(composer).getByLabelText("Comment"), { target: { value: "why?" } });
-    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByLabelText("Comment"));
+    await user.paste("why?");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
 
     await waitFor(() => {
       expect(screen.getByLabelText("First composer outcome").textContent).toBe("saved");
-      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
     });
   } finally {
     view.unmount();
     createComment.mockRestore();
+    getIssue.mockRestore();
+    getInbox.mockRestore();
+    listComments.mockRestore();
   }
 });
 
 test("composeForMark rejects when the composer is dismissed unsaved", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: {
       mutations: { retry: false },
@@ -895,9 +985,9 @@ test("composeForMark rejects when the composer is dismissed unsaved", async () =
   );
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.click(screen.getByRole("button", { name: "Compose second" }));
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
     await waitFor(() =>
       expect(screen.getByLabelText("First composer outcome").textContent).toBe(
         "replaced by a newer composer"
@@ -905,10 +995,11 @@ test("composeForMark rejects when the composer is dismissed unsaved", async () =
     );
     const composer = screen.getByRole("form", { name: "Comment composer" });
     expect(within(composer).getByText("second")).toBeTruthy();
-    fireEvent.keyDown(within(composer).getByLabelText("Comment"), { key: "Escape" });
+    await user.click(within(composer).getByLabelText("Comment"));
+    await user.keyboard("{Escape}");
     await waitFor(() => {
       expect(screen.getByLabelText("Second composer outcome").textContent).toBe("composer closed");
-      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
     });
   } finally {
     view.unmount();
@@ -975,7 +1066,14 @@ function renderMarginWithBridge(bridge: DocumentBridge, reopened?: DocumentBridg
   queryClient.setQueryData(["asks", issue.key], []);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
-  return render(
+  // A send from this margin refetches the issue, its inbox and its comments; each answers the
+  // seeded set, so the margin stays as the test set it up.
+  const reads = [
+    spyOn(api, "getIssue").mockResolvedValue(issue),
+    spyOn(api, "getInbox").mockResolvedValue([]),
+    spyOn(api, "listComments").mockResolvedValue([]),
+  ];
+  const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
         <MarginProvider>
@@ -987,9 +1085,17 @@ function renderMarginWithBridge(bridge: DocumentBridge, reopened?: DocumentBridg
       </QueryClientProvider>
     </MemoryRouter>
   );
+  return {
+    ...view,
+    unmount: () => {
+      view.unmount();
+      for (const read of reads) read.mockRestore();
+    },
+  };
 }
 
 test("the composer's kind switch retypes its mark through the document and sends under the new mark", async () => {
+  const user = userEvent.setup();
   const fake = fakeBridge((markId, kind) =>
     kind === "suggestion"
       ? { refused: "unmarkable" }
@@ -999,33 +1105,38 @@ test("the composer's kind switch retypes its mark through the document and sends
   const view = renderMarginWithBridge(fake.bridge);
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const composer = await screen.findByRole("form", { name: "Comment composer" });
     const kinds = within(composer).getByRole("group", { name: "Kind" });
 
-    fireEvent.click(within(kinds).getByRole("button", { name: "Suggest" }));
+    await user.click(within(kinds).getByRole("button", { name: "Suggest" }));
     expect(fake.retyped).toEqual([["m-1", "suggestion"]]);
     expect(within(composer).getByRole("status").textContent).toBe(
       "A suggestion needs whole words inside one table cell. Comment or ask about this selection instead, or close this composer and select again."
     );
-    expect(
-      within(kinds).getByRole("button", { name: "Comment" }).getAttribute("aria-pressed")
-    ).toBe("true");
+    expect(within(kinds).getByRole("button", { name: "Comment" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
 
-    fireEvent.click(within(kinds).getByRole("button", { name: "Ask" }));
+    await user.click(within(kinds).getByRole("button", { name: "Ask" }));
     expect(fake.retyped).toEqual([
       ["m-1", "suggestion"],
       ["m-1", "ask"],
     ]);
     await waitFor(() =>
-      expect(within(kinds).getByRole("button", { name: "Ask" }).getAttribute("aria-pressed")).toBe(
+      expect(within(kinds).getByRole("button", { name: "Ask" })).toHaveAttribute(
+        "aria-pressed",
         "true"
       )
     );
-    expect(within(composer).queryByRole("status")).toBeNull();
+    expect(within(composer).queryByRole("status")).not.toBeInTheDocument();
 
-    fireEvent.change(within(composer).getByLabelText("Question"), { target: { value: "Why?" } });
-    fireEvent.click(within(composer).getAllByRole("button", { name: "Ask" }).at(-1) as HTMLElement);
+    await user.click(within(composer).getByLabelText("Question"));
+    await user.paste("Why?");
+    await user.click(
+      within(composer).getAllByRole("button", { name: "Ask" }).at(-1) as HTMLElement
+    );
     await waitFor(() => expect(createAsk).toHaveBeenCalledTimes(1));
     expect(createAsk.mock.calls[0]?.[1]).toMatchObject({
       anchor: { artifact: "artifact-1", mark_id: "m-1-ask" },
@@ -1039,6 +1150,7 @@ test("the composer's kind switch retypes its mark through the document and sends
 });
 
 test("the margin removes the composer's mark when the composer is cancelled or replaced, in the document open then", async () => {
+  const user = userEvent.setup();
   const fake = fakeBridge((markId, kind) => ({
     markId: `${markId}-${kind}`,
     placement: null,
@@ -1052,9 +1164,9 @@ test("the margin removes the composer's mark when the composer is cancelled or r
   const view = renderMarginWithBridge(fake.bridge, reopened.bridge);
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const composer = await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.click(
+    await user.click(
       within(within(composer).getByRole("group", { name: "Kind" })).getByRole("button", {
         name: "Ask",
       })
@@ -1062,19 +1174,19 @@ test("the margin removes the composer's mark when the composer is cancelled or r
     await screen.findByLabelText("Question");
 
     // A newer composer takes the margin: the retyped mark, not the original, is removed.
-    fireEvent.click(screen.getByRole("button", { name: "Compose second" }));
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
     await waitFor(() => expect(fake.removed).toEqual(["m-1-ask"]));
 
     // A fresh editor registers under the open composer.
-    fireEvent.click(screen.getByRole("button", { name: "Reopen the document" }));
+    await user.click(screen.getByRole("button", { name: "Reopen the document" }));
 
     // Cancelling removes the mark the composer holds, in the document now open.
-    fireEvent.keyDown(
-      within(screen.getByRole("form", { name: "Comment composer" })).getByLabelText("Comment"),
-      { key: "Escape" }
+    await user.click(
+      within(screen.getByRole("form", { name: "Comment composer" })).getByLabelText("Comment")
     );
+    await user.keyboard("{Escape}");
     await waitFor(() => expect(reopened.removed).toEqual(["m-2"]));
-    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+    expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument();
     // The replaced document is told nothing more once the document reopened onto `reopened`.
     expect(fake.removed).toEqual(["m-1-ask"]);
   } finally {
@@ -1086,6 +1198,7 @@ test("the margin removes the composer's mark when the composer is cancelled or r
 // way to the Retry's send, which is no Discard, so the mark stays in the document for it. Only
 // the reader's own Discard of a refusal takes the mark out.
 test("a refused compose's Retry keeps its mark and sends to it", async () => {
+  const user = userEvent.setup();
   const fake = fakeBridge((markId, kind) => ({
     markId: `${markId}-${kind}`,
     placement: null,
@@ -1097,12 +1210,13 @@ test("a refused compose's Retry keeps its mark and sends to it", async () => {
   const view = renderMarginWithBridge(fake.bridge);
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const composer = await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.change(within(composer).getByLabelText("Comment"), { target: { value: "Kept" } });
-    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByLabelText("Comment"));
+    await user.paste("Kept");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
     const retry = await within(composer).findByRole("button", { name: "Retry" });
-    fireEvent.click(retry);
+    await user.click(retry);
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
     expect(createComment.mock.calls[1]?.[1]).toMatchObject({
       anchor: { artifact: "artifact-1", mark_id: "m-1" },
@@ -1118,6 +1232,7 @@ test("a refused compose's Retry keeps its mark and sends to it", async () => {
 // the reader sees why: the open compose comes back on screen - here from under the Pinned tab -
 // saying its send is still out, until that send lands.
 test("a newer compose while the open compose's send is out brings that compose back, saying why", async () => {
+  const user = userEvent.setup();
   const fake = fakeBridge((markId, kind) => ({
     markId: `${markId}-${kind}`,
     placement: null,
@@ -1128,16 +1243,17 @@ test("a newer compose while the open compose's send is out brings that compose b
   const view = renderMarginWithBridge(fake.bridge);
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const composer = await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.change(within(composer).getByLabelText("Comment"), { target: { value: "why?" } });
-    fireEvent.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByLabelText("Comment"));
+    await user.paste("why?");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
     const pinned = screen.getByRole("tab", { name: "Pinned" });
-    fireEvent.click(pinned);
-    await waitFor(() => expect(pinned.getAttribute("aria-selected")).toBe("true"));
+    await user.click(pinned);
+    await waitFor(() => expect(pinned).toHaveAttribute("aria-selected", "true"));
 
-    fireEvent.click(screen.getByRole("button", { name: "Compose second" }));
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
     await waitFor(() =>
       expect(screen.getByLabelText("Second composer outcome").textContent).toBe(
         "the open composer's send is out"
@@ -1145,9 +1261,7 @@ test("a newer compose while the open compose's send is out brings that compose b
     );
     expect(fake.removed).toEqual(["m-2"]);
     await waitFor(() =>
-      expect(screen.getByRole("tab", { name: "Comments" }).getAttribute("aria-selected")).toBe(
-        "true"
-      )
+      expect(screen.getByRole("tab", { name: "Comments" })).toHaveAttribute("aria-selected", "true")
     );
     const shown = screen.getByRole("form", { name: "Comment composer" });
     expect(within(shown).getByText("selected")).toBeTruthy();
@@ -1199,6 +1313,7 @@ function SecondDocumentCompose(): ReactNode {
 // send out hands the mark to the margin, which keeps it for the send: the editor's promise
 // resolves rather than rejecting, which would take the mark back.
 test("a compose after leaving a document mid-send opens, and that send's landing leaves it open", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
@@ -1228,22 +1343,22 @@ test("a compose after leaving a document mid-send opens, and that send's landing
   );
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const first = await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.change(within(first).getByLabelText("Comment"), { target: { value: "why?" } });
-    fireEvent.click(within(first).getByRole("button", { name: "Send" }));
+    await user.click(within(first).getByLabelText("Comment"));
+    await user.paste("why?");
+    await user.click(within(first).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
-    fireEvent.click(screen.getByRole("button", { name: "Open second issue" }));
+    await user.click(screen.getByRole("button", { name: "Open second issue" }));
     await waitFor(() =>
       expect(screen.getByLabelText("First composer outcome").textContent).toBe("saved")
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Compose on the second document" }));
+    await user.click(screen.getByRole("button", { name: "Compose on the second document" }));
     const second = await screen.findByRole("form", { name: "Comment composer" });
     expect(within(second).getByText("elsewhere")).toBeTruthy();
-    fireEvent.change(within(second).getByLabelText("Comment"), {
-      target: { value: "Second draft" },
-    });
+    await user.click(within(second).getByLabelText("Comment"));
+    await user.paste("Second draft");
 
     await act(async () => {
       sent.resolve({ ...comment, body: "why?" });
@@ -1281,6 +1396,7 @@ function NavigateToFirstIssue(): ReactNode {
 // hidden, and so does the mark the send names. A refusal while the reader is away hands the draft
 // back to it, and coming back finds both, the open compose again.
 test("a compose left mid-send keeps its draft, its refusal and its mark for the reader's return", async () => {
+  const user = userEvent.setup();
   const fake = fakeBridge((markId, kind) => ({
     markId: `${markId}-${kind}`,
     placement: null,
@@ -1316,15 +1432,16 @@ test("a compose left mid-send keeps its draft, its refusal and its mark for the 
   );
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const first = await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.change(within(first).getByLabelText("Comment"), { target: { value: "why?" } });
-    fireEvent.click(within(first).getByRole("button", { name: "Send" }));
+    await user.click(within(first).getByLabelText("Comment"));
+    await user.paste("why?");
+    await user.click(within(first).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Open second issue" }));
+    await user.click(screen.getByRole("button", { name: "Open second issue" }));
     await waitFor(() =>
-      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull()
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
     );
     await act(async () => {
       sent.reject(new ApiError(409, { code: "UNAVAILABLE", error: "the server is down" }));
@@ -1332,7 +1449,7 @@ test("a compose left mid-send keeps its draft, its refusal and its mark for the 
     });
     await waitFor(() => expect(queryClient.isMutating()).toBe(0));
 
-    fireEvent.click(screen.getByRole("button", { name: "Back to the first issue" }));
+    await user.click(screen.getByRole("button", { name: "Back to the first issue" }));
     const back = await screen.findByRole("form", { name: "Comment composer" });
     expect(within(back).getByText("selected")).toBeTruthy();
     expect(within(back).getByLabelText<HTMLTextAreaElement>("Comment").value).toBe("why?");
@@ -1357,6 +1474,7 @@ test("a compose left mid-send keeps its draft, its refusal and its mark for the 
 // that document's own send - never another document's, and never none - so its send's outcome
 // lands on the compose and the mark it was sent from.
 test("a newer compose on a document whose send is out waits on it, after visits to another document with a send out", async () => {
+  const user = userEvent.setup();
   const fake = fakeBridge((markId, kind) => ({
     markId: `${markId}-${kind}`,
     placement: null,
@@ -1398,7 +1516,7 @@ test("a newer compose on a document whose send is out waits on it, after visits 
     </MemoryRouter>
   );
   const goTo = async (document: "first" | "second", quote: string) => {
-    fireEvent.click(
+    await user.click(
       screen.getByRole("button", {
         name: document === "first" ? "Back to the first issue" : "Open second issue",
       })
@@ -1408,31 +1526,29 @@ test("a newer compose on a document whose send is out waits on it, after visits 
   };
 
   try {
-    fireEvent.click(screen.getByRole("button", { name: "Compose first" }));
+    await user.click(screen.getByRole("button", { name: "Compose first" }));
     const first = await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.change(within(first).getByLabelText("Comment"), {
-      target: { value: "On the first" },
-    });
-    fireEvent.click(within(first).getByRole("button", { name: "Send" }));
+    await user.click(within(first).getByLabelText("Comment"));
+    await user.paste("On the first");
+    await user.click(within(first).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(1));
 
-    fireEvent.click(screen.getByRole("button", { name: "Open second issue" }));
+    await user.click(screen.getByRole("button", { name: "Open second issue" }));
     await waitFor(() =>
-      expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull()
+      expect(screen.queryByRole("form", { name: "Comment composer" })).not.toBeInTheDocument()
     );
-    fireEvent.click(screen.getByRole("button", { name: "Compose on the second document" }));
+    await user.click(screen.getByRole("button", { name: "Compose on the second document" }));
     const second = await screen.findByRole("form", { name: "Comment composer" });
-    fireEvent.change(within(second).getByLabelText("Comment"), {
-      target: { value: "On the second" },
-    });
-    fireEvent.click(within(second).getByRole("button", { name: "Send" }));
+    await user.click(within(second).getByLabelText("Comment"));
+    await user.paste("On the second");
+    await user.click(within(second).getByRole("button", { name: "Send" }));
     await waitFor(() => expect(createComment).toHaveBeenCalledTimes(2));
 
     await goTo("first", "selected");
     await goTo("second", "elsewhere");
     await goTo("first", "selected");
 
-    fireEvent.click(screen.getByRole("button", { name: "Compose second" }));
+    await user.click(screen.getByRole("button", { name: "Compose second" }));
     await waitFor(() =>
       expect(screen.getByLabelText("Second composer outcome").textContent).toBe(
         "the open composer's send is out"
@@ -1486,6 +1602,7 @@ test("Margin links an orphaned ask to its original document version", async () =
   queryClient.setQueryData(["asks", issue.key], [orphanedAsk]);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], []);
+  const getAsk = answerAskThreads(orphanedAsk);
   const view = render(
     <MemoryRouter initialEntries={[buildIssuePath({ key: issue.key, kind: "issue" })]}>
       <QueryClientProvider client={queryClient}>
@@ -1498,9 +1615,10 @@ test("Margin links an orphaned ask to its original document version", async () =
 
   try {
     const link = await screen.findByRole("link", { name: "View original text" });
-    expect(link.getAttribute("href")).toBe("/issues/CORE-1/artifacts/spec?v=1&ask=ask-1");
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/artifacts/spec?v=1&ask=ask-1");
   } finally {
     view.unmount();
+    getAsk.mockRestore();
   }
 });
 
@@ -1510,6 +1628,11 @@ test("the desktop margin takes no width on a route that has no margin", async ()
   });
   queryClient.setQueryData(["inbox"], []);
   queryClient.setQueryData(["user-state"], {});
+  // This margin's issue is never seeded: it reads the issue, its asks and its comments, and
+  // each of them is empty here.
+  const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
+  const listIssueAsks = spyOn(api, "listIssueAsks").mockResolvedValue([]);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
   const originalMatchMedia = window.matchMedia;
   const originalInnerWidth = window.innerWidth;
   const innerWidthDescriptor = Object.getOwnPropertyDescriptor(window, "innerWidth");
@@ -1536,9 +1659,11 @@ test("the desktop margin takes no width on a route that has no margin", async ()
   );
 
   try {
-    expect(screen.queryByTestId("desktop-margin-shell")).toBeNull();
-    expect(screen.queryByRole("separator", { name: "Resize margin" })).toBeNull();
-    expect(screen.queryByText("Open an issue or document to review its margin.")).toBeNull();
+    expect(screen.queryByTestId("desktop-margin-shell")).not.toBeInTheDocument();
+    expect(screen.queryByRole("separator", { name: "Resize margin" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Open an issue or document to review its margin.")
+    ).not.toBeInTheDocument();
   } finally {
     inbox.unmount();
   }
@@ -1557,6 +1682,9 @@ test("the desktop margin takes no width on a route that has no margin", async ()
     expect(await screen.findByTestId("desktop-margin-shell")).toBeTruthy();
   } finally {
     onIssue.unmount();
+    getIssue.mockRestore();
+    listIssueAsks.mockRestore();
+    listComments.mockRestore();
     window.matchMedia = originalMatchMedia;
     if (innerWidthDescriptor === undefined) {
       Object.defineProperty(window, "innerWidth", {
@@ -1570,6 +1698,7 @@ test("the desktop margin takes no width on a route that has no margin", async ()
 });
 
 test("desktop margin resize handle supports keyboard adjustments and reset", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1613,14 +1742,17 @@ test("desktop margin resize handle supports keyboard adjustments and reset", asy
       "width: 384px"
     );
 
-    fireEvent.keyDown(handle, { key: "ArrowLeft" });
+    // The handle takes the key where it is: a click on it would start the drag its pointer
+    // capture holds, which is not what this row is about.
+    handle.focus();
+    await user.keyboard("{ArrowLeft}");
     await waitFor(() =>
       expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
         "width: 408px"
       )
     );
 
-    fireEvent.doubleClick(handle);
+    await user.dblClick(handle);
     await waitFor(() =>
       expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
         "width: 384px"
@@ -1641,6 +1773,7 @@ test("desktop margin resize handle supports keyboard adjustments and reset", asy
 });
 
 test("margin keeps an ask draft through parent, width, and viewport layout updates", async () => {
+  const user = userEvent.setup();
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1698,19 +1831,19 @@ test("margin keeps an ask draft through parent, width, and viewport layout updat
 
   try {
     await screen.findByText("No comments, asks, or suggestions on this document.");
-    fireEvent.click(screen.getByRole("button", { name: "Open ask composer" }));
+    await user.click(screen.getByRole("button", { name: "Open ask composer" }));
     const question = await screen.findByLabelText("Question");
-    fireEvent.change(question, { target: { value: "Keep this draft" } });
+    await user.click(question);
+    await user.paste("Keep this draft");
 
-    fireEvent.click(screen.getByRole("button", { name: "Rerender parent" }));
+    await user.click(screen.getByRole("button", { name: "Rerender parent" }));
     expect(screen.getByLabelText("Parent render").textContent).toBe("1");
     expect((screen.getByLabelText("Question") as HTMLTextAreaElement).value).toBe(
       "Keep this draft"
     );
 
-    fireEvent.keyDown(screen.getByRole("separator", { name: "Resize margin" }), {
-      key: "ArrowLeft",
-    });
+    screen.getByRole("separator", { name: "Resize margin" }).focus();
+    await user.keyboard("{ArrowLeft}");
     await waitFor(() =>
       expect(screen.getByTestId("desktop-margin-shell").getAttribute("style")).toContain(
         "width: 408px"
@@ -1726,7 +1859,9 @@ test("margin keeps an ask draft through parent, width, and viewport layout updat
         listener(new Event("change"));
       }
     });
-    await waitFor(() => expect(screen.queryByTestId("desktop-margin-shell")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByTestId("desktop-margin-shell")).not.toBeInTheDocument()
+    );
 
     act(() => {
       compact = false;
@@ -1793,6 +1928,17 @@ function renderDocumentMargin(comments: Comment[]) {
   queryClient.setQueryData(["artifact", documentArtifact.id, "asks"], []);
   queryClient.setQueryData(["artifact", documentArtifact.id, "comments"], comments);
   const listArtifactComments = spyOn(api, "listArtifactComments").mockResolvedValue(comments);
+  // Each card's edit reads that comment's blocks; none of these comments is indexed, so a save
+  // carries no block ids.
+  const commentBlocks = spyOn(api, "commentBlocks").mockImplementation(async (id) => ({
+    blocks: [],
+    indexed: false,
+    item: graphNode({ id, kind: "comment" }),
+  }));
+  // A save refetches the margin's own reads: the document's asks and the viewer's inbox, both
+  // empty here as the cache was seeded.
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([]);
+  const listArtifactAsks = spyOn(api, "listArtifactAsks").mockResolvedValue([]);
   const view = render(
     <MemoryRouter
       initialEntries={[
@@ -1810,40 +1956,42 @@ function renderDocumentMargin(comments: Comment[]) {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { listArtifactComments, view };
+  return { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view };
 }
 
-function expandThreadCard(card: HTMLElement): void {
+async function expandThreadCard(user: UserEvent, card: HTMLElement): Promise<void> {
   const collapsed = card.querySelector<HTMLButtonElement>('button[aria-expanded="false"]');
   if (collapsed === null) {
     throw new Error("Expected a collapsed thread card.");
   }
-  fireEvent.click(collapsed);
+  await user.click(collapsed);
 }
 
-async function saveMarginEdit(card: HTMLElement, body: string): Promise<void> {
-  expandThreadCard(card);
+async function saveMarginEdit(user: UserEvent, card: HTMLElement, body: string): Promise<void> {
+  await expandThreadCard(user, card);
   await waitFor(() =>
     expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(1)
   );
-  fireEvent.click(within(card).getByRole("button", { name: "Edit" }));
-  fireEvent.change(screen.getByLabelText("Edit comment"), { target: { value: body } });
-  await act(async () => {
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await Promise.resolve();
-  });
+  await user.click(within(card).getByRole("button", { name: "Edit" }));
+  const field = screen.getByLabelText("Edit comment");
+  await user.click(field);
+  await user.keyboard("{Control>}a{/Control}");
+  await user.paste(body);
+  await user.click(screen.getByRole("button", { name: "Save" }));
 }
 
 test("Margin keeps sibling edit controls hidden while an owner save is pending", async () => {
+  const user = userEvent.setup();
   const saving = documentComment("saving-comment", "Saving comment");
   const sibling = documentComment("sibling-comment", "Sibling comment");
   const save = Promise.withResolvers<Comment>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
-  const { listArtifactComments, view } = renderDocumentMargin([saving, sibling]);
+  const { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view } =
+    renderDocumentMargin([saving, sibling]);
 
   try {
     const savingCard = await screen.findByTestId(`margin-comment-${saving.id}`);
-    await saveMarginEdit(savingCard, "Updated saving comment");
+    await saveMarginEdit(user, savingCard, "Updated saving comment");
     await waitFor(() =>
       expect(editComment).toHaveBeenCalledWith(
         saving.id,
@@ -1853,7 +2001,7 @@ test("Margin keeps sibling edit controls hidden while an owner save is pending",
     );
 
     const siblingCard = screen.getByTestId(`margin-comment-${sibling.id}`);
-    expandThreadCard(siblingCard);
+    await expandThreadCard(user, siblingCard);
     await waitFor(() =>
       expect(within(siblingCard).queryAllByRole("button", { name: "Edit" })).toHaveLength(0)
     );
@@ -1873,30 +2021,33 @@ test("Margin keeps sibling edit controls hidden while an owner save is pending",
     view.unmount();
     editComment.mockRestore();
     listArtifactComments.mockRestore();
+    commentBlocks.mockRestore();
+    getInbox.mockRestore();
+    listArtifactAsks.mockRestore();
   }
 });
 
 test("Margin restores edit controls and the draft when an owner save rejects", async () => {
+  const user = userEvent.setup();
   const root = documentComment("root-comment", "Root comment");
   const reply = documentComment("reply-comment", "Reply comment", root.id);
   const save = Promise.withResolvers<Comment>();
   const editComment = spyOn(api, "editComment").mockImplementation(() => save.promise);
-  const { listArtifactComments, view } = renderDocumentMargin([root, reply]);
+  const { commentBlocks, getInbox, listArtifactAsks, listArtifactComments, view } =
+    renderDocumentMargin([root, reply]);
 
   try {
     const card = await screen.findByTestId(`margin-comment-${root.id}`);
-    expandThreadCard(card);
+    await expandThreadCard(user, card);
     await waitFor(() =>
       expect(within(card).getAllByRole("button", { name: "Edit" })).toHaveLength(2)
     );
-    fireEvent.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
-    fireEvent.change(screen.getByLabelText("Edit comment"), {
-      target: { value: "Draft survives" },
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Save" }));
-      await Promise.resolve();
-    });
+    await user.click(within(card).getAllByRole("button", { name: "Edit" })[0] as HTMLElement);
+    const field = screen.getByLabelText("Edit comment");
+    await user.click(field);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.paste("Draft survives");
+    await user.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(editComment).toHaveBeenCalledWith(root.id, { body: "Draft survives" }, keyedAttempt)
     );
@@ -1919,5 +2070,8 @@ test("Margin restores edit controls and the draft when an owner save rejects", a
     view.unmount();
     editComment.mockRestore();
     listArtifactComments.mockRestore();
+    commentBlocks.mockRestore();
+    getInbox.mockRestore();
+    listArtifactAsks.mockRestore();
   }
 });

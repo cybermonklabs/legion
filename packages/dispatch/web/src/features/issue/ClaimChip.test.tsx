@@ -1,13 +1,14 @@
 import { expect, spyOn, test } from "bun:test";
 import { ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
-import type { Agent, Issue, IssueClaim, IssueClaimLiveness, IssueDetails } from "../../api/types";
+import type { Agent, ClaimHolderLiveness, Issue, IssueClaim, IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
@@ -33,7 +34,10 @@ const base: Issue = {
   number: 1,
   parent: null,
   blocked_by: [],
+  plan_artifact_id: "",
+  decisions_artifact_id: "",
   primary_artifact_id: "artifact-1",
+  verification_artifact_id: "",
   priority: null,
   project: "CORE",
   rank: "U",
@@ -53,7 +57,10 @@ const idlePriorityWrite: IssuePriorityWrite = {
   submit: () => undefined,
 };
 
-function header(issue: Issue, liveness: Partial<IssueClaimLiveness> = {}): { unmount: () => void } {
+function header(
+  issue: Issue,
+  liveness: ClaimHolderLiveness = {}
+): { unmount: () => void; user: UserEvent } {
   const details: IssueDetails = {
     route_status: null,
     route_holder: null,
@@ -71,8 +78,11 @@ function header(issue: Issue, liveness: Partial<IssueClaimLiveness> = {}): { unm
   };
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The header reads the project's repository mappings at once for an issue that resolves to
-  // none, as these do; a project that maps none shows no repository item.
+  // none, as these do; a project that maps none shows no repository item. The components line
+  // reads the project's architecture sources the same way, and a project with none offers no
+  // picker, so neither read reaches the network.
   const mappings = spyOn(api, "listRepoProjects").mockResolvedValue([]);
+  const architectureSources = spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -80,6 +90,7 @@ function header(issue: Issue, liveness: Partial<IssueClaimLiveness> = {}): { unm
       </QueryClientProvider>
     </MemoryRouter>
   );
+  const user = userEvent.setup();
   const view = render(
     <IssueHeader
       documentArtifact={undefined}
@@ -94,7 +105,9 @@ function header(issue: Issue, liveness: Partial<IssueClaimLiveness> = {}): { unm
     unmount: () => {
       view.unmount();
       mappings.mockRestore();
+      architectureSources.mockRestore();
     },
+    user,
   };
 }
 
@@ -111,6 +124,7 @@ function running(sessionID: string, title: string): Agent {
     last_seen: 1,
     open_asks: 0,
     last_activity: null,
+    state: "live",
   };
 }
 
@@ -134,7 +148,8 @@ test("a claimed issue names its holder and releases the claim from the header", 
     // The holder is drawn by `AgentName`: its name links to its live conversation, and the
     // registry lists it, so it reads as running and the chip adds nothing.
     const chip = screen.getByTestId("issue-claim");
-    expect(within(chip).getByRole("link", { name: "Implementer" }).getAttribute("href")).toBe(
+    expect(within(chip).getByRole("link", { name: "Implementer" })).toHaveAttribute(
+      "href",
       "/agents/session-one/live"
     );
     await waitFor(() =>
@@ -142,8 +157,8 @@ test("a claimed issue names its holder and releases the claim from the header", 
         chip.querySelector('[data-agent-name="session-one"]')?.getAttribute("data-agent-state")
       ).toBe("running")
     );
-    expect(screen.queryByText("not running")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Release the claim on CORE-1" }));
+    expect(screen.queryByText("not running")).not.toBeInTheDocument();
+    await view.user.click(screen.getByRole("button", { name: "Release the claim on CORE-1" }));
     await waitFor(() => expect(release).toHaveBeenCalledWith("CORE-1", keyedAttempt));
   } finally {
     view.unmount();
@@ -186,10 +201,12 @@ test("a release that fails says so and offers a retry", async () => {
   const release = spyOn(api, "releaseIssueClaim").mockRejectedValue(new Error("network error"));
   const view = header({ ...base, claim });
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Release the claim on CORE-1" }));
+    await view.user.click(
+      await screen.findByRole("button", { name: "Release the claim on CORE-1" })
+    );
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Could not release this claim.");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(alert).toHaveTextContent("Could not release this claim.");
+    await view.user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() => expect(release).toHaveBeenCalledTimes(2));
   } finally {
     view.unmount();
@@ -213,12 +230,13 @@ test("the claim shows the holder's live title, not the one stamped on the claim"
       last_seen: 1,
       open_asks: 0,
       last_activity: null,
+      state: "live",
     },
   ]);
   const view = header({ ...base, claim });
   try {
     expect(await screen.findByText("Live registry title")).toBeDefined();
-    expect(screen.queryByText("Implementer")).toBeNull();
+    expect(screen.queryByText("Implementer")).not.toBeInTheDocument();
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -232,8 +250,8 @@ test("an unclaimed issue shows no holder and nothing to release", async () => {
   const view = header(base);
   try {
     expect(await screen.findByRole("heading", { level: 1 })).toBeDefined();
-    expect(screen.queryByTitle(/Claimed by/)).toBeNull();
-    expect(screen.queryByRole("button", { name: /Release the claim/ })).toBeNull();
+    expect(screen.queryByTitle(/Claimed by/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Release the claim/ })).not.toBeInTheDocument();
   } finally {
     view.unmount();
     agents.mockRestore();
@@ -255,10 +273,10 @@ test("a holder that missed its heartbeats reads as unresponsive since its last h
   const view = header({ ...base, claim });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
-    expect(screen.queryByTestId("issue-claim-lapsed")).toBeNull();
-    expect(screen.queryByText("not running")).toBeNull();
+    expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
+    expect(screen.queryByText("not running")).not.toBeInTheDocument();
     // The state and the moment it started, which is what tells a reader whether to wait.
-    expect(stalled.textContent).toContain("unresponsive since");
+    expect(stalled).toHaveTextContent("unresponsive since");
     expect(
       within(stalled)
         .getByTestId("issue-claim-unresponsive-since")
@@ -305,10 +323,10 @@ test("an unresponsive holder past its takeable moment reads takeable now, still 
   const view = header({ ...base, claim });
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
-    expect(stalled.textContent).toContain("unresponsive since");
+    expect(stalled).toHaveTextContent("unresponsive since");
     expect(within(stalled).getByTestId("issue-claim-takeable").textContent).toBe(", takeable now");
-    expect(screen.queryByTestId("issue-claim-lapsed")).toBeNull();
-    expect(screen.queryByText("not running")).toBeNull();
+    expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
+    expect(screen.queryByText("not running")).not.toBeInTheDocument();
     const chip = screen.getByTestId("issue-claim");
     expect(chip.getAttribute("title")).toContain("another agent may take it now");
     expect(chip.getAttribute("title")).toContain("It has not ended, and may yet answer.");
@@ -330,7 +348,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
   const lastSeen = new Date(Date.now() - 6 * 60_000).toISOString();
   const takeableAt = new Date(Date.now() + 14 * 60_000).toISOString();
-  const liveness: Partial<IssueClaimLiveness> = {
+  const liveness: ClaimHolderLiveness = {
     holder_state: "unresponsive",
     last_seen: lastSeen,
     takeable_at: takeableAt,
@@ -338,7 +356,7 @@ test("the issue read's own holder_state outranks an agent list that does not nam
   const view = header({ ...base, claim }, liveness);
   try {
     const stalled = await screen.findByTestId("issue-claim-unresponsive");
-    expect(screen.queryByTestId("issue-claim-lapsed")).toBeNull();
+    expect(screen.queryByTestId("issue-claim-lapsed")).not.toBeInTheDocument();
     // Both moments on the chip are the read's own, not the registry's.
     expect(
       within(stalled)

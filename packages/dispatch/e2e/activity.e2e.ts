@@ -128,7 +128,8 @@ test("Activity breaks its rows by day and marks where the reader stopped", async
     await page.goto(`/issues/${issue.key}/activity`);
 
     const list = page.getByRole("list", { name: "Issue activity" });
-    const dividers = list.getByRole("separator");
+    // The dividers are the list's labelled items: a day's, and the unread watermark's.
+    const dividers = list.locator("li[aria-label]");
     await expect(dividers).toHaveCount(3);
     expect(
       await dividers.evaluateAll((items) => items.map((item) => item.getAttribute("aria-label")))

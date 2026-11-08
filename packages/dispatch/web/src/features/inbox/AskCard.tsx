@@ -52,7 +52,8 @@ import { AskChoiceRow } from "./AskOptionRow";
 import { AskRecipients } from "./AskRecipients";
 import { AskThread } from "./AskThread";
 import { AskThreadDisclosure } from "./AskThreadDisclosure";
-import { URGENCY_LABELS } from "./ask-urgency";
+import type { OwnedAsk } from "./ask-name";
+import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import type { Draft } from "./draft-store";
 import { EarlierApproval } from "./EarlierApproval";
 import { clearReplyDraft } from "./reply-drafts";
@@ -69,7 +70,7 @@ const createReply = (
 
 export interface AskCardProps {
   artifactSlug?: string;
-  ask: Ask;
+  ask: OwnedAsk;
   /** The project document that owns an ask whose read lacks `document` (only Inbox rows carry
    *  it), so the card can still name the ask's `dispatch://` reference. */
   owner?: { project: string; slug: string };
@@ -239,8 +240,10 @@ export function AskCard({
   const inBlock = frame === "block";
   /** The project document this ask belongs to: the one it was asked on, else the one the host
    *  is showing it under. It names the ask's own reference, the replies' references, and where
-   *  a file dropped into the box goes. */
-  const askOwner = displayedAsk.document ?? owner;
+   *  a file dropped into the box goes. `document` is the Inbox row's: the ask read carries no
+   *  owner, so the fresher `displayedAsk` cannot name it and this card's own row is where it
+   *  is read. */
+  const askOwner = ask.document ?? owner;
   const reference = itemRoute("ask", displayedAsk, askOwner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
@@ -304,6 +307,7 @@ export function AskCard({
   // The copy handles' values: the title the session stamped, as the clipboard has always had it.
   const sessionTitle = sessionAuthor?.origin?.session_title?.trim();
   const tmuxTarget = sessionAuthor?.origin?.tmux;
+  const urgency = askUrgency(displayedAsk.urgency);
   const notched = hasUrgencyNotch(displayedAsk, inBlock);
   // The thread's own "still open?" wording must track the post-answer ask, not the possibly
   // stale prop passed to this instance: `completed` renders before an invalidated `ask` prop
@@ -320,7 +324,7 @@ export function AskCard({
   // The thread's newest write the card shows, which the shared thread read mark watches and
   // reads through: the newest reply, unless the record's answer came after it (an answer is a
   // write like a reply).
-  const newestReply = threadQuery.data?.replies.at(-1);
+  const newestReply = (threadQuery.data?.replies ?? []).at(-1);
   const recordedAnswer = completed?.state === "answered" ? completed.answer : null;
   const answerIsNewest =
     recordedAnswer !== null &&
@@ -333,7 +337,7 @@ export function AskCard({
     newestShownAt: answerIsNewest ? recordedAnswer?.at : newestReply?.created_at,
     owner: askRepliesOwner(displayedAsk),
     threadId: displayedAsk.id,
-    writes: threadQuery.data?.replies,
+    writes: threadQuery.data?.replies ?? undefined,
   });
   const markNewest = threadRead.ref;
   const unreadReplies = unread ?? threadRead.unread;
@@ -517,11 +521,11 @@ export function AskCard({
 
   return (
     <article
-      aria-label={`Urgency: ${URGENCY_LABELS[displayedAsk.urgency]}`}
+      aria-label={`Urgency: ${URGENCY_LABELS[urgency]}`}
       className={
         inBlock
           ? "relative mt-3"
-          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${notched ? "mt-3" : ""} ${card} ${askUrgencyAccent[displayedAsk.urgency]}`
+          : `relative rounded-xl border-l-4 shadow-sm ${isCompact ? "px-3 pt-4 pb-3" : "px-4 pt-5 pb-4"} ${notched ? "mt-3" : ""} ${card} ${askUrgencyAccent[urgency]}`
       }
       // The one handle on a card as a whole, carrying the question the card draws: a page-level
       // key that must not fire while the reader is answering an ask (the issue page's priority
@@ -553,8 +557,8 @@ export function AskCard({
           </button>
         )}
         inBlock={inBlock}
-        lastReply={threadQuery.data?.replies.at(-1)}
-        owner={owner}
+        lastReply={(threadQuery.data?.replies ?? []).at(-1)}
+        owner={askOwner}
         place="card"
         trailing={
           !handlesOpen ? null : (
@@ -625,10 +629,10 @@ export function AskCard({
           the question in Newest first, at the foot of the card in Oldest first. */}
       {answerFirst ? null : threadNode}
       <form className="mt-3 space-y-3" onSubmit={submit} ref={trackForm}>
-        {displayedAsk.options.length === 0 ? null : (
+        {(displayedAsk.options ?? []).length === 0 ? null : (
           <fieldset className="min-w-0 space-y-2">
             <legend className="sr-only">Answer options</legend>
-            {displayedAsk.options.map((option) => (
+            {(displayedAsk.options ?? []).map((option) => (
               <AskChoiceRow
                 checked={selected.includes(option.label)}
                 disabled={isSubmitting}

@@ -53,7 +53,7 @@ export function AskEditHistory({ ask, edits }: { ask: Ask; edits: AskEdit[] }): 
                     source={textSourceOf("ask", ask.id)}
                   />
                 </div>
-                <AskOptionList options={edit.previous.options} selected={[]} />
+                <AskOptionList options={edit.previous.options ?? []} selected={[]} />
                 <p className="mt-1">
                   Reworded by <AgentName actor={edit.edited_by} inline /> ·{" "}
                   <Timestamp at={edit.at} />
@@ -164,7 +164,7 @@ function AnsweredAsk({
   // unlabeled addendum. An ask with no options at all has no Other row to have chosen, so its
   // free text is always the plain answer instead.
   const otherText =
-    ask.options.length > 0 && answer !== null && chosen.length === 0 ? answer.text : null;
+    (ask.options ?? []).length > 0 && answer !== null && chosen.length === 0 ? answer.text : null;
   return (
     <article
       className={`relative rounded-xl p-4 text-sm ${inBlock || hasUrgencyNotch(ask, inBlock) ? "mt-3" : ""} ${calloutSuccessBorder} ${calloutSuccessBg} ${calloutSuccessText}`}
@@ -201,7 +201,7 @@ function AnsweredAsk({
           </p>
         ) : null}
         <AskEditHistory ask={ask} edits={edits} />
-        <AskOptionList options={ask.options} selected={chosen} />
+        <AskOptionList options={ask.options ?? []} selected={chosen} />
         {otherText !== null && otherText !== "" ? (
           <div className="mt-2">
             <p className={`text-sm font-medium ${textPrimaryOnSuccessCallout}`}>Other</p>
@@ -283,7 +283,7 @@ function ResolvedAsk({
             <AskApprovalLink ask={ask} />
           </p>
         ) : null}
-        <AskOptionList options={ask.options} selected={[]} />
+        <AskOptionList options={ask.options ?? []} selected={[]} />
         <AskEditHistory ask={ask} edits={edits} />
       </AskHeader>
     </article>

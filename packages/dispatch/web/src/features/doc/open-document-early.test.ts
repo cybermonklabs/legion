@@ -13,7 +13,7 @@ import { openDocumentEarly, takeEarlyTextRead } from "./open-document-early";
 // awaited, which is what every page with no document on it reads.
 afterEach(() => theFirstBatchIsAwaited(false));
 
-const artifact: IssueDetails["artifacts"][number] = {
+const artifact: NonNullable<IssueDetails["artifacts"]>[number] = {
   created_at: "2026-09-10T00:00:00Z",
   created_by: { id: "alice", kind: "user" },
   id: "artifact-early",
@@ -22,6 +22,8 @@ const artifact: IssueDetails["artifacts"][number] = {
   name: "Notes",
   primary: true,
   project: "CORE",
+  ref_key: "CORE-77/notes",
+  session_id: null,
   slug: "notes",
   versions: [],
 };
@@ -46,6 +48,9 @@ const issue: IssueDetails = {
   open_asks: [],
   parent: null,
   primary_artifact_id: artifact.id,
+  decisions_artifact_id: "",
+  plan_artifact_id: "",
+  verification_artifact_id: "",
   priority: null,
   progress: { children: null, tasks: null },
   project: "CORE",
@@ -63,7 +68,7 @@ const issue: IssueDetails = {
   updated_at: "2026-09-10T00:00:00Z",
 };
 
-const text: ArtifactText = { markdown: "# The lease ledger\n", version: null };
+const text: ArtifactText = { markdown: "# The lease ledger\n", token: "", version: null };
 
 // What a document address starts before any page has rendered: the two chunks the document's
 // editor is built from, and the schema its surface draws with and its socket is admitted

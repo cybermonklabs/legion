@@ -126,7 +126,7 @@ export function openDocumentEarly(client: QueryClient, pathname: string, search:
     .then((issue) => {
       const artifact =
         route.kind === "artifact"
-          ? issue.artifacts.find(({ slug }) => slug === route.slug)
+          ? (issue.artifacts ?? []).find(({ slug }) => slug === route.slug)
           : primarySpec(issue);
       // A blob artifact, and a slug this issue has no artifact for, open no document.
       if (artifact?.kind === "doc") {

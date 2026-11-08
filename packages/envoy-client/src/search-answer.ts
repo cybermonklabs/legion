@@ -8,6 +8,8 @@ import {
   type SearchAsk,
   type SearchResponse,
   type SearchResult,
+  type SearchResultsPage,
+  type SearchResultsPageAbsentAs,
   snippetText,
 } from "@legion/contracts";
 import { actorText } from "./actor-text";
@@ -22,7 +24,7 @@ function searchHitLine(result: SearchResult, baseUrl: string): string {
   const href = new URL(result.href, baseUrl).toString();
   const { owner } = result;
   if (owner.kind === "document") {
-    const reference = dispatchDocumentRef(owner.project, owner.slug);
+    const reference = dispatchDocumentRef(owner.project ?? "", owner.slug ?? "");
     return `${reference} [document] ${owner.name} - ${result.kind}: ${snippetText(result.snippet)} -> ${href}`;
   }
   const artifactName = result.artifact ? ` ${result.artifact.name}` : "";
@@ -58,18 +60,32 @@ export function askStateLines(ask: SearchAsk | undefined): string[] {
   if (ask === undefined) {
     return ["  Answer state not reported by this Dispatch; open the link to read the ask."];
   }
+  const resolution = ask.resolution;
+  const closed =
+    resolution === undefined
+      ? "closed, and this Dispatch did not say by whom"
+      : resolutionText(resolution);
   switch (ask.state) {
     case "open":
       return ["  Open: no answer yet."];
     case "answered":
-      return answerLines("Answered", ask.answer);
+      return ask.answer === undefined
+        ? ["  Answered; this Dispatch did not carry the answer. Open the link to read it."]
+        : answerLines("Answered", ask.answer);
     case "resolved":
       return ask.answer === undefined
-        ? [`  Closed with no answer: ${resolutionText(ask.resolution)}`]
-        : [
-            `  Closed after an answer: ${resolutionText(ask.resolution)}`,
-            ...answerLines("Last answer", ask.answer),
-          ];
+        ? [`  Closed with no answer: ${closed}`]
+        : [`  Closed after an answer: ${closed}`, ...answerLines("Last answer", ask.answer)];
+    default: {
+      // A Dispatch newer than this client can answer with a state this union does not hold. The
+      // state goes on the line as it came, so one unknown word costs its own line rather than
+      // the whole search answer; `never` keeps the switch exhaustive, so a state added to the
+      // union stops the type checker here.
+      const unreportedState: never = ask.state;
+      return [
+        `  Answer state "${String(unreportedState)}" is newer than this client; open the link to read the ask.`,
+      ];
+    }
   }
 }
 
@@ -79,6 +95,13 @@ function searchResultLine(result: SearchResult, baseUrl: string): string {
   return result.kind === "ask" ? [line, ...askStateLines(result.ask)].join("\n") : line;
 }
 
+/** What this client reads from `GET /api/v1/search`: the route table's answer, which always
+ *  carries the four paging fields, or a Dispatch older than search paging, which carries none of
+ *  them (`SearchResultsPage`). */
+export type SearchAnswerRead =
+  | SearchResponse
+  | (Omit<SearchResponse, keyof SearchResultsPage> & SearchResultsPageAbsentAs<undefined>);
+
 /**
  * The `dispatch_search` tool's text and details for one answer: refuses a later page from a
  * legacy Dispatch that predates paging and always answers its first page regardless of offset,
@@ -87,12 +110,12 @@ function searchResultLine(result: SearchResult, baseUrl: string): string {
  * legacy-Dispatch refusal message; `search.offset` is the server's own answer.
  */
 export function searchAnswer(
-  search: SearchResponse,
+  search: SearchAnswerRead,
   query: string,
   offset: number | undefined,
   configUrl: string
 ): { readonly text: string; readonly details: Record<string, unknown> } {
-  const results = search.results;
+  const results = search.results ?? [];
   const count = results.length;
   const lines = results.map((result) => searchResultLine(result, configUrl));
   const noun = count === 1 ? "result" : "results";

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+// biome-ignore lint/style/noRestrictedImports: the bare pointerdown the chrome's space listens for, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { AfterTheFirstBatch, ChromeAfterTheFirstBatch } from "./AfterTheFirstBatch";
@@ -167,6 +168,8 @@ test("a reader who presses the chrome's space has the chrome then", () => {
   const space = container.firstElementChild;
   if (space === null) throw new Error("the chrome kept no space");
 
+  // A bare `pointerdown` on the space, which is the one event this release listens for:
+  // user-event has no form that stops at the press without the pointer-up after it.
   act(() => {
     fireEvent.pointerDown(space);
   });

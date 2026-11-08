@@ -3,13 +3,13 @@ import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
 import { issueQuery } from "../../api/queries";
-import type { Artifact, Event } from "../../api/types";
+import type { Artifact, DispatchEvent } from "../../api/types";
 import { linkText } from "../../theme/classes";
 import { type AgentPart, AgentParts } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
 import { buildIssuePath, buildReferencePath, documentRoute } from "../refs/routes";
 
-type ArtifactVersionEvent = Extract<Event, { type: "artifact.version" }>;
+type ArtifactVersionEvent = Extract<DispatchEvent, { type: "artifact.version" }>;
 
 /** An activity line's parts as this tab draws them: a question the line quotes is formatted and
  *  cut to the one line the row gives it, and with `artifact` the artifact's name is a link to
@@ -69,7 +69,7 @@ function SavedVersionLine({
   issueKey: string;
 }): ReactNode {
   const issue = useQuery(issueQuery(issueKey));
-  const artifact: Artifact | undefined = issue.data?.artifacts.find(
+  const artifact: Artifact | undefined = issue.data?.artifacts?.find(
     ({ id }) => id === event.payload.artifact_id
   );
   if (artifact === undefined) {
@@ -93,7 +93,7 @@ export function ActivityLine({
   issueKey,
 }: {
   description: readonly AgentPart[];
-  event: Event;
+  event: DispatchEvent;
   issueKey: string;
 }): ReactNode {
   switch (event.type) {

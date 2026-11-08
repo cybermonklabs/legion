@@ -12,13 +12,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   act,
   cleanup,
-  fireEvent,
   type RenderResult,
   render,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
+import type { UserEvent } from "@testing-library/user-event";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 
@@ -30,6 +31,7 @@ import {
   installFakeLiveSockets,
 } from "../../__tests__/live-socket-harness";
 import { answerAgentMessages, answerAgentStates } from "../../__tests__/send-answers";
+import { userOnFakeClock } from "../../__tests__/user";
 import { AGENT_LIST_REFILLING, ApiError, api, NetworkError } from "../../api/client";
 import { liveSocketFor } from "../../api/live-socket";
 import type { Agent, Message, MessageRead, UserAgentStates } from "../../api/types";
@@ -70,6 +72,7 @@ const agent: Agent = {
   open_asks: 0,
   roles: [],
   session_id: SESSION,
+  state: "live",
   title: "Planner",
 };
 
@@ -77,11 +80,13 @@ function message(id: string, body: string, overrides: Partial<Message> = {}): Me
   return {
     author: { id: "sami", kind: "user" },
     body,
+    broadcast_id: null,
     created_at: "2026-09-27T21:16:15Z",
     deliveries: [],
     id,
     in_reply_to: null,
     issue_key: null,
+    reply_block: null,
     target: `session:${SESSION}`,
     ...overrides,
   };
@@ -223,7 +228,7 @@ function answer(
 function renderLiveView({
   agentState,
   agents,
-  capabilities = agent.capabilities,
+  capabilities = agent.capabilities ?? [],
   messages,
   other,
   putAgentState,
@@ -320,7 +325,8 @@ function relayStatus(view: HTMLElement = screen.getByTestId("agent-conversation"
 // and seeing them there is reading them.
 test("the live view shows the session's Dispatch replies to direct messages and marks them read", async () => {
   const putAgentState = answerAgentStates().mockImplementation(async (_session, input) => ({
-    ...input,
+    cleared_before: input.cleared_before ?? undefined,
+    read_through: input.read_through ?? undefined,
     unread_replies: 0,
   }));
   renderLiveView({
@@ -351,14 +357,18 @@ test("the live view shows the session's Dispatch replies to direct messages and 
 test("the live view retries a read mark that failed to save", async () => {
   const putAgentState = answerAgentStates()
     .mockRejectedValueOnce(new ApiError(503, { code: "UNAVAILABLE", error: "restarting" }))
-    .mockImplementation(async (_session, input) => ({ ...input, unread_replies: 0 }));
+    .mockImplementation(async (_session, input) => ({
+      cleared_before: input.cleared_before ?? undefined,
+      read_through: input.read_through ?? undefined,
+      unread_replies: 0,
+    }));
   renderLiveView({
     agentState: { [SESSION]: { unread_replies: 2 } },
     messages: conversation,
     putAgentState,
   });
 
-  await waitFor(() => expect(agentsLink().textContent).toContain("New replies 2"));
+  await waitFor(() => expect(agentsLink()).toHaveTextContent("New replies 2"));
   await waitFor(() => expect(agentsLink().textContent).toBe("Agents"), { timeout: 4000 });
 });
 
@@ -415,10 +425,11 @@ test("the live view attributes other people's messages to the session to their a
   // list it), marked not running, and linked to its own live conversation.
   const reviewer = others[2]?.querySelector('[data-agent-name="reviewer-session-id"]');
   if (!(reviewer instanceof HTMLElement)) throw new Error("the reviewer is not an AgentName");
-  await waitFor(() => expect(reviewer.getAttribute("data-agent-state")).toBe("not-running"));
-  expect(
-    within(reviewer).getByRole("link", { name: "Reviewer (stamped)" }).getAttribute("href")
-  ).toBe("/agents/reviewer-session-id/live");
+  await waitFor(() => expect(reviewer).toHaveAttribute("data-agent-state", "not-running"));
+  expect(within(reviewer).getByRole("link", { name: "Reviewer (stamped)" })).toHaveAttribute(
+    "href",
+    "/agents/reviewer-session-id/live"
+  );
 });
 
 // The header is the agent's own live conversation (exclusion E3): `AgentName` names it by its
@@ -728,6 +739,7 @@ test("a person's message embedding a picture shows once, with or without the mar
 // Send is the terminal's Enter: the default wherever the session takes a steer. A session that
 // advertises Aside and no Send would refuse one, so Aside is its default.
 test("the live view sends as Send by default where the session takes it, and as Aside where it does not", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message("sent", input.body)
   );
@@ -747,10 +759,9 @@ test("the live view sends as Send by default where the session takes it, and as 
       .getAllByRole("option")
       .map((option) => option.textContent)
   ).toEqual(["Send", "Aside", "BTW"]);
-  fireEvent.change(screen.getByPlaceholderText(/delivered as Send/), {
-    target: { value: "try the other branch" },
-  });
-  fireEvent.click(
+  await user.click(screen.getByPlaceholderText(/delivered as Send/));
+  await user.paste("try the other branch");
+  await user.click(
     within(screen.getByTestId("agent-composer")).getByRole("button", { name: "Send" })
   );
   await waitFor(() =>
@@ -785,13 +796,13 @@ const dropped = () =>
   new NetworkError(`/api/v1/agents/${SESSION}/messages`, new TypeError("Failed to fetch"));
 
 /** Types `body` into the live view's composer and presses its Send. */
-async function sendFromLiveView(body: string): Promise<void> {
-  fireEvent.change(screen.getByPlaceholderText(/delivered as Send/), { target: { value: body } });
-  await act(async () => {
-    fireEvent.click(
-      within(screen.getByTestId("agent-composer")).getByRole("button", { name: "Send" })
-    );
-  });
+async function sendFromLiveView(user: UserEvent, body: string): Promise<void> {
+  // The box is empty at every call - a press clears it - so the paste is the whole message.
+  await user.click(screen.getByPlaceholderText(/delivered as Send/));
+  await user.paste(body);
+  await user.click(
+    within(screen.getByTestId("agent-composer")).getByRole("button", { name: "Send" })
+  );
 }
 
 // A message sent from the live view is one key, minted when the person presses Send: a fetch that
@@ -814,7 +825,7 @@ test("the live view's send retries under one key", async () => {
   await waitFor(() => expect(mode.value).toBe("steer"));
 
   await onFakeClock(async () => {
-    await sendFromLiveView("try the other branch");
+    await sendFromLiveView(userOnFakeClock(), "try the other branch");
     expect(createAgentMessage).toHaveBeenCalledTimes(1);
     await act(async () => {
       jest.advanceTimersByTime(1_000);
@@ -825,9 +836,9 @@ test("the live view's send retries under one key", async () => {
     });
     expect(createAgentMessage).toHaveBeenCalledTimes(3);
   });
-  expect(screen.queryByTestId("agent-send-error")).toBeNull();
+  expect(screen.queryByTestId("agent-send-error")).not.toBeInTheDocument();
 
-  await sendFromLiveView("and this");
+  await sendFromLiveView(userEvent.setup(), "and this");
   await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(4));
   const [first, ...later] = sentKeys(createAgentMessage);
   expect(first).toMatch(/^[0-9a-f-]{36}$/);
@@ -852,7 +863,7 @@ test("leaving the live view leaves its send being tried, under its key", async (
   await waitFor(() => expect(mode.value).toBe("steer"));
 
   await onFakeClock(async () => {
-    await sendFromLiveView("try the other branch");
+    await sendFromLiveView(userOnFakeClock(), "try the other branch");
     await tick(1_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(2);
 
@@ -909,7 +920,8 @@ test("Send stays open with text while an earlier send is out or late, and each p
   await renderSendingView();
 
   await onFakeClock(async () => {
-    await sendFromLiveView("try the other branch");
+    const user = userOnFakeClock();
+    await sendFromLiveView(user, "try the other branch");
     const [held] = screen.getAllByTestId("agent-send-held");
     // The pending turn names the message as the reader's own, at a glance and to a screen reader.
     expect(
@@ -920,12 +932,11 @@ test("Send stays open with text while an earlier send is out or late, and each p
     // The field cleared on the press, and the next message goes out as its own press.
     const input = screen.getByPlaceholderText(/delivered as Send/) as HTMLTextAreaElement;
     expect(input.value).toBe("");
-    fireEvent.change(input, { target: { value: "and this" } });
+    await user.click(input);
+    await user.paste("and this");
     expect(sendButton().disabled).toBe(false);
     expect(sendButton().getAttribute("aria-disabled")).toBeNull();
-    await act(async () => {
-      fireEvent.click(sendButton());
-    });
+    await user.click(sendButton());
     await tick(0);
     expect(screen.getAllByTestId("agent-send-held")).toHaveLength(2);
     // In press order: the second waits while the first is being tried.
@@ -935,9 +946,10 @@ test("Send stays open with text while an earlier send is out or late, and each p
     const [late] = screen.getAllByTestId("agent-send-held");
     expect(within(late as HTMLElement).getByRole("status").textContent).toBe(KEYED_SEND_LATE_TEXT);
     expect(within(late as HTMLElement).getByRole("button", { name: "Stop trying" })).toBeTruthy();
-    fireEvent.change(input, { target: { value: "a third" } });
+    await user.click(input);
+    await user.paste("a third");
     expect(sendButton().getAttribute("aria-disabled")).toBeNull();
-    fireEvent.change(input, { target: { value: "" } });
+    await user.clear(input);
 
     await act(async () => {
       answers[0]?.resolve(message("sent", "try the other branch"));
@@ -952,7 +964,7 @@ test("Send stays open with text while an earlier send is out or late, and each p
     });
     await tick(0);
   });
-  expect(screen.queryByTestId("agent-send-held")).toBeNull();
+  expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
   const [first, second] = sentKeys(createAgentMessage);
   expect(second).not.toBe(first);
 });
@@ -969,26 +981,27 @@ test("a message Dispatch refuses offers Retry under a new key, Discard, and hold
     .mockRejectedValue(refused);
   spies.push(createAgentMessage);
   await renderSendingView();
+  const user = userEvent.setup();
 
-  await sendFromLiveView("try the other branch");
+  await sendFromLiveView(user, "try the other branch");
   const error = await screen.findByTestId("agent-send-error");
   expect(error.textContent).toBe("Could not send: Dispatch refused it");
-  await sendFromLiveView("the next one");
+  await sendFromLiveView(user, "the next one");
   await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(2));
   expect(createAgentMessage.mock.calls[1]?.[1].body).toBe("the next one");
 
   const held = screen.getByTestId("agent-send-held");
-  fireEvent.click(within(held).getByRole("button", { name: "Retry" }));
+  await user.click(within(held).getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(3));
   const [first, , retried] = sentKeys(createAgentMessage);
   expect(retried).not.toBe(first);
 
   await screen.findByTestId("agent-send-error");
-  fireEvent.click(
+  await user.click(
     within(screen.getByTestId("agent-send-held")).getByRole("button", { name: "Discard" })
   );
-  expect(screen.queryByTestId("agent-send-held")).toBeNull();
-  expect(sendButton().getAttribute("title")).toBe("Type a message first.");
+  expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
+  expect(sendButton()).toHaveAttribute("title", "Type a message first.");
   expect(createAgentMessage).toHaveBeenCalledTimes(3);
 });
 
@@ -1003,29 +1016,26 @@ test("Stop trying ends a late live view send, and its Retry goes under the same 
   await renderSendingView();
 
   await onFakeClock(async () => {
-    await sendFromLiveView("try the other branch");
+    const user = userOnFakeClock();
+    await sendFromLiveView(user, "try the other branch");
     for (const wait of [1_000, 2_000, 4_000, 8_000]) await tick(wait);
-    expect(screen.queryByRole("button", { name: "Stop trying" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Stop trying" })).not.toBeInTheDocument();
     await tick(15_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
 
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Stop trying" }));
-    });
+    await user.click(screen.getByRole("button", { name: "Stop trying" }));
     await tick(0);
     expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendStoppedError().message);
     await tick(30 * 60_000);
     expect(createAgentMessage).toHaveBeenCalledTimes(5);
 
     createAgentMessage.mockResolvedValueOnce(message("sent", "try the other branch"));
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    });
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await tick(0);
   });
   expect(createAgentMessage).toHaveBeenCalledTimes(6);
   expect(new Set(sentKeys(createAgentMessage)).size).toBe(1);
-  expect(screen.queryByTestId("agent-send-held")).toBeNull();
+  expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
 });
 
 // A session whose plugin cannot reach its conversation advertises no mode: the live view says a
@@ -1038,7 +1048,7 @@ test("the live view says a session advertising no delivery mode takes no message
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
 
-  expect((await screen.findByTestId("agent-takes-no-messages")).textContent).toContain(
+  expect(await screen.findByTestId("agent-takes-no-messages")).toHaveTextContent(
     "advertises no delivery mode"
   );
 
@@ -1051,7 +1061,7 @@ test("the live view says a session advertising no delivery mode takes no message
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
   });
   await screen.findByRole("combobox", { name: "Delivery mode" });
-  expect(screen.queryByTestId("agent-takes-no-messages")).toBeNull();
+  expect(screen.queryByTestId("agent-takes-no-messages")).not.toBeInTheDocument();
 });
 
 // Only a current agent list says a session is gone. One that is refilling says that instead, and
@@ -1073,7 +1083,7 @@ test("the live view says the session may have ended only from a current agent li
   expect((await screen.findByTestId("agent-list-refilling")).textContent).toBe(
     AGENT_LIST_REFILLING
   );
-  expect(screen.queryByText(/may have ended/)).toBeNull();
+  expect(screen.queryByText(/may have ended/)).not.toBeInTheDocument();
   expect(await modes()).toEqual(["Send", "Aside", "BTW"]);
 
   cleanup();
@@ -1085,8 +1095,8 @@ test("the live view says the session may have ended only from a current agent li
     putAgentState: putAgentState(),
   });
   await screen.findByTestId("agent-list-unreachable");
-  expect(screen.queryByTestId("agent-list-refilling")).toBeNull();
-  expect(screen.queryByText(/may have ended/)).toBeNull();
+  expect(screen.queryByTestId("agent-list-refilling")).not.toBeInTheDocument();
+  expect(screen.queryByText(/may have ended/)).not.toBeInTheDocument();
   expect(await modes()).toEqual(["Send", "Aside", "BTW"]);
 
   cleanup();
@@ -1095,7 +1105,7 @@ test("the live view says the session may have ended only from a current agent li
   expect((await screen.findByTestId("agent-not-listed")).textContent).toBe(
     "Not in the live session list — it may have ended."
   );
-  expect(screen.queryByTestId("agent-list-refilling")).toBeNull();
+  expect(screen.queryByTestId("agent-list-refilling")).not.toBeInTheDocument();
 });
 
 /** An assistant message the session streamed, optionally naming the model that produced it
@@ -1152,8 +1162,8 @@ test("the live view shows nothing for a session whose client reports no model", 
 
   const thread = await screen.findByTestId("agent-thread");
   await within(thread).findByText("Switching to it now.");
-  expect(screen.queryByTestId("agent-session-model")).toBeNull();
-  expect(within(thread).queryByTestId("agent-message-model")).toBeNull();
+  expect(screen.queryByTestId("agent-session-model")).not.toBeInTheDocument();
+  expect(within(thread).queryByTestId("agent-message-model")).not.toBeInTheDocument();
 });
 
 // The header says what the relay is doing: connecting until the session's first answer arrives on
@@ -1211,7 +1221,9 @@ test("a rotation rebuilds from the replay and keeps status live", async () => {
 
   answer(second, [assistantFrame(2, Date.parse("2026-09-27T21:17:16Z"), "After the rotation.")]);
   await within(thread).findByText("After the rotation.");
-  await waitFor(() => expect(within(thread).queryByText("Before the rotation.")).toBeNull());
+  await waitFor(() =>
+    expect(within(thread).queryByText("Before the rotation.")).not.toBeInTheDocument()
+  );
   expect(relayStatus()).toEqual(["Live"]);
 });
 
@@ -1284,8 +1296,8 @@ test("two agent views share the tab's socket", async () => {
   answer(socket, [assistantFrame(1, at, "Reviewing the change.")], REVIEWER);
   await within(planner.container).findByText("Planning the change.");
   await within(reviewer.container).findByText("Reviewing the change.");
-  expect(within(planner.container).queryByText("Reviewing the change.")).toBeNull();
-  expect(within(reviewer.container).queryByText("Planning the change.")).toBeNull();
+  expect(within(planner.container).queryByText("Reviewing the change.")).not.toBeInTheDocument();
+  expect(within(reviewer.container).queryByText("Planning the change.")).not.toBeInTheDocument();
   expect(relayStatus(planner.container)).toEqual(["Live"]);
   expect(relayStatus(reviewer.container)).toEqual(["Live"]);
 
@@ -1334,8 +1346,14 @@ async function renderWithCommands(commands?: AgentStreamCommand[]): Promise<HTML
   return within(screen.getByTestId("agent-composer")).getByRole("textbox") as HTMLTextAreaElement;
 }
 
-function type(input: HTMLTextAreaElement, value: string): void {
-  fireEvent.change(input, { target: { value } });
+/**
+ * Writes `value` into the live composer, as one edit: the trigger popover follows every edit,
+ * and a `clear` before the paste would be a delete it follows and a list it closed.
+ */
+async function type(user: UserEvent, input: HTMLTextAreaElement, value: string): Promise<void> {
+  await user.click(input);
+  await user.keyboard("{Control>}a{/Control}");
+  await user.paste(value);
 }
 
 function commandOptions(): string[] {
@@ -1353,10 +1371,11 @@ const MODE_OPTIONS = ["Senddelivery mode", "Asidedelivery mode", "BTWdelivery mo
 // learns it will not run here), and as the person types, names that start with what they typed
 // before names that merely hold it.
 test("the composer completes the session's slash commands, filtering as the person types", async () => {
+  const user = userEvent.setup();
   const input = await renderWithCommands(COMMANDS);
   await waitFor(() => expect(input.placeholder).toContain("/"));
 
-  type(input, "/");
+  await type(user, input, "/");
   await waitFor(() =>
     expect(commandOptions()).toEqual([
       ...MODE_OPTIONS,
@@ -1367,7 +1386,7 @@ test("the composer completes the session's slash commands, filtering as the pers
     ])
   );
 
-  type(input, "/comp");
+  await type(user, input, "/comp");
   await waitFor(() =>
     expect(commandOptions()).toEqual(["/compactCompact the session's context", "/recompile"])
   );
@@ -1376,20 +1395,22 @@ test("the composer completes the session's slash commands, filtering as the pers
 // Picking a command writes what the person would have typed at the terminal, never a directive
 // the session would receive as markup, and Send carries it to the session unchanged.
 test("picking a command puts /name in the message as plain text, and Enter sends it unchanged", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message("sent", input.body)
   );
   spies.push(createAgentMessage);
   const input = await renderWithCommands(COMMANDS);
 
-  type(input, "/co");
+  await type(user, input, "/co");
   await waitFor(() => expect(commandOptions()).toHaveLength(2));
-  fireEvent.keyDown(input, { key: "Enter" });
+  // The paste left the caret in the input, so Enter reaches the open list.
+  await user.keyboard("{Enter}");
   await waitFor(() => expect(input.value).toBe("/compact "));
-  expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
+  expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 
   // With the list closed Enter is the composer's own Send again.
-  fireEvent.keyDown(input, { key: "Enter" });
+  await user.keyboard("{Enter}");
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -1401,17 +1422,18 @@ test("picking a command puts /name in the message as plain text, and Enter sends
 
 // The list is the keyboard's while it is open, and Escape hands Enter back to sending.
 test("arrow keys move through the commands, and after Escape Enter sends what was typed", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = spyOn(api, "createAgentMessage").mockImplementation(
     async (_session, input) => message("sent", input.body)
   );
   spies.push(createAgentMessage);
   const input = await renderWithCommands(COMMANDS);
 
-  type(input, "/");
+  await type(user, input, "/");
   await waitFor(() => expect(commandOptions()).toHaveLength(MODE_OPTIONS.length + 4));
   // Four steps down from the first mode row reaches the second command, so the arrows are shown
   // crossing from the modes into the session's own commands.
-  for (let step = 0; step < 4; step += 1) fireEvent.keyDown(input, { key: "ArrowDown" });
+  await user.keyboard("{ArrowDown}".repeat(4));
   await waitFor(() =>
     expect(
       within(screen.getByRole("listbox", { name: "Slash commands" })).getByRole("option", {
@@ -1419,14 +1441,16 @@ test("arrow keys move through the commands, and after Escape Enter sends what wa
       }).textContent
     ).toBe("/jobsShow background jobs")
   );
-  fireEvent.keyDown(input, { key: "Tab" });
+  await user.keyboard("{Tab}");
   await waitFor(() => expect(input.value).toBe("/jobs "));
 
-  type(input, "/rec");
+  await type(user, input, "/rec");
   await waitFor(() => expect(commandOptions()).toEqual(["/recompile"]));
-  fireEvent.keyDown(input, { key: "Escape" });
-  await waitFor(() => expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull());
-  fireEvent.keyDown(input, { key: "Enter" });
+  await user.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument()
+  );
+  await user.keyboard("{Enter}");
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -1437,15 +1461,15 @@ test("arrow keys move through the commands, and after Escape Enter sends what wa
 });
 
 // A session with every skill installed lists hundreds of commands; the list shows the best
-// fifty rather than a scroller the length of the page.
 test("a session with hundreds of commands shows fifty of them", async () => {
+  const user = userEvent.setup();
   const many = Array.from({ length: 300 }, (_, index) => ({
     name: `skill:s${String(index).padStart(3, "0")}`,
     source: "skill" as const,
   }));
   const input = await renderWithCommands(many);
 
-  type(input, "/");
+  await type(user, input, "/");
   await waitFor(() => expect(commandOptions()).toHaveLength(MODE_OPTIONS.length + 50));
   expect(commandOptions()[MODE_OPTIONS.length]).toBe("/skill:s000");
 });
@@ -1457,28 +1481,27 @@ test("a session with hundreds of commands shows fifty of them", async () => {
 // throughout, since picking one is how a reader leaves BTW without reaching for the header, so
 // both placeholders still name the key that opens them.
 test("no command completion is offered without a command list, for a / mid-message, or in BTW", async () => {
+  const user = userEvent.setup();
   const silent = await renderWithCommands();
   expect(silent.placeholder).toContain("/ for send modes");
   expect(silent.placeholder).not.toContain("commands");
-  type(silent, "/");
+  await type(user, silent, "/");
   await waitFor(() => expect(commandOptions()).toEqual(MODE_OPTIONS));
 
   cleanup();
   for (const spy of spies.splice(0)) spy.mockRestore();
   const input = await renderWithCommands(COMMANDS);
-  type(input, "please /co");
+  await type(user, input, "please /co");
   await Bun.sleep(50);
-  expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
+  expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 
-  fireEvent.change(screen.getByRole("combobox", { name: "Delivery mode" }), {
-    target: { value: "btw" },
-  });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Delivery mode" }), "btw");
   await waitFor(() => expect(input.placeholder).toContain("delivered as BTW"));
   expect(input.placeholder).toContain("/ for send modes");
   expect(input.placeholder).not.toContain("commands");
-  type(input, "/");
+  await type(user, input, "/");
   await waitFor(() => expect(commandOptions()).toEqual(MODE_OPTIONS));
-  type(input, "/co");
+  await type(user, input, "/co");
   await Bun.sleep(50);
   expect(commandOptions()).toEqual([]);
 });
@@ -1486,15 +1509,16 @@ test("no command completion is offered without a command list, for a / mid-messa
 // Picking a mode from the list is the header's "Send as" pick: it sets the mode, writes nothing
 // into the message, and keeps whatever was typed after the name.
 test("picking a delivery mode from the slash list sets Send as and writes no text", async () => {
+  const user = userEvent.setup();
   const input = await renderWithCommands(COMMANDS);
   const mode = screen.getByRole("combobox", { name: "Delivery mode" }) as HTMLSelectElement;
 
-  type(input, "/bt");
+  await type(user, input, "/bt");
   await waitFor(() => expect(commandOptions()).toEqual(["BTWdelivery mode"]));
-  fireEvent.keyDown(input, { key: "Enter" });
+  await user.keyboard("{Enter}");
   await waitFor(() => expect(mode.value).toBe("btw"));
   expect(input.value).toBe("");
-  expect(screen.queryByRole("listbox", { name: "Slash commands" })).toBeNull();
+  expect(screen.queryByRole("listbox", { name: "Slash commands" })).not.toBeInTheDocument();
 });
 
 /** The models a session lists, in its own order: two providers interleaved, and a custom
@@ -1581,7 +1605,7 @@ test("the header shows the model and thinking level each settings frame reports,
   expect(picker("Model").value).toBe("anthropic/model-a");
   expect(screen.getByTestId("agent-session-model").textContent).toBe("anthropic/model-a");
   expect(picker("Thinking level").value).toBe("auto");
-  expect(screen.queryByTestId("agent-settings-notice")).toBeNull();
+  expect(screen.queryByTestId("agent-settings-notice")).not.toBeInTheDocument();
 
   view.frame(
     settingsFrame(4, {
@@ -1604,23 +1628,22 @@ test("a session not answering the live view keeps the empty transcript's explana
     putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
     responding: false,
   });
-  expect((await screen.findByTestId("agent-thread-empty")).textContent).toContain(
+  expect(await screen.findByTestId("agent-thread-empty")).toHaveTextContent(
     "This session is not answering the live view"
   );
-  expect(screen.queryByTestId("agent-settings-notice")).toBeNull();
+  expect(screen.queryByTestId("agent-settings-notice")).not.toBeInTheDocument();
 });
 
 // A pick is the person's own Send of what they would type at the session's terminal: always a
 // Send, since a BTW is a side question the session does not run, and the id exactly as the
 // session listed it, even one `/model` could read a role or a level into.
 test("a pick sends /model or /effort as a Send whatever Send as says, the id unchanged", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = spyOnSwitchSends();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
-  fireEvent.change(screen.getByRole("combobox", { name: "Delivery mode" }), {
-    target: { value: "btw" },
-  });
+  await user.selectOptions(screen.getByRole("combobox", { name: "Delivery mode" }), "btw");
 
-  fireEvent.change(picker("Model"), { target: { value: "custom/model@v2:high" } });
+  await user.selectOptions(picker("Model"), "custom/model@v2:high");
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -1636,7 +1659,7 @@ test("a pick sends /model or /effort as a Send whatever Send as says, the id unc
   ]);
   await waitFor(() => expect(held(picker("Thinking level"))).toBe(false));
 
-  fireEvent.change(picker("Thinking level"), { target: { value: "high" } });
+  await user.selectOptions(picker("Thinking level"), "high");
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenLastCalledWith(
       SESSION,
@@ -1652,16 +1675,17 @@ test("a pick sends /model or /effort as a Send whatever Send as says, the id unc
 // reply and the frame may arrive in either order. What a held picker does with a pick is
 // `SessionSettings.test.tsx`'s.
 test("while a switch waits the pickers and Send hold, and its reply and frame land in either order", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = spyOnSwitchSends();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
   const input = within(screen.getByTestId("agent-composer")).getByRole(
     "textbox"
   ) as HTMLTextAreaElement;
-  type(input, "and then run the tests");
+  await type(user, input, "and then run the tests");
   await waitFor(() => expect(sendButton().disabled).toBe(false));
 
   // The reply before the frame.
-  fireEvent.change(picker("Model"), { target: { value: "anthropic/model-b" } });
+  await user.selectOptions(picker("Model"), "anthropic/model-b");
   expect((await screen.findByTestId("agent-switch-status")).textContent).toBe(
     "Switching model to anthropic/model-b…"
   );
@@ -1693,7 +1717,7 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
   await waitFor(() => expect(picker("Model").value).toBe("anthropic/model-b"));
 
   // The frame before the reply.
-  fireEvent.change(picker("Thinking level"), { target: { value: "high" } });
+  await user.selectOptions(picker("Thinking level"), "high");
   await waitFor(() => expect(sendButton().disabled).toBe(true));
   view.frame(
     settingsFrame(4, {
@@ -1726,10 +1750,11 @@ test("while a switch waits the pickers and Send hold, and its reply and frame la
 // A switch the session refuses publishes no new frame: the header keeps what the session last
 // reported, and the line under it is the session's own reason.
 test("a refused switch shows the session's reason and the header keeps its values", async () => {
+  const user = userEvent.setup();
   spyOnSwitchSends();
   const view = await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
 
-  fireEvent.change(picker("Model"), { target: { value: "openai/model-c" } });
+  await user.selectOptions(picker("Model"), "openai/model-c");
   await screen.findByTestId("agent-switch-status");
   await view.storeThread([
     {
@@ -1758,7 +1783,8 @@ test("a switch whose key has run out says so, and frees the pickers", async () =
   await renderWithPickers([settingsFrame(1), commandsFrame(2, SWITCHES)]);
 
   await onFakeClock(async () => {
-    fireEvent.change(picker("Model"), { target: { value: "anthropic/model-b" } });
+    const user = userOnFakeClock();
+    await user.selectOptions(picker("Model"), "anthropic/model-b");
     await tick(0);
     expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
@@ -1830,8 +1856,11 @@ function holdSends() {
 }
 
 /** Follows the in-app link to the session titled `title` and returns its composer's input. */
-async function switchTo(title: "Planner" | "Reviewer"): Promise<HTMLTextAreaElement> {
-  fireEvent.click(screen.getByRole("link", { name: `Switch to ${title}` }));
+async function switchTo(
+  user: UserEvent,
+  title: "Planner" | "Reviewer"
+): Promise<HTMLTextAreaElement> {
+  await user.click(screen.getByRole("link", { name: `Switch to ${title}` }));
   await screen.findByRole("heading", { level: 1, name: new RegExp(title) });
   return composerInput();
 }
@@ -1839,6 +1868,7 @@ async function switchTo(title: "Planner" | "Reviewer"): Promise<HTMLTextAreaElem
 // A person talks to a session while it works, as at its terminal: a turn still streaming does
 // not hold Send, and a click sends at once, as Send, the session's default.
 test("Send stays pressable while the session is mid-turn, and a click sends at once as Send", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = acceptSends();
   renderLiveView({
     agentState: {},
@@ -1849,11 +1879,11 @@ test("Send stays pressable while the session is mid-turn, and a click sends at o
   const input = await modeSettled("steer");
   await midTurnShown();
 
-  type(input, "try the other branch");
+  await type(user, input, "try the other branch");
   const send = sendButton();
-  expect(send.hasAttribute("disabled")).toBe(false);
-  expect(send.hasAttribute("aria-disabled")).toBe(false);
-  fireEvent.click(send);
+  expect(send).not.toHaveAttribute("disabled");
+  expect(send).not.toHaveAttribute("aria-disabled");
+  await user.click(send);
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -1865,6 +1895,7 @@ test("Send stays pressable while the session is mid-turn, and a click sends at o
 
 // Enter is the keyboard's Send, and a turn still streaming does not swallow it.
 test("Enter sends while the session is mid-turn", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = acceptSends();
   renderLiveView({
     agentState: {},
@@ -1875,8 +1906,9 @@ test("Enter sends while the session is mid-turn", async () => {
   const input = await modeSettled("steer");
   await midTurnShown();
 
-  type(input, "stop after this file");
-  fireEvent.keyDown(input, { key: "Enter" });
+  await type(user, input, "stop after this file");
+  // The paste left the caret in the box, so Enter is the composer's own Send.
+  await user.keyboard("{Enter}");
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -1891,6 +1923,7 @@ test("Enter sends while the session is mid-turn", async () => {
 // stays focusable (aria-disabled, not disabled), and neither a click nor Enter sends. With text,
 // the line goes back to saying how to send.
 test("with an empty box Send is refused, says why on screen, and sends nothing", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = acceptSends();
   renderLiveView({
     agentState: {},
@@ -1900,8 +1933,8 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
   const input = await modeSettled("steer");
 
   const send = sendButton();
-  expect(send.getAttribute("aria-disabled")).toBe("true");
-  expect(send.hasAttribute("disabled")).toBe(false);
+  expect(send).toHaveAttribute("aria-disabled", "true");
+  expect(send).not.toHaveAttribute("disabled");
   expect(send.title).toBe("Type a message first.");
   const description = (send.getAttribute("aria-describedby") ?? "")
     .split(" ")
@@ -1912,21 +1945,24 @@ test("with an empty box Send is refused, says why on screen, and sends nothing",
     .getAllByText("Type a message first.")
     .filter((line) => !line.classList.contains("sr-only"));
   expect(shown).toHaveLength(1);
-  fireEvent.click(send);
-  fireEvent.keyDown(input, { key: "Enter" });
+  // Send is `aria-disabled`, never `disabled`, so the press is delivered and refused.
+  await user.click(send);
+  await user.click(input);
+  await user.keyboard("{Enter}");
   await Bun.sleep(50);
   expect(createAgentMessage).not.toHaveBeenCalled();
 
-  type(input, "now with words");
-  await waitFor(() => expect(sendButton().hasAttribute("aria-disabled")).toBe(false));
-  expect(sendButton().hasAttribute("aria-describedby")).toBe(false);
+  await type(user, input, "now with words");
+  await waitFor(() => expect(sendButton()).not.toHaveAttribute("aria-disabled"));
+  expect(sendButton()).not.toHaveAttribute("aria-describedby");
   expect(within(composer()).getByText("Enter to send · Shift+Enter for a new line")).toBeTruthy();
-  expect(within(composer()).queryByText("Type a message first.")).toBeNull();
+  expect(within(composer()).queryByText("Type a message first.")).not.toBeInTheDocument();
 });
 
 // A send Dispatch refuses is not lost: the message is held on screen with the reason, for Retry or
 // Discard, and the box is free for the next one.
 test("a refused send keeps the message on screen and says why", async () => {
+  const user = userEvent.setup();
   spies.push(
     spyOn(api, "createAgentMessage").mockRejectedValue(
       new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" })
@@ -1939,8 +1975,8 @@ test("a refused send keeps the message on screen and says why", async () => {
   });
   const input = await modeSettled("steer");
 
-  type(input, "try the other branch");
-  fireEvent.click(sendButton());
+  await type(user, input, "try the other branch");
+  await user.click(sendButton());
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
@@ -1954,6 +1990,7 @@ test("a refused send keeps the message on screen and says why", async () => {
 // another session leaves that session's box and screen alone, and is waiting, message and reason,
 // when they go back. A send out on one session does not hold Send on another.
 test("a refusal that lands after switching sessions stays with the session that sent it, not the one on screen", async () => {
+  const user = userEvent.setup();
   const { createAgentMessage, held } = holdSends();
   renderLiveView({
     agentState: {},
@@ -1963,8 +2000,8 @@ test("a refusal that lands after switching sessions stays with the session that 
   });
   const input = await modeSettled("steer");
 
-  type(input, "hold this");
-  fireEvent.click(sendButton());
+  await type(user, input, "hold this");
+  await user.click(sendButton());
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -1973,18 +2010,18 @@ test("a refusal that lands after switching sessions stays with the session that 
     )
   );
 
-  const other = await switchTo("Reviewer");
-  type(other, "Reviewer's own words");
-  expect(sendButton().hasAttribute("disabled")).toBe(false);
+  const other = await switchTo(user, "Reviewer");
+  await type(user, other, "Reviewer's own words");
+  expect(sendButton()).not.toHaveAttribute("disabled");
   await act(async () => {
     held[0]?.reject(new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" }));
     await Bun.sleep(50);
   });
   expect(composerInput().value).toBe("Reviewer's own words");
-  expect(screen.queryByTestId("agent-send-error")).toBeNull();
-  expect(screen.queryByTestId("agent-send-held")).toBeNull();
+  expect(screen.queryByTestId("agent-send-error")).not.toBeInTheDocument();
+  expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
 
-  await switchTo("Planner");
+  await switchTo(user, "Planner");
   expect((await screen.findByTestId("agent-send-error")).textContent).toBe(
     "Could not send: Dispatch refused it"
   );
@@ -1998,6 +2035,7 @@ test("a refusal that lands after switching sessions stays with the session that 
 // A refused send is one turn, however often a Retry of it is refused, and it no longer holds the
 // line: its Retry joins behind what was pressed since.
 test("a send pressed while another is out waits its turn, and a refused one is retried at the back", async () => {
+  const user = userEvent.setup();
   const { createAgentMessage, held } = holdSends();
   renderLiveView({
     agentState: {},
@@ -2007,8 +2045,8 @@ test("a send pressed while another is out waits its turn, and a refused one is r
   const input = await modeSettled("steer");
   const refusal = new ApiError(400, { code: "MESSAGE_INPUT", error: "Dispatch refused it" });
 
-  type(input, "first");
-  fireEvent.click(sendButton());
+  await type(user, input, "first");
+  await user.click(sendButton());
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -2016,10 +2054,11 @@ test("a send pressed while another is out waits its turn, and a refused one is r
       keyedAttempt
     )
   );
-  type(composerInput(), "second");
-  expect(sendButton().hasAttribute("aria-disabled")).toBe(false);
+  await type(user, composerInput(), "second");
+  expect(sendButton()).not.toHaveAttribute("aria-disabled");
   expect(within(composer()).getByText("Enter to send · Shift+Enter for a new line")).toBeTruthy();
-  fireEvent.keyDown(composerInput(), { key: "Enter" });
+  // The paste left the caret in the box, so Enter is this second press.
+  await user.keyboard("{Enter}");
   await waitFor(() => expect(screen.getAllByTestId("agent-send-held")).toHaveLength(2));
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
@@ -2034,7 +2073,7 @@ test("a send pressed while another is out waits its turn, and a refused one is r
     keyedAttempt
   );
 
-  fireEvent.click(
+  await user.click(
     within(screen.getAllByTestId("agent-send-held")[0] as HTMLElement).getByRole("button", {
       name: "Retry",
     })
@@ -2053,19 +2092,20 @@ test("a send pressed while another is out waits its turn, and a refused one is r
   });
   await screen.findByTestId("agent-send-error");
   expect(screen.getAllByTestId("agent-send-held")).toHaveLength(1);
-  fireEvent.click(
+  await user.click(
     within(screen.getByTestId("agent-send-held")).getByRole("button", { name: "Retry" })
   );
   await waitFor(() => expect(createAgentMessage).toHaveBeenCalledTimes(4));
   await act(async () => {
     held[3]?.resolve(message("sent", "first"));
   });
-  await waitFor(() => expect(screen.queryByTestId("agent-send-held")).toBeNull());
+  await waitFor(() => expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument());
 });
 
 // What a person is writing to one session stays with it: switching to another shows that
 // session's own box, and switching back finds the draft where it was left.
 test("a draft stays with its session across a switch to another", async () => {
+  const user = userEvent.setup();
   renderLiveView({
     agentState: {},
     messages: [],
@@ -2074,10 +2114,10 @@ test("a draft stays with its session across a switch to another", async () => {
   });
   const input = await modeSettled("steer");
 
-  type(input, "draft for the planner");
-  const other = await switchTo("Reviewer");
+  await type(user, input, "draft for the planner");
+  const other = await switchTo(user, "Reviewer");
   expect(other.value).toBe("");
-  const back = await switchTo("Planner");
+  const back = await switchTo(user, "Planner");
   expect(back.value).toBe("draft for the planner");
 });
 
@@ -2086,6 +2126,7 @@ test("a draft stays with its session across a switch to another", async () => {
 // message out on another session holds nothing there either, and Enter sends nothing while a
 // switch holds.
 test("a pending switch holds its own session's Send, and a send out on another holds nothing there", async () => {
+  const user = userEvent.setup();
   const { createAgentMessage, held: answers } = holdSends();
   const view = renderLiveView({
     agentState: {},
@@ -2097,7 +2138,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
   await screen.findByRole("combobox", { name: "Model" });
   await modeSettled("steer");
 
-  fireEvent.change(picker("Model"), { target: { value: "anthropic/model-b" } });
+  await user.selectOptions(picker("Model"), "anthropic/model-b");
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,
@@ -2112,19 +2153,20 @@ test("a pending switch holds its own session's Send, and a send out on another h
     .map((id) => document.getElementById(id)?.textContent ?? "")
     .join(" ");
   expect(describedBy).toBe(wait);
-  expect(within(composer()).queryByText("Type a message first.")).toBeNull();
-  type(composerInput(), "and then run the tests");
+  expect(within(composer()).queryByText("Type a message first.")).not.toBeInTheDocument();
+  await type(user, composerInput(), "and then run the tests");
   expect(sendButton().disabled).toBe(true);
   expect(within(composer()).getByText(wait)).toBeTruthy();
   expect(within(composer()).queryByText("Enter to send · Shift+Enter for a new line")).toBeNull();
-  fireEvent.keyDown(composerInput(), { key: "Enter" });
+  // The paste left the caret in the box: a switch holds this press, and nothing is sent.
+  await user.keyboard("{Enter}");
   await Bun.sleep(50);
   expect(createAgentMessage).toHaveBeenCalledTimes(1);
 
-  const other = await switchTo("Reviewer");
-  type(other, "review the diff");
+  const other = await switchTo(user, "Reviewer");
+  await type(user, other, "review the diff");
   await waitFor(() => expect(sendButton().disabled).toBe(false));
-  fireEvent.click(sendButton());
+  await user.click(sendButton());
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenLastCalledWith(
       OTHER,
@@ -2133,12 +2175,12 @@ test("a pending switch holds its own session's Send, and a send out on another h
     )
   );
   await waitFor(() => expect(screen.getAllByTestId("agent-send-held")).toHaveLength(1));
-  expect(sendButton().getAttribute("title")).toBe("Type a message first.");
+  expect(sendButton()).toHaveAttribute("title", "Type a message first.");
 
-  const back = await switchTo("Planner");
+  const back = await switchTo(user, "Planner");
   expect(back.value).toBe("and then run the tests");
   expect(sendButton().disabled).toBe(true);
-  expect(screen.queryByTestId("agent-send-held")).toBeNull();
+  expect(screen.queryByTestId("agent-send-held")).not.toBeInTheDocument();
   await act(async () => {
     answers[0]?.resolve(message("switch-1", "/model anthropic/model-b"));
   });
@@ -2166,7 +2208,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
   );
   expect(sendButton().disabled).toBe(false);
   expect(within(composer()).getByText("Enter to send · Shift+Enter for a new line")).toBeTruthy();
-  await switchTo("Reviewer");
+  await switchTo(user, "Reviewer");
   expect(sendButton().disabled).toBe(false);
 });
 
@@ -2174,6 +2216,7 @@ test("a pending switch holds its own session's Send, and a send out on another h
 // pressable, the message goes as an aside, and the warning that it records a failed attempt
 // stays up.
 test("a session advertising no delivery mode still takes a mid-turn send as an aside", async () => {
+  const user = userEvent.setup();
   const createAgentMessage = acceptSends();
   renderLiveView({
     agentState: {},
@@ -2185,11 +2228,11 @@ test("a session advertising no delivery mode still takes a mid-turn send as an a
   await screen.findByTestId("agent-takes-no-messages");
   await midTurnShown();
 
-  type(composerInput(), "are you there?");
+  await type(user, composerInput(), "are you there?");
   const send = sendButton();
-  expect(send.hasAttribute("disabled")).toBe(false);
-  expect(send.hasAttribute("aria-disabled")).toBe(false);
-  fireEvent.click(send);
+  expect(send).not.toHaveAttribute("disabled");
+  expect(send).not.toHaveAttribute("aria-disabled");
+  await user.click(send);
   await waitFor(() =>
     expect(createAgentMessage).toHaveBeenCalledWith(
       SESSION,

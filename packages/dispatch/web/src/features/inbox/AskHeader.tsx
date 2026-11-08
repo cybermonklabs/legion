@@ -21,7 +21,7 @@ import { buildDispatchReference, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { askTurnHolder } from "./ask-turn";
-import { URGENCY_LABELS } from "./ask-urgency";
+import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 
 /**
  * Where a header is drawn. Each place keeps its own grammar and tone, and every one of them
@@ -171,7 +171,7 @@ function DrawnAskHeader({
 }: AskHeaderProps & { asker: AskHeaderAsker | undefined }): ReactNode {
   const author = ask?.author;
   const session = author?.kind === "session" ? author : undefined;
-  const reference = ask === undefined ? undefined : itemRoute("ask", ask, ask.document ?? owner);
+  const reference = ask === undefined ? undefined : itemRoute("ask", ask, owner);
   const urgency = block?.urgency ?? ask?.urgency;
   const state = block?.state ?? ask?.state;
   // Who asked, when, and the reference: the card below a decision block draws all three, so the
@@ -203,9 +203,9 @@ function DrawnAskHeader({
     ask === undefined || !hasUrgencyNotch(ask, inBlock) ? null : (
       <span
         aria-hidden="true"
-        className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[ask.urgency]}`}
+        className={`absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${surfaceBg} ${URGENCY_NOTCH_TEXT[askUrgency(ask.urgency)]}`}
       >
-        {URGENCY_LABELS[ask.urgency].toUpperCase()}
+        {URGENCY_LABELS[askUrgency(ask.urgency)].toUpperCase()}
       </span>
     );
 

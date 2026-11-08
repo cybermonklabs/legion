@@ -1,6 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the dialog form's own submit, which user-event has no form for
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
@@ -10,8 +12,14 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { CreateIssueDialog } from "./CreateIssueDialog";
 
 const projects = [
-  { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0 },
-  { created_at: "2026-09-10T00:00:00Z", key: "OPS", name: "Operations", open_asks: 0 },
+  { created_at: "2026-09-10T00:00:00Z", key: "CORE", name: "Core", open_asks: 0, gated_steps: [] },
+  {
+    created_at: "2026-09-10T00:00:00Z",
+    key: "OPS",
+    name: "Operations",
+    open_asks: 0,
+    gated_steps: [],
+  },
 ];
 
 function issue(input: CreateIssueInput, key: string): Issue {
@@ -53,6 +61,7 @@ function renderDialog(
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
   });
+  const user = userEvent.setup();
   const view = render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={queryClient}>
@@ -64,6 +73,7 @@ function renderDialog(
     </MemoryRouter>
   );
   return {
+    user,
     unmount: () => {
       view.unmount();
       queryClient.clear();
@@ -95,16 +105,14 @@ test("preselects the route's project, submits title and spec, and opens the crea
     const select = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Project" });
     await waitFor(() => expect(select.value).toBe("OPS"));
     const create = screen.getByRole("button", { name: "Create" });
-    expect(create.getAttribute("aria-disabled")).toBe("true");
+    expect(create).toHaveAttribute("aria-disabled", "true");
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
-      target: { value: "  Ship the keymap  " },
-    });
-    expect(create.hasAttribute("aria-disabled")).toBe(false);
-    fireEvent.change(screen.getByRole("textbox", { name: /Spec/ }), {
-      target: { value: "One line of spec." },
-    });
-    fireEvent.click(create);
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("  Ship the keymap  ");
+    expect(create).not.toHaveAttribute("aria-disabled");
+    await view.user.click(screen.getByRole("textbox", { name: /Spec/ }));
+    await view.user.paste("One line of spec.");
+    await view.user.click(create);
 
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/OPS-7")
@@ -131,18 +139,18 @@ test("a refused create keeps the dialog and draft, shows the server message, and
   });
   try {
     await screen.findByRole("combobox", { name: "Project" });
-    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
-      target: { value: "Flaky create" },
-    });
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Flaky create");
+    // The form's own submit: user-event has no form for it.
     fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("the project is being moved");
+    expect(alert).toHaveTextContent("the project is being moved");
     expect(screen.getByRole<HTMLInputElement>("textbox", { name: "Title" }).value).toBe(
       "Flaky create"
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await view.user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-3")
     );
@@ -171,7 +179,9 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
   try {
     await screen.findByRole("combobox", { name: "Project" });
     const title = screen.getByRole<HTMLInputElement>("textbox", { name: "Title" });
-    fireEvent.change(title, { target: { value: "Made once" } });
+    await view.user.click(title);
+    await view.user.paste("Made once");
+    // The form's own submit: user-event has no form for it.
     fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
 
     const made = await screen.findByTestId("landed-without-answer");
@@ -179,9 +189,10 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
       "The issue “Made once” was made, but Dispatch lost its answer, so it may take a moment to appear."
     );
     expect(title.value).toBe("");
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(screen.getByTestId("current-route").textContent).toBe("/");
 
+    // The form's own submit again, with the draft gone: user-event has no form for it.
     fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
     await Bun.sleep(20);
     expect(attempts).toBe(1);
@@ -205,15 +216,14 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
   });
   try {
     await screen.findByRole("combobox", { name: "Project" });
-    fireEvent.change(screen.getByRole("textbox", { name: "Title" }), {
-      target: { value: "Astrolabe calibration" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Astrolabe calibration");
+    await view.user.click(screen.getByRole("button", { name: "Create" }));
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("CORE-1");
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Create anyway" }));
+    expect(alert).toHaveTextContent("CORE-1");
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    await view.user.click(screen.getByRole("button", { name: "Create anyway" }));
 
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-2")
@@ -236,6 +246,8 @@ test("Create refused by an empty draft keeps focus, sends nothing and says why",
     await screen.findByRole("combobox", { name: "Project" });
     const create = screen.getByRole("button", { name: "Create" });
     create.focus();
+    // A press on a control the refusal already holds, with the focus the line above set:
+    // user-event will not click what it reads as unpressable, which is the row's subject.
     fireEvent.click(create);
 
     expect(calls).toEqual([]);
@@ -260,6 +272,8 @@ test("Create anyway refused by a cleared title keeps focus, sends nothing and sa
   try {
     await screen.findByRole("combobox", { name: "Project" });
     const title = screen.getByRole("textbox", { name: "Title" });
+    // The title field's own `change`, written and then cleared, and presses on a refused
+    // Create: user-event has no form for a press it reads as unpressable.
     fireEvent.change(title, { target: { value: "Astrolabe calibration" } });
     fireEvent.click(screen.getByRole("button", { name: "Create" }));
     await screen.findByRole("alert");
@@ -267,6 +281,7 @@ test("Create anyway refused by a cleared title keeps focus, sends nothing and sa
 
     const anyway = screen.getByRole("button", { name: "Create anyway" });
     anyway.focus();
+    // A press on a control the refusal already holds, with the focus the line above set.
     fireEvent.click(anyway);
 
     expect(calls).toHaveLength(1);
