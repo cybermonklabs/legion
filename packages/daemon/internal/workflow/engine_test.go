@@ -1010,3 +1010,37 @@ func capPosts(t *testing.T, pool *pgxpool.Pool) (messages []string, blocked int)
 	}
 	return messages, blocked
 }
+
+// A worker's own backward move (request_backward_move) tells the architect under the same
+// phase-finished kind its prompt routes on, and the handoff row such a move writes is empty — no
+// summary, no verdict. Without a reason of its own the architect reads that notice as a completion
+// that said nothing, which is how a tester's return to implementing looked like a phase that
+// finished with no verdict. So the notice names the move: the phase it went back to, the role that
+// asked, and that role's own words.
+func TestABackwardMovesNoticeNamesTheMoveAndItsReason(t *testing.T) {
+	pool := migratedPool(t)
+	ctx := context.Background()
+	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+
+	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-back", intake.BackwardMove{
+		Issue: "LEGION-208", Requester: claim.RoleTester, To: phase.Implementing, Reason: "the harness needs a fixture the plan does not name",
+	}, testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+		t.Fatalf("ApplyFact the tester's backward move: %v", err)
+	}
+	var payload []byte
+	if err := pool.QueryRow(ctx, "select payload from outbox where kind = 'notice' and payload->>'kind' = 'phase-finished'").Scan(&payload); err != nil {
+		t.Fatalf("read the phase-finished notice: %v", err)
+	}
+	var notice map[string]any
+	if err := json.Unmarshal(payload, &notice); err != nil {
+		t.Fatalf("decode notice %s: %v", payload, err)
+	}
+	want := "moved back to implementing by the tester: the harness needs a fixture the plan does not name"
+	if notice["role"] != "tester" || notice["phase"] != "testing" || notice["reason"] != want {
+		t.Fatalf("the backward move's notice = %s, want the tester's phase-finished for testing reading %q", payload, want)
+	}
+	if notice["summary"] != nil || notice["verdict"] != nil {
+		t.Fatalf("the backward move's notice = %s, want no summary and no verdict: the row a move writes is empty", payload)
+	}
+}

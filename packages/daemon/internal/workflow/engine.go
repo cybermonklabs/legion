@@ -1097,7 +1097,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 			return err
 		}
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, from, row.To, handoff, reason)); err != nil {
 		return err
 	}
 	if err := e.phaseEnded(ctx, tx, issue, trigger, from, row.To, starting, reason); err != nil {
@@ -1112,17 +1112,26 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	return nil
 }
 
-// noticeFor is what a transition on trigger out of from tells the architect: that from finished,
-// with its worker's handoff, or, when the head started conflicting with its base (TriggerConflict),
-// why, under the checks-red kind the architect's prompt reads, since that is the daemon stopping
-// the phase on something it read of the head. Two moves tell it nothing (a notice of no kind, which
-// notice drops): its own sign-off, whose only recipient would be the architect that just acted, and
-// the merge that closes the issue, whose close tells a child's architect child-closed itself
-// (leave) and suspends a root's with the rest of its tree.
-func noticeFor(trigger TriggerKind, from phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
+// noticeFor is what a transition on trigger out of from into to tells the architect: that from
+// finished, with its worker's handoff, or, when the head started conflicting with its base
+// (TriggerConflict), why, under the checks-red kind the architect's prompt reads, since that is
+// the daemon stopping the phase on something it read of the head. Two moves tell it nothing (a
+// notice of no kind, which notice drops): its own sign-off, whose only recipient would be the
+// architect that just acted, and the merge that closes the issue, whose close tells a child's
+// architect child-closed itself (leave) and suspends a root's with the rest of its tree.
+//
+// A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
+// kind the architect's prompt routes on, and says in its reason what happened and who asked: the
+// phase it moved the issue to, the role that moved it and the words that role gave. The handoff
+// row a move writes is empty, so without that reason the architect reads a completion with no
+// summary and no verdict and cannot tell it from a worker that finished its phase.
+func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
 	switch trigger {
 	case TriggerConflict:
 		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
+	case TriggerBackward:
+		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
+			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
