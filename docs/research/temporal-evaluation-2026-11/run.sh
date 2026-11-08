@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# run.sh reproduces the eighteen experiments of the workflow-engine evaluation of
+# run.sh reproduces the twenty experiments of the workflow-engine evaluation of
 # INFRA-1546 against the real thing in every case.
 #
 #   bash docs/research/temporal-evaluation-2026-11/run.sh
@@ -8,11 +8,11 @@
 # The directory is named temporal-evaluation because the issue started as a question
 # about Temporal; the evaluation now measures five products:
 #
-#   1 to 6    Temporal, against a dev server this script installs and runs
-#   7 to 9    DBOS Transact, a Go library on the pod's PostgreSQL
-#   10 to 12  Restate, against a restate-server this script installs
-#   13 to 15  go-workflows, a Go library on the pod's PostgreSQL
-#   16 to 18  durabletask-go, a Go library on the pod's PostgreSQL
+#   1 to 6, 19, 20  Temporal, against a dev server this script installs and runs
+#   7 to 9          DBOS Transact, a Go library on the pod's PostgreSQL
+#   10 to 12        Restate, against a restate-server this script installs
+#   13 to 15        go-workflows, a Go library on the pod's PostgreSQL
+#   16 to 18        durabletask-go, a Go library on the pod's PostgreSQL
 #
 # It runs from the repository root, or from anywhere else: it finds its own directory
 # and the repository root from there. It writes nothing into the working tree. The
@@ -21,13 +21,21 @@
 # checkout stays clean and `jj status` after a run shows nothing new.
 #
 # It stops at the first failure up to the point where the experiments start, naming
-# what failed. From there it runs all eighteen whatever each one does, so one failure
-# does not hide the other seventeen, and ends with the line
+# what failed. From there it runs all twenty whatever each one does, so one failure
+# does not hide the other nineteen, and ends with the line
 #
-#   temporal-evaluation: all 18 experiments passed
+#   temporal-evaluation: all 20 experiments passed
 #
-# only when all eighteen passed. Otherwise it names each experiment that did not pass
-# and exits non-zero without that line.
+# only when all twenty passed and every control failed. Otherwise it names each
+# experiment that did not pass and each control that did not fail, and exits non-zero
+# without that line.
+#
+# Each of the five kill experiments -- 3, 7, 10, 13 and 16 -- is followed by its
+# control: the same experiment run again, with the same flags and -no-kill added, in a
+# scratch directory of its own. The control must fail, because an experiment that
+# passes with nothing killed measures nothing; a control that exits zero is a failure
+# of this run, named apart from the experiment itself. A control is not an experiment
+# and is not counted as one, so the count in that last line stays 20.
 
 set -o errexit -o nounset -o pipefail
 
@@ -51,15 +59,23 @@ readonly restate_version_line='restate-server 1.8.1'
 # The Go module proxy the prototype's dependencies come from.
 readonly go_proxy_url='https://proxy.golang.org/'
 
-# The six Temporal namespaces, one per Temporal experiment. The server's Action
+# The eight Temporal namespaces, one per Temporal experiment. The server's Action
 # counter is a server-lifetime counter carrying a namespace label, so experiment 6 can
 # only count its own Actions if nothing else ran in its namespace.
-readonly namespaces=(e1 e2 e3 e4 e5 e6)
+readonly namespaces=(e1 e2 e3 e4 e5 e6 e7 e8)
 
 # How long to wait for the server to answer, and how long one experiment may take. The
-# slowest experiment on 2026-11-07 was the eleventh, at about 50 seconds.
+# slowest experiment on 2026-11-07, experiment 20 aside, was the eleventh, at about 50
+# seconds.
 readonly server_ready_timeout=120
 readonly experiment_timeout=300
+
+# Experiment 20 holds one handed-out activity open for five minutes of real time with
+# no worker alive, which is the whole measurement and cannot be shortened. It gets a
+# bound of its own rather than lifting every other experiment's, which would let a
+# hung experiment sit for a quarter of an hour: fifteen minutes leaves the hold, the
+# handout around it and the completion after it room to finish.
+readonly experiment_20_timeout=900
 
 die() {
 	printf 'temporal-evaluation: %s\n' "$*" >&2
@@ -123,13 +139,13 @@ mkdir -p -- "$cli_dir" "$restate_dir" "$bin_dir" "$server_dir"
 say "temporary directory: $base_dir"
 say "repository root: $repo_root"
 
-# --- 2. the PostgreSQL nine of the eighteen need -------------------------------------
+# --- 2. the PostgreSQL nine of the twenty need ---------------------------------------
 
 # Experiments 7 to 9, 13 to 15 and 16 to 18 measure libraries whose whole state lives
 # in the application's own PostgreSQL. Without a database there is nothing to measure,
 # and a run that skipped them would not be this evaluation.
 [[ -n "${LEGION_TEST_PG_DSN:-}" ]] ||
-	die "LEGION_TEST_PG_DSN is empty. Nine of the eighteen experiments -- 7 to 9 for DBOS, 13 to 15 for go-workflows and 16 to 18 for durabletask-go -- measure libraries that keep their workflow state in PostgreSQL, so this run cannot measure them without one. Set LEGION_TEST_PG_DSN to a PostgreSQL URL this process may create a database in and run again."
+	die "LEGION_TEST_PG_DSN is empty. Nine of the twenty experiments -- 7 to 9 for DBOS, 13 to 15 for go-workflows and 16 to 18 for durabletask-go -- measure libraries that keep their workflow state in PostgreSQL, so this run cannot measure them without one. Set LEGION_TEST_PG_DSN to a PostgreSQL URL this process may create a database in and run again."
 readonly postgres_dsn="$LEGION_TEST_PG_DSN"
 say 'LEGION_TEST_PG_DSN is set'
 
@@ -370,76 +386,156 @@ done
 }
 say "the dev server answers on $server_address"
 
-# --- 10. the eighteen experiments ------------------------------------------------------
+# --- 10. the twenty experiments --------------------------------------------------------
+
+# The flags one Restate run needs, and the label naming the ports it was given. Each
+# run of a Restate experiment -- and each control of one -- holds a restate-server of
+# its own, so each reserves a pair of ports for itself. They are globals rather than
+# printed output because every caller of free_port has to record what it was handed,
+# and a command substitution is a subshell that could not.
+restate_flags=()
+restate_label=''
+
+reserve_restate() {
+	local what=$1 ingress admin
+	ingress=$(free_port) || die "found no free port for $what's Restate ingress"
+	taken_ports+=("$ingress")
+	admin=$(free_port) || die "found no free port for $what's Restate admin API"
+	taken_ports+=("$admin")
+	restate_label=" (restate ingress 127.0.0.1:$ingress, admin 127.0.0.1:$admin)"
+	restate_flags=(
+		-restate-server "$restate_bin"
+		-restate-service "$bin_dir/restateservice"
+		-restate-ingress "127.0.0.1:$ingress"
+		-restate-admin "127.0.0.1:$admin"
+	)
+}
 
 # Every experiment is given a scratch directory of its own and the flags its own
-# product needs. The Restate experiments start and stop their own restate-server, one
-# per experiment, on ports this script reserves for them.
+# product needs. Experiments 19 and 20 run straight after experiment 6 because they
+# need the dev server those six share, which is stopped as soon as 20 is done. The
+# Restate experiments start and stop their own restate-server, one per experiment, on
+# ports this script reserves for them.
+#
+# Each kill experiment that passed is followed by its control: the same experiment,
+# the same flags, -no-kill added, a scratch directory of its own so it neither reads
+# nor overwrites the experiment's files, and the experiment's own timeout. A control
+# that fails proves the experiment measures its kill; one that passes proves it
+# measures nothing, and is counted here apart from the experiments.
 failed=()
-for n in $(seq 1 18); do
+controls_that_passed=()
+for n in 1 2 3 4 5 6 19 20 7 8 9 10 11 12 13 14 15 16 17 18; do
 	work_dir="$run_dir/work/e$n"
 	mkdir -p -- "$work_dir"
 
-	args=(-experiment "$n" -work-dir "$work_dir")
+	# The flags this experiment's product needs, which its control needs too.
+	flags=()
 	label=''
+	# How long this experiment may take, and its control with it. Only experiment 20
+	# needs more than the bound every other experiment shares.
+	bound=$experiment_timeout
 	case "$n" in
 	[1-6])
 		namespace=${namespaces[$((n - 1))]}
 		label=" (namespace $namespace)"
-		args+=(-address "$server_address" -namespace "$namespace" -repo-root "$repo_root")
+		flags+=(-address "$server_address" -namespace "$namespace" -repo-root "$repo_root")
 		case "$n" in
-		3) args+=(-session-worker "$bin_dir/sessionworker") ;;
-		6) args+=(-metrics-url "$metrics_url") ;;
+		3) flags+=(-session-worker "$bin_dir/sessionworker") ;;
+		6) flags+=(-metrics-url "$metrics_url") ;;
 		esac
 		;;
+	19)
+		namespace=${namespaces[6]}
+		label=" (namespace $namespace)"
+		flags+=(-address "$server_address" -namespace "$namespace")
+		;;
+	20)
+		namespace=${namespaces[7]}
+		label=" (namespace $namespace)"
+		flags+=(-address "$server_address" -namespace "$namespace")
+		bound=$experiment_20_timeout
+		;;
 	7 | 8 | 9)
-		args+=(-postgres-dsn "$postgres_dsn" -dbos-worker "$bin_dir/dbosworker")
+		flags+=(-postgres-dsn "$postgres_dsn" -dbos-worker "$bin_dir/dbosworker")
 		;;
 	10 | 11 | 12)
-		ingress_port=$(free_port) || die "found no free port for experiment $n's Restate ingress"
-		taken_ports+=("$ingress_port")
-		admin_port=$(free_port) || die "found no free port for experiment $n's Restate admin API"
-		taken_ports+=("$admin_port")
-		label=" (restate ingress 127.0.0.1:$ingress_port, admin 127.0.0.1:$admin_port)"
-		args+=(
-			-restate-server "$restate_bin"
-			-restate-service "$bin_dir/restateservice"
-			-restate-ingress "127.0.0.1:$ingress_port"
-			-restate-admin "127.0.0.1:$admin_port"
-		)
+		reserve_restate "experiment $n"
+		label=$restate_label
+		flags+=("${restate_flags[@]}")
 		;;
 	13 | 14 | 15)
-		args+=(-postgres-dsn "$postgres_dsn" -gw-worker "$bin_dir/gwworker")
+		flags+=(-postgres-dsn "$postgres_dsn" -gw-worker "$bin_dir/gwworker")
 		;;
 	16 | 17 | 18)
-		args+=(-postgres-dsn "$postgres_dsn" -dt-worker "$bin_dir/dtworker")
+		flags+=(-postgres-dsn "$postgres_dsn" -dt-worker "$bin_dir/dtworker")
 		;;
 	esac
 
 	printf '\n=== experiment %d%s ===\n' "$n" "$label"
 	status=0
-	timeout "$experiment_timeout" "$bin_dir/experiments" "${args[@]}" || status=$?
+	timeout "$bound" "$bin_dir/experiments" \
+		-experiment "$n" -work-dir "$work_dir" "${flags[@]}" || status=$?
 	if ((status != 0)); then
 		failed+=("$n")
 		printf 'experiment %d: exit status %d\n' "$n" "$status"
 	fi
 
-	# The Temporal dev server is only for experiments 1 to 6; nothing after them
-	# needs a server this script runs.
-	if ((n == 6)); then
+	# The control of a kill experiment, run while everything that experiment needed
+	# is still up: the dev server for experiment 3, the database for the rest.
+	case "$n" in
+	3 | 7 | 10 | 13 | 16)
+		if ((status != 0)); then
+			printf '\n=== experiment %d control (no kill) ===\n' "$n"
+			printf 'experiment %d control: not run, because experiment %d did not pass, and a control of an experiment that failed proves nothing\n' "$n" "$n"
+		else
+			control_dir="$run_dir/work/e$n-control"
+			mkdir -p -- "$control_dir"
+			control_flags=("${flags[@]}")
+			control_label=$label
+			# A Restate control holds a restate-server of its own, as its
+			# experiment does, so it gets ports of its own the same way.
+			if ((n == 10)); then
+				reserve_restate "experiment $n's control"
+				control_flags=("${restate_flags[@]}")
+				control_label=$restate_label
+			fi
+			printf '\n=== experiment %d control (no kill)%s ===\n' "$n" "$control_label"
+			control_status=0
+			timeout "$bound" "$bin_dir/experiments" \
+				-experiment "$n" -work-dir "$control_dir" "${control_flags[@]}" -no-kill ||
+				control_status=$?
+			if ((control_status == 0)); then
+				controls_that_passed+=("$n")
+				printf "experiment %d control: exit status 0 -- the run that killed nothing passed, so experiment %d measures nothing\n" "$n" "$n"
+			else
+				printf 'experiment %d control: exit status %d -- the run that killed nothing failed, as a control must\n' "$n" "$control_status"
+			fi
+		fi
+		;;
+	esac
+
+	# The Temporal dev server is only for experiments 1 to 6, 19 and 20, which run
+	# one after another; nothing after them needs a server this script runs.
+	if ((n == 20)); then
 		stop_dev_server
-		say 'the dev server is stopped: experiments 7 to 18 measure libraries and a server of their own'
+		say 'the dev server is stopped: experiments 1 to 6, 19 and 20 are done, and 7 to 18 measure libraries and a server of their own'
 	fi
 done
 
 # --- 11. the verdict ------------------------------------------------------------------
 
 printf '\n'
-if ((${#failed[@]} > 0)); then
+if ((${#failed[@]} > 0 || ${#controls_that_passed[@]} > 0)); then
 	for n in "${failed[@]}"; do
 		printf 'temporal-evaluation: experiment %d did not pass\n' "$n" >&2
 	done
-	printf 'temporal-evaluation: %d of 18 experiments did not pass\n' "${#failed[@]}" >&2
+	for n in "${controls_that_passed[@]}"; do
+		printf "temporal-evaluation: experiment %d's control did not fail, so experiment %d measures nothing\n" "$n" "$n" >&2
+	done
+	((${#failed[@]} == 0)) ||
+		printf 'temporal-evaluation: %d of 20 experiments did not pass\n' "${#failed[@]}" >&2
+	((${#controls_that_passed[@]} == 0)) ||
+		printf "temporal-evaluation: %d of the 5 kill experiments' controls did not fail\n" "${#controls_that_passed[@]}" >&2
 	exit 1
 fi
-printf 'temporal-evaluation: all 18 experiments passed\n'
+printf 'temporal-evaluation: all 20 experiments passed\n'

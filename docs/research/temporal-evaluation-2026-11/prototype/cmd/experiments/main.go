@@ -7,7 +7,7 @@
 //	experiments -experiment N [-restate-server PATH] [-restate-service PATH] \
 //	    [-restate-ingress HOST:PORT] [-restate-admin HOST:PORT] [-work-dir DIR]
 //
-// Experiments 1 to 6 measure Temporal and take its address; experiments 7 to 9
+// Experiments 1 to 6, 19 and 20 measure Temporal and take its address; experiments 7 to 9
 // measure DBOS, which is a library keeping its state in the application's own
 // PostgreSQL, and take that database's URL instead; experiments 10 to 12 measure
 // Restate, which is a server that calls the application, and take that server's two
@@ -36,7 +36,9 @@ import (
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp16"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp17"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp18"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp19"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp2"
+	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp20"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp3"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp4"
 	"github.com/cybermonklabs/legion/docs/research/temporal-evaluation-2026-11/prototype/internal/exp5"
@@ -53,9 +55,9 @@ const notImplemented = 2
 
 func main() {
 	var cfg harness.Config
-	flag.IntVar(&cfg.Experiment, "experiment", 0, "which experiment to run, 1..18")
-	flag.StringVar(&cfg.Address, "address", "127.0.0.1:7233", "the Temporal server's gRPC address (experiments 1..6)")
-	flag.StringVar(&cfg.Namespace, "namespace", "default", "the Temporal namespace to run in (experiments 1..6)")
+	flag.IntVar(&cfg.Experiment, "experiment", 0, "which experiment to run, 1..20")
+	flag.StringVar(&cfg.Address, "address", "127.0.0.1:7233", "the Temporal server's gRPC address (experiments 1..6, 19 and 20)")
+	flag.StringVar(&cfg.Namespace, "namespace", "default", "the Temporal namespace to run in (experiments 1..6, 19 and 20)")
 	flag.StringVar(&cfg.SessionWorker, "session-worker", "", "absolute path of the built cmd/sessionworker binary (experiment 3)")
 	flag.StringVar(&cfg.MetricsURL, "metrics-url", "", "the dev server's Prometheus endpoint (experiment 6)")
 	flag.StringVar(&cfg.WorkDir, "work-dir", "", "a writable scratch directory the experiment may use")
@@ -74,8 +76,8 @@ func main() {
 	noKill := flag.Bool("no-kill", false, "experiments 3, 7, 10, 13 and 16 only: skip the kill, to prove a run that kills nothing fails")
 	flag.Parse()
 
-	if cfg.Experiment < 1 || cfg.Experiment > 18 {
-		fmt.Fprintf(os.Stderr, "experiments: -experiment must be 1..18, got %d\n", cfg.Experiment)
+	if cfg.Experiment < 1 || cfg.Experiment > 20 {
+		fmt.Fprintf(os.Stderr, "experiments: -experiment must be 1..20, got %d\n", cfg.Experiment)
 		os.Exit(notImplemented)
 	}
 
@@ -119,6 +121,10 @@ func main() {
 		os.Exit(harness.Verdict(cfg.Experiment, exp17.Run(ctx, cfg)))
 	case 18:
 		os.Exit(harness.Verdict(cfg.Experiment, exp18.Run(ctx, cfg)))
+	case 19:
+		os.Exit(harness.Verdict(cfg.Experiment, exp19.Run(ctx, cfg)))
+	case 20:
+		os.Exit(harness.Verdict(cfg.Experiment, exp20.Run(ctx, cfg)))
 	default:
 		fmt.Printf("experiment %d: not implemented\n", cfg.Experiment)
 		os.Exit(notImplemented)
