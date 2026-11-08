@@ -9,11 +9,8 @@ import type { Server, Subprocess } from "bun";
 import type { DispatchProcess } from "../harness-processes";
 import type { ProxiedRequest, ProxiedSocket } from "../round-robin-proxy";
 
-// The test preload (web/src/__tests__/setup.ts) puts happy-dom's fetch, Response and Headers and a
-// WebSocket stub on globalThis. So the proxy runs as the harness runs it, a `bun` process of its
-// own; this file answers as the two Dispatch processes with Bun's own Response, asks with
-// `Bun.fetch`, and opens websockets with Bun's `ws` client, none of which the preload replaces.
-const NativeResponse = (await Bun.fetch("data:,")).constructor as typeof Response;
+// The proxy runs as the harness runs it, a `bun` process of its own, and this file answers as the
+// two Dispatch processes it proxies and opens its websockets with `ws`'s client.
 const { WebSocket: WsClient } = require("ws") as {
   WebSocket: new (
     url: string,
@@ -74,10 +71,10 @@ function startUpstream(name: DispatchProcess) {
       if (url.pathname === "/socket") {
         return server.upgrade(request, { data: undefined })
           ? undefined
-          : new NativeResponse("no upgrade", { status: 400 });
+          : new Response("no upgrade", { status: 400 });
       }
       if (url.pathname.includes("/_test/")) {
-        return new NativeResponse(`hook on ${name}`, { status: upstream.hookStatus });
+        return new Response(`hook on ${name}`, { status: upstream.hookStatus });
       }
       if (url.pathname === "/events") {
         const body = new ReadableStream<Uint8Array>({
@@ -89,9 +86,9 @@ function startUpstream(name: DispatchProcess) {
             };
           },
         });
-        return new NativeResponse(body, { headers: { "Content-Type": "text/event-stream" } });
+        return new Response(body, { headers: { "Content-Type": "text/event-stream" } });
       }
-      return new NativeResponse(name);
+      return new Response(name);
     },
     websocket: {
       message(ws, message) {
@@ -108,7 +105,7 @@ function startUpstream(name: DispatchProcess) {
 
 /** A port nothing listens on at the moment it is asked for. */
 function freePort(): number {
-  const probe = Bun.serve({ fetch: () => new NativeResponse(), hostname: "127.0.0.1", port: 0 });
+  const probe = Bun.serve({ fetch: () => new Response(), hostname: "127.0.0.1", port: 0 });
   const port = Number(probe.url.port);
   probe.stop(true);
   return port;
@@ -397,8 +394,8 @@ describe("DISPATCH_E2E_PROCESSES", () => {
     });
     const [code, stdout, stderr] = await Promise.all([
       child.exited,
-      new NativeResponse(child.stdout).text(),
-      new NativeResponse(child.stderr).text(),
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
     ]);
     return { code, stderr, stdout };
   };
