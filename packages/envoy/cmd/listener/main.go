@@ -977,13 +977,16 @@ func main() {
 	// deployment's replica count and byte limit (listenerStreamOptions).
 	client, err := bus.ConnectOwningStream(cfg.NATSURLs, listenerStreamOptions(cfg)...)
 	if err != nil {
-		log.Fatal(err)
+		// Named, because this step and the two below it are the whole of the start-up between the
+		// listening line and "webhooks open", and each one can end it with a bare error: a reader
+		// of a log that holds only "context deadline exceeded" cannot tell which step timed out.
+		log.Fatalf("connect to NATS and reconcile the %s stream: %v", bus.Stream, err)
 	}
 	// The spent-proof bucket, before anything of /v1 can be served: a listener configured to take
 	// broker access tokens on a bus that cannot open it refuses to start, naming the setting,
 	// rather than recording spent proofs where its own replicas cannot see them.
 	if err := brokerTokenAuth.open(client.Conn, cfg.NATSReplicas); err != nil {
-		log.Fatal(err)
+		log.Fatalf("open the spent-proof bucket for broker access tokens: %v", err)
 	}
 	consumer := bus.ListenerDurable(cfg.MachineID)
 	// The durable is checked here, before the cache warm-ups below (up to 30 s each), so a refused
@@ -1013,7 +1016,7 @@ func main() {
 		renames = webhookCfg.GitHub.RepositoryRenames
 		ciStore, err = cistore.Open(client.Conn, logger, cistore.WithReplicas(cfg.NATSReplicas), cistore.WithTTL(7*24*time.Hour))
 		if err != nil {
-			log.Fatal(err)
+			log.Fatalf("open the CI store: %v", err)
 		}
 	} else {
 		logger.Info("CI store not opened: no GitHub webhook route, so this listener records and settles no checks")
@@ -1516,8 +1519,9 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	}
 
 	// Ordered shutdown:
-	// 1. Session relays — publish no frame and ack nothing more; the messages they hold are
-	//    delivered again once their ack wait runs out.
+	// 1. Session relays — publish no frame and ack nothing more; each one pulling returns the
+	//    messages it holds to the server with a nak (sessionRelays.release), so they are
+	//    delivered again at once rather than after their ack wait.
 	// 2. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
