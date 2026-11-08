@@ -260,6 +260,7 @@
       },
       "devDependencies": {
         "@biomejs/biome": "^2.3.14",
+        "@legion/test-fixtures": "workspace:*",
         "@types/bun": "latest",
         "happy-dom": "^20.14.0",
         "typescript": "^5.3.0",

@@ -10,11 +10,11 @@
  * permission bits and the gzip header's timestamp.
  */
 
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { packUpstream } from "../scripts/build-upstream-tarball";
 
 const MTIME = "2026-10-17T22:41:59Z";
@@ -25,14 +25,15 @@ const MEMBERS = [
   "package/src/lib.ts",
 ];
 
-let workDir: string;
-let sourceDir: string;
-let first: string;
-let second: string;
+// Reserved at this call, which registers the `beforeAll` that makes the directory above the one
+// below, so the tree that hook writes lands in a directory that already exists, and the `afterAll`
+// that removes it takes the subdirectories the mode cases make with it.
+const workDir = temporaryDirectory("proof-sdk-pack-test");
+const sourceDir = join(workDir, "source");
+const first = join(workDir, "first.tgz");
+const second = join(workDir, "second.tgz");
 
 beforeAll(() => {
-  workDir = mkdtempSync(join(tmpdir(), "proof-sdk-pack-test-"));
-  sourceDir = join(workDir, "source");
   mkdirSync(join(sourceDir, "src", "editor", "plugins"), { recursive: true });
   writeFileSync(join(sourceDir, "src", "lib.ts"), "export const lib = 1;\n");
   writeFileSync(
@@ -49,14 +50,8 @@ beforeAll(() => {
   for (const name of ["src/lib.ts", "src/editor/plugins/marks.ts", "package.json", "LICENSE"]) {
     chmodSync(join(sourceDir, name), 0o600);
   }
-  first = join(workDir, "first.tgz");
-  second = join(workDir, "second.tgz");
   packUpstream({ sourceDir, mtime: MTIME, outputPath: first });
   packUpstream({ sourceDir, mtime: MTIME, outputPath: second });
-});
-
-afterAll(() => {
-  rmSync(workDir, { recursive: true, force: true });
 });
 
 /** `tar --list --verbose`'s lines for an archive, one per member, with dates in UTC. */
