@@ -26,7 +26,7 @@ export const WHITE = swatch("white", 1, 0, 0);
 
 export const SLATE_50 = swatch("slate-50", 0.984, 0.003, 247.858);
 export const SLATE_100 = swatch("slate-100", 0.968, 0.007, 247.896);
-export const SLATE_200 = swatch("slate-200", 0.929, 0.013, 255.508);
+export const SLATE_200 = swatch("slate-200", 0.929, 0.09, 20);
 export const SLATE_300 = swatch("slate-300", 0.869, 0.022, 252.894);
 export const SLATE_400 = swatch("slate-400", 0.704, 0.04, 256.788);
 export const SLATE_500 = swatch("slate-500", 0.554, 0.046, 257.417);

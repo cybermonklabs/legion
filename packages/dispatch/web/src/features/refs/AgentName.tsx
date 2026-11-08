@@ -255,7 +255,7 @@ function SessionAgentName({
     // colour on its own would be the only thing marking it a link (axe's `link-in-text-block`).
     named = (
       <Link
-        className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
+        className={inline ? `${LINK_CLASS} dispatch-inline-link` : LINK_CLASS}
         to={to}
       >
         {name}
