@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
+	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/testcontainers/testcontainers-go"
@@ -329,6 +330,37 @@ func start(image string, options ...testcontainers.ContainerCustomizer) (*tcnats
 		return started, errors.Join(err, testcontainers.TerminateContainer(started))
 	}
 	return started, nil
+}
+
+// StartInProcess runs a JetStream nats-server inside the test binary, on a loopback port the
+// kernel picks and a store of t's own, and returns its client URL. It is shut down when t ends,
+// before t's temporary directory goes.
+//
+// Which of this package's three starters a test wants: URL for the package's one shared server,
+// which every test of a binary takes in turn and gets empty, and which is the server a host with
+// no Docker names in LEGION_TEST_NATS_URL; StartNkeyAuthorized and StartNkeyAuthorizedUsers for
+// a server that admits nkey users alone, which is a container and so needs a Docker; and this
+// one for a second server beside the shared one — a test that moves the daemon from one NATS
+// server to another needs two, and URL hands out one whatever the host is. It takes no
+// credential and enforces no user, so a test about authentication wants one of the others.
+// packages/envoy's own rig starts its servers this way too (internal/testnats' Server.launch).
+func StartInProcess(t testing.TB) string {
+	t.Helper()
+	srv, err := natsserver.NewServer(&natsserver.Options{
+		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("create a NATS server: %v", err)
+	}
+	go srv.Start()
+	t.Cleanup(func() {
+		srv.Shutdown()
+		srv.WaitForShutdown()
+	})
+	if !srv.ReadyForConnections(10 * time.Second) {
+		t.Fatal("the NATS server did not accept connections within 10s")
+	}
+	return srv.ClientURL()
 }
 
 // StartNkeyAuthorized runs a NATS container of its own, with JetStream, that accepts only clients

@@ -44,7 +44,14 @@ export function describeSettingSource(source: LegionSettingSource | undefined): 
  *  change it took into its own settings and could not carry into the thing that holds a copy of
  *  the value — the daemon runs on the new value, that holder kept the old one, and the text is
  *  the holder's own error (the daemon's `api.SettingResult`). A verdict word this build does not
- *  know is shown as the daemon wrote it, never dropped. */
+ *  know is shown as the daemon wrote it, never dropped.
+ *
+ *  The failure names no holder of its own, because the verdict's `holder` is not the one that
+ *  kept the old value: the daemon sets it to the row's named holder whether or not that holder
+ *  failed, and a row reaches more than one (`config.Row.Also` — `worker_rpc_timeout_seconds` is
+ *  the worker stream's and NATS's, `repository_renames` four things'). The one that failed is
+ *  named inside `failed`, which the daemon writes as `<holder>: <error>`
+ *  (`internal/daemon/holders.go`), so the text carries it once and correctly. */
 export function describeVerdict(verdict: LegionSettingVerdict): {
   readonly failure: boolean;
   readonly text: string;
@@ -53,10 +60,9 @@ export function describeVerdict(verdict: LegionSettingVerdict): {
     return { failure: true, text: `Refused: ${verdict.refused}` };
   }
   if (verdict.failed !== undefined) {
-    const holder = verdict.holder ?? "what holds it";
     return {
       failure: true,
-      text: `The daemon took the new value, and ${holder} kept the old one: ${verdict.failed}`,
+      text: `The daemon took the new value, and what holds it kept the old one: ${verdict.failed}`,
     };
   }
   switch (verdict.applied) {

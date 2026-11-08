@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -27,67 +26,26 @@ import (
 // configuration the change settled, moves this project's durable consumers onto it, and closes
 // the connection it replaced (acceptance A5).
 //
-// The connection is opened through the daemon's own openNATS, with one difference this pod
-// forces: its NATS server takes no nkeys ("nkeys not supported by the server"), so the seed the
-// changed key names is not carried onto the wire. The seed is what drives the rebuild, which is
-// what this test is about; that the seed a key names is the one the connection authenticates as
-// is TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved's, against a server that takes one.
+// The connection is opened through the daemon's own openNATS, and the seed the changed key
+// names is not carried onto the wire, since this pod's NATS server takes no nkeys
+// (bootedNATSHolder). The seed is what drives the rebuild, which is what this test is about;
+// that the seed a key names is the one the connection authenticates as is
+// TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved's, against a server that takes one.
 func TestAChangedNatsSeedRebuildsTheNatsClient(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
-	logs := &syncBuffer{}
-	w := grantWorkflow(t, logs)
-	live := liveSettings(t,
+	notificationsStreamOn(t, url)
+	w, live, _, opened := bootedNATSHolder(t,
 		"nats_urls: ["+url+"]",
 		"nats_nkey_seed_file: "+testnats.SeedFile(t, testnats.UserSeed(t)+"\n"))
-	heard, err := w.heardAtBoot(t.Context())
-	if err != nil {
-		t.Fatalf("read the repositories this project hears about: %v", err)
-	}
-	// The context boot gives the open it runs: readinessAttempt's own, bounded and cancelled
-	// the moment that open returns (readiness.go, daemon.go's serve). The holder below is built
-	// as workflowRuntime.connect builds it — the open and the handover take the context of the
-	// rebuild that calls them — so the rebuild the change makes runs on what a daemon's rebuild
-	// runs on and not on a context that lives as long as the test.
-	booting, bootOver := context.WithTimeout(t.Context(), bootTimeout)
-	var seeds []string
-	open := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
-		seeds = append(seeds, c.NatsNkeySeedFile)
-		c.NatsNkeySeedFile = ""
-		return openNATS(ctx, w, c, func(string) (string, bool) { return "", false }, intake.ConsumerSpec{
-			Project: c.Project, Repositories: heard, AckWait: c.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
-		})
-	}
-	conn, consumers, err := open(booting, *live.Snapshot())
-	if err != nil {
-		t.Fatalf("open the workflow's NATS: %v", err)
-	}
-	rebuild := newRebuilder(w.log, config.Settled(*live.Snapshot()))
-	live.OnChange(rebuild.observe)
-	// The daemon's own open reads what the consumers hear as the rebuild starts
-	// (workflowRuntime.connect); this one, whose consumers hear the boot's set and whose
-	// rebuild is what the test is about, opens with it. The open and the swap run under the
-	// mapping's own lock, and the handover — what the rebuilt consumers are to hear, worked out
-	// and handed to them, and the swap — under the lock every fact applies under
-	// (natsHandover), all the daemon's own.
-	w.nats = newNATSHolder(conn, consumers, w.log, open, &w.mappingMu, w.natsHandover)
-	bootOver()
-	rebuild.register(w.nats)
-	t.Cleanup(w.stop)
 	before := w.nats.connection()
 
 	rotated := testnats.SeedFile(t, testnats.UserSeed(t)+"\n")
 	applied := apply(t, live, map[string]any{"nats_nkey_seed_file": rotated})
 
+	var seeds []string
+	for _, open := range opened() {
+		seeds = append(seeds, open.NatsNkeySeedFile)
+	}
 	if len(seeds) != 2 || seeds[1] != rotated {
 		t.Fatalf("the holder opened its connections for %v, want the second for the seed the change named", seeds)
 	}
@@ -122,14 +80,14 @@ func TestAChangedNatsSeedRebuildsTheNatsClient(t *testing.T) {
 // named and nowhere else.
 func TestAChangedNatsURLMovesTheDaemonToTheServerTheChangeNames(t *testing.T) {
 	// The server the daemon boots on is the package's shared one; the server it is moved to
-	// runs in this process (startNATSServer), since testnats serves one shared server and the
-	// containers it starts need a Docker a Sandbox pod has not got.
-	booted, moved := testnats.URL(t), startNATSServer(t)
+	// runs in this process (testnats.StartInProcess), since testnats serves one shared server
+	// and the containers it starts need a Docker a Sandbox pod has not got.
+	booted, moved := testnats.URL(t), testnats.StartInProcess(t)
 	// Envoy's notification stream is what this project's durable consumers are opened on, so
 	// the server the daemon is moved to carries one as the server it booted on does.
 	notificationsStreamOn(t, booted)
-	movedStream := notificationsStreamOn(t, moved)
-	w, live, rebuild := bootedNATSHolder(t, booted)
+	_, movedStream := notificationsStreamOn(t, moved)
+	w, live, rebuild, _ := bootedNATSHolder(t, "nats_urls: ["+booted+"]")
 	before := w.nats.connection()
 	if got := before.ConnectedUrl(); got != booted {
 		t.Fatalf("the daemon booted on %q, want the server its configuration named, %q", got, booted)
@@ -196,7 +154,7 @@ func TestAChangedNatsURLMovesTheDaemonToTheServerTheChangeNames(t *testing.T) {
 func TestANatsURLTheDaemonCannotOpenIsAnsweredFailed(t *testing.T) {
 	booted := testnats.URL(t)
 	notificationsStreamOn(t, booted)
-	w, live, rebuild := bootedNATSHolder(t, booted)
+	w, live, rebuild, _ := bootedNATSHolder(t, "nats_urls: ["+booted+"]")
 	before := w.nats.connection()
 
 	// Nothing listens on port 1 here, and no server a test starts can be given it: each takes a
@@ -238,43 +196,8 @@ func TestANatsURLTheDaemonCannotOpenIsAnsweredFailed(t *testing.T) {
 // stream's own — while intake went on cutting a handler at the limit it booted with.
 func TestAChangedWorkerRPCTimeoutReopensTheIntakeConsumers(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
-	logs := &syncBuffer{}
-	w := grantWorkflow(t, logs)
-	live := liveSettings(t, "nats_urls: ["+url+"]")
-	heard, err := w.heardAtBoot(t.Context())
-	if err != nil {
-		t.Fatalf("read the repositories this project hears about: %v", err)
-	}
-	// The boot's own context, cancelled the moment the open returns, as readinessAttempt gives
-	// it: the holder's rebuild makes one of its own (natsHolder.rebuild).
-	booting, bootOver := context.WithTimeout(t.Context(), bootTimeout)
-	var windows []time.Duration
-	open := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
-		windows = append(windows, c.WorkerRPCTimeout)
-		return openNATS(ctx, w, c, func(string) (string, bool) { return "", false }, intake.ConsumerSpec{
-			Project: c.Project, Repositories: heard, AckWait: c.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
-		})
-	}
-	conn, consumers, err := open(booting, *live.Snapshot())
-	if err != nil {
-		t.Fatalf("open the workflow's NATS: %v", err)
-	}
-	rebuild := newRebuilder(w.log, config.Settled(*live.Snapshot()))
-	live.OnChange(rebuild.observe)
-	w.nats = newNATSHolder(conn, consumers, w.log, open, &w.mappingMu, w.natsHandover)
-	bootOver()
-	rebuild.register(w.nats)
-	t.Cleanup(w.stop)
+	notificationsStreamOn(t, url)
+	w, live, _, opened := bootedNATSHolder(t, "nats_urls: ["+url+"]")
 	before := w.nats.connection()
 
 	// A window wide enough to lift the limit off intake's ten-minute floor: a change that left
@@ -287,6 +210,10 @@ func TestAChangedWorkerRPCTimeoutReopensTheIntakeConsumers(t *testing.T) {
 
 	if len(applied) != 1 || applied[0].Holder != config.HolderWorkerStream || applied[0].Outcome != config.OutcomeRebuilt {
 		t.Fatalf("the apply reported %+v, want the one rebuilt change the operator is told the worker stream holds", applied)
+	}
+	var windows []time.Duration
+	for _, open := range opened() {
+		windows = append(windows, open.WorkerRPCTimeout)
 	}
 	if len(windows) != 2 || windows[1] != raised {
 		t.Fatalf("the holder opened its consumers for %v, want the second on the window the change settled", windows)
@@ -314,16 +241,7 @@ func TestAChangedWorkerRPCTimeoutReopensTheIntakeConsumers(t *testing.T) {
 // again.
 func TestANatsRebuildHearsTheRepositoriesMappedSinceBoot(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	_, stream := notificationsStreamOn(t, url)
 	logs := &syncBuffer{}
 	w := grantWorkflow(t, logs)
 	cfg := daemonGrantConfig(url)
@@ -346,10 +264,6 @@ func TestANatsRebuildHearsTheRepositoriesMappedSinceBoot(t *testing.T) {
 	if heard := w.nats.intake().Repositories(); !slices.Contains(heard, mapped) {
 		t.Fatalf("after the rebuild GitHub intake hears %v, want the repository mapped since boot among them", heard)
 	}
-	stream, err := js.Stream(t.Context(), "ENVOY_NOTIFICATIONS")
-	if err != nil {
-		t.Fatalf("open the notification stream: %v", err)
-	}
 	if filters := githubFiltersOf(t, stream, cfg.Project); !slices.Contains(filters, "notifications.github.acme.widgets.>") {
 		t.Fatalf("the GitHub durable consumer filters on %v, want the subject of the repository mapped since boot among them", filters)
 	}
@@ -362,16 +276,7 @@ func TestANatsRebuildHearsTheRepositoriesMappedSinceBoot(t *testing.T) {
 // would go unheard with them until something else moved the mapping again.
 func TestANatsRebuildWaitsForAMappingReadHoldingTheFactLock(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	notificationsStreamOn(t, url)
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
 	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
@@ -434,16 +339,7 @@ func TestANatsRebuildWaitsForAMappingReadHoldingTheFactLock(t *testing.T) {
 // anything, and the set it opens with is the one that read left.
 func TestANatsRebuildOpensNoConsumerWhileAMappingReadHoldsTheMappingLock(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	_, stream := notificationsStreamOn(t, url)
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
 	if err := connectAsBootDoes(t, w, cfg, newRebuilder(w.log, config.Settled(cfg)), func(string) (string, bool) { return "", false }); err != nil {
@@ -489,10 +385,6 @@ func TestANatsRebuildOpensNoConsumerWhileAMappingReadHoldsTheMappingLock(t *test
 	if heard := w.nats.intake().Repositories(); !slices.Contains(heard, mapped) {
 		t.Fatalf("after the rebuild GitHub intake hears %v, want the repository the mapping read mapped while the rebuild waited among them", heard)
 	}
-	stream, err := js.Stream(t.Context(), "ENVOY_NOTIFICATIONS")
-	if err != nil {
-		t.Fatalf("open the notification stream: %v", err)
-	}
 	if filters := githubFiltersOf(t, stream, cfg.Project); !slices.Contains(filters, "notifications.github.acme.widgets.>") {
 		t.Fatalf("the GitHub durable consumer filters on %v, want the subject of the repository the mapping read mapped among them", filters)
 	}
@@ -512,16 +404,7 @@ func TestANatsRebuildOpensNoConsumerWhileAMappingReadHoldsTheMappingLock(t *test
 // (workflowRuntime.natsHearing), follows it.
 func TestAChangedRepositoryRenamesHasGitHubIntakeHearThePartner(t *testing.T) {
 	url := testnats.URL(t)
-	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
-	if err != nil {
-		t.Fatalf("connect to the test NATS server: %v", err)
-	}
-	t.Cleanup(probe.Close)
-	js, err := jetstream.New(probe)
-	if err != nil {
-		t.Fatalf("open JetStream: %v", err)
-	}
-	testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	js, stream := notificationsStreamOn(t, url)
 	w := grantWorkflow(t, &syncBuffer{})
 	cfg := daemonGrantConfig(url)
 	rebuild := newRebuilder(w.log, config.Settled(cfg))
@@ -529,10 +412,6 @@ func TestAChangedRepositoryRenamesHasGitHubIntakeHearThePartner(t *testing.T) {
 		t.Fatalf("connect the workflow's NATS: %v", err)
 	}
 	t.Cleanup(w.stop)
-	stream, err := js.Stream(t.Context(), "ENVOY_NOTIFICATIONS")
-	if err != nil {
-		t.Fatalf("open the notification stream: %v", err)
-	}
 	const moved = "notifications.github.cybermonklabs.legion.>"
 	if filters := githubFiltersOf(t, stream, cfg.Project); slices.Contains(filters, moved) {
 		t.Fatalf("the GitHub durable consumer filters on %v before the change, so this proves nothing", filters)
@@ -695,37 +574,12 @@ func (h *heardPullRequests) repositories() []string {
 	return slices.Clone(h.repos)
 }
 
-// startNATSServer runs a JetStream NATS server in this process, on a loopback port the kernel
-// picks and a store of t's own, and returns its client URL. It is shut down when t ends, before
-// t's temporary directory goes.
-//
-// It is here because testnats hands out one shared server per test binary and the servers it
-// starts itself are containers, which a Sandbox pod has no Docker for: a test that moves the
-// daemon from one NATS server to another needs a second one whatever the host is.
-// packages/envoy's own rig starts its servers the same way (internal/testnats' Server.launch).
-func startNATSServer(t *testing.T) string {
-	t.Helper()
-	srv, err := natsserver.NewServer(&natsserver.Options{
-		Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir(),
-	})
-	if err != nil {
-		t.Fatalf("create a NATS server: %v", err)
-	}
-	go srv.Start()
-	t.Cleanup(func() {
-		srv.Shutdown()
-		srv.WaitForShutdown()
-	})
-	if !srv.ReadyForConnections(10 * time.Second) {
-		t.Fatal("the NATS server did not accept connections within 10s")
-	}
-	return srv.ClientURL()
-}
-
 // notificationsStreamOn creates Envoy's notification stream on the NATS server at url, through a
-// client of the test's own that is closed when t ends, and returns it: the stream this project's
-// durable consumers are opened on, which every NATS test here creates before the daemon connects.
-func notificationsStreamOn(t *testing.T, url string) jetstream.Stream {
+// client of the test's own that is closed when t ends, and returns that client and the stream:
+// the stream this project's durable consumers are opened on, which every NATS test here creates
+// before the daemon connects, and the client a test publishes through or reads another stream
+// with.
+func notificationsStreamOn(t *testing.T, url string) (jetstream.JetStream, jetstream.Stream) {
 	t.Helper()
 	probe, err := nats.Connect(url, nats.Timeout(5*time.Second))
 	if err != nil {
@@ -736,25 +590,40 @@ func notificationsStreamOn(t *testing.T, url string) jetstream.Stream {
 	if err != nil {
 		t.Fatalf("open JetStream on %s: %v", url, err)
 	}
-	return testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
+	return js, testnats.CreateStream(t, js, jetstream.StreamConfig{Name: "ENVOY_NOTIFICATIONS", Subjects: []string{"notifications.>"}})
 }
 
-// bootedNATSHolder is a daemon's NATS holder booted on url, built as workflowRuntime.connect
-// builds it: the daemon's own openNATS and handover, the consumers hearing what this project
-// heard at boot, and the open run on the context boot gives it — readinessAttempt's own,
-// cancelled the moment the open returns — so a rebuild that kept boot's context fails here as it
-// fails in a daemon. It answers the workflow, the settings holder a change goes through, and the
-// rebuilder that holder's changes are observed by, with the holder stopped when t ends.
-func bootedNATSHolder(t *testing.T, url string) (*workflowRuntime, *config.Live, *rebuilder) {
+// bootedNATSHolder is a daemon's NATS holder booted on the configuration settings describes —
+// `nats_urls` among them, since there is no other way to say which server it boots on — built as
+// workflowRuntime.connect builds it: the daemon's own openNATS and handover, the consumers
+// hearing what this project heard at boot, and the open run on the context boot gives it —
+// readinessAttempt's own, cancelled the moment the open returns — so a rebuild that kept boot's
+// context fails here as it fails in a daemon.
+//
+// It answers the workflow, the settings holder a change goes through, the rebuilder that
+// holder's changes are observed by, and the configuration of every open the holder has made,
+// boot's first and one per rebuild after it: what the rebuild a change caused was given, which
+// a test reads the key it changed out of. The holder is stopped when t ends.
+//
+// One difference from a daemon's own open, which this pod forces: the seed `nats_nkey_seed_file`
+// names is not carried onto the wire, since the server here takes no nkeys ("nkeys not supported
+// by the server"). What the open was given is reported all the same, so a test about the seed
+// reads the one its change named; that the seed a key names is the one the connection
+// authenticates as is TestTheWorkflowConnectsAsTheNatsSeedTheDaemonResolved's, against a server
+// that takes one.
+func bootedNATSHolder(t *testing.T, settings ...string) (*workflowRuntime, *config.Live, *rebuilder, func() []config.Config) {
 	t.Helper()
 	w := grantWorkflow(t, &syncBuffer{})
-	live := liveSettings(t, "nats_urls: ["+url+"]")
+	live := liveSettings(t, settings...)
 	heard, err := w.heardAtBoot(t.Context())
 	if err != nil {
 		t.Fatalf("read the repositories this project hears about: %v", err)
 	}
 	booting, bootOver := context.WithTimeout(t.Context(), bootTimeout)
+	var opened []config.Config
 	open := func(ctx context.Context, c config.Config) (*nats.Conn, *intake.Consumers, error) {
+		opened = append(opened, c)
+		c.NatsNkeySeedFile = ""
 		return openNATS(ctx, w, c, func(string) (string, bool) { return "", false }, intake.ConsumerSpec{
 			Project: c.Project, Repositories: heard, AckWait: c.WorkerRPCTimeout, NakDelay: time.Second, Logger: w.log,
 		})
@@ -769,7 +638,7 @@ func bootedNATSHolder(t *testing.T, url string) (*workflowRuntime, *config.Live,
 	bootOver()
 	rebuild.register(w.nats)
 	t.Cleanup(w.stop)
-	return w, live, rebuild
+	return w, live, rebuild, func() []config.Config { return opened }
 }
 
 // routeChange is one settings change made the way the settings route makes it: through the

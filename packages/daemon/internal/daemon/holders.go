@@ -123,13 +123,28 @@ type rebuilder struct {
 	// since (rereadCredentials).
 	credentialDigests map[string]string
 	// applyMu serialises a route change with the take of what that change's own rebuilds could
-	// not do (route). The applies themselves are serialised already — internal/settings'
-	// Keeper.mu holds one route change at a time and config.Live.mu one apply — but the take
-	// that answers the caller runs after the apply has let both of those go, and a second
-	// request arriving in that window used to take the first request's failures before the
-	// first could: the first was answered `rebuilt` while the daemon had kept the connection it
-	// could not replace. Held across the whole route call, this puts the take inside the window
-	// that serialises the applies, so one request can never take or overwrite another's.
+	// not do (route). What an apply records and what a route takes are both by path
+	// (noteRebuilds writes and deletes the paths of its own apply, takeFailures reads the
+	// caller's own), so two route calls that name no path in common cannot reach each other's
+	// answer at all: the keys alone close that. This lock is for the case the keys do not —
+	// two calls changing one path, a key two operators set at once or a caller's own retry of
+	// a request it never saw answered.
+	//
+	// The applies themselves are serialised already — internal/settings' Keeper.mu holds one
+	// route change at a time and config.Live.mu one apply — but the take that answers the
+	// caller runs after the apply has let both of those go, and a second request for that same
+	// path arriving in that window used to settle it first: its own rebuild of the path
+	// succeeded, which drops what the first apply's rebuilds had recorded under it
+	// (noteRebuilds), and the first was answered `rebuilt` while the daemon kept the connection
+	// it could not replace. Held across the whole route call, this puts the take inside the
+	// window that serialises the applies, so one request can never take or overwrite another's.
+	//
+	// The file arm's apply takes no applyMu, so a file that takes a path back while a route
+	// request for that path sits between its apply and its take leaves that request reading
+	// what the file's own apply recorded for it. The two are not the same answer, but the
+	// daemon runs on the file's value by then, which is the later of the two: the request is
+	// told what the daemon could not do for the path it asked about, as that path was last
+	// applied.
 	applyMu sync.Mutex
 	// failed is what an applied change's rebuilds could not do, by the path of that change, as
 	// the settings route answers the caller that asked for it (observe, route). It is by path
@@ -316,12 +331,8 @@ func (r *rebuilder) noteRebuilds(holdersOf map[string][]string, failures map[str
 // recorded under the settings holder's lock (observe, noteRebuilds), so a failure of an earlier
 // change, of another caller's change or of the file's own apply is never read as this caller's.
 //
-// The whole call runs under applyMu, which serialises these applies with their takes. The
-// applies alone were serialised before — Keeper.mu holds one route change at a time — but the
-// take ran after the apply had let that lock go, and a rebuild that waits (drainBound, a
-// runtime's launch bound) leaves a long window inside the apply for the next request to reach
-// its own take first: it took what this apply had recorded, and this apply was answered
-// `rebuilt` while the daemon kept the connection it could not replace.
+// The whole call runs under applyMu, which is what makes the take this apply's own where
+// another request names a path this one named too: the keys answer every other case (applyMu).
 func (r *rebuilder) route(apply func(context.Context, config.Caller, string, map[string]any) ([]config.Change, []config.Refusal, error)) api.ApplySettings {
 	return func(ctx context.Context, caller config.Caller, by string, changes map[string]any) ([]config.Change, []config.Refusal, api.SettingsRebuildFailures, error) {
 		r.applyMu.Lock()
