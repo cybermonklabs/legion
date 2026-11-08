@@ -38,9 +38,12 @@ import {
   focusVisibleRing,
   selectedCardBg,
   surfaceBg,
+  surfaceMutedBg,
+  surfaceMutedHoverBg,
   tableResizeActive,
   tableResizeHover,
   textMutedOnCanvas,
+  textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
 import { claimIsTakeable } from "../issue/ClaimChip";
@@ -71,12 +74,14 @@ import {
 } from "./issues-table-controls";
 import {
   buildItems,
+  clearSelection as clearPicked,
   defaultView,
   type EpicAncestor,
   facetCounts,
   type Item,
   isEpic,
   matchesSearch,
+  readSelection,
   readUrl,
   type View,
   writeUrl,
@@ -290,16 +295,18 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     () => buildItems(all, text.label, ancestry.data, hasLegion ? (legion.data ?? null) : undefined),
     [all, text, ancestry.data, hasLegion, legion.data]
   );
+  const picked = useMemo(() => readSelection(params), [params]);
   const items = useMemo(
     () =>
       allItems.filter(
         ({ issue }) =>
+          (picked === null || picked.keys.has(issue.key)) &&
           (!flags.needsYou || issue.open_asks > 0) &&
           (!flags.unread ||
             issueIsUnread(issue, userState.data?.[issue.key]?.last_read_seq ?? 0)) &&
           (!flags.unclaimed || issue.claim === null || claimIsTakeable(issue.claim, registry))
       ),
-    [allItems, flags.needsYou, flags.unread, flags.unclaimed, registry, userState.data]
+    [allItems, picked, flags.needsYou, flags.unread, flags.unclaimed, registry, userState.data]
   );
 
   const columns = useIssueTableColumns(userState.data, boxWidth < 640, hasLegion, legion.data);
@@ -577,6 +584,27 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
           hasLegion={hasLegion}
           board={legion.data}
         />
+
+        {picked === null ? null : (
+          <p className={`flex flex-wrap items-center gap-2 text-sm ${textSecondaryOnCanvas}`}>
+            <span
+              className={`inline-flex min-h-9 items-center gap-2 rounded-full border px-3 ${borderDefault} ${surfaceMutedBg}`}
+            >
+              Showing: <b className={textPrimaryOnCanvas}>{picked.label}</b>
+              <span className={textMutedOnCanvas}>
+                · {items.length} of {picked.keys.size} {picked.keys.size === 1 ? "issue" : "issues"}
+              </span>
+              <button
+                aria-label={`Stop showing only ${picked.label}`}
+                className={`-mr-1 rounded-full px-1.5 ${surfaceMutedHoverBg}`}
+                onClick={() => setParams((current) => clearPicked(current), { replace: false })}
+                type="button"
+              >
+                ×
+              </button>
+            </span>
+          </p>
+        )}
 
         <IssueTableToolbar table={table} />
 

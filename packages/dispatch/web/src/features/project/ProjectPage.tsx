@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
@@ -29,6 +29,7 @@ import { DocumentList } from "./DocumentList";
 import { IssueBoard } from "./IssueBoard";
 import { IssueFilters } from "./IssueFilters";
 import { IssuesTable } from "./IssuesTable";
+import { selectIssues } from "./issues-table-model";
 import { LegionHealthPanel } from "./LegionHealthPanel";
 
 type ProjectTab = "architecture" | "issues" | "documents";
@@ -53,6 +54,7 @@ const issueViewLabels: Record<IssueView, string> = {
 export function ProjectPage(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
+  const [, setSearchParams] = useSearchParams();
   const [issueView, setIssueView] = useUserPreference<IssueView>(
     "project.issue-view",
     (stored) => (stored === "board" ? stored : "list"),
@@ -278,8 +280,14 @@ export function ProjectPage(): ReactNode {
           issueView === "list" ? (
             <>
               {/* The project's health numbers, above the table's status bar (dispatch://INFRA-979).
-                  The table's own session wires onSelectIssues to its filter chip. */}
-              <LegionHealthPanel key={`health-${route.project}`} project={route.project} />
+                  A number the person clicks narrows the table to the issues behind it. */}
+              <LegionHealthPanel
+                key={`health-${route.project}`}
+                onSelectIssues={(keys, label) =>
+                  setSearchParams((current) => selectIssues(current, keys, label))
+                }
+                project={route.project}
+              />
               <IssuesTable key={route.project} project={route.project} />
             </>
           ) : (

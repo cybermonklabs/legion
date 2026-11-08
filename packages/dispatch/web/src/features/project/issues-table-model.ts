@@ -382,6 +382,43 @@ export function writeUrl(params: URLSearchParams, state: View): URLSearchParams 
   next.set("size", String(state.pageSize));
   return next;
 }
+
+/** The issues behind a health number the person clicked (dispatch://INFRA-979's panel), as the
+ *  URL holds them: the keys and the words naming them. */
+export interface IssueSelection {
+  readonly keys: ReadonlySet<string>;
+  readonly label: string;
+}
+export function readSelection(params: URLSearchParams): IssueSelection | null {
+  const only = params.get("only");
+  if (only === null) return null;
+  return {
+    keys: new Set(only.split(",").filter(Boolean)),
+    label: params.get("onlyLabel") ?? "Selected issues",
+  };
+}
+/** Narrows the table to these issues. They are mostly finished ones, so the Status filter is
+ *  lifted (closed issues load) and the page goes back to the first; other filters stay. */
+export function selectIssues(
+  params: URLSearchParams,
+  keys: readonly string[],
+  label: string
+): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.set("only", keys.join(","));
+  next.set("onlyLabel", label);
+  next.delete("status");
+  next.set("nofilter", "1");
+  next.delete("page");
+  return next;
+}
+export function clearSelection(params: URLSearchParams): URLSearchParams {
+  const next = new URLSearchParams(params);
+  next.delete("only");
+  next.delete("onlyLabel");
+  next.delete("page");
+  return next;
+}
 export function startNextWrites(
   items: readonly Item[],
   keys: readonly string[]
