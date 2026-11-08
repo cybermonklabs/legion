@@ -80,7 +80,7 @@ func sessionOf(t *testing.T, rig *Rig, operator string) (string, *ecdsa.PrivateK
 // record.
 func pendingRequest(t *testing.T, rig *Rig, enrollmentID string, key *ecdsa.PrivateKey) (requestID, recordID string) {
 	t.Helper()
-	compact, err := record.Sign(key, rig.URL, []record.AuthorizationDetail{{Type: record.KindAgentSecret, Identifier: "TEST_SECRET", Actions: []string{"inject"}}}, "", "", nil, time.Now())
+	compact, err := record.Sign(key, rig.URL, []record.AuthorizationDetail{{Type: record.KindAgentSecret, Identifier: "TEST_SECRET", Actions: []string{"inject"}}}, "checking Rig.Decide decides on the broker's page", "", nil, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}

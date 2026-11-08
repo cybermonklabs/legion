@@ -135,19 +135,22 @@ func claimViews(t *testing.T, body []byte) []map[string]any {
 // route authenticates nobody, so it knows that plugin by the pod the request came from: a pod
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
-// pacing holds, the gated steps, the retired entries of the report of claims nothing will wake
-// and the three fields the setting sources came with among what it is served without, since
-// such a pod is below treeContract, wakesWaitingContract, gatedStepsContract,
-// retiredStrandedContract and settingSourcesContract too. A pod at this contract,
-// and a caller in no pod — the operator's `legion state`, whose open-rounds line reads both
-// fields and whose queue line reads those wakes — are served everything. The claims are the
+// pacing holds, the gated steps, the retired entries of the report of claims nothing will wake,
+// the claim views' step record and the three fields the setting sources came with among what it
+// is served without, since such a pod is below treeContract, wakesWaitingContract,
+// gatedStepsContract, retiredStrandedContract, stallRecordContract and settingSourcesContract
+// too. A pod at this contract, and a caller in no pod — the operator's `legion state`, whose
+// open-rounds line reads both fields, whose queue line reads those wakes and whose tool-call
+// line reads the step records — are served everything. The claims are the
 // state snapshot's own, so there is no readable state whose caller's contract is unknown: a
 // snapshot without them is no state, and the route refuses it.
 func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(supervise.PodUpdateContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
-	if !strings.Contains(string(full), `"updateRound"`) || !strings.Contains(string(full), `"updateHead"`) || !fullCarried || len(fullWakes) == 0 {
-		t.Fatalf("the fixture's state %s carries no update round or no waiting wake; this test proves nothing", full)
+	fullCalls, _ := stepsServed(t, full)
+	if !strings.Contains(string(full), `"updateRound"`) || !strings.Contains(string(full), `"updateHead"`) ||
+		len(fullCalls) == 0 || !fullCarried || len(fullWakes) == 0 {
+		t.Fatalf("the fixture's state %s carries no update round, no step record or no waiting wake; this test proves nothing", full)
 	}
 
 	for _, tc := range []struct {
@@ -156,12 +159,17 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		claims []supervise.Claim
 		rounds bool
 		wakes  bool
+		// stall is whether the caller is served the claim views' `step`, the record
+		// stallRecordContract added. That contract is this daemon's own since the bump the
+		// record forced landed, so a pod at it is served the record and a pod still running an
+		// older plugin is not.
+		stall bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(supervise.PodUpdateContract - 1)},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), rounds: true, wakes: true, stall: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), rounds: true, wakes: true, stall: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(supervise.PodUpdateContract - 1), rounds: true, wakes: true, stall: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -173,16 +181,18 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			if tc.wakes && len(wakes) != len(fullWakes) {
 				t.Errorf("the state %s names %d of the wakes the pacing holds, want the fixture's %d", body, len(wakes), len(fullWakes))
 			}
-			if tc.rounds {
+			if tc.rounds && tc.stall {
 				if string(body) != string(full) {
 					t.Fatalf("state = %s, want the state as this contract writes it, %s", body, full)
 				}
 				return
 			}
-			for _, view := range claimViews(t, body) {
-				for key := range view {
-					if !slices.Contains(contract45ClaimView, key) {
-						t.Errorf("claim view %v carries %q, which contract 45's strict reader refuses", view, key)
+			if !tc.rounds {
+				for _, view := range claimViews(t, body) {
+					for key := range view {
+						if !slices.Contains(contract45ClaimView, key) {
+							t.Errorf("claim view %v carries %q, which contract 45's strict reader refuses", view, key)
+						}
 					}
 				}
 			}
@@ -194,16 +204,21 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// wakesWaitingContract refuses empty as surely as filled (withoutWakesWaiting),
 			// with the gated steps gone, the field gatedStepsContract added, with the retired
 			// entries of the report of claims nothing will wake gone, the one state
-			// retiredStrandedContract added (withoutRetiredStranded), and with the three fields
-			// settingSourcesContract added gone, which such a pod refuses the same way
-			// (state_sources_contract_test.go holds that half). What is expected of it is read
-			// from the state those seven leave rather than by deleting the keys they write by
-			// name.
+			// retiredStrandedContract added (withoutRetiredStranded), with each claim view's
+			// `step` gone, the record stallRecordContract added (withoutStallRecord), and with
+			// the three fields settingSourcesContract added gone, which such a pod refuses the
+			// same way (state_sources_contract_test.go holds that half). What is expected of it
+			// is read from the state those eight leave rather than by deleting the keys they
+			// write by name.
 			if carriesSettingSources(t, body) || carriesCommit(t, body) || carriesRequiresChecks(t, body) {
 				t.Errorf("the state %s carries a field contract %d added, which a reader before it refuses", body, settingSourcesContract)
 			}
+			if calls, _ := stepsServed(t, body); len(calls) > 0 {
+				t.Errorf("the state %s names the calls %v, which a reader before contract %d refuses", body, calls, stallRecordContract)
+			}
 			stripped := withoutUpdateRounds(withoutMemory(withoutTrees(withoutWakesWaiting(populatedState(t)))))
-			wantJSON, err := json.Marshal(withoutSettingSources(withoutRetiredStranded(withoutGatedSteps(stripped))))
+			stripped = withoutStallRecord(withoutSettingSources(withoutRetiredStranded(withoutGatedSteps(stripped))))
+			wantJSON, err := json.Marshal(stripped)
 			if err != nil {
 				t.Fatal(err)
 			}

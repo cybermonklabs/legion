@@ -107,6 +107,10 @@ func (s *switchStore) RetireDelivery(ctx context.Context, c supervise.Claim, del
 	return s.now().RetireDelivery(ctx, c, deliveryID)
 }
 
+func (s *switchStore) PutClaimStep(ctx context.Context, token claim.Token, step supervise.StepRecord) (bool, error) {
+	return s.now().PutClaimStep(ctx, token, step)
+}
+
 // claimWriteFault is a fault on every claim write of one claim: the writes of that token answer
 // fault, and everything else goes to the store behind it. One claim's writes alone are touched,
 // so what another claim's machine does meanwhile is the real store's own answer rather than a

@@ -133,8 +133,9 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // TestGrantListAndRevokeUnderTheMachinesLogin: a session key this machine enrolled gets an
 // agent-tier secret automatically. `grant list` shows that grant, and `--json` prints exactly what
 // Dispatch's Live grants page reads for the operator. `grant revoke` ends it, as the operator's
-// revoke on that page does: the session can no longer read the value, and its next request for the
-// secret waits for approval.
+// revoke on that page does: the session can no longer read the value, and its next request for
+// the secret, which now names a reason because the revoke withheld the name and so put it to a
+// person, waits for approval.
 func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	rig := brokertest.NewRig(t)
 	binary := buildAgentSecrets(t)
@@ -191,7 +192,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 	if stdout, _, _ := grant("list"); strings.Contains(stdout, grantID) {
 		t.Fatalf("grant list after the revoke = %q, want the grant gone", stdout)
 	}
-	if stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil, "request", "TEST_AUTO_SECRET", "--json"); exit != exitPending {
+	if stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, nil, "request", "TEST_AUTO_SECRET", "--json", "--reason", "asking again after the operator's revoke"); exit != exitPending {
 		t.Fatalf("the box asking again after the operator's revoke: exit %d, stdout %q, stderr %q; want it waiting for approval (%d)", exit, stdout, stderr, exitPending)
 	}
 	if stdout, stderr, exit := grant("revoke", uuid.NewString()); exit != 1 || stdout != "" || !strings.Contains(stderr, "(NOT_FOUND)") {

@@ -131,6 +131,7 @@ const (
 	whyMemory   = "a tree's memory group is drawn once, as the tree is opened, under the mode admission and the API server were given at boot, and the instructions are read at boot into the launch specs: a change of either reaches the next boot and no tree already drawn"
 	whyPodSweep = "the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it"
 	whyWakePace = "the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it"
+	whyStallBst = "the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it"
 )
 
 // Caller is which arm asked for a change through the settings route: what that caller may set.
@@ -254,6 +255,11 @@ var Classes = []Row{
 	// on (internal/daemon's supervision.cfg) rather than at each sweep.
 	{Field: "Config.PodUpdateMaxOpenRounds", Path: "pod_update_max_open_rounds", Class: ClassFixed, Why: whyPodSweep},
 	{Field: "Config.PodUpdateRoundsPerMinute", Path: "pod_update_rounds_per_minute", Class: ClassFixed, Why: whyPodSweep},
+	// Each role's stall backstop, which the sweep reads off the configuration the daemon booted
+	// on, the same way the two limits above it do. The floor the loader holds this bound above
+	// is computed from the three LEGION_STALL_* numbers of the daemon's own environment, which
+	// are no key of the file (config.StallLimits).
+	{Field: "Config.WorkerStallBackstops", Path: "worker_stall_backstop_hours", Class: ClassFixed, Why: whyStallBst},
 	// The pace the daemon lets the wakes it causes out at, which it reads once, at boot, into
 	// the one limiter the engine and every machine reserve from (internal/daemon's run,
 	// reserveWake).

@@ -712,6 +712,7 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `worker_boot_timeout_seconds` | rebuild | `runtime` |
 | `worker_rpc_timeout_seconds` | rebuild | `worker-stream` |
 | `worker_stop_timeout_seconds` | rebuild | `runtime` |
+| `worker_stall_backstop_hours` | fixed | — |
 | `worker_stream_port` | fixed | — |
 | `worker_wake_burst` | fixed | — |
 | `worker_wakes_per_minute` | fixed | — |
@@ -743,3 +744,5 @@ Each line below is the reason the route answers with, for the keys it names.
 - `pod_update_max_open_rounds`, `pod_update_rounds_per_minute` — the pod-update sweep reads both limits off the configuration the daemon booted on, and nothing builds that reader again: a change of either reaches the next boot and no sweep before it.
 
 - `worker_wakes_per_minute`, `worker_wake_burst` — the daemon builds its one wake limiter at boot and hands it to the workflow engine and to every machine it supervises, and it builds none of them again: a change of either reaches the next boot and no wake before it.
+
+- `worker_stall_backstop_hours` — the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it.

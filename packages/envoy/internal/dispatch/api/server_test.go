@@ -675,6 +675,38 @@ func TestCreateIssueRejectsSpecOutsideProofSchema(t *testing.T) {
 		t.Fatalf("create invalid issue spec: status=%d body=%s", response.Code, response.Body.String())
 	}
 }
+
+// A quoted closing tag a tab ends opens a block of HTML in the browser editor's parser and none
+// in goldmark, and that block swallows the line under it, so nothing the document could be
+// stored as reads back as written and the create is refused, naming the line as written
+// (pmdoc's htmlFlowRefusal).
+func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
+	handler := newTestHandler(t)
+	project := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "TEST", "name": "Test project",
+	}, "alice")
+	if project.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", project.Code, project.Body.String())
+	}
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "TEST", "title": "A closing tag a tab ends", "spec": "> </a\t>\n> text\n",
+	}, "alice")
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"INVALID_MARKDOWN"`) {
+		t.Fatalf("create a spec line the browser reads as block HTML: status=%d body=%s", response.Code, response.Body.String())
+	}
+	refusal := decodeBody[struct {
+		Error string `json:"error"`
+	}](t, response).Error
+	if !strings.Contains(refusal, `line 1, "> </a\t>"`) {
+		t.Fatalf("refusal names no line as written: %q", refusal)
+	}
+	// The clause of pmdoc's browserBlockHTML naming what the two parsers read apart, which this
+	// package cannot import and no other refusal of this route carries.
+	if !strings.Contains(refusal, "reads as a block of HTML where goldmark reads the text of a paragraph") {
+		t.Fatalf("refusal carries none of the browser-block-HTML wording: %q", refusal)
+	}
+}
+
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	database := storetest.Open(t)
 	broker := events.NewBroker()

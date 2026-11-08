@@ -1742,12 +1742,33 @@ owns the claim — a bun test under `e2e/__tests__/` for a harness module of thi
 directory (`e2e/__tests__/round-robin-proxy.test.ts` is the shape to follow: it
 spawns the module with `Bun.spawn`, waits for its listening line, drives it
 against stub upstreams and kills it in `afterAll`), that package's own tests for
-a command, and a Go test for a claim about the server (INFRA-1404). Two rows
-still in this suite take no page fixture: `e2e/cli-reply-answers.e2e.ts:10`,
-which drives the CLI, and `e2e/two-builds.multiprocess.e2e.ts:723`, which waits
-out the two-build block index's window. Both sit outside the ten rows
-INFRA-1404 moved and are tracked as dispatch://INFRA-1554, so they are
-exceptions on record rather than the shape to copy.
+a command, and a Go test for a claim about the server (INFRA-1404). Every row
+of this suite binds `page`, `browser` or `context`, and
+`cd packages/dispatch && bun test e2e/__tests__/no-browser-rows.test.ts` is the
+check that decides it: it reads every call of `e2e/**/*.e2e.ts` whose callee
+TypeScript types as @playwright/test's `TestType`, or types as one of the
+title-first members `only`, `skip`, `fixme`, `fail` and `fail.only` of one — so
+a `test` extended by `test.extend`, renamed on import, reached through a
+namespace or bound to another name declares its rows like `test` itself, and a
+member bound to another name, by `const only = test.only` or
+`const { skip } = test`, declares its row like `test.only` and `test.skip`,
+since each is decided by the type the callee carries and not by the name it is
+written under — for the fixtures its callback binds, and refuses a row that
+binds none of the three. A callback written in the call is read there, and one
+passed by name is read where TypeScript's own checker says that name is bound:
+in its own scope, and in the module an import leads to, so a `for`-of `const`,
+a parameter or an import is never read as a same-named function declared
+elsewhere in the file. Any other callback — a `let`, `helpers.body`, a name
+the program cannot resolve — leaves its row refused with no fixtures, since
+fixtures the check did not read are not fixtures it saw. It reads the three
+Playwright listings first, to prove it scanned the files the suite runs. A row
+may stand all the same as a named exemption with its reason, written in
+`e2e/no-browser-rows.ts`, whose list ships empty; the check refuses a stale
+exemption too — one naming a row the suite no longer holds, or one that drives
+a browser now — so the rule cannot come to lie in the other direction either.
+INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
+agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
+two-build rollout row.
 
 The markdown shapes the parity rows read live in
 `packages/envoy/internal/dispatch/pmdoc/testdata/corpus/`, and all three suites
