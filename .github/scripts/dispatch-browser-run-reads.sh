@@ -50,9 +50,9 @@
 #
 # Run from anywhere: .github/scripts/dispatch-browser-run-reads.sh jobs <out-file>, or
 # .github/scripts/dispatch-browser-run-reads.sh blobs-refused
-# CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows", and its
-# tests in ci.yaml's test job. The steps that call it are the task after this one: until that
-# lands, the merge job still reads inline and nothing in CI reaches this file.
+# CI runs it in dispatch-browser.yaml's merge job, at the step "Reading one, the rows" for the
+# `jobs` mode and at the step "Report a refused blob download as a refused read" for
+# `blobs-refused`, and its tests in ci.yaml's test job.
 set -euo pipefail
 shopt -s inherit_errexit
 
