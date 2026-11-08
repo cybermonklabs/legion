@@ -136,8 +136,8 @@ function endRecordedProcess(pidFile: string): ProcessEnding {
  *
  * A descendant that writes must ignore `SIGPIPE`. Its output goes into the socket whose only
  * reader is the helper, and the row waits for the helper to exit, so on a stock kernel the next
- * write after that exit ends the writer and this helper answers `already gone`. The writing row
- * below carries the measurement.
+ * write after that exit ends the writer and `endRecordedProcess` answers `already gone`. The
+ * writing row below carries the measurement.
  */
 async function withEscapedDescendant(
   name: string,
@@ -353,12 +353,13 @@ describe("app-logins.ts", () => {
     // cleanup kills the loop. That is why the loop ignores `SIGPIPE`: on a stock Linux kernel
     // the next write into a socket whose reader has gone raises it, and its default disposition
     // ends the `sh` the loop runs in, which is what failed this row at random on CI's
-    // ubuntu-24.04 runners; under this repository's gVisor sandboxes that write succeeds and
-    // the loop survives. `trap "" PIPE` makes the two kernels agree (measured both ways: the
-    // same loop against a closed reader is ended with wait status 141 without it and runs to
-    // its end with it). It counts its writes rather than looping for ever, so a run that
-    // never reaches the cleanup still ends it, as the silent row's `sleep 60` ends itself;
-    // thirty seconds is six times the bound it must not push out.
+    // ubuntu-24.04 runners; under this repository's gVisor sandboxes that write fails with
+    // `EPIPE` but raises no `SIGPIPE`, so the loop survives. `trap "" PIPE` makes the two
+    // kernels agree (measured both ways: the same loop against a closed reader is ended with
+    // exit status 141, 128 + `SIGPIPE`, without it and runs to its end with it). It counts its
+    // writes rather than looping for ever, so a run that never reaches the cleanup still ends
+    // it, as the silent row's `sleep 60` ends itself; thirty seconds is six times the bound it
+    // must not push out.
     await withEscapedDescendant("escaped-writing.pid", async (pidFile) => {
       const escaped =
         `setsid sh -c 'trap "" PIPE; echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do` +
