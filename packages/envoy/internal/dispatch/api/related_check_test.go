@@ -1163,3 +1163,38 @@ func TestCreateExistingExternalIssueAnswersNoCheckWasMade(t *testing.T) {
 		t.Fatalf("already_exists rows for %s = %+v, want one not-made check", key, rows)
 	}
 }
+
+// The item the check lists for an issue is the ISSUE, never the issue's own document. Every
+// assertion the related tests above make reads Owner.Key, which an issue and its spec share, so
+// none of them can tell the two apart; the dialog a person reads can, because it follows the
+// item's own Href. Listing the document sends a reader to the spec tab with a query string
+// where they asked for the issue, and it is the defect this whole tree exists to fix (R4)
+// reappearing on the check's own page.
+//
+// Keyword-only, because the ordering between an issue and its document is the keyword legs'
+// and needs no model: the embedder is configured only because the check's server takes one.
+func TestRelatedCheckListsTheIssueItselfAndNotItsOwnDocument(t *testing.T) {
+	const title = "Astrolabe drift spoils the mooring calibration"
+	const spec = "The astrolabe drifts during the quadrant sweep and the mooring calibration is spoiled."
+	const text = "Astrolabe drift during mooring"
+	handler, database, srv := meaningServer(t, &fakeEmbedder{vectors: map[string][]float32{}})
+	createSuggestionProject(t, handler, "OWNROW")
+	key := createSearchIssue(t, handler, "OWNROW", title, spec)
+	refreshTermStats(t, database, "OWNROW")
+
+	suggestions := srv.relatedCheck(context.Background(),
+		relatedInput{project: "OWNROW", text: text, keywordsOnly: true})
+	if suggestions.Outcome != "found" {
+		t.Fatalf("suggestions = %+v, want the issue found by its own words", suggestions)
+	}
+	index := slices.Index(relatedOwnerKeys(suggestions.Related), key)
+	if index < 0 {
+		t.Fatalf("related = %+v, want an item standing for %s", suggestions.Related, key)
+	}
+	item := suggestions.Related[index]
+	if item.Kind != "issue" || item.Href != "/issues/"+key {
+		t.Fatalf("the item for %s = kind %q href %q, want kind \"issue\" href %q: the check listed the issue's "+
+			"own document, so a reader following it lands on the spec tab rather than on the issue",
+			key, item.Kind, item.Href, "/issues/"+key)
+	}
+}
