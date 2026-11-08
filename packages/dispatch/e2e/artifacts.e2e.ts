@@ -1,6 +1,13 @@
 import { writeFile } from "node:fs/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { expect, type Locator, type Page, type TestInfo, test } from "@playwright/test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  type TestInfo,
+  test,
+} from "@playwright/test";
 
 import { RECONNECT_SPREAD_MS } from "../web/src/api/live-socket";
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
@@ -205,6 +212,100 @@ test("artifacts upload, version, references, and phone layout @phone", async ({
       await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     ).toBe(true);
   }
+});
+
+// The base a multipart upload names: the value of its `precondition` form field, parsed, and
+// null when the upload carries no such field. The page posts a `FormData` for a picked file, and
+// the server reads the base from that field (`multipartArtifactUpload` in the server's
+// `api/artifacts.go`), so this is the base as the server receives it rather than as the page
+// meant it. No unit test reads this: every one of them mocks the client the page uploads
+// through, so what the request carries is read here or nowhere.
+function uploadedBase(request: Request): unknown {
+  const field = /name="precondition"\r?\n\r?\n([^\r\n]*)/.exec(request.postData() ?? "");
+  return field === null ? null : JSON.parse(field[1] ?? "");
+}
+
+// A person uploading a markdown document over a name the issue already holds is a caller of the
+// base guard, so what the page sends and what it shows are read here rather than in jsdom alone.
+// The upload is held in its own route while the document is changed under it: the page reads the
+// token inside `uploadBase` and posts immediately after, so the change lands between that read
+// and the server's reading of the request, and no wall clock decides it. The second half is what
+// `web/src/features/artifacts/ArtifactUpload.test.tsx` asserts against a mocked client - the
+// server's own sentence names `dispatch doc-read` and `--precondition-json`, and a person at a
+// browser runs no command and pastes no token, so the row must say what the refusal means
+// instead.
+test("an upload over a document carries the base the page read, and says what a change under it means", async ({
+  page,
+}, testInfo) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Upload over a document" });
+  const notes = await createIssueArtifact(issue.key, {
+    content: "# Review notes\n\nThe ledger keeps three leases.\n",
+    name: "notes.md",
+  });
+
+  const bases: unknown[] = [];
+  // What the next upload meets at the server: the first one meets nothing and is taken, and the
+  // second meets this edit, made after the page read its token.
+  let changeUnderTheUpload: (() => Promise<unknown>) | null = null;
+  await page.route(`**/api/v1/issues/${issue.key}/artifacts`, async (route) => {
+    if (route.request().method() !== "POST") return route.fallback();
+    bases.push(uploadedBase(route.request()));
+    const change = changeUnderTheUpload;
+    changeUnderTheUpload = null;
+    if (change !== null) {
+      await change();
+    }
+    return route.fallback();
+  });
+
+  await page.goto(`/issues/${issue.key}`);
+  await openArtifacts(page, false);
+  const upload = page.getByLabel("Upload artifact");
+  const row = page.getByTestId("artifact-notes-md");
+  await expect(row).toContainText("1 version");
+
+  // The base the live document holds now, which is what the page reads for itself before it
+  // posts: the upload names it, and the version it writes is the proof the server took it.
+  const base = await documentBase(notes.artifact.id);
+  await upload.setInputFiles(await notesFile(testInfo));
+  await confirmUpload(page);
+  await expect(row).toContainText("2 versions");
+  expect(bases).toEqual([base]);
+  expect((await getArtifactText(notes.artifact.id)).markdown).toBe(
+    "# Review notes\n\nThese notes replace the initial spec.\n"
+  );
+
+  // The second upload names the base the document holds now, and an agent moves the document
+  // past it while the upload is held, so the server reads a base that is one version behind.
+  const held = await documentBase(notes.artifact.id);
+  changeUnderTheUpload = () =>
+    editArtifact(
+      notes.artifact.id,
+      {
+        ops: [
+          {
+            find: "These notes replace the initial spec.",
+            op: "replace",
+            with: "The reviewer rewrote these notes.",
+          },
+        ],
+        summary: "The reviewer's own words",
+      },
+      { as: "agent" }
+    );
+  await upload.setInputFiles(await notesFile(testInfo));
+  await confirmUpload(page);
+
+  const refusal = page.getByRole("alert");
+  await expect(refusal).toContainText("changed");
+  await expect(refusal).not.toContainText("dispatch doc-read");
+  await expect(refusal).not.toContainText("--precondition-json");
+  expect(bases).toEqual([base, held]);
+  // Nothing of the refused upload was written: the document still says what the agent left.
+  expect((await getArtifactText(notes.artifact.id)).markdown).toBe(
+    "# Review notes\n\nThe reviewer rewrote these notes.\n"
+  );
 });
 
 // The From/To compare of a document shows what changed as the change view, word by word. It is

@@ -1346,7 +1346,13 @@ export class DispatchApiClient {
     if ("content" in input) {
       return this.post<ArtifactUploadResponse>(
         path,
-        { actor: input.actor, content: input.content, name: input.name, summary: input.summary },
+        {
+          actor: input.actor,
+          content: input.content,
+          name: input.name,
+          precondition: input.precondition,
+          summary: input.summary,
+        },
         bounds
       );
     }
@@ -1354,6 +1360,9 @@ export class DispatchApiClient {
     body.set("name", input.name);
     if (input.summary !== undefined) {
       body.set("summary", input.summary);
+    }
+    if (input.precondition !== undefined) {
+      body.set("precondition", JSON.stringify(input.precondition));
     }
     if (input.actor !== undefined) {
       body.set("actor", JSON.stringify(input.actor));
