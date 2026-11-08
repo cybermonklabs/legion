@@ -1331,7 +1331,8 @@ GATES = [
     gate("proof_sdk_offline", "proof-sdk-offline", reads=reads(
         (".github/scripts/ci-fault-proxy.py",
          f"{at('proof-sdk-offline', 'Start the fault proxy over the old proof-sdk route')} runs it; "
-         f"the four hosts it faults and the log its refusals are counted from are that step's arguments"),
+         f"the hosts it faults (the job's FAULT_HOSTS) and the log its refusals are counted from "
+         f"are that step's arguments"),
     ) + bun_job("proof-sdk-offline") + CI_SELF),
 
     # The ci-images job: the copy, and the package mode of the image gate, which reads ghcr.io.

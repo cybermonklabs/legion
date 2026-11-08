@@ -2,7 +2,7 @@
  * Raising the upstream pin is the six-step procedure in `packages/proof-editor/AGENTS.md`, whose
  * second step deletes the tarball the old pin packed. Nothing makes that step happen: the
  * `.gitignore` line tracking the archive is a glob, `!packages/proof-editor/proof-sdk-*.tgz`,
- * written as one so the eight path patterns across the workflows and the two Dockerfiles need no
+ * written as one so the path patterns `packages/proof-editor/AGENTS.md` lists need no
  * edit when the pin moves, and a glob tracks a forgotten tarball as readily as the live one. A
  * raise that packs the new archive and leaves the old one beside it commits both, and from then on
  * every clone and both image build contexts — each `COPY packages/proof-editor/proof-sdk-*.tgz`

@@ -27,8 +27,9 @@ read nothing else of GitHub. Moving the pin changes nothing in the table below; 
 
 To move the pin to a new commit, in this order:
 
-1. Run `bun run build-upstream-tarball <commit>`, which writes `proof-sdk-<commit>.tgz` beside
-   `package.json`.
+1. Run `bun run build-upstream-tarball <commit>`, with the commit's full 40-character sha, which
+   writes `proof-sdk-<commit>.tgz` beside `package.json`. It needs GNU tar, whose options it
+   passes; on macOS put the `gnubin` directory of Homebrew's `gnu-tar` first on `PATH`.
 2. Delete the old tarball. The `.gitignore` entry that tracks it is a glob, so a forgotten one
    stays tracked, and `tests/one-upstream-tarball.test.ts` fails until the directory holds
    exactly one.
@@ -37,6 +38,11 @@ To move the pin to a new commit, in this order:
 4. Run `bun install`, which rewrites `bun.lock` and the `sha512` it records for the dependency.
 5. Run `bun run upstream-declarations`, which rewrites `upstream/`.
 6. Update this file's own references to the old commit.
+
+`bun.lock`'s `sha512` ties the tarball to the lockfile and to nothing upstream, and a reviewer
+reads the tarball's diff as a binary. So whoever reviews a raise rebuilds it,
+`bun run build-upstream-tarball <commit> "$TMPDIR/rebuild.tgz"`, and compares the rebuild with the
+committed file using `cmp`: the bytes are that commit's only when the rebuild reproduces them.
 
 Nothing else names the file. The `.gitignore` negation `!packages/proof-editor/proof-sdk-*.tgz`
 and the eight path patterns that select on the tarball — the three filter lists of
