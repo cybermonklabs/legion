@@ -383,6 +383,32 @@ DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE \
   bash packages/dispatch/e2e/acceptance/verification.sh
 ```
 
+`e2e/acceptance/write-guards.sh` drives the three guards on a write the same way, through the
+real CLI and the HTTP API beside it. A person approves an issue's specification and the question
+`dispatch ask` opens on that issue names the review: who gave it, when, that they approved, their
+reason, and the line asking the sender to say what changed since it. An agent uploads a document
+holding a question, the person answers it, and the agent uploads the body it composed again,
+writing the same question with no `#id`: the uploaded block takes the live block's id, so the
+issue still holds that one answered ask and the settlement writes the answer onto the block
+again. An upload naming a base behind the live document is refused `409 PRECONDITION_FAILED`,
+whose answer carries the live token, the live version and `dispatch doc-read`; the command exits
+non-zero, nothing is written, and the same upload with the base `dispatch doc-read` prints is
+taken. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT` and `DEV_SIGNIN_LOGIN`, which is
+required here because the review and the answer are a person's writes, and one optional
+`BASE_REQUIRED_DATABASE_URL`: a replacement that names no base is taken while
+`DISPATCH_UPLOAD_BASE_REQUIRED` is off, which is the default every server carries, so the
+refusal of one needs a server with the setting on. Name an empty Postgres database and the
+script builds this checkout's server, starts one of its own on a port of its own and that
+database, drives the `400 PRECONDITION_REQUIRED` against it and stops it by the pid it captured;
+unset, that one check prints a `SKIP: base …` line and the run drives the other half, that such a
+replacement is taken. It writes three issues in `PROJECT` and closes all three, also when a check
+fails. Against `bun run dispatch:local`:
+
+```bash
+DISPATCH_URL=http://127.0.0.1:8777 DISPATCH_TOKEN=e2e-token PROJECT=CORE DEV_SIGNIN_LOGIN=alice \
+  bash packages/dispatch/e2e/acceptance/write-guards.sh
+```
+
 `e2e/acceptance/block-coverage.sh` takes the first three inputs, with `PROJECT` optional (unset,
 every project), and only reads. For every document it can list (each project's documents and each
 issue's documents), it counts the document as not indexed when `GET /api/v1/artifacts/{id}/blocks`
@@ -390,7 +416,7 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-All three source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+All four source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 
