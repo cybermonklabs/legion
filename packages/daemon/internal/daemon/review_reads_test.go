@@ -58,7 +58,7 @@ func reviewsStandInWith(t *testing.T, reviews func() string, reads *atomic.Int64
 }
 
 // captureHeadCommitted is the committer date GitHub gives the head commit of CAPTURE-1's pull
-// request, which the read falls back to when the record holds no clock of its own
+// request, which the read falls back to when the record holds no arrival of its own
 // (review_reads.go's headArrivedAt). It is a minute after the record's own captureHeadArrived, so
 // a test can tell which of the two a review was judged against.
 var captureHeadCommitted = time.Date(2026, 10, 8, 22, 16, 0, 0, time.UTC)
@@ -82,14 +82,14 @@ func reviewsStandInCounting(t *testing.T, reviews func() string, reads *atomic.I
 		case "/repos/acme/widgets/pulls/86/reviews":
 			reads.Add(1)
 			w.Write([]byte(reviews()))
-		case "/repos/acme/widgets/commits/code":
+		case "/repos/acme/widgets/commits/code", "/repos/acme/widgets/commits/pushed":
 			commitReads.Add(1)
 			date := committed()
 			if date == "" {
 				http.Error(w, `{"message":"Not Found"}`, http.StatusNotFound)
 				return
 			}
-			fmt.Fprintf(w, `{"sha":"code","commit":{"committer":{"date":%q}}}`, date)
+			fmt.Fprintf(w, `{"sha":%q,"commit":{"committer":{"date":%q}}}`, strings.TrimPrefix(r.URL.Path, "/repos/acme/widgets/commits/"), date)
 		case "/repos/acme/widgets/rules/branches/main":
 			w.Write([]byte(`[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"pr-checks-result"}]}}]`))
 		case "/repos/acme/widgets/branches/main":
@@ -543,7 +543,8 @@ func TestARateLimitOnTheReviewsReadEndsTheRead(t *testing.T) {
 // meets the moved record, and taking commit_id at face value there would approve a head nobody
 // reviewed — the one thing this tree's "only reviewed commits merge" exists to stop. So a listed
 // review of the current head decides only if it was submitted after that head arrived, which is
-// the record's own observation of the head (record.PullRequest.HeadUpdatedAt).
+// the record's own observation of the event that put it there
+// (record.PullRequest.HeadArrivedAt).
 func TestAListedReviewOlderThanTheHeadItNamesDecidesNothing(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -574,8 +575,9 @@ func TestAListedReviewOlderThanTheHeadItNamesDecidesNothing(t *testing.T) {
 	}
 }
 
-// A record that holds no clock of its own — a pull request whose head arrived before the daemon
-// kept one — is answered by the head commit's own committer date, read from GitHub: the earliest
+// A record that holds no arrival of its own — a head the daemon's own read found, and a row
+// written before the column existed — is answered by the head commit's own committer date, read
+// from GitHub: the earliest
 // moment any review of that head could have been submitted. A commit GitHub will not answer
 // applies nothing this read, whatever the review says, since a review the daemon cannot place
 // against its head is one it has not verified; the next read of the issue asks again, so the cost
@@ -599,10 +601,12 @@ func TestAListedReviewOfAClocklessRecordIsHeldToTheHeadsCommitDate(t *testing.T)
 		t.Run(tc.name, func(t *testing.T) {
 			pool := isolatedOutboxPool(t)
 			seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
-			// The column is not null, so a record with no clock holds the zero time.
+			// The column is not null, so a record with no arrival holds the zero time. The
+			// pull request's own updated_at is left where seedCapture put it, since the arrival
+			// is the only clock this read judges a review against.
 			if _, err := pool.Exec(context.Background(),
-				"update pull_requests set head_updated_at = $1 where issue = 'CAPTURE-1'", time.Time{}); err != nil {
-				t.Fatalf("seed a record with no clock: %v", err)
+				"update pull_requests set head_arrived_at = $1 where issue = 'CAPTURE-1'", time.Time{}); err != nil {
+				t.Fatalf("seed a record with no arrival: %v", err)
 			}
 			var reads, outsiderReads atomic.Int64
 			var commitReads atomic.Int64
@@ -611,7 +615,7 @@ func TestAListedReviewOfAClocklessRecordIsHeldToTheHeadsCommitDate(t *testing.T)
 			}, &reads, func() string { return "read" }, &outsiderReads, func() string { return tc.committed }, &commitReads).URL
 			readCapture(t, reviewReadRuntime(pool, api))
 			if got := commitReads.Load(); got != 1 {
-				t.Fatalf("the read read the head commit %d times, want once: a record with no clock is judged against the head's own date", got)
+				t.Fatalf("the read read the head commit %d times, want once: a record with no arrival is judged against the head's own date", got)
 			}
 
 			if got, _ := capturePhase(t, pool); got != tc.want {
@@ -622,5 +626,50 @@ func TestAListedReviewOfAClocklessRecordIsHeldToTheHeadsCommitDate(t *testing.T)
 				t.Fatalf("the round's recorded decision = %q, want %q", got, tc.decision)
 			}
 		})
+	}
+}
+
+// The lost synchronize is the case this listed read exists for, and the record it leaves must not
+// refuse the review it came for. When the webhook is lost the daemon's own read moves the head
+// (followHead) and the fact it applies carries the pull request's updated_at at the moment of that
+// read, which is later than any review of that head and which every later activity on the pull
+// request moves later still. So a read records no arrival for a head it found itself
+// (record.PullRequest.HeadArrivedAt), and the head commit's own committer date answers for it:
+// otherwise the approval this read is for would be refused at this read and at every read after
+// it, and the round would never get its decision (dispatch://INFRA-714/spec R12, the architect's
+// ruling on the second shape of this guard).
+func TestAReviewOfAHeadTheReadFoundItselfIsHeldToItsCommitDate(t *testing.T) {
+	read := time.Date(2026, 10, 26, 20, 0, 0, 0, time.UTC)
+	pool := isolatedOutboxPool(t)
+	seedCapture(t, pool, phase.Reviewing, "needs_review", completedReviewer("review-1"))
+	readCapture(t, readRuntime(pool, pullRequestStandIn(t, "pushed", read, &atomic.Int32{}).URL, quietLogger()))
+
+	_, pr := capturePhase(t, pool)
+	if pr.HeadSHA != "pushed" {
+		t.Fatalf("after the read the record is at %q, want the head GitHub showed", pr.HeadSHA)
+	}
+	if !pr.HeadUpdatedAt.Equal(read) {
+		t.Fatalf("the record's clock = %v, want the read's own stamp %v", pr.HeadUpdatedAt, read)
+	}
+	if !pr.HeadArrivedAt.IsZero() {
+		t.Fatalf("the record's head arrival = %v, want none: a read of GitHub knows no arrival of the head it found", pr.HeadArrivedAt)
+	}
+
+	// The review was submitted before the read that found the head and after the head was
+	// committed, which is every real review of a head whose synchronize was lost.
+	committed := read.Add(-2 * time.Hour)
+	submitted := read.Add(-time.Hour)
+	var reads, outsiderReads, commitReads atomic.Int64
+	api := reviewsStandInCounting(t, func() string {
+		return "[" + listedReview(5463503611, reviewReadApp, "APPROVED", "pushed", submitted.Format(time.RFC3339)) + "]"
+	}, &reads, func() string { return "read" }, &outsiderReads, func() string { return committed.Format(time.RFC3339) }, &commitReads).URL
+	readCapture(t, reviewReadRuntime(pool, api))
+
+	if got, _ := capturePhase(t, pool); got != phase.Accepting {
+		t.Fatalf("after the read the issue is in %s, want %s: the review was submitted at %v, after the head was committed at %v",
+			got, phase.Accepting, submitted, committed)
+	}
+	if got, _ := reviewerDecision(t, pool); got != "approved" {
+		t.Fatalf("the round's recorded decision = %q, want %q", got, "approved")
 	}
 }

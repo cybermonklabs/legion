@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A listed review is held to the time the head it names arrived, which a head move alone records
+  (`head_arrived_at`), rather than to the pull request's latest lifecycle clock. The daemon's own
+  read of a pull request whose synchronize webhook was lost writes that clock from the pull
+  request's `updated_at` at the moment of the read, and every later activity on the pull request
+  moves it again, so holding a review to it refused a real review of that head for good — the
+  lost-webhook case the listed read exists for. A head the read found records no arrival, and the
+  head commit's own committer date answers for it. A rate-limited answer to that commit read now
+  stops the read, as the reviews read's own does.

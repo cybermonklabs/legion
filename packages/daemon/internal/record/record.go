@@ -537,6 +537,14 @@ type PullRequest struct {
 	// reopened, synchronize or closed; one with no clock never lowers it): an older one is a late
 	// redelivery and changes nothing (classify.LateLifecycle).
 	HeadUpdatedAt time.Time
+	// HeadArrivedAt is GitHub's time of the event that put HeadSHA on the pull request, zero when
+	// no such event is recorded: a head the daemon's own read found, whose synchronize webhook was
+	// lost, and a row written before this column existed. HeadUpdatedAt cannot answer this
+	// question, since that read writes it from the pull request's updated_at at the moment of the
+	// read and any later activity on the pull request moves it again, while a listed review is
+	// held to the head's arrival (internal/daemon's headArrivedAt). A zero one is answered by the
+	// head commit's own committer date, read from GitHub.
+	HeadArrivedAt time.Time
 	// CheckedHead is the head whose CI settlement Failing, Cancelled, CheckRuns, Generation and
 	// Snapshot record, empty while none is recorded: the current head, or an earlier head whose
 	// settlement no longer counts, since a settlement stands only for the head it names. A
@@ -885,6 +893,18 @@ const (
 // DesignSteps is every step, in the order a deployment that gates all three takes them: the
 // decisions first, then the criteria they are judged by, then the spec built on both.
 var DesignSteps = []DesignStep{DesignStepDecisions, DesignStepCriteria, DesignStepSpec}
+
+// OrSpec is step itself, and DesignStepSpec when step is empty. A fact, a request or a row built
+// with no step is of the spec step: spec is the step every deployment requires — `root-issues`
+// resolves to it alone, and a deployment that gates nothing still holds its row — so a reader
+// that defaults asks for the row the writers write (Postgres.PutGate, which defaults the same
+// way). Every place that reads a step which may be empty asks this, so the rule is written once.
+func (step DesignStep) OrSpec() DesignStep {
+	if step == "" {
+		return DesignStepSpec
+	}
+	return step
+}
 
 // Valid says whether step is one of the three steps. The stored column admits those three names
 // alone, so a value this refuses is one no record can hold.

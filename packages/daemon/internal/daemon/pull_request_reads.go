@@ -74,7 +74,8 @@ func (w *workflowRuntime) followHead(ctx context.Context, github githubrest.Clie
 		}
 	}
 	eventID := fmt.Sprintf("head-read:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, time.Now().UnixNano())
-	fact := intake.PullRequestSynchronized{Repo: pr.Repo, Number: pr.Number, Branch: pr.Branch, HeadSHA: pull.Head.SHA, Body: pull.Body, UpdatedAt: pull.UpdatedAt}
+	fact := intake.PullRequestSynchronized{Repo: pr.Repo, Number: pr.Number, Branch: pr.Branch, HeadSHA: pull.Head.SHA, Body: pull.Body,
+		UpdatedAt: pull.UpdatedAt, Read: true}
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		return pr, fmt.Errorf("apply the synchronize to %s: %w", pull.Head.SHA, err)
 	}

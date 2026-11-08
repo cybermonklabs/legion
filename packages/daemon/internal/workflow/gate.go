@@ -83,10 +83,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// gateRegister). A fact naming no step is of the spec step, as a row naming none is
 	// (record.Store.PutGate). A step whose row holds another document — a carried root's, whose
 	// architect registers this issue's own — is registered afresh.
-	step := fact.Step
-	if step == "" {
-		step = record.DesignStepSpec
-	}
+	step := fact.Step.OrSpec()
 	var stored *record.DesignGate
 	if held, found := gates[step]; found && held.ArtifactID == fact.ArtifactID {
 		stored = &held
@@ -975,10 +972,7 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // version and the row's own document are what the message names, so a reader is sent to the
 // document that moved rather than to the spec.
 func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignGate, version int) error {
-	step := gate.Step
-	if step == "" {
-		step = record.DesignStepSpec
-	}
+	step := gate.Step.OrSpec()
 	gates, err := e.store.GatesOf(ctx, tx, gate.Issue)
 	if err != nil {
 		return err

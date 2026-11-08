@@ -77,9 +77,10 @@ func (w *workflowRuntime) readReviews(ctx, read context.Context, github githubre
 		if ctx.Err() != nil {
 			return true
 		}
-		w.log.Error("apply none of a pull request's reviews this read; a later read of the issue reads them again",
-			"repo", pr.Repo, "pullRequest", pr.Number, "error", err)
-		return false
+		return w.logReadFailure(err,
+			"read what a pull request's listed reviews decide: GitHub's rate limit; this read asks GitHub no more",
+			"apply none of a pull request's reviews this read; a later read of the issue reads them again",
+			"repo", pr.Repo, "pullRequest", pr.Number)
 	}
 	if !ok {
 		return false
@@ -222,24 +223,27 @@ func (w *workflowRuntime) refuseReview(id int64) {
 
 // headArrivedAt is when the pull request's current head arrived, which a listed review must be
 // newer than to approve it (reviewToApply). The record's own observation is the answer wherever it
-// holds one: HeadUpdatedAt is GitHub's time of the lifecycle event that put this head on the pull
-// request. A record that holds none — a pull request opened before the daemon recorded the time,
-// or one whose observations carried no clock — is answered by the head commit's own committer
-// date, read from GitHub, which is the earliest moment any review of that head could have been
-// submitted.
+// holds one: HeadArrivedAt is GitHub's time of the event that put this head on the pull request,
+// and a head move alone writes it. HeadUpdatedAt is no answer, because the daemon's own read of a
+// pull request whose synchronize webhook was lost writes that from the pull request's updated_at
+// at the moment of the read, which every later activity on the pull request moves again: holding
+// a review to it would refuse a real review of that head for good, and that lost webhook is the
+// case this listed read exists for.
+//
+// A record that holds no arrival — a head a read found, and a row written before the column
+// existed — is answered by the head commit's own committer date, read from GitHub, which is the
+// earliest moment any review of that head could have been submitted.
 //
 // A date neither gives is an error, and this read then applies no review at all: a review the
 // daemon cannot place against its head is one it has not verified, and letting it decide would
 // approve a head nobody is known to have reviewed, which is the fault this guard exists for
 // (dispatch://INFRA-714/spec R12, the architect's ruling on dispatch://INFRA-1557). The cost of
 // refusing is a read, not a decision: the next read of the issue asks GitHub again, as it does for
-// every other failure of this read.
+// every other failure of this read, and an answer of GitHub's rate limit stops this read as the
+// reviews read's own does (readReviews).
 func (w *workflowRuntime) headArrivedAt(ctx context.Context, github githubrest.Client, pr record.PullRequest) (time.Time, error) {
-	if !pr.HeadUpdatedAt.IsZero() {
-		return pr.HeadUpdatedAt, nil
-	}
-	if pr.HeadSHA == "" {
-		return time.Time{}, nil
+	if !pr.HeadArrivedAt.IsZero() {
+		return pr.HeadArrivedAt, nil
 	}
 	var commit struct {
 		Commit struct {

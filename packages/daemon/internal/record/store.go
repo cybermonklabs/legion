@@ -541,7 +541,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 }
 
 const pullRequestColumns = `issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
-	failing, cancelled, check_runs,
+	head_arrived_at, failing, cancelled, check_runs,
 	generation, snapshot, pushes, head_moves, head_run, review_seen, review_seen_at, state,
 	checked_head, mergeability, merge_state, merge_sha`
 
@@ -699,13 +699,14 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 	// again; planned_red, required, required_workflows and required_workflows_head are stopped too
 	// and need not be named at all, being nullable or defaulted (migrations 0013, 0028, 0029).
 	_, err = tx.Exec(ctx, `insert into pull_requests (issue, repo, number, branch, base, base_moved, head_sha, head_updated_at,
-		failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
+		head_arrived_at, failing, cancelled, check_runs, generation, snapshot, pushes, head_moves,
 		head_run, review_seen, review_seen_at, state, checked_head, mergeability, merge_state, merge_sha,
 		fix_attempts, blocked_attempts, head_counted)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, 0, 0, '')
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, 0, 0, '')
 		on conflict (issue) do update set repo = excluded.repo, number = excluded.number, branch = excluded.branch,
 		base = excluded.base, base_moved = excluded.base_moved,
 		head_sha = excluded.head_sha, head_updated_at = excluded.head_updated_at,
+		head_arrived_at = excluded.head_arrived_at,
 		failing = excluded.failing, cancelled = excluded.cancelled, check_runs = excluded.check_runs,
 		generation = excluded.generation, snapshot = excluded.snapshot,
 		pushes = excluded.pushes, head_moves = excluded.head_moves, head_run = excluded.head_run,
@@ -714,7 +715,7 @@ func (s *Postgres) PutPullRequest(ctx context.Context, tx pgx.Tx, pr PullRequest
 		mergeability = excluded.mergeability,
 		merge_state = excluded.merge_state, merge_sha = excluded.merge_sha`,
 		pr.Issue, pr.Repo, pr.Number, pr.Branch, pr.Base, pr.BaseMoved, pr.HeadSHA, pr.HeadUpdatedAt,
-		failing, cancelled, checkRuns,
+		pr.HeadArrivedAt, failing, cancelled, checkRuns,
 		pr.Generation, pr.Snapshot, pushes, moves, run,
 		pr.ReviewSeen.ID, pr.ReviewSeen.SubmittedAt, pr.State, pr.CheckedHead,
 		pr.Mergeability, pr.MergeState, pr.MergeSHA,
@@ -1139,7 +1140,7 @@ func scanPullRequest(row scanner) (*PullRequest, error) {
 	var pr PullRequest
 	var failing, cancelled, checkRuns, pushes, moves, run []byte
 	if err := row.Scan(&pr.Issue, &pr.Repo, &pr.Number, &pr.Branch, &pr.Base, &pr.BaseMoved, &pr.HeadSHA, &pr.HeadUpdatedAt,
-		&failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
+		&pr.HeadArrivedAt, &failing, &cancelled, &checkRuns, &pr.Generation, &pr.Snapshot,
 		&pushes, &moves, &run, &pr.ReviewSeen.ID, &pr.ReviewSeen.SubmittedAt, &pr.State,
 		&pr.CheckedHead, &pr.Mergeability, &pr.MergeState, &pr.MergeSHA); err != nil {
 		return nil, err
@@ -1374,16 +1375,12 @@ func (s *Postgres) GatesForArtifact(ctx context.Context, tx pgx.Tx, artifactID s
 // reason and mark only with its version (scanGate). It is the single writer of every gate change,
 // so it is also the only place ever_opened can rise.
 //
-// A gate built with no step is written as DesignStepSpec. Go names no missing field at build time,
-// so a caller that forgets the step would otherwise be found only by the stored column's check,
-// at run time, in whatever deployment reached that path first. Spec is the step every deployment
-// requires — `root-issues` resolves to it alone, and a deployment that gates nothing still holds
-// its row — so defaulting writes the row the readers ask for rather than one nobody reads.
+// A gate built with no step is written as DesignStepSpec (DesignStep.OrSpec, the one place that
+// rule is written). Go names no missing field at build time, so a caller that forgets the step
+// would otherwise be found only by the stored column's check, at run time, in whatever deployment
+// reached that path first.
 func (s *Postgres) PutGate(ctx context.Context, tx pgx.Tx, gate DesignGate) error {
-	step := gate.Step
-	if step == "" {
-		step = DesignStepSpec
-	}
+	step := gate.Step.OrSpec()
 	approvedSeq, approvedAt := markValues(gate.ApprovedMark)
 	if gate.ApprovedVersion == nil {
 		approvedSeq, approvedAt = nil, nil
