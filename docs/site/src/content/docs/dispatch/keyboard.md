@@ -134,6 +134,8 @@ On the List:
 | `t h` | Children tab |
 | `t a` | Artifacts tab |
 | `t v` | Activity tab |
+| `t d` | Decisions tab |
+| `t o` | Collaborators tab |
 | `Escape` | Back out of the focused status or priority |
 
 `0` – `3` and `Shift+P` do nothing while focus is in an ask's card or on a checkbox or option,
