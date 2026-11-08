@@ -149,7 +149,10 @@ name: CI
 # made, which is the loud failure the retry exists to give. GitHub reads this budget in whole
 # minutes, so a whole minute is the smallest margin that can be written and the budget is the
 # next whole minute strictly above the arithmetic. .github/scripts/check-download-retry.sh's
-# rule 8 refuses a step that carries less. It is the rule the Playwright install of the browser
+# rule 8 refuses a step that carries less, and a step that carries none at all: a budget nobody
+# wrote is a budget nothing judges, which is how this file's `airlock-lean` held
+# .github/actions/install-elan's 8 x 60 + 127 = 607 s ladder with no term for it anywhere.
+# It is the rule the Playwright install of the browser
 # suite already followed (.github/scripts/playwright-install.sh, whose head derives the budget
 # its calling steps carry), and it holds for every retried step of this repository's workflows.
 #
@@ -172,6 +175,11 @@ name: CI
 # job's round-up already covers the step's, and where it is — 300 s, 600 s, 2100 s — the step
 # takes one more whole minute and the job takes it with it, so the job still outlives the step
 # it names. The ci-ok report takes more than that one minute, and each of those steps says why.
+#
+# That check holds a job's own budget above each of its steps' arithmetic too, which is the
+# half of this derivation a check can make: it reads the attempts and not the measurement, and
+# a job whose ceiling sits under one of its steps' ladders cuts that step before the step's own
+# budget can name the site that failed.
 #
 # The slowest step alone, and not the sum of every retried step, because the sum answers the
 # wrong case. A job whose every download exhausts every attempt at once has not met the
@@ -6224,9 +6232,9 @@ jobs:
         # needs setting. The budget is written for three of them, 3 x 300 = 900 s, because a
         # merge-group run posts one ci-ok per job whose own result decides the group, so a run
         # that fails in three jobs leaves three posts on this head
-        # (.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that count and why
-        # it is three). 300 + 900 = 1200 s, a whole number of minutes, so the budget is the
-        # next one strictly above it -> 21 min.
+        # (.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that 900 s and
+        # the sum it comes from). 300 + 900 = 1200 s, a whole number of minutes, so the
+        # budget is the next one strictly above it -> 21 min.
         #
         # This budget matters more than most. ci-ok-reconcile.sh's own header says a refused
         # PATCH only warns, because failing this step would turn a passing verdict red; a step

@@ -91,7 +91,7 @@ jobs:
         # each one at once. Then the run list's 5 x 30 + 150 = 300 s and the force-cancel's
         # 300 s, which counts once because the queue starts one ci.yaml run for a group and
         # the loop below is over the runs to cancel
-        # (.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that count).
+        # (.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that 300 s).
         # 2160 + 300 + 300 = 2760 s, a whole number of minutes, so the budget is the next one
         # strictly above it -> 47 min.
         timeout-minutes: 47

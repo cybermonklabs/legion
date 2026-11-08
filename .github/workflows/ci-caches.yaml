@@ -423,8 +423,11 @@ jobs:
           key: elan-${{ runner.os }}-${{ hashFiles('packages/envoy/internal/broker/airlock/lean/lean-toolchain') }}
           lookup-only: true
 
+      # install-elan's own retry arithmetic: its curl of the release tarball,
+      # 8 x 60 + 127 = 607 s -> 11 min.
       - if: steps.elan-cache.outputs.cache-hit != 'true'
         uses: ./.github/actions/install-elan
+        timeout-minutes: 11
 
       # The build is what downloads the toolchain lean-toolchain names, so the entry holds what
       # airlock-lean will find rather than elan alone.

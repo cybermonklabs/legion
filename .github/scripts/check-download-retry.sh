@@ -61,11 +61,15 @@
 # 600 s and 900 s of retries under a 20-, a 10- and a 15-minute budget — and a rule 8 that
 # stopped at the `run:` saw the arithmetic of none of them.
 #
-# Two limits are left in that reading set, and each is a script this check cannot name. A call
+# Three limits are left in that reading set, and each is a script this check cannot name. A call
 # that does not write the script's path — one that builds the path as it runs, or runs a
 # variable holding the whole command — is a call SCRIPT_CALL does not find: the script is still
 # read as a file of its own, so rules 1 to 6 hold it, but its arithmetic reaches no step's
-# budget. And a script outside .github/scripts/ is not read at all, since that one directory is
+# budget. A call written inside a heredoc is another: a heredoc body is data to the shell, and
+# scripts_called reads the text with every body blanked, because the paths the bodies of this
+# tree hold are paths some Python prints rather than runs, and counting them as calls handed the
+# lint step that runs this check 15000 s of other scripts' arithmetic. And a script outside
+# .github/scripts/ is not read at all, since that one directory is
 # the whole set: a `run:` that calls the repository's own scripts/<name>.sh or a
 # packages/<package>/scripts/<name>.sh — ci.yaml and the release workflows each hold such calls
 # — is read no further than its own words, so a download written inside one of those files is
@@ -176,8 +180,9 @@
 #      resolution that install should have done. Holding either to the floor would be demanding
 #      the one shape this rule refuses, so the check reads these four only to refuse a retry.
 #
-#   8. A step that holds a retried fetch and carries its own `timeout-minutes` gives that budget
-#      strictly more time than the attempts it allows: 60 x <minutes> is strictly greater than
+#   8. A step that holds a retried fetch carries its own `timeout-minutes`, and that budget
+#      gives strictly more time than the attempts the step allows: 60 x <minutes> is strictly
+#      greater than
 #      that step's arithmetic, which is 5 x <bound> + 150 s for each `retry_fetch` call and,
 #      for each curl making its own attempts, one attempt per `--retry` and one more at
 #      `--max-time` with curl's own waits between them — the same ladder rule 1 holds that curl
@@ -197,6 +202,26 @@
 #      after 5 minutes.` instead of naming the site and its attempts, which is the loud failure
 #      the retry exists to give. GitHub's granularity is the minute, so a whole minute is the
 #      smallest margin that can be written.
+#
+#      A step holding an arithmetic above zero and writing no `timeout-minutes` at all is
+#      refused with the figure it needs. A budget that does not exist is judged by nothing, and
+#      nothing was what judged ci.yaml's `airlock-lean` at 61e220f36: the step running
+#      .github/actions/install-elan carried that action's curl of the elan tarball,
+#      8 x 60 + 127 = 607 s, wrote no budget of its own, and the job's twenty minutes carried
+#      no term for it either, so an exhausted ladder there would have ended the job on GitHub's
+#      bare timeout line. This check read that step's cost and compared it with nothing,
+#      because only a step that wrote a budget made an entry to compare. Every step of a
+#      workflow makes one now. A composite action's step makes none: GitHub takes no
+#      `timeout-minutes` on one, so the budget that holds an action's calls is the `uses:` step
+#      that runs it, which is where the figure is asked for.
+#
+#      The job's own `timeout-minutes` is held above that same arithmetic, because a job
+#      ceiling under one of its steps' attempts cuts the step before the step's own budget can
+#      name the site, and the step's margin then buys nothing. A job writing no
+#      `timeout-minutes` is held at GitHub's own default of 360 minutes (JOB_DEFAULT_MINUTES).
+#      This is the rule ci.yaml's Budgets note already writes for a reader — a job carries its
+#      measured duration plus the arithmetic of its slowest retried step — read here as the
+#      half a check can make, which is the arithmetic and not the measurement.
 #
 #      How many times a step runs one call: every multiplier counts, not the innermost one.
 #
@@ -225,17 +250,40 @@
 #      between them cost nothing in it.
 #
 #      A loop whose pass count is not written — a `while read` over a list the run makes, a
-#      `while :` over the pages of a route — is read from DECLARED_LOOPS below, where each entry
-#      says how many passes the budgets that reach that loop are written for and why that is the
-#      number to write. An entry matching no such loop fails this check, as a stale exception
-#      does, so a declaration cannot outlive its loop; and an entry whose file, step and verb
-#      match sites in two loops fails as well, because it writes one number and the second loop
-#      would take it without anybody writing it one. A step whose budget reaches a loop with
-#      neither a count nor an entry is refused in place of being judged, and the refusal names
-#      that loop: this check undercounts no budget, because a budget written for one pass of a
-#      loop that makes four is a step the runner cuts in the middle of the retry the budget
-#      exists to allow. A loop no step's budget reaches is nobody's arithmetic and is left
-#      alone; rule 2 is what reads a loop wherever it sits.
+#      `while :` over the pages of a route — is a count this check does not make, and no pass
+#      number stands in for one it did not make. What answers such a site is a
+#      DeclaredArithmetic entry of DECLARED_LOOPS below: it writes the seconds that site
+#      contributes to the budget of the step holding it, and its `why` writes that figure out
+#      as a sum, so a reader checks the arithmetic rather than taking the number. The figure
+#      may not fall below one call of the site, which is what one_call computes: a site costs
+#      at least one call of itself, whatever the run finds for it to do, and a figure under
+#      that floor is refused naming the site and the floor.
+#
+#      The other kind of entry is a RaisedPasses, and its job is the opposite one. Where this
+#      check did read a loop's count, a reader who knows the body runs more often than the
+#      loop says writes the larger number, and the budgets reaching that loop are held to it.
+#      It may only raise. A figure at or below the computed count is refused by name, because
+#      it buys nothing and hides the next edit of that loop — the one that would have raised
+#      the count — behind a number nobody rereads; and it stands in for no count at all, so a
+#      RaisedPasses over a loop this check could not read is refused as the wrong kind of
+#      entry, naming the DeclaredArithmetic that would answer.
+#
+#      A step whose budget reaches a site with neither a count this check resolved nor a
+#      DeclaredArithmetic entry is refused in place of being judged, and the refusal names the
+#      file, the line and the verb, the loop line it could not read, and which kind of entry
+#      answers it. That refusal is the default: this check derives no budget from a count it
+#      never made, because a budget written for one pass of a loop that makes four is a step
+#      the runner cuts in the middle of the retry the budget exists to allow. This rule has
+#      been wrong here three times, each fix teaching the reading one more loop shape while
+#      leaving the default on pass; the default is refusal now, and a declaration carries its
+#      own arithmetic or it is not one.
+#
+#      An entry matching no such site fails this check, as a stale exception does, so a
+#      declaration cannot outlive its loop; and an entry whose file, step and verb match sites
+#      in two loops fails as well, because it writes one figure and the second loop would take
+#      it without anybody writing it one. A loop in a script no step runs is nobody's
+#      arithmetic and is left alone, and so is a Dockerfile's, whose RUN lines sit in no step's
+#      budget; rule 2 is what reads a loop wherever it sits.
 #
 #   9. In a step whose shell leaves `pipefail` off, a fetch that is not the last command of its
 #      pipeline is refused. A workflow `run:` that names no shell runs under GitHub's own
@@ -484,6 +532,11 @@ CURL_WAIT_CEILING = 600
 # 1, 2, 4, 8, 16, 32 and 64 seconds between its own.
 HELPER_WAIT = 150
 CURL_WAIT = 127
+# What a job allows a step when the job writes no `timeout-minutes` of its own, read off
+# GitHub's own documentation ("Workflow syntax for GitHub Actions", `jobs.<job_id>.timeout-
+# minutes`): six hours. Rule 8 holds a step's arithmetic under its job's budget as well as
+# under its own, and this is the budget a job that writes none is holding it under.
+JOB_DEFAULT_MINUTES = 360
 # What a `timeout` argument's suffix multiplies its number by, as timeout(1) reads it.
 SUFFIX = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 # The one Python function a `urllib.request` read of a script under .github/scripts/ goes through,
@@ -1310,21 +1363,42 @@ def one_call(site: Site) -> int:
     return 0
 
 
+def raising(site: Site) -> "RaisedPasses | None":
+    """The declaration that raises a pass count for this site, where one is written."""
+    return next((entry for entry in DECLARED_LOOPS
+                 if isinstance(entry, RaisedPasses) and entry.covers(site)), None)
+
+
+def declared_arithmetic(site: Site) -> "DeclaredArithmetic | None":
+    """The declaration that carries this site's own arithmetic, where one is written."""
+    return next((entry for entry in DECLARED_LOOPS
+                 if isinstance(entry, DeclaredArithmetic) and entry.covers(site)), None)
+
+
 def passes_at(loops: Loops, line: int, site: Site | None) -> int | None:
-    """The passes the loop at `line` makes: the count it writes, else the count a DECLARED_LOOPS
-    entry writes for the site whose budget reaches it. An entry is bound to the loop it first
-    covers, and a second loop under the same entry is refused below rather than counted."""
+    """The passes the loop at `line` makes: the count this check reads off the loop itself,
+    raised where a RaisedPasses entry covers the site whose budget reaches it. A declaration
+    stands in for no count: where the loop writes none this answers None, and the site is
+    refused below or answered in seconds by a DeclaredArithmetic entry instead. An entry is
+    bound to the loop it covers, and a second loop under the same entry is refused below
+    rather than counted."""
     passes = loops.passes.get(line)
-    if passes is not None:
-        return passes
     if site is None:
+        return passes
+    entry = raising(site)
+    if entry is None:
+        return passes
+    if passes is None:
+        # A raising declaration over a loop this check never counted: the entry is in the
+        # wrong place, and the site is left uncounted rather than given this entry's number.
+        entry.unmade.add(line)
         return None
-    declared = next((entry for entry in DECLARED_LOOPS if entry.covers(site)), None)
-    if declared is None:
-        return None
-    declared.used += 1
-    declared.loops.add(line)
-    return declared.passes
+    entry.used += 1
+    entry.loops.add(line)
+    if entry.passes <= passes:
+        entry.lowered[line] = passes
+        return passes
+    return entry.passes
 
 
 def around(loops: Loops, lines: list[int], site: Site | None) -> tuple[int | None, int,
@@ -1374,16 +1448,25 @@ def times_run(loops: Loops, line: int, site: Site | None, stack: list[int] | Non
 
 
 def arithmetic_of(site: Site) -> int | None:
-    """Rule 8's arithmetic for one site: one call of it for each time the step runs it, with the
-    waits of the loops that run it. None where one of those loops makes a count this check
-    cannot read and no DECLARED_LOOPS entry writes one, which is a site refused below rather
-    than a budget undercounted here."""
+    """Rule 8's arithmetic for one site: one call of it for each time the step runs it, with
+    the waits of the loops that run it. Where one of those loops makes a count this check
+    cannot read, the figure is the DeclaredArithmetic entry's own seconds, and None where no
+    such entry covers the site — which is a site refused below rather than a budget
+    undercounted here."""
     one = one_call(site)
     if not one:
         return 0
-    if site.factor is None:
+    if site.factor is not None:
+        return site.factor * one + site.wait
+    entry = declared_arithmetic(site)
+    if entry is None:
         return None
-    return site.factor * one + site.wait
+    entry.used += 1
+    if site.blocked is not None:
+        entry.loops.add(site.blocked)
+    if entry.seconds < one:
+        entry.below[site.line] = one
+    return entry.seconds
 
 
 def carried(call: Call, cost: int | None) -> int | None:
@@ -1410,11 +1493,22 @@ def scripts_called(text: str, first_line: int = 1) -> dict[str, list[int]]:
 
     Read off the text by the path each call writes, with backslash continuations joined and
     comment lines left out, rather than off the commands this file scans elsewhere: a call
-    reaches a script in command position, inside a `$(…)`, as the value of an assignment, behind
-    a `source` or `.`, or out of a heredoc a `python3` runs, and the path is the one thing all
-    of those write. A name SCRIPTS does not hold is nothing this check reads."""
+    reaches a script in command position, inside a `$(…)`, as the value of an assignment or
+    behind a `source` or `.`, and the path is the one thing all of those write. A name SCRIPTS
+    does not hold is nothing this check reads.
+
+    A heredoc body is left out with the comments, for the reason without_heredocs gives: it is
+    data to the shell and not commands, and every path one holds in this tree is a path some
+    Python prints rather than runs — check-ci-images.sh's `MIRROR_SCRIPT`, which names the
+    script a reader is told to run, and this file's own EXEMPTIONS and DECLARED_LOOPS, which
+    name the files their entries cover. Counting those as calls gave the lint step that runs
+    this check 15000 s of other scripts' arithmetic, and the ci-images job's two check steps
+    mirror-ci-images.sh's 3000 s, none of which those steps wait for. A heredoc that does run
+    a script — a `python3` body calling one through subprocess — is a shape no file here
+    writes, and the day one does is the day to read a heredoc by what it runs rather than by
+    the paths it spells."""
     found: dict[str, list[int]] = {}
-    lines = text.split("\n")
+    lines = without_heredocs(text)[0].split("\n")
     index = 0
     while index < len(lines):
         line = lines[index]
@@ -1485,11 +1579,12 @@ def sites_of(path: str, body: str, first_line: int, step: str,
             site.piped = False
     found = unpacks_dropped(found)
     for site in found:
-        # A DECLARED_LOOPS entry is the other place a pass count can be written, and it is read
-        # only for a call that has a figure a budget would carry. A site with neither leaves
-        # whatever step runs it without a figure, which uncounted_of below hands to that step's
-        # budget. A Dockerfile is outside this reading, as it is outside rule 8: no step's
-        # budget holds its RUN lines.
+        # A RaisedPasses entry is the other place a pass count can be written, and it is read
+        # only for a call that has a figure a budget would carry. A site whose loops write no
+        # count leaves whatever step runs it without one here: arithmetic_of asks the
+        # DeclaredArithmetic entries for its seconds, and uncounted_of below hands the step's
+        # budget the ones no entry answers. A Dockerfile is outside this reading, as it is
+        # outside rule 8: no step's budget holds its RUN lines.
         declaring = site if one_call(site) and site.path not in DOCKERFILES else None
         site.factor, site.wait, site.blocked = times_run(loops, site.line, declaring,
                                                          site.loops)
@@ -1497,14 +1592,15 @@ def sites_of(path: str, body: str, first_line: int, step: str,
 
 
 def uncounted_of(found: list[Site]) -> list[Uncounted]:
-    """The sites of one body this check can put no figure on: a retried call that one of the
-    loops running it counts in passes this check can neither read nor find declared. A step
-    whose budget reaches one of these is refused in the loop's place, and a loop no budget
-    reaches costs nobody anything and is left alone — rule 2 is what reads a loop wherever it
-    sits."""
+    """The sites of one body this check can put no figure on: a retried call inside a loop
+    whose passes it can neither read nor find raised, and for which no DeclaredArithmetic
+    entry writes the seconds either. A step whose budget reaches one of these is refused in
+    the loop's place, and a loop no budget reaches costs nobody anything and is left alone —
+    rule 2 is what reads a loop wherever it sits."""
     return [Uncounted(site.path, site.line, site.verb, site.blocked, one_call(site))
             for site in found
-            if site.factor is None and one_call(site) and site.path not in DOCKERFILES]
+            if site.factor is None and one_call(site) and site.path not in DOCKERFILES
+            and declared_arithmetic(site) is None]
 
 
 def unpacks_dropped(found: list[Site]) -> list[Site]:
@@ -1642,28 +1738,23 @@ EXEMPTIONS = [
 ]
 
 
-# ------------------------------------------------- the loops whose passes are declared, not read
+# ------------------------------------ what a reader declares where this check's reading stops
 
 
-class DeclaredLoop:
-    """One loop whose pass count rule 8 cannot read off the loop itself — a `while read` over a
-    list the run makes, a `while :` over the pages of a route — with the passes the budgets
-    that reach it are written for and why that is the number. A site covered here is counted
-    `passes` times; a site in such a loop with no entry is refused, because a budget written
-    for one pass of a loop that makes four is a step the runner cuts in the middle of the retry
-    the budget exists to allow. An entry matching no such loop fails this check, as a stale
-    exception does: a declaration cannot outlive its loop.
+class Declaration:
+    """One figure a reader writes down where rule 8's own reading of a loop stops, matched to a
+    site by the file, the step and the verb it names. Two kinds answer two different questions
+    and neither does the other's job: a pass count this check read can be raised, and a site
+    whose pass count it never made is answered in seconds rather than in passes. An entry
+    matching nothing fails this check, as a stale exception does, so a declaration cannot
+    outlive what it was written for; and an entry two loops of one file match fails as well,
+    because it writes one figure and the second loop would take it without anybody writing it
+    one."""
 
-    An entry says one number, so it answers for one loop. `loops` is the loops it was read for,
-    by their own lines, and a second line there fails this check too: a file, a step and a verb
-    name a loop only while that file holds one of them, and a second loop of the same verb
-    would otherwise take this entry's count without anybody writing it one."""
-
-    def __init__(self, path: str, step: str | None, verb: str, passes: int, why: str) -> None:
+    def __init__(self, path: str, step: str | None, verb: str, why: str) -> None:
         self.path = path
         self.step = step
         self.verb = verb
-        self.passes = passes
         self.why = why
         self.used = 0
         self.loops: set[int] = set()
@@ -1675,54 +1766,119 @@ class DeclaredLoop:
             and site.verb == self.verb
         )
 
+    def names(self) -> str:
+        """How a refusal names this entry."""
+        return self.path + (f" step '{self.step}'" if self.step else "") + f" `{self.verb}`"
 
-# What every entry of one pass says, each in its own words below: the loop runs the call once
-# for each thing the run found to do, the budget is written for the one the common run finds,
-# and a run where every pass exhausts its five attempts is not the transient fault a retry
-# exists to survive but an outage of the host, which ci.yaml's Budgets note leaves to the job's
-# own ceiling rather than to the step's.
-DECLARED_LOOPS = [
-    DeclaredLoop(".github/workflows/ci.yaml",
-                 "Force-cancel the runs of the groups the queue removed", "gh api", 1,
-                 "one force-cancel per group the queue removed. That step's own comment derives "
-                 "its budget from one ladder beside about 3 s a call over the at most 21 calls "
-                 "the 20 groups the queue builds at once can need"),
-    DeclaredLoop(".github/workflows/dequeued.yaml",
-                 "Cancel the removed group's ci.yaml run", "gh api", 1,
-                 "one force-cancel per ci.yaml merge-group run still going at the removed "
-                 "group's head, and the queue starts one run for a group: a re-run is another "
-                 "attempt of that run and not a second one"),
-    DeclaredLoop(".github/workflows/main-bypass-check.yaml",
-                 "Start ci.yaml when this push's head was never tested", "gh workflow run", 1,
-                 "one dispatch. .github/scripts/main-bypass-check.sh's header says it prints "
-                 "one line on standard output, `dispatch <sha>`, naming the head when it "
-                 "reached main untested, so the loop over its acts runs this call once"),
+
+class RaisedPasses(Declaration):
+    """A declaration that raises a pass count this check did read: the loop writes `for x in 1
+    2 3` and a reader knows the body runs five times. Raising is the whole of what it does. A
+    figure at or below the count this check computed buys nothing and hides the next edit of
+    that loop, the one that would have raised it, so it is refused by name; and it stands in
+    for no count at all, because a loop this check could not read is a loop nobody has priced,
+    and a pass number written there is an excuse rather than a declaration."""
+
+    def __init__(self, path: str, step: str | None, verb: str, passes: int, why: str) -> None:
+        super().__init__(path, step, verb, why)
+        self.passes = passes
+        # The loops it was read for that write no count of their own, and the loops whose own
+        # count is at or above what it writes. Each of them is this entry refused by name.
+        self.unmade: set[int] = set()
+        self.lowered: dict[int, int] = {}
+
+    def figure(self) -> str:
+        return f"{self.passes} pass{'' if self.passes == 1 else 'es'}"
+
+
+class DeclaredArithmetic(Declaration):
+    """A declaration that carries its own arithmetic for a site whose pass count this check
+    cannot resolve — a `while read` over a list the run makes, a `while :` over the pages of a
+    route. It writes the seconds that site contributes to the budget of the step holding it,
+    and `why` writes that figure out as a sum, so a reader checks the arithmetic rather than
+    taking the number on trust. This check uses it in place of the arithmetic it could not
+    compute. A figure below one call of the site is refused with that floor: a site costs at
+    least one call of itself, whatever the run finds for it to do."""
+
+    def __init__(self, path: str, step: str | None, verb: str, seconds: int, why: str) -> None:
+        super().__init__(path, step, verb, why)
+        self.seconds = seconds
+        # The sites whose one call costs more than this entry's whole figure, each with that
+        # floor. Each of them is this entry refused by name.
+        self.below: dict[int, int] = {}
+
+    def figure(self) -> str:
+        return f"{self.seconds} s"
+
+
+# Every entry below is a DeclaredArithmetic, because every loop in this tree that rule 8 cannot
+# read is one whose passes are as many as the run finds work: a `while read` over a list the run
+# wrote, a `while :` over the pages of a route. Each one's figure is the passes its own prose
+# argues for at one call of that site, and the sum is written out beside it so that a reader
+# checks it rather than takes it. What every entry of one pass says, each in its own words: the
+# loop runs the call once for each thing the run found to do, the budget is written for the one
+# the common run finds, and a run where every pass exhausts its five attempts is not the
+# transient fault a retry exists to survive but an outage of the host, which ci.yaml's Budgets
+# note leaves to the job's own ceiling rather than to the step's.
+DECLARED_LOOPS: list[Declaration] = [
+    DeclaredArithmetic(".github/workflows/ci.yaml",
+                       "Force-cancel the runs of the groups the queue removed", "gh api", 300,
+                       "one force-cancel per group the queue removed, and the budget is "
+                       "written for the one a common run removes: 1 x (5 x 30 + 150) = 300 s. "
+                       "That step's own comment derives its budget from that one ladder beside "
+                       "about 3 s a call over the at most 21 calls the 20 groups the queue "
+                       "builds at once can need"),
+    DeclaredArithmetic(".github/workflows/dequeued.yaml",
+                       "Cancel the removed group's ci.yaml run", "gh api", 300,
+                       "one force-cancel per ci.yaml merge-group run still going at the "
+                       "removed group's head, and the queue starts one run for a group: a "
+                       "re-run is another attempt of that run and not a second one. "
+                       "1 x (5 x 30 + 150) = 300 s"),
+    DeclaredArithmetic(".github/workflows/main-bypass-check.yaml",
+                       "Start ci.yaml when this push's head was never tested",
+                       "gh workflow run", 300,
+                       "one dispatch. .github/scripts/main-bypass-check.sh's header says it "
+                       "prints one line on standard output, `dispatch <sha>`, naming the head "
+                       "when it reached main untested, so the loop over its acts runs this "
+                       "call once. 1 x (5 x 30 + 150) = 300 s"),
     # A script site is read with no job and no step, so these entries name no step: the call at
     # the `for path in scripts:` loop below passes step="-".
-    DeclaredLoop(".github/scripts/check-pr-text.sh", None, "gh api", 1,
-                 "one page of the route. The loop reads pages until a short one, and a pull "
-                 "request carrying more than 100 reviews or more than 100 comments reads "
-                 "another page at the per_page=100 the call asks for"),
-    DeclaredLoop(".github/scripts/ci-ok-reconcile.sh", None, "gh api", 3,
-                 "one PATCH per other ci-ok on the head that needs one, and three is what the "
-                 "ci-ok step's budget is written for. A merge-group run posts one ci-ok per job "
-                 "whose own result decides the group (ci-ok-report.sh), so a run that fails in "
-                 "three jobs leaves three posts on the head; the two posted ci-oks that script's "
-                 "header measures on open heads are one per head. This one is written high on "
-                 "purpose: the script's refusals only warn, and a step the runner cuts fails the "
-                 "ci-ok job, which turns a passing required check red"),
-    DeclaredLoop(".github/scripts/mirror-ci-images.sh", None, "crane copy", 1,
-                 "one copy per row of .github/ci-images.yaml the package does not hold. The "
-                 "ci-images step's budget is written for the rows a run copies, at the under "
-                 "75 s a row that file's own comment derives"),
-    DeclaredLoop(".github/scripts/mirror-ci-images.sh", None, "crane digest", 1,
-                 "the digest read that confirms the copy above it, once per row copied"),
-    DeclaredLoop(".github/scripts/mirror-ci-images.sh", None, "crane config", 1,
-                 "the Go check of one row, once per row that file holds. The read sits in "
-                 "image_go(), which check_go() calls, and that loop runs check_go once for the "
-                 "row the package already holds and once for the row it is about to copy — two "
-                 "written calls of which a pass runs one, so the figure this check sums is "
-                 "twice what a row costs"),
+    DeclaredArithmetic(".github/scripts/check-pr-text.sh", None, "gh api", 900,
+                       "the page read of one list route, over the three lists this script "
+                       "reads. read_list's loop reads pages until a short one, which is no "
+                       "count this check can make, and a pull request carrying more than 100 "
+                       "reviews or more than 100 comments reads another page at the "
+                       "per_page=100 the call asks for; the budgets reaching it are written "
+                       "for the one page the common pull request answers. The "
+                       "`for ((i = 0; i < ${#lists[@]}; i += 2))` under it runs read_list "
+                       "once for each of three lists, so three lists at one page each is "
+                       "3 x 1 x (5 x 30 + 150) = 900 s. The two reads this script writes "
+                       "outside that loop are counted where they are written and are no part "
+                       "of this figure"),
+    DeclaredArithmetic(".github/scripts/ci-ok-reconcile.sh", None, "gh api", 900,
+                       "one PATCH per other ci-ok on the head that needs one, and three is "
+                       "what the ci-ok step's budget is written for: 3 x (5 x 30 + 150) = "
+                       "900 s. A merge-group run posts one ci-ok per job whose own result "
+                       "decides the group (ci-ok-report.sh), so a run that fails in three jobs "
+                       "leaves three posts on the head; the two posted ci-oks that script's "
+                       "header measures on open heads are one per head. This one is written "
+                       "high on purpose: the script's refusals only warn, and a step the "
+                       "runner cuts fails the ci-ok job, which turns a passing required check "
+                       "red"),
+    DeclaredArithmetic(".github/scripts/mirror-ci-images.sh", None, "crane copy", 1650,
+                       "one copy per row of .github/ci-images.yaml the package does not hold, "
+                       "and the ci-images step's budget is written for the rows a run copies, "
+                       "at the under 75 s a row that file's own comment derives: "
+                       "1 x (5 x 300 + 150) = 1650 s"),
+    DeclaredArithmetic(".github/scripts/mirror-ci-images.sh", None, "crane digest", 450,
+                       "the digest read that confirms the copy above it, once per row copied: "
+                       "1 x (5 x 60 + 150) = 450 s"),
+    DeclaredArithmetic(".github/scripts/mirror-ci-images.sh", None, "crane config", 900,
+                       "the Go check of one row, once per row that file holds. The read sits "
+                       "in image_go(), which check_go() calls, and the loop runs check_go once "
+                       "for the row the package already holds and once for the row it is about "
+                       "to copy — two written calls of which a pass runs one, so the figure is "
+                       "twice what a row costs: 2 x (5 x 60 + 150) = 900 s"),
 ]
 
 
@@ -1779,17 +1935,22 @@ credentialed_scripts: set[str] = set()
 
 
 class Budget:
-    """One step that carries its own `timeout-minutes`, which rule 8 holds above the attempts it
-    allows: where the budget is written, what the step is called, the minutes it gives, the
-    arithmetic of the calls the step's own `run:` holds, the local composite action a `uses:`
-    step runs, whose calls are the step's too, and the scripts the step's `run:` invokes, each
-    with how many times the step runs it, whose calls are the step's too for the same reason. A
-    cost of None is a step holding a site this check cannot count, and `uncounted` is what made
-    it so, which the refusal names in place of a comparison."""
+    """One step of a workflow, with everything rule 8 compares: where the step is written, what
+    it is called, the minutes its own `timeout-minutes` gives (None where it writes none, which
+    is itself refused for a step holding a retried call), the minutes its job gives and where
+    that is written, the arithmetic of the calls the step's own `run:` holds, the local
+    composite action a `uses:` step runs, whose calls are the step's too, and the scripts the
+    step's `run:` invokes, each with how many times the step runs it, whose calls are the
+    step's too for the same reason. A cost of None is a step holding a site this check cannot
+    count, and `uncounted` is what made it so, which the refusal names in place of a
+    comparison.
 
-    def __init__(self, path: str, line: int, step: str, minutes: int, cost: int | None,
-                 uses: str | None, scripts: dict[str, Call],
-                 uncounted: list[Uncounted]) -> None:
+    A composite action's steps get no entry here: GitHub takes no `timeout-minutes` on one, so
+    the budget that holds an action's calls is the `uses:` step that runs it."""
+
+    def __init__(self, path: str, line: int, step: str, minutes: int | None, cost: int | None,
+                 uses: str | None, scripts: dict[str, Call], uncounted: list[Uncounted],
+                 job: str | None, job_minutes: int | None, job_line: int) -> None:
         self.path = path
         self.line = line
         self.step = step
@@ -1798,6 +1959,9 @@ class Budget:
         self.uses = uses
         self.scripts = scripts
         self.uncounted = uncounted
+        self.job = job
+        self.job_minutes = job_minutes
+        self.job_line = job_line
 
 
 budgets: list[Budget] = []
@@ -1848,27 +2012,38 @@ def sets_pipefail(shell: object) -> bool:
     return shell.strip() == "bash" or "pipefail" in shell
 
 
-def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mapping, object]]:
+def written_minutes(holder: object) -> int | None:
+    """The `timeout-minutes` a step or a job writes, where it writes a whole number of them."""
+    if not isinstance(holder, Mapping):
+        return None
+    minutes = holder.get("timeout-minutes")
+    return minutes if isinstance(minutes, int) and not isinstance(minutes, bool) else None
+
+
+def steps_of(path: str, document: Mapping) -> list[tuple[str | None, str, Mapping, object,
+                                                         object]]:
     """The steps of a workflow's jobs and of a composite action's `runs`, each with the job it
-    sits in (None in an action), the name a problem calls it by, and the shell it runs under:
-    its own `shell:`, else its job's `defaults.run.shell`, else the workflow's."""
+    sits in (None in an action), the name a problem calls it by, the shell it runs under — its
+    own `shell:`, else its job's `defaults.run.shell`, else the workflow's — and the mapping of
+    the job holding it, whose own `timeout-minutes` rule 8 holds above the step's arithmetic
+    too."""
     found = []
-    holders: list[tuple[str | None, object, object]] = []
+    holders: list[tuple[str | None, object, object, object]] = []
     fallback = defaults_shell(document)
     runs = document.get("runs")
     if isinstance(runs, Mapping):
-        holders.append((None, runs.get("steps"), fallback))
+        holders.append((None, runs.get("steps"), fallback, None))
     for name, job in (document.get("jobs") or {}).items():
         if isinstance(job, Mapping):
-            holders.append((name, job.get("steps"), defaults_shell(job) or fallback))
-    for job, steps, shell in holders:
+            holders.append((name, job.get("steps"), defaults_shell(job) or fallback, job))
+    for job, steps, shell, holder in holders:
         if not isinstance(steps, list):
             continue
         for step in steps:
             if not isinstance(step, Mapping):
                 continue
             name = step.get("name") or step.get("id") or "-"
-            found.append((job, str(name), step, step.get("shell") or shell))
+            found.append((job, str(name), step, step.get("shell") or shell, holder))
     return found
 
 
@@ -1881,7 +2056,7 @@ for path in workflows + actions:
     if not isinstance(document, Mapping):
         continue
     credentialed = credentialed_jobs(path, document)
-    for job, name, step, shell in steps_of(path, document):
+    for job, name, step, shell, holder in steps_of(path, document):
         cost: int | None = 0
         called: dict[str, Call] = {}
         blocked: list[Uncounted] = []
@@ -1911,10 +2086,20 @@ for path in workflows + actions:
             action_uncounted.setdefault(path, []).extend(blocked)
             if uses:
                 action_uses.setdefault(path, []).append(uses)
-        minutes = step.get("timeout-minutes")
-        if isinstance(minutes, int) and not isinstance(minutes, bool):
-            budgets.append(Budget(path, step.lines.get("timeout-minutes", 0), name, minutes,
-                                  cost, uses, called, blocked))
+        # Every step of a workflow gets an entry, whether or not it writes a budget: a step
+        # that holds a retried call and writes none is refused below, which is the shape that
+        # let .github/actions/install-elan's 607 s ladder under ci.yaml's `airlock-lean` reach
+        # no comparison at all. A composite action's step gets none, because GitHub takes no
+        # `timeout-minutes` there and the `uses:` step that runs the action is its budget.
+        if path not in action_files:
+            minutes = written_minutes(step)
+            job_minutes = written_minutes(holder)
+            budgets.append(Budget(
+                path,
+                step.lines.get("timeout-minutes", min(step.lines.values(), default=0)),
+                name, minutes, cost, uses, called, blocked, job, job_minutes,
+                holder.lines.get("timeout-minutes", min(holder.lines.values(), default=0))
+                if isinstance(holder, Mapping) else 0))
 
 # Exception (d) for a script: a *.sh under .github/scripts/ that a credentialed publish job runs
 # can carry no retry either, because the retry is `. .github/scripts/ci-retry.sh` and that source
@@ -2229,6 +2414,8 @@ for budget in budgets:
     blocking = list(budget.uncounted)
     for target in sorted(seen):
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
+    carries = (f"carries `timeout-minutes: {budget.minutes}`" if budget.minutes is not None
+               else "carries no `timeout-minutes`")
     if blocking:
         named = "; ".join(
             f"`{item.what}` at {item.path}:{item.line}, inside the loop at line {item.loop}"
@@ -2240,7 +2427,7 @@ for budget in budgets:
         if one is None:
             one = script_arithmetic(blocking[0].what, set()) or 0
         problem(budget.path, budget.line,
-                f"step '{budget.step}' carries `timeout-minutes: {budget.minutes}` and this "
+                f"step '{budget.step}' {carries} and this "
                 "check can put no figure on it: it runs a retried call inside a loop whose "
                 f"passes it cannot read — {named}. One call there takes "
                 f"{one} s to exhaust its attempts and the step waits for "
@@ -2249,29 +2436,62 @@ for budget in budgets:
                 "this check reads it — a `for x in 1 2 3 4 5 6 7`, a `for x in "
                 "$(seq 1 7)`, or a `for ((i = 0; i < 7; i++))` — or, where the passes are as "
                 "many as the run finds work, "
-                "declare them in DECLARED_LOOPS in .github/scripts/check-download-retry.sh: "
-                "an entry there says how many passes the budgets reaching that loop are "
-                "written for and why that is the number.")
+                "declare that site in DECLARED_LOOPS in "
+                ".github/scripts/check-download-retry.sh: a DeclaredArithmetic entry there "
+                "writes the seconds the site contributes to this budget and the sum they come "
+                "from. A pass count answers nothing here, because this check made none: a "
+                "RaisedPasses entry raises a count it did read and stands in for no count it "
+                "did not.")
         continue
-    if cost is None or not cost or 60 * budget.minutes > cost:
+    if cost is None or not cost:
         continue
-    followed = sorted(target for target in seen if target in script_files)
-    through = (f" That arithmetic is the step's own and that of {', '.join(followed)}, which it "
-               "runs: a step waits for every attempt the scripts it calls make." if followed
-               else "")
-    problem(budget.path, budget.line,
-            f"step '{budget.step}' carries `timeout-minutes: {budget.minutes}`, "
-            f"{60 * budget.minutes} s, and its own retries take {cost} s to exhaust, which that "
-            f"budget does not strictly exceed.{through} A budget its own retries reach is a race "
-            "between the last attempt's error and the runner's kill, and the retry can lose it: "
-            "in run 42386541065's job 128445139635 a `gh api` read bounded at 30 s under "
-            "`timeout-minutes: 5` — 5 x 30 + 150 = 300 s against 300 s — printed "
-            "`attempt 5 of 5 reached its 30s bound` at 17:22:16.7444966Z and was killed at "
-            "17:22:16.7483230Z, four milliseconds later. Lose that race and the step reports "
-            "GitHub's bare `The action '…' has timed out after N minutes.` rather than naming "
-            "the site and its attempts, which is the loud failure the retry exists to give. "
-            f"GitHub's granularity is the minute, so write `timeout-minutes: {cost // 60 + 1}` "
-            "or more.")
+    if budget.minutes is None:
+        problem(budget.path, budget.line,
+                f"step '{budget.step}' holds {cost} s of retries and carries no "
+                "`timeout-minutes` of its own, so nothing holds that arithmetic above "
+                "anything: this rule compares a step's attempts with the budget that step "
+                "writes, and a step writing none is judged by nothing while the job's ceiling "
+                "cuts it with GitHub's bare `The action '…' has timed out after N minutes.` "
+                "That is how .github/actions/install-elan's 8 x 60 + 127 = 607 s ladder sat "
+                "under ci.yaml's `airlock-lean` with no term for it and nothing said so. "
+                "GitHub's granularity is the minute, so write "
+                f"`timeout-minutes: {cost // 60 + 1}` or more on this step.")
+        continue
+    if 60 * budget.minutes <= cost:
+        followed = sorted(target for target in seen if target in script_files)
+        through = (f" That arithmetic is the step's own and that of {', '.join(followed)}, "
+                   "which it runs: a step waits for every attempt the scripts it calls make."
+                   if followed else "")
+        problem(budget.path, budget.line,
+                f"step '{budget.step}' carries `timeout-minutes: {budget.minutes}`, "
+                f"{60 * budget.minutes} s, and its own retries take {cost} s to exhaust, which "
+                f"that budget does not strictly exceed.{through} A budget its own retries reach "
+                "is a race between the last attempt's error and the runner's kill, and the "
+                "retry can lose it: "
+                "in run 42386541065's job 128445139635 a `gh api` read bounded at 30 s under "
+                "`timeout-minutes: 5` — 5 x 30 + 150 = 300 s against 300 s — printed "
+                "`attempt 5 of 5 reached its 30s bound` at 17:22:16.7444966Z and was killed at "
+                "17:22:16.7483230Z, four milliseconds later. Lose that race and the step "
+                "reports GitHub's bare `The action '…' has timed out after N minutes.` rather "
+                "than naming the site and its attempts, which is the loud failure the retry "
+                "exists to give. GitHub's granularity is the minute, so write "
+                f"`timeout-minutes: {cost // 60 + 1}` or more.")
+        continue
+    allowed = JOB_DEFAULT_MINUTES if budget.job_minutes is None else budget.job_minutes
+    if 60 * allowed <= cost:
+        job_carries = (
+            f"job '{budget.job}' carries `timeout-minutes: {budget.job_minutes}`, "
+            f"{60 * budget.job_minutes} s" if budget.job_minutes is not None
+            else f"job '{budget.job}' writes no `timeout-minutes`, so GitHub gives it "
+                 f"{JOB_DEFAULT_MINUTES} minutes, {60 * JOB_DEFAULT_MINUTES} s")
+        problem(budget.path, budget.job_line,
+                f"{job_carries}, and its step '{budget.step}' holds retries taking {cost} s to "
+                "exhaust, which that budget does not strictly exceed. A job whose ceiling sits "
+                "under one of its own steps' arithmetic cuts that step before the step's own "
+                "budget can name the site that failed, so the step's `timeout-minutes` buys "
+                "nothing: a job carries its measured duration plus the arithmetic of its "
+                "slowest retried step, which is the rule ci.yaml's Budgets note writes out. "
+                f"Write `timeout-minutes: {cost // 60 + 1}` or more on this job.")
 
 for entry in EXEMPTIONS:
     if entry.used:
@@ -2287,27 +2507,52 @@ for entry in EXEMPTIONS:
 for entry in DECLARED_LOOPS:
     if len(entry.loops) > 1:
         problem(SELF, 1,
-                f"the declared loop for {entry.path}"
-                + (f" step '{entry.step}'" if entry.step else "")
-                + f" `{entry.verb}` covers the loops at lines "
+                f"the declared loop for {entry.names()} covers the loops at lines "
                 + ", ".join(str(line) for line in sorted(entry.loops))
-                + ", and it writes one pass count. A loop's passes are that loop's own, so an "
+                + ", and it writes one figure. A loop's passes are that loop's own, so an "
                 "entry that two of them match hands the second a figure nobody wrote for it: "
                 "one of those loops is counting something else. Write the count where this "
                 "check reads it off the loop, or give the two loops steps or verbs that tell "
-                f"them apart. This entry said {entry.passes} "
-                f"pass{'' if entry.passes == 1 else 'es'}, because {entry.why}.")
+                f"them apart. This entry said {entry.figure()}, because {entry.why}.")
+        continue
+    if isinstance(entry, RaisedPasses) and entry.unmade:
+        problem(SELF, 1,
+                f"the raised pass count for {entry.names()} covers the loop at line "
+                + ", ".join(str(line) for line in sorted(entry.unmade))
+                + ", whose passes this check never counted. A raised count raises a count "
+                "this check made; it stands in for none. What a site in an unreadable loop "
+                "needs is a DeclaredArithmetic entry, which writes the seconds that site "
+                f"contributes to its step's budget and the sum they come from. This entry "
+                f"said {entry.figure()}, because {entry.why}.")
+        continue
+    if isinstance(entry, RaisedPasses) and entry.lowered:
+        line, counted = sorted(entry.lowered.items())[0]
+        problem(SELF, 1,
+                f"the raised pass count for {entry.names()} writes {entry.figure()} over the "
+                f"loop at line {line}, which this check reads as {counted}. A raised count "
+                "raises: a figure at or below the one this check computed buys nothing, and "
+                "it hides the next edit of that loop — the one that would have raised the "
+                "count — behind a number nobody rereads. Drop this entry, or write a figure "
+                f"above {counted}. It said {entry.figure()}, because {entry.why}.")
+        continue
+    if isinstance(entry, DeclaredArithmetic) and entry.below:
+        line, floor = sorted(entry.below.items())[0]
+        problem(SELF, 1,
+                f"the declared arithmetic for {entry.names()} writes {entry.figure()}, and "
+                f"one call of that site at {entry.path}:{line} takes {floor} s to exhaust its "
+                "attempts. A site costs at least one call of itself, whatever the run finds "
+                "for it to do, so a figure under that floor is a budget written for a step "
+                f"the runner cuts inside the first ladder. Write {floor} s or more, or price "
+                f"the attempts the site actually makes. It said {entry.figure()}, because "
+                f"{entry.why}.")
         continue
     if entry.used:
         continue
     problem(SELF, 1,
-            f"the declared loop for {entry.path}"
-            + (f" step '{entry.step}'" if entry.step else "")
-            + f" `{entry.verb}` matches no retried call in a loop whose passes this check "
-            "cannot read. A declaration outliving its loop is a figure nobody checks again: "
-            "drop it, or point it at where that loop moved. It said the budgets reaching it "
-            f"are written for {entry.passes} pass{'' if entry.passes == 1 else 'es'}, because "
-            f"{entry.why}.")
+            f"the declared loop for {entry.names()} matches no retried call in a loop whose "
+            "passes this check cannot read. A declaration outliving its loop is a figure "
+            "nobody checks again: drop it, or point it at where that loop moved. It said the "
+            f"budgets reaching it are written for {entry.figure()}, because {entry.why}.")
 
 if LIST_MODE and not problems:
     # A reader of this list pipes it (`| head`, `| cut`), so a closed pipe ends this the way any
