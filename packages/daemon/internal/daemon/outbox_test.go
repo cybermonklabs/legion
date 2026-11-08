@@ -2599,7 +2599,10 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Done, Generation: 3, Status: "done", Rank: "U", LastDispatchSeq: 5}
+	root := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Implementing, Generation: 3, Status: "in_progress", Rank: "U", LastDispatchSeq: 5}
+	// The record is written twice: the architect's start below is a start of the tree while it ran,
+	// and a start of a closed issue starts nothing, so the root stands in the workflow for it and
+	// takes its closed shape only afterwards.
 	putOutboxIssue(t, pool, records, root)
 	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
 	provisioned, removed := 0, 0
@@ -2633,7 +2636,7 @@ func TestAClosedTreeSetBackToTodoRelaunchesItsArchitect(t *testing.T) {
 
 	// The tree closes and lingers, then its linger expires: every claim stops and the workspace goes.
 	until := time.Now().Add(-time.Minute)
-	root.LingerUntil = &until
+	root.Phase, root.Status, root.LingerUntil = phase.Done, "done", &until
 	putOutboxIssue(t, pool, records, root)
 	if _, err := intake.ApplyFact(ctx, pool, "outbox", "linger:LEGION-208:3", intake.LingerExpired{Issue: root.Key, Generation: 3}, engine, admission); err != nil {
 		t.Fatalf("apply linger expiry: %v", err)
