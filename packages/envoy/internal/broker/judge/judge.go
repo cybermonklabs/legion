@@ -191,15 +191,10 @@ func (r *Runner) consider(ctx context.Context, p requests.PendingRequest) {
 // a decision on it, so the model call would buy nothing at all, and the requester is told
 // nothing by it either.
 //
-// What it does not do is bound how many model calls one session can start. Measured at this
-// head: a session looping create, cancel, create cost one model call per round, twelve rounds
-// twelve calls, and this read fired on none of them. Each create makes a request of its own
-// that is live for the milliseconds this run spends on JudgePolicy and the two Dispatch GETs,
-// so the window this read closes is the one a cancel of *that* request would have to land in,
-// and a cancel made from outside takes far longer than that. The decision not to cap the runs
-// in flight or to limit a session's creates stands on its own grounds (D8, and the architect's
-// decision recorded on the issue): nobody has seen that loop, and a queue would leave a
-// legitimate request waiting for a person.
+// What it does not do is bound how many model calls one session can start: each create makes a
+// request of its own, live for the milliseconds this run spends before the model call, so a
+// session that loops create, cancel, create pays for one model call per round. D8 decides not
+// to cap the runs in flight or limit a session's creates.
 //
 // A run stopped here still writes its row. No request row is ever deleted — a cancel and an
 // expiry are state changes — so LogJudged finds the request and the enrollment it hangs off,
@@ -382,7 +377,9 @@ type verdictRow struct {
 	decided string
 }
 
-// detail is the row's detail object, the one place its keys are spelled.
+// detail is the row's detail object, the one place this package spells its keys. The row an
+// approval's own transaction writes gains one more, applied, which requests' decider.judgedRow
+// sets from what that transaction did.
 func (v verdictRow) detail(modelID string) map[string]any {
 	detail := map[string]any{
 		"checks":  v.checks,
@@ -443,17 +440,18 @@ func (r *Runner) write(ctx context.Context, p requests.PendingRequest, row verdi
 			r.logged(p, row)
 			return
 		}
-		// A person decided the request first, it expired, or the session's operator
-		// withheld the name while the judge was reading: each is the ordinary outcome
-		// of losing a race and no fault of the judge's (D10, and the withheld guard
-		// currentPolicyAdmits makes for the judge alone, which answers
-		// record.ErrNotApprover). Any other refusal is one the judge should not have
-		// reached at all. Either way the approval wrote nothing, and the verdict is
-		// still the record of what the judge was asked and what it answered, so it is
-		// written on its own.
+		// A person decided the request first, it expired, or the current policy moved
+		// while the judge was reading: the session's operator withheld the name (the
+		// guard currentPolicyAdmits makes for the judge alone), the name's owner changed,
+		// or its max-grant fell below the request's lifetime. Each is the ordinary outcome
+		// of losing a race and no fault of the judge's (D10), and the policy's three all
+		// answer record.ErrNotApprover. Any other refusal is one the judge should not have
+		// reached at all. Either way the approval wrote nothing, and the verdict is still
+		// the record of what the judge was asked and what it answered, so it is written on
+		// its own.
 		row.notApplied = err
 		if errors.Is(err, requests.ErrTerminal) || errors.Is(err, requests.ErrExpired) || errors.Is(err, record.ErrNotApprover) {
-			slog.Info("broker judge: the request was decided or withheld before the judge's approval landed",
+			slog.Info("broker judge: the request was decided, expired or moved out of the judge's policy before the judge's approval landed",
 				"record", p.RecordID, "request", p.RequestID, "model", modelID, "reason", err)
 		} else {
 			slog.Error("broker judge: the judge's approval was refused", "record", p.RecordID,
