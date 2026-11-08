@@ -304,8 +304,12 @@ const githubIntakeSubject = "notifications.github.>"
 // intakeMessageTimeout bounds how long one envelope's own handling may take -- its GitHub calls
 // (a pull request plus its commit pages, or a workflow run plus its jobs pages, each with this
 // package's own bounded page retries) and its Postgres writes. A handler that runs past it is
-// cancelled, logged and acked: the five-minute reconcile is this package's catch-up mechanism,
-// so one slow envelope must not hold the consumer. A var so a test can shrink it.
+// cancelled and logged, and acked for every failure but one: the five-minute reconcile is this
+// package's catch-up mechanism, so one slow envelope must not hold the consumer. The one
+// failure it does not cover is a deadline that falls on a pull request's head write, or on
+// either of the reads before it, which leaves a head row no pass can offer (ErrHeadNotStored);
+// that envelope is handed back instead, for the bounded number of redeliveries deliver allows.
+// A var so a test can shrink it.
 var intakeMessageTimeout = time.Minute
 
 // intakeMaxAckPending bounds how many messages NATS may have outstanding with this consumer at
