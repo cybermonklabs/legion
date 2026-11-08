@@ -140,6 +140,33 @@ func TestAReasonlessRequestIsDeniedByTheOneNameThatWouldWait(t *testing.T) {
 	}
 }
 
+// TestADenialTheRuleAndThePolicyBothSpeakToSaysBoth: SERVICE_KEY is the fixture service's own
+// secret, which no person approves, so the policy denies it to this operator's session with no
+// reason to name; DEEL_API_KEY is human-tier, so with no reason the rule denies it by name. The
+// detail has to carry both sentences: told only "ask again with --reason", the session would ask
+// again with one and be refused all the same, learning nothing about the name that refuses it
+// whatever it says.
+func TestADenialTheRuleAndThePolicyBothSpeakToSaysBoth(t *testing.T) {
+	ctx := context.Background()
+	m, enr, key, _ := newFixture(t)
+
+	req, err := m.Create(ctx, enr, signRequest(t, m, key, "", "SERVICE_KEY", "DEEL_API_KEY"), "")
+	if err != nil {
+		t.Fatalf("Create(SERVICE_KEY, DEEL_API_KEY) with no reason: %v", err)
+	}
+	want := "DEEL_API_KEY: " + policy.ReasonNoReason + "; policy denies at least one requested secret"
+	if req.State != "denied" || req.Detail == nil || *req.Detail != want {
+		t.Fatalf("Create = %+v (detail %v); want it denied reading %q", req, req.Detail, want)
+	}
+	if len(req.Secrets) != 2 || req.Secrets[0].Decision != policy.Deny || req.Secrets[1].Decision != policy.Deny {
+		t.Fatalf("decisions = %+v; want both names denied", req.Secrets)
+	}
+	got, err := m.Get(ctx, req.ID)
+	if err != nil || got.Detail == nil || *got.Detail != want {
+		t.Fatalf("Get = %+v, %v; want the row's decision_detail to read %q", got, err, want)
+	}
+}
+
 // TestWhatCountsAsAReasonIsWhatIsLeftOfItTrimmed is the rule's boundary: the reason is read
 // trimmed, so a request signing a space alone is denied exactly as one signing none is — the
 // session gets the same answer whether its person typed --reason "" or --reason " " — while one
