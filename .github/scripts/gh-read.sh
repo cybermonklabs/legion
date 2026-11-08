@@ -5,7 +5,7 @@
 # attempt with `timeout 30`. GitHub refuses a call now and then — a 502, a secondary rate limit
 # — and a single refusal must decide nothing here: ci-ok is the check main's ruleset requires,
 # the scripts that post it act on what one API call answered, and the browser lane's merge job
-# reads its own legs through that same list.
+# reads its own attempt's jobs through this ladder.
 #
 # Sourced, never run: `source "$(dirname "${BASH_SOURCE[0]}")/gh-read.sh"`.
 #
