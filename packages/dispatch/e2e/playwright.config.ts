@@ -264,17 +264,27 @@ const multiprocessProjects = [
 // (sjawhar/legion#2612).
 const clockSpecs = /(agent-workspace-timing|heavy-bodies|nested-directive)\.e2e\.ts/;
 
+// The one spec of the containerised visual review (`visual.e2e.ts`), which runs in the `visual`
+// and `visual-phone` projects at the end of this list and in no project above them: a project
+// whose configuration key equals one of theirs - the same engine, viewport, origin and
+// server-process count - would run the same row twice, which
+// e2e/__tests__/row-configurations.test.ts refuses. `iphone` is that project for `visual-phone`,
+// which spreads the same device, and the three other projects that name a `testIgnore` name
+// this one too for the reason given above `webkit`: without a `testMatch` a project sees every
+// spec in this directory, so the ignore is what keeps this file to its own two projects.
+const visualSpecs = /visual\.e2e\.ts$/;
+
 // Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
 // project added here is one more the clock rows wait for.
 const parallelProjects = [
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
     grep: phoneTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -318,7 +328,7 @@ const parallelProjects = [
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -375,7 +385,7 @@ const parallelProjects = [
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs, visualSpecs],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -488,6 +498,68 @@ const aloneProjects = [
   },
 ] satisfies Project[];
 
+/**
+ * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
+ * comparing that page against a committed baseline in light and in dark, and the pages a phone
+ * width rearranges once more in that viewport (e2e/visual.e2e.ts).
+ *
+ * Both projects run that one spec and split its rows by the ` @phone` tag its phone rows carry,
+ * the tag the suite already selects phone rows by (`phoneTagged` above): `visual-phone` greps
+ * it and `visual` inverts it, so every row runs under exactly one project and reads the
+ * baseline directory of that project alone.
+ *
+ * A baseline a person takes and a baseline CI compares must be the same rendering, so both
+ * projects run inside the pinned Playwright image and nowhere else: `e2e/visual-run.sh` seeds on
+ * the host, starts that container and runs exactly these two projects in it. A run outside the
+ * container reaches the rows, and every one of them skips itself, because the host's browser
+ * builds, fonts and GPU stack are not the image's and its shots would be a different rendering
+ * of the same page (the skip and its message are in the spec).
+ *
+ * They are declared unconditionally, never behind the variable that turns the rows on.
+ * `e2e/__tests__/row-configurations.test.ts` lists this config in a subprocess whose environment
+ * is cut to `HOME`, `PATH` and `DISPATCH_E2E_PROCESSES`, so a project declared only when a
+ * variable is set is invisible to that guard: its rows would never be checked for a duplicate
+ * configuration while the test still read green.
+ *
+ * They sit after `aloneProjects` in a group of their own, so `parallelProjects` does not grow -
+ * a project added there is one more the clock rows wait for - and the `-alone` projects gain no
+ * dependency on a project that skips its rows on every host run.
+ *
+ * `workers: 1`, which Playwright takes per project: these rows compare images, and two of them
+ * drawing at once on one machine is the contention that makes a comparison read a half-drawn
+ * frame. `retries: 0`, against the one retry the run takes on CI, for a reason of their own: a
+ * screenshot comparison that fails and then passes is a tolerance that is too tight or a page
+ * that is not settled, and either one is the thing this layer exists to find, so it is reported
+ * as a failure rather than as a flake.
+ */
+const visualProjects = [
+  {
+    name: "visual",
+    testMatch: visualSpecs,
+    grepInvert: phoneTagged,
+    // A baseline is an input a person reads in a review, not an output of a row, so these files
+    // live beside the suite at `e2e/__screenshots__/<project>/<route>-<scheme>.png` and are
+    // committed - the one place in this suite a spec's file is not under `testInfo.outputPath()`
+    // (packages/dispatch/AGENTS.md). The template carries no `{platform}` segment, which the
+    // default template adds: every shot is taken in the one pinned Linux image, so the segment
+    // would say the same thing on every file and in the name of each the route and the scheme
+    // are what a reader is looking for.
+    snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
+    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    workers: 1,
+    retries: 0,
+  },
+  {
+    name: "visual-phone",
+    testMatch: visualSpecs,
+    grep: phoneTagged,
+    snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
+    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    workers: 1,
+    retries: 0,
+  },
+] satisfies Project[];
+
 export default defineConfig({
   testDir: ".",
   testMatch: /.*\.e2e\.ts/,
@@ -533,5 +605,7 @@ export default defineConfig({
   // both read it or do not accept each other's cookies (e2e/preflight.ts).
   globalSetup: fileURLToPath(new URL("./preflight.ts", import.meta.url)),
   projects:
-    harnessProcessCount === 2 ? multiprocessProjects : [...parallelProjects, ...aloneProjects],
+    harnessProcessCount === 2
+      ? multiprocessProjects
+      : [...parallelProjects, ...aloneProjects, ...visualProjects],
 });

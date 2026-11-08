@@ -264,10 +264,12 @@ function SessionAgentName({
     named = name;
   } else {
     // No `aria-label`: the link is named by its visible name, and the attribution after it is
-    // read once, as text.
+    // read once, as text. Inside a sentence it is underlined, as every other inline link of the
+    // app is: the link blue alone does not reach 3:1 against the text around it in dark, so
+    // colour on its own would be the only thing marking it a link (axe's `link-in-text-block`).
     named = (
       <Link
-        className={inline ? `${LINK_CLASS} dispatch-inline-link` : LINK_CLASS}
+        className={inline ? `${LINK_CLASS} dispatch-inline-link underline` : LINK_CLASS}
         onClick={variant.onNavigate}
         replace={variant.replace === true}
         to={to}

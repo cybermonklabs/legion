@@ -798,8 +798,8 @@ func scanCheckResult(row pgx.Row) (model.CheckResult, error) {
 // It refuses on nothing but GitHub's proof that the repository does not hold the commit, which
 // delivery.RepositoryHoldsCommit defines as the one 422 whose message says GitHub found no
 // commit for the SHA. No other GitHub answer can block the result a closed issue takes, the
-// production check's after-merge result — whose merge commit is on the default branch and is
-// held anyway.
+// production check's after-merge result — whose merge commit is on the branch its pull request
+// merged into and is held anyway.
 func (s *server) refuseUnknownCommit(ctx context.Context, repo *string, sha string) error {
 	if repo == nil {
 		return nil

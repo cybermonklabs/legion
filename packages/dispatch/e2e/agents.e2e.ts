@@ -597,7 +597,7 @@ test("opening a row marks read the newer of two replies written in one milliseco
         request.method() === "PUT" &&
         request.url().endsWith(`/api/v1/me/agents/${planner.session_id}/state`)
     );
-    await plannerCard.getByRole("button", { name: "Planner replied: 2 unread" }).click();
+    await plannerCard.getByRole("button", { name: "New replies 2 from Planner" }).click();
     expect((await marked).postDataJSON()).toEqual({ read_through: replyB });
     await expect(
       plannerCard.getByRole("list", { name: "Conversation with Planner" })

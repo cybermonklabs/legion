@@ -408,6 +408,7 @@ jobs:
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
@@ -1156,9 +1157,9 @@ jobs:
               - '.github/scripts/apt-archive-cache-key.sh'
               - '.github/scripts/dispatch-browser-samples.sh'
               - '.github/scripts/dispatch-browser-latest-blobs.sh'
-              # e2e/cli-reply-answers.e2e.ts:18 runs envoy-client's dispatch CLI, spawned as its
-              # own process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with
-              # its sources, through packages/envoy-client/src/broker-credential.ts:21-22
+              # e2e/inbox-cli.e2e.ts:330 runs envoy-client's dispatch CLI, spawned as its own
+              # process (e2e/dispatch-cli.ts:8), and @legion/broker-client is compiled with its
+              # sources, through packages/envoy-client/src/broker-credential.ts:21-22
               # (ci_job_reads.py's envoy_client_dep).
               - 'packages/envoy-client/src/**'
               - 'packages/envoy-client/bin/dispatch.ts'
@@ -1211,6 +1212,7 @@ jobs:
               - 'packages/envoy/internal/broker/secrets/*'
               - 'packages/envoy/internal/broker/store/**'
               - 'packages/envoy/internal/broker/wake/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/ratelimit/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
@@ -1335,8 +1337,11 @@ jobs:
               # counts its testdata among what this job reads.
               - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/fixtureenv/*'
+              - 'packages/envoy/internal/githubtest/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testwait/*'
               # The image pull before its tests, of the consts in testnats/nats.go and
               # testpg/testpg.go.
               - '.github/actions/pull-test-images/**'
@@ -1416,6 +1421,7 @@ jobs:
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/stacktest/*'
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # internal/dispatch/docs/approval_carry_test.go:26.
               - 'packages/contracts/fixtures/decision-blocks/**'
@@ -1427,7 +1433,9 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *dispatch_command_tests
+              - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testwait/*'
               # The step takes the memory tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
             # `go test -tags multiprocess ./cmd/dispatch`, the same closure as dispatch_memory.
@@ -1435,7 +1443,9 @@ jobs:
               - '.github/workflows/ci.yaml'
               - *go_workspace
               - *dispatch_command_tests
+              - 'packages/envoy/internal/githubtest/*'
               - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/internal/testwait/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
             # The server-change soak (listener-server-change): `go test -tags serverchange
@@ -1493,6 +1503,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/text/**'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
@@ -1500,6 +1511,7 @@ jobs:
               - 'packages/envoy/internal/redact/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/internal/webhook/testdata/**'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
@@ -1546,6 +1558,7 @@ jobs:
               - 'packages/envoy/internal/dispatch/githubapp/githubapptest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
+              - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'
@@ -1553,6 +1566,7 @@ jobs:
               - 'packages/envoy/internal/redact/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              - 'packages/envoy/internal/testwait/*'
               - 'packages/envoy/migrationid/*'
               # The step takes the multiprocess tag's test list from this script at run time.
               - '.github/scripts/go-tagged-tests.sh'
@@ -1875,12 +1889,15 @@ jobs:
     timeout-minutes: 30
     # The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
     # with `checks: write` and names the run's jobs in it with `actions: read`. `contents: read`
-    # is the checkout's. The pull request's text is the `pr-title` job's, which declares the
-    # scopes its own routes read.
+    # is the checkout's. `pull-requests: read` is the daemon API contract check's: when it is
+    # about to refuse a change it reads every open pull request of the repository, with the paths
+    # each changes, to name a number no other one has taken. The pull request's text is the
+    # `pr-title` job's, which declares the scopes its own routes read.
     permissions:
       contents: read
       actions: read
       checks: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1896,6 +1913,17 @@ jobs:
 
       - name: Check every manifest names the one exact zod
         run: .github/scripts/check-zod-version.sh
+
+      # Only on a pull request and a merge group, the two events that have a base to compare
+      # with: this job also runs on the bypass check's dispatched run at main's tip, where the
+      # change has already merged. The condition tests `github.event_name` and no output of the
+      # `changes` job, which rules 2 and 3 of .github/scripts/check-ci-filters.sh require of a
+      # step in this job.
+      - name: Check a change that touches the daemon API contract declares a number above the base's
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/check-daemon-api-contract.sh
 
       - name: Check the saved gh help is the worker image's gh
         run: .github/scripts/check-gh-version.sh
@@ -2228,6 +2256,9 @@ jobs:
 
       - name: Test the zod version check
         run: .github/scripts/check-zod-version.test.sh
+
+      - name: Test the daemon API contract number check
+        run: .github/scripts/check-daemon-api-contract.test.sh
 
       - name: Test the gh version check
         run: .github/scripts/check-gh-version.test.sh
