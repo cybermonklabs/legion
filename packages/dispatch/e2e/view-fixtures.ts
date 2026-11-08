@@ -1,13 +1,14 @@
 /**
  * What the `view` specs share (dispatch://INFRA-682): the block as an author writes it, the
  * block as a reader's page holds it, the data a page draws, the issue that holds a page file
- * and a data file, and opening a comment's thread in the Conversation.
+ * and a data file, the address of a document a row opens, and opening a comment's thread in the
+ * Conversation.
  *
  * One module, so a change to the directive or to the seed is one edit rather than five:
  * `view-block.e2e.ts`, `view-budget.e2e.ts`, `view-bytes.e2e.ts`, `view-grants.e2e.ts` and
  * `view-sandbox.e2e.ts` each read these, and the copies they kept before were the same text.
- * Only the page a row shows stays the row's own, since each spec reads something different of
- * its page.
+ * A page that one spec alone reads stays that spec's own; the ready-only page that
+ * `view-budget.e2e.ts` and `view-bytes.e2e.ts` both seed is here (`seedReadyView`).
  */
 import { expect, type Locator, type Page } from "@playwright/test";
 
@@ -22,7 +23,8 @@ import {
 /** The project every `view` row's issue and document live in. */
 export const VIEW_PROJECT = "CORE";
 
-/** The caption the measured rows give their block, and so the text that finds it on the page. */
+/** The caption the rows of `view-budget.e2e.ts` and `view-bytes.e2e.ts` give their block, and so
+ *  the text that finds it on the page. */
 export const VIEW_CAPTION = "Attempts of the kernel boot loop.";
 
 /** The one data file of the seed below, as text a page can draw: one bar, whose `.value` is
@@ -111,7 +113,8 @@ export async function seedViewIssue(options: {
 }
 
 /** A page file that answers `ready` and says nothing else, and a data file granted to it: what
- *  the two measured rows seed, which care about what a block costs rather than what it draws. */
+ *  the rows of `view-budget.e2e.ts` and `view-bytes.e2e.ts` seed, which care about when a block
+ *  asks for its page and what it costs rather than what it draws. */
 export async function seedReadyView(): Promise<ViewFixture> {
   await seedViewProject();
   return seedViewIssue({
