@@ -316,18 +316,30 @@ func importSession(ctx context.Context, conn *pgx.Conn, file, treeVolume string)
 	return importedSession{Outcome: outcome, Summary: ompsessions.Summarize(content)}, nil
 }
 
+// ignoringEINTR calls fn until the error it answers with is not EINTR, and returns that error. A
+// signal can interrupt any open or fstat of the walk, and the rooted-directory API this walk
+// replaced retried each of its own calls the same way (src/os/root_unix.go).
+func ignoringEINTR(fn func() error) error {
+	for {
+		err := fn()
+		if !errors.Is(err, unix.EINTR) {
+			return err
+		}
+	}
+}
+
 // openNoFollow opens name in the directory the descriptor parent holds, refusing a symbolic link
 // at name with ELOOP, and retries the EINTR an open may answer with. Every component of
 // openSessionFileBeneath's walk and its leaf are opened through it, so the flag set is written
 // once and a later change to it cannot reach only one of them.
 func openNoFollow(parent int, name string) (int, error) {
-	for {
-		fd, err := unix.Openat(parent, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		return fd, err
-	}
+	var fd int
+	err := ignoringEINTR(func() error {
+		var err error
+		fd, err = unix.Openat(parent, name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+		return err
+	})
+	return fd, err
 }
 
 // openSessionFileBeneath opens the session file at relative, the path below the sessions
@@ -350,7 +362,7 @@ func openNoFollow(parent int, name string) (int, error) {
 //
 // A component's kind comes from fstat of the handle just opened rather than from a second reading
 // of the name, so a rename between the check and the open cannot change what was opened. Every
-// open and every fstat retries EINTR, keeping the behaviour of the ignoringEINTR loop Go's
+// open and every fstat runs through ignoringEINTR, keeping the behaviour of the loop Go's
 // rooted-directory API wraps each of its own opens in (src/os/root_unix.go).
 func openSessionFileBeneath(volume, relative string) (*os.File, error) {
 	sessions := filepath.Join(volume, sandbox.SessionsSubPath)
@@ -361,16 +373,12 @@ func openSessionFileBeneath(volume, relative string) (*os.File, error) {
 		return nil, fmt.Errorf("%s is the sessions directory itself, not a session file", sessions)
 	}
 	var parent int
-	for {
-		fd, err := unix.Open(volume, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
-		if err != nil {
-			return nil, fmt.Errorf("the tree volume %s cannot be opened: %w", volume, err)
-		}
-		parent = fd
-		break
+	if err := ignoringEINTR(func() error {
+		var err error
+		parent, err = unix.Open(volume, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		return err
+	}); err != nil {
+		return nil, fmt.Errorf("the tree volume %s cannot be opened: %w", volume, err)
 	}
 	// The walk starts at the volume, so the sessions directory's own components come first.
 	// relative is filepath.Rel's output, which is clean, and IsLocal has refused an absolute, an
@@ -391,11 +399,7 @@ func openSessionFileBeneath(volume, relative string) (*os.File, error) {
 			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
 		}
 		var st unix.Stat_t
-		err = unix.Fstat(directory, &st)
-		for errors.Is(err, unix.EINTR) {
-			err = unix.Fstat(directory, &st)
-		}
-		if err != nil {
+		if err := ignoringEINTR(func() error { return unix.Fstat(directory, &st) }); err != nil {
 			unix.Close(directory)
 			return nil, fmt.Errorf("%s cannot be opened: %w", walked, err)
 		}
