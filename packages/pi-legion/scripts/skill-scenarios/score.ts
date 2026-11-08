@@ -1089,7 +1089,10 @@ function toldArchitect(entries: SessionEntry[], threads: z.infer<typeof Threads>
  *                landed on, by SHA" with a second submission of its own (`approved`). A second
  *                call on a thread already resolved names that one thread again, and a call on a
  *                thread of the pull request that is none of the scenario's resolves one thread
- *                too, neither of which the reference forbids;
+ *                too, neither of which the reference forbids. And neither agent asked the
+ *                daemon to move the issue (`moved`): the loop exists to spend no round, which
+ *                is what k2's claim means by "opens no new round", and "Neither the implementer
+ *                nor the reviewer moves the issue itself" is said of both cases;
  *   code-defect  one thread whose sentence is false only because the code is wrong. "A thread
  *                the fix cannot close is a message to the architect … a `REQUEST_CHANGES`
  *                naming the behavioural finding is the review that moves it. Neither the
@@ -1240,13 +1243,20 @@ function threadsClosed(runDir: string, run: string, label: string, dirCase: stri
         fixResolves === 0 &&
         resolves.length === 0 &&
         moved === undefined
-      : repliedEach &&
+      : // The loop exists to spend no round, which is what k2's claim means by "opens no new
+        // round", and the design says it of both cases: "Neither the implementer nor the
+        // reviewer moves the issue itself" (review-threads.md step 3, the same sentence in
+        // merge-gate.md). Scored in code-defect since that arm was written and in text-fixes
+        // from 2026-11-08, so a run that performed every act of the loop and then asked the
+        // daemon to move the issue back no longer passes as a clean loop.
+        repliedEach &&
         fixResolves === 0 &&
         fixed &&
         threadsLine &&
         listed &&
         resolvedEach &&
-        approved;
+        approved &&
+        moved === undefined;
   const ref = [fixSession, reviewSession].every((entries) =>
     readCalls(entries).some((call) =>
       call.target.includes("skill://legion-worker/references/review-threads.md")
