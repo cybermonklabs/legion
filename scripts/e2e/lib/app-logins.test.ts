@@ -299,6 +299,39 @@ describe("app-logins.ts", () => {
     expect(JSON.parse(stdout).implement).toBe("example-implement[bot]");
   });
 
+  // A stage proof runs many bun commands in one shell group, and the first read of
+  // `process.stderr` sets `O_NONBLOCK` on the open pipe fd 2 is. The flag belongs to the pipe
+  // rather than to the process, and bun leaves it set when it exits, so every later writer on
+  // that pipe inherits it
+  // (docs/solutions/testing/bun-console-log-drops-what-a-full-non-blocking-pipe-cannot-take-and-exits-0.md).
+  // `writeSync` raises `EAGAIN` there where a blocking descriptor waits, so this locks that the
+  // helper's megabyte-long failure still reaches a caller whole on a descriptor an earlier bun
+  // left non-blocking, rather than ending after 66,381 bytes with a stack trace in its place.
+  test("the failure reaches a caller whose fd 2 an earlier bun left non-blocking, whole", async () => {
+    const noisy = "printf '%01000000d' 0 >&2; printf 'END-OF-STDERR\\n' >&2; exit 3";
+    const path = config(app("101", noisy), app("202"));
+    // Only the first bun's stdout is redirected: a `2>/dev/null` on it would flip a descriptor
+    // of its own and leave this pipe blocking, and the row would then prove nothing (measured).
+    // Both runs are in one group, so one reader that stalls holds the pipe for both, and the
+    // group prints fd 2's flags so the row refuses to pass when a later bun stops setting them.
+    const shell = `{
+  bun -e 'process.stderr' >/dev/null
+  sed -n 's/^flags:/fd2 flags:/p' /proc/self/fdinfo/2
+  bun "${script}" --roles implement "${path}" "${standIn}" >/dev/null
+} 2>&1 | { sleep 1; cat; }`;
+    const child = Bun.spawn(["bash", "-c", shell], { stdout: "pipe", stderr: "pipe" });
+    const [printed] = await Promise.all([new Response(child.stdout).text(), child.exited]);
+    const lines = printed.trimEnd().split("\n");
+    expect(lines.find((line) => line.startsWith("fd2 flags:"))).toMatch(/\b04001$/);
+    const failure = `app-logins: the implement App (app_id 101): github_apps.implement.token_command failed (exit 3): ${"0".repeat(1_000_000)}END-OF-STDERR`;
+    // By length and by both ends, for the reason the row above gives.
+    const last = lines.at(-1) ?? "";
+    expect(last.length).toBe(failure.length);
+    expect(last.slice(0, 120)).toBe(failure.slice(0, 120));
+    expect(last.slice(-40)).toBe(failure.slice(-40));
+    // A bound of its own: the row holds the reader for a second on purpose.
+  }, 30_000);
+
   test("a token command whose escaped descendant holds its output open fails within the drain bound", async () => {
     const escaped = "setsid sleep 60 >&2 & exit 0";
     const started = Date.now();

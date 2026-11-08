@@ -116,13 +116,25 @@ export function redactTokens(text: string): string {
  * 212,992-byte socket send buffer that `Bun.spawn`'s `stderr: "pipe"` gives the child, and the
  * `process.exit` that followed discarded the rest.
  *
- * Nothing bounds the wait, and nothing can: fd 2 as a pipe has no `O_NONBLOCK`, and a `writeSync`
- * of 1 MiB against a reader that slept three seconds blocked for 2,985 ms and raised `EAGAIN`
- * zero times, so a deadline inside this loop would never fire. The trade that inverts: a reader
- * that stalls forever used to make the helper exit after five seconds with its own diagnosis
- * truncated, and now makes it wait, bounded by the job's own timeout, with the evidence the
- * helper exists to print kept whole. A reader that is gone is `EPIPE`, which ends the write:
- * there is nothing left to say and nobody to say it to. */
+ * `EAGAIN` is waited out rather than reported. A blocking descriptor never raises it: 1 MiB
+ * against a reader that slept three seconds blocked for 2,985 ms and raised it zero times. But
+ * the first read of `process.stderr` sets `O_NONBLOCK` on the open pipe, the flag belongs to the
+ * pipe rather than to the process, and bun leaves it set when it exits, so every later writer on
+ * that pipe inherits it
+ * (docs/solutions/testing/bun-console-log-drops-what-a-full-non-blocking-pipe-cannot-take-and-exits-0.md),
+ * and a stage proof runs many bun commands in one shell group. Sleeping a millisecond and
+ * retrying the same offset delivered all 2,000,148 bytes of one such group's stderr, where
+ * letting the `EAGAIN` out delivered 66,381 and a stack trace in place of the diagnosis.
+ *
+ * Every other failure ends the write, `EPIPE` among them, as does a write that takes none of a
+ * non-empty buffer: there is nowhere to put the rest and no second channel to complain on, and
+ * the exit code the caller reads is the part of the contract that still holds. So nothing here
+ * throws, since a throw out of the relay rejects its promise before anything handles it, which
+ * kills this process with a stack and leaves a token command's process group alive. Nothing
+ * bounds the wait either, and nothing can, since a deadline inside this loop would never fire
+ * against a write that blocks: a reader that stalls forever used to make the helper exit after
+ * five seconds with its own diagnosis truncated, and now makes it wait under the job's own
+ * timeout, with the evidence the helper exists to print kept whole. */
 function writeAll(fd: number, text: string): void {
   const bytes = Buffer.from(text, "utf8");
   for (let written = 0; written < bytes.length; ) {
@@ -130,12 +142,11 @@ function writeAll(fd: number, text: string): void {
     try {
       count = writeSync(fd, bytes, written);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EPIPE") return;
-      throw error;
+      if ((error as NodeJS.ErrnoException).code !== "EAGAIN") return;
+      Bun.sleepSync(1);
+      continue;
     }
-    if (count === 0) {
-      throw new Error(`fd ${fd} took none of the ${bytes.length - written} bytes left`);
-    }
+    if (count === 0) return;
     written += count;
   }
 }
