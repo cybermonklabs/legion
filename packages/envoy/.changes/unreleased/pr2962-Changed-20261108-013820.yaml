@@ -1,0 +1,5 @@
+kind: Changed
+body: An `after_merge` check result is current while its commit is on the branch the check's issue's pull request merged into, and on the repository's default branch where Dispatch holds no merge of that issue; a `default_branch` result is current only on the repository's default branch, whatever branch the pull request merged into. The answer is cached per repository, branch and commit in the new `branch_commits` table, so one branch's answer is never read for another.
+time: 2026-11-08T01:38:20.034317597Z
+custom:
+    Issue: pr2962
