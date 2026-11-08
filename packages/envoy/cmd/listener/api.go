@@ -1055,6 +1055,19 @@ type sessionInfo struct {
 	// predates the fields.
 	Plugin        string `json:"plugin,omitempty"`
 	PluginVersion string `json:"plugin_version,omitempty"`
+	// ClientInstanceID names the client process whose registration this is
+	// (session.SessionEntry.ClientInstanceID): one Oh My Pi Envoy extension instance, one Claude
+	// Code channel-server process, each minting the id at its own start. It is answered so that
+	// a reader holding a session id can tell one client process's registration from its
+	// successor's under the same session id, which is what the Legion daemon's clean stop of a
+	// dead role needs: a relaunch of that claim registers the same session id again with an
+	// instance id of its own, so a stop that named only the session id would take the live
+	// relaunch down with the process it meant to clear. The field is left out where the entry
+	// carries none - a client predating it, or one that states no instance - as
+	// GET /v1/roles/<role> leaves its own client_instance_id out (roleGetHandler), so a client
+	// reads an absent field as "this registration names no process" rather than as the empty
+	// string.
+	ClientInstanceID string `json:"client_instance_id,omitempty"`
 }
 
 // sessionInterestReadTimeout bounds sessionInfoFor's read of one session's interest record from
@@ -1105,21 +1118,22 @@ func sessionInfoFor(ctx context.Context, registry *store.Registry, entry session
 // from one that has stopped without comparing timestamps itself.
 func sessionInfoWith(entry session.ListEntry, held []string) sessionInfo {
 	return sessionInfo{
-		SessionID:      entry.SessionID,
-		State:          entry.State,
-		MachineID:      entry.MachineID,
-		Host:           entry.HostOrMachine(),
-		TmuxPlace:      entry.TmuxPlace,
-		Dir:            entry.Dir,
-		Port:           entry.Port,
-		Title:          entry.Title,
-		Capabilities:   append([]string{}, entry.Capabilities...),
-		SelfSubscribed: entry.SelfSubscribed,
-		Roles:          held,
-		UpdatedAt:      entry.UpdatedAt,
-		LastSeen:       entry.UpdatedAt,
-		Plugin:         entry.Plugin,
-		PluginVersion:  entry.PluginVersion,
+		SessionID:        entry.SessionID,
+		State:            entry.State,
+		MachineID:        entry.MachineID,
+		Host:             entry.HostOrMachine(),
+		TmuxPlace:        entry.TmuxPlace,
+		Dir:              entry.Dir,
+		Port:             entry.Port,
+		Title:            entry.Title,
+		Capabilities:     append([]string{}, entry.Capabilities...),
+		SelfSubscribed:   entry.SelfSubscribed,
+		Roles:            held,
+		UpdatedAt:        entry.UpdatedAt,
+		LastSeen:         entry.UpdatedAt,
+		Plugin:           entry.Plugin,
+		PluginVersion:    entry.PluginVersion,
+		ClientInstanceID: entry.ClientInstanceID,
 	}
 }
 

@@ -3411,6 +3411,44 @@ func TestSessionEntryRouteAnswersTheSameBodyAsTheSessionsRow(t *testing.T) {
 	}
 }
 
+// The route names the client process whose registration it answers, so a reader holding a session
+// id can tell one client process's registration from its successor's under the same session id.
+// The Legion daemon's clean stop of a dead role rests on that: a relaunch of the claim registers
+// the same session id again with an instance id of its own, and a stop naming the session id alone
+// would clear the live relaunch's registration. A session whose entry names no process - a client
+// predating the field, or one that states no instance - leaves client_instance_id out of the body
+// entirely, as GET /v1/roles/<role> leaves its own out, so a client reads an absent field as "this
+// registration names no process" rather than as the empty string. That half is read off the raw
+// body, because a decoded empty string cannot tell a field omitempty left out from one present and
+// empty.
+func TestSessionEntryRouteNamesTheClientInstanceThatRegistered(t *testing.T) {
+	const instance = "4f1c2a9e8b7d6c5a4f1c2a9e8b7d6c5a"
+	registry, sessions := setupSessionsTest(t, nil, nil)
+	state := &listenerDeps{registry: registry, sessions: sessions}
+	registerInstance(t, sessions, "ses_instanced", instance)
+	registerInstance(t, sessions, "ses_instanceless", "")
+
+	named := sessionEntryRoute(t, state, "ses_instanced")
+	if named.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_instanced: status %d %s, want 200", named.Code, named.Body.String())
+	}
+	if got := decodeSessionInfo(t, named); got.ClientInstanceID != instance {
+		t.Fatalf("client_instance_id = %q, want the registering client instance %q", got.ClientInstanceID, instance)
+	}
+
+	instanceless := sessionEntryRoute(t, state, "ses_instanceless")
+	if instanceless.Code != http.StatusOK {
+		t.Fatalf("GET /v1/registry/ses_instanceless: status %d %s, want 200", instanceless.Code, instanceless.Body.String())
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(instanceless.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode the answer for a session registered with no client instance: %v", err)
+	}
+	if raw, ok := body["client_instance_id"]; ok {
+		t.Fatalf("client_instance_id = %s, want the field left out where the registration names no process", raw)
+	}
+}
+
 // The route reads; every other method on it is the caller's mistake, answered as every other /v1
 // handler answers one.
 func TestSessionEntryRouteRefusesANonGETMethod(t *testing.T) {
