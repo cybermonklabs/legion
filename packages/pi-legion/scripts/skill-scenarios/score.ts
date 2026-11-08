@@ -1103,25 +1103,25 @@ function braced(text: string, from: number): string | undefined {
   }
   return undefined;
 }
-/** The string `source` holds when it begins with one, read as Python and JavaScript both write
- * one: `'…'`, `"…"`, `` `…` `` and Python's triple quotes, with `\n`, `\t`, `\"`, `\'`, `\\` and
- * `` \` `` as they are written. A template literal's `${…}` is read through `resolve`, which
- * answers a name the same code assigned: an agent that writes the head into a `const` and then
- * interpolates it has written the message as plainly as one that typed the sha, and a scorer
- * that stopped at the first `${` would read that publish as unreadable. An interpolation
- * `resolve` cannot answer leaves the whole string unread, since the text that reached the topic
- * is then not in the call. */
-function stringLiteral(
-  source: string,
-  resolve: (name: string) => string | undefined = () => undefined
-): string | undefined {
-  const text = source.trimStart();
-  const triple = ['"""', "'''"].find((q) => text.startsWith(q));
-  const quote = triple ?? ['"', "'", "`"].find((q) => text.startsWith(q));
+/** The string literal that starts at `text[from]`, with the index just past it, read as Python
+ * and JavaScript both write one: `'…'`, `"…"`, `` `…` `` and Python's triple quotes, with `\n`,
+ * `\t`, `\"`, `\'`, `\\` and `` \` `` as they are written. A template literal's `${…}` is read
+ * through `resolve`, which answers a name the same code assigned: an agent that writes the head
+ * into a `const` and then interpolates it has written the message as plainly as one that typed
+ * the sha, and a scorer that stopped at the first `${` would read that publish as unreadable. An
+ * interpolation `resolve` cannot answer leaves the whole string unread, since the text that
+ * reached the topic is then not in the call. */
+function literalAt(
+  text: string,
+  from: number,
+  resolve: (name: string) => string | undefined
+): { value: string; end: number } | undefined {
+  const triple = ['"""', "'''"].find((q) => text.startsWith(q, from));
+  const quote = triple ?? ['"', "'", "`"].find((q) => text.startsWith(q, from));
   if (quote === undefined) return undefined;
   let out = "";
-  for (let i = quote.length; i < text.length; i += 1) {
-    if (text.startsWith(quote, i)) return out;
+  for (let i = from + quote.length; i < text.length; i += 1) {
+    if (text.startsWith(quote, i)) return { value: out, end: i + quote.length };
     if (text[i] === "\\") {
       const escaped = text[i + 1] ?? "";
       out += { n: "\n", t: "\t", r: "\r" }[escaped] ?? escaped;
@@ -1141,6 +1141,51 @@ function stringLiteral(
     out += text[i];
   }
   return undefined;
+}
+/** The string an expression begins with, where a message of any size is written as more than one
+ * literal: Python's parenthesised run of adjacent strings, which is how an agent wraps a long
+ * message, and either language's `+` between parts, with a name among them resolved as an
+ * interpolation is. It stops at the end of the value — a comma, a closing brace, or the end of
+ * the expression — and reads nothing where a part is neither a literal nor a name `resolve`
+ * answers, since the text that reached the topic is then not in the call. */
+function stringLiteral(
+  source: string,
+  resolve: (name: string) => string | undefined = () => undefined
+): string | undefined {
+  let out: string | undefined;
+  let depth = 0;
+  for (let i = 0; i < source.length; i += 1) {
+    const c = source[i] ?? "";
+    // The value ends where the statement does: at a `;`, and at the line's end once a part has
+    // been read, since a run of parts over more than one line is written inside parentheses.
+    if (c === ";") return out;
+    if (c === "\n" && depth === 0 && out !== undefined) return out;
+    if (/\s/.test(c) || c === "+") continue;
+    if (c === "(") {
+      depth += 1;
+      continue;
+    }
+    if (c === ")" && depth > 0) {
+      depth -= 1;
+      continue;
+    }
+    if (c === "," || c === "}" || c === ")") return out;
+    const literal = literalAt(source, i, resolve);
+    if (literal !== undefined) {
+      out = (out ?? "") + literal.value;
+      i = literal.end - 1;
+      continue;
+    }
+    // A name is a part of this value only once a literal has been read: an expression that is
+    // one name alone is the caller's to resolve (readString), and reading it here would ask the
+    // resolver for the very name it is resolving.
+    const name = out === undefined ? undefined : /^[A-Za-z_$][\w$]*/.exec(source.slice(i))?.[0];
+    const value = name === undefined ? undefined : resolve(name);
+    if (name === undefined || value === undefined) return undefined;
+    out += value;
+    i += name.length - 1;
+  }
+  return out;
 }
 /** The string an expression of `code` evaluates to, as far as reading the code can tell: its own
  * literal, the value of a name the same code assigned, or the contents of a file the code opens,
