@@ -58,23 +58,31 @@
 #                under packages/daemon/internal/store/migrations; a column resolves
 #                when a migration creates that table with the column or alters the
 #                table to add it.
-#   Experiment   experiment 1 .. experiment N, where N is the highest-numbered
-#                transcript committed beside this script: the bound is read from the
-#                directory at every run, so a twenty-second experiment recorded beside
-#                this script is read by this one with no edit here. It resolves when
-#                that experiment's recorded output is committed beside this script,
-#                which a number within the bound whose own transcript is missing is
-#                not, and it counts as a citation, so a section whose only evidence is
-#                a measurement is not a section with no citation. A number above the
-#                bound is no experiment of this directory and no citation of either
-#                kind: what makes it one is its transcript, committed beside this
-#                script.
+#   Experiment   experiment N, for any N this grammar names: a number written after
+#                "experiment" or "experiments", or listed in the plural that word
+#                opens, names an experiment, and a number standing anywhere else in a
+#                sentence names none. That is the whole of what makes a number the
+#                name of an experiment, and the size of the number is no part of it,
+#                so the plain numbers both documents write everywhere are read as
+#                figures or as nothing. It resolves when that experiment's recorded
+#                output is committed beside this script, and it is refused when none
+#                is, whether its number stands above the highest transcript this
+#                directory holds or in a gap below that one: what makes an experiment
+#                this directory's is its transcript, committed beside this script, so
+#                the count can never read as a pass for a figure nobody looked at.
+#                Either way it counts as a citation, so a section whose only evidence
+#                is a measurement is not a section with no citation. The transcripts
+#                are read from the directory at every run, so a twenty-second
+#                experiment recorded beside this script is resolved by this one with
+#                no edit here.
 #                The plural names more than one experiment, and each one it names is a
 #                citation of its own, resolved against its own transcript:
 #                "experiments N and M" and "experiments N, M and O" name each number
 #                listed, however many, where the word "and" closes the list; a comma
 #                alone closes nothing, so the 12 of "experiment 1, 12 signals" stays a
-#                figure. "experiments N to M" names every experiment from N to M.
+#                figure. "experiments N to M" names every experiment from N to M,
+#                above the highest transcript committed here as below it. A number
+#                below 1 names none, there being no zeroth experiment.
 #   Figure       Any number a document attributes to a numbered experiment: the 92 of
 #                "Experiment 1 drove ... 92 history events". It resolves when that text,
 #                as written, is a number of its own in what that experiment's committed
@@ -118,7 +126,9 @@
 #
 # It exits non-zero on: a file that does not hold the identifier it is cited with; an
 # identifier cited in the code form that the file holds only as a string; a table no
-# migration creates; a dispatch:// reference that does not read; a number a document
+# migration creates; a dispatch:// reference that does not read; an experiment named
+# with no transcript committed beside this script, its number above the highest
+# transcript committed there or in a gap below it alike; a number a document
 # attributes to an experiment that the experiment's committed transcript does not
 # measure below its header; a citation whose path leaves the repository; a web address
 # with no read date beside it; an address answering 404 or 410, or one curl ends on an
@@ -175,10 +185,13 @@ readonly \
 	dispatch_pattern='dispatch://[A-Za-z0-9._/@#-]+' \
 	web_pattern='https://[^][:space:]`")<>]+( \(read [0-9]{4}-[0-9]{2}-[0-9]{2}\))?'
 
-# The experiments this directory holds: 1 up to the highest-numbered transcript
-# committed beside this script. The bound is read from the directory rather than
-# written here, so a transcript recorded beside this script is read by the experiment
-# rule and by the figure rule with no edit to this script.
+# The highest-numbered transcript committed beside this script, 0 when none is. It
+# bounds no citation: the experiment rule and the figure rule read the transcripts
+# themselves, one experiment at a time, so a transcript recorded beside this script is
+# read by both with no edit here, and a number no transcript answers is refused rather
+# than passed over. It is read for one thing only: a run made where no transcript of
+# any experiment this grammar can name stands beside this script is refused by name,
+# rather than one refusal at a time of every experiment the documents cite.
 highest_experiment_recorded() {
 	local file base number highest=0
 	for file in "$script_dir"/experiment-[0-9]*-*.txt; do
@@ -396,11 +409,14 @@ resolve_experiment() {
 #                              12 of "experiment 1, 12 signals" is no experiment
 #   experiments N to M         every experiment from N to M
 #
-# A number above max, the highest-numbered transcript committed beside this script,
-# names no experiment of this directory and is passed over.
+# What names an experiment is this grammar and nothing else, so a plain number of
+# ordinary prose names none, and the size of the number is no part of it: a number
+# above the highest transcript committed beside this script names an experiment this
+# directory has no transcript for, which the caller refuses rather than passes over.
+# A number below 1 names none, there being no zeroth experiment.
 # shellcheck disable=SC2016  # this is awk source, not shell
 readonly experiments_named_awk='
-	function experiments_named(text, max,   out, pos, rest, plural, hit, j, list, count, ended, sep, hi, m, k) {
+	function experiments_named(text,   out, pos, rest, plural, hit, j, list, count, ended, sep, hi, m, k) {
 		out = ""
 		pos = 1
 		while (match(substr(text, pos), /[Ee]xperiments? [0-9]+/) > 0) {
@@ -416,7 +432,7 @@ readonly experiments_named_awk='
 			if (plural && match(substr(rest, j), /^ to [0-9]+/) > 0) {
 				hi = substr(rest, j + 4, RLENGTH - 4) + 0
 				j = j + RLENGTH
-				for (m = list[1] + 1; m <= hi && m <= max; m++) list[++count] = m
+				for (m = list[1] + 1; m <= hi; m++) list[++count] = m
 			} else if (plural) {
 				ended = 0
 				while (match(substr(rest, j), /^(, and | and |, )[0-9]+/) > 0) {
@@ -429,7 +445,7 @@ readonly experiments_named_awk='
 			}
 			if (!ended) count = 1
 			for (k = 1; k <= count; k++) {
-				if (list[k] < 1 || list[k] > max) continue
+				if (list[k] < 1) continue
 				if (index("," out ",", "," list[k] ",") > 0) continue
 				out = out (out == "" ? "" : ",") list[k]
 			}
@@ -441,9 +457,9 @@ readonly experiments_named_awk='
 # Every experiment the document names, one number per line, each named once, whether
 # it was named on its own or in a plural naming several.
 experiment_mentions() {
-	awk -v max="$experiment_max" "$experiments_named_awk"'
+	awk "$experiments_named_awk"'
 	{
-		named = experiments_named($0, max)
+		named = experiments_named($0)
 		if (named == "") next
 		count = split(named, each, ",")
 		for (i = 1; i <= count; i++) if (!seen[each[i]]++) print each[i]
@@ -459,7 +475,7 @@ experiment_mentions() {
 # The same number attributed to the same experiments twice is one record.
 # shellcheck disable=SC2016  # the backticks below are markdown, not substitution
 experiment_figures() {
-	awk -v max="$experiment_max" "$experiments_named_awk"'
+	awk "$experiments_named_awk"'
 	function blank(n,   s) {
 		s = ""
 		while (n-- > 0) s = s " "
@@ -515,7 +531,7 @@ experiment_figures() {
 		sub(/[ \t]+$/, "", text)
 
 		# Every experiment the scope names, singular or plural, possessive or not.
-		numbers = experiments_named(text, max)
+		numbers = experiments_named(text)
 		if (numbers == "") return
 		split(numbers, named, ",")
 
@@ -810,9 +826,17 @@ readonly experiment_figure_fixture_resolved=5
 readonly experiment_figure_fixture_failed=3
 
 # The two rules widened after a review found this check reading experiments 1 to 18
-# alone, in one fixture: a figure of experiment 21, which that range read as a figure
-# of no experiment and left unchecked; a figure of 21 its transcript does not measure;
-# and two scopes naming experiments in the plural, one with "and" and one with a range.
+# alone, and widened again after a later review found a number above the highest
+# transcript passed over rather than refused; one fixture holds both: a figure of
+# experiment 21, which the first range read as a figure of no experiment and left
+# unchecked; a figure of 21 its transcript does not measure; two scopes naming
+# experiments in the plural, one with "and" and one with a range; and a sentence
+# naming experiment 25, of which this directory holds no transcript. That last line
+# is the one that fails if a number above the highest transcript committed here is
+# ever passed over again: experiment 25 is refused for the transcript nobody
+# committed, and so is the 999999 it carries, where a reading that dropped the 25
+# would take the sentence to name no experiment and would print no line of either, so
+# the summary would read as a pass over a figure nothing was read for.
 # The plural lines are the ones that fail if a scope naming several experiments is ever
 # read as naming none: the 19 and the 20 would then be numbers of whatever experiment
 # the sentence named, and the 11 would be a figure of nothing and go unchecked. They
@@ -825,15 +849,17 @@ Experiment 21 handed a task token of 144 bytes to a process that holds a working
 Experiment 21 handed a token of 4096 bytes, a figure no committed transcript of it holds.
 Experiments 19 and 20 left the handout Started on attempt 1, the longer of them across 11 readings.
 Experiments 16 to 18 each have a transcript committed beside this script, which the range names one by one.
+Experiment 25 recorded 999999 history events.
 EOF
 }
 
 # Six experiments named and resolved -- 21, named twice and counted once; 19 and 20 of
 # the plural; and 16, 17 and 18, which the range names although it writes only two of
-# them -- and two figures, the 144 of experiment 21 and the 11 of experiment 20. One
-# refusal, the 4096 no transcript of experiment 21 measures.
+# them -- and two figures, the 144 of experiment 21 and the 11 of experiment 20. Three
+# refusals: the 4096 no transcript of experiment 21 measures, experiment 25, which no
+# transcript committed here records, and the 999999 that sentence attributes to it.
 readonly experiments_named_fixture_resolved=8
-readonly experiments_named_fixture_failed=1
+readonly experiments_named_fixture_failed=3
 
 self_test() {
 	local failures=0
@@ -883,7 +909,7 @@ self_test() {
 		printf 'self-test: the measured figure resolved, the figure outside the transcript, the figure only inside a longer number and the figure standing in the header alone were refused, and the number in the next cell was not checked\n'
 	fi
 
-	printf '\nself-test, every experiment this directory holds and the plural that names them: a figure of experiment 21 resolves, one its transcript does not measure is refused, and a scope naming experiments in the plural names each of them, so each is a citation of its own and none of their numbers is read as a figure\n\n'
+	printf '\nself-test, every experiment a document can name and the plural that names them: a figure of experiment 21 resolves, one its transcript does not measure is refused, a scope naming experiments in the plural names each of them, so each is a citation of its own and none of their numbers is read as a figure, and a sentence naming experiment 25, which this directory holds no transcript of, is refused for the experiment and for the figure it carries rather than passed over\n\n'
 	reset_counts
 	resolve_document named "$(experiments_named_fixture)"
 	summary
@@ -893,7 +919,7 @@ self_test() {
 			"$count_resolved" "$count_failed" "$count_unreachable" >&2
 		failures=$((failures + 1))
 	else
-		printf 'self-test: experiment 21 and the figure its transcript measures resolved, the figure it never measured was refused, and the six experiments of two plurals were each named, each resolved and each kept out of the figures of its scope\n'
+		printf 'self-test: experiment 21 and the figure its transcript measures resolved, the figure it never measured was refused, the six experiments of two plurals were each named, each resolved and each kept out of the figures of its scope, and experiment 25, which stands above every transcript committed here, was refused together with the 999999 that sentence attributes to it\n'
 	fi
 
 	printf '\n'
