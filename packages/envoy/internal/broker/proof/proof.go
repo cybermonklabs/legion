@@ -26,6 +26,14 @@ const jtiRetentionMargin = time.Minute
 type Subject struct {
 	EnrollmentID string
 	LauncherID   string
+	// Thumbprint is the key this proof was signed with, which is the key the row it names was
+	// pinned to when Verify read that row: the two Verify compared and found equal, and the
+	// whole of what the proof proved. A caller that reads the row again reads it by this
+	// thumbprint beside the id (enroll.Service.CredentialForKey), because the row's key can
+	// move between the two reads — the pods of one ServiceAccount share a credential row on
+	// this schema — and a second read by the id alone would answer whatever key holds the row
+	// by then.
+	Thumbprint string
 }
 
 type Verifier struct {
@@ -107,5 +115,5 @@ func (v *Verifier) Verify(ctx context.Context, compact, method, url string, now 
 	if !fresh {
 		return Subject{}, fmt.Errorf("%w: replayed jti", ErrInvalid)
 	}
-	return Subject{EnrollmentID: c.EnrollmentID, LauncherID: c.LauncherID}, nil
+	return Subject{EnrollmentID: c.EnrollmentID, LauncherID: c.LauncherID, Thumbprint: presented}, nil
 }

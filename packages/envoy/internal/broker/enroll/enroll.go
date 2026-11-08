@@ -512,15 +512,40 @@ func (s *Service) tokenLoginListed(subject, service string) bool {
 }
 
 // Credential loads a launcher credential's own identity (operator, service, host, and a token
-// login's subject) by its id, for a handler that has already authenticated the caller via a
-// launcher proof (proof.Subject's LauncherID, verified live by AuthenticateLauncher through
-// proof.Verifier.LookupLauncher) and needs that identity to pass to Create or Revoke. err is a
-// genuine dependency failure; a launcher id a live proof just verified vanishing before this read is
-// treated the same way (never silently swallowed into an empty Credential).
+// login's subject) by its id alone, which answers whatever row holds that id at this read. A
+// request a launcher proof authenticated is read by CredentialForKey instead, which holds the
+// row to the key that proof proved. err is a genuine dependency failure; an id no row holds is
+// pgx.ErrNoRows (never silently swallowed into an empty Credential).
 func (s *Service) Credential(ctx context.Context, id string) (Credential, error) {
 	var cred Credential
 	if err := s.Store.Pool.QueryRow(ctx, `select id, operator, service, host, subject, coalesce(pod_uid,'') from launcher_credentials where id=$1`, id).
 		Scan(&cred.ID, &cred.Operator, &cred.Service, &cred.Host, &cred.Subject, &cred.PodUID); err != nil {
+		return Credential{}, err
+	}
+	return cred, nil
+}
+
+// CredentialForKey is Credential for a caller a launcher proof authenticated: it reads the row by
+// its id and the key the proof proved together (proof.Subject's LauncherID and Thumbprint, the
+// pair Verify compared), and answers ErrNoCredential when no row holds both — the error every
+// other read of a launcher credential by something that does not name one answers
+// (revokeCredential, RetireCredential).
+//
+// The pair is what makes the handler's credential the proved key's. The pods of one
+// ServiceAccount share one credential row on the schema this release ships (IssueTokenLoginTx's
+// subject-only conflict target), and a login moves that row's key_thumbprint and pod_uid, so a
+// sibling pod logging in between the proof's own lookup (AuthenticateLauncher) and this read
+// would hand the caller the sibling's PodUID, and Revoke's own-account branch would then judge
+// the request as that sibling. A row whose key has moved is no credential of this caller's, and
+// the route refuses it (401 LAUNCHER_INVALID) rather than acting under another pod's identity.
+func (s *Service) CredentialForKey(ctx context.Context, id, thumbprint string) (Credential, error) {
+	var cred Credential
+	err := s.Store.Pool.QueryRow(ctx, `select id, operator, service, host, subject, coalesce(pod_uid,'') from launcher_credentials where id=$1 and key_thumbprint=$2`, id, thumbprint).
+		Scan(&cred.ID, &cred.Operator, &cred.Service, &cred.Host, &cred.Subject, &cred.PodUID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Credential{}, ErrNoCredential
+	}
+	if err != nil {
 		return Credential{}, err
 	}
 	return cred, nil
@@ -1490,9 +1515,9 @@ func (s *Service) launches(service *string, podAccount string) bool {
 
 // ownPod reports whether podAccount, the ServiceAccount a pod runs as, is cred's own login
 // subject: a pod of the login's own account, which is a pod enrolling itself rather than one a
-// launcher enrols. The one comparison, read by Create through podUnderTokenLogin and by Revoke
-// through sameLauncher, so which pod of its own account a login reaches is decided by the pod
-// UID at both and never by the launcher relation.
+// launcher enrols. The one comparison, read by podUnderTokenLogin at Create and by Revoke's
+// own-account branch, so no other rule has to tell a pod that enrolled itself from a pod a
+// launcher enrolled.
 func ownPod(cred Credential, podAccount string) bool {
 	return cred.Subject != nil && *cred.Subject == podAccount
 }
@@ -1504,20 +1529,16 @@ func ownPod(cred Credential, podAccount string) bool {
 // Legion daemon pod end the enrollments its predecessor made, since a machine login is per pod
 // and the new pod holds a credential of its own.
 //
-// A pod of an account that BROKER_SERVICE_LOGINS lists and BROKER_SERVICES binds for its
-// service's pods — the pair config.Load accepts — enrols itself, and this gives it nothing: the
-// pod UID decides which pod of its own account a login reaches (ownPod, podUnderTokenLogin), so
-// this is false there and one session pod can never end another's enrollment
-// (TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment). It gives nothing across services
-// either, and nothing to a credential a person approved, which carries no subject.
+// It decides launchers and nothing else. A pod enrollment of the login's own account never
+// reaches it: Revoke's own-account branch answers that case itself (ownPod), whatever
+// BROKER_SERVICES binds the account to, and reads this only for the enrollments that branch
+// leaves. It gives nothing across services either, and nothing to a credential a person
+// approved, which carries no subject.
 // enrolledLoginSubject, enrolledLoginService and enrolledPodAccount are the enrolling
 // credential's subject and service and the enrollment's own verified pod account, each nil where
 // the row has none.
 func (s *Service) sameLauncher(cred Credential, enrolledLoginSubject, enrolledLoginService, enrolledPodAccount *string) bool {
 	if cred.Operator != nil || cred.Subject == nil || enrolledLoginSubject == nil || enrolledPodAccount == nil {
-		return false
-	}
-	if ownPod(cred, *enrolledPodAccount) {
 		return false
 	}
 	if *enrolledLoginSubject != *cred.Subject {
@@ -1558,27 +1579,39 @@ func machineCredential(cred Credential) bool {
 // against, so that case alone falls through to ErrNotLive below rather than ErrOperatorMismatch.
 //
 // A pod enrollment and a machine's own session carry no operator, so the operator cannot tell
-// one service's sessions from another's: each is ended by the launcher credential that created
-// it, and a pod enrollment otherwise only by the same launcher logging in again from another pod
-// (sameLauncher), never by another service's credential, nor a second credential of the same
-// service, nor another machine of the same fleet, and never by a pod that enrolled itself
-// (ErrNotEnrollingCredential for every other caller). A launcher's machine login is per pod
-// (IssueTokenLoginTx), so a restarted Legion daemon in the pod it already runs in keeps its
-// credential, while a replaced daemon pod holds a credential of its own rather than its
-// predecessor's; without that second rule one deploy of the daemon would leave every enrollment
-// its previous pods made with nothing able to end it. sameLauncher gives the new credential its
-// predecessor's pods and no others, since it takes the same ServiceAccount logging in and the
-// pod's own account being one BROKER_SERVICES binds to that login's service — the launcher
-// relation POD_NOT_LAUNCHED reads at Create. A pod that enrolled itself is no launcher, whatever
-// BROKER_SERVICES binds its account to: a pod enrollment of the login's own subject account is
-// reached by the pod UID and by nothing else, before either rule above, so a session pod of an
-// account both settings name ends its own enrollment and no other pod's of that account even on
-// the schema where the two pods share one credential id. An enrollment neither rule reaches — a
-// service login a person approved before token logins, or
-// the daemon's credential before someone revoked it — ends when its pod stops renewing, one lease
-// (BROKER_LEASE_SECONDS) after its renewer stops, or at once when a person revokes that credential
-// (RevokeCredential). A box or host enrollment keeps the operator rule alone: a helper that logs in
-// again revokes the enrollments its earlier credential made for the same operator.
+// one service's sessions from another's. Which credential ends one is decided in the two
+// branches below, and a pod enrollment of the login's own account takes the first of them:
+//
+//   - such an enrollment ends under the credential that made it, and only while that credential
+//     is the one its own pod holds: cred.PodUID is the enrollment's runtime id (ownPod, the
+//     reading podUnderTokenLogin makes of the same pair at Create). Each test refuses what the
+//     other lets through. On the schema this release ships the pods of one account share a
+//     credential id (IssueTokenLoginTx's subject-only conflict target), so the
+//     enrolling-credential test reads true for a sibling pod's enrollment and the pod uid is
+//     what refuses it; and a pod whose own enrollment another credential made — a service login
+//     a person approved, which enrols any pod — brings a matching pod uid, and the
+//     enrolling-credential test is what refuses that. So a session pod of an account both
+//     settings name ends its own enrollment and no other pod's of that account, on either
+//     schema.
+//
+//   - every other enrollment with no operator ends under the credential that made it, and a pod
+//     enrollment under the same launcher logging in again from another pod as well
+//     (sameLauncher): never another service's credential, nor a second credential of the same
+//     service, nor another machine of the same fleet (ErrNotEnrollingCredential for every other
+//     caller). A launcher's machine login is per pod (IssueTokenLoginTx), so a restarted Legion
+//     daemon in the pod it already runs in keeps its credential, while a replaced daemon pod
+//     holds a credential of its own rather than its predecessor's; without sameLauncher one
+//     deploy of the daemon would leave every enrollment its previous pods made with nothing able
+//     to end it. It gives the new credential its predecessor's pods and no others, since it
+//     takes the same ServiceAccount logging in and the pod's own account being one
+//     BROKER_SERVICES binds to that login's service — the launcher relation POD_NOT_LAUNCHED
+//     reads at Create.
+//
+// An enrollment neither branch reaches — a service login a person approved before token logins,
+// or the daemon's credential before someone revoked it — ends when its pod stops renewing, one
+// lease (BROKER_LEASE_SECONDS) after its renewer stops, or at once when a person revokes that
+// credential (RevokeCredential). A box or host enrollment keeps the operator rule alone: a helper
+// that logs in again revokes the enrollments its earlier credential made for the same operator.
 //
 // Once ownership passes, Revoke returns ErrNotLive, changing nothing, when the enrollment is
 // already revoked — the guard that keeps the audit trail honest: without it a no-op call would
@@ -1607,23 +1640,17 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 	if !authorized(cred, kind, operator) {
 		return ErrOperatorMismatch
 	}
-	// Which pod of its own account a login reaches is decided by the pod UID, the rule
-	// podUnderTokenLogin applies at Create (ownPod), and it holds here on both paths rather
-	// than through sameLauncher alone. On the schema this release ships, a second pod of one
-	// account takes the account's one credential over, keeping its id (IssueTokenLoginTx's
-	// subject-only conflict target), so the enrolling-credential test below reads true for an
-	// enrollment another pod of the account made. The first pod stays live through all of it —
-	// its launcher key dies with the takeover, its enrollment key renews on, since Renew holds
-	// no pod enrollment to its launcher's liveness — so without this rule one session pod ends
-	// another's live enrollment. It refuses and never grants: a credential still reaches only
-	// what the test below lets it reach.
-	if cred.Operator == nil && kind == "pod" && enrolledSubject != nil && ownPod(cred, *enrolledSubject) &&
-		(cred.PodUID == "" || cred.PodUID != enrolledRuntimeID) {
-		return ErrNotEnrollingCredential
-	}
-	if cred.Operator == nil && enrolledBy != cred.ID &&
-		!(kind == "pod" && s.sameLauncher(cred, enrolledLoginSubject, enrolledLoginService, enrolledSubject)) {
-		return ErrNotEnrollingCredential
+	// The two branches the doc above describes. A credential with an operator — a person's own
+	// machine login — is held to neither: the operator test above is its whole ownership rule.
+	if cred.Operator == nil {
+		if kind == "pod" && enrolledSubject != nil && ownPod(cred, *enrolledSubject) {
+			if cred.PodUID == "" || cred.PodUID != enrolledRuntimeID || enrolledBy != cred.ID {
+				return ErrNotEnrollingCredential
+			}
+		} else if enrolledBy != cred.ID &&
+			!(kind == "pod" && s.sameLauncher(cred, enrolledLoginSubject, enrolledLoginService, enrolledSubject)) {
+			return ErrNotEnrollingCredential
+		}
 	}
 	if revokedAt != nil {
 		return ErrNotLive

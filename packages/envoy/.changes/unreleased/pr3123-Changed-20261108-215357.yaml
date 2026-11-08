@@ -6,11 +6,18 @@ body: |-
   (`agent-secrets enroll --pod`). `BROKER_SERVICE_LOGINS` refused such an account before,
   because every pod of it holds a token for it. What holds the narrowing is the enrolment rule
   rather than the setting: such a login enrols the one pod whose token made it, any other pod
-  UID is `403 POD_SELF_ENROLL_ONLY`. Ending an enrollment reads the same rule, so a pod of the
+  UID is `403 POD_SELF_ENROLL_ONLY`. Ending an enrollment reads the same pair, so a pod of the
   account ends its own enrollment and no other pod's of that account, including on the schema
-  this release ships, where the two pods share one credential row and the one that took it over
-  would otherwise have ended the other's. A launcher that enrols pods of another account is
-  unchanged: a replaced pod still ends the enrollments its predecessor made.
+  this release ships, where the two pods share one credential row and the enrolling-credential
+  test alone would have let the pod that took it over end the other's. A launcher that enrols
+  pods of another account is unchanged: a replaced pod still ends the enrollments its
+  predecessor made.
+
+  Beside it, `POST /v1/oauth/exchange/pod-sessions` now refuses a pod token whose account is the
+  one the caller logs in as, `403 POD_ACCOUNT_IS_THE_CALLER`. A registrar records which pod may
+  exchange under which session name, and registers pods of another account; a pod of a listed
+  account that registered itself would pick the name it writes under, which is the one choice
+  that row takes from it.
 time: 2026-11-08T21:53:57.588549598Z
 custom:
     Issue: pr3123

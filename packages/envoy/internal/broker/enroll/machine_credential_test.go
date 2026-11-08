@@ -104,6 +104,35 @@ func TestAMachinesSecondExchangeMovesItsOneCredential(t *testing.T) {
 	}
 }
 
+// TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves: CredentialForKey answers the row while that
+// row is still pinned to the thumbprint the caller's proof proved, and ErrNoCredential once
+// another login has moved the row onto a key the caller never proved. That is the race it closes
+// for authLauncher, whose two reads of one credential — the proof's own lookup of the pinned key
+// and the handler's read of the identity it acts under — are two queries with no lock between
+// them, while one row is shared by every login of a subject.
+func TestACredentialReadByItsKeyIsGoneOnceThatKeyMoves(t *testing.T) {
+	ctx := context.Background()
+	svc := newService(t)
+	svc.VMServicesByAccount = map[string]string{machineAccountEmail: machineFleet}
+	subject := exchange.MachineSubject(exchange.GoogleIdentity{Account: machineAccountEmail}, "tp-one")
+	id := issueMachineCredential(t, svc, subject, "tp-proved")
+
+	cred, err := svc.CredentialForKey(ctx, id, "tp-proved")
+	if err != nil || cred.ID.String() != id {
+		t.Fatalf("CredentialForKey under the proved key = %+v, %v; want the row it names", cred, err)
+	}
+	if again := issueMachineCredential(t, svc, subject, "tp-moved"); again != id {
+		t.Fatalf("the second login = credential %s, want the one row %s this test turns on", again, id)
+	}
+	if _, err := svc.CredentialForKey(ctx, id, "tp-proved"); !errors.Is(err, ErrNoCredential) {
+		t.Fatalf("CredentialForKey under a key the row has left = %v, want ErrNoCredential", err)
+	}
+	// The row is there and live: the key that holds it now reads it, and nothing was revoked.
+	if _, err := svc.CredentialForKey(ctx, id, "tp-moved"); err != nil {
+		t.Fatalf("CredentialForKey under the key the row holds now: %v", err)
+	}
+}
+
 // TestAMachineEnrolsASessionThatActsForItsFleetAndNoPerson: the credential the exchange minted
 // is the bridge to every secrets route. It carries its fleet's service and no person, so the
 // session it enrols carries no operator either and records the credential's subject, which is

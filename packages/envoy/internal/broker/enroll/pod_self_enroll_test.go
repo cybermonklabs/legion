@@ -24,8 +24,8 @@ const (
 	podLoginService = "legion-daemon"
 	// selfAccount is an account BROKER_SERVICE_LOGINS lists: the pods that run as it hold a
 	// login of their own and enrol themselves. newPodRig leaves BROKER_SERVICES binding it for
-	// no service's pods, and the two tests of an account both settings name bind it to
-	// podLoginService.
+	// no service's pods, and each test of an account both settings name binds it to
+	// podLoginService itself.
 	selfAccount = "system:serviceaccount:legion:k8s-session"
 	// launcherAccount is the account a launcher logs in as, and workerPodAccount the account the
 	// pods it launches run as, which BROKER_SERVICES binds to the launcher's service.
@@ -415,10 +415,10 @@ func TestASelfEnrolledPodEndsNoOtherPodsEnrollment(t *testing.T) {
 // lists and BROKER_SERVICES binds for the service's pods — the pair config.Load accepts —
 // makes every session pod of that account both a login of the service and a pod that service
 // launches, so the launcher relation holds between any two of them and, left at that, either
-// could end the other's enrollment. Which pod of its own account a login reaches is decided by
-// the pod UID, the rule podUnderTokenLogin applies at Create (ownPod), so sameLauncher is false
-// for a self-enrolment and the second pod is refused the first's enrollment. The half that keeps
-// working: the credential that made the enrollment still ends it.
+// could end the other's enrollment. Revoke's own-account branch answers a pod enrollment of the
+// login's own account itself (ownPod), before the launcher relation is read at all, so the
+// second pod is refused the first's enrollment. The half that keeps working: the credential
+// that made the enrollment, which is the first pod's own, still ends it.
 func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
 	// Two session pods hold two logins at once only on the schema of the release after this
 	// one (newPerPodRig).
@@ -462,9 +462,10 @@ func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
 // and sameLauncher is never consulted. The first pod stays live through the takeover — its
 // launcher key dies, its enrollment key renews on, since Renew holds no pod enrollment to its
 // launcher's liveness — so this is one live session pod able to end another's, which is what
-// Revoke's pod-UID rule refuses. Measured over HTTP against the compiled broker on these
+// Revoke's own-account branch refuses. Measured over HTTP against the compiled broker on these
 // migrations before the rule: the renew answered 200 and the second pod's DELETE answered 204.
-// Its own enrollment each pod still ends, by that same pod UID.
+// Its own enrollment each pod still ends: the second under the credential the takeover handed
+// it, the first after logging in again.
 func TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount(t *testing.T) {
 	r := newPodRig(t)
 	r.svc.ServicesByAccount[selfAccount] = podLoginService
@@ -494,7 +495,16 @@ func TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount(t *testing.
 		t.Fatalf("the second pod ends its own enrollment: %v", err)
 	}
 
-	if err := r.svc.Revoke(ctx, first, mine.ID.String(), "launcher:"+first.ID.String()); err != nil {
+	// The first pod logs in again before ending its own enrollment, which is the path a pod
+	// whose sibling took the row over takes. The takeover left the shared row holding the
+	// second pod's key and pod uid, so over HTTP the first pod's old key is 401
+	// LAUNCHER_INVALID and the credential the broker reads for it names the second pod;
+	// logging in again puts the first pod's own key and pod uid back on that one row.
+	again := r.login(t, selfAccount, "pod-uid-shipped-one")
+	if again.ID != first.ID || again.PodUID != "pod-uid-shipped-one" {
+		t.Fatalf("the first pod's login after the takeover = %+v, want credential %s back on its own pod", again, first.ID)
+	}
+	if err := r.svc.Revoke(ctx, again, mine.ID.String(), "launcher:"+again.ID.String()); err != nil {
 		t.Fatalf("the first pod ends its own enrollment after the takeover: %v", err)
 	}
 	if !r.revoked(t, mine.ID.String()) {

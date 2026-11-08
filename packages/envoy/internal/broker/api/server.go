@@ -308,8 +308,19 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "this route needs a launcher proof, not a session proof")
 			return caller{}, false
 		}
-		cred, err := s.deps.Enroll.Credential(r.Context(), subject.LauncherID)
-		if err != nil {
+		// By the key the proof proved and not by the launcher id alone: the pods of one
+		// ServiceAccount share a credential row, and a sibling's login between the proof's own
+		// lookup and this read moves that row's key and pod uid, which would hand the handler
+		// the sibling's identity (enroll.Service.CredentialForKey).
+		cred, err := s.deps.Enroll.CredentialForKey(r.Context(), subject.LauncherID, subject.Thumbprint)
+		switch {
+		case errors.Is(err, enroll.ErrNoCredential):
+			// The key that proved this request holds the row no longer, so it authenticates
+			// nothing — the same answer this call site gives every credential that is not
+			// valid, rather than the 503 of a store that cannot answer.
+			writeError(w, http.StatusUnauthorized, "LAUNCHER_INVALID", "the launcher credential is not valid")
+			return caller{}, false
+		case err != nil:
 			writeUnavailable(w, "DATABASE_UNAVAILABLE", "read launcher credential", err)
 			return caller{}, false
 		}
@@ -444,7 +455,10 @@ func (s *server) listedCaller(w http.ResponseWriter, err error, account string, 
 // that account log in as. It is the token login's own check
 // (machine.Service.VerifyServiceToken), so a route of this class and a daemon's token
 // login accept exactly the same credential: the same verifier, the same hour-from-issue bound on a
-// copied token, and the same list. An account that list does
+// copied token, and the same list. It answers the ServiceAccount beside the service, since
+// BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a service, and then a pod of
+// that account logs its service in and calls these routes: a handler reading what such a caller
+// may do needs the account it logs in as. An account the list does
 // not name is 403 ACCOUNT_NOT_LISTED, the credential being sound and the broker's list refusing; a
 // broker that trusts no Kubernetes token issuer answers 401 ACCOUNT_TOKENS_OFF, as this class's
 // routes then authenticate no one. No refusal repeats the token.
@@ -467,7 +481,7 @@ func (s *server) serviceCaller(w http.ResponseWriter, r *http.Request) (caller, 
 		writeError(w, http.StatusUnauthorized, "ACCOUNT_TOKEN_INVALID", "the ServiceAccount token does not verify")
 		return caller{}, false
 	}
-	return caller{service: account.Service}, true
+	return caller{service: account.Service, serviceSubject: account.Subject}, true
 }
 
 // proofSubject verifies r's Proof header and returns who it authenticates, unwrapped: authLauncher

@@ -33,6 +33,10 @@ type caller struct {
 	// service is the service BROKER_SERVICE_LOGINS says the ServiceAccount token that
 	// authenticated the request logs in as, which a serviceAuth handler logs when it acts.
 	service string
+	// serviceSubject is the ServiceAccount that token names, the account
+	// BROKER_SERVICE_LOGINS lists for that service, which a serviceAuth handler compares
+	// against an account a request names to tell another account's pod from the caller's own.
+	serviceSubject string
 	// signIn is the broker sign-in session a request to the approval page carries, the zero
 	// approval.Session when it carries none that is live.
 	signIn approval.Session
@@ -194,16 +198,19 @@ func accountAuthAfterRecordKind(needs power, h func(*server, http.ResponseWriter
 // token, the account BROKER_SERVICE_LOGINS lets log in as that service — a deployment's Legion
 // daemon, which registers the pods it starts. The token is verified and mapped to its service by
 // the check a token login makes (machine.Service.VerifyServiceToken). The handler is given the
-// service's name.
+// service's name and the ServiceAccount that logged in. It is given the account because
+// BROKER_SERVICE_LOGINS may name an account BROKER_SERVICES binds to a service: every pod of such
+// an account logs that service in, so a caller here may be a pod of the very account a request
+// names, and the account is what tells the two apart.
 //
 // It is a class of its own rather than a power of accountAuth's because the two lists are two
 // authorities: BROKER_API_ACCOUNTS names the callers that relay a person's decisions and read
 // tokens back, and a daemon that registers its own pods is not one of them. A deployment already
 // lists its per-project daemons in BROKER_SERVICE_LOGINS for their token logins, so these routes
 // need no new setting and no new account.
-func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, string)) routeHandler {
+func serviceAuth(h func(*server, http.ResponseWriter, *http.Request, string, string)) routeHandler {
 	return routeHandler{auth: authService, serve: func(s *server, w http.ResponseWriter, r *http.Request, who caller) {
-		h(s, w, r, who.service)
+		h(s, w, r, who.service, who.serviceSubject)
 	}}
 }
 
