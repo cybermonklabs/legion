@@ -78,11 +78,7 @@ for (const route of phoneRoutes) {
           fullPage: true,
           // Everything that is not the same twice, as `e2e/visual.e2e.ts` masks it and for the
           // reasons it gives there.
-          mask: [
-            page.locator("time"),
-            page.getByText(/^Generated /),
-            page.getByText(/, as of /),
-          ],
+          mask: [page.locator("time"), page.getByText(/^Generated /), page.getByText(/, as of /)],
           // MEASURED, separately from the desktop project because a phone emulation lays the
           // page out at another scale, and it stays at zero here too.
           //

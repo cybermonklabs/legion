@@ -140,11 +140,7 @@ for (const route of shotRoutes) {
           //
           // Each of these was found by reading a diff image of a container run against the run
           // before it, not by widening the bound until the rows passed.
-          mask: [
-            page.locator("time"),
-            page.getByText(/^Generated /),
-            page.getByText(/, as of /),
-          ],
+          mask: [page.locator("time"), page.getByText(/^Generated /), page.getByText(/, as of /)],
           // MEASURED, and it stays at zero: nothing is tolerated.
           // (docs/solutions/testing/a-tolerance-is-measured-by-setting-it-to-zero-and-ships-with
           // -its-separation-stated-pr2502.md asks for the bound to start at zero, for the
