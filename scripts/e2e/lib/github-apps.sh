@@ -340,12 +340,42 @@ write_github_apps() {
 # implement App's contents, the review App's checks), which also refuses the two Apps swapped whole.
 # A command that fails, a release GitHub refuses, an answer naming another id or lacking the
 # permission, or a GitHub that never answers fails the check, naming the App by its role and id and
-# never a token.
+# never a token. One of those failures has its fix in an input rather than on GitHub: the secrets
+# broker refusing a role's github-app secret outright, UNKNOWN_SECRET (`no agent secret has this
+# name`), which says this deployment's broker holds no credential under the name the role's inputs
+# gave. The check reads that refusal out of the run it already makes, asking the broker nothing of
+# its own (a probe of a human-tier secret raises a person's approval card), and fails naming the
+# role, the secret it named and the input to set instead of app-logins.ts's reason alone.
 github_app_logins=
 check_github_apps() {
-  local roles
+  local roles log line role upper secret_var named status=0
   roles=$(IFS=, && printf %s "$*")
-  github_app_logins=$(bun "$github_apps_lib/app-logins.ts" --roles "$roles" "$work/github-apps.yaml") ||
+  # app-logins.ts's stderr reaches the run's as it is written, through tee, and $log keeps it for
+  # the read below: bash waits for tee, so the file is whole once the subshell has ended. Every
+  # line app-logins.ts relays is redacted of every token form before it writes it, and no message
+  # below prints a line of the file.
+  log=$work/app-logins.stderr
+  (umask 077 && : >"$log") || fail "check_github_apps: could not write $log"
+  github_app_logins=$(
+    set -o pipefail
+    { bun "$github_apps_lib/app-logins.ts" --roles "$roles" "$work/github-apps.yaml" 2>&1 1>&3 3>&- |
+      tee -- "$log" >&2; } 3>&1
+  ) || status=$?
+  if [ "$status" != 0 ]; then
+    # app-logins.ts names the failing role's field, github_apps.<role>.token_command, on the line
+    # that carries the command's own stderr, so one line tells which role the broker refused.
+    while IFS= read -r line; do
+      [[ "$line" == *UNKNOWN_SECRET* || "$line" == *"no agent secret has this name"* ]] || continue
+      for role in "$@"; do
+        [[ "$line" == *"github_apps.$role.token_command"* ]] || continue
+        upper=${role^^}
+        secret_var=${role}_app_secret
+        named=
+        [ -z "${!secret_var:-}" ] || named=" named ${!secret_var}"
+        fail "the secrets broker serves no github-app secret$named for the $role App (UNKNOWN_SECRET): set LEGION_E2E_${upper}_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App"
+      done
+    done <"$log"
     fail "lib/app-logins.ts could not prove the Legion role Apps against GitHub from their tokens (its reason is above)"
+  fi
   note "GET /apps/<slug> answers each App's configured id under its own token: $(jq -c . <<<"$github_app_logins")"
 }

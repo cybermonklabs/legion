@@ -423,7 +423,9 @@ describe("read_app_logins", () => {
 // on PATH, which, as the real CLI does, puts the release the github-app secret it names gives
 // (STORE/<name>) into the environment of the command after `--` under that name. It appends its
 // argv to ARGV_LOG, fails with exit 3 when the `<owner>/<read-only>` it was asked for matches
-// FAIL_MINT, releases nothing when EMPTY_MINT is set, and streams stdout when OVERSIZED_MINT is set.
+// FAIL_MINT, refuses the names UNKNOWN_SECRETS lists as the broker refuses a name it does not
+// serve (`UNKNOWN_SECRET`, exit 1), releases nothing when EMPTY_MINT is set, and streams stdout
+// when OVERSIZED_MINT is set.
 const store = join(dir, "store");
 const fakeBin = join(dir, "bin");
 mkdirSync(store);
@@ -446,6 +448,11 @@ done
 shift
 if [ -n "\${FAIL_MINT:-}" ]; then
   case "$owner/$ro" in $FAIL_MINT) echo "grant for $name denied" >&2; exit 3 ;; esac
+fi
+if [ -n "\${UNKNOWN_SECRETS:-}" ]; then
+  case " \$UNKNOWN_SECRETS " in
+    *" $name "*) echo "agent-secrets: no agent secret has this name (UNKNOWN_SECRET); asked the broker AGENT_SECRETS_URL names" >&2; exit 1 ;;
+  esac
 fi
 if [ -n "\${EMPTY_MINT:-}" ]; then export "$name="; exec "$@"; fi
 if [ -n "\${OVERSIZED_MINT:-}" ]; then exec yes x; fi
@@ -688,6 +695,25 @@ printf 'command %s\\n' "$(app_token_command "$implement_app_secret")"`
     expect(stdout).not.toContain("logins");
     expect(stderr).toContain("answered App id 405, want 404");
     expect(stderr).toMatch(/^FAIL prerequisites: lib\/app-logins.ts could not prove/m);
+    holdsNoToken(stderr);
+  });
+
+  // A deployment whose broker holds no credential for a role (the review App's secret deleted) must
+  // set that role's input: the check reads the broker's own refusal out of the run it already makes
+  // and names the role, the secret and the input, rather than app-logins.ts's reason alone.
+  test("a secret the broker does not serve fails the check, naming the role, the secret and the input", async () => {
+    const { code, stdout, stderr } = await githubApps(
+      { ...appInputs, UNKNOWN_SECRETS: "REVIEW_APP" },
+      proveBoth
+    );
+    expect(code).toBe(1);
+    expect(stdout).not.toContain("logins");
+    // The broker's own line still reaches the run's stderr as it is written.
+    expect(stderr).toContain("no agent secret has this name (UNKNOWN_SECRET)");
+    expect(stderr).toMatch(
+      /^FAIL prerequisites: the secrets broker serves no github-app secret named REVIEW_APP for the review App \(UNKNOWN_SECRET\): set LEGION_E2E_REVIEW_APP_SECRET to the name of a github-app secret this deployment's broker holds for that App$/m
+    );
+    expect(stderr).not.toContain("could not prove the Legion role Apps");
     holdsNoToken(stderr);
   });
 
