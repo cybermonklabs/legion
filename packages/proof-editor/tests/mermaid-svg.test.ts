@@ -2,6 +2,9 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { Window } from "happy-dom";
 import { renderMermaidMarkup } from "../src/mermaid-render";
 import { mermaidSvgElement, sanitizeMermaidSvg, showMermaidSvg } from "../src/mermaid-svg";
+import { MERMAID_BLOCK_CLASSDEF_DRAWING } from "./fixtures/mermaid-block-classdef";
+import { MERMAID_EVENTMODELING_DRAWING } from "./fixtures/mermaid-eventmodeling";
+import { MERMAID_JOURNEY_DRAWING } from "./fixtures/mermaid-journey";
 
 // The document is passed in and never installed as `globalThis.document`: ELK, which lays out
 // flowcharts and state diagrams, fails to build while a global `document` exists. That is also
@@ -32,6 +35,17 @@ function parseRaw(markup: string): Element {
     .documentElement as unknown as Element;
 }
 
+/** What the filter leaves of `sheet`: the text of the `<style>` of a drawing holding nothing
+ *  else, which is the whole of its answer. */
+function filteredSheet(sheet: string): string {
+  const svg = sanitizeMermaidSvg(
+    `<svg xmlns="http://www.w3.org/2000/svg"><style>${sheet}</style></svg>`,
+    document,
+    "xml"
+  );
+  return svg.getElementsByTagName("style")[0]?.textContent ?? "";
+}
+
 describe("renderMermaidMarkup", () => {
   test("returns the editor's svg markup for a source", () => {
     const markup = renderMermaidMarkup("sequenceDiagram\n  Alice->>Bob: Hi");
@@ -48,7 +62,7 @@ describe("renderMermaidMarkup", () => {
 describe("mermaidSvgElement", () => {
   test("draws a sequence diagram as an svg of the document with the editor's accessible name", () => {
     const markup = renderMermaidMarkup("sequenceDiagram\n  Alice->>Bob: Hi");
-    const svg = mermaidSvgElement(markup, document);
+    const svg = mermaidSvgElement(markup, document, "xml");
 
     expect(svg.localName).toBe("svg");
     expect(svg.ownerDocument).toBe(document);
@@ -60,8 +74,18 @@ describe("mermaidSvgElement", () => {
     expect(rawStyle).toContain("@import");
     const style = svg.getElementsByTagName("style")[0]?.textContent ?? "";
     expect(style.trim()).not.toBe("");
-    expect(style).not.toContain("@import");
-    expect(style).toBe(rawStyle.replace(/@import[^\n]*;/g, ""));
+    expect(style).not.toMatch(/@import|googleapis/i);
+    // The mounted sheet is built from the rules the document's own CSS parser read, in that
+    // parser's own serialization, so it is never the author's text: beautiful-mermaid's `svg`
+    // rule comes through with the twelve custom properties every colour of the drawing reads.
+    expect(style).toContain("svg { --_text: var(--fg); --_text-sec: var(--muted, color-mix(");
+    expect(style).toContain("--_key-badge: color-mix(in srgb, var(--fg) 10%, var(--bg)); }");
+    // happy-dom 20.14.0 drops the rule that follows an `@import` it removed, which in this
+    // sheet is `text { font-family: 'Inter', system-ui, sans-serif; }`. A browser keeps it:
+    // measured over this same sheet in Chromium 1248, a constructed `CSSStyleSheet` holds two
+    // rules after `replaceSync` where happy-dom holds one. What a browser's own engine makes
+    // of a drawing's sheet is read by `packages/dispatch/e2e/mermaid.e2e.ts`.
+    expect(style).not.toContain("font-family");
   });
 
   test("drops an author's classDef and style url() paint and keeps the arrowhead markers", () => {
@@ -69,7 +93,8 @@ describe("mermaidSvgElement", () => {
       renderMermaidMarkup(
         "graph TD\n  A --> B\n  classDef evil fill:url(https://evil.example/x.png)\n  class A evil\n  style B fill:url(https://evil.example/y.png)\n  linkStyle 0 stroke:\\75rl(https://evil.example/q)"
       ),
-      document
+      document,
+      "xml"
     );
 
     const values = attributeValues(svg);
@@ -78,7 +103,7 @@ describe("mermaidSvgElement", () => {
   });
 
   test("throws for markup that is not an svg document", () => {
-    expect(() => mermaidSvgElement("<div>not a diagram</div>", document)).toThrow(
+    expect(() => mermaidSvgElement("<div>not a diagram</div>", document, "xml")).toThrow(
       "Invalid SVG output"
     );
   });
@@ -96,7 +121,8 @@ describe("showMermaidSvg", () => {
     const diagram = (id: string) =>
       mermaidSvgElement(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect id="${id}" width="4" height="4"/></svg>`,
-        document
+        document,
+        "xml"
       );
     const sheet = "svg{display:block}";
     const second = diagram("second");
@@ -128,18 +154,22 @@ describe("sanitizeMermaidSvg", () => {
     ];
     for (const source of diagrams) {
       const markup = renderMermaidMarkup(source);
-      const svg = sanitizeMermaidSvg(markup, document);
+      const svg = sanitizeMermaidSvg(markup, document, "xml");
       expect(elementNames(svg)).toEqual(elementNames(parseRaw(markup)));
     }
   });
 
+  // `text { fill: red; }` stands before the three `@import`s because happy-dom 20.14.0 drops
+  // the rule that follows an `@import` it removed (recorded in `mermaidSvgElement` above),
+  // where a browser keeps it; this order lets the row read what the filter keeps rather than
+  // what that parser loses.
   const hostile = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
       viewBox="0 0 10 10" onload="window.hit = 1">
     <style>
+      text { fill: red; }
       @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500&amp;display=swap');
       @IMPORT "https://evil.example/sheet.css";
       @import url(https://evil.example/a;b.css) screen;
-      text { fill: red; }
     </style>
     <script>window.hit = 1</script>
     <foreignObject><div xmlns="http://www.w3.org/1999/xhtml">html</div></foreignObject>
@@ -152,10 +182,18 @@ describe("sanitizeMermaidSvg", () => {
   </svg>`;
 
   test("keeps the shapes, text and styling and drops every script, link and fetch", () => {
-    const svg = sanitizeMermaidSvg(hostile, document);
+    const svg = sanitizeMermaidSvg(hostile, document, "xml");
 
     expect(svg.ownerDocument).toBe(document);
-    expect(elementNames(svg)).toEqual(["svg", "style", "rect", "path", "text"]);
+    expect(elementNames(svg)).toEqual([
+      "svg",
+      "style",
+      "foreignObject",
+      "div",
+      "rect",
+      "path",
+      "text",
+    ]);
     expect(svg.getAttribute("onload")).toBeNull();
     expect(svg.getAttribute("viewBox")).toBe("0 0 10 10");
     const rect = svg.getElementsByTagName("rect")[0];
@@ -180,7 +218,8 @@ describe("sanitizeMermaidSvg", () => {
         <rect id="imaged" style="background:image-set('https://x.example/f' 1x)"/>
         <rect id="local" fill="url(#grad)" marker-end='url( "#arrow" )' data-label="a\\b (x.example)"/>
       </svg>`,
-      document
+      document,
+      "xml"
     );
 
     expect(
@@ -204,9 +243,283 @@ describe("sanitizeMermaidSvg", () => {
     expect(local?.getAttribute("data-label")).toBe("a\\b (x.example)");
   });
 
+  // What the filter makes of each shape the review of INFRA-925 tried it with, and of each
+  // behaviour the readers it replaced had. The sheet is no longer read by this package: the
+  // window's own CSS parser reads it (`new view.CSSStyleSheet().replaceSync`), the rules it
+  // yields are serialized by it, every rule whose text fetches or holds a backslash is left
+  // out, and the whole sheet goes where an `@import` is left in what stayed.
+  //
+  // Under bun that parser is happy-dom's, not a browser's, and the two differ where it is
+  // recorded below. Each difference is the same way round — happy-dom keeps less, so what
+  // this row reads is never weaker than what a reader's browser applies — except the one
+  // marked, where happy-dom is the laxer tokenizer and the rule that follows drops the fetch
+  // anyway. What a browser's own engine makes of a drawing's sheet is read end to end by
+  // `packages/dispatch/e2e/mermaid.e2e.ts`.
+  const SHEET_READINGS: readonly { name: string; sheet: string; kept: string }[] = [
+    {
+      name: "a rule whose paint fetches goes whole, and the rule beside it stays",
+      sheet:
+        "#d .evil rect{fill:#ff0000!important;mask-image:url(https://evil.example/m.png)!important;" +
+        "marker-end:url(#d_pointEnd)!important;}#d .a rect{fill:#f00;}",
+      kept: "#d .a rect { fill: #f00; }\n",
+    },
+    {
+      name: "an upper-case URL(, and a value that wraps before its (",
+      sheet:
+        "#d .a rect{mask-image:URL(https://evil.example/a);fill:#f00;}" +
+        "#d .b rect{mask-image:url\n(https://evil.example/b);fill:#0f0;}",
+      kept: "",
+    },
+    {
+      name: "the escaped spelling of url(, which CSS decodes",
+      sheet: "#d .a rect{mask-image:\\75rl(https://evil.example/a);fill:#f00;}",
+      kept: "",
+    },
+    {
+      // happy-dom understands neither spelling and drops both declarations, so the two rules
+      // stay without them. Chromium understands `image-set(…)`, so there the rule holds it and
+      // the rule goes — which is why the test here is `FETCHING_FUNCTION` rather than `url(`
+      // alone: this function fetches with a bare string and no `url(` anywhere in it.
+      name: "image-set and its prefixed spelling",
+      sheet:
+        "#d .a rect{background:image-set('https://evil.example/a' 1x);fill:#f00;}" +
+        "#d .b rect{background:-webkit-image-set('https://evil.example/b' 1x);fill:#0f0;}",
+      kept: "#d .a rect { fill: #f00; }\n#d .b rect { fill: #0f0; }\n",
+    },
+    {
+      name: "a local url(#id) the drawing makes to its own marker, followed by a remote one",
+      sheet: "#d .a rect{marker-end:url(#d_pointEnd) url(https://evil.example/a);fill:#f00;}",
+      kept: "",
+    },
+    {
+      // `u/**/rl(` is an identifier, a comment and another identifier to a CSS tokenizer,
+      // never the `url(` function token, so it fetches nothing. Both engines refuse the
+      // declaration; happy-dom serializes what is left of it with the comment taken out,
+      // which reads as `url(` to the test here and takes the rule, where Chromium drops the
+      // declaration outright and keeps the `fill` beside it. Neither fetches anything.
+      name: "a comment inside the word url, which is no function token",
+      sheet: "#d .a rect{mask-image:u/**/rl(https://evil.example/a);fill:#f00;}",
+      kept: "",
+    },
+    {
+      name: "a selector's own colon, a var() and a media query, which end no property",
+      sheet: "@media (min-width:100px){g:hover text{fill:var(--mermaid-text-color);}}",
+      kept: "@media (min-width:100px) {\n  g:hover text { fill: var(--mermaid-text-color); }\n}\n",
+    },
+    {
+      name: "a keyframe's own blocks, which the engine serializes by percentage",
+      sheet: "@keyframes dash{to{stroke-dashoffset:0;}}",
+      kept: "@keyframes dash { \n  100% { stroke-dashoffset: 0; }\n}\n",
+    },
+    {
+      // `cssText` serializes an at-rule with everything nested in it, so one test over the
+      // rule reaches an `@font-face`'s `src` and an `@media`'s own declarations alike.
+      name: "an @font-face src, which takes its rule, the only rule the sheet holds",
+      sheet: "@font-face{font-family:x;src:url(https://evil.example/f.woff);}",
+      kept: "",
+    },
+    {
+      name: "a declaration a } ends rather than a ;",
+      sheet: "#d .a rect{fill:#f00;mask-image:url(https://evil.example/a) }",
+      kept: "",
+    },
+    {
+      name: "a } that closes nothing",
+      sheet: "#d .a rect{fill:#f00;}}#d .b rect{mask-image:url(https://evil.example/b);}",
+      kept: "#d .a rect { fill: #f00; }\n",
+    },
+    {
+      name: "a declaration the sheet ends before its ; does, which the engine drops from its rule",
+      sheet: "#d .a rect{fill:#f00;mask-image:url(https://evil.example/a)",
+      kept: "#d .a rect {  }\n",
+    },
+    {
+      // The one place happy-dom is the laxer tokenizer: it ends the string where Chromium runs
+      // it on to the end of the sheet, so happy-dom reads two rules and Chromium one, whose
+      // text then holds the `url(` and takes the whole sheet. Either way the fetch is gone.
+      name: "a string the sheet ends before, which the two tokenizers end differently",
+      sheet: '#d .a rect{content:"x;}#d .b rect{mask-image:url(https://evil.example/b);}',
+      kept: '#d .a rect { content: "x; }\n',
+    },
+    {
+      name: "an @import a comment separates from its quoted target",
+      sheet: '@import/**/"https://evil.example/c.css";\ntext{fill:red;}',
+      kept: "",
+    },
+    {
+      // The text round 3's reviewer wrote: to the reader this package used to carry, the quote
+      // inside the comment opened a string that ran on to the quote opening the target, so the
+      // keyword was never tested and the sheet went through whole, `@import` and all. A CSS
+      // parser reads a comment as a comment.
+      name: "the reviewer's @import behind a comment holding one quote",
+      sheet: "/*'*/@import 'https://e.example/x.css'",
+      kept: "",
+    },
+    {
+      name: "a quoted @import with no comment and no ; of its own",
+      sheet: "@import 'https://e.example/x.css'",
+      kept: "",
+    },
+    {
+      // happy-dom drops the rule that follows an `@import` it removed, where Chromium keeps
+      // `text { fill: red; }`. Neither keeps the import.
+      name: "a quoted @import before a rule of the author's own",
+      sheet: "@import 'https://e.example/x.css';text{fill:red;}",
+      kept: "",
+    },
+    {
+      name: "a comment that is never closed, which runs to the end of the sheet",
+      sheet: "text{fill:red;}/* @import 'https://e.example/x.css'",
+      kept: "text { fill: red; }\n",
+    },
+    {
+      name: "the reviewer's text after a rule, where the rule survives and the import does not",
+      sheet: "text{fill:red}/*'*/@import 'https://e.example/x.css'",
+      kept: "text { fill: red; }\n",
+    },
+    {
+      name: "the Google Fonts @import, whose quoted URL holds the ; that would end a rule",
+      sheet:
+        "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500');\n" +
+        "text{fill:red;}",
+      kept: "",
+    },
+    {
+      name: "an @import whose unquoted URL holds a ;, and the media query after it",
+      sheet: "@import url(https://evil.example/a;b.css) screen;\ntext{fill:red;}",
+      kept: "",
+    },
+    {
+      // happy-dom 20.14.0 yields no rule at all here: it drops the `@namespace` and the rule
+      // after it, as it does after an `@import` it removed. Chromium and Firefox yield the
+      // `@namespace`, whose text holds the `url(`, so the rule goes on its own and
+      // `text { fill: red; }` stays. With the two the other way round happy-dom keeps that
+      // rule as well (measured in happy-dom; round 4's reviewer measured the browsers).
+      // Neither engine lets the fetch through.
+      name: "an at-rule other than @import that fetches, which goes as its own rule",
+      sheet: "@namespace url(https://evil.example/ns);text{fill:red;}",
+      kept: "",
+    },
+  ];
+
+  test("reads a sheet as a browser's tokenizer does, and takes every @import with it", () => {
+    for (const reading of SHEET_READINGS) {
+      expect(filteredSheet(reading.sheet), reading.name).toBe(reading.kept);
+    }
+  });
+
+  // The two sheets upstream Mermaid writes for the sources the review of INFRA-925 measured the
+  // cost of reading a sheet with. Both are built here rather than drawn, since one render of
+  // either costs seconds; each shape was recorded by drawing its source through
+  // `packages/dispatch/web/src/features/refs/mermaid-upstream.ts`:
+  //  - a `block-beta` of 40,075 characters whose `classDef` and `class` name 20,000 `a`
+  //    characters is drawn as five rules, one per shape, each selector holding the whole class
+  //    name and no `:` (its sheet is 104,990 characters, Mermaid's own theme included);
+  //  - a `stateDiagram-v2` of 1,678 characters whose `classDef` value is 800 `a:` pairs and an
+  //    unterminated quote is drawn as three rules, Mermaid appending ` !important; }` of its
+  //    own, so the run of `:` stands in a value no quote closes.
+  const LONG_CLASS_NAME = "a".repeat(20_000);
+  const LONG_SELECTOR_SHEET = ["rect", "polygon", "ellipse", "circle", "path"]
+    .map((shape) => `#dispatch-mermaid-0 .${LONG_CLASS_NAME} ${shape}{fill:#ff0000!important;}`)
+    .join("");
+  const COLON_RUN_SHEET = ["rect", "polygon", "path"]
+    .map(
+      (shape) =>
+        `#dispatch-mermaid-0 .evil ${shape}{fill:${"a:".repeat(800)}"x !important !important; }`
+    )
+    .join("");
+  // One comment and no end to it, which is where round 3's reader ran a string to the end of
+  // the sheet. A CSS parser reads it as a comment that ends with the sheet and keeps the rule
+  // before it.
+  const UNTERMINATED_COMMENT_SHEET = `text{fill:red}/*${"a".repeat(40_000)}`;
+
+  // The page's own thread reads the sheet, where the worker's five-second bound does not reach
+  // (`answerOf` calls `mermaidSvgElement`, `mermaid-diagrams.ts`), so a filter whose cost grows
+  // faster than the sheet freezes the tab of every reader of the comment that holds it. The
+  // bound is wall-clock because that is the harm: 1,000 ms for the three sheets together.
+  // Measured on this pod (2 vCPU, bun 1.4.4), four runs of the three: 20 to 29 ms with the
+  // window's own parser (25 ms for the selector, 3 ms for the run of colons, 2 ms for the
+  // comment), against 14 to 18 ms for the two the one-pass reader of round 3 read. This row at
+  // the head it was first written against took 4,770 ms (2,355 ms for the selector and
+  // 2,312 ms for the run of colons, measured apart), where a regular expression reading a
+  // declaration as `property:value` began a scan at each character of a selector holding no
+  // `:` and at each `:` of the run. So the bound stands at more than thirty times what the
+  // filter costs, and the reading it refuses misses it by a factor of four and three quarters.
+  test("reads a long selector and a long run of colons in time with the sheet's length", () => {
+    const began = performance.now();
+    const selector = filteredSheet(LONG_SELECTOR_SHEET);
+    const colons = filteredSheet(COLON_RUN_SHEET);
+    const comment = filteredSheet(UNTERMINATED_COMMENT_SHEET);
+    const took = performance.now() - began;
+
+    // No sheet here fetches, so every rule of all three comes through, in the parser's own
+    // serialization rather than the author's text: the cost is what this row measures.
+    expect(selector).toContain(`.${LONG_CLASS_NAME} rect { fill: #ff0000 !important; }`);
+    expect(selector).toContain(`.${LONG_CLASS_NAME} path { fill: #ff0000 !important; }`);
+    expect(selector).toHaveLength(LONG_SELECTOR_SHEET.length + 30);
+    expect(colons).toContain(`fill: ${"a:".repeat(800)}"x !important !important;`);
+    expect(comment).toBe("text { fill: red; }\n");
+    expect(took).toBeLessThan(1_000);
+  });
+
+  /** Mirrors `MAX_SHEET_BRACES` in `src/mermaid-svg.ts`, which is not exported: the row reads
+   *  the boundary from both sides, so a cap moved there without this row fails here. */
+  const SHEET_BRACE_CAP = 3_000;
+
+  /** A flat sheet of `count` rules, the shape a `classDef`-heavy drawing writes: upstream
+   *  Mermaid writes about six rules per `classDef`, and the largest sheet the product was
+   *  measured writing holds 1,552 `{` (`MAX_SHEET_BRACES`). */
+  const flatSheet = (count: number): string =>
+    Array.from({ length: count }, (_, index) => `.c${index}{fill:red}`).join("");
+
+  // The count is taken before `replaceSync`, so this row reads the same answer under happy-dom
+  // as under a browser; what the two parsers differ on is the sheet at the cap, which happy-dom
+  // keeps rule for rule here, and what a browser's engine costs at that size is measured in the
+  // comment on `MAX_SHEET_BRACES` (3.6 ms flat, 11.3 ms nested 3,000 deep, and the tab gone at
+  // 4,800 deep) and read by a browser row (`packages/dispatch/e2e/mermaid.e2e.ts`).
+  test("refuses a sheet holding more braces than the cap, and keeps one at it", () => {
+    const atTheCap = filteredSheet(flatSheet(SHEET_BRACE_CAP));
+    expect(atTheCap).toContain(".c0 { fill: red; }");
+    expect(atTheCap).toContain(`.c${SHEET_BRACE_CAP - 1} { fill: red; }`);
+
+    // One rule more is one `{` more, and the sheet goes whole rather than in part.
+    expect(filteredSheet(flatSheet(SHEET_BRACE_CAP + 1))).toBe("");
+    // The shape the cap is for: the nesting a `classDef` writes into a sheet of its own through
+    // `</style><style>`, which crashes a browser's CSS parser rather than costing it time.
+    const nested = SHEET_BRACE_CAP + 1;
+    expect(filteredSheet(".q{".repeat(nested) + "}".repeat(nested))).toBe("");
+    // A `}` never gives a count back: here every one of them sits inside a string, where it
+    // closes nothing, so a counter that subtracted would read this sheet as flat and let it
+    // through. Counting `{` alone can only read the nesting high, and reading it high only
+    // refuses a sheet.
+    expect(filteredSheet(".q{'}'".repeat(nested))).toBe("");
+  });
+
+  // beautiful-mermaid writes two `<style>` elements for an xychart (1,081 and 1,274 characters,
+  // measured over one drawing of each of its six families), so the rule that keeps the first
+  // `<style>` alone is the HTML parse's and never this one. Nothing of an author's reaches the
+  // start of a sheet here: that renderer writes a `classDef` or `style` line into presentation
+  // attributes, where the attribute rules filter it.
+  test("keeps every style element of an xml parse, since beautiful-mermaid writes two", () => {
+    const svg = sanitizeMermaidSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        "<style>text{fill:red}</style>" +
+        "<style>rect{fill:blue}</style>" +
+        '<rect id="shape" width="1" height="1"/></svg>',
+      document,
+      "xml"
+    );
+
+    expect(
+      allElements(svg)
+        .filter((element) => element.localName === "style")
+        .map((style) => style.textContent)
+    ).toEqual(["text { fill: red; }\n", "rect { fill: blue; }\n"]);
+  });
+
   test("compares element names exactly, since XML names are case-sensitive", () => {
     expect(() =>
-      sanitizeMermaidSvg('<SVG xmlns="http://www.w3.org/2000/svg"><rect/></SVG>', document)
+      sanitizeMermaidSvg('<SVG xmlns="http://www.w3.org/2000/svg"><rect/></SVG>', document, "xml")
     ).toThrow("Invalid SVG output");
 
     const svg = sanitizeMermaidSvg(
@@ -214,7 +527,8 @@ describe("sanitizeMermaidSvg", () => {
         <RECT id="upper" width="1" height="1"/>
         <rect id="lower" width="1" height="1"/>
       </svg>`,
-      document
+      document,
+      "xml"
     );
     expect(elementNames(svg)).toEqual(["svg", "rect"]);
     expect(svg.getElementsByTagName("rect")[0]?.getAttribute("id")).toBe("lower");
@@ -227,7 +541,186 @@ describe("sanitizeMermaidSvg", () => {
       "<svg><rect/></svg>",
       "not markup at all",
     ]) {
-      expect(() => sanitizeMermaidSvg(markup, document)).toThrow("Invalid SVG output");
+      expect(() => sanitizeMermaidSvg(markup, document, "xml")).toThrow("Invalid SVG output");
     }
+  });
+});
+
+/** The namespace a browser lays a `foreignObject`'s content out in, whatever namespace the parse
+ *  that read the markup assigned it. */
+const XHTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+
+/** The first `<foreignObject>` of a drawing, which is where journey and eventmodeling put their
+ *  label. Matched by local name: `getElementsByTagName` on an HTML document folds the name it is
+ *  given to upper case, which no SVG element carries. */
+function labelOf(svg: Element): Element {
+  const label = allElements(svg).find((element) => element.localName === "foreignObject");
+  if (label === undefined) throw new Error("the drawing holds no foreignObject");
+  return label;
+}
+
+/** Markup no renderer writes, put into a label by hand: a link, an image and a handler. A label
+ *  is the one place an author's own markup reaches the drawing unescaped, which is what makes
+ *  the `foreignObject` allowlist load-bearing (`mermaid-svg.ts`). */
+const HAND_WRITTEN_LABEL_MARKUP =
+  '<a href="https://evil.example/go"><b>link</b></a>' +
+  '<img src="https://evil.example/pixel.png" width="1" height="1"/>' +
+  '<span onclick="globalThis.hit = 1" class="added">clickable</span>';
+
+// Upstream Mermaid's own markup, which the page reads with the HTML parser (`mermaid-diagrams.ts`
+// picks the parse from the renderer the worker names). Each drawing is a recording of mermaid
+// 12.3.0 under the worker's configuration, with its `<style>` element taken out, because
+// happy-dom's HTML parser loses an svg `<style>`'s text and every element after it; each
+// fixture's header says how it was recorded (`tests/fixtures/`).
+describe("sanitizeMermaidSvg, over upstream Mermaid's drawings", () => {
+  test("keeps a journey's label: its text and the class and style of each node of it", () => {
+    const svg = sanitizeMermaidSvg(MERMAID_JOURNEY_DRAWING, document, "html");
+
+    const label = labelOf(svg);
+    expect(label.namespaceURI).toBe("http://www.w3.org/2000/svg");
+    const kept = allElements(label).slice(1);
+    expect(kept.map((element) => [element.localName, element.namespaceURI])).toEqual([
+      ["div", XHTML_NAMESPACE],
+      ["div", XHTML_NAMESPACE],
+    ]);
+    expect(kept[0]?.getAttribute("class")).toBe("journey-section section-type-0");
+    expect(kept[0]?.getAttribute("style")).toBe("display:table;height:100%;width:100%");
+    expect(kept[1]?.getAttribute("class")).toBe("label");
+    expect(label.textContent).toBe("Draw");
+    // The drawing's other label, and the `<switch>` each one sits in, are kept with it.
+    expect(svg.textContent).toContain("Render");
+    expect(elementNames(svg)).toContain("switch");
+  });
+
+  test("keeps an eventmodeling label whole: its b, its two line breaks and its code", () => {
+    const svg = sanitizeMermaidSvg(MERMAID_EVENTMODELING_DRAWING, document, "html");
+
+    const label = labelOf(svg);
+    const kept = allElements(label).slice(1);
+    expect(kept.map((element) => [element.localName, element.namespaceURI])).toEqual([
+      ["div", XHTML_NAMESPACE],
+      ["span", XHTML_NAMESPACE],
+      ["b", XHTML_NAMESPACE],
+      ["br", XHTML_NAMESPACE],
+      ["br", XHTML_NAMESPACE],
+      ["code", XHTML_NAMESPACE],
+    ]);
+    expect(kept[1]?.getAttribute("style")).toBe(
+      "display:table-cell;text-align:center;vertical-align:middle"
+    );
+    expect(kept[5]?.getAttribute("style")).toBe("text-align: left; display: block;max-width:430px");
+    // The frame's name, then its inline data, whose spaces mermaid writes as no-break spaces.
+    expect(label.textContent).toBe("Dispatchitem:\u00a0apple,\u00a0count:");
+  });
+
+  test("removes an image, a link and a handler an author wrote into a label", () => {
+    for (const drawing of [MERMAID_JOURNEY_DRAWING, MERMAID_EVENTMODELING_DRAWING]) {
+      const svg = sanitizeMermaidSvg(
+        drawing.replace("</foreignObject>", `${HAND_WRITTEN_LABEL_MARKUP}</foreignObject>`),
+        document,
+        "html"
+      );
+
+      const label = labelOf(svg);
+      expect(elementNames(label)).not.toContain("a");
+      expect(elementNames(label)).not.toContain("img");
+      expect(label.textContent).not.toContain("link");
+      expect(attributeValues(svg).filter((value) => value.includes("evil.example"))).toEqual([]);
+      // The `<span>` the handler sat on is a label's own element, so it stays, without it: the
+      // allowlist removes what an author added, not everything beside Mermaid's own markup.
+      const added = allElements(label).find((element) => element.getAttribute("class") === "added");
+      expect(added?.localName).toBe("span");
+      expect(added?.getAttribute("onclick")).toBeNull();
+      expect(label.textContent).toContain("clickable");
+    }
+  });
+
+  // mermaid rewrites every void `<br>` of a label to `<br/>` (`cleanUpSvgCode`) and hands the
+  // markup to DOMPurify, whose serializer writes it back as the void `<br>` in a browser and
+  // leaves it self-closed under linkedom, the DOM the worker's shim builds and the fixture was
+  // recorded against. Measured in Google Chrome for Testing 158.0.8117.2 against mermaid 12.3.0:
+  // `<b>Dispatch</b><br><br><code ...>`. So this row writes the browser's spelling back, which
+  // is the whole reason Mermaid's markup is read with the HTML parser.
+  test("a label's void br survives the html parse, which the xml parse refuses the drawing for", () => {
+    const asABrowserWritesIt = MERMAID_EVENTMODELING_DRAWING.replaceAll("<br/>", "<br>");
+
+    const label = labelOf(sanitizeMermaidSvg(asABrowserWritesIt, document, "html"));
+    expect(elementNames(label).filter((name) => name === "br")).toHaveLength(2);
+    expect(label.textContent).toBe("Dispatchitem:\u00a0apple,\u00a0count:");
+
+    expect(() => sanitizeMermaidSvg(asABrowserWritesIt, document, "xml")).toThrow(
+      "Invalid SVG output"
+    );
+  });
+
+  // The drawing this row reads is `block-beta`, which Mermaid draws with SVG text labels and no
+  // `foreignObject`, so it is well-formed XML and the XML parser keeps its `<style>`'s text
+  // where happy-dom's HTML parser would lose it (the module comment of `src/mermaid-svg.ts`).
+  // The rule under test reads that text whichever parser carried it; the html parse of a whole
+  // Mermaid drawing, `<style>` and all, is read by a browser row
+  // (`packages/dispatch/e2e/mermaid.e2e.ts`).
+  test("drops a classDef's fetching paint from the drawing's own style and keeps the rest of it", () => {
+    const recorded =
+      /<style[^>]*>([\s\S]*?)<\/style>/.exec(MERMAID_BLOCK_CLASSDEF_DRAWING)?.[1] ?? "";
+    const svg = sanitizeMermaidSvg(MERMAID_BLOCK_CLASSDEF_DRAWING, document, "xml");
+
+    const sheet = svg.getElementsByTagName("style")[0]?.textContent ?? "";
+    // The author's `classDef` is five rules of the sheet, one per shape Mermaid styles, and
+    // every one of them fetches, so every one goes whole — the colour and the marker
+    // reference beside the paint with it. That is what reading the sheet by rule costs the
+    // author who wrote the paint, and it costs no other reader anything: Mermaid's own theme
+    // is the other 52 rules of the recording, and all 52 come through.
+    expect(recorded.match(/\.evil/g)).toHaveLength(5);
+    expect(recorded.match(/\{/g)).toHaveLength(57);
+    expect(sheet).not.toContain(".evil");
+    expect(sheet).not.toContain("evil.example");
+    expect(sheet.match(/\{/g)).toHaveLength(52);
+    expect(sheet).toContain(
+      "#dispatch-mermaid-0 { font-family: var(--mermaid-font-family); " +
+        "font-size: var(--mermaid-font-size); fill: var(--mermaid-text-color); }"
+    );
+
+    // The five dropped rules each pointed a `marker-end` at the drawing's own arrowhead, which
+    // no rule of the kept sheet does now. The marker itself is still drawn, and so is the edge
+    // attribute that references it.
+    expect(
+      Array.from(svg.getElementsByTagName("marker"), (marker) => marker.getAttribute("id"))
+    ).toContain("dispatch-mermaid-0_block-pointEnd");
+    expect(attributeValues(svg)).toContain("url(#dispatch-mermaid-0_block-pointEnd)");
+    expect(svg.textContent).toContain("Dispatch");
+  });
+
+  // One `<style>` is all Mermaid writes — 36 of the 37 types it registers carry one and
+  // wardley none — so a second is an author's, written by a `classDef` whose value carries
+  // `</style><style>`: the HTML parse ends the drawing's own element at that `</style>` and
+  // opens the author's, at the very start of a sheet of their own.
+  //
+  // happy-dom 20.14.0's HTML parser loses an svg `<style>`'s text and every element after it
+  // (the module comment of `src/mermaid-svg.ts`), so no row here can write two of them the way
+  // a browser reads them. It writes `<svg:style>` instead, the one spelling that parser carries
+  // into the drawing as a `style` of the SVG namespace holding its own text; a browser needs no
+  // such spelling and reads that one as an element named `svg:style`, so a browser's own parse
+  // of this attack is read by a row of its own (`packages/dispatch/e2e/mermaid.e2e.ts`, the
+  // `classDef` that nests a style element 6,000 deep).
+  test("keeps the first style element of an html parse and drops the author's second", () => {
+    const svg = sanitizeMermaidSvg(
+      '<svg xmlns="http://www.w3.org/2000/svg">' +
+        "<svg:style>text{fill:red}</svg:style>" +
+        "<svg:style>text{fill:blue}</svg:style>" +
+        '<rect id="shape" width="1" height="1"/></svg>',
+      document,
+      "html"
+    );
+
+    // Mermaid's own sheet comes through, rule for rule, and the author's whole element is gone.
+    expect(
+      allElements(svg)
+        .filter((element) => element.localName === "style")
+        .map((style) => style.textContent)
+    ).toEqual(["text { fill: red; }\n"]);
+    // What the author wrote after it is dropped with the element it opened, not with the rest
+    // of the drawing: the shape written after both sheets is still drawn.
+    expect(svg.textContent).not.toContain("blue");
+    expect(elementNames(svg)).toEqual(["svg", "style", "rect"]);
   });
 });
