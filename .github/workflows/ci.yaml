@@ -4251,6 +4251,7 @@ jobs:
       # prints the proxy's own log line for it. The log is emptied at the end, so the counts the
       # report step reads are the installs' alone.
       - name: Probe the proxy before the installs
+        id: probe
         # GitHub Actions folds an env key's case, so `http_proxy` and `HTTP_PROXY` in one block
         # are the same key written twice and it refuses the whole workflow file, with no job run
         # and no annotation on the pull request. The lowercase pair is the one both readers here
@@ -4297,12 +4298,16 @@ jobs:
       # prints the refused lines themselves when there are any, and a tally of every host it
       # passed through whatever the verdict, so the log says what the installs talked to rather
       # than only what they did not. It runs when an install above failed, which is what a
-      # reintroduced remote dependency does, because that is the run whose tally a reader needs;
-      # it is skipped only when the proxy never started, where there is no log to read. The step
-      # is behind no proxy itself - it reaches nothing - and it stops the proxy, whose liveness
-      # the kill also confirms: a proxy that had died would have failed the installs first.
+      # reintroduced remote dependency does, because that is the run whose tally a reader needs.
+      # It is gated on the probe rather than on the proxy, because the probe's own refusal of
+      # api.github.com is still in the log when the probe fails on its second request: a bad
+      # minute of registry.npmjs.org would otherwise have this step blame a dependency for the
+      # probe's request, with no install run at all. `!cancelled()` rather than `always()`, so a
+      # cancelled or timed-out job prints no success line either. The step is behind no proxy
+      # itself - it reaches nothing - and it stops the proxy, whose liveness the kill also
+      # confirms: a proxy that had died would have failed the installs first.
       - name: Count what the installs asked the proxy for
-        if: always() && steps.proxy.outcome == 'success'
+        if: ${{ !cancelled() && steps.probe.outcome == 'success' }}
         env:
           PROXY_PID: ${{ steps.proxy.outputs.pid }}
         run: |
@@ -4322,8 +4327,9 @@ jobs:
           printf '%s\n' "$seen" | sed -n 's/^504 //p' | sort | uniq -c | sed 's/^/  /'
           echo "requests the proxy passed through: $passed, by host:"
           printf '%s\n' "$seen" | sed -n 's/^pass //p' | sort | uniq -c | sed 's/^/  /'
-          # Not under `set -e`: a proxy that is already gone must not abort the step before it
-          # has printed its verdict, and a proxy that died early would have failed the installs.
+          # The `|| echo` is what keeps a failed kill from ending the step under GitHub's
+          # `bash -e`: a proxy that is already gone must not abort it before its verdict is out,
+          # and a proxy that died early would have failed the installs.
           kill "$PROXY_PID" || echo "the proxy was no longer running when this step stopped it"
           if [ "$refused" != 0 ]; then
             echo "::error::the frozen install reached the old proof-sdk route through the proxy $refused time(s); a dependency of this repository is fetched from GitHub again, which the tarball committed in packages/proof-editor exists to prevent"
