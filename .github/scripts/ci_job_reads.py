@@ -149,13 +149,21 @@ def root_workspaces():
 WORKSPACES = root_workspaces()
 
 
-def bun_job(job, workflow=""):
-    """.github/actions/setup-bun and a frozen `bun install`. No bunfig.toml at the root and no
-    .npmrc anywhere; packages/dispatch/bunfig.toml is read only by bun test there."""
-    install = at(job, "bun install --frozen-lockfile", workflow)
+def setup_bun(job, workflow=""):
+    """.github/actions/setup-bun alone: the Bun a job runs its own file with, where no step of it
+    installs the workspace's dependencies. The one job on this read without bun_job below is
+    sessions-script, whose test and the script it spawns import node: builtins and bun alone."""
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
         (".bun-version", ".github/actions/setup-bun/action.yml:22 bun-version-file: .bun-version"),
+    )
+
+
+def bun_job(job, workflow=""):
+    """setup_bun and a frozen `bun install`. No bunfig.toml at the root and no
+    .npmrc anywhere; packages/dispatch/bunfig.toml is read only by bun test there."""
+    install = at(job, "bun install --frozen-lockfile", workflow)
+    return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
         ("bun.lock", f"{install} reads the lockfile to install the versions it records"),
         ("patches/**", f"{install} applies package.json:50-59 patchedDependencies"),
@@ -330,9 +338,6 @@ RULES = {
         (f"{DAEMON}/internal/intake/testdata/github/pr-opened.json", "internal/daemon/nats_permissions_test.go:77")),
     f"{DAEMON}/internal/daemon/outbox_scratch_dispatch_test.go": [
         run(ENVOY, ["./cmd/dispatch"], "internal/daemon/outbox_scratch_dispatch_test.go:353 testbuild.EnvoyBinary, which runs go build ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
-    f"{DAEMON}/internal/daemon/promptreferences_omp_test.go": [
-        Read(g, "internal/daemon/promptreferences_omp_test.go:132,207-228 bun pm pack of packages/pi-envoy and pi-legion runs their prepack")
-        for g in PACK_READS] + reads(("packages/envoy-client/scripts/build-dispatch-cli.sh", "scripts/pi-plugin-prepack.sh:92, run by the pack in promptreferences_omp_test.go:228")),
     f"{DAEMON}/internal/daemon/supervision_test.go": reads((f"{DAEMON}/internal/stream/*", "internal/daemon/supervision_test.go:1220 Glob ../stream/*.go")),
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:269-270 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
@@ -614,12 +619,36 @@ go list ./... | grep -Ev '/{TEXT_CHECK_PACKAGE}$' | xargs go test -count=1"""
 DAEMON_RACE_PACKAGES = ["internal/daemon", "internal/sessionproxy", "internal/launcher"]
 DAEMON_RACE_STEP = "Test the concurrent packages under the race detector"
 DAEMON_RACE_PKGS = [f"./{p}/" for p in DAEMON_RACE_PACKAGES]
-DAEMON_RACE_TEXT = "go test -count=1 -race -timeout 30m " + " ".join(DAEMON_RACE_PKGS)
 DAEMON_PLAIN_STEP = "Test the Go daemon"
 DAEMON_PLAIN_PATTERN = "/(" + "|".join(DAEMON_RACE_PACKAGES + [TEXT_CHECK_PACKAGE]) + ")$"
 DAEMON_PLAIN_SCRIPT = f"""\
 set -o pipefail
 go list ./... | grep -Ev '{DAEMON_PLAIN_PATTERN}' | xargs go test -count=1 -timeout 15m"""
+
+# The one test of this module that packs the two plugin releases:
+# internal/daemon/promptreferences_omp_test.go:132 packs packages/pi-envoy and packages/pi-legion
+# with `bun pm pack` (packedPlugin, :207-228), and each pack runs that package's prepack, which
+# reads bun.lock and builds the bundle from the installed workspace. It runs once per run of the
+# router, in the plugin-pack job, and the race step that runs its package skips it by name: the
+# pack's reads - the lockfile, the two plugin packages and what their prepack reads - are then
+# inputs of that one job rather than of the daemon's whole Go suite, so a lockfile-only change
+# runs this test and no other daemon Go test (dispatch://INFRA-1413, A4). Both step texts are
+# built from this one list, and check-ci-filters.sh pins each step's whole script, so the -skip
+# and the -run cannot come to name different tests.
+PLUGIN_PACK_TESTS = ["TestTheRealPluginsOnTheRealOhMyPi"]
+PLUGIN_PACK_PACKAGE = "internal/daemon"
+PLUGIN_PACK_JOB = "plugin-pack"
+PLUGIN_PACK_STEP = "Pack the plugin releases and load them on the real Oh My Pi"
+PLUGIN_PACK_PATTERN = f"'^({'|'.join(sorted(PLUGIN_PACK_TESTS))})$'"
+PLUGIN_PACK_SCRIPT = f"go test -count=1 -timeout 15m -run {PLUGIN_PACK_PATTERN} ./{PLUGIN_PACK_PACKAGE}/"
+# The skip belongs to the step that would otherwise run the test, so the two lists are held
+# together here rather than by a reader noticing: a package moved out of the race step while the
+# pack test stayed in it would run that test twice and read the lockfile in both jobs.
+if PLUGIN_PACK_PACKAGE not in DAEMON_RACE_PACKAGES:
+    raise ValueError(f"the plugin-pack test is in {PLUGIN_PACK_PACKAGE}, which the race step does not run, so "
+                     f"nothing skips it there; name that package's step here, or move the -skip to the step that "
+                     f"runs it")
+DAEMON_RACE_SCRIPT = f"go test -count=1 -race -timeout 30m -skip {PLUGIN_PACK_PATTERN} " + " ".join(DAEMON_RACE_PKGS)
 
 
 # ---------------------------------------------------------------- the envoy race lane
@@ -964,6 +993,9 @@ CHECK_STEP = "Check every CI filter matches every file its job reads"
 GUIDES_STEP = "Check the guides' semantic line breaks"
 COPY_STEP = "Copy every image the package does not hold"
 PACKAGE_STEP = "Check the package holds every row of .github/ci-images.yaml"
+# The session message-wait suite's own job: the test job's one step that needs a database.
+SESSIONS_JOB = "sessions-script"
+SESSIONS_STEP = "Test the session message-wait script"
 
 # ------------------------------------------------- the test job's script harnesses, one gate each
 # Each `*.test.sh` step of the test job tests one script of this repository, and runs behind a
@@ -1167,9 +1199,11 @@ GATES = [
     # the plain step over every package of the module but the three concurrent ones and the text
     # checks, the race step over those three, and the Stage 1 proof, which builds ./cmd/legion
     # and boots it. The filter is daemon_go_tests, the list that already stood for exactly this
-    # closure while it was aliased into the test filter and gated nothing of its own.
+    # closure while it was aliased into the test filter and gated nothing of its own. The one
+    # test the race step does not run is the plugin pack's (PLUGIN_PACK_TESTS), whose job is
+    # below: with it goes the Bun install, which no other test of this module needs, and with
+    # that the lockfile and the workspace manifests.
     gate("daemon_go_tests", "daemon-go", runs=[
-        step_run("daemon-go", DAEMON_RACE_STEP, DAEMON_RACE_TEXT, DAEMON, DAEMON_RACE_PKGS, race=True),
         script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                    at("daemon-go", "Stage 1 live proof"), DAEMON, ["./cmd/legion"], mode="build"),
     ], exact=[
@@ -1183,6 +1217,15 @@ GATES = [
             (DAEMON, packages_but(DAEMON, TEXT_CHECK_PACKAGE),
              "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
         ]),
+        # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
+        # its script is pinned too. What it compiles is every test file of the three packages,
+        # the skipped test's included: -skip leaves a test out of the run, never out of the
+        # build, so the closure here is the step's whole closure and only the pack's own reads
+        # (the plugin-pack gate below) leave this job.
+        pinned_step("daemon-go", DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
+            (DAEMON, DAEMON_RACE_PKGS, "go test -race over the three concurrent packages, the plugin-pack test "
+                                       "skipped by name", {"race": True}),
+        ]),
     ], reads=reads(
         ("scripts/e2e/stage1-skeleton.sh", at("daemon-go", "Stage 1 live proof")),
         ("scripts/e2e/lib/rig.sh", "scripts/e2e/stage1-skeleton.sh:112 sources it"),
@@ -1194,8 +1237,28 @@ GATES = [
         (".github/actions/pull-test-images/**", at("daemon-go", "Pull the NATS test container images")),
         (f"{DAEMON}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const Image"),
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('daemon-go', 'Pull the NATS test container images')} const HubImage"),
-    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")
-      + bun_job("daemon-go")),
+    ) + install_jj("daemon-go") + install_omp("daemon-go") + setup_go("daemon-go", f"{DAEMON}/go.mod")),
+
+    # The plugin-pack job: the one test of internal/daemon that packs the two plugin releases
+    # and loads them on the real Oh My Pi (PLUGIN_PACK_TESTS, which the daemon-go race step
+    # skips by name). The step runs that test alone, and compiles the package it is in to do
+    # it, so this filter is that package's whole test closure as well as the pack's own reads -
+    # the two plugin packages, what their prepack builds each bundle from, and the lockfile the
+    # frozen install reads. The job exists for the lockfile: with the test here, a bun.lock-only
+    # change runs this one test instead of the daemon's whole Go suite.
+    gate("plugin_pack", PLUGIN_PACK_JOB, exact=[
+        pinned_step(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP, DAEMON, PLUGIN_PACK_SCRIPT, [
+            (DAEMON, [f"./{PLUGIN_PACK_PACKAGE}/"], "go test -run over the package the pack test is in", {}),
+        ]),
+    ], reads=[
+        Read(g, f"{at(PLUGIN_PACK_JOB, PLUGIN_PACK_STEP)}: internal/daemon/promptreferences_omp_test.go:132,207-228 "
+                "packs packages/pi-envoy and packages/pi-legion with `bun pm pack`, which runs their prepack")
+        for g in PACK_READS
+    ] + reads(
+        ("packages/envoy-client/scripts/build-dispatch-cli.sh", "scripts/pi-plugin-prepack.sh:92, run by the pack "
+                                                                "in promptreferences_omp_test.go:228"),
+    ) + install_jj(PLUGIN_PACK_JOB) + install_omp(PLUGIN_PACK_JOB)
+      + setup_go(PLUGIN_PACK_JOB, f"{DAEMON}/go.mod") + bun_job(PLUGIN_PACK_JOB)),
 
     # What is left of the test job once the daemon's Go suite has a job of its own: the Claude
     # Code plugin build, the changelog fold, about thirty script harnesses - each behind a gate
@@ -1220,7 +1283,8 @@ GATES = [
         ("packages/envoy-client/test/fake-dispatch.ts", "scripts/e2e/lib/agent-replay.test.ts:4-7 imports it by path"),
         ("scripts/dispatch/**", f"{at('test', 'Lint the Dispatch census script')}, typecheck and test"),
         ("scripts/github-apps/**", f"{at('test', 'Lint the GitHub App registration script')} and typecheck"),
-        ("scripts/sessions/**", f"{at('test', 'Lint the session message-wait script')}, typecheck and test"),
+        ("scripts/sessions/**", f"{at('test', 'Lint the session message-wait script')} and typecheck; the suite "
+                                f"itself is {SESSIONS_JOB}'s, the one step of this job that needed a database"),
         (f"{FIX}/daemon-api/**", "scripts/e2e/lib/stage4b-boot-capabilities.test.ts:16"),
         (f"{DAEMON}/internal/daemon/controller.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:344-345 reads it as text"),
         (f"{DAEMON}/internal/controller/liveness.go", "scripts/e2e/lib/controller-liveness-verdict.test.ts:348"),
@@ -1238,6 +1302,18 @@ GATES = [
                          "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch)")
       + setup_go("test", f"{DAEMON}/go.mod")
       + biome(at("test", "Lint the Dispatch census script")) + bun_job("test")),
+
+    # The session message-wait suite, in a job of its own: it is the one test of the whole test
+    # job that needs a database (scripts/sessions/__tests__/message-wait.test.ts:20-28 refuses
+    # without LEGION_TEST_PG_DSN, since a store it cannot measure is a measurement of nothing),
+    # and a Postgres service on the test job would start one for every change that selects any
+    # of its thirty-two harness steps. The test reads the script it spawns and nothing else: both
+    # are under scripts/sessions, and both import node: builtins and bun alone, so the job
+    # installs no dependencies and this filter names no lockfile.
+    gate("sessions_script", SESSIONS_JOB, reads=reads(
+        ("scripts/sessions/**", f"{at(SESSIONS_JOB, SESSIONS_STEP)}: the suite, and message-wait.ts, which "
+                                "scripts/sessions/__tests__/message-wait.test.ts:18,199 spawns"),
+    ) + setup_bun(SESSIONS_JOB)),
 
     # The test job's guide-layout step, gated on a filter of its own: the test spawns the
     # checker over five guides, and no other step of the job reads one of them. The job's own

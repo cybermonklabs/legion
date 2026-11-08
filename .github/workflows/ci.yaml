@@ -53,8 +53,9 @@ name: CI
 #
 # Caches: no job of this workflow saves an Actions cache entry. setup-go caches nothing here
 # (`cache: false` on every step). The jobs that cache Go restore one of six families with
-# actions/cache/restore: go-daemon (typecheck, daemon-go and pi-legion; the test job restored it
-# while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
+# actions/cache/restore: go-daemon (typecheck, daemon-go, plugin-pack — which compiles the same
+# internal/daemon test binary daemon-go's race step does — and pi-legion; the test job restored
+# it while it ran the daemon's Go suite and does not now), go-docs (docs, and the build job
 # of docs-pages.yaml, which saves it), go-envoy (envoy-e2e-local and envoy-session-stall, which
 # build the same listener and natsd, listener-server-change and envoy-go-checks, which build the
 # listener, and envoy-go-race-docs, envoy-go-docs-finalizers and the shard, alone and
@@ -133,9 +134,11 @@ env:
       "typecheck": "typecheck",
       "test": "test",
       "daemon-go": "daemon_go_tests",
+      "plugin-pack": "plugin_pack",
       "docs": "docs",
       "contracts": "contracts",
       "conflicts-script": "conflicts_script",
+      "sessions-script": "sessions_script",
       "envoy-client": "envoy_client",
       "pi-shared": "pi_shared",
       "pi-envoy": "pi_envoy",
@@ -228,6 +231,14 @@ jobs:
       # The daemon's Go suite, a job of its own since dispatch://INFRA-1413: the test job used
       # to carry it behind the output above, so a change to a shell script ran it too.
       daemon_go_tests: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.daemon_go_tests }}
+      # The one test of that suite that packs the two plugin releases, in a job of its own: its
+      # pack reads bun.lock, so with it in daemon-go a lockfile change ran the daemon's whole Go
+      # suite (dispatch://INFRA-1413, A4).
+      plugin_pack: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.plugin_pack }}
+      # The session message-wait suite, in a job of its own: it is the one test of the test job
+      # that needs a database, and a Postgres service there would start one for every change
+      # that selects any of that job's thirty-two harness steps.
+      sessions_script: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.sessions_script }}
       # The guides' layout step of the test job, which has a filter of its own: the job's other
       # steps read none of the guides, so a run that changed none of them skips that step.
       guide_layout: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.guide_layout }}
@@ -713,8 +724,6 @@ jobs:
               - 'packages/envoy/cmd/dispatch/**'
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
-              # going's own golden, which a test run of that package reads.
-              - 'packages/envoy/going/testdata/**'
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/dispatch/**'
@@ -763,14 +772,14 @@ jobs:
             # packages they compile, the Dispatch server internal/testbuild/testbuild.go:112 builds
             # for internal/daemon/outbox_scratch_dispatch_test.go:353, and what their tests read
             # outside the daemon: contracts' fixtures
-            # (internal/api/state_golden_test.go:27, internal/intake/intake_test.go:698), the two
-            # Oh My Pi plugins internal/daemon/promptreferences_omp_test.go:132 packs, whose prepack
-            # bundles contracts and envoy-client, stages skills/ and writes their notices, the
+            # (internal/api/state_golden_test.go:27, internal/intake/intake_test.go:698), the
+            # plugin files internal/daemon/agentmodels_omp_test.go:165,175 copies and stages, the
             # GitHub App helper internal/api/real_github_test.go:88 sources, and the examples and
             # docs its tests hold to the code (cmd/legion/config_example_test.go:24,
             # internal/config/controller_test.go:179, internal/config/kubernetes_test.go:1322).
-            # The root manifest, lockfile and patches the packs resolve through, and the Bun
-            # that runs them, are bun_install's, named below.
+            # No bun_install: the one test of this suite that packed the two plugins - and so
+            # resolved the root manifest, the lockfile and the patches - is the plugin-pack job's
+            # now, and this job installs nothing (dispatch://INFRA-1413, A4).
             #
             # The list is the one the test job's filter used to name through this anchor while
             # it gated nothing of its own; it is now the daemon-go job's own filter, so a change
@@ -779,7 +788,6 @@ jobs:
               - *ci_router
               - '.github/workflows/ci-job-daemon-go.yaml'
               - *go_workspace
-              - *bun_install
               - 'packages/daemon/**'
               - *daemon_envoy_deps
               - *dispatch_server
@@ -789,17 +797,13 @@ jobs:
               # The testdata of envoy's internal/contracts, which the daemon compiles.
               - 'packages/envoy/internal/contracts/**'
               - 'packages/contracts/**'
-              - 'packages/envoy-client/**'
-              - 'packages/pi-envoy/**'
+              # What is left of the two plugins once the pack is the plugin-pack job's: the
+              # agents internal/daemon/agentmodels_omp_test.go:165 copies, and the partition of
+              # skills/ its :175 stages with the prepack script. The rest of pi-legion, all of
+              # pi-envoy, pi-shared and envoy-client, and the notices writer, were the pack's
+              # alone and are that job's filter now.
               - 'packages/pi-legion/**'
-              - 'packages/pi-shared/**'
               - 'scripts/pi-plugin-prepack.sh'
-              - 'scripts/third-party-notices.ts'
-              # A daemon Go test does read the skills: the prepack both packs run stages
-              # skills/<name> into the plugin they build (internal/daemon/agentmodels_omp_test.go:175
-              # and promptreferences_omp_test.go:228). Dropping this pattern was tried and
-              # .github/scripts/check-ci-filters.sh refused it, naming 68 files of skills/ under
-              # that read.
               - 'skills/**'
               - 'scripts/e2e/lib/github-apps.sh'
               # The Stage 1 proof: the script, the rig it sources and the helpers the rig runs.
@@ -815,6 +819,43 @@ jobs:
               - *omp_install
               - '.github/actions/install-uv/**'
               - '.github/actions/pull-test-images/**'
+
+            # The plugin-pack job: internal/daemon's one test that packs packages/pi-envoy and
+            # packages/pi-legion with `bun pm pack` and loads the two tarballs on the real Oh My
+            # Pi. The step runs that test by name and compiles the package it is in to do it, so
+            # this list is that package's test closure - packages/daemon, the Dispatch server
+            # internal/testbuild builds for outbox_scratch_dispatch_test.go, and the envoy
+            # packages internal/daemon imports - and the pack's own reads: the two plugin
+            # packages, everything their prepack builds each bundle from, and the frozen install
+            # that prepack builds against, the lockfile included. The lockfile is why the job
+            # exists: while this test was daemon-go's, bun.lock was on that filter and a
+            # lockfile-only change ran the daemon's whole Go suite (dispatch://INFRA-1413, A4).
+            # No Stage 1 script, no uv and no NATS images: those are daemon-go's steps, not this
+            # one's.
+            plugin_pack:
+              - *ci_router
+              - '.github/workflows/ci-job-plugin-pack.yaml'
+              - *go_workspace
+              - *bun_install
+              - *omp_install
+              - 'packages/daemon/**'
+              - *dispatch_server
+              - 'packages/envoy/daemonpermissions/*'
+              - 'packages/envoy/dispatchbody/*'
+              - 'packages/envoy/internal/testnats/*'
+              - 'packages/envoy/sessiontiming/*'
+              - 'packages/envoy/testnatsimages/*'
+              - 'packages/contracts/**'
+              - 'packages/envoy-client/**'
+              # The two plugins the test packs, the shared package their bundles inline, and what
+              # their prepack runs: the skill partition it stages, the notices it writes and the
+              # Dispatch CLI bundle pi-envoy's build chains.
+              - 'packages/pi-envoy/**'
+              - 'packages/pi-legion/**'
+              - 'packages/pi-shared/**'
+              - 'scripts/pi-plugin-prepack.sh'
+              - 'scripts/third-party-notices.ts'
+              - 'skills/**'
 
             # `go vet -tags e2e ./...` in packages/daemon.
             typecheck:
@@ -1364,6 +1405,17 @@ jobs:
               - *bun_install
               - *biome
               - 'scripts/conflicts/**'
+            # The session message-wait suite's own job: the suite, the script it spawns, and the
+            # Bun that runs both. No install: the two import node: builtins and bun alone, so no
+            # lockfile and no workspace manifest is an input of this job. The lint and the
+            # typecheck of the same directory stay in the test job, which the `test` filter below
+            # names scripts/sessions for.
+            sessions_script:
+              - *ci_router
+              - '.github/workflows/ci-job-sessions-script.yaml'
+              - 'scripts/sessions/**'
+              - '.bun-version'
+              - '.github/actions/setup-bun/**'
             envoy_client:
               - *ci_router
               - '.github/workflows/ci-job-envoy-client.yaml'
@@ -1752,9 +1804,6 @@ jobs:
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
-              # internal/intake's testdata, the one testdata directory under this module that the
-              # text-check run compiles a package of (`go list -deps -test ./internal/textcheck/`).
-              - 'packages/daemon/internal/intake/testdata/**'
               # The prompt design_approved_wake_test.go:19-26 holds the resume's wake to, and the
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
@@ -1799,15 +1848,15 @@ jobs:
             # six source guards now carry `//go:build !race`, so the race build compiles none of
             # them and the text-check job runs their eleven tests instead. What is left is the
             # closure of `go test -race ./internal/dispatch/api/` (`go list -deps -test -race` in
-            # packages/envoy), one pattern per directory, with the testdata of each directory
-            # that has one and what those packages embed.
+            # packages/envoy), one pattern per directory, with what those packages embed and the
+            # testdata of the package whose tests this job runs: a dependency's testdata is read
+            # by that package's own tests, which run in a job of their own.
             envoy_go_race_api:
               - *ci_router
               - '.github/workflows/ci-job-envoy-go-race-api.yaml'
               - *go_workspace
               - 'packages/envoy/going/*'
               - 'packages/envoy/going/goingtest/*'
-              - 'packages/envoy/going/testdata/**'
               - 'packages/envoy/internal/broker/api/*'
               - 'packages/envoy/internal/broker/approval/*'
               # The approval page's embedded stylesheet and templates.
@@ -1831,12 +1880,10 @@ jobs:
               - 'packages/envoy/internal/broker/store/migrations/**'
               - 'packages/envoy/internal/broker/store/storetest/*'
               - 'packages/envoy/internal/brokerclient/*'
-              - 'packages/envoy/internal/brokerclient/testdata/**'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/bus/*'
               - 'packages/envoy/internal/contracts/*'
-              - 'packages/envoy/internal/contracts/testdata/**'
               - 'packages/envoy/internal/cputest/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
@@ -1876,7 +1923,6 @@ jobs:
               # The two schema files internal/dispatch/pmdoc embeds.
               - 'packages/envoy/internal/dispatch/pmdoc/schema/block-node-types.json'
               - 'packages/envoy/internal/dispatch/pmdoc/schema/blocks.json'
-              - 'packages/envoy/internal/dispatch/pmdoc/testdata/**'
               - 'packages/envoy/internal/dispatch/processes/*'
               - 'packages/envoy/internal/dispatch/rank/*'
               - 'packages/envoy/internal/dispatch/refs/*'
@@ -1888,7 +1934,6 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/searchtest/*'
               - 'packages/envoy/internal/dispatch/store/storetest/*'
               - 'packages/envoy/internal/dispatch/text/*'
-              - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               - 'packages/envoy/internal/googleidentity/*'
@@ -1916,9 +1961,9 @@ jobs:
               - '!packages/daemon/**/*_test.go'
             # The document service's own race job. Not packages/envoy/**, as envoy_go_race has:
             # a race job of twenty minutes or more must not run on every change under that tree
-            # (INFRA-490). This is the closure of ./internal/dispatch/docs/ (`go list -deps -test
-            # -race`), one pattern per directory, with the testdata of each directory that has
-            # one and what those packages embed.
+            # -race`), one pattern per directory, with what those packages embed and the testdata
+            # its own tests read - this package's, and pmdoc's, which one of them names through
+            # `..`. A dependency's testdata no test of this job reads is not an input.
             envoy_go_race_docs:
               - *ci_router
               # Two jobs run this package under the detector and share this filter, so it names
@@ -1930,7 +1975,6 @@ jobs:
               - '.github/scripts/race_memory.py'
               - *go_workspace
               - 'packages/envoy/internal/contracts/*'
-              - 'packages/envoy/internal/contracts/testdata/**'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
@@ -1958,7 +2002,6 @@ jobs:
               - 'packages/envoy/internal/dispatch/store/searchtest/*'
               - 'packages/envoy/internal/dispatch/store/storetest/*'
               - 'packages/envoy/internal/dispatch/text/*'
-              - 'packages/envoy/internal/dispatch/text/testdata/**'
               - 'packages/envoy/internal/explaintest/*'
               - 'packages/envoy/internal/githubappjwt/*'
               # room_recovery_test.go reads the goroutine dump through it.
@@ -2004,8 +2047,9 @@ jobs:
             # The server-change soak (listener-server-change): `go test -tags serverchange
             # ./cmd/listener`. The listener's own packages, and what its test binary compiles
             # beyond them - the in-process NATS and Postgres helpers, the builder of the binary it
-            # starts, and the Dispatch packages cmd/listener's tests drive - each package's
-            # testdata included.
+            # starts, and the Dispatch packages cmd/listener's tests drive. A dependency's own
+            # testdata is no input of this job: the tests that read it are that package's, and
+            # this job runs cmd/listener's alone.
             listener_server_change:
               - *ci_router
               - '.github/workflows/ci-job-listener-server-change.yaml'
@@ -2013,10 +2057,8 @@ jobs:
               - *listener_command
               # What cmd/listener's test binary compiles that `go list -deps ./cmd/listener` does
               # not, so listener_command, which is that build closure, leaves them to the jobs
-              # that run the tests: the chat client and its golden, the redirect table and the
-              # router.
+              # that run the tests: the chat client, the redirect table and the router.
               - 'packages/envoy/going/*'
-              - 'packages/envoy/going/testdata/**'
               - 'packages/envoy/internal/redirects/*'
               - 'packages/envoy/internal/routing/*'
               - 'packages/envoy/internal/broker/proof/*'
@@ -2026,13 +2068,10 @@ jobs:
               - 'packages/envoy/internal/brokertoken/brokertokentest/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cmdtest/*'
-              - 'packages/envoy/internal/contracts/testdata/**'
               - 'packages/envoy/internal/dispatch/accesslog/*'
               - 'packages/envoy/internal/dispatch/agentsecrets/*'
               - 'packages/envoy/internal/dispatch/agentstream/*'
               - 'packages/envoy/internal/dispatch/api/*'
-              # internal/dispatch/api/write_advice_test.go:504 reads testdata/decision-block-inserts.json.
-              - 'packages/envoy/internal/dispatch/api/testdata/**'
               - 'packages/envoy/internal/dispatch/architecture/*'
               - 'packages/envoy/internal/dispatch/asks/*'
               - 'packages/envoy/internal/dispatch/auth/*'
@@ -2070,7 +2109,6 @@ jobs:
               - 'packages/envoy/internal/ratelimit/*'
               - 'packages/envoy/internal/testnats/*'
               - 'packages/envoy/internal/testpg/*'
-              - 'packages/envoy/internal/webhook/testdata/**'
               - 'packages/envoy/migrationid/*'
               # cmd/listener/api_test.go:191,436,480, which the soak's run compiles too.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
@@ -2569,6 +2607,22 @@ jobs:
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
+  # The one test of the daemon's Go suite that packs the two plugin releases and loads them on
+  # the real Oh My Pi. It left daemon-go above in dispatch://INFRA-1413: the pack reads bun.lock
+  # and the two plugin packages, so that filter named the lockfile and a lockfile change ran the
+  # daemon's whole Go suite. Here it runs on its own inputs, and the daemon-go race step skips
+  # it by name (.github/scripts/ci_job_reads.py's PACK_TESTS builds both steps' text).
+  plugin-pack:
+    needs: changes
+    if: needs.changes.outputs.plugin_pack == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-plugin-pack.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
   # Builds the documentation site (docs/site) on every pull request and merge group that could
   # change it. No run of this workflow is a push to main: docs-pages.yaml builds and publishes
   # main's site to GitHub Pages, at the address .github/scripts/repo-paths.sh derives from the
@@ -2616,6 +2670,21 @@ jobs:
       actions: read
       checks: write
     uses: ./.github/workflows/ci-job-conflicts-script.yaml
+    with:
+      ci-ok-changes: ${{ toJSON(needs.changes) }}
+
+  # The session message-wait suite, which creates a session-store database of its own and
+  # refuses without one. It was a step of the test job until dispatch://INFRA-1413: the one step
+  # of that job that needs a database, which is why it has one here instead of a Postgres
+  # service on a job whose other thirty-odd steps would start it for nothing.
+  sessions-script:
+    needs: changes
+    if: needs.changes.outputs.sessions_script == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    uses: ./.github/workflows/ci-job-sessions-script.yaml
     with:
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -3332,9 +3401,11 @@ jobs:
       - typecheck
       - test
       - daemon-go
+      - plugin-pack
       - docs
       - contracts
       - conflicts-script
+      - sessions-script
       - envoy-client
       - pi-shared
       - pi-envoy

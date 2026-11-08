@@ -300,10 +300,37 @@ def go_skips_dir(parent: Path, name: str) -> bool:
             or (parent / name / "go.mod").is_file())
 
 
-def pattern_dirs(run_: Run) -> list:
+def test_build_files(listing: list) -> dict:
+    """Per first-party package directory, the names of the files of its test build: what go list
+    reports as TestGoFiles and XTestGoFiles, unioned over every entry naming that directory,
+    since -test lists a package again as the variant its test binary compiles and as that
+    binary's own main package. go list fills both fields from the directory scan whether or not
+    the command asked for -test, so a build run's listing answers this too."""
+    names: dict = defaultdict(set)
+    for pkg in listing:
+        d = rel(pkg["Dir"]) if pkg.get("Dir") else None
+        if d is not None:
+            names[d].update(pkg.get("TestGoFiles") or [], pkg.get("XTestGoFiles") or [])
+    return names
+
+
+def directory_reads(dir_rel: str, tests: set, why: str) -> list:
+    """What a go command reads of a first-party package's directory: every file beside the
+    source - the non-Go ones, which no other read names, included - minus the files of that
+    package's test build, which only a run that compiles them reads. It is `<dir>/*` while the
+    package has no test file, and the names themselves once it has, since a glob cannot say
+    "every file but these"."""
+    if not tests:
+        return [Read(f"{dir_rel}/*", why)]
+    return [Read(f"{dir_rel}/{name}", why) for name in sorted(os.listdir(REPO / dir_rel))
+            if name not in tests and (REPO / dir_rel / name).is_file()]
+
+
+def pattern_dirs(run_: Run, tests: dict) -> list:
     """A `<root>/...` pattern reads every directory under root that holds .go files, to evaluate
     their build constraints, the packages it then excludes included; go_skips_dir says which are
-    passed over."""
+    passed over. A directory's test files are left out here as they are everywhere outside a run
+    that compiles them (closure below), and the run that does puts them back."""
     reads = []
     for pattern in run_.pkgs:
         if not pattern.endswith("..."):
@@ -313,19 +340,32 @@ def pattern_dirs(run_: Run) -> list:
             here = Path(current)
             subdirs[:] = [s for s in subdirs if not go_skips_dir(here, s)]
             if any(n.endswith(".go") for n in names):
-                reads.append(Read(f"{rel(current)}/*", f"{run_.why} (the pattern {pattern} reads the directory's .go files)"))
+                d = rel(current)
+                reads += directory_reads(d, tests[d],
+                                         f"{run_.why} (the pattern {pattern} reads the directory's .go files)")
     return reads
 
 
 def closure(session: Session, rules: dict, run_: Run, seen: set) -> list:
-    """Every Read the go command reads, with the closures of the go commands its tests start."""
+    """Every Read the go command reads, with the closures of the go commands its tests start.
+
+    A package's test files - what go list reports as TestGoFiles and XTestGoFiles, their
+    TestEmbedPatterns and XTestEmbedPatterns, and, for a run that runs them, its testdata and
+    the RULES rows keyed on them - are read by a run whose go list ran over that package itself
+    in test or vet mode, which are the modes that compile them. A run that merely holds the
+    package in its closure, as a dependency or as something it builds, reads the files of its
+    non-test build instead: its GoFiles, its CgoFiles, its EmbedPatterns and whatever else sits
+    beside them in the directory. So a change to a _test.go file selects the jobs that compile
+    that file and no others."""
     if run_ in seen:
         return []
     seen.add(run_)
-    reads = list(session.module_files(run_)) + pattern_dirs(run_)
+    listed = session.listing(run_, deps=True)
+    tests = test_build_files(listed)
+    reads = list(session.module_files(run_)) + pattern_dirs(run_, tests)
     reads += [Read(b, f"{run_.why} (the overlay's replacement for {a})") for a, b in run_.overlay]
     dirs = set()
-    for pkg in session.listing(run_, deps=True):
+    for pkg in listed:
         if pkg.get("Standard") or not pkg.get("Dir"):
             continue
         d = rel(pkg["Dir"])
@@ -337,22 +377,26 @@ def closure(session: Session, rules: dict, run_: Run, seen: set) -> list:
                                     f"imports are unknown: {' '.join(error.split())[:300]}")
         if (REPO / d).is_dir() and d not in dirs:
             dirs.add(d)
-            reads.append(Read(f"{d}/*", f"{run_.why} (go list -deps)"))
-            if run_.mode == "test" and (REPO / d / "testdata").is_dir():
-                reads.append(Read(f"{d}/testdata/**", f"{run_.why} (the testdata of a package it tests or compiles)"))
+            reads += directory_reads(d, tests[d], f"{run_.why} (go list -deps)")
         reads += embed_reads(d, pkg.get("EmbedPatterns"), run_.why)
         if run_.mode == "test" and not pkg.get("ForTest"):
             for name in (pkg.get("GoFiles") or []) + (pkg.get("CgoFiles") or []):
                 reads += apply_rules(session, rules, f"{d}/{name}", seen)
     if run_.mode in ("test", "vet"):
+        # The packages the command names, which are the ones whose test files it compiles: a
+        # package reached only as a dependency is in the listing above and not in this one.
         for pkg in session.listing(run_, deps=False):
             d = rel(pkg["Dir"]) if pkg.get("Dir") else None
             if d is None:
                 continue
+            test_files = (pkg.get("TestGoFiles") or []) + (pkg.get("XTestGoFiles") or [])
+            reads += [Read(f"{d}/{name}", f"{run_.why} (tests)") for name in test_files]
             embeds = (pkg.get("TestEmbedPatterns") or []) + (pkg.get("XTestEmbedPatterns") or [])
             reads += embed_reads(d, embeds, f"{run_.why} (tests)")
             if run_.mode == "test":
-                for name in (pkg.get("TestGoFiles") or []) + (pkg.get("XTestGoFiles") or []):
+                if (REPO / d / "testdata").is_dir():
+                    reads.append(Read(f"{d}/testdata/**", f"{run_.why} (the testdata of a package it tests)"))
+                for name in test_files:
                     reads += apply_rules(session, rules, f"{d}/{name}", seen)
     return reads
 

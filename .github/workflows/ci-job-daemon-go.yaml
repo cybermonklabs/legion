@@ -31,11 +31,14 @@ name: CI job daemon-go
 #     setup-go of its own — its held-port, CI-filter and build-tag-lister steps still run go —
 #     but no restore: the entry holds what compiling packages/daemon leaves behind, and those
 #     steps compile a scratch module and the envoy listener instead.
-#   * Bun and a frozen install: internal/daemon's promptreferences_omp_test.go:228 and
-#     agentmodels_omp_test.go:175 run `bun pm pack` of packages/pi-envoy and packages/pi-legion,
-#     whose prepack builds each bundle from the installed workspace and t.Fatal without it.
-# Nothing else of the `test` job came: no Bun suite, no Biome and no changie, since no step here
-# runs one.
+# No Bun and no install: the one test of this module that needed the workspace built was
+# internal/daemon's `bun pm pack` of the two plugins, which is
+# .github/workflows/ci-job-plugin-pack.yaml's now, and the race step below skips it by name. What
+# is left that names bun runs no pack: agentmodels_omp_test.go:175 runs
+# scripts/pi-plugin-prepack.sh --stage-skills, which copies the skill directories and builds
+# nothing, and handoff_records_live_test.go's bun is behind `//go:build e2e`, which no step here
+# compiles. So this job's filter names no lockfile and no workspace manifest, and a bun.lock-only
+# change runs the plugin-pack test and no test of this job (dispatch://INFRA-1413, A4).
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
@@ -109,15 +112,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
-      # internal/daemon's promptreferences_omp_test.go:228 and agentmodels_omp_test.go:175 pack
-      # packages/pi-envoy and packages/pi-legion with `bun pm pack`, whose prepack builds each
-      # bundle from the installed workspace; both t.Fatal rather than skip when the pack fails.
-      - name: Setup Bun
-        uses: ./.github/actions/setup-bun
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
 
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -206,8 +200,16 @@ jobs:
       # main at job 125691048644 (run 41562777668). No single test dominates it: a local run timed
       # 648 tests one after another, the slowest at 44 s. The 30 minutes leave it three times its
       # slowest run.
+      #
+      # The -skip is the plugin-pack test, the one test of internal/daemon that packs the two
+      # plugin releases: it runs in .github/workflows/ci-job-plugin-pack.yaml, so that its reads
+      # — bun.lock among them — are that job's inputs and not this suite's, and a test run twice
+      # is a test whose second run tells nobody anything. The name is written in
+      # .github/scripts/ci_job_reads.py (PACK_TESTS), which builds this step's text and the other
+      # job's from the one list and holds each step to it, so the skip and the run cannot come to
+      # name different tests.
       - name: Test the concurrent packages under the race detector
-        run: go test -count=1 -race -timeout 30m ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
+        run: go test -count=1 -race -timeout 30m -skip '^(TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/ ./internal/sessionproxy/ ./internal/launcher/
         working-directory: packages/daemon
 
       # The proof builds the daemon's ./cmd/legion and boots it against the Postgres above, so it

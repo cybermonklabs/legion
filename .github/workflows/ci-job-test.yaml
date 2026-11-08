@@ -10,7 +10,9 @@ name: CI job test
 # What runs here is what reads this repository's own tooling: the Claude Code plugin build, the
 # changelog fold, the `*.test.sh` harness of each script under .github/scripts (and of
 # scripts/sessions-import-pods.sh), and the Bun suites of scripts/. The daemon's Go tests, which
-# this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's.
+# this job used to carry, are .github/workflows/ci-job-daemon-go.yaml's, and the session
+# message-wait suite, the one step here that needed a database, is
+# .github/workflows/ci-job-sessions-script.yaml's. No step of this job needs one now.
 #
 # Each harness step runs behind an input of its own, which ci.yaml's calling job fills from the
 # `changes` output of the same name, whose filter is that harness and the script it tests: so a
@@ -415,8 +417,10 @@ jobs:
       - name: Typecheck the session message-wait script
         run: bunx tsc --noEmit -p scripts/sessions
 
-      - name: Test the session message-wait script
-        run: bun test scripts/sessions
+      # The suite itself is .github/workflows/ci-job-sessions-script.yaml's: it creates a
+      # session-store database of its own and refuses without one, and it was the one step of
+      # this job that needed a database. The lint and the typecheck above stay, since they need
+      # none and share this job's Bun.
 
       # Go, but no Actions cache: the go-daemon entry holds what compiling packages/daemon
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
