@@ -59,7 +59,7 @@ export type Exemption = {
  * `e2e/__tests__/` for a harness module of this directory, that package's own tests for a
  * command, a Go test for a claim about the server), not to list it here. Write one as
  *
- *     { file: "cli-reply-answers.e2e.ts", title: '"the CLI drives the CLI"', reason: "…" }
+ *     { file: "<the spec>.e2e.ts", title: '"<the title as the source writes it>"', reason: "…" }
  *
  * where `title` is the title's source text, quotes included, since that is what `rowsOfSource`
  * reads. `staleExemptions` refuses an entry that has outlived what it excuses — one naming a row
