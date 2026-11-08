@@ -56,8 +56,10 @@ const reasonBound = 200
 
 // The refusals the compaction writes itself, which both doors give word for word (compact).
 const (
-	// claimNotRunning: the claim's agent is not running, so there is no session to compact and
-	// fresh_session is what reaches it.
+	// claimNotRunning: the claim is suspended, failed or retired, so it runs no agent and has no
+	// session to compact, and what starts it again is what reaches it — fresh_session for a
+	// workflow role, the daemon's controller keeper for the project's own controller
+	// (startsAgain, startsAgainName).
 	claimNotRunning = "CLAIM_NOT_RUNNING"
 	// claimNotOnOmp: the role runs on Claude Code, which has no Oh My Pi session at all.
 	claimNotOnOmp = "CLAIM_NOT_ON_OMP"
@@ -136,12 +138,13 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // nothing at all. The controller's skill has it try this one first and ask for a fresh session
 // only when the claim is still refused after it (skills/legion-controller).
 //
-// It reaches a claim whose agent is ready or idle and no suspension is held over. The machine
-// is the one judge of which states take a compaction: this route asks for it and reports the
-// refusal the machine answered, written from the state that refusal names (refuseState). Six
-// are refused:
+// It reaches a claim whose agent is ready or idle and no suspension is held over, which is the
+// pair of states the machine itself takes a compaction in (supervise's onCompact rows). The
+// machine is the one judge of which states take a compaction: this route asks for it and
+// reports the refusal the machine answered, written from the state that refusal names
+// (refuseState). Six are refused:
 //
-//   - a claim that is suspended, stopped or failed runs no agent at all, so there is no session
+//   - a claim that is suspended, failed or retired runs no agent at all, so there is no session
 //     to ask (startsAgain). Such a claim is started again rather than compacted, and the refusal
 //     names what does start it, which the claim's role decides: fresh_session for every
 //     workflow role, and the daemon's controller keeper for the project's own controller, which
@@ -332,16 +335,23 @@ func refuseState(w http.ResponseWriter, token claim.Token, state supervise.Claim
 const freshSessionName = "fresh_session (`legion claims retry --fresh-session`)"
 
 // controllerKeeperName is what starts the project's own controller again, in the words the
-// fresh session's own refusal of the controller gives it (freshSession).
-const controllerKeeperName = "the daemon's controller keeper"
+// fresh session's own refusal of the controller gives it (freshSession). It names the one state
+// the keeper does not start, because the keeper's resume is the rule's: a controller an operator
+// suspended stands until that operator resumes it, and a refusal that named the keeper alone
+// would leave the operator waiting on a resume that never comes (the daemon's controllerKeeper,
+// supervise.Claim.RuleHolds). The keeper launches a queued controller, resumes one the daemon
+// suspended, and retries one that failed or retired.
+const controllerKeeperName = "the daemon's controller keeper, whose resume an operator's own suspension holds"
 
-// startsAgainName is what a refusal names as starting the claim again once it is stopped, which
-// the claim's role decides. Every workflow role's is the fresh session. The project's own
-// controller's is the daemon's controller keeper: the fresh session refuses the controller in
-// every state, since stopping its process and starting it again is that keeper's alone
-// (freshSession's NOT_THE_CONTROLLER), so a controller sent to the fresh session is sent to a
-// door that refuses it. Only the compaction's refusals have a controller to answer, because the
-// compaction is the one of the two recoveries that reaches it (compact).
+// startsAgainName is what a refusal names as starting the claim again once its process is gone —
+// a claim that is suspended, failed or retired (startsAgain) — which the claim's role decides.
+// Every workflow role's is the fresh session, which reaches all three of those states
+// (freshSessionOp). The project's own controller's is the daemon's controller keeper: the fresh
+// session refuses the controller in every state, since stopping its process and starting it
+// again is that keeper's alone (freshSession's NOT_THE_CONTROLLER), so a controller sent to the
+// fresh session is sent to a door that refuses it. Only the compaction's refusals have a
+// controller to answer, because the compaction is the one of the two recoveries that reaches it
+// (compact).
 func startsAgainName(role claim.Role) string {
 	if role == claim.RoleController {
 		return controllerKeeperName

@@ -48,6 +48,9 @@ const (
 	// claimUnsettled: a claim between states has no settled agent for either recovery to act on
 	// — one queued, one with a launch in flight, and one stored working under a launch the wake
 	// pacing parks, which has a launch in flight as much as the other two (refuseParkedRelaunch).
+	// The compaction gives it for a registered claim as well, which runs no session to ask yet
+	// where the fresh session suspends it and starts it again (agentRunning, supervise's
+	// onCompact rows).
 	// A claim a suspension is held over that is not stored working takes it too: the hold is
 	// held for a launch that has not reached ready and the claim has no settled agent either,
 	// which is the code such a claim was refused with before the hold was read at all
@@ -91,12 +94,15 @@ type controllerOp struct {
 }
 
 // freshSessionOp is the fresh session in the words its own refusals name it by, which both of
-// its doors give; the compaction's own is compact.go's (compactOp).
+// its doors give; the compaction's own is compact.go's (compactOp). The states reaches names are
+// the two sets the operation acts on, in the words `legion claims list` prints them: the agent
+// it suspends first (agentRunning), a registered one among them, and the stopped claim it starts
+// where it stands (startsAgain), which is retired where an operator stopped it.
 var freshSessionOp = controllerOp{
 	name:             "a fresh session",
 	notTheController: "its own claim takes no fresh session",
 	cutsTheTurn:      "a fresh session would cut that turn off",
-	reaches:          "A fresh session reaches a claim whose agent is ready or idle, and one that is suspended, stopped or failed",
+	reaches:          "A fresh session reaches a claim whose agent is registered, ready or idle, and one that is suspended, failed or retired",
 }
 
 // controllerTarget is the claim a controller's recovery named, read and authenticated: the
@@ -189,11 +195,15 @@ func roleList() string {
 // and reports the status its caller's success answer takes, with the sentence that answer
 // carries when nothing restarted the claim's phase (FreshSessionResponse.PhaseNotRestarted).
 //
-// It reaches every claim of the project that is not in a turn and whose launch is not in
-// flight — one idle on the provider-error ladder, a suspended one, one an operator stopped, a
-// failed one, and a root architect as much as a phase worker. The claim a run of provider
-// errors names is live and idle between the ladder's sends, not stopped, so a recovery that
-// reached only stopped and failed claims would miss the one the notice is sent for.
+// It reaches a claim whose agent is registered, ready or idle (agentRunning), and one that is
+// suspended, failed or retired (startsAgain) — one idle on the provider-error ladder, a
+// suspended one, one an operator stopped, which retires it, a failed one, and a root architect
+// as much as a phase worker. The claim a run of provider errors names is live and idle between
+// the ladder's sends, not stopped, so a recovery that reached only stopped and failed claims
+// would miss the one the notice is sent for. Every other state is refused below: a claim
+// stored working, one between states — queued, launch_uncertain, launching or shim_connected —
+// one a suspension is held over, whatever state that is, and the project's own controller in
+// every state of it.
 //
 // It is three operator commands in a row, and nothing else: `legion claims suspend` for a claim
 // that runs, then `legion claims forget-session`, then the start — `legion claims resume` for a
@@ -237,8 +247,9 @@ func roleList() string {
 // held because its tree lingers. The claim is back in a new session whichever of them comes,
 // and this answers success with the refusal named in it (FreshSessionResponse.PhaseNotRestarted,
 // OperatorClaim.PhaseNotRestarted). A refusal here would be false twice over: it would tell the
-// caller that nothing happened, for a worker this route had just relaunched, and for a ready or
-// idle worker, which this route suspends itself as the operator, it would leave the worker
+// caller that nothing happened, for a worker this route had just relaunched, and for a
+// registered, ready or idle worker, which this route suspends itself as the operator
+// (agentRunning), it would leave the worker
 // stopped behind a suspension no rule of the daemon's lifts and the controller's own door
 // cannot — the controller asks for a fresh session and a compaction, never a resume, so such a
 // worker would stand until an operator resumed it.
@@ -428,11 +439,17 @@ func refuseProcessGone(w http.ResponseWriter, token claim.Token, op controllerOp
 // altogether is the machine's own, decided where each of those is written (supervise's
 // suspendHeld, dropHeld, letGo). The sentence says what the claim is now, and then which door
 // reaches each state a caller can read of it afterwards (askAgainLater). What starts a
-// suspended, stopped or failed claim is the claim's role's (startsAgain, startsAgainName): the
+// suspended, failed or retired claim is the claim's role's (startsAgain, startsAgainName): the
 // fresh session for a workflow role, and the daemon's controller keeper for the project's own
 // controller, which only this operation's compaction reaches, since the fresh session refuses
 // the controller at its door. The asking operation is what reaches a ready or idle claim, so
 // the refusal names both (controllerOp).
+//
+// Those two states are what both operations reach, and the sentence names no more, because one
+// sentence serves both doors: the fresh session reaches a registered agent as well
+// (agentRunning), and naming the fresh session here would name it in a controller's refusal
+// too, where it reaches nothing at all (freshSession's NOT_THE_CONTROLLER). The claim's own
+// refusal of a registered state is where that state is named (freshSessionOp.reaches).
 //
 // The code follows the claim rather than the hold, so no caller's answer changes for a state
 // that was refused before this refusal read the hold at all: a claim stored working takes the
@@ -446,7 +463,7 @@ func refuseHeldSuspension(w http.ResponseWriter, token claim.Token, state superv
 		code = claimInATurn
 	}
 	writeFailure(w, http.StatusConflict, code, fmt.Sprintf(
-		"%s has a suspension held over it, and %s reaches no claim a suspension waits over. %s reaches %s while it is suspended, stopped or failed, and %s reaches it while it is ready or idle. %s",
+		"%s has a suspension held over it, and %s reaches no claim a suspension waits over. %s reaches %s while it is suspended, failed or retired, and %s reaches it while it is ready or idle. %s",
 		token, op.name, startsAgainName(role), token, op.name, askAgainLater))
 	return false
 }
@@ -469,7 +486,10 @@ func relaunchWaits(view supervise.ClaimView) bool {
 }
 
 // startsAgain is whether a claim's process is already gone, so the fresh session starts it rather
-// than suspending it first: the states forgetSession and the retry both act on.
+// than suspending it first: suspended, failed and retired, the states the forget acts on bar the
+// queued one (supervise's onForgetSession rows). What starts each of them differs — a resume for
+// the suspended claim, the retry for a failed or retired one, which a resume is refused for
+// (supervise's onResume and onOperatorRetry rows) — and freshSession picks between the two.
 func startsAgain(state supervise.ClaimState) bool {
 	return state == supervise.StateSuspended || failedOrRetired(state)
 }

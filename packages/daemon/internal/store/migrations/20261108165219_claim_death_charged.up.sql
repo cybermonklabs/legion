@@ -27,4 +27,13 @@
 -- release rolled forward again reads it back: that process's first death is charged nothing,
 -- until a report that finds the process running clears the flag (supervise's judge). It is one
 -- death at most, and the claim is relaunched for that death as it would be for one charged.
+--
+-- A clear this column's writer made and the store refused leaves the same one death uncharged,
+-- with no rollback in it. The report that finds the process running again writes the clear
+-- (supervise's judge), and a write the store does not take is left owed to a repair the machine
+-- holds in memory (internal/supervise/owed.go), which dies with the daemon. A restart before
+-- that repair runs reads the stored true back over a process that is alive, so the next death of
+-- that process is charged nothing — until a report that finds the process running clears the
+-- flag again. It is one death at most, as the rollback above is, and the claim is relaunched for
+-- that death as it would be for one charged.
 alter table claims add column death_charged boolean not null default false;

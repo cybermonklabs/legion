@@ -25,11 +25,13 @@ import (
 //
 // Every sentence says what the claim is doing when the refusal is given, which door reaches
 // each state a caller can read of it afterwards, and nothing of what the next report, turn,
-// hold or relaunch will bring (api's askAgainLater). The words below are spelled here rather
+// hold or relaunch will bring (api's askAgainLater). The states are the sets the two
+// operations act on, in the words `legion claims list` prints them (api's agentRunning,
+// startsAgain, supervise's onCompact rows). The words below are spelled here rather
 // than read off the routes, so a route that changes one of them fails a test.
 const (
 	wantCompactionReaches   = "A compaction reaches a claim whose agent is ready or idle"
-	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is ready or idle, and one that is suspended, stopped or failed"
+	wantFreshSessionReaches = "A fresh session reaches a claim whose agent is registered, ready or idle, and one that is suspended, failed or retired"
 	wantAskAgainLater       = "Ask again later; `read_state` (`legion claims list`) shows its state"
 )
 
@@ -625,14 +627,14 @@ func heldSuspensionCases() []heldSuspensionCase {
 
 // heldSuspensionRefusal is the sentence both recoveries give a claim a suspension is held over,
 // with the asking operation's own name in it and the door that reaches each state the caller
-// can read of the claim: what starts a suspended, stopped or failed claim is the claim's
+// can read of the claim: what starts a suspended, failed or retired claim is the claim's
 // role's — the fresh session for a workflow role, and the daemon's controller keeper for the
-// project's own controller — and the asking operation is what reaches a ready or idle one
-// (api's refuseHeldSuspension, startsAgainName, controllerOp).
+// project's own controller — and the asking operation is what reaches a ready or idle one, the
+// two states both operations reach (api's refuseHeldSuspension, startsAgainName, controllerOp).
 func heldSuspensionRefusal(token claim.Token, startsAgain, operation string) string {
 	return string(token) + " has a suspension held over it, and " + operation + " reaches no claim a " +
 		"suspension waits over. " + startsAgain + " reaches " + string(token) + " while it is suspended, " +
-		"stopped or failed, and " + operation + " reaches it while it is ready or idle. " + wantAskAgainLater
+		"failed or retired, and " + operation + " reaches it while it is ready or idle. " + wantAskAgainLater
 }
 
 // A suspension held over the claim is read ahead of every other window the claim can be in,
@@ -679,7 +681,7 @@ func TestARecoveryRefusedUnderAHeldSuspensionSaysTheClaimStopsWorking(t *testing
 // and the fresh session refuses it in every state, since starting the controller's process
 // again is the daemon's controller keeper's alone (api's freshSession).
 // So this refusal names that keeper as what reaches the controller while it is suspended,
-// stopped or failed: fresh_session would send the operator to a door that answers
+// failed or retired: fresh_session would send the operator to a door that answers
 // NOT_THE_CONTROLLER, which is the circle the rows above exist to keep a caller out of. Only
 // the operator's door asks it, since `controller` is no role the controller's own compact may
 // name (api's claimCompact).

@@ -186,13 +186,14 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "session so far, and the claim keeps its session, its workspace and everything it knows of its issue and is sent " +
   "whatever task it owes again. Try compact before fresh_session for a claim that stays stuck. The answer says " +
   "whether the session was compacted and, when it was not, why; the claim is back either way. The daemon refuses " +
-  "it for a claim that is suspended, stopped or failed (CLAIM_NOT_RUNNING: fresh_session " +
+  "it for a claim that is suspended, failed or retired (CLAIM_NOT_RUNNING: fresh_session " +
   "reaches that one), for a claim it records as working, which may be in a turn " +
   "(CLAIM_IN_A_TURN), for a claim left working over a process the daemon's last report " +
   "of it found gone, where no turn is running (CLAIM_IN_A_TURN), for a claim a " +
   "suspension is held over (CLAIM_IN_A_TURN where the claim is working, CLAIM_UNSETTLED " +
   "where it is not), for a claim between states — one queued, one whose launch is in " +
-  "flight, and one left working under a relaunch the wake pacing parked " +
+  "flight, one whose agent has registered and is not ready yet, which fresh_session " +
+  "reaches, and one left working under a relaunch the wake pacing parked " +
   "(CLAIM_UNSETTLED) — for a claim whose role runs on Claude Code (CLAIM_NOT_ON_OMP) " +
   "and for role controller. " +
   "Each refusal says what the claim does now and which operation reaches each state. It " +

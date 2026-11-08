@@ -760,9 +760,10 @@ package api
 // that issue, the effect `legion claims retry --fresh-session` runs for an operator: the claim
 // leaves the session it recorded behind and starts again in a new one, which also puts its run
 // of provider-error turns back to zero. One effect stands behind both doors (api's
-// freshSession), and it reaches every claim of the project that is not in a turn and whose
-// launch is not in flight, where the plain retry reaches only a claim that failed and one an
-// operator stopped. Its answer (`api.FreshSessionResponse`), and the `api.OperatorClaim` the
+// freshSession), and it reaches a claim whose agent is registered, ready or idle and one that
+// is suspended, failed or retired, where the plain retry reaches only a claim that failed and
+// one an operator stopped, which `legion claims stop` retires. Its answer
+// (`api.FreshSessionResponse`), and the `api.OperatorClaim` the
 // operator's retry answers, carry an optional `phaseNotRestarted`: the claim came back owing no
 // task and the workflow refused the restart of its phase, which is the one thing the claim's
 // state does not record, so the fresh session reports the refusal rather than giving it, and the
@@ -776,10 +777,13 @@ package api
 // (`compacted`, and `reason` when it is false), and a compaction Oh My Pi refused or skipped is
 // that answer rather than a failure, since the claim is back and whatever task it owed has gone
 // again all the same. It reaches a claim whose agent is ready or idle, a root architect included,
-// and refuses a suspended, stopped or failed claim naming fresh_session (`CLAIM_NOT_RUNNING`), a
+// and refuses a suspended, failed or retired claim naming what starts it again
+// (`CLAIM_NOT_RUNNING`): fresh_session for a workflow role, and the daemon's controller keeper
+// for the project's own controller. It refuses a
 // claim in a turn (`CLAIM_IN_A_TURN`), a claim between states — queued, with a launch in flight,
-// or stored working under a launch the wake pacing parks, which fresh_session refuses as well
-// (`CLAIM_UNSETTLED`) — a Claude Code claim, which runs no Oh My Pi session (`CLAIM_NOT_ON_OMP`),
+// one whose agent has registered and is not ready yet, or stored working under a launch the wake
+// pacing parks (`CLAIM_UNSETTLED`), of which fresh_session refuses all but the registered one,
+// which it reaches — a Claude Code claim, which runs no Oh My Pi session (`CLAIM_NOT_ON_OMP`),
 // and the role `controller` (`INVALID_ROLE`). The controller's `legion` tool gains
 // `compact (issue, role)` beside `fresh_session`, and
 // `POST /legion/v1/operator/claims/{token}/compact`, which `legion claims compact --claim <token>`

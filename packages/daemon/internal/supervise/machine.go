@@ -2228,9 +2228,14 @@ func (m *Machine) letGo() {
 // clears it is written here, before the guard below: the claim's process is running, the charge
 // standing in the store is of a death that is over, and the window this guard drops is one
 // where nothing else writes the claim (Claim.DeathCharged, died). A write the store would not
-// take ends the report, and the next report of the same process repeats nothing: the clear is
-// already made in memory, so reportedProcess reports none to write. The write is owed where it
-// failed, and the claim's next decision makes it good (owes, repair), as died's is.
+// take ends the report, and what the report would have done goes with it: judge returns above
+// the guard and the verdict below it, so the sweep's own work on this observation is not run at
+// all — no waiting delivery sent to the live claim it found, no ask whether an unanswered turn
+// is over (observe, table's onObservation row), and no death, displacement or repoint charged
+// from any other verdict. The next report of the same process repeats nothing of the write: the
+// clear is already made in memory, so reportedProcess reports none to write. The write is owed
+// where it failed, and the claim's next decision makes it good (owes, repair), as died's is;
+// the sweep observes the process again at its next pass, and that report is judged whole.
 func (m *Machine) judge(ctx context.Context, observation runtime.Observation, alive func(context.Context) error, again TimerKind, after time.Duration) error {
 	if m.reportedProcess(observation.Kind) {
 		if err := m.persist(ctx); err != nil {

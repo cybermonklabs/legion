@@ -519,21 +519,24 @@ claim, which is retired rather than failed, so name that one with `--claim`.
 provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
 sends the claim whatever task it owed again, so the session, its workspace and everything the
 worker knows of its issue stay, and only the transcript the provider is asked to read gets shorter.
-It reaches a claim whose agent is ready or idle, a root architect included, and refuses
-a suspended, stopped or failed claim naming `--fresh-session`, a claim the daemon records as
-working, which may be in a turn, a claim a suspension is held over, a claim whose launch is in
-flight, a claim left working under a relaunch the wake pacing parked, a claim left working over a
-process the daemon's last report of it found gone, and a claim whose role runs on Claude Code,
-which has no Oh My Pi session.
+It reaches a claim whose agent is ready or idle, a root architect included, and refuses a
+suspended, failed or retired claim naming what starts it again: `--fresh-session` for a workflow
+role, and the daemon's controller keeper for the project's own controller claim, which only
+`--claim` can name and which `--fresh-session` refuses in every state, a keeper whose resume an
+operator's own suspension holds.
+It also refuses a claim the daemon records as working, which may be in a turn, a claim a
+suspension is held over, a claim whose launch is in flight, a claim whose agent has registered
+and is not ready yet, which `--fresh-session` reaches, a claim left working under a relaunch the
+wake pacing parked, a claim left working over a process the daemon's last report of it found
+gone, and a claim whose role runs on Claude Code, which has no Oh My Pi session.
 A compaction Oh My Pi refused or skipped — a session too small, one already compacted — is
 printed with its reason, and whatever task the claim owed has gone again all the same.
 
 `legion claims retry --claim <token> --fresh-session` is the recovery for a claim the compaction
 left refused: it forgets the session that claim recorded and starts the claim
 in a new session with its phase's task, so no `legion claims forget-session` comes before it. It
-reaches a live or suspended claim as well as a failed or stopped one — every claim of the
-project that is in no turn, has no launch and no parked relaunch in flight, has no suspension held
-over it, and is not left working over a process the daemon's last report of it found gone — so it is what starts a claim the
+reaches a claim whose agent is registered, ready or idle as well as one that is suspended,
+failed or retired, with no suspension held over it, so it is what starts a claim the
 compaction could not reach, and a new session loses everything the old one held. It
 forgets that session before it starts the phase, because the start runs the moment the restart
 commits and would otherwise resume the very session you are dropping. A retry the daemon then

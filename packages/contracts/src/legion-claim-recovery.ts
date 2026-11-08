@@ -21,11 +21,11 @@ const nonEmptyString = z.string().min(1);
  * gives it.
  *
  * `fresh_session` has that claim leave the session it recorded behind and start again in a new
- * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches every
- * claim of the project that is in no turn, has no launch and no parked relaunch in flight, has no
- * suspension held over it, and is not left working over a process the daemon's last report of it
- * found gone, a root architect included: one idle on the provider-error ladder, one whose agent
- * has registered and is not ready yet, and one that is suspended, stopped or failed.
+ * one, the effect `legion claims retry --fresh-session` runs for an operator. It reaches a claim
+ * whose agent is registered, ready or idle and one that is suspended, failed or retired, with no
+ * suspension held over it, a root architect included: one idle on the provider-error ladder, one
+ * whose agent has registered and is not ready yet, a suspended one, a failed one, and one an
+ * operator stopped, which retires it.
  *
  * `compact` shortens the session instead, the effect `legion claims compact` runs for one: the
  * claim keeps its session, its workspace and everything it knows of its issue, and whatever task
@@ -45,7 +45,7 @@ const nonEmptyString = z.string().min(1);
  * any state but working, and the one working claim that takes this code rather than the turn's,
  * left working under a relaunch the daemon is pacing. The compaction adds
  * three refusals of its own:
- * `CLAIM_NOT_RUNNING` for a suspended, stopped or failed claim, which runs no session at all and
+ * `CLAIM_NOT_RUNNING` for a suspended, failed or retired claim, which runs no session at all and
  * which `fresh_session` reaches; `CLAIM_NOT_ON_OMP` for a role running on Claude Code, which has
  * no Oh My Pi session; and `COMPACTION_FAILED` for an ask that did not happen, an end the daemon
  * could not write, a claim that lost its process while its session was being compacted, and an

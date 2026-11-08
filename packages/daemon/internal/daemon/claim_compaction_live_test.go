@@ -997,14 +997,14 @@ func (r *claimCompactionLive) awaitErroredTurnFrom(token claim.Token, run, from 
 // binary against the booted daemon — and answers the claim as it stood when the command the
 // daemon accepted ran, together with what that command printed.
 //
-// It asks again while the daemon refuses: the operation reaches a claim whose agent is ready or
-// idle and one that is suspended, stopped or failed, and refuses one it is in the middle of
-// starting or one in a turn. A worker an operator stopped is one the daemon starts again by
-// itself — its issue holds a slot in a worker phase and its claim owes no task, the state
-// admission repairs (internal/admit/admit.go's resumeSlottedWorkers) — so the claim this step
-// asks about may be launching, and the refusal is the daemon's own word that it is not there
-// yet. Every refusal is printed with the failure, so a refusal for any other reason is read
-// rather than hidden behind the wait.
+// It asks again while the daemon refuses: the operation reaches a claim whose agent is
+// registered, ready or idle and one that is suspended, failed or retired, and refuses one it is
+// in the middle of starting or one in a turn. A worker an operator stopped is one the daemon
+// starts again by itself — its issue holds a slot in a worker phase and its claim owes no task,
+// the state admission repairs (internal/admit/admit.go's resumeSlottedWorkers) — so the claim
+// this step asks about may be launching, and the refusal is the daemon's own word that it is
+// not there yet. Every refusal is printed with the failure, so a refusal for any other reason
+// is read rather than hidden behind the wait.
 func (r *claimCompactionLive) retryFreshSession(token claim.Token) (api.OperatorClaim, string) {
 	r.t.Helper()
 	deadline := time.Now().Add(paneReady)
