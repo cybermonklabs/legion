@@ -8,14 +8,15 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// ownerLockNamespace is the first key of every owner lock ("OWNR"). Postgres keeps the two-key
+// OwnerLockNamespace is the first key of every owner lock ("OWNR"). Postgres keeps the two-key
 // advisory key space apart from the single-key one, and within it the other namespaces of this
 // module are the copy locks' (docs.copiedAsksLockNamespace, "COPY"), the duty leases'
 // (duty.leaseNamespace, "LOOP"), the API's test hooks' (api.testHookLockNamespace, "HOOK") and
 // the hashtext of a name (the dependency, repository-mapping and delivery session-group locks),
 // none of which is this value, so an owner lock never waits on one of those whatever its owner
-// hashes to.
-const ownerLockNamespace int32 = 0x4F574E52
+// hashes to. It is exported, with LockKey, so a test reads an owner's lock out of pg_locks by the
+// keys this file takes it with rather than by spelling them again (api/files_test.go).
+const OwnerLockNamespace int32 = 0x4F574E52
 
 // OwnerKind names what owns a collaboration: an issue, a document no issue owns (a project
 // document, keyed by the artifact's id), or a project.
@@ -61,9 +62,10 @@ func OwnerOf(issueKey, artifactID *string) *Owner {
 	return nil
 }
 
-// lockKey is the text whose hashtext is the lock's second key: `<kind>:<key>`, the same spelling
-// the event broker orders owners by.
-func (o Owner) lockKey() string { return string(o.Kind) + ":" + o.Key }
+// LockKey is the text whose hashtext is the lock's second key: `<kind>:<key>`, the same spelling
+// the event broker orders owners by. It is exported, with OwnerLockNamespace, for a test that
+// reads an owner's lock out of pg_locks (api/files_test.go).
+func (o Owner) LockKey() string { return string(o.Kind) + ":" + o.Key }
 
 // OwnerLocker is what an owner lock runs on: a transaction, or a savepoint of one, whose rollback
 // gives back the locks taken under it. The pool satisfies it too, for a try that holds its lock only
@@ -178,9 +180,9 @@ func QueueLockOwner(b *WriteBatch, owner Owner) {
 // arguments: ownerLock for one owner, ownersLock for several.
 func lockOwnersStatement(owners []Owner) (string, []any) {
 	if len(owners) == 1 {
-		return ownerLock, []any{ownerLockNamespace, owners[0].lockKey()}
+		return ownerLock, []any{OwnerLockNamespace, owners[0].LockKey()}
 	}
-	return ownersLock, []any{ownerLockNamespace, lockKeys(owners)}
+	return ownersLock, []any{OwnerLockNamespace, lockKeys(owners)}
 }
 
 // lockOwnersFailed is err, the failure of lockOwnersStatement's statement, naming what it locked.
@@ -195,7 +197,7 @@ func lockOwnersFailed(owners []Owner, err error) error {
 func lockKeys(owners []Owner) []string {
 	keys := make([]string, len(owners))
 	for index, owner := range owners {
-		keys[index] = owner.lockKey()
+		keys[index] = owner.LockKey()
 	}
 	return keys
 }
@@ -207,7 +209,7 @@ func lockKeys(owners []Owner) []string {
 // writer that holds the owner and holds off the next one. The read it guards is a separate
 // statement after it, as LockOwner's is.
 func LockOwnerShared(ctx context.Context, q OwnerLocker, owner Owner) error {
-	if _, err := q.Exec(ctx, ownerLockShared, ownerLockNamespace, owner.lockKey()); err != nil {
+	if _, err := q.Exec(ctx, ownerLockShared, OwnerLockNamespace, owner.LockKey()); err != nil {
 		return fmt.Errorf("lock %s %s for share: %w", owner.Kind, owner.Key, err)
 	}
 	return nil
@@ -226,7 +228,7 @@ func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error
 	if len(owners) == 0 {
 		return nil
 	}
-	if _, err := q.Exec(ctx, ownersLockShared, ownerLockNamespace, lockKeys(owners)); err != nil {
+	if _, err := q.Exec(ctx, ownersLockShared, OwnerLockNamespace, lockKeys(owners)); err != nil {
 		return fmt.Errorf("lock owners %v for share: %w", lockKeys(owners), err)
 	}
 	return nil
@@ -245,10 +247,10 @@ func TryLockOwners(ctx context.Context, q OwnerLocker, owners ...Owner) ([]Owner
 	keys := make([]string, len(owners))
 	byKey := make(map[string]Owner, len(owners))
 	for index, owner := range owners {
-		keys[index] = owner.lockKey()
+		keys[index] = owner.LockKey()
 		byKey[keys[index]] = owner
 	}
-	rows, err := q.Query(ctx, ownersTryLock, ownerLockNamespace, keys)
+	rows, err := q.Query(ctx, ownersTryLock, OwnerLockNamespace, keys)
 	if err != nil {
 		return nil, fmt.Errorf("try owner locks: %w", err)
 	}

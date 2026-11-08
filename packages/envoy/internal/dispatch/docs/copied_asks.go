@@ -190,7 +190,7 @@ const copiedAsksLockNamespace int32 = 0x434F5059
 // copy lock never waits on a single-key advisory lock - a document's room (lockDocumentRoom), a
 // project's rank allocation, an agent's artifacts, the migration runner's - whatever the project's
 // name hashes to. Within the two-key space only the copy locks take copiedAsksLockNamespace: the
-// server's other namespaces of it are the owner locks' (store's ownerLockNamespace), which every
+// server's other namespaces of it are the owner locks' (store.OwnerLockNamespace), which every
 // writer of an owner's rows takes, internal/dispatch/duty's (duty.leaseNamespace), under which a
 // background loop holds the lease that keeps one process at a time running its periodic pass, the
 // test hooks' (the api package's testHookLockNamespace, under DISPATCH_TEST_HOOKS alone), under

@@ -48,6 +48,14 @@ type PgVersioned struct {
 	// case duty.FreeSessionLock closes the connection for
 	// (TestARoomAppendWhoseUnlockDoesNotFreeTheLockClosesItsConnection).
 	beforeAppendUnlock func(room string, conn *pgxpool.Conn)
+	// commitAppendApart sends a room append's commit in a pipeline of its own, after the writes,
+	// rather than at the end of the writes pipeline (appendRoomTx). False outside the one test
+	// that sets it: it is the fault the xid guard of that transaction is measured against, the
+	// gap INFRA-636 is about, so that guard is known to red when the window opens before the
+	// commit (TestTheRoomAppendXidGuardRedsOnACommitSentApartFromTheWrites). The transaction is
+	// correct either way - the same statements commit, one round trip more - so nothing but that
+	// guard can tell the two apart, which is what makes it a control.
+	commitAppendApart bool
 	// storedHistoryHeld runs when the gate admits a browser's append on a stored history that was
 	// replaced under its room and still holds every item the update builds on
 	// (storedHistoryHolds), inside the append's transaction. Nil outside tests; tests count the

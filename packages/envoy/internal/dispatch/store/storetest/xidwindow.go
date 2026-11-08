@@ -443,6 +443,16 @@ type XidReport struct {
 // statement did assign is read off its result instead (xidAssigned).
 var xidWriteSQL = regexp.MustCompile(`(?is)\b(insert\s+into|update\s+\S+\s+set|delete\s+from)\b|\bfor\s+(no\s+key\s+)?update\b|\bfor\s+(key\s+)?share\b|pg_current_xact_id\(\)`)
 
+// XidAssigningSQL reports whether a statement may give its transaction a transaction id, read off
+// its SQL alone (xidWriteSQL): an insert, update or delete, a select that takes a row lock, and a
+// call of pg_current_xact_id(). It is exported for the guard of a transaction this rig measures
+// nothing of - a room append, whose BEGIN and COMMIT go inside pipelines, so no transaction of it
+// is seen here at all (docs.xidAssigningSQL) - so that guard and this rig judge a statement by the
+// one rule. A guard over queued statements has the SQL and nothing else: a statement queued into a
+// pipeline is recorded before it runs, so no command tag says yet whether it touched a row, which
+// is what xidAssigned reads for the statements this rig does see.
+func XidAssigningSQL(sql string) bool { return xidWriteSQL.MatchString(sql) }
+
 // xidRowLockSQL is a select that takes a row lock, which Postgres gives the transaction an xid for
 // as it does a write.
 var xidRowLockSQL = regexp.MustCompile(`(?is)\bfor\s+(no\s+key\s+update|update|key\s+share|share)\b`)

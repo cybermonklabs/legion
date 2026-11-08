@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -522,7 +523,21 @@ func TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone(t *testing.T) {
 		t.Fatalf("the append left the prune's checkpoint standing")
 	}
 
-	trips := recorder.recorded()
+	if failure := appendXidWindowFailure(recorder.recorded()); failure != "" {
+		t.Fatal(failure)
+	}
+}
+
+// appendXidWindowFailure judges, over the round trips one room append sent, what the xid rig
+// would assert of a route: the transaction's first writing statement and its commit are in the
+// same round trip, that trip is the writes pipeline, and nothing of the append's runs between
+// them. It answers the failure to report, or "" when the shape holds.
+//
+// It is a function rather than a run of assertions inside the test so a test can feed it a
+// sequence no appendRoomTx sends and watch it red (TestTheRoomAppendXidCheckRedsOnAFedSequence),
+// which the test above cannot show of itself: a guard whose rule is never seen to fail guards
+// nothing. The fault the committed code carries for the same reason is commitAppendApart.
+func appendXidWindowFailure(trips []roundTrip) string {
 	labels := roundTripLabels(trips)
 	writing, committing := -1, -1
 	for index, trip := range trips {
@@ -539,28 +554,123 @@ func TestARoomsAppendBatchHoldsItsXidForItsWritesPipelineAlone(t *testing.T) {
 		}
 	}
 	if writing < 0 || committing < 0 {
-		t.Fatalf("the append sent no write and no commit, so nothing here says where its xid window is:\n\t%s",
+		return fmt.Sprintf("the append sent no write and no commit, so nothing here says where its xid window is:\n\t%s",
 			strings.Join(labels, "\n\t"))
 	}
 	if writing != committing {
-		t.Fatalf("the append's first write is round trip %d (%s) and its commit round trip %d (%s), so it holds a transaction id across %d round trip(s) of its own:\n\t%s",
+		return fmt.Sprintf("the append's first write is round trip %d (%s) and its commit round trip %d (%s), so it holds a transaction id across %d round trip(s) of its own:\n\t%s",
 			writing+1, labels[writing], committing+1, labels[committing], committing-writing, strings.Join(labels, "\n\t"))
 	}
 	if label := labels[writing]; label != "the append's writes (one batch)" {
-		t.Fatalf("the append's window is round trip %d, %q, want the writes pipeline:\n\t%s",
+		return fmt.Sprintf("the append's window is round trip %d, %q, want the writes pipeline:\n\t%s",
 			writing+1, label, strings.Join(labels, "\n\t"))
+	}
+	return ""
+}
+
+// The negative control of the guard above, run against the fault committed beside it: with
+// commitAppendApart set, appendRoomTx sends its writes and then its commit a round trip later,
+// which is the gap INFRA-636 is about, and the guard must name it. The append itself still
+// commits exactly what it would otherwise, so nothing but the guard tells the two runs apart.
+func TestTheRoomAppendXidGuardRedsOnACommitSentApartFromTheWrites(t *testing.T) {
+	ctx := context.Background()
+	service, artifactID, recorder := tracedRoomService(t)
+	versioned := service.persistence.(*PgVersioned)
+	versioned.commitAppendApart = true
+
+	recorder.reset()
+	stored, err := versioned.AppendUpdatesWithCredit(ctx, artifactID,
+		[]BrowserUpdate{{Update: paragraphUpdate(), ContentChanged: true}})
+	if err != nil {
+		t.Fatalf("append the room's update with its commit sent apart: %v", err)
+	}
+	if stored == 0 {
+		t.Fatal("the faulted append stored no version, so the fault changed more than where the commit went")
+	}
+	trips := recorder.recorded()
+	failure := appendXidWindowFailure(trips)
+	if failure == "" {
+		t.Fatalf("the guard passed an append whose commit left its writes pipeline, so it passes whatever the code does:\n\t%s",
+			strings.Join(roundTripLabels(trips), "\n\t"))
+	}
+	if !strings.Contains(failure, "holds a transaction id across") {
+		t.Fatalf("the guard reds on the fault with %q, want it to name the round trips the window spans", failure)
+	}
+	t.Logf("the guard reds against the committed fault: %s", failure)
+}
+
+// The guard's check fed round-trip sequences by hand, each a shape appendRoomTx does not send,
+// and the one it does. It needs no database: the check reads the SQL each trip carried and
+// nothing else.
+func TestTheRoomAppendXidCheckRedsOnAFedSequence(t *testing.T) {
+	lock := `select pg_advisory_lock(hashtext($1))`
+	unlock := roundTrip{sql: []string{`select pg_advisory_unlock(hashtext($1))`}}
+	insert := `insert into doc_updates (artifact_id, version, update) values ($1, $2, $3)`
+	prune := `delete from doc_updates where artifact_id = $1 and version <= $2`
+	opening := roundTrip{batch: true, sql: []string{lock, `begin`, appendGateStatement}}
+	writes := roundTrip{batch: true, sql: []string{insert}}
+	writesAndCommit := roundTrip{batch: true, sql: []string{insert, `commit`}}
+	read := roundTrip{sql: []string{appendGateStatement}}
+	commit := roundTrip{sql: []string{`commit`}}
+	for _, fed := range []struct {
+		what  string
+		trips []roundTrip
+		red   bool
+	}{
+		{"the shape the append sends", []roundTrip{opening, writesAndCommit, unlock}, false},
+		{"a read between the writes and the commit", []roundTrip{opening, writes, read, commit, unlock}, true},
+		{"a prune's delete in the opening pipeline", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, appendGateStatement}}, writesAndCommit, unlock}, true},
+		{"a window that is no pipeline of writes", []roundTrip{{batch: true, sql: []string{lock, `begin`, prune, `commit`}}, unlock}, true},
+		{"an append that neither wrote nor committed", []roundTrip{opening, read, unlock}, true},
+	} {
+		t.Run(fed.what, func(t *testing.T) {
+			failure := appendXidWindowFailure(fed.trips)
+			if fed.red && failure == "" {
+				t.Fatalf("the check passed %s, so it would pass that of the append itself", fed.what)
+			}
+			if !fed.red && failure != "" {
+				t.Fatalf("the check red on %s, the shape appendRoomTx sends: %s", fed.what, failure)
+			}
+			if fed.red {
+				t.Logf("the check reds on %s: %s", fed.what, failure)
+			}
+		})
 	}
 }
 
-// xidAssigningSQL reports whether a statement writes a row, and so gives its transaction a
-// transaction id. It reads the SQL rather than the command tag because a statement queued into a
-// pipeline is recorded before it runs.
+// xidAssigningSQL reports whether a statement gives its transaction a transaction id. It reads
+// the SQL rather than the command tag because a statement queued into a pipeline is recorded
+// before it runs, so no tag of it exists yet. The rule is the xid rig's own
+// (storetest.XidAssigningSQL), so this guard, which stands in for the rig over a transaction the
+// rig sees nothing of, judges a statement exactly as the rig would.
 func xidAssigningSQL(sql string) bool {
-	one := strings.ToLower(oneLineSQL(sql))
-	for _, verb := range []string{"insert into", "update ", "delete from"} {
-		if strings.Contains(one, verb) {
-			return true
+	return storetest.XidAssigningSQL(sql)
+}
+
+// What xidAssigningSQL takes for a statement that assigns a transaction id, and what it does not.
+// The two an append's own writes do not cover are the pg_current_xact_id() an event's write phase
+// takes its id with (events.lockEventOwner) and a trailing row lock: neither writes a row, and
+// each opens the window all the same, so a pipeline that queued one before the commit would be a
+// gap this guard must see. The call that asks whether an id was assigned without assigning one is
+// the near miss they must not drag in.
+func TestXidAssigningSQLKnowsWhatTakesATransactionId(t *testing.T) {
+	for sql, want := range map[string]bool{
+		`insert into doc_updates (artifact_id) values ($1)`:       true,
+		"update artifacts\n\t\tset title = $2\n\t\twhere id = $1": true,
+		`delete from doc_checkpoints where artifact_id = $1`:      true,
+		`select status from issues where key = $1 for update`:     true,
+		`select key from issues where key = $1
+		for no key update`: true,
+		`select 1 from issues where key = $1 for share`:               true,
+		`select pg_current_xact_id()`:                                 true,
+		`select pg_current_xact_id_if_assigned()`:                     false,
+		`select status, closed_at is null from issues where key = $1`: false,
+		`select pg_advisory_lock(hashtext($1))`:                       false,
+		`begin`:                                                       false,
+		`commit`:                                                      false,
+	} {
+		if got := xidAssigningSQL(sql); got != want {
+			t.Errorf("xidAssigningSQL(%q) = %v, want %v", sql, got, want)
 		}
 	}
-	return false
 }
