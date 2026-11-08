@@ -340,3 +340,68 @@ func TestTwoPodsARelayedFrameAnsweredInsideTheGraceOfAReceiveLostReleaseIsTakenO
 	serving.requireOnce(t, []mpMessage{warm, m, after})
 	serving.requireOrder(t, []mpMessage{warm, m, after})
 }
+
+// A session that moves to the machine's other pod while the stopping relay is still inside its
+// settle grace takes every message once, and no frame is both acked and naked. The frame is at
+// the session ("received", not yet written) when the pod is stopped; inside relaySettleGrace the
+// session registers through the standby, which is where it answers the frame "done", so the
+// stopping relay acks it while its successor is already taking the session over. A frame the
+// settle acks leaves the run at that answer (onReply) and is not among the frames the run gives
+// back to the server (settleStoppedFrames, sessionRelays.release), so it is never sent again:
+// whenever the stopping pod logged no in-doubt line for the frame, the session must have taken
+// it exactly once and the pod's hand-over line must be the whole one: INFO, nothing returned.
+// Where the grace ended with the session's reply still out, the frame is in doubt, goes back
+// with the rest, and reaches the session at most once more, under its own event id, as the rows
+// above hold.
+//
+// Giving the settled frames back as well fails it: the relay naks a message it has already
+// acked, which nats.go refuses (`nats: message was already acknowledged`), so the run writes the
+// WARN hand-over line naming that failure instead of the INFO one, and this row reads the level
+// and the error rather than trusting a count. Measured in a scratch copy where
+// settleStoppedFrames returns every frame it began with: `"level":"WARN" … "returned":0,"error":
+// "bus: the relay of session ses_mp_relay_move_in_settle could not return 1 of the messages it
+// held; the first failed with: nats: message was already acknowledged"`. That refusal is nats.go
+// holding one message object, not the server: the architect's rule is that the relay must not
+// try (the settle runs first, and only what it leaves unanswered goes back).
+func TestTwoPodsASessionThatMovesInsideTheStoppingRelaysSettleTakesEveryFrameOnce(t *testing.T) {
+	const sessionID = "ses_mp_relay_move_in_settle"
+	row := mpStartRelayRow(t, sessionID, mpHoldReceived, false)
+	a, b, serving, publisher := row.a, row.b, row.serving, row.publisher
+	warm, m, release := row.warm, row.held, row.release
+
+	stopped := time.Now()
+	a.Terminate(t)
+	// Inside relaySettleGrace of the term's end, which the stop reaches in milliseconds: the
+	// session re-registers through the other pod while the stopping relay still waits for this
+	// frame's done, and answers it there.
+	b.registerNATS(t, serving, sessionID)
+	moved := time.Since(stopped)
+	release()
+	t.Logf("the session moved to %s %s after the stop, and answered the frame there", b.instance, moved)
+	a.WaitExit(t, "SIGTERM")
+	mpWaitActive(t, b, mpHardBound)
+
+	after := publisher.mustPublish(t, sessionID)
+	serving.awaitAll(t, []mpMessage{m, after}, 30*time.Second)
+	time.Sleep(mpQuiet)
+	serving.requireOnce(t, []mpMessage{warm, after})
+	serving.requireKnown(t, []mpMessage{warm, m, after})
+	serving.requireOrder(t, []mpMessage{warm, m, after})
+
+	handOver := lineWith(a.Output.String(), `"msg":"session relay stopped;`, `"session_id":"`+sessionID+`"`)
+	if handOver == "" {
+		t.Fatalf("%s wrote no hand-over line for %s, so what it gave the server back is unsaid", a.instance, sessionID)
+	}
+	if lineWith(a.Output.String(), `"msg":"`+relayFrameInDoubtLine+`"`, m.event) != "" {
+		t.Logf("the grace ended with the frame's reply still out, so it went back with the rest: %s", handOver)
+		serving.requireAtMostTwice(t, m, "the frame the settle grace left unanswered")
+		return
+	}
+	t.Logf("the settle acked the frame inside its grace: %s", handOver)
+	// The settle acked the frame, so neither half of the hand-over had anything to give back: a
+	// second copy of it here, or a hand-over that failed, is a frame both acked and naked.
+	serving.requireOnce(t, []mpMessage{m})
+	if !strings.Contains(handOver, `"level":"INFO"`) || !strings.Contains(handOver, `"returned":0`) {
+		t.Fatalf("%s acked %s inside its settle and still tried to give a message back: %s", a.instance, m.event, handOver)
+	}
+}
