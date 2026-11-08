@@ -224,9 +224,10 @@ type PendingRequest struct {
 	// Secrets are the names the request asks for, in the request's own name order. The judge
 	// decides a request for one.
 	Secrets []string
-	// LifetimeSeconds is the lifetime the requester signed, nil for a grant that lasts
-	// until its session ends. An unbounded grant is what the judge's seconds are there to
-	// bound, so the judge decides none.
+	// LifetimeSeconds is the grant's lifetime as the record holds it: the one the requester
+	// signed, else the broker's default for its names (defaultLifetime), and nil for a grant
+	// that lasts until its session ends. An unbounded grant is what the judge's seconds are
+	// there to bound, so the judge decides none.
 	LifetimeSeconds *int
 	// Reason is the requester's own signed reason, which names the Dispatch issue, and
 	// Approver the record's approver: the secret's owner, or record.AnyoneApprover for a

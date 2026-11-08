@@ -111,7 +111,7 @@ request. A machine login, labelled as one, is approved in Dispatch by typing the
 shows, and Dispatch relays that decision, and a person's revoke of a grant or a machine login, under
 the signed-in person's identity. The broker opens no ask and writes nothing in Dispatch: Dispatch
 reads the pending requests from the broker, and the broker reads one thing back, whether an issue
-its model judge was given is open. A grant lasts the lifetime its request named, else 12 hours (until its session ends for secrets tagged `default-grant=session`),
+its model judge was given is open. A grant lasts the lifetime its request named, else 15 minutes for a request that names a human-tier secret and 12 hours for any other (until its session ends for secrets tagged `default-grant=session`),
 and `agent-secrets NAME -- <command>` runs a command with the granted value in that command's
 environment rather than printing it. People create and change the secrets themselves, in the
 broker's own store (AWS Secrets Manager or GCP Secret Manager) under their own cloud sign-in, with

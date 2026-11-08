@@ -194,9 +194,10 @@ type DispatchArgs struct {
 	// an oidcIssuer with no oidcAudience is refused.
 	//
 	// Turning this on opens Dispatch to every workload that can get a token for that audience
-	// under that issuer: such a caller reads Dispatch's authAny routes as a service actor,
-	// and a service actor holds no scope and no subject list, so Dispatch admits whatever
-	// subject the token names (serviceTokenActor, internal/dispatch/api/server.go). Only the
+	// under that issuer: such a caller reaches every one of Dispatch's authAny routes, the
+	// writes among them (an issue's create and status, a message), as a service actor, and a
+	// service actor holds no scope and no subject list, so Dispatch admits whatever subject
+	// the token names (serviceTokenActor, internal/dispatch/api/server.go). Only the
 	// audience bounds it. Pick one no other workload of the cluster asks the kubelet for, and
 	// leave it unset where no caller needs it.
 	OidcAudience string `pulumi:"oidcAudience,optional"`

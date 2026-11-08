@@ -153,7 +153,9 @@ wait for a person. Three things in your own command decide whether a request can
 class:
 
 - One secret. A request that names two is outside it.
-- `--ttl 15m`, or less. A request with no `--ttl`, or a longer one, is outside it.
+- `--ttl 15m`, or less. A longer one is outside it. With no `--ttl`, the judge reads the lifetime
+  the broker gives instead: 15 minutes for a human-tier secret, which is inside it, and the whole
+  session for a secret tagged `default-grant=session`, which is outside it. Pass `--ttl 15m`.
 - The key of the issue you work on in `--reason`, for an issue that is not done.
 
 The rules of your deployment decide which secrets the judge may take, and you are told none of

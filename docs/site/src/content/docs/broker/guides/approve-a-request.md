@@ -21,7 +21,9 @@ A request it approved is gone from your Inbox, and its page names `judge:<model 
 decider, with no person beside it. The grant is still yours to end: it records you as its
 approver, or anyone for a shared secret, so it is on your Settings page and
 `agent-secrets grant revoke` ends it
-([revoke a session or a grant](/legion/broker/guides/revoke-a-session/)).
+([revoke a session or a grant](/legion/broker/guides/revoke-a-session/)). Ending it ends that grant
+alone and withholds nothing, so the session may ask again, and the judge may approve that request
+as it approved this one.
 [Concepts](/legion/broker/concepts/#the-model-judge) says what the judge checks before it asks a
 model anything.
 

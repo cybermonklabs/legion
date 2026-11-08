@@ -45,7 +45,7 @@ const runBudget = 30 * time.Second
 // let the reads take twice as long as the arithmetic above allows.
 const dispatchBound = 10 * time.Second
 
-// maxJudgedLifetime is the longest signed lifetime the judge decides, whatever judge seconds a
+// maxJudgedLifetime is the longest grant lifetime the judge decides, whatever judge seconds a
 // rules entry allows: the bound of the class itself.
 const maxJudgedLifetime = 15 * time.Minute
 
@@ -226,9 +226,10 @@ func (r *Runner) beforeTheModel(ctx context.Context, p requests.PendingRequest) 
 	return checks, data
 }
 
-// lifetimeAllowed is the second check: the request names one secret, it signed a lifetime, and
-// that lifetime is within both bounds — the class's own 15 minutes and the seconds the rules
-// give the judge for that secret.
+// lifetimeAllowed is the second check: the request names one secret, its grant has a lifetime —
+// the one it signed, else the broker's default (requests.PendingRequest.LifetimeSeconds) — and
+// that lifetime is within both bounds: the class's own 15 minutes and the seconds the rules give
+// the judge for that secret.
 func lifetimeAllowed(p requests.PendingRequest, seconds uint32, judged bool) (bool, string) {
 	switch {
 	case len(p.Secrets) != 1:

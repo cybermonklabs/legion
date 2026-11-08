@@ -811,8 +811,8 @@ and never for one it joined to a request already pending, so one record is judge
 at the first that fails, asking the model nothing:
 
 1. the secret's rules entry has a `judge` value;
-2. the request names one secret, and the lifetime its session signed is at most 15 minutes and at
-   most that entry's seconds;
+2. the request names one secret, and its grant's lifetime — the `--ttl` its session signed, else
+   the broker's default for that secret — is at most 15 minutes and at most that entry's seconds;
 3. the tag policy, read again now, still answers approval for that name;
 4. the name is not withheld for that session;
 5. the request's signed reason names a Dispatch issue key, and Dispatch shows that issue at a
@@ -840,11 +840,12 @@ for it, and a reason naming an issue key, so a forged record, and one a rules ch
 release nothing either.
 
 The issue check is the broker's one read of Dispatch: two GETs, the issue and the text of its
-spec document, with the broker's own projected ServiceAccount token, read from its file at each
-call. The broker writes nothing there — no ask, no comment, no status — and reads nothing that
-belongs to a person. It reaches its model at the endpoint its settings name, presenting the
-broker machine's own Google identity token for the audience they name. Those settings are
-all-or-none, and the [configuration reference](/legion/broker/reference/config/) gives each one.
+spec document, with the broker's own projected ServiceAccount token, read again from its file once
+the copy it holds is 30 seconds old. The broker writes nothing there — no ask, no comment, no
+status — and reads nothing that belongs to a person. It reaches its model at the endpoint its
+settings name, presenting the broker machine's own Google identity token for the audience they
+name. Those settings are all-or-none, and the
+[configuration reference](/legion/broker/reference/config/) gives each one.
 
 ## The audit record
 

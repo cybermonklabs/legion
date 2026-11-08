@@ -984,9 +984,10 @@ the `serviceAccountIssuer` output) unless `oidcIssuer` names another cluster's. 
 to boot holding one of the pair alone, so the component renders both or neither, and an
 `oidcIssuer` with no `oidcAudience` is refused. The secrets broker's judge needs this: it reads
 Dispatch with its own pod's token. Turning it on opens Dispatch to every workload that can get a
-token for that audience under that issuer — such a caller reads Dispatch's `authAny` routes as a
-service actor, which holds no scope and whose subject Dispatch does not check against any list,
-so the audience is the whole of the bound. Pick one no other workload of the cluster asks the
+token for that audience under that issuer — such a caller reaches every one of Dispatch's
+`authAny` routes as a service actor, the writes among them (an issue's create and status, a
+message), and that actor holds no scope and has a subject Dispatch does not check against any
+list, so the audience is the whole of the bound. Pick one no other workload of the cluster asks the
 kubelet for, and leave `oidcAudience` unset where no caller needs it, which is how Dispatch
 behaves today: neither variable renders and no token is verified.
 

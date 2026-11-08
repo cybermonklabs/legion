@@ -415,7 +415,8 @@ dev-broker: ready.
   (DEMO_API_KEY, approver: $APPROVER_LOGIN), both owned by $APPROVER_LOGIN, whose sessions ask
   for them, and one agent-tier secret (DEMO_SERVICE_TOKEN) owned by the registered service
   $SERVICE, which a pod session enrolled under that service gets without asking and a person's
-  session never sees. A grant lasts for the --ttl its request names, else 12 hours.
+  session never sees. A grant lasts for the --ttl its request names, else 15 minutes for
+  DEMO_API_KEY and 12 hours for the agent-tier ones.
   Drive it with agent-secrets and agent-secrets-helper in another shell;
   press Ctrl-C here to stop the broker and its issuer.
 
