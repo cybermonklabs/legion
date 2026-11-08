@@ -6,9 +6,11 @@ body: |-
   (`agent-secrets enroll --pod`). `BROKER_SERVICE_LOGINS` refused such an account before,
   because every pod of it holds a token for it. What holds the narrowing is the enrolment rule
   rather than the setting: such a login enrols the one pod whose token made it, any other pod
-  UID is `403 POD_SELF_ENROLL_ONLY`, and it ends that pod's enrollment and no other pod's of
-  the account. A launcher that enrols pods of another account is unchanged: a replaced pod
-  still ends the enrollments its predecessor made.
+  UID is `403 POD_SELF_ENROLL_ONLY`. Ending an enrollment reads the same rule, so a pod of the
+  account ends its own enrollment and no other pod's of that account, including on the schema
+  this release ships, where the two pods share one credential row and the one that took it over
+  would otherwise have ended the other's. A launcher that enrols pods of another account is
+  unchanged: a replaced pod still ends the enrollments its predecessor made.
 time: 2026-11-08T21:53:57.588549598Z
 custom:
     Issue: pr3123

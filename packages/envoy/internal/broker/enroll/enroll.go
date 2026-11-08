@@ -1570,10 +1570,11 @@ func machineCredential(cred Credential) bool {
 // predecessor's pods and no others, since it takes the same ServiceAccount logging in and the
 // pod's own account being one BROKER_SERVICES binds to that login's service — the launcher
 // relation POD_NOT_LAUNCHED reads at Create. A pod that enrolled itself is no launcher, whatever
-// BROKER_SERVICES binds its account to: sameLauncher is false where the enrollment's own pod
-// account is the login's own subject account, so a session pod of an account both settings name
-// ends its own enrollment and no other pod's. An enrollment neither rule reaches — a service
-// login a person approved before token logins, or
+// BROKER_SERVICES binds its account to: a pod enrollment of the login's own subject account is
+// reached by the pod UID and by nothing else, before either rule above, so a session pod of an
+// account both settings name ends its own enrollment and no other pod's of that account even on
+// the schema where the two pods share one credential id. An enrollment neither rule reaches — a
+// service login a person approved before token logins, or
 // the daemon's credential before someone revoked it — ends when its pod stops renewing, one lease
 // (BROKER_LEASE_SECONDS) after its renewer stops, or at once when a person revokes that credential
 // (RevokeCredential). A box or host enrollment keeps the operator rule alone: a helper that logs in
@@ -1590,13 +1591,13 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 	defer tx.Rollback(ctx)
 
 	var operator, enrolledSubject, enrolledLoginSubject, enrolledLoginService *string
-	var kind string
+	var kind, enrolledRuntimeID string
 	var enrolledBy uuid.UUID
 	var revokedAt *time.Time
-	err = tx.QueryRow(ctx, `select e.operator, e.kind, e.launcher_credential_id, e.revoked_at, e.subject, c.subject, c.service
+	err = tx.QueryRow(ctx, `select e.operator, e.kind, e.launcher_credential_id, e.revoked_at, e.subject, e.runtime_id, c.subject, c.service
 		from enrollments e join launcher_credentials c on c.id = e.launcher_credential_id
 		where e.id=$1 for update of e`, id).
-		Scan(&operator, &kind, &enrolledBy, &revokedAt, &enrolledSubject, &enrolledLoginSubject, &enrolledLoginService)
+		Scan(&operator, &kind, &enrolledBy, &revokedAt, &enrolledSubject, &enrolledRuntimeID, &enrolledLoginSubject, &enrolledLoginService)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrNotLive
 	}
@@ -1605,6 +1606,20 @@ func (s *Service) Revoke(ctx context.Context, cred Credential, id, by string) er
 	}
 	if !authorized(cred, kind, operator) {
 		return ErrOperatorMismatch
+	}
+	// Which pod of its own account a login reaches is decided by the pod UID, the rule
+	// podUnderTokenLogin applies at Create (ownPod), and it holds here on both paths rather
+	// than through sameLauncher alone. On the schema this release ships, a second pod of one
+	// account takes the account's one credential over, keeping its id (IssueTokenLoginTx's
+	// subject-only conflict target), so the enrolling-credential test below reads true for an
+	// enrollment another pod of the account made. The first pod stays live through all of it —
+	// its launcher key dies with the takeover, its enrollment key renews on, since Renew holds
+	// no pod enrollment to its launcher's liveness — so without this rule one session pod ends
+	// another's live enrollment. It refuses and never grants: a credential still reaches only
+	// what the test below lets it reach.
+	if cred.Operator == nil && kind == "pod" && enrolledSubject != nil && ownPod(cred, *enrolledSubject) &&
+		(cred.PodUID == "" || cred.PodUID != enrolledRuntimeID) {
+		return ErrNotEnrollingCredential
 	}
 	if cred.Operator == nil && enrolledBy != cred.ID &&
 		!(kind == "pod" && s.sameLauncher(cred, enrolledLoginSubject, enrolledLoginService, enrolledSubject)) {

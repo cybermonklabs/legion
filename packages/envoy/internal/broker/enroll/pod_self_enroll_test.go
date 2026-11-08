@@ -453,20 +453,19 @@ func TestAPodOfAnAccountInBothListsEndsNoOtherPodsEnrollment(t *testing.T) {
 	}
 }
 
-// TestOnTheShippedSchemaAnAccountHoldsOneCredentialWhateverItsPod: the two tests above run on the
-// schema the release after this one leaves (newPerPodRig), because two pods of one account hold
-// two live credentials only once 0015's launcher_credentials_live_subject index is dropped. On
-// the schema this release ships that index stands, so IssueTokenLoginTx resolves its conflict on
-// the subject alone and a second pod of the account takes the one credential over: same
-// credential id, the first pod's key replaced by the second's, one live row. The first pod
-// cannot authenticate at all after that, so the pair of live session pods sameLauncher fences is
-// not reachable here, and the second pod ends what that credential enrolled through the
-// enrolling-credential rule (enrolledBy == cred.ID), never through sameLauncher — the replaced-pod
-// takeover TestAReplacedLauncherPodEndsItsPredecessorsEnrollments names, which this release
-// depends on. Binding the account changes none of it, so this change neither opens nor widens
-// that path; what closes it is the per-pod login of the next release, where the two credentials
-// differ and sameLauncher decides.
-func TestOnTheShippedSchemaAnAccountHoldsOneCredentialWhateverItsPod(t *testing.T) {
+// TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount: the two tests above run on the
+// schema the release after this one leaves (newPerPodRig), where two pods of one account hold two
+// credentials and sameLauncher decides between them. On the schema this release ships, 0015's
+// launcher_credentials_live_subject index still stands, so IssueTokenLoginTx resolves its
+// conflict on the subject alone and the second pod's login takes the account's one credential
+// over, keeping its id: the enrolling-credential test reads true for the first pod's enrollment
+// and sameLauncher is never consulted. The first pod stays live through the takeover — its
+// launcher key dies, its enrollment key renews on, since Renew holds no pod enrollment to its
+// launcher's liveness — so this is one live session pod able to end another's, which is what
+// Revoke's pod-UID rule refuses. Measured over HTTP against the compiled broker on these
+// migrations before the rule: the renew answered 200 and the second pod's DELETE answered 204.
+// Its own enrollment each pod still ends, by that same pod UID.
+func TestOnTheShippedSchemaAPodEndsNoOtherPodsEnrollmentOfItsAccount(t *testing.T) {
 	r := newPodRig(t)
 	r.svc.ServicesByAccount[selfAccount] = podLoginService
 	ctx := context.Background()
@@ -478,21 +477,28 @@ func TestOnTheShippedSchemaAnAccountHoldsOneCredentialWhateverItsPod(t *testing.
 
 	second := r.login(t, selfAccount, "pod-uid-shipped-two")
 	if second.ID != first.ID {
-		t.Fatalf("the second pod's credential = %s, want the first's %s: this schema holds one live credential per account", second.ID, first.ID)
+		t.Fatalf("the second pod's credential = %s, want the first's %s: this schema holds one live credential per account, which is what makes this case reachable", second.ID, first.ID)
 	}
-	if got := r.liveRows(t, selfAccount); got != 1 {
-		t.Fatalf("live credentials of %s = %d, want its one", selfAccount, got)
+	if err := r.svc.Revoke(ctx, second, mine.ID.String(), "launcher:"+second.ID.String()); !errors.Is(err, ErrNotEnrollingCredential) {
+		t.Fatalf("Revoke(the first pod's enrollment, by the second pod's login) = %v, want ErrNotEnrollingCredential", err)
 	}
-	taken, err := r.svc.Credential(ctx, first.ID.String())
-	if err != nil || taken.PodUID != "pod-uid-shipped-two" {
-		t.Fatalf("Credential(%s) = %+v, %v; want the row moved to pod-uid-shipped-two", first.ID, taken, err)
+	if r.revoked(t, mine.ID.String()) {
+		t.Fatalf("enrollment %s ended, want it untouched", mine.ID)
 	}
 
-	if err := r.svc.Revoke(ctx, second, mine.ID.String(), "launcher:"+second.ID.String()); err != nil {
-		t.Fatalf("the pod that took the credential over ends what it enrolled: %v", err)
+	theirs, err := r.enroll(t, second, selfAccount, "pod-uid-shipped-two")
+	if err != nil {
+		t.Fatalf("Create(the second session pod's own enrollment) = %v", err)
+	}
+	if err := r.svc.Revoke(ctx, second, theirs.ID.String(), "launcher:"+second.ID.String()); err != nil {
+		t.Fatalf("the second pod ends its own enrollment: %v", err)
+	}
+
+	if err := r.svc.Revoke(ctx, first, mine.ID.String(), "launcher:"+first.ID.String()); err != nil {
+		t.Fatalf("the first pod ends its own enrollment after the takeover: %v", err)
 	}
 	if !r.revoked(t, mine.ID.String()) {
-		t.Fatalf("enrollment %s is still live, want it ended by the credential that made it", mine.ID)
+		t.Fatalf("enrollment %s is still live, want it ended by its own pod", mine.ID)
 	}
 }
 
