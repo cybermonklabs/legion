@@ -230,9 +230,11 @@ func TestTheOutboxDoesNotScanWhileIdle(t *testing.T) {
 	// Both hooks take restMu, and the wait's own queue is read under it rather than handed in,
 	// because the two facts have to be read together: the holder could otherwise record a rest
 	// in the gap between the flag going up and the wake that follows it, and the scan that wake
-	// causes would then land inside the window. Under one lock a wait either runs before the
-	// connection is reported, and the flag refuses it, or after the wake is queued, and the
-	// queue refuses it.
+	// causes would then land inside the window. Under one lock a wait that runs before the
+	// connection is reported is refused by the flag, and one that runs while that wake is still
+	// queued is refused by the queue. A wait after the wake's own scan finds the queue empty and
+	// records a rest, which is the rest this row is for: by then that scan is one of the claims
+	// restingAt is compared with.
 	var restMu sync.Mutex
 	listening := false
 	var restingAt atomic.Int64

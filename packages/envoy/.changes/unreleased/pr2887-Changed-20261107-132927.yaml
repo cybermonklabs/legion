@@ -2,11 +2,12 @@ kind: Changed
 body: |-
   The two lines a maintenance loop's tick writes, `dispatch duty: leased pass ran` and the
   `dispatch duty: leased pass skipped` a tick writes when it finds its period already served,
-  now name that tick's own due time beside the aligned period it fell in. Neither line is
-  written at the moment its tick was due - the skip once the lease and the period have been
-  read, the other once the whole pass has run - so until now a reader had only the moment the
-  line was written: a tick held in a slow call is logged in a period later than the one it was
-  judged in, and two processes' lines can read as one period while their ticks were due in two.
+  now name that tick's own due time beside the aligned period they already carried. The period
+  is computed from that due time, so it told a tick of one period from a tick of the next
+  already; the due time says where inside the period the tick fell. Two processes ticking
+  minutes apart inside one period write the same period, and neither line is written at the
+  moment its tick was due - the skip once the lease and the period have been read, the other
+  once the whole pass has run - so until now nothing in the two lines gave that stagger.
   A pass with no period is also a pass with no due time, and names neither.
 time: 2026-11-07T13:29:27.000000000Z
 custom:

@@ -28,11 +28,12 @@ func leasesOf(t *testing.T, database *store.Store) *pgxpool.Pool {
 	return leases
 }
 
-// Both lines a tick writes name the tick's own due and the aligned period it fell in. Neither is
-// written at the moment its tick was due - the skip after the lease and the period read, the ran
-// line after the whole pass - so without them a reader has only the moment the line was written:
-// a tick held in a slow call is logged in a period later than the one it was judged in, and two
-// processes whose lines land inside one period can have been due in two. Reading dispatch's
+// Both lines a tick writes name the tick's own due and the aligned period it fell in. The period
+// is periodBoundary of that due, so it already tells a tick of one period from a tick of the
+// next; what the due adds is where inside the period the tick fell. Two processes ticking minutes
+// apart inside one period write the same period, and neither line is written at the moment its
+// tick was due - the skip after the lease and the period read, the ran line after the whole pass
+// - so the moment a line carries does not give that stagger either. Reading dispatch's
 // multiprocess rows cost a day for want of exactly this (INFRA-1492). A pass with no period is
 // also a pass with no due, and names neither.
 func TestTheLinesAboutATickNameItsDueAndItsPeriod(t *testing.T) {
