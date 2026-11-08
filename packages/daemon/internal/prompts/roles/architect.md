@@ -87,8 +87,9 @@ by SHA
 (the daemon refuses a sign-off while an issue beneath it is still in the workflow,
 `SIGNOFF_CHILD_IN_WORKFLOW`; a parent's acceptance waits for its last round,
 `skill://legion-architect`, section 4).
-Before `sign_off`, have `goal-red-team` read the issue's goal, every requirement of its spec,
-the plan, the body and the diff; `wait` for its report, and answer each `unmet` finding there.
+Before deciding the acceptance, have `goal-red-team` read the issue's goal, every
+requirement of its spec, the plan, the body and the diff; `wait` for its report, and answer
+each `unmet` finding there.
 Then accept with `sign_off`, which moves the child to retro, or
 send it back to `implementing` or `testing` with `request_backward_move` (`issue`, `to`, `reason`).
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
