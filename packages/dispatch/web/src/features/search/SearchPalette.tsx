@@ -52,6 +52,8 @@ import { KeyHints } from "../shell/ShortcutHelp";
 import { useCloseOnNavigation, useDialog } from "../shell/useDialog";
 import { AskHitStatus } from "./AskHitStatus";
 import {
+  type BarScopeLevel,
+  barTargets,
   documentRouteOf,
   issueOfPage,
   readSelectedIssues,
@@ -455,7 +457,7 @@ function PaletteDialog({
   // selection is no longer the page's once it has.
   const [blockScope] = useState(scopeAtCursor);
   const [projectScope] = useState(() => scopeOfProject(location.pathname));
-  const [scopeLevel, setScopeLevel] = useState<"page" | "block" | "project">("page");
+  const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
   // The issues the issue list had selected as this open was made, so no render of the list
   // behind the bar moves a chip the reader is looking at.
   const [selectedIssues] = useState(readSelectedIssues);
@@ -469,6 +471,13 @@ function PaletteDialog({
   const pageScope = scopeOfPage(location.pathname, location.search, documentName, selectedIssues);
   const scope =
     scopeLevel === "block" ? blockScope : scopeLevel === "project" ? projectScope : pageScope;
+  // What each offer acts on at the level the chip is at now, so a row acts on what the chip
+  // above it names rather than on the page the bar was opened over.
+  const targets = barTargets(scopeLevel, {
+    block: blockScope,
+    issue: pageIssue,
+    project: pageProject,
+  });
   // The person's recent items, read from the browser on the render that opens the bar: the
   // keystroke that opens it makes no request, which is what lets the list paint at once. They
   // are one person's own, so they wait for the signed-in identity the shell already read.
@@ -609,14 +618,16 @@ function PaletteDialog({
       navigate(buildIssuePath({ key, kind: "issue" }));
       onClose();
     },
-    project: pageProject,
+    project: targets.project,
     words: searchText,
   });
-  // The words in the box as a message to the agent already on this issue, offered only while a
-  // live session holds that issue's claim. It asks whatever the words are: the row is what
-  // sends, and it sits among the foot rows below, so no Enter aimed at a hit sends anything.
+  // The words in the box as a message to the agent on the issue the chip names, offered only
+  // while a live session holds that issue's claim. It asks whatever the words are: the row is
+  // what sends, and it sits among the foot rows below, so no Enter aimed at a hit sends
+  // anything.
   const sendToAgent = useSendToAgentOffer({
-    issue: pageIssue,
+    block: targets.block,
+    issue: targets.issue,
     words: searchText,
   });
   const commandSections: readonly CommandSection[] = [
@@ -656,12 +667,12 @@ function PaletteDialog({
     id: NEW_ISSUE_GROUP_ID,
     label: "New issue",
     options:
-      newIssue === undefined
+      newIssue?.row === undefined
         ? []
         : [
             {
               hint: null,
-              label: newIssue.label,
+              label: newIssue.row.label,
               row: { id: NEW_ISSUE_OPTION_ID, kind: "new-issue" } as const,
             },
           ],
@@ -749,7 +760,7 @@ function PaletteDialog({
       // One of the two rows that write: it makes the issue with the bar still open, so the
       // person reads what was made and, with no session named, that nothing was started on it.
       // It closes the bar itself, by opening the issue.
-      newIssue?.select();
+      newIssue?.row?.select();
       return;
     }
     if (row.kind === "send-to-agent") {

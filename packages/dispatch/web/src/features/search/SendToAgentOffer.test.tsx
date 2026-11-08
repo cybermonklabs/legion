@@ -12,6 +12,7 @@ import type {
   SearchResponse,
   SearchResultsPage,
 } from "../../api/types";
+import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { SearchPalette } from "./SearchPalette";
 import { handoffBody } from "./send-to-agent";
@@ -133,6 +134,33 @@ async function typeWords(): Promise<void> {
   await waitFor(() => expect(screen.getAllByRole("option").length).toBeGreaterThan(0));
 }
 
+/** The writing cursor inside a block of the page behind the bar, as a reader writing in the
+ *  document leaves it. The bar reads it on the render that opens it (`scopeAtCursor`), so this
+ *  is put in place before `openBar`; it answers what that render will find, and the caller
+ *  takes it off the page again. */
+function placeCaretInBlock(text: string): { readonly chip: string; readonly remove: () => void } {
+  const editable = document.createElement("div");
+  editable.setAttribute("contenteditable", "true");
+  const block = document.createElement("p");
+  block.setAttribute(BLOCK_ID_ATTRIBUTE, "b-1");
+  block.textContent = text;
+  editable.append(block);
+  document.body.append(editable);
+  editable.focus();
+  const range = document.createRange();
+  range.setStart(block.firstChild ?? block, 0);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  return { chip: `the block “${text}”`, remove: () => editable.remove() };
+}
+
+/** Presses one key on the bar's box, which is where the two keys that move the chip act. */
+function pressOnBox(key: string): void {
+  fireEvent.keyDown(screen.getByRole("combobox", { name: "Search" }), { key });
+}
+
 const offerLabel = `Send this to the agent on ${issueKey}`;
 
 test("offers the words to the agent holding the claim, and sends nothing until the row is pressed", async () => {
@@ -195,5 +223,41 @@ test("the row is absent with no claim, a person's claim, a holder that stopped, 
 });
 
 test("the body names the issue, then the person's words as they typed them", () => {
-  expect(handoffBody("CORE-7", "write the rota up")).toBe("CORE-7: write the rota up");
+  expect(handoffBody("CORE-7", undefined, "write the rota up")).toBe("CORE-7: write the rota up");
+});
+
+test("Backspace widens the chip to the project, which no agent holds, so the row goes with it", async () => {
+  const bar = openBar(sessionClaim, "live");
+  try {
+    // Backspace acts on an empty box alone, so it is pressed before the words are typed.
+    pressOnBox("Backspace");
+    await typeWords();
+
+    expect(screen.getByTestId("search-scope").textContent).toContain("the project CORE");
+    expect(screen.queryByText(offerLabel)).toBeNull();
+    expect(bar.createAgentMessage).not.toHaveBeenCalled();
+  } finally {
+    bar.restore();
+  }
+});
+
+test("Tab narrows the chip to the block, and the message names that block before the words", async () => {
+  const block = placeCaretInBlock("The sextant sights the horizon.");
+  const bar = openBar(sessionClaim, "live");
+  try {
+    pressOnBox("Tab");
+    await typeWords();
+
+    expect(screen.getByTestId("search-scope").textContent).toContain(block.chip);
+    fireEvent.click(await waitFor(() => screen.getByText(offerLabel)));
+
+    await waitFor(() => expect(bar.createAgentMessage).toHaveBeenCalled());
+    expect(bar.createAgentMessage.mock.calls[0]?.[1]).toEqual({
+      body: `${issueKey}, ${block.chip}: ${words}`,
+      delivery: "aside",
+    });
+  } finally {
+    bar.restore();
+    block.remove();
+  }
 });

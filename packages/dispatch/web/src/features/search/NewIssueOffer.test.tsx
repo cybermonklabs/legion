@@ -4,7 +4,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type {
   ArtifactUploadResponse,
   Issue,
@@ -175,4 +175,38 @@ test("the criterion is the person's words in a check block carrying no attribute
   expect(firstCriterion("a crew list that reads back")).toBe(
     ":::check{}\na crew list that reads back\n:::\n"
   );
+});
+
+// The create lands and a write onto the issue is refused. The issue exists, so the bar reports
+// it as made and says which write was refused against its key, and the row it leaves is the
+// way to open it: pressing again would make a second issue, which is the husk R14
+// (dispatch://INFRA-1042/spec#b-r14) exists to stop.
+test("a write refused after the create reports the issue as made and offers to create no more", async () => {
+  const bar = openBar({ label: "from-the-bar", session: "sess-1" });
+  try {
+    bar.uploadArtifact.mockRejectedValue(
+      new ApiError(400, { code: "ARTIFACT_INPUT", error: "the document was refused" })
+    );
+    fireEvent.click(await offerFor());
+
+    await waitFor(() =>
+      expect(screen.getByTestId("search-new-issue-said").textContent).toBe(
+        "CORE-7 is made; its first criterion was refused: the document was refused"
+      )
+    );
+    // The first refusal ends the filing: nothing was written onto the issue after it, and the
+    // bar stayed where the person can read what happened.
+    expect(bar.patchIssue).not.toHaveBeenCalled();
+    expect(bar.createMessage).not.toHaveBeenCalled();
+    expect(screen.getByTestId("current-route").textContent).toBe("/projects/CORE/issues");
+
+    expect(screen.queryByText(`Make a new issue from “${words}”`)).toBeNull();
+    fireEvent.click(screen.getByText("Open CORE-7"));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-7")
+    );
+    expect(bar.createIssue).toHaveBeenCalledTimes(1);
+  } finally {
+    bar.restore();
+  }
 });

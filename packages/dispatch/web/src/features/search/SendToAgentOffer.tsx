@@ -62,13 +62,21 @@ function liveHolderOf(
  * It always asks: the row is what sends, whatever any confidence in the words would be, because
  * a send spends that agent a turn (dispatch://INFRA-1042/ask/4310b2c0-df6f-424b-b0b6-b75e23a60fb6).
  * Nothing is sent until the person presses it, and one press sends one message.
+ *
+ * The issue and the block are the chip's rather than the page's (`barTargets` in
+ * `bar-scope.ts`): the row is listed only while the chip names an issue or a block of one, and
+ * a block it names is named in the message, so what is sent is what the bar says it acts on.
  */
 export function useSendToAgentOffer({
+  block,
   issue,
   send = sendToAgent,
   words,
 }: {
-  /** The issue the page under the bar is on, or undefined on every other page. */
+  /** The block of the issue the chip names, in the chip's own words, and undefined where the
+   *  chip names the issue itself. */
+  readonly block: string | undefined;
+  /** The issue the chip names, or undefined where it names no issue. */
   readonly issue: string | undefined;
   /** Write seam for tests; defaults to the real send. */
   readonly send?: SendToAgent;
@@ -97,7 +105,7 @@ export function useSendToAgentOffer({
   }
   const approve = (session: string) => {
     setState({ kind: "sending", words });
-    send(writes, { issue, session, words }).then(
+    send(writes, { block, issue, session, words }).then(
       (undelivered) => {
         setState(
           undelivered === undefined

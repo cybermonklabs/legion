@@ -13,20 +13,22 @@ export const NEW_ISSUE_GROUP_ID = "search-group-new-issue";
 export const NEW_ISSUE_OPTION_ID = "search-option-new-issue";
 
 /** Where the offer stands: nothing pressed, the writes out, the issue made (`filed` absent for
- *  one Dispatch had no answer naming), or a refusal in the person's words. */
+ *  one Dispatch had no answer naming, and carrying the write onto it that Dispatch refused
+ *  where there was one), or the create itself refused, in the person's words. */
 type OfferState =
   | { readonly kind: "idle" }
   | { readonly kind: "making"; readonly words: string }
   | { readonly filed: FiledIssue | undefined; readonly kind: "made"; readonly words: string }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
 
-/** What the offer is at this moment: the row the bar lists for it, what pressing that row does,
- *  and the line the bar says underneath. */
+/** What the offer is at this moment: the row the bar lists for it, if any, and the line the
+ *  bar says underneath. */
 export interface NewIssueOffer {
-  /** The row's words, which say what pressing it does. */
-  readonly label: string;
-  /** Press it: accept the offer, or, once the issue is made, open it. */
-  readonly select: () => void;
+  /** The row the bar lists: the offer to make the issue while a press can still make one, and
+   *  `Open CORE-7` once one is made. It is gone while the writes are out, and gone for a
+   *  create Dispatch landed with no answer naming, because a second press there would make a
+   *  second issue (dispatch://INFRA-1042/spec#b-r14, the husk). */
+  readonly row: { readonly label: string; readonly select: () => void } | undefined;
   /** What the bar says under the list about the issue it made or could not make. */
   readonly said: ReactNode;
 }
@@ -41,9 +43,11 @@ export type FileNewIssue = (
  * The bar's offer of the words a person typed as a new issue, for words its search matched
  * nothing with. Offering is not making: nothing is written until the person presses the row.
  *
- * The press writes the issue (`fileNewIssue`) and then: with a session configured, opens the
- * issue, since a conversation is running on it; with none, says so and leaves the row as the way
- * to open it, because an issue nobody was asked about is one the person decides what to do with.
+ * The press writes the issue (`fileNewIssue`) and then: with a session configured and every
+ * write landed, opens the issue, since a conversation is running on it; with no session named,
+ * says so and leaves the row as the way to open it, because an issue nobody was asked about is
+ * one the person decides what to do with; with a write onto the issue refused, says which write
+ * it was and leaves the row as the way to open the issue, which is made either way.
  */
 export function useNewIssueOffer({
   file = fileNewIssue,
@@ -91,7 +95,9 @@ export function useNewIssueOffer({
       (made) => {
         void queryClient.invalidateQueries({ queryKey: ["issues"] });
         setState({ filed: made, kind: "made", words });
-        if (made !== undefined && made.session !== "") {
+        // Opening the issue closes the bar, so it waits on a filing nothing was refused in: a
+        // refusal is read here, against the issue it is about.
+        if (made !== undefined && made.session !== "" && made.refused === undefined) {
           onOpen(made.issue.key);
         }
       },
@@ -104,22 +110,28 @@ export function useNewIssueOffer({
       }
     );
   };
+  // Pressing the row once the issue is made opens it, which is the one thing left to do with
+  // it: the create landed, so nothing here creates again.
+  const openRow =
+    filed === undefined
+      ? undefined
+      : { label: `Open ${filed.issue.key}`, select: () => onOpen(filed.issue.key) };
   return {
-    label: filed === undefined ? `Make a new issue from “${words}”` : `Open ${filed.issue.key}`,
+    // The row is listed from the two states a press can still create from - nothing pressed,
+    // and a create Dispatch refused - and as `Open …` once an issue is made. While the writes
+    // are out, and for a create Dispatch landed with no answer naming, there is no row: a press
+    // there would make a second issue.
+    row:
+      here.kind === "idle" || here.kind === "refused"
+        ? { label: `Make a new issue from “${words}”`, select: accept }
+        : openRow,
     said: <NewIssueSaid state={here} />,
-    select: () => {
-      if (filed !== undefined) {
-        onOpen(filed.issue.key);
-        return;
-      }
-      if (here.kind !== "making") {
-        accept();
-      }
-    },
   };
 }
 
-/** The one line the bar says about the issue it is making, made, or could not make. */
+/** The one line the bar says about the issue it is making, made, or could not make. An issue
+ *  it made that a later write was refused on says which write that was, against the key of the
+ *  issue it has: the create landed, so there is an issue whatever the rest of the filing did. */
 function NewIssueSaid({ state }: { readonly state: OfferState }): ReactNode {
   if (state.kind === "idle") {
     return null;
@@ -138,13 +150,26 @@ function NewIssueSaid({ state }: { readonly state: OfferState }): ReactNode {
       </p>
     );
   }
+  const filed = state.filed;
+  if (filed === undefined) {
+    return (
+      <p className={barNoteClassName} data-testid="search-new-issue-said" role="status">
+        The issue is made, and Dispatch had no answer naming it.
+      </p>
+    );
+  }
+  if (filed.refused !== undefined) {
+    return (
+      <p className={barNoteClassName} data-testid="search-new-issue-said" role="alert">
+        {`${filed.issue.key} is made; ${filed.refused.what} was refused: ${filed.refused.why}`}
+      </p>
+    );
+  }
   return (
     <p className={barNoteClassName} data-testid="search-new-issue-said" role="status">
-      {state.filed === undefined
-        ? "The issue is made, and Dispatch had no answer naming it."
-        : state.filed.session === ""
-          ? `${state.filed.issue.key} is made. No conversation was started: this Dispatch names no session for a new issue.`
-          : `${state.filed.issue.key} is made, and its first message went to the session ${state.filed.session}.`}
+      {filed.session === ""
+        ? `${filed.issue.key} is made. No conversation was started: this Dispatch names no session for a new issue.`
+        : `${filed.issue.key} is made, and its first message went to the session ${filed.session}.`}
     </p>
   );
 }

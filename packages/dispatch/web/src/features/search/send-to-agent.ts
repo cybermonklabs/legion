@@ -6,17 +6,22 @@ import { press } from "./offer";
 /**
  * The words one send carries. The route the send goes through
  * (`POST /api/v1/agents/{session_id}/messages`) belongs to no issue, so the issue the person was
- * looking at is named in the text or the agent cannot tell which work this is about. The
- * person's own words follow it, as they typed them: nothing here rewrites them, and nothing
+ * looking at is named in the text or the agent cannot tell which work this is about. Where the
+ * bar's chip names a block of that issue (`Tab`), the block is named after the issue, in the
+ * chip's own words, so the words the agent is handed are about the part the person was reading.
+ * The person's own words follow it, as they typed them: nothing here rewrites them, and nothing
  * here adds a word of its own.
  */
-export function handoffBody(issue: string, words: string): string {
-  return `${issue}: ${words}`;
+export function handoffBody(issue: string, block: string | undefined, words: string): string {
+  return `${block === undefined ? issue : `${issue}, ${block}`}: ${words}`;
 }
 
 /** What one approved offer sends. */
 export interface SendToAgentWrite {
-  /** The issue the bar was opened on, which the body names. */
+  /** The block of that issue the chip names, in the chip's words (`the block “…”`), and
+   *  undefined where the chip names the issue itself. */
+  readonly block: string | undefined;
+  /** The issue the chip names, which the body names. */
   readonly issue: string;
   /** The session holding that issue's claim, which the message goes to. */
   readonly session: string;
@@ -46,10 +51,14 @@ export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<s
  */
 export async function sendToAgent(
   writes: Writes,
-  { issue, session, words }: SendToAgentWrite
+  { block, issue, session, words }: SendToAgentWrite
 ): Promise<string | undefined> {
   const write: Attempt<Message> = (bounds) =>
-    api.createAgentMessage(session, { body: handoffBody(issue, words), delivery: "aside" }, bounds);
+    api.createAgentMessage(
+      session,
+      { body: handoffBody(issue, block, words), delivery: "aside" },
+      bounds
+    );
   const message = await press(writes, `“${words}” to the agent on ${issue}`, write);
   const attempt = message?.deliveries.at(-1);
   if (attempt === undefined || attempt.state !== "failed") {

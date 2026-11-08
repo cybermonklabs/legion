@@ -120,6 +120,38 @@ export function issueOfPage(pathname: string, search: string): string | undefine
   return parseIssuePath(pathname, search)?.key;
 }
 
+/** How far the two keys have moved the chip from what the page put under the bar: the page's
+ *  own scope, the block the writing cursor was in (`Tab`), or the whole project (`Backspace`). */
+export type BarScopeLevel = "block" | "page" | "project";
+
+/** What the bar's offers act on: the block the chip names, the issue the chip names or holds
+ *  that block, and the project the chip sits in. Each is undefined where the chip names no such
+ *  thing, and an offer with nothing to act on is not listed at all. */
+export interface BarTargets {
+  readonly block: string | undefined;
+  readonly issue: string | undefined;
+  readonly project: string | undefined;
+}
+
+/**
+ * What each offer acts on, for the level the two keys have left the chip at and what the page
+ * under the bar offers (`page`, every target the page itself names). The chip says what the bar
+ * acts on, so it decides what the offers act on: a row acting on the page while the chip names
+ * something narrower is the bar doing one thing and saying another.
+ *
+ * The block is the chip's at block level alone, since that is the one level that names a block.
+ * No issue survives at project level, where the chip has been widened past it. The project
+ * stands at every level, because each level sits in one project: a block is in a document of it
+ * and an issue belongs to it.
+ */
+export function barTargets(level: BarScopeLevel, page: BarTargets): BarTargets {
+  return {
+    block: level === "block" ? page.block : undefined,
+    issue: level === "project" ? undefined : page.issue,
+    project: page.project,
+  };
+}
+
 /** The project document the page shows, whose name the chip reads it by. */
 export function documentRouteOf(
   pathname: string,
