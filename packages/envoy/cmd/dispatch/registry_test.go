@@ -1,7 +1,9 @@
 package main
 
 import (
+	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -28,17 +30,25 @@ const bootProbeDialDelay = 3 * time.Second
 const bootProbeDeadline = `msg="dispatch: register this server process" ` +
 	`error="probe the database: context deadline exceeded"`
 
-// The boot's one probe of the database outlasts the bound /healthz's probe reads within. Why that
-// read is the one that is always cold, and why the warm bound is no bound for it, is on
-// store.Pool.HealthyWithin; the boot's own bound is bootProbeTimeout. Here every connection
-// reaches Postgres bootProbeDialDelay late, which is past the warm bound, and the process must
-// still register and serve.
+// The boot's one probe of the database outlasts the bound /healthz's probe reads within, and it
+// leaves that pool warm for the first /healthz a prober makes. Why that read is the one that is
+// always cold, and why the warm bound is no bound for it, is on store.Pool.HealthyWithin; the
+// boot's own bound is bootProbeTimeout, thirty seconds. Here every connection reaches Postgres
+// bootProbeDialDelay late - three seconds, half again store.healthProbeTimeout's two - which is
+// past the warm bound, and the process must still register, serve, and answer that first
+// /healthz 200.
 //
-// What holds the row is healthyWithin: the process serves and answers /healthz 200, which comes
-// after joinRegistry, so a boot that died at the probe - or at any step before it, every one of
-// which dials through the same slow proxy - never reaches it. The registration line is read after
-// that for the log it names, so a reader of a later failure sees which step the boot got past.
-func TestTheBootProbeOutlastsTheWarmProbesBound(t *testing.T) {
+// Each step below reddens its own way. Step two reads the listening line, which comes after
+// joinRegistry, so a boot that died at the probe - or at any step before it, every one of which
+// dials through the same slow proxy - never reaches it: narrow the probe's bound to Healthy's
+// two seconds and the process exits 1 before it serves anything, and this step fails with
+// bootProbeDeadline. Step three reads /healthz once, never polling, since a poll hides the
+// defect this row is here for: delete the probe and the health pool's first read is that
+// handler's own, which pays the three-second dial inside the two-second warm bound, so it
+// answers 503 with db false. Step four requires that no probe of that pool failed, so a 200 that
+// followed a failed probe cannot pass as a warm read. Step five reads the registration line for
+// the log it names, so a reader of a later failure sees which step the boot got past.
+func TestTheBootProbeOutlastsTheWarmProbesBoundAndLeavesTheFirstHealthzWarm(t *testing.T) {
 	migrated := storetest.Open(t)
 	dsn, err := url.Parse(migrated.Pool.Config().ConnString())
 	if err != nil {
@@ -51,14 +61,43 @@ func TestTheBootProbeOutlastsTheWarmProbesBound(t *testing.T) {
 	// bootProbeDialDelay on each of the three connections it opens one after another, and every
 	// other step it takes is as slow as the machine is. So the row waits on a hang guard instead,
 	// far from the 11 s the boot took here, which fails only a process that never serves at all.
-	if err := process.healthyWithin(2 * time.Minute); err != nil {
-		// A probe that ran out of its bound exits the process with 1 before it serves anything, so
-		// this is where that failure arrives: name it, rather than leaving the reader to find the
-		// line in the output.
-		if strings.Contains(process.Output.String(), bootProbeDeadline) {
-			t.Fatalf("the boot probe ran out of its bound at a dial of %s: %v", bootProbeDialDelay, err)
+	listening := `msg="dispatch: listening" addr=127.0.0.1:` + strconv.Itoa(process.port)
+	hangGuard := 2 * time.Minute
+	deadline := time.Now().Add(hangGuard)
+serving:
+	for !process.logged(listening) {
+		select {
+		case <-process.Exited:
+			// Exited closes only once the output is whole, so these reads are final.
+			if process.logged(listening) {
+				break serving
+			}
+			// A probe that ran out of its bound exits the process with 1 before it serves
+			// anything, so this is where that failure arrives: name it, rather than leaving the
+			// reader to find the line in the output.
+			if strings.Contains(process.Output.String(), bootProbeDeadline) {
+				t.Fatalf("the boot probe ran out of its bound at a dial of %s:\n%s",
+					bootProbeDialDelay, process.Output.String())
+			}
+			t.Fatalf("Dispatch exited before it served anything:\n%s", process.Output.String())
+		default:
 		}
-		t.Fatal(err)
+		if time.Now().After(deadline) {
+			t.Fatalf("Dispatch did not log that it serves within %v:\n%s", hangGuard, process.Output.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	status, health := process.health(t)
+	if status != http.StatusOK || !health.DB {
+		t.Fatalf("the first /healthz answered %d with db %t, want 200 with db true: the boot's probe opened the "+
+			"health pool, so this read paid no dial; a 503 says this read was that pool's first and paid the "+
+			"%s dial inside store.healthProbeTimeout's two seconds:\n%s",
+			status, health.DB, bootProbeDialDelay, process.Output.String())
+	}
+	if failed := process.logLines("dispatch: health probe failed"); len(failed) > 0 {
+		t.Fatalf("a probe of the health pool failed, so the 200 above came after a cold read rather than from a "+
+			"warm pool:\n%s", strings.Join(failed, "\n"))
 	}
 	process.WaitForOutput(t, "dispatch: registered this server process")
 }
