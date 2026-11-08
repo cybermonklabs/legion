@@ -106,41 +106,46 @@ ${then}`;
 // A failure names the App it could not read by its role and app id, on one line of stderr.
 const namesApp = (role: string, id: string) => new RegExp(`\\b${role} App\\b.*\\bapp_id ${id}\\b`);
 
-/** Ends the process whose pid the file holds, and answers whether that process was still
- * running. */
-function endRecordedProcess(pidFile: string): boolean {
-  if (!existsSync(pidFile)) return false;
+/** How a recorded process ended: the pid file was never written, what it held was no pid to
+ * signal, the kernel refused the signal because the process had gone, or the signal ended a
+ * process that was still running. */
+type ProcessEnding = "no pid file" | "unusable pid" | "already gone" | "killed";
+
+/** Ends the process whose pid the file holds, and answers which of those four endings it came
+ * to. */
+function endRecordedProcess(pidFile: string): ProcessEnding {
+  if (!existsSync(pidFile)) return "no pid file";
   const pid = Number.parseInt(readFileSync(pidFile, "utf8").trim(), 10);
   rmSync(pidFile, { force: true });
-  if (!Number.isInteger(pid) || pid <= 1) return false;
+  if (!Number.isInteger(pid) || pid <= 1) return "unusable pid";
   try {
     process.kill(pid, "SIGKILL");
-    return true;
+    return "killed";
   } catch {
-    // Already gone: nothing to end.
-    return false;
+    return "already gone";
   }
 }
 
 /**
  * Runs `body` against a pid file of its own, `name` under `dir`, ends whatever process that file
- * names once `body` is over, and asserts that the process was still running. A command that
- * escapes its caller's session outlives the run that started it, so a row that starts one has it
- * write down the pid it ends up with and ends it here; a descendant that ended before the run
- * did would leave the row proving nothing.
+ * names once `body` is over, and asserts that the ending was `killed`, the one of the four that
+ * means a running process was ended here. A command that escapes its caller's session outlives
+ * the run that started it, so a row that starts one has it write down the pid it ends up with
+ * and ends it here; a descendant that ended before the run did would leave the row proving
+ * nothing, and the assertion prints the ending it came to instead.
  */
 async function withEscapedDescendant(
   name: string,
   body: (pidFile: string) => Promise<void>
 ): Promise<void> {
   const pidFile = join(dir, name);
-  let wasRunning = false;
+  let ending: ProcessEnding = "no pid file";
   try {
     await body(pidFile);
   } finally {
-    wasRunning = endRecordedProcess(pidFile);
+    ending = endRecordedProcess(pidFile);
   }
-  expect(wasRunning).toBe(true);
+  expect(ending).toBe("killed");
 }
 
 describe("app-logins.ts", () => {
@@ -337,15 +342,28 @@ describe("app-logins.ts", () => {
     // row's does: the `sh` that prints `$$` is the `sh` that then runs the loop, and the pid
     // therefore names the writer itself. Killing it ends the writing and leaves the `sleep` of
     // the iteration it stood in, which holds the inherited stderr for the rest of its second and
-    // then exits. `setsid` puts the loop outside every process group the helper kills, and the
-    // helper's own exit does not stop it (measured: it was still writing into the socket
-    // `Bun.spawn` gave the command ten seconds later). It counts its writes rather than looping
-    // for ever, so a run that never reaches the cleanup still ends it, as the silent row's
-    // `sleep 60` ends itself; thirty seconds is six times the bound it must not push out.
+    // then exits. `setsid` puts the loop in a session of its own, so no process group the helper
+    // kills reaches it: in the issue pod (gVisor 4.19.0, dash, bun 1.4.4) the token command ran
+    // as pid 268 with pgid 268 and sid 268, and the loop as pid 270 with ppid 1, pgid 270 and
+    // sid 270. The loop's fd 1 and fd 2 are one and the same socket, the end whose only reader
+    // is the helper (in that pod `/proc/270/fd/1` and `/proc/270/fd/2` both read
+    // `socket:[4030]`), and this row waits for the helper's exit, so the reader has always gone
+    // by the time the cleanup kills the loop. That is why the loop ignores `SIGPIPE`: on a stock
+    // Linux kernel the helper's exit does end it, because the next write into that socket raises
+    // that signal, whose default disposition ends the `sh` the loop runs in. Measured in the pod
+    // on a real pipe, which behaves as a stock kernel's socket does: the same loop writing into
+    // a pipe whose reader had closed was ended, and a non-writing wrapper around it recorded
+    // status 141. That is what failed this row on CI (`ubuntu-24.04`, run 42514904982, job
+    // 128835746683). Under gVisor the write succeeds instead and the loop survives: in the pod
+    // it was still iterating 12 seconds after the run returned. `trap "" PIPE` is what makes
+    // the two kernels agree, measured in the pod as the same loop running to its end against
+    // the same closed reader. It counts its writes rather than looping for ever, so a run that
+    // never reaches the cleanup still ends it, as the silent row's `sleep 60` ends itself;
+    // thirty seconds is six times the bound it must not push out.
     await withEscapedDescendant("escaped-writing.pid", async (pidFile) => {
       const escaped =
-        `setsid sh -c 'echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do printf x >&2; sleep 1;` +
-        " i=$((i + 1)); done' >&2 & exit 3";
+        `setsid sh -c 'trap "" PIPE; echo $$ >${pidFile}; i=0; while [ $i -lt 30 ]; do` +
+        " printf x >&2; sleep 1; i=$((i + 1)); done' >&2 & exit 3";
       const started = Date.now();
       const { code, stderr } = await run(config(app("101", escaped), app("202")));
       expect(code).toBe(1);
