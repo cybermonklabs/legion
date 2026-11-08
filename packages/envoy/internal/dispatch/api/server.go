@@ -412,6 +412,11 @@ type server struct {
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
 	slowWrites sync.Map
+	// slowWriteRuns is the slowWriteRecord of each route the slow-write test hook has delayed a
+	// run of, by the same "METHOD path" slowWrites uses. A disarm takes the route out of
+	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
+	// hook did before and since.
+	slowWriteRuns sync.Map
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -426,11 +431,13 @@ type server struct {
 	// (recordRelatedChecks, run as detached work) hold or wait on a pool connection right now, at
 	// most relatedRecordRetryLimit.
 	relatedRecordRetrying atomic.Int32
-	// defaultBranches is what the results reads last learned about each repository's default
-	// branch (delivery.DefaultBranches), held across requests so the Verification tab's refetch
-	// on every result.recorded does not spend one GET /repos/{owner}/{repo} apiece. The policy
-	// is delivery's; the server holds the one cache the process shares.
-	defaultBranches delivery.DefaultBranches
+	// branches is what the results reads last learned about each repository's default branch
+	// (delivery.Branches), held across requests so the Verification tab's refetch on every
+	// result.recorded does not spend one GET /repos/{owner}/{repo} apiece. It answers about
+	// every branch a check is measured against, and caches the default branch alone, since what
+	// a named branch holds of a commit is kept in the database (branch_commits). The policy is
+	// delivery's; the server holds the one cache the process shares.
+	branches delivery.Branches
 	// commitPulls is the moment before which the results read will not read GitHub again for the
 	// pull requests of a commit it could answer for no other way (delivery.CommitPullReads,
 	// currencyReader.readThroughHead), held across requests so one commit costs at most one such

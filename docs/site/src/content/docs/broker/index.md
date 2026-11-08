@@ -52,7 +52,7 @@ sequenceDiagram
     participant Model as The judge's model
     participant Dispatch
     actor Person as Approver
-    Agent->>CLI: agent-secrets DEMO_API_KEY -- ./deploy.sh
+    Agent->>CLI: agent-secrets DEMO_API_KEY --reason 'deploy the demo service' -- ./deploy.sh
     CLI->>Helper: sign this request as my session
     Helper-->>CLI: signed request and proof
     CLI->>Broker: POST /v1/requests
