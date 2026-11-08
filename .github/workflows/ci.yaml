@@ -268,6 +268,7 @@ jobs:
       check_action_pins_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_action_pins_test }}
       check_private_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_plugin_names_test }}
+      check_fireevent_reasons_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_fireevent_reasons_test }}
       check_release_credentials_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.repo_paths_test }}
       playwright_deps_current_test: ${{ github.event_name == 'workflow_dispatch' && 'true' || steps.filter.outputs.playwright_deps_current_test }}
@@ -1186,6 +1187,12 @@ jobs:
               - '.github/scripts/test-lib.sh'
               - '.github/scripts/check-plugin-names.test.sh'
               - '.github/scripts/check-plugin-names.sh'
+            check_fireevent_reasons_test: &check_fireevent_reasons_test
+              - *ci_router
+              - '.github/workflows/ci-job-test.yaml'
+              - '.github/scripts/test-lib.sh'
+              - '.github/scripts/check-fireevent-reasons.test.sh'
+              - '.github/scripts/check-fireevent-reasons.sh'
             check_release_credentials_test: &check_release_credentials_test
               - *ci_router
               - '.github/workflows/ci-job-test.yaml'
@@ -1386,6 +1393,7 @@ jobs:
               - *check_action_pins_test
               - *check_private_names_test
               - *check_plugin_names_test
+              - *check_fireevent_reasons_test
               - *check_release_credentials_test
               - *repo_paths_test
               - *playwright_deps_current_test
@@ -3359,6 +3367,7 @@ jobs:
       check_action_pins_test: ${{ needs.changes.outputs.check_action_pins_test }}
       check_private_names_test: ${{ needs.changes.outputs.check_private_names_test }}
       check_plugin_names_test: ${{ needs.changes.outputs.check_plugin_names_test }}
+      check_fireevent_reasons_test: ${{ needs.changes.outputs.check_fireevent_reasons_test }}
       check_release_credentials_test: ${{ needs.changes.outputs.check_release_credentials_test }}
       repo_paths_test: ${{ needs.changes.outputs.repo_paths_test }}
       playwright_deps_current_test: ${{ needs.changes.outputs.playwright_deps_current_test }}

@@ -79,6 +79,14 @@ jobs:
       - name: Check no current file names the pre-split Oh My Pi plugin
         run: .github/scripts/check-plugin-names.sh
 
+      # Biome's own rule refuses the `fireEvent` import under packages/dispatch/web/src, and a file
+      # that needs it keeps one `biome-ignore` naming that file's reasons. The rule reads imports,
+      # so it says nothing about a call added to a file whose exemption is already in place, which
+      # is what a forward merge of main brings: no conflict, no lint error, no type error. This
+      # check asks each call for its own reason instead.
+      - name: Check every fireEvent call of the Dispatch suite carries its own reason
+        run: .github/scripts/check-fireevent-reasons.sh
+
       - name: Check the release workflows keep credentials out of jobs that run dependency code
         run: .github/scripts/check-release-credentials.sh
 

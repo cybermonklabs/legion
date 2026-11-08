@@ -163,8 +163,7 @@ def setup_bun(job, workflow=""):
 
 
 def bun_job(job, workflow=""):
-    """setup_bun and a frozen `bun install`. No bunfig.toml at the root and no
-    .npmrc anywhere; packages/dispatch/bunfig.toml is read only by bun test there."""
+    """setup_bun and a frozen `bun install`. No Bun configuration file and no .npmrc anywhere."""
     install = at(job, "bun install --frozen-lockfile", workflow)
     return setup_bun(job, workflow) + reads(
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
@@ -1105,6 +1104,10 @@ SCRIPT_TEST_GATES = [
     ]),
     harness("check_plugin_names_test", "Test the plugin-name check", f"{SCRIPTS}/check-plugin-names.test.sh", [
         (f"{SCRIPTS}/check-plugin-names.sh", "the script under test"),
+    ]),
+    harness("check_fireevent_reasons_test", "Test the fireEvent reason check",
+            f"{SCRIPTS}/check-fireevent-reasons.test.sh", [
+        (f"{SCRIPTS}/check-fireevent-reasons.sh", "the script under test"),
     ]),
     harness("check_release_credentials_test", "Test the release credential check",
             f"{SCRIPTS}/check-release-credentials.test.sh", [

@@ -95,6 +95,12 @@ on:
         description: "ci.yaml's needs.changes.outputs.check_plugin_names_test: check-plugin-names.test.sh and what it tests."
         type: string
         required: true
+      check_fireevent_reasons_test:
+        description: >-
+          ci.yaml's needs.changes.outputs.check_fireevent_reasons_test:
+          check-fireevent-reasons.test.sh and what it tests.
+        type: string
+        required: true
       check_release_credentials_test:
         description: >-
           ci.yaml's needs.changes.outputs.check_release_credentials_test:
@@ -315,6 +321,10 @@ jobs:
       - name: Test the plugin-name check
         if: inputs.check_plugin_names_test == 'true'
         run: .github/scripts/check-plugin-names.test.sh
+
+      - name: Test the fireEvent reason check
+        if: inputs.check_fireevent_reasons_test == 'true'
+        run: .github/scripts/check-fireevent-reasons.test.sh
 
       - name: Test the release credential check
         if: inputs.check_release_credentials_test == 'true'
