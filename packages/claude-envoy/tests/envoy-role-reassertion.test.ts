@@ -9,7 +9,6 @@ import type {
   ChannelTopicSubscription,
 } from "../src/channel-forwarder"
 import {
-  CHANNEL_CAPABILITIES,
   type ChannelNotification,
   type ChannelNotifier,
   startChannelSession,
@@ -21,7 +20,13 @@ import {
   SessionIdentity,
 } from "../src/session-identity"
 import { STATE_FILE_MAX_AGE_MS } from "../src/session-state"
-import { emptyReplay, type FakeClient, useScratchState, waitFor } from "./channel-session-harness"
+import {
+  emptyReplay,
+  type FakeClient,
+  testCapabilities,
+  useScratchState,
+  waitFor,
+} from "./channel-session-harness"
 
 const scratchState = useScratchState()
 
@@ -103,7 +108,7 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 25,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
@@ -155,7 +160,7 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 25,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
@@ -208,7 +213,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 25,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
@@ -264,7 +269,7 @@ test("a soft claim a different live session refuses removes the role record, whi
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 25,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
@@ -325,7 +330,7 @@ test("a refusal naming this session under another process keeps the record, asks
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 25,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
@@ -408,7 +413,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 25,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
@@ -473,7 +478,7 @@ test("the age sweep does not reach the record of a process still pressing its re
     identity: new SessionIdentity("ses_current", "/tmp"),
     connection: new IdleNats(),
     notifier,
-    capabilities: CHANNEL_CAPABILITIES,
+    capabilities: testCapabilities,
     client,
     heartbeatMs: 25,
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },

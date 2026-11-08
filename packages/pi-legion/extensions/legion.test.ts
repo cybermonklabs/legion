@@ -1705,7 +1705,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       signal,
     });
     /** An assistant message that ran a real tool call, as Oh My Pi hands it to `message_end`: its
-     * tool-call block is `toolCall` (`packages/pi-envoy/src/agent-stream.ts` reads the same
+     * tool-call block is `toolCall` (`packages/pi-shared/src/agent-stream.ts` reads the same
      * shape), not Claude Code's `tool_use`. */
     const ranTool = {
       message: {
