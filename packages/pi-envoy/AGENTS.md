@@ -231,7 +231,8 @@ with that shell's own failure. The command runs on the same detached promise, ne
 queued delivery task, whose pass deadline a two-minute command would blow while holding every
 other Dispatch message for the session behind it: `/bin/sh -c`, in the directory
 `SessionContext.cwd` names, with the session's environment, in a process group of its own, both
-streams to a file in a private directory rather than a pipe, stopped after
+streams pipes read to their end with the first 32,000 bytes kept and the rest thrown away, so a
+command that prints without end writes no file and fills no disk, stopped after
 `ENVOY_SHELL_COMMAND_LIMIT_MS` (default 120000) with what it printed kept. One command runs for a
 session at a time, and a `!` that arrives while one runs is answered naming the command still
 running. What it printed goes three ways, each cut at 8,000 characters with a line saying it was

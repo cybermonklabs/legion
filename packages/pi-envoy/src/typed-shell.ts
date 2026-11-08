@@ -35,7 +35,7 @@ const SHELL_COMMAND_HEADING =
   "A person ran this shell command in this session from Dispatch. Nothing is asked of you; this is the command and what it printed.";
 
 /** What a person's `!command` did: the command without its mark, what it printed (both streams, in
- *  the order the shell wrote them, cut at `SHELL_OUTPUT_MAX`), and how it ended when it did not
+ *  the order their chunks arrived, cut at `SHELL_OUTPUT_MAX`), and how it ended when it did not
  *  end well. */
 export interface ShellCommandResult {
   readonly command: string;
