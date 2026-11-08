@@ -288,6 +288,35 @@ func (r *rig) request(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, 
 	return pending{requestID: created.RequestID, recordID: *created.RecordID}
 }
 
+// requestDenied has the session ask for names with reason, which the request machine is expected
+// to deny outright, and answers the broker's own one sentence about why. It fails when the
+// broker let the request through, since a denial that opened a record would still have a page.
+func (r *rig) requestDenied(t *testing.T, enrollmentID string, key *ecdsa.PrivateKey, reason string, names ...string) string {
+	t.Helper()
+	details := make([]record.AuthorizationDetail, len(names))
+	for i, n := range names {
+		details[i] = record.AuthorizationDetail{Type: record.KindAgentSecret, Identifier: n, Actions: []string{"inject"}}
+	}
+	compact, err := record.Sign(key, r.url, details, reason, "", nil, time.Now())
+	if err != nil {
+		t.Fatalf("record.Sign: %v", err)
+	}
+	status, out := r.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
+		map[string]any{"request": compact, "session_id": nil})
+	if status != http.StatusOK {
+		t.Fatalf("POST /v1/requests %v = %d: %s", names, status, out)
+	}
+	created := decode[struct {
+		State    string  `json:"state"`
+		RecordID *string `json:"record_id"`
+		Detail   *string `json:"detail"`
+	}](t, out)
+	if created.State != "denied" || created.RecordID != nil || created.Detail == nil {
+		t.Fatalf("POST /v1/requests %v = %s, want it denied with no record and a detail", names, out)
+	}
+	return *created.Detail
+}
+
 // benSession is a session of ben's machine on host, stating no session id.
 func (r *rig) benSession(t *testing.T, host string) (string, *ecdsa.PrivateKey) {
 	t.Helper()
