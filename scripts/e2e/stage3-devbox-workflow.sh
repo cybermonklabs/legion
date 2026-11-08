@@ -29,13 +29,17 @@
 # session, not a Legion pane, with no personal GH_TOKEN in its environment: `prerequisites` refuses
 # to start otherwise (require_proof_human, lib/workflow.sh).
 # Legion's two role Apps are this deployment's own by default, and four inputs for another
-# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id, and
-# LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_SECRET, the secrets broker github-app
-# secrets that release their installation tokens (lib/github-apps.sh). `prerequisites` proves each
-# App from its token before the run writes anything, whichever pair it took. The tokens are
-# released through each App's token_command to the daemon, and once to lib/app-logins.ts to prove
-# each App and read its bot login from GitHub (read_app_logins, lib/workflow.sh); they never enter
-# this shell, a pane, an argv, or this transcript.
+# deployment's: LEGION_E2E_IMPLEMENT_APP_ID and LEGION_E2E_REVIEW_APP_ID, each App's numeric id,
+# LEGION_E2E_IMPLEMENT_APP_SECRET, the name of the secrets broker github-app secret that releases
+# the implement App's installation tokens, and LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that
+# prints the review App's PEM private key on stdout (lib/github-apps.sh). The ids and the secret
+# name default; the key command has none, and a run that sets no key command is refused.
+# `prerequisites` proves each App from its token before the run writes anything, whichever Apps it
+# took. The implement App's tokens are released through its token_command to the daemon; the review
+# App's key command is its private_key_command, from which the daemon mints and renews that App's
+# tokens itself. Either App is proved once to lib/app-logins.ts, which reads its bot login from
+# GitHub (read_app_logins, lib/workflow.sh). No token and no key enters this shell, a pane, an
+# argv, or this transcript.
 set -Eeuo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -639,7 +643,8 @@ approval_requests_in() { jq '[.[] | select(.type == "ask.opened" and .payload.ki
 begin prerequisites
 refuse_leftovers legion-e2e3
 for tool in go docker jq curl python3 tmux bun mise secrets agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh); legion.yaml's
 # github_apps is the block proved.
 require_app_inputs implement review

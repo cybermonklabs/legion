@@ -37,12 +37,16 @@
 # that prints that copy (Claude Code's apiKeyHelper), so the key reaches no pane's environment, no
 # argv and no transcript.
 # The rig is Stage 3's without its GitHub ingress bridge: scratch
-# Postgres, NATS, Envoy listener and Dispatch, Legion's role Apps through the secrets broker's
-# github-app secrets (`agent-secrets`; this deployment's own pair unless the four
-# LEGION_E2E_*_APP_* inputs name another deployment's, lib/github-apps.sh; each App's installation
-# tokens are released to the daemon's token_command and once to lib/app-logins.ts, which proves
-# they are its id's App's before the run writes anything, never in this shell), and the smoke
-# repository
+# Postgres, NATS, Envoy listener and Dispatch, Legion's role Apps from their own inputs
+# (lib/github-apps.sh; the implement App's id and the name of the secrets broker github-app secret
+# `agent-secrets` releases its installation tokens from, and the review App's id, are this
+# deployment's own unless LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and
+# LEGION_E2E_REVIEW_APP_ID name another deployment's, while LEGION_E2E_REVIEW_APP_KEY_COMMAND is
+# required and has no default: shell text that prints the review App's PEM private key on stdout,
+# which the daemon runs as that App's private_key_command and mints and renews that App's tokens
+# from itself; either App is proved once to lib/app-logins.ts, which reads its bot login and
+# refuses a credential that is not its id's App's, before the run writes anything and never in
+# this shell), and the smoke repository
 # sjawhar/legion-smoke, where the implementer pushes a branch and opens no pull request.
 set -Eeuo pipefail
 
@@ -565,7 +569,7 @@ if [ "$model_route" = key-file ]; then
 fi
 refuse_leftovers legion-e2ecc
 for tool in go docker jq curl python3 tmux bun mise gh jj pgrep claude; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client each App's token_command runs, is required"
+command -v agent-secrets >/dev/null || fail "agent-secrets, the secrets broker's client the implement App's token_command runs, is required"
 [ "$model_route" != gateway ] || command -v hawk-token >/dev/null || fail "hawk-token is required under LEGION_E2E_MODEL_ROUTE=gateway"
 (umask 077 && tr -d '[:space:]' <"$key_file" >"$work/claude-model-key")
 [ -s "$work/claude-model-key" ] || fail "$key_file_var ($key_file) holds no key"

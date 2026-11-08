@@ -37,11 +37,16 @@ Inputs (environment):
                                  default https://api.anthropic.com)
   PARKED_DECISION_EVIDENCE_DIR   the evidence directory (default: a fresh /tmp directory, kept)
   PARKED_DECISION_UNTIL          stop after this checkpoint passes (a development run, not the proof)
-  LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET, LEGION_E2E_REVIEW_APP_ID,
-  LEGION_E2E_REVIEW_APP_SECRET
-                                 Legion's two role Apps (default: this deployment's own, each
-                                 token minted through agent-secrets; lib/github-apps.sh), proved
-                                 from their tokens against GitHub's GET /apps/<slug> in prerequisites
+  LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET, LEGION_E2E_REVIEW_APP_ID
+                                 the implement App's id and the name of the secrets broker
+                                 github-app secret its tokens are minted through, and the review
+                                 App's id (default: this deployment's own; lib/github-apps.sh)
+  LEGION_E2E_REVIEW_APP_KEY_COMMAND
+                                 shell text that prints the review App's PEM private key on
+                                 stdout (required, no default); the daemon runs it as that App's
+                                 private_key_command and mints and renews that App's tokens
+                                 itself. Both Apps are proved from their tokens against GitHub's
+                                 GET /apps/<slug> in prerequisites
 The devbox gh must act as the proof human.
 
 Checkpoints, in order:
@@ -582,7 +587,8 @@ stop_agent_daemons() {
 # ---- checkpoints --------------------------------------------------------------------------------------
 begin prerequisites
 for tool in go docker jq curl python3 tmux bun mise agent-secrets gh shellcheck jj pgrep; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (--help), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, as Stage 3 does);
 # legion.yaml's github_apps is the block proved.
 require_app_inputs implement review

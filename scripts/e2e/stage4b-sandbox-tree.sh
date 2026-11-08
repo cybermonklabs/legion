@@ -82,11 +82,15 @@
 #   document websocket require.
 # - LEGION_E2E_ENVOY_TOKEN_SECRET_ID (required) is the Secrets Manager id of the production Envoy
 #   listener's API token. The repository carries neither credential.
-# - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET, LEGION_E2E_REVIEW_APP_ID and
-#   LEGION_E2E_REVIEW_APP_SECRET name another deployment's two role Apps: each App's numeric id
-#   and the secrets broker github-app secret the `agent-secrets` client releases its installation
-#   tokens from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets
-#   none. prerequisites proves each App from its token against GitHub (GraphQL's viewer, then
+# - LEGION_E2E_IMPLEMENT_APP_ID, LEGION_E2E_IMPLEMENT_APP_SECRET and LEGION_E2E_REVIEW_APP_ID name
+#   another deployment's two role Apps: each App's numeric id, and the name of the secrets broker
+#   github-app secret the `agent-secrets` client releases the implement App's installation tokens
+#   from (lib/github-apps.sh). Each defaults to this deployment's own, so a run here sets none.
+# - LEGION_E2E_REVIEW_APP_KEY_COMMAND (required, no default) is shell text that prints the review
+#   App's PEM private key on stdout. The daemon runs it as that App's private_key_command and
+#   mints and renews that App's tokens from the key itself. The repository carries neither the
+#   key nor the command, and the run prints neither.
+#   prerequisites proves both Apps from their tokens against GitHub (GraphQL's viewer, then
 #   GET /apps/<slug>) before the run's first write anywhere; the daemon's github_apps is the block
 #   proved.
 # - LEGION_E2E_PROJECT (default LEGSMOKE, a Dispatch project key: [A-Z][A-Z0-9]{1,9}, exactly

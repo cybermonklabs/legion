@@ -17,10 +17,13 @@
 # branch before any merge, and the scratch base is deleted at the end.
 #
 # Run it as `bash scripts/e2e/stage3-4b13b-acceptance.sh` from the operator's own Oh My Pi session,
-# with the Stage 3 proof's two required inputs, LEGION_E2E_MODEL_GATEWAY_URL and SMOKE_UPSTREAM_NATS
-# (scripts/e2e/README.md; Legion's two role Apps are this deployment's own unless the four
-# LEGION_E2E_*_APP_* inputs name another's, lib/github-apps.sh), and three of its own, since it
-# creates no Docker container:
+# with the Stage 3 proof's three required inputs, LEGION_E2E_MODEL_GATEWAY_URL, SMOKE_UPSTREAM_NATS
+# and LEGION_E2E_REVIEW_APP_KEY_COMMAND, shell text that prints the review App's PEM private key on
+# stdout, which the daemon runs as that App's private_key_command and mints and renews that App's
+# tokens from (scripts/e2e/README.md; the two role Apps' ids, LEGION_E2E_IMPLEMENT_APP_ID and
+# LEGION_E2E_REVIEW_APP_ID, and the name of the implement App's secrets broker github-app secret,
+# LEGION_E2E_IMPLEMENT_APP_SECRET, default to this deployment's own, lib/github-apps.sh), and three
+# of its own, since it creates no Docker container:
 # ACCEPT_PG_CONTAINER and ACCEPT_PG_PORT name a running Postgres container (user postgres, password
 # ci) in which the daemon and Dispatch take their own databases, and ACCEPT_NATS_BIN a nats-server
 # binary it runs natively. Its GitHub writes are the Stage 3 proof human's, the devbox gh acting as
@@ -580,7 +583,8 @@ until_true_quiet() {
 
 begin prerequisites
 for tool in go psql jq curl python3 tmux bun mise secrets agent-secrets gh jj hawk-token; do command -v "$tool" >/dev/null || fail "$tool is required"; done
-# Legion's two role Apps, this deployment's own unless the App inputs name another's, proved
+# Legion's two role Apps, this deployment's own ids unless the App inputs name another's, with the
+# implement App's broker secret and the review App's key command behind them (the header), proved
 # against GitHub here, before the run writes anything (lib/github-apps.sh, which the lib sourced
 # from ACCEPT_ROOT must carry).
 declare -F require_app_inputs >/dev/null ||
