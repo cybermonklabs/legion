@@ -264,6 +264,7 @@ func (d *tickDispatch) PostMessage(context.Context, string, string) error { retu
 func (d *tickDispatch) HandOver(context.Context, dispatch.Issue, string) error {
 	return nil
 }
+func (d *tickDispatch) ReleaseClaim(context.Context, string) error { return nil }
 func (d *tickDispatch) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
 	return nil, nil
 }
