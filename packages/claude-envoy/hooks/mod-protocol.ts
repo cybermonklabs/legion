@@ -595,15 +595,16 @@ export interface ModCallArguments {
    * mod is the one process where the turn's events and this write are in one order
    * (INFRA-1026 review, round eleven; `./mod.ts`).
    *
-   * The mod answers with the row the message became, and a frame of Envoy's is answered on
-   * that row and on nothing else. A request the mod never answered leaves the frame
-   * unanswered, so Envoy sends it again, which `eventId` makes safe.
+   * The mod answers with the write the message became - a row's uuid, or a prompt the engine
+   * took - and a frame of Envoy's is answered on that answer and on nothing else. A request the
+   * mod never answered leaves the frame unanswered, so Envoy sends it again, which `eventId`
+   * makes safe.
    */
   "session.message": {
     /**
      * The Envoy event this message is, which the mod's write is idempotent by: it records the
-     * row each id became and answers a replay of that id with the recorded row, writing
-     * nothing (`$.store`, `./mod-writer.ts`). Every message that reached the session as a frame of
+     * write each id became and answers a replay of that id from the record, writing nothing
+     * (`$.store`, `./mod-writer.ts`). Every message that reached the session as a frame of
      * Envoy's carries it — a card and a person's own message alike, since a person's message
      * whose answer is late comes again as a card under that same id and must be the one write
      * (`../src/mod-session.ts`, `deliver`). The Dispatch attempt records nothing of that: it

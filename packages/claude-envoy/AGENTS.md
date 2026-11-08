@@ -330,11 +330,11 @@ above says how to run it).
   answer is late is sent again and arrives as a card, the accept having spent its Dispatch
   attempt, so the two writes are one write or the model reads their words twice. Before it
   appends or submits, the mod looks that id up in `$.store` and answers a copy it already
-  wrote with the recorded row, writing nothing (`writeOnce`, `hooks/mod-writer.ts`). Every write
-  is recorded, the one that has no row to record included: a prompt the engine took whose row
-  the mod did not see within `PROMPT_ROW_MS` is in the session, and answered as a drop instead it
-  was recorded nowhere, so its resend submitted the message a second time and a person's own
-  message had Dispatch tell them their session dropped a prompt it took (INFRA-1026 review).
+  wrote with the recorded write, writing nothing (`writeOnce`, `hooks/mod-writer.ts`). Every
+  write is recorded, a prompt included, which has no row to record: a prompt the engine took is
+  in the session, and answered as a drop instead it was recorded nowhere, so its resend
+  submitted the message a second time and a person's own message had Dispatch tell them their
+  session dropped a prompt it took (INFRA-1026 review).
   The store has no compare-and-set — two `get`s of an unset key
   both answered undefined, 0 ms and 2 s apart, in one session and across two
   (`/legion/scratch/tmp/infra-1026-store`) — so the mod chains the look-up and the write per

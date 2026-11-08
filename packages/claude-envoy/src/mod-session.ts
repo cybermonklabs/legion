@@ -378,12 +378,13 @@ export function modSession(options: ModSessionOptions): ModSession {
   }
 
   /**
-   * Hand the mod one message and answer with the row it became.
+   * Hand the mod one message and answer with the write it became.
    *
    * What the mod does with it — a row of the turn running, or the prompt of a new turn, and the
    * one prompt that points the model at a row no request read — is the mod's own
-   * (`../hooks/mod-writer.ts`, `writeMessage`). What this file needs back is the row, which is the
-   * proof the session has the message, and `as`, which says which write wrote that row.
+   * (`../hooks/mod-writer.ts`, `writeMessage`). What this file needs back is that answer, which
+   * is the proof the session has the message: `as` says which write it was, and a row's uuid
+   * comes with it.
    */
   const written = async (
     message: ModUnreadMessage,

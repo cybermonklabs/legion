@@ -316,8 +316,9 @@ function createLink(): SessionLink {
 
   /** What a message becomes in this session, and what points the model at a row no request
    *  read: the rules this link carries between the socket and the session, in a file of their
-   *  own (`./mod-writer`). It reaches `$` through this link's own closures and holds the
-   *  turn's state itself, so the two halves share these four and nothing else. */
+   *  own (`./mod-writer`). A write is handed the request's own `engine` (`invoke`); the writer
+   *  reads `engine` below only for the prompt it submits at a turn's end, where no request is
+   *  in hand, and holds the turn's state itself. */
   const writer = createMessageWriter({
     engine: () => host,
     send,
