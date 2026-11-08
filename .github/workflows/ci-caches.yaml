@@ -218,15 +218,19 @@ jobs:
           lookup-only: true
 
       # envoy-go's set: the test binary of every package of the envoy module, the integration
-      # package's and the natslive build of internal/testnats among them. `go test -c` links each
-      # package's test binary and `-o /dev/null` writes none of them, so every object the restored
-      # build cache holds is made and no test runs: envoy-go's tests want the job's Postgres
-      # service and container images, which a cache fill has no reason to start.
+      # package's and the natslive build of internal/testnats among them. It runs each binary
+      # with `-run '^$'`, which matches no test, rather than `go test -c -o /dev/null`: measured
+      # on 2026-11-08, a job restoring a `-c -o /dev/null` fill still spent about 70 s of its unit
+      # step on work this step had done, because what `go test` reuses is the cached result of the
+      # run action, which only a run writes - the compile and link alone leave it unwritten. So
+      # the fill does what the job does, to the last action, and starts no test: `-run '^$'` runs
+      # each binary, which prints `ok … [no tests to run]` and touches no Postgres and no
+      # container image, which a cache fill has no reason to start (dispatch://INFRA-1075).
       - name: Build the test binary of every package of the envoy module
         if: steps.go-envoy-test.outputs.cache-hit != 'true'
         run: |
-          go test -c -o /dev/null ./...
-          go test -c -o /dev/null -tags natslive ./internal/testnats/
+          go list ./... | xargs go test -count=1 -run '^$' -p 8 > /dev/null
+          go test -count=1 -run '^$' -tags natslive ./internal/testnats/ > /dev/null
         working-directory: packages/envoy
 
       # Without the module zips. A module Go has already extracted is read from its extracted
