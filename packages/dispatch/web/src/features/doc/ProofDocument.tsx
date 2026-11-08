@@ -63,7 +63,11 @@ import { DocumentPreview, documentPreview, takesTheBuiltBlocks } from "./Documen
 import { DocumentReferences, useReferenceClick } from "./document-references";
 import type { EditorConstruction, EditorHandle, EditorOptions } from "./editor";
 import { bindRemoteMarks } from "./editor";
-import { theFirstBatchIsAwaited, useAfterTheFirstBatch } from "./first-batch";
+import {
+  theDocumentIsAwaitedFromTheServer,
+  theFirstBatchIsAwaited,
+  useAfterTheFirstBatch,
+} from "./first-batch";
 import { currentAddress, firstScreenAwaits } from "./first-screen";
 import type { Highlight } from "./highlight";
 import { liveTextQueryOptions } from "./live-text";
@@ -1047,6 +1051,12 @@ export function ProofDocument({
             },
             onSynced: () => {
               refusals = 0;
+              // The document is here, so the page is no longer waiting on the server for it:
+              // what it waits for from now on is the build, which the deadline over the whole
+              // load covers (`first-batch.ts`).
+              if (page) {
+                theDocumentIsAwaitedFromTheServer(false);
+              }
               // From here the editor is being built, so the draw the reader is reading stops
               // painting the rest of itself into a page this editor is about to replace
               // (`DocumentPreview`).
@@ -1113,6 +1123,12 @@ export function ProofDocument({
           });
           document = connection;
           connectionRef.current = connection;
+          // The socket is open and the document has been asked for. From here the page is
+          // waiting on the server alone, which is the one step of this load nothing reports
+          // the end of when the answer never comes (`first-batch.ts`).
+          if (page) {
+            theDocumentIsAwaitedFromTheServer(true);
+          }
           /** The draw's own blocks, indexed by their ids once rather than scanned for in
            *  every batch (`takesTheBuiltBlocks`), against the element they were indexed
            *  from, so a draw React has replaced is indexed again. */

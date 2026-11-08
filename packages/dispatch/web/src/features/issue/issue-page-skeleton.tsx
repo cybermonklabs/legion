@@ -73,12 +73,19 @@ const ISSUE_TABS = [
  * moves the document under it by no pixels.
  *
  * Each tab is a pulsing box the width of its own name rather than a tab that reads as one: the
- * strip is what the reader presses, and nothing here answers a press or a screen reader.
+ * strip is what the reader presses, and nothing there answers a press or a screen reader.
+ *
+ * `trailing` is the one thing in this box that is not a placeholder: the open document's
+ * connection dot, which the strip itself carries in the same place (`Tabs`'s own `trailing`,
+ * inside `SpecToolbar`). It is the document's own state rather than the page's chrome, and the
+ * moment a reader most needs it - the document is not connected and their edits are in this
+ * browser alone - is exactly the moment no first batch comes to draw the strip
+ * (`features/doc/first-batch.ts`, dispatch://INFRA-341 R11).
  */
-export function IssueTabsSkeleton(): ReactNode {
+export function IssueTabsSkeleton({ trailing }: { trailing?: ReactNode }): ReactNode {
   return (
-    <div aria-hidden="true" className={tabStripClassName(true)} data-testid="issue-tabs-box">
-      <div className={tabListClassName(true)}>
+    <div className={tabStripClassName(true)} data-testid="issue-tabs-box">
+      <div aria-hidden="true" className={tabListClassName(true)}>
         {ISSUE_TABS.map((label) => (
           <span className={tabClassName(true, false)} key={label}>
             <span className={`animate-pulse rounded ${textTransparent} ${skeletonBg}`}>
@@ -87,6 +94,7 @@ export function IssueTabsSkeleton(): ReactNode {
           </span>
         ))}
       </div>
+      {trailing}
     </div>
   );
 }

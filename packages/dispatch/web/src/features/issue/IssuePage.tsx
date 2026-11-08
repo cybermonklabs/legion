@@ -26,6 +26,7 @@ import {
 } from "../../theme/classes";
 import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ChromeAfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
+import { ConnectionDot } from "../doc/ConnectionDot";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { outsideAskCard } from "../inbox/ask-card";
 import {
@@ -511,7 +512,21 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           />
         </Suspense>
       </ChromeAfterTheFirstBatch>
-      <ChromeAfterTheFirstBatch space={<IssueTabsSkeleton />}>
+      {/* The open document's connection dot stands in the strip's space until the strip itself
+          lands. A reader whose edits are in this browser alone is told so while the document is
+          still connecting, which is exactly when no first batch comes to draw the strip
+          (`issue-page-skeleton.tsx`, `features/doc/first-batch.ts`). */}
+      <ChromeAfterTheFirstBatch
+        space={
+          <IssueTabsSkeleton
+            trailing={
+              activeTab === "spec" && specToolbar !== undefined ? (
+                <ConnectionDot connection={specToolbar.connection} pending={specToolbar.pending} />
+              ) : undefined
+            }
+          />
+        }
+      >
         <Suspense fallback={<IssueTabsSkeleton />}>
           <IssueTabs
             activeTab={activeTab}

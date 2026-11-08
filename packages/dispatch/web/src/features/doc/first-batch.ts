@@ -37,9 +37,13 @@ const listeners = new Set<() => void>();
  * the batch itself (`ProofDocument`'s `onBatch`), an issue or a text read that names no
  * document to open (`open-document-early.ts`), a transport or editor chunk that failed and a
  * stored tree the server will not admit (`ProofDocument`'s `reportLoadFailure` and its blocked
- * admission). What has no end is a socket that neither connects nor fails: it stays
- * `connecting`, nothing reports anything, and the page's header and tab strip are a skeleton
- * with nothing left to release them (`AfterTheFirstBatch.tsx`'s `ChromeAfterTheFirstBatch`).
+ * admission). What has no end of its own is a load that stops in the middle: a chunk that
+ * never arrives, a socket that neither connects nor fails, a server that takes the page's
+ * SyncStep1 and sends nothing back. Nothing reports any of those, and the page's header and
+ * tab strip stay a skeleton with nothing left to release them (`AfterTheFirstBatch.tsx`'s
+ * `ChromeAfterTheFirstBatch`). This is the deadline over the whole of that load;
+ * `LONGEST_WAIT_FOR_THE_DOCUMENT_MS` below is the shorter one over its last step, where the
+ * page is waiting on nothing but a round trip.
  *
  * So the hold is a bargain with a deadline rather than an open one. The reader has the
  * document's own text on the screen about 0.6 s into the load whatever the socket does
@@ -60,8 +64,31 @@ const listeners = new Set<() => void>();
  */
 export const LONGEST_HOLD_MS = 20_000;
 
-/** The deadline armed with the hold above, cleared by whatever releases it first. */
+/**
+ * How long the page holds them once the socket is open and the server has not answered with
+ * the document.
+ *
+ * The deadline above covers the whole load, main thread included, which is why it is as long
+ * as it is: on a throttled phone the socket is not even opened until about six seconds in
+ * (`e2e/large-documents-page.ts`, the opening timeline), and the build after it is the page's
+ * own thread. This one covers one step of that load, and the step it covers is a round trip:
+ * the page has asked the server for the document over an open socket and is waiting for the
+ * frame that carries it (`ProofDocument`'s `admit`, `onSynced`). Nothing of the page's own
+ * work stands between the two, so a wait that long is a server that is not going to answer -
+ * which is the state a held transport leaves a page in, and the one case the deadline above
+ * cannot tell from a slow build.
+ *
+ * Ten seconds: twenty times the half-second R11 calls a freeze, and long enough that a phone
+ * on a slow link still gets the hold it was measured for. What firing costs is what firing
+ * above costs - the reads' head start, with the reader's place kept under the chrome that
+ * lands (`readers-place.ts`) - and what it buys is the way out of a document the server is
+ * not sending.
+ */
+export const LONGEST_WAIT_FOR_THE_DOCUMENT_MS = 10_000;
+
+/** The deadlines armed with the hold above, each cleared by whatever releases it first. */
 let deadline: number | undefined;
+let serverDeadline: number | undefined;
 
 /**
  * Whether the page waits for a first batch before making the reads above.
@@ -69,11 +96,13 @@ let deadline: number | undefined;
  * `true` from the address alone, before anything has rendered: an address that opens a document
  * (`openDocumentEarly`). `false` as soon as nothing is waited for - the first batch is in, the
  * address opens no document, the issue names no document to open, the surface reports that
- * no editor is coming, or the deadline above has passed - and false is where it stays until the
- * next address.
+ * no editor is coming, or either deadline above has passed - and false is where it stays until
+ * the next address.
  */
 export function theFirstBatchIsAwaited(next: boolean): void {
   window.clearTimeout(deadline);
+  window.clearTimeout(serverDeadline);
+  serverDeadline = undefined;
   deadline = next
     ? window.setTimeout(() => theFirstBatchIsAwaited(false), LONGEST_HOLD_MS)
     : undefined;
@@ -84,6 +113,22 @@ export function theFirstBatchIsAwaited(next: boolean): void {
   for (const notify of listeners) {
     notify();
   }
+}
+
+/**
+ * Whether the page is waiting on the server for the document itself: `true` when the document's
+ * socket has been opened (`ProofDocument`'s `admit`), `false` when its state has been applied
+ * and the editor is being built from it (`onSynced`), which is the step the batch comes out of.
+ *
+ * Said only by the surface whose document the page is (`page`), as every other report to this
+ * gate is: a pane's document holds nothing of the page behind it.
+ */
+export function theDocumentIsAwaitedFromTheServer(next: boolean): void {
+  window.clearTimeout(serverDeadline);
+  serverDeadline =
+    next && awaited
+      ? window.setTimeout(() => theFirstBatchIsAwaited(false), LONGEST_WAIT_FOR_THE_DOCUMENT_MS)
+      : undefined;
 }
 
 /** Whether the page is past the editor's first batch, for a reader outside React. */

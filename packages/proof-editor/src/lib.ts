@@ -769,8 +769,13 @@ async function theConstruction(
       show(root);
       throw error;
     }
-    // The third task of the three: the host's swap runs when this resolves, so this resolves a
-    // task after the binding connected rather than in its microtask.
+    // The third task: the peer cursors. Installing them reconfigures the editor's whole plugin
+    // set a second time, over a document that by now holds every block
+    // (`installCollabCursorsWhenReady`), and measured at a desktop width on a 986-block
+    // document that is 266 ms of main thread. It used to run in the task the host's swap runs
+    // in - the two together held the page for 465 ms of the build's last second, the longest
+    // task of the whole build - so the task boundary below is what keeps each of them its own
+    // (dispatch://INFRA-341, R11).
     await endOfTask();
 
     if (opts.awareness) {
@@ -778,6 +783,9 @@ async function theConstruction(
       // `awareness.getStates().get(clientId).user`.
       opts.awareness.setLocalStateField('user', opts.user);
       installCollabCursorsWhenReady(view, editor.ctx, collabService, opts.awareness, () => alive);
+      // The fourth task: the host's swap, which runs when this resolves, so it never joins the
+      // reconfigure above.
+      await endOfTask();
     }
 
     return handle;

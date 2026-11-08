@@ -197,6 +197,19 @@ function attachTriggers(): () => void {
   document.addEventListener("wheel", onReaderInput, { capture: true, passive: true });
   document.addEventListener("keydown", onReaderInput, { capture: true, passive: true });
   document.addEventListener("pointerdown", onReaderInput, { capture: true, passive: true });
+  // The reader may already be on a trigger when these go up. This host is loaded beside the
+  // route rather than in the entry chunk (`features/shell/deferred-shell.ts`), so a page draws
+  // its references before the listeners above exist. A pointer resting on one is told again the
+  // moment it crosses a boundary, but `focusin` fires once and no second one is coming: a reader
+  // who tabs to a reference while this chunk is still arriving would otherwise wait on a card
+  // that never opens.
+  const focused = triggerOf(document.activeElement);
+  if (focused?.matches(":focus-visible") === true) {
+    const route = routeOf(focused);
+    if (route !== undefined) {
+      refPreview.focus(focused, route);
+    }
+  }
   return () => {
     document.removeEventListener("pointermove", onPointerMove);
     document.removeEventListener("pointerover", onPointerOver);

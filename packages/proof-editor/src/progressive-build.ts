@@ -252,11 +252,12 @@ export interface ProgressiveBuild {
  * the binding the mapping those batches made. Every block of the fragment is in the editor's
  * document, and in the real DOM, when this resolves.
  *
- * The last batch, the adoption and the host's swap are three tasks, not one
+ * The last batch, the adoption, the peer cursors and the host's swap are four tasks, not one
  * (dispatch://INFRA-341, R11): together they were 1,370 ms on a phone at 4x CPU throttling,
  * over the 500 ms a reader feels as a freeze. The task between the last batch and the adoption
- * is this function's; the one between the adoption and the swap is `createProofEditor`'s, which
- * answers its handle a task after the connect so the host's swap never joins it.
+ * is this function's; the two after it are `createProofEditor`'s, which installs the peer
+ * cursors a task after the adoption and answers its handle a task after that, so the host's
+ * swap joins neither.
  */
 export async function buildTheDocumentInBatches({
   adopt,
