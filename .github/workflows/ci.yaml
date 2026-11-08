@@ -364,6 +364,11 @@ jobs:
       # are all 'true'.
       filter_verdicts: ${{ github.event_name == 'workflow_dispatch' && '{}' || steps.verdicts.outputs.verdicts }}
     steps:
+      # Probe for dispatch://INFRA-1413's review round 2, never merged: this step fails the
+      # changes job, and the three conditions below are put back as they stood before the
+      # fix, so a pull_request run reads the pre-fix gate against the fixed base.
+      - name: Fail the changes job on purpose
+        run: exit 1
       # On pull_request dorny/paths-filter reads the file list from the API and never reads the
       # tree; merge_group diffs with git and needs the clone (a merge group diffs its
       # base_sha..head_sha, fetching what the clone lacks). A dispatched run clones too, and
@@ -3456,7 +3461,7 @@ jobs:
   # it by name (.github/scripts/ci_job_reads.py's PACK_TESTS builds both steps' text).
   plugin-pack:
     needs: changes
-    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.plugin_pack == 'true') }}
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && needs.changes.outputs.plugin_pack == 'true' }}
     permissions:
       contents: read
       actions: read
@@ -3534,7 +3539,7 @@ jobs:
   # service on a job whose other thirty-odd steps would start it for nothing.
   sessions-script:
     needs: changes
-    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.sessions_script == 'true') }}
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && needs.changes.outputs.sessions_script == 'true' }}
     permissions:
       contents: read
       actions: read
@@ -3744,7 +3749,7 @@ jobs:
   # (.github/workflows/ci-job-text-checks.yaml's header).
   text-checks:
     needs: changes
-    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && (needs.changes.result != 'success' || needs.changes.outputs.text_checks == 'true') }}
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') && needs.changes.outputs.text_checks == 'true' }}
     permissions:
       contents: read
       actions: read
