@@ -624,16 +624,16 @@ func TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal(t *testing.T) {
 	// pass every bound from the future and is caught by the first. The middle comparison is the
 	// reason this row reads stopped_by at all: this is the one path here where the two are not
 	// the same capped value, so the two clocks read in the wrong order, or the two attributes
-	// swapped, leave an upper bound no later than the lower one and no bound on the stop from
-	// above, and fail here.
+	// swapped, leave an upper bound earlier than the lower one and fail here; two reads that land
+	// on the same nanosecond pass, and leave bounds that are still honest to the clock.
 	//
 	// What no comparison here can catch is which side of o.hold.Store(nil) each clock was read
 	// on. Moving the second read above the store, and leaving it after the first, keeps the two
 	// in order and every bound below holding; the line is written after both reads and after the
-	// store, so nothing it carries says where the store fell between them. That placement is
-	// held by publish's own doc comment and by the two-process row, which reads /healthz while
-	// the turn is running and so sees Publishing() answer true past a stopped_by that came too
-	// early.
+	// store, so nothing it carries says where the store fell between them. No row holds that
+	// placement: publish's doc comment records it, and the one reader that compares /healthz with
+	// stopped_by, the two-process row, sees only turns that end at the hold's deadline, where
+	// stopped_by is the deadline wherever the read sits.
 	if stopped.Before(began) {
 		t.Errorf("the line dates the stop at %s, before publish was called at %s",
 			stopped.Format(time.RFC3339Nano), began.Format(time.RFC3339Nano))
