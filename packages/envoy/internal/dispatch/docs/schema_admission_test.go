@@ -256,6 +256,8 @@ func TestSchemaAdmissionFollowsTheLiveFleet(t *testing.T) {
 	}{
 		{name: "a page one version newer beside a live process of its build", fleet: []process{{5, 4, 0}}, query: page(5, 4), token: "5", writable: true},
 		{name: "after a rollback, a page one version newer creating what no live process creates", query: page(5, 4), token: "5"},
+		{name: "a page creating above every live process's schema version", query: page(5, 5), token: "5"},
+		{name: "a page one version newer that creates only what every live process reads", query: page(5, 3), token: "5", writable: true},
 		{name: "after a rollback, a page one version older that represents everything the fleet creates", query: page(3, 3), token: "3", writable: true},
 		{name: "a page that cannot represent an element the document holds", future: true, query: page(3, 3), token: "3"},
 		{name: "a page of this version beside the element it represents", future: true, query: page(4, 3), token: "4", writable: true},
