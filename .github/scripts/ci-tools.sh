@@ -28,11 +28,15 @@
 # below is the one list of the words a `second_source:` may hold, so no word is printed for a row
 # and then refused when the bytes are fetched.
 #
-# A fourth word a line may say and no row may hold: `cache`. .github/actions/setup-bun writes it
-# itself, from oven-sh/setup-bun's own `cache-hit` output, where that action restored Bun from
-# this repository's Actions cache instead of downloading the release asset. The cache holds bytes
-# a row already pins and is no store an install can fetch a tool from, so it is no property of a
-# row, no `second_source:` may name it, and nothing in this file prints it.
+# Two more words a line may say and no row may hold: `cache` and `existing-install`.
+# .github/actions/setup-bun writes both itself, where it installed nothing and read what
+# oven-sh/setup-bun left at ~/.bun/bin/bun: `cache` where that action restored Bun from this
+# repository's Actions cache instead of downloading the release asset, and `existing-install`
+# where a Bun of the pinned version was already at that path when the action started and that
+# action kept it, which it reports as a cache hit too. Neither names a store an install can
+# fetch a tool from — the one holds bytes a row already pins, the other is the runner's own
+# filesystem — so neither is a property of a row, no `second_source:` may name either, and
+# nothing in this file prints them.
 #
 # THIS FILE IS SOURCED, NEVER EXECUTED. It defines functions, declares the empty cache those
 # functions keep a read manifest row in, reads nothing and fetches nothing at load, and it is
