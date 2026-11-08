@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
@@ -72,6 +74,32 @@ func (r *sessionsImportRig) refuses(want string, extra ...string) {
 	code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
 	if code != 1 || !strings.Contains(out, want) {
 		r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", code, out, want)
+	}
+}
+
+// refusesWithin is refuses under a deadline, for the two cases whose open would never answer if
+// the walk's flag set lost O_NONBLOCK. Every other refusal comes back at once, so refuses stays
+// as it is: a deadline on all of them would only turn a slow database into a flake.
+func (r *sessionsImportRig) refusesWithin(limit time.Duration, want string, extra ...string) {
+	r.t.Helper()
+	type outcome struct {
+		code int
+		out  string
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		code, out, _ := r.run(append([]string{"--tree", "LEGION-1"}, extra...)...)
+		done <- outcome{code: code, out: out}
+	}()
+	select {
+	case got := <-done:
+		if got.code != 1 || !strings.Contains(got.out, want) {
+			r.t.Fatalf("import = %d, stdout\n%s\nwant exit 1 and the line %q", got.code, got.out, want)
+		}
+	case <-time.After(limit):
+		// Failing here rather than waiting: without the deadline a blocked open holds the whole
+		// package until `go test`'s own timeout kills it, with a stack dump and no word of why.
+		r.t.Fatalf("the import did not answer within %s: the open of the named pipe is waiting for a writer, so the walk's flags have lost O_NONBLOCK; want the line %q", limit, want)
 	}
 }
 
@@ -332,6 +360,41 @@ func TestSessionsImportRefusesSymlinkedSessionDirectory(t *testing.T) {
 			}
 		})
 	}
+
+	// The sessions directory is the walk's first no-follow component: a legion-v10.0.0 deployment
+	// left it writable by every agent, so one of them could put a link in its place and the copy
+	// would read a file off the volume. The link stands for the directory the agent's own sits
+	// in, so its target holds the session file one level deeper than the cases above.
+	t.Run("the sessions directory itself", func(t *testing.T) {
+		for _, target := range []struct {
+			name string
+			make func(t *testing.T, r *sessionsImportRig) string
+		}{
+			{"absolute target", func(t *testing.T, r *sessionsImportRig) string {
+				outside := t.TempDir()
+				hold(t, filepath.Join(outside, directory))
+				return outside
+			}},
+			{"relative target", func(t *testing.T, r *sessionsImportRig) string {
+				hold(t, filepath.Join(r.volume, "outside", directory))
+				return filepath.Join("..", "outside")
+			}},
+		} {
+			t.Run(target.name, func(t *testing.T) {
+				r := newSessionsImportRig(t, []map[string]string{{"token": token, "tree": "LEGION-1", "sessionFile": recorded}})
+				// The volume holds no sessions directory: the link stands in its place.
+				link := filepath.Join(r.volume, "sessions")
+				if err := os.Symlink(target.make(t, r), link); err != nil {
+					t.Fatal(err)
+				}
+
+				r.refuses(token + " failed " + recorded + ": read the session file: " + link + " is a symbolic link\n")
+				if _, found := r.held(recorded); found {
+					t.Fatal("the table contains the symlink-directory target")
+				}
+			})
+		}
+	})
 }
 
 // Each of these is a path the walk refuses before or during its descent, rather than at the leaf,
@@ -393,15 +456,70 @@ func TestSessionsImportRefusesPathsTheWalkCannotDescend(t *testing.T) {
 			r.volume + " is not under the sessions directory " + filepath.Join(r.volume, "sessions") + "\n")
 	})
 
-	t.Run("a sessions directory that cannot be opened", func(t *testing.T) {
+	t.Run("a volume that holds no sessions directory", func(t *testing.T) {
+		recorded := agentSessions + "/" + directory + "/" + name
+		r := newSessionsImportRig(t, claim(recorded))
+		// The rig's volume exists and is empty. The sessions directory is the walk's first
+		// component, so a volume without one is refused as a component now, not as the volume.
+		r.refuses(token + " failed " + recorded + ": read the session file: " +
+			filepath.Join(r.volume, "sessions") + " is not on the tree volume\n")
+	})
+
+	t.Run("a tree volume that cannot be opened", func(t *testing.T) {
 		recorded := agentSessions + "/" + directory + "/" + name
 		r := newSessionsImportRig(t, claim(recorded))
 		missing := filepath.Join(t.TempDir(), "no-such-volume")
 		// The rig appends a caller's arguments after its own --tree-volume and flag keeps the
 		// last value of a repeated flag, so this runs against a volume that does not exist.
-		r.refuses(token+" failed "+recorded+": read the session file: the sessions directory "+
-			filepath.Join(missing, "sessions")+" cannot be opened: no such file or directory\n",
+		r.refuses(token+" failed "+recorded+": read the session file: the tree volume "+
+			missing+" cannot be opened: no such file or directory\n",
 			"--tree-volume", missing)
+	})
+}
+
+// O_NONBLOCK in the walk's flag set has one job: to stop the open of a named pipe from waiting
+// for a writer. Nothing else in the package pins it, so these two cases are what fails when it
+// goes, and each runs under a deadline because the regression is a hang rather than a wrong
+// answer.
+func TestSessionsImportRefusesNamedPipes(t *testing.T) {
+	const (
+		token     = "legion-legion-legion-1-architect"
+		session   = "01a18950-3b61-70b7-82d4-c80464927f8e"
+		directory = "--legion-workspaces-sjawhar-legion-legion-1--"
+	)
+	name := "2026-10-29T20-18-19-105Z_" + session + ".jsonl"
+	claim := func(recorded string) []map[string]string {
+		return []map[string]string{{"token": token, "tree": "LEGION-1", "sessionFile": recorded}}
+	}
+	// Nothing ever opens either pipe for writing, which is what makes a blocking open block.
+	mkfifo := func(t *testing.T, path string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := syscall.Mkfifo(path, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The refusal was measured at 0.47 s in this pod, so seconds of headroom keep a loaded
+	// machine from failing an import that does answer.
+	const limit = 10 * time.Second
+
+	t.Run("a named pipe where the session file belongs", func(t *testing.T) {
+		recorded := agentSessions + "/" + directory + "/" + name
+		r := newSessionsImportRig(t, claim(recorded))
+		mkfifo(t, r.onVolume(recorded))
+		// The leaf opens at once and is refused by the kind read off the handle, a refusal that
+		// names no path because the line already carries the one the claim recorded.
+		r.refusesWithin(limit, token+" failed "+recorded+": read the session file: is not a regular file\n")
+	})
+
+	t.Run("a named pipe where an intermediate directory belongs", func(t *testing.T) {
+		recorded := agentSessions + "/a-pipe/" + name
+		r := newSessionsImportRig(t, claim(recorded))
+		mkfifo(t, filepath.Join(r.volume, "sessions", "a-pipe"))
+		r.refusesWithin(limit, token+" failed "+recorded+": read the session file: "+
+			filepath.Join(r.volume, "sessions", "a-pipe")+" is not a directory\n")
 	})
 }
 
