@@ -621,8 +621,10 @@ test("a document's card shows its owner, name, latest version and text from its 
     id: "doc-9",
     kind: "doc",
     latest_version: 4,
+    mime: null,
     name: "Runbook.md",
     project: "CORE",
+    size: null,
     slug: "runbook-md",
   });
   const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
@@ -674,8 +676,10 @@ function summaryWithSpec(): IssueReferenceSummary {
         id: "spec",
         kind: "doc",
         latest_version: 3,
+        mime: null,
         name: "Design.md",
         primary: true,
+        size: null,
         slug: "design-md",
       },
     ],

@@ -172,7 +172,7 @@ const expectTimeout = 15_000;
 // DISPATCH_E2E_SIGNIN=oidc and every other one without it.
 //
 // `retries: 0`, against the one retry the run takes on CI, and for a reason of its own: the
-// `-alone` projects below also set it, but their argument is about the wall clock and does not
+// `-alone` projects below also set it, but their argument is about a measurement and does not
 // reach here. This project's argument is that nothing publishes its flaky rows. The job that
 // runs it (.github/workflows/dispatch-browser.yaml's multiprocess job) writes no blob report,
 // and the merge job that reports the run's flake rate reads the shard and alone legs' blobs
@@ -198,18 +198,27 @@ const multiprocessProjects = [
 // so these files run in the `-alone` projects at the end of this list, after every other project
 // and one row at a time, and in no project above them (sjawhar/legion#2612).
 const clockSpecs = /(heavy-bodies|nested-directive)\.e2e\.ts/;
+// The spec whose one row is read from the bytes a page made the browser fetch
+// (`view-bytes.e2e.ts`). That number is read against the machine too: what a page gets through
+// before the row looks is not the same under three other lanes' load. So it runs where the
+// clock-read specs run, in `chromium-alone`, and in no project above it.
+const byteSpecs = /view-bytes\.e2e\.ts/;
+// The specs the measured projects take and every project above them leaves alone, so a row of
+// one of these files is measured once and on a quiet machine.
+const measuredSpecs = [clockSpecs, byteSpecs];
 
 // Every project that runs four lanes wide. The `-alone` projects below name all of them, so a
-// project added here is one more the clock rows wait for.
+// project added here is one more the measured rows wait for.
 const parallelProjects = [
+  // Every row of every spec, less the measured files, which `chromium-alone` runs.
   {
     name: "chromium",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, ...measuredSpecs],
     use: { ...devices["Desktop Chrome"] },
   },
   {
     name: "iphone",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, ...measuredSpecs],
     grep: phoneTagged,
     use: { ...devices["iPhone 13"], browserName: "chromium" as const },
   },
@@ -242,12 +251,16 @@ const parallelProjects = [
   // not.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
+  // A sandboxed frame's own origin, what a page inside it may reach, the `postMessage` pair that
+  // carries its data and the height it reports: every row of `view-block`, `view-sandbox` and
+  // `view-grants`, since WebKit is the engine iOS Safari gives a `view` block's page. The block's
+  // byte measure (`view-bytes`) is Chromium's alone; that file says why.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
-  // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
+  // measured spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone.
   {
     name: "webkit",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, ...measuredSpecs],
     grep: webkitTagged,
     use: { ...devices["Desktop Safari"] },
   },
@@ -256,15 +269,19 @@ const parallelProjects = [
   // header's model and thinking pickers on a phone, what the Conversation's floating pills
   // cover on a phone, and the one-socket invariant also run in WebKit, the engine iOS Safari
   // uses; only those rows, since the rest of each spec is engine-agnostic.
-  // This project keeps its file `testMatch` and its title `grep` rather than an engine tag: 13
-  // rows is already as narrow as a tag would make it, and Playwright reads an array of regexes
-  // as OR (`createTitleMatcher` answers on the first that matches), so a tag beside the titles
-  // below would widen the project rather than narrow it.
+  // This project keeps its file `testMatch` and its title `grep` rather than an engine tag, and
+  // Playwright reads an array of regexes as OR (`createTitleMatcher` answers on the first that
+  // matches), so a tag beside the titles below would widen the project rather than narrow it.
+  // The `view` block's three engine specs join it by file and by the phrase `a view block`, which
+  // every one of their titles holds: a frame's sandbox, its opaque origin, what a page in it may
+  // reach, the `postMessage` pair and the frame's height are each engine's own, and this project
+  // is where they meet WebKit on a phone. A file matched here with no title in the `grep` runs
+  // zero tests and looks green, so a row added to one of those files keeps that phrase.
   {
     name: "webkit-iphone",
     testMatch:
-      /(agent-view|agent-view-settings|phone-conversation|delivery-live|live-socket)\.e2e\.ts/,
-    grep: /on a phone the live view|a document-scrolling route|covers none of|a capped model name|on a phone the delivery page|the header shows the session's reported model|a tab holds one live socket for every live view/,
+      /(agent-view|agent-view-settings|phone-conversation|delivery-live|live-socket|view-block|view-sandbox|view-grants)\.e2e\.ts/,
+    grep: /on a phone the live view|a document-scrolling route|covers none of|a capped model name|on a phone the delivery page|the header shows the session's reported model|a tab holds one live socket for every live view|a view block/,
     use: { ...devices["iPhone 13"] },
   },
   // Firefox runs the rows a Firefox decision can change, and nothing else: it selects by the
@@ -300,10 +317,14 @@ const parallelProjects = [
   // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, whose upload
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
+  // A sandboxed frame's own origin, what a page inside it may reach, the `postMessage` pair that
+  // carries its data and the height it reports: every row of `view-block`, `view-sandbox` and
+  // `view-grants`, for the reason given above `webkit`. The block's byte measure (`view-bytes`)
+  // is Chromium's alone; that file says why.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
-    testIgnore: [plainHttpSpecs, multiprocessSpecs, clockSpecs],
+    testIgnore: [plainHttpSpecs, multiprocessSpecs, ...measuredSpecs],
     grep: firefoxTagged,
     use: { ...devices["Desktop Firefox"] },
   },
@@ -343,8 +364,8 @@ const parallelProjects = [
 ] satisfies Project[];
 
 /**
- * The last projects of a run: the rows whose claim is a wall-clock time, with the machine to
- * themselves.
+ * The last projects of a run: the rows whose claim is a measurement - a wall-clock time, or how
+ * many bytes of JavaScript a page made the browser fetch - with the machine to themselves.
  *
  * Each names in `dependencies` every project before it, so Playwright starts the first of them
  * only once every parallel project has finished, and runs these three one after another rather
@@ -361,32 +382,42 @@ const parallelProjects = [
  * A project whose dependency has a failing row is not run at all: in a red run these rows are
  * left unrun rather than measured beside whatever the failing row's retry is doing.
  *
- * A command line that names one of these three files runs the whole suite, since a project's
+ * A command line that names one of these files runs the whole suite, since a project's
  * dependencies are pulled in whole: a file filter narrows a project it selects, never a project
  * selected to run before it. `--no-deps` is how one of these files is run by itself, and such a
  * run is as quiet as the machine it is on.
  *
  * Each engine keeps the rows it ran. `heavy-bodies.e2e.ts` ran in `chromium`, `firefox` and
  * `webkit`, for the reasons written above those projects, and runs here in all three;
- * `nested-directive.e2e.ts` ran in `chromium` alone and runs in `chromium-alone` alone.
+ * `nested-directive.e2e.ts` and `view-bytes.e2e.ts` ran in `chromium` alone and run in
+ * `chromium-alone` alone.
  *
- * These three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
- * their axis is the file, not a behaviour. Every row of a clock-read file runs here whatever it
- * asserts, because what puts it here is that its claim is a wall-clock time, and
- * `heavy-bodies.e2e.ts` carries no engine tag at all - the two tagged projects ignore it.
+ * All three select by `testMatch` alone, where `webkit` and `firefox` select by an engine tag:
+ * their axis is the file, not a behaviour. Every row of a measured file runs here whatever it
+ * asserts, because what puts it here is that its claim is read against the machine - a
+ * wall-clock time, or the bytes a page made the browser fetch - and `heavy-bodies.e2e.ts`
+ * carries no engine tag at all; the two tagged projects ignore it.
+ *
+ * The file is the axis because a project's `testMatch` is what the CI job names on its command
+ * line (`.github/workflows/dispatch-browser.yaml`, whose alone leg runs these three projects by
+ * name). A project selecting a row out of a file other projects run would have to be named
+ * there too, and a project nothing names runs in no job at all. So the byte measure sits in
+ * `view-bytes.e2e.ts` rather than beside the frame rows of `view-budget.e2e.ts`, which read
+ * what the frames of one page asked for and stay in the four-lane `chromium` project, where a
+ * red elsewhere cannot leave them unrun.
  *
  * Each also sets `retries: 0`, which Playwright takes per project as it takes `workers`,
  * against the one retry the run takes on CI. The reason is these rows' own, and holds whatever
- * the reporting around them does: a row whose claim is a wall-clock time has nothing to gain
- * from a second attempt, because a threshold that a regression misses half the time would fail
- * the first attempt, pass the retry, be reported `flaky`, and leave the run green where it
- * should be red. The multiprocess project above sets the same value on a different argument.
+ * the reporting around them does: a row whose claim is a measurement has nothing to gain from a
+ * second attempt, because a threshold that a regression misses half the time would fail the
+ * first attempt, pass the retry, be reported `flaky`, and leave the run green where it should
+ * be red. The multiprocess project above sets the same value on a different argument.
  */
 const aloneProjects = [
   {
     name: "chromium-alone",
     dependencies: parallelProjects.map((project) => project.name),
-    testMatch: clockSpecs,
+    testMatch: measuredSpecs,
     use: { ...devices["Desktop Chrome"] },
     workers: 1,
     retries: 0,

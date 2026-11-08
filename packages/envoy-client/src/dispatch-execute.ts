@@ -3253,6 +3253,12 @@ async function readUploadedFile(
     details,
   });
   const stated = artifact.versions.find((version) => version.number === number);
+  /** The type this version is stored under, which the read of its bytes does not repeat: a
+   *  version stored as `text/html`, `application/xhtml+xml`, `image/svg+xml`, `text/xml` or
+   *  `application/xml` is downloaded as `application/octet-stream`, so that no uploaded file is
+   *  drawn as a page on Dispatch's own origin. A row that records no type is one the download
+   *  would have called an octet stream too. */
+  const mime = stated?.mime ?? "application/octet-stream";
   if (
     artifact.kind === "image" &&
     stated?.size !== undefined &&
@@ -3275,7 +3281,7 @@ async function readUploadedFile(
         images: [image],
       };
     }
-    if (sniffPictureType(file.bytes) !== undefined) return tooLarge(file.mime, file.bytes.length);
+    if (sniffPictureType(file.bytes) !== undefined) return tooLarge(mime, file.bytes.length);
   }
   let text: string;
   try {
@@ -3283,13 +3289,13 @@ async function readUploadedFile(
   } catch {
     return {
       text:
-        `${artifact.name} is an uploaded ${file.mime} file (version ${number}${of}, ${size}) that is not ` +
+        `${artifact.name} is an uploaded ${mime} file (version ${number}${of}, ${size}) that is not ` +
         `UTF-8 text, so dispatch doc-read cannot show it. ${bytesRoute}`,
       details,
     };
   }
   return {
-    text: `File ${artifact.name}: ${file.mime}, version ${number}${of}, ${size}.\n\n${text}`,
+    text: `File ${artifact.name}: ${mime}, version ${number}${of}, ${size}.\n\n${text}`,
     details,
   };
 }

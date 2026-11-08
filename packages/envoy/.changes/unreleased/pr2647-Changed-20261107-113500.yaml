@@ -1,0 +1,5 @@
+kind: Changed
+body: 'Every file-version download now carries `Content-Security-Policy: sandbox; default-src ''none''`, and a stored type a browser draws as a document (`text/html`, `application/xhtml+xml`, `image/svg+xml`, `text/xml`, `application/xml`) is answered `application/octet-stream`. `Content-Disposition: attachment` is advice an engine may decline, and an engine that drew such a file in a tab ran it on Dispatch''s own origin, where its script held the reader''s session. A picture is unaffected: an image is only ever sniffed `image/png`, `image/jpeg`, `image/gif` or `image/webp`, so no type an `<img>` asks for is rewritten. Because the answer''s `Content-Type` can no longer say what such a file is, `GET` and `HEAD` of a version now name the type it is stored under in `X-Dispatch-Stored-Type`, and a version whose row records no type carries no such header; one `HEAD` therefore answers both a version''s size and its type.'
+time: 2026-11-07T11:35:00.000000000Z
+custom:
+    Issue: pr2647

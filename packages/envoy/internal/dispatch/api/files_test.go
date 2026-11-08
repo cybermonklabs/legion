@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -188,6 +189,97 @@ func TestARowStillHoldingItsBytesIsServedFromTheRow(t *testing.T) {
 	}
 	if memory.Len() != 0 {
 		t.Fatalf("serving a row-held version wrote %d objects to the store", memory.Len())
+	}
+}
+
+// A `HEAD` of a version's address is what a view block weighs against its 16 MiB before it sends
+// the bytes to a page (dispatch://INFRA-682, R6), so it must answer the length and read none of
+// them. The row records every version's size, whether its bytes sit in the row or in the store,
+// so the answer needs no object at all: the bucket is made unreachable here, and the `HEAD` is
+// expected to answer all the same, with the download headers its `GET` carries.
+func TestAHeadOfAStoreBackedVersionAnswersItsLengthWithoutReadingTheObject(t *testing.T) {
+	memory := filestest.NewMemory()
+	handler, database, _ := newTestServer(t, testServerOptions{files: memory})
+	issue := fileIssue(t, handler)
+	body := []byte(strings.Repeat("attempts", 4096))
+	upload := multipartRequest(t, handler, "/api/v1/issues/"+issue+"/artifacts", map[string]string{"name": "loop.json"}, "loop.json", "application/json", body, "alice")
+	if upload.Code != http.StatusCreated {
+		t.Fatalf("upload: status=%d body=%s", upload.Code, upload.Body.String())
+	}
+	version := decodeBody[uploaded](t, upload)
+	if versionRow(t, database, version.Artifact.ID, 1) != nil {
+		t.Fatal("the row kept its bytes, so this test would not reach the store path")
+	}
+	route := "/api/v1/artifacts/" + version.Artifact.ID + "/versions/1"
+
+	memory.SetFailure(errors.New("the store must not be read to answer a HEAD"))
+	head := dispatchRequest(t, handler, http.MethodHead, route, nil, "alice")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD of a store-backed version: status=%d body=%s, want 200 answered from the row's size", head.Code, head.Body.String())
+	}
+	if got := head.Header().Get("Content-Length"); got != strconv.Itoa(len(body)) {
+		t.Errorf("HEAD Content-Length = %q, want %d", got, len(body))
+	}
+	if got := head.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("HEAD Content-Type = %q, want application/json", got)
+	}
+
+	// The control: with the bucket reachable the same address still serves the bytes, so what
+	// the HEAD avoided is a read it did not need rather than one the route has lost.
+	memory.SetFailure(nil)
+	served := dispatchRequest(t, handler, http.MethodGet, route, nil, "alice")
+	if served.Code != http.StatusOK || !bytes.Equal(served.Body.Bytes(), body) {
+		t.Fatalf("GET after the HEAD: status=%d, %d body bytes", served.Code, served.Body.Len())
+	}
+}
+
+// The same `HEAD` says what the version is stored as, which its Content-Type cannot: a version
+// stored as one of the five types an engine draws as a document is downloaded as
+// `application/octet-stream`, so that no uploaded file is drawn as a page on Dispatch's own
+// origin. A `view` block tells its page what each file it sends is (dispatch://INFRA-682, R6),
+// and one read of one version answers both facts it needs - the bytes it weighs against the
+// 16 MiB and the type it is stored under - so the two can never come from two answers that
+// disagree, and no reader of this route has to fetch the artifact's whole versions list for a
+// type.
+func TestAFileVersionsHeadNamesTheTypeItIsStoredUnder(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	issue := fileIssue(t, handler)
+	drawing := []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)
+	version := uploadTestFile(t, handler, "/api/v1/issues/"+issue+"/artifacts", "shape.svg", "image/svg+xml", drawing)
+	route := "/api/v1/artifacts/" + version.Artifact.ID + "/versions/1"
+
+	head := dispatchRequest(t, handler, http.MethodHead, route, nil, "alice")
+	if head.Code != http.StatusOK {
+		t.Fatalf("HEAD: status=%d body=%s, want 200", head.Code, head.Body.String())
+	}
+	if got := head.Header().Get("X-Dispatch-Stored-Type"); got != "image/svg+xml" {
+		t.Errorf("HEAD X-Dispatch-Stored-Type = %q, want image/svg+xml", got)
+	}
+	if got := head.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("HEAD Content-Type = %q, want application/octet-stream: the body is drawn by no engine", got)
+	}
+	if got := head.Header().Get("Content-Length"); got != strconv.Itoa(len(drawing)) {
+		t.Errorf("HEAD Content-Length = %q, want %d: one answer carries the size as well", got, len(drawing))
+	}
+
+	// The GET says the same, since both answers are written by one function: a reader that
+	// weighed a version by its HEAD and drew it from its GET is told one type.
+	served := dispatchRequest(t, handler, http.MethodGet, route, nil, "alice")
+	if got := served.Header().Get("X-Dispatch-Stored-Type"); got != "image/svg+xml" {
+		t.Errorf("GET X-Dispatch-Stored-Type = %q, want image/svg+xml", got)
+	}
+
+	// A row that records no type carries no header at all, rather than an empty one: the
+	// reader is told nothing, which is what the row holds.
+	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set mime = null where artifact_id = $1`, version.Artifact.ID); err != nil {
+		t.Fatalf("clear the version's stored type: %v", err)
+	}
+	untyped := dispatchRequest(t, handler, http.MethodHead, route, nil, "alice")
+	if _, named := untyped.Header()["X-Dispatch-Stored-Type"]; named {
+		t.Errorf("a version with no stored type answered X-Dispatch-Stored-Type %q, want no such header", untyped.Header().Get("X-Dispatch-Stored-Type"))
+	}
+	if got := untyped.Header().Get("Content-Type"); got != "application/octet-stream" {
+		t.Errorf("a version with no stored type: Content-Type = %q, want application/octet-stream", got)
 	}
 }
 
