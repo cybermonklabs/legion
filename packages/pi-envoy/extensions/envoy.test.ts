@@ -13101,14 +13101,24 @@ console.log(JSON.stringify(args));
       const ledgerRecords = (entries: readonly { readonly customType?: string }[]) =>
         JSON.stringify(entries.filter((entry) => entry.customType === REPLAY_DELIVERED_ENTRY));
 
-      /** Whether a process of this machine is still running, as the rows that watch a command's
-       *  own process group read it. */
+      /**
+       * Whether a process of this machine is still running, as the rows that watch a command's
+       * own process group read it. A killed child whose parent has not reaped it yet is a zombie:
+       * `kill(pid, 0)` still answers for it, because the entry stays in the process table until
+       * its status is read, so the state in `/proc` decides where there is one. A machine with
+       * no `/proc` falls back to the signal alone.
+       */
       const alive = (pid: number): boolean => {
         try {
           process.kill(pid, 0);
-          return true;
         } catch {
           return false;
+        }
+        try {
+          const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+          return stat.slice(stat.lastIndexOf(")") + 1).trim().charAt(0) !== "Z";
+        } catch {
+          return true;
         }
       };
 
@@ -13388,12 +13398,14 @@ console.log(JSON.stringify(args));
 
         await fixture.handlers.get("session_shutdown")?.({}, context);
 
-        await until(() => !alive(pid), "the command's process group to be killed", 10_000);
-        // The person is answered all the same, and the message is taken.
+        // The person is answered all the same, and the message is taken. The reply is posted
+        // only once the command's own promise has settled, so its arrival is the end of the
+        // command; the process table is then read for what the kill left.
         await replied(1);
         expect(replies[0]?.body).toMatchObject({
           body: "!echo $$ > pid; exec sleep 600\n\nThe command printed nothing.\n\nThe command was stopped.",
         });
+        await until(() => !alive(pid), "the command's process group to be killed", 10_000);
       }, 20_000);
 
       // A session shutting down runs no command: one started now would outlive the session it
