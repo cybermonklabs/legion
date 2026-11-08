@@ -1,7 +1,7 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { agentRow, openAgents, plannerSession, seedAgents, shownAgentRows } from "./agents";
-import { createAgentMessage, createMessage, patchIssue } from "./api";
+import { createAgentMessage, createMessage, listComments, patchIssue } from "./api";
 import { keyedWrite } from "./keyed-writes";
 import { resetDatabase } from "./seed";
 import { holdPosts, MESSAGE_REFUSED, refusePosts } from "./sends";
@@ -10,12 +10,14 @@ import { asUser } from "./users";
 // The issue picker's keyboard-step rule (`markKeyStep` in `AgentMessageComposer.tsx`) holds only
 // because every engine dispatches a closed select's `change` inside the key's own task, where the
 // HTML spec queues it as a task of its own. These rows notice an engine that moves to the spec's
-// queued task: its first arrow or letter would commit at once. So the `webkit` and `firefox`
-// projects run this spec as well as Chromium, and its rows drive keys through `page.keyboard`,
-// which every engine has. The rows that step and then leave the select without Enter run in the
-// same engines, since each engine takes focus out of a select its own way. So do the rows about
-// what the picker and Reply do with a message on its way to the server, and about an issue closed
-// after it was picked.
+// queued task: its first arrow or letter would commit at once. So the six rows below that step a
+// select from the keyboard, or step one and leave it without Enter, carry `@webkit @firefox`, the
+// tags those two projects select by (`playwright.config.ts`), and they drive keys through
+// `page.keyboard`, which every engine has. Each of the three ways of leaving a select is a row of
+// its own, since each engine takes focus out of a select its own way. Every other row of this
+// file is untagged: what the picker and Reply do with a message on its way to the server, and
+// what a pick dispatched from a script does, are the same in every engine, and Chromium asserts
+// them.
 
 test.beforeEach(async () => {
   await resetDatabase();
@@ -40,7 +42,10 @@ async function sendAndCapturePath(page: Page, field: Locator): Promise<string> {
 test.describe("agents page", () => {
   // The arrows choose and Enter commits, so a reader can pass the first option to reach the
   // second - and the Enter that picks is the picker's, not a newline at the top of the message.
-  test("the arrows move the issue selection and Enter commits it", async ({ browser }) => {
+  // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
+  test("the arrows move the issue selection and Enter commits it @webkit @firefox", async ({
+    browser,
+  }) => {
     await seedAgents();
     const context = await asUser(browser, "alice");
     try {
@@ -89,7 +94,9 @@ test.describe("agents page", () => {
     ["Shift+Tab", (page: Page) => page.keyboard.press("Shift+Tab")],
     ["a click into the message", (_page: Page, field: Locator) => field.click()],
   ] as const) {
-    test(`a step left by ${way} is dropped, so the select, the toggle and the send name one issue`, async ({
+    // @webkit @firefox: a closed select's `change` dispatched inside the key's own task, left
+    // without Enter the way this engine takes focus out of a select.
+    test(`a step left by ${way} is dropped, so the select, the toggle and the send name one issue @webkit @firefox`, async ({
       browser,
     }) => {
       const issueKey = await seedAgents();
@@ -129,7 +136,8 @@ test.describe("agents page", () => {
   }
 
   // From `No issue` the message is a direct one, so a step left by Tab must not show an issue.
-  test("a step from No issue left by Tab is dropped, and the message goes to the agent directly", async ({
+  // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
+  test("a step from No issue left by Tab is dropped, and the message goes to the agent directly @webkit @firefox", async ({
     browser,
   }) => {
     await seedAgents();
@@ -161,7 +169,8 @@ test.describe("agents page", () => {
   });
 
   // Type-ahead is a step as the arrows are: the letter moves the selection and Enter commits it.
-  test("type-ahead from the keyboard moves the issue selection and Enter commits it", async ({
+  // @webkit @firefox: a closed select's `change` dispatched inside the key's own task.
+  test("type-ahead from the keyboard moves the issue selection and Enter commits it @webkit @firefox", async ({
     browser,
   }) => {
     await seedAgents();
@@ -723,8 +732,8 @@ test.describe("agents page", () => {
   // next read. The select keeps showing the committed issue, marked closed - as the issue header's
   // Status select keeps a closed issue's own status among its options - so what the picker shows,
   // what the toggle names and where the message goes stay one issue until the reader picks
-  // another; the server refuses the comment.
-  test("an issue closed after the pick stays named in the select and the toggle, marked closed", async ({
+  // another; a closed issue takes comments, so the message posts there.
+  test("an issue closed after the pick stays named in the select and the toggle, marked closed, and takes the message", async ({
     browser,
   }) => {
     const issueKey = await seedAgents();
@@ -763,8 +772,17 @@ test.describe("agents page", () => {
       await expect(picker.locator("option:checked")).toHaveText(`${issueKey} (closed)`);
       await expect(toggle).toContainText(`${issueKey} (closed)`);
 
+      const posted = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          response.url().endsWith(`/api/v1/issues/${issueKey}/comments`)
+      );
       expect(await sendAndCapturePath(page, field)).toBe(`/api/v1/issues/${issueKey}/comments`);
-      await expect(row.getByText("Couldn't send — issue is closed")).toBeVisible();
+      expect((await posted).status()).toBe(201);
+      await expect(field).not.toHaveValue(/Status please/);
+      expect(
+        (await listComments(issueKey)).some((comment) => comment.body.includes("Status please"))
+      ).toBe(true);
 
       // Picking another issue ends it: the closed one is no longer offered at all.
       await picker.selectOption("CORE-2");

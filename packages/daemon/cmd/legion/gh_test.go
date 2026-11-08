@@ -60,15 +60,18 @@ func legionGhIn(t *testing.T, dir string, env map[string]string, stdin string, a
 }
 
 // `legion gh` execs the real gh (LEGION_GH_PATH) as `gh`, with its arguments untouched and
-// GH_CONFIG_DIR pointed at the directory of the owner the command names, and at the issue's
-// owner's (the GH_CONFIG_DIR it was given) when it names none, reading --help=false as no help. It
+// GH_CONFIG_DIR pointed at the directory of the repository the command names where the bundle
+// holds one — `<owner>/<repo>`, whose token reaches that repository alone — at the owner's
+// otherwise (a repository the bundle holds no directory for, two repositories of the one owner,
+// a selector naming the owner alone), and at the issue's owner's (the GH_CONFIG_DIR it was
+// given) when the command names no owner, reading --help=false as no help. It
 // reads each command from the real gh's own help. The real gh runs with GH_PATH naming the `gh`
 // wrapper first on PATH, so the git gh runs asks `legion gh auth git-credential`, which answers by
-// the path's owner as `legion git-credential` does; with useHttpPath on for github.com, and gh's
+// the path's repository as `legion git-credential` does; with useHttpPath on for github.com, and gh's
 // update check and prompts off. A command naming an owner the bundle holds no directory for is
 // refused, exit 2, naming the owner, and so are one it cannot read, a gh alias, and any command
 // when PATH's first gh is the real gh; the real gh never runs. In a clone of an owner's
-// repository, a command naming none runs as that owner's. Each of the three variables it needs is
+// repository, a command naming none runs as that repository's. Each of the three variables it needs is
 // required, and an unset one is named with exit 2; --help with no real gh to hand it to is
 // legion's usage.
 func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
@@ -102,6 +105,13 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		{[]string{"pr", "list"}, defaultDir},
 		{[]string{"pr", "view", "1", "-R", "acme/widgets", "--help=false"}, filepath.Join(root, "acme")},
 		{[]string{"api", "repos/sjawhar/legion-smoke", "--help=false", "-q", "."}, filepath.Join(root, "sjawhar")},
+		// The repository the bundle holds a directory of its own for, named by -R and by `gh
+		// api`'s endpoint; a repository it holds none for, two repositories of the one owner, and
+		// a selector naming the owner alone are the owner's directory's.
+		{[]string{"pr", "view", "1", "-R", "sjawhar/legion"}, filepath.Join(root, "sjawhar", "legion")},
+		{[]string{"api", "repos/sjawhar/legion/pulls/1", "--jq", ".title"}, filepath.Join(root, "sjawhar", "legion")},
+		{[]string{"issue", "transfer", "3", "sjawhar/legion", "-R", "sjawhar/legion-smoke"}, filepath.Join(root, "sjawhar")},
+		{[]string{"repo", "list", "sjawhar"}, filepath.Join(root, "sjawhar")},
 	} {
 		code, stdout, stderr := legionGh(t, env, tc.args...)
 		want := stub + "|" + tc.dir + "|" + strings.Join(tc.args, " ") + "\n" + wantEnv

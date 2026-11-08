@@ -96,7 +96,7 @@ func (a *Answer) Question() string { return a.question }
 // Open builds question's gh environment for agent once, before its first call: a fresh 0700
 // directory <state_dir>/answers/<question>/gh (whatever an earlier run of the same question left
 // there removed first) holding the agent's bundle (host.Credential for its role and its issue's
-// repository owner, written with ghconfig.WriteBundle, exactly as a tmux pane's is), the empty
+// repository, written with ghconfig.WriteBundle, exactly as a tmux pane's is), the empty
 // HOME, XDG and working directories every call runs with, and the GH_PATH wrapper. It logs the
 // App and owners the bundle holds, never a token.
 func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer, error) {
@@ -140,7 +140,7 @@ func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer
 			_ = os.RemoveAll(a.dir)
 		}
 	}()
-	bundle, err := host.Credential(ctx, agent.Role, strings.ToLower(agent.Repository.Owner()))
+	bundle, err := host.Credential(ctx, agent.Role, agent.Repository)
 	if err != nil {
 		return nil, fmt.Errorf("the gh tool for %s: the %s's github credential: %w", question, agent.Role, err)
 	}
@@ -157,9 +157,9 @@ func Open(ctx context.Context, host Host, agent Agent, question string) (*Answer
 	if err := os.WriteFile(a.wrapper, []byte(script), 0o700); err != nil {
 		return nil, fmt.Errorf("the gh tool for %s: write its gh wrapper: %w", question, err)
 	}
-	written := bundle.Owners[bundle.Default]
+	written := bundle.Dirs[bundle.Default]
 	host.Log.Info("answers: github credential written", "question", question, "issue", agent.Issue, "role", agent.Role,
-		"app", written.App, "appID", agent.AppID, "expiresAt", written.ExpiresAt, "owners", bundle.OwnerNames())
+		"app", written.App, "appID", agent.AppID, "expiresAt", written.ExpiresAt, "dirs", bundle.DirNames())
 	opened = true
 	return a, nil
 }

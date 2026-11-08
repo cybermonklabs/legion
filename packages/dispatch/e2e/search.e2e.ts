@@ -163,8 +163,7 @@ test("a search term lists marked document, comment, ask, and issue-title results
 
 test("an ask hit says whether it is answered, and an answered one shows its latest answer, who gave it and the options chosen", async ({
   browser,
-}, testInfo) => {
-  test.skip(testInfo.project.name === "iphone", "ask hit states are independent of viewport");
+}) => {
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "Planetarium" });
   const answered = await createAsk(
@@ -300,7 +299,7 @@ test("a project-document hit is grouped under the document and opens it; a messa
   }
 });
 
-test("the rail Search control opens the palette and Escape returns focus to it @phone", async ({
+test("the rail Search control opens the palette and Escape returns focus to it", async ({
   browser,
 }, testInfo) => {
   await seedSearchFixture();
@@ -308,8 +307,7 @@ test("the rail Search control opens the palette and Escape returns focus to it @
 
   try {
     const page = await context.newPage();
-    const isPhone = testInfo.project.name === "iphone";
-    await openSearchFromRail(page, isPhone);
+    await openSearchFromRail(page, false);
 
     const dialog = page.getByRole("dialog", { name: "Search" });
     const search = page.getByRole("combobox", { name: "Search" });
@@ -324,9 +322,7 @@ test("the rail Search control opens the palette and Escape returns focus to it @
 
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
-    if (!isPhone) {
-      await expect(page.getByRole("button", { name: /^search/i })).toBeFocused();
-    }
+    await expect(page.getByRole("button", { name: /^search/i })).toBeFocused();
   } finally {
     await context.close();
   }
@@ -403,15 +399,13 @@ test("phone search rows are at least 44px, do not overflow, and a comment result
   }
 });
 
-test("no results and short queries are stated, not silent @phone", async ({
-  browser,
-}, testInfo) => {
+test("no results and short queries are stated, not silent", async ({ browser }) => {
   await seedSearchFixture();
   const context = await asUser(browser, "alice");
 
   try {
     const page = await context.newPage();
-    await openSearchFromRail(page, testInfo.project.name === "iphone");
+    await openSearchFromRail(page, false);
     const search = page.getByRole("combobox", { name: "Search" });
 
     await search.fill("a");
@@ -422,42 +416,70 @@ test("no results and short queries are stated, not silent @phone", async ({
     await context.close();
   }
 });
-test("the agent issue API returns POSSIBLE_DUPLICATE and force creates the issue", async ({
+// The gate refuses a near copy of an open issue, not a title that shares words with one. A text
+// that only shares words is created and names the issue it is like, so the filer reads that issue
+// before going on (dispatch://INFRA-1160/spec#b-r2, #b-r4).
+test("the agent issue API names a likely duplicate, refuses a copy, and force creates it", async ({
   request,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
   await createIssue({ project: "CORE", title: "Calibrate astrolabe navigation instruments" });
 
-  const duplicate = await request.post("/api/v1/issues", {
+  const related = await request.post("/api/v1/issues", {
     data: {
       actor: searchSession.actor,
       project: "CORE",
       title: "Astrolabe navigation instruments rollout",
     },
+    headers: { Authorization: `Bearer ${e2eAgentToken}` },
+  });
+  expect(related.status()).toBe(201);
+  await expect(related.json()).resolves.toMatchObject({
+    advice: {
+      suggestions: {
+        likely_duplicate: {
+          key: "CORE-1",
+          title: "Calibrate astrolabe navigation instruments",
+        },
+      },
+    },
+    key: "CORE-2",
+  });
+
+  const mirrorSpec = "# Mirrors\n\nThe sextant mirror is silvered. The clamp holds it square.\n";
+  const copied = {
+    actor: searchSession.actor,
+    project: "CORE",
+    spec: mirrorSpec,
+    title: "Overhaul the sextant mirror alignment",
+  };
+  await createIssue({
+    project: "CORE",
+    spec: mirrorSpec,
+    title: "Overhaul the sextant mirror alignment",
+  });
+
+  const duplicate = await request.post("/api/v1/issues", {
+    data: copied,
     headers: { Authorization: `Bearer ${e2eAgentToken}` },
   });
   expect(duplicate.status()).toBe(409);
   await expect(duplicate.json()).resolves.toMatchObject({
     candidates: [
       {
-        key: "CORE-1",
-        title: "Calibrate astrolabe navigation instruments",
+        key: "CORE-3",
+        title: "Overhaul the sextant mirror alignment",
       },
     ],
     code: "POSSIBLE_DUPLICATE",
   });
 
   const forced = await request.post("/api/v1/issues", {
-    data: {
-      actor: searchSession.actor,
-      force: true,
-      project: "CORE",
-      title: "Astrolabe navigation instruments rollout",
-    },
+    data: { ...copied, force: true },
     headers: { Authorization: `Bearer ${e2eAgentToken}` },
   });
   expect(forced.status()).toBe(201);
-  await expect(forced.json()).resolves.toMatchObject({ key: "CORE-2" });
+  await expect(forced.json()).resolves.toMatchObject({ key: "CORE-4" });
 });
 
 // The hint names keys a touch reader does not have, and 33px of palette is 33px of hits, so it

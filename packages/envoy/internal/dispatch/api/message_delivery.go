@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -351,9 +352,10 @@ func (s *server) recordPendingMessageDelivery(
 	defer tx.Rollback(ctx)
 	// The issue is locked before the message row and the attempt rows, the order every other
 	// message transaction takes them in, so the two halves of a delivery cannot deadlock
-	// against each other. It is also the receipt owner a supersede below appends against.
+	// against each other. It is also the receipt owner a supersede below appends against. A
+	// closed issue still takes a delivery, so the lock refuses nothing.
 	if message.IssueKey != nil {
-		if _, err := s.requireOpenIssue(ctx, tx, *message.IssueKey); err != nil {
+		if _, err := s.lockIssue(ctx, tx, *message.IssueKey); err != nil {
 			return pendingMessageDelivery{}, err
 		}
 	}
@@ -751,8 +753,11 @@ func (s *server) deliverMessageResuming(
 	deliveryError, err := takeover.retry(ctx,
 		func() string {
 			var failure string
+			// A direct message is written to the session it names and invites its answer;
+			// nothing about one says a reply is unwanted.
 			envelopeID, duplicate, failure = s.sendResolvedDelivery(
-				ctx, pending.resolved, message.Body, key, pending.urgency, pending.frame,
+				ctx, pending.resolved, message.Body, key, pending.urgency,
+				contracts.ExpectsReplyOptional, pending.frame,
 			)
 			return failure
 		},
@@ -874,7 +879,7 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if message.IssueKey != nil {
-		if _, err := s.requireOpenIssue(r.Context(), tx, *message.IssueKey); err != nil {
+		if _, err := s.lockIssue(r.Context(), tx, *message.IssueKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}

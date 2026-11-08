@@ -59,6 +59,7 @@ import { codeBlockExtPlugins } from 'proof-sdk-upstream/src/editor/schema/code-b
 import { frontmatterSchema } from 'proof-sdk-upstream/src/editor/schema/frontmatter';
 import { libraryRemarkFrontmatterPlugin } from './lib-remark-frontmatter-plugin';
 import { libraryRemarkDirectivePlugin } from './lib-remark-directive-plugin';
+import { libraryRemarkHtmlBlockPlugin, libraryRemarkHtmlFlowPlugin } from './html-blocks';
 import { libraryRemarkNestedLinksPlugin } from './nested-links';
 import { liveTypedBlocksRemarkPlugin } from './read-only-directives';
 import { brokenAskInputGuards, keepUnselectedAskBlocks, relaxAskContentCheck } from './ask-content';
@@ -90,7 +91,8 @@ import {
 
 import { dispatchMarkPlugins, remarkDispatchMarksPlugin, dispatchMarkHandler } from './dispatch-marks';
 import type { MarkAction, RecordMarkPlacement, SelectionBarActionKind } from './dispatch-marks';
-import { commentOnSelection, dispatchActionBarPlugin } from './dispatch-action-bar';
+import { commentOnSelection, dispatchActionBarPlugin, setAccess } from './dispatch-action-bar';
+import type { ProofEditorAccess } from './dispatch-action-bar';
 import { registerPopoverHookInstance } from './dispatch-popover-hook';
 import { dispatchMarkEventsPlugin } from './dispatch-mark-events';
 import { remarkSoftBreakAsSpace } from './dispatch-soft-breaks';
@@ -109,12 +111,19 @@ import {
   setChangeDecorations as applyChangeDecorations,
 } from './editor-change-decorations';
 import type { ChangeDecorations } from './editor-change-decorations';
+import {
+  referenceDecorationsPlugin,
+  setReferences as applyReferences,
+} from './reference-decorations';
+import type { EditorReferences } from './reference-decorations';
 import { removeRecordMark, remarkRecordMark, retypeMark as retypeRecordMark } from './record-mark-retype';
 import type { RemarkOutcome, RetypeOutcome } from './record-mark-retype';
 
 export type { MarkAction, RecordMarkPlacement, SelectionBarActionKind, PopoverActionKind } from './dispatch-marks';
+export type { ProofEditorAccess } from './dispatch-action-bar';
 export type { RemarkOutcome, RemarkRefusal, RetypedMark, RetypeRefusal, RetypeOutcome } from './record-mark-retype';
 export type { BlockWidget, ChangeDecorations, TextDecoration } from './editor-change-decorations';
+export type { EditorReferences, ReferenceCandidate, ReferenceTarget } from './reference-decorations';
 export type { BlockMark } from './editor-highlights';
 export type {
   BlockAttributeKind,
@@ -149,11 +158,16 @@ export interface CreateProofEditorOptions {
   awareness?: Awareness | null;
   /** Local user identity for cursor labels. */
   user: ProofEditorUser;
-  /** Render the document read-only. Defaults to false. */
-  readOnly?: boolean;
+  /** What the reader may do with the document: `'edit'` it, `'comment'` on it alone - the
+   *  selection bar offers Comment alone, for a selection that holds text, which writes no mark
+   *  and reports a `quote-comment` action, for a host whose server anchors the comment by its
+   *  quote - or only `'read'` it. Defaults to `'edit'`. */
+  access?: ProofEditorAccess;
   /** Fired for every mark-affecting user action: Comment/Suggest/Ask on the
    *  selection bar (the editor has already applied the mark locally with a
-   *  fresh markId over [from,to]; a rejected promise removes it), and
+   *  fresh markId over [from,to]; a rejected promise removes it), Comment on
+   *  a document with `'comment'` access (`quote-comment`: no mark is
+   *  written), and
    *  Reply/Resolve/Unresolve/Accept/Reject/Delete on the mark popover (no
    *  local mutation is applied for these — the host's server is expected to
    *  mutate and the change arrives back through the shared Y.Doc). */
@@ -186,8 +200,8 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   setMarkdown(markdown: string): void;
   /** Top offset of each mark's first span relative to the library root. */
   markOffsets(): Map<string, number>;
-  /** Toggle editability (e.g. for a readOnly flag change post-construction). */
-  setReadOnly(readOnly: boolean): void;
+  /** Changes what the reader may do with the document (`access`) post-construction. */
+  setAccess(access: ProofEditorAccess): void;
   /** Apply mark metadata received from a peer, re-anchoring by quote. Unified
    *  Proof marks (comment/suggestion/flagged/approved) only — see
    *  ./dispatch-marks.ts's module doc for why dispatchAsk marks are outside
@@ -215,7 +229,7 @@ export interface ProofEditorHandle extends TypedBlockCommands {
   ): RemarkOutcome;
   /** Starts a comment on the current selection exactly as the selection bar's Comment button
    *  does, `onMarkAction` included, and answers whether it did: false for an empty selection and
-   *  while the document is read-only, where the bar offers no Comment. */
+   *  while the document is read-only and takes no comments, where the bar offers no Comment. */
   commentOnSelection(): boolean;
   /** Scrolls a mark's anchor into view and pulses it. Works for both the
    *  unified marks system and dispatchAsk marks: both render `data-id`. */
@@ -239,6 +253,11 @@ export interface ProofEditorHandle extends TypedBlockCommands {
    *  Replaces what was drawn before; an empty set draws nothing.
    *  See ./editor-change-decorations.ts. */
   setChangeDecorations(decorations: ChangeDecorations): void;
+  /** Draws the references the host's reader finds in the document's own text as their targets'
+   *  titles, without changing it: the reader, what each candidate resolves to, and the callback
+   *  the editor reports the document's candidate keys to, in one value that replaces the last
+   *  one; `null` draws none. See ./reference-decorations.ts. */
+  setReferences(references: EditorReferences | null): void;
   /** The stable id of the block containing the selection head, if any. */
   blockIdAtSelection(): string | null;
   /** Tear down the editor and any collab bindings. */
@@ -352,6 +371,7 @@ export async function createProofEditor(
     // Frontmatter and typed directives register before their node schemas claim their AST nodes.
     .use(libraryRemarkFrontmatterPlugin)
     .use(libraryRemarkDirectivePlugin)
+    .use(libraryRemarkHtmlFlowPlugin)
     .use(frontmatterSchema)
     // `use` flattens its argument twice, so an array of composed schemas — each of them a pair
     // of plugins — is an argument Milkdown accepts but its own signature cannot express.
@@ -370,6 +390,10 @@ export async function createProofEditor(
     // Register remark plugins for proof marks and dispatchAsk parsing
     .use(remarkProofMarksPlugin)
     .use(remarkDispatchMarksPlugin)
+    // After the mark plugins, whose own block-level span is a pair of HTML blocks until they have
+    // read it: a block of HTML becomes a paragraph holding the same text, which the schema has a
+    // node for. Before the fit check below, which reads that paragraph as the block's content.
+    .use(libraryRemarkHtmlBlockPlugin)
     // Last of the remark plugins that shape inline content, so the links it splits are every link
     // the tree holds: a link inside a link label (an autolink, the only nesting CommonMark allows)
     // is hoisted beside the runs around it (./nested-links.ts). `$remark` puts it in `remarkCtx`,
@@ -413,6 +437,7 @@ export async function createProofEditor(
     .use(recordMarkHistoryPlugin)
     .use(editorHighlightsPlugin)
     .use(editorChangeDecorationsPlugin)
+    .use(referenceDecorationsPlugin)
     .use(placeholderPlugin)
     .use(keepUnselectedAskBlocks) // no read-back edit drops an unselected block of an off-rule ask (./ask-content.ts)
     .config((ctx) => {
@@ -435,13 +460,12 @@ export async function createProofEditor(
 
   const view = editor.ctx.get(editorViewCtx);
 
-  let currentReadOnly = Boolean(opts.readOnly);
-  view.setProps({ editable: () => !currentReadOnly });
   view.setProps(brokenAskInputGuards); // no input throws in an off-rule ask (./ask-content.ts)
-  const setReadOnly = (readOnly: boolean) => {
-    currentReadOnly = readOnly;
-    view.setProps({ editable: () => !currentReadOnly });
+  const applyAccess = (access: ProofEditorAccess) => {
+    setAccess(view, access);
+    view.setProps({ editable: () => access === 'edit' });
   };
+  applyAccess(opts.access ?? 'edit');
 
   // --- Collab binding -------------------------------------------------
   // Adapted from ProofEditorImpl's initFromShare() collab-activation block.
@@ -514,7 +538,7 @@ export async function createProofEditor(
       }
       return offsets;
     },
-    setReadOnly,
+    setAccess: applyAccess,
     applyRemoteMarks(metadata: Record<string, StoredMark>, options?: { hydrateAnchors?: boolean }): void {
       applyRemoteMarksMutation(view, metadata, options);
     },
@@ -560,6 +584,9 @@ export async function createProofEditor(
     },
     setChangeDecorations(decorations: ChangeDecorations): void {
       applyChangeDecorations(view, decorations);
+    },
+    setReferences(references: EditorReferences | null): void {
+      applyReferences(view, references);
     },
     blockIdAtSelection(): string | null {
       const $head = view.state.selection.$head;

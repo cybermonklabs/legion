@@ -31,7 +31,7 @@ unassigned.
 Each time you read it:
 
 - `Status: done` means someone closed it: the close withdrew its open asks (each recorded
-  `withdrawn`; a reopen brings them back), and Dispatch refuses an ask or a message there
+  `withdrawn`; a reopen brings them back), and Dispatch refuses an ask there
   (`409 ISSUE_CLOSED`). Reopen it with `set_status` to `icebox` and say so in the day's report.
 - `Assignee: unassigned` with a person known: assign it, naming your session (`dispatch whoami`):
   `curl -sS -X PATCH -H "Authorization: Bearer $(cat "$DISPATCH_TOKEN_FILE")" -H 'Content-Type: application/json' -d '{"assignee": "<email>", "actor": {"kind": "session", "id": "<session id>"}}' "$DISPATCH_URL/api/v1/issues/<REPORT KEY>"`.
@@ -78,6 +78,13 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   `no_provider`, `no_price`, `unknown_format`, `no_conversation` or `post_refused`: its issue, role
   and reason, for the operator, whose `answers` configuration fixes it. With none, say nothing of
   them.
+- **The week** (on the report of your first turn of each UTC week only, from
+  `skill://legion-controller/references/weekly-audit.md`): the window's two times; the forced
+  creates by filer with the no-answer creates apart; the tree sizes in the five buckets with the
+  parked descendants; each nudge you sent, by its tree; and the duplicate audit's pairs, those
+  you folded and those you skipped with the event that settles each. Name beside each number the
+  command that recounts it. When you lead a stream that keeps a scoreboard, the same two measures
+  go on it under `forced_creates_by_filer` and `tree_sizes`.
 
 A day with nothing finished says so in one sentence. When the lists do not fit, give each list's
 count and name its issues of `--priority 0` and `--priority 1`, in board rank order.

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // sessionGateUnder is the tmux daemon's gate over gateUnder's pane profile, run through the image
@@ -67,7 +67,7 @@ func TestTheTmuxGateRefusesASessionDatabaseItsPanesCouldNotUse(t *testing.T) {
 // no Oh My Pi has opened yet, whose table the first pane's Oh My Pi creates, which the gate logs.
 func TestTheTmuxGatePassesASessionDatabaseItsPanesCanUse(t *testing.T) {
 	ctx := context.Background()
-	dsn := testpg.Database(t, "legion_tmux_session_gate_test")
+	dsn := testdb.Database(t, "legion_tmux_session_gate_test")
 	f := newImageOmp(t, []string{"available"}, []string{"yes"}, []string{"refuses"})
 	g, logged := sessionGateUnder(t, f, dsn)
 

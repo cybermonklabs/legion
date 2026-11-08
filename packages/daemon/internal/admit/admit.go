@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -344,7 +343,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("list admission slots: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues)
+	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
 	if err != nil {
 		return false, err
 	}
@@ -433,7 +432,7 @@ func (a *Admission) blocked(ctx context.Context, tx pgx.Tx) ([]record.BlockedIss
 	if err != nil {
 		return nil, fmt.Errorf("list admission slots: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues)
+	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
 	if err != nil {
 		return nil, err
 	}
@@ -461,7 +460,7 @@ func (a *Admission) Reconcile(ctx context.Context, tx pgx.Tx, summaries []intake
 	if err != nil {
 		return fmt.Errorf("list admission issues: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues)
+	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
 	if err != nil {
 		return err
 	}
@@ -814,7 +813,7 @@ func (a *Admission) orphan(ctx context.Context, tx pgx.Tx, stored record.Issue, 
 	if root == nil {
 		return true, nil
 	}
-	live, err := record.TreeLive(ctx, a.store, tx, *root)
+	live, err := record.TreeLive(ctx, a.store, tx, *root, a.engine.GatedSteps())
 	if err != nil {
 		return false, fmt.Errorf("read whether %s's tree is live: %w", stored.Key, err)
 	}
@@ -902,11 +901,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	}
 	orphan := carry && !claim.IsTreeRoot(stored.Key, stored.Tree)
 	oldTree, oldGeneration := stored.Tree, stored.Generation
-	var gate *record.DesignGate
+	var gates map[record.DesignStep]record.DesignGate
 	var pr *record.PullRequest
 	var err error
 	if orphan {
-		gate, err = a.store.Gate(ctx, tx, oldTree)
+		gates, err = a.store.GatesOf(ctx, tx, oldTree)
 		if err != nil {
 			return fmt.Errorf("read gate of re-admitted orphan %s: %w", stored.Key, err)
 		}
@@ -930,7 +929,8 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	// among them, stays its own tree (workflow's RanAsRoot) and records no chain to be held under.
 	stored.Ancestry = nil
 	if !orphan {
-		stored.Phase, stored.Hold, stored.Awaiting, stored.ReadyPendingVersion = phase.Admitted, nil, nil, nil
+		stored.Phase, stored.Hold, stored.Awaiting = phase.Admitted, nil, nil
+		stored.ReadyPending = nil
 		// Another tree's work arriving without its run: the run it had was that tree's.
 		if !claim.IsTreeRoot(stored.Key, oldTree) {
 			stored.TakenBack = false
@@ -992,17 +992,19 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 		}
 		// Every root a hand-over created is recorded as one, so its architect's catch-up says it was
 		// handed over and decomposes nothing anew; it is marked as carrying a gate, which tells the
-		// architect never to register its own spec, only when its old root had one. A root reopened
-		// in its linger has its gate cleared with the generation, so a second close hands its
-		// children over with none: such a child keeps its phase and pull request, and its architect
-		// registers its spec as a fresh root's does, the gate its READY needs.
-		if gate != nil {
+		// architect never to register its own spec, only when its old root had one. The carry takes
+		// every step's row, each keeping its own step, so a tree gated on several steps arrives
+		// approved on each of them as the old root was. A root reopened in its linger has its gate
+		// cleared with the generation, so a second close hands its children over with none: such a
+		// child keeps its phase and pull request, and its architect registers its spec as a fresh
+		// root's does, the gate its READY needs.
+		for _, gate := range gates {
 			gate.Issue = stored.Key
-			if err := a.store.PutGate(ctx, tx, *gate); err != nil {
+			if err := a.store.PutGate(ctx, tx, gate); err != nil {
 				return fmt.Errorf("carry gate to re-admitted orphan %s: %w", stored.Key, err)
 			}
 		}
-		return a.store.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: stored.Key, Generation: stored.Generation, GateCarried: gate != nil})
+		return a.store.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: stored.Key, Generation: stored.Generation, GateCarried: len(gates) > 0})
 	}
 	// Only the old tree's own root coming back cancels its pending hand-overs; an orphan of that
 	// tree admitted by a person leaves its siblings' fences standing.
@@ -1020,29 +1022,43 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 }
 
 // keepStaleApproval keeps, for the architect start of the root key re-admission is clearing, the
-// person's approval its gate holds of a version the spec has since moved past: the new
-// generation's architect registers its spec again on a cleared gate, and its start task
-// (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. Under
-// gates.design off, which asks no person, nothing is kept and any pair an earlier re-admission kept
-// is dropped: no start names one there, so no delivery would forget it. Under an armed gate, a gate
-// that holds no stale approval drops an earlier pair, which this gate has since outgrown; a root
-// with no gate at all (an earlier re-admission cleared it and nothing has registered since) keeps
-// the earlier pair, which no start has delivered yet.
+// person's approval a gate of its holds of a version its document has since moved past: the new
+// generation's architect registers each step again on a cleared gate, and its start task
+// (workflow.Engine.ParkedDecisionTask) tells it to request approval of the latest version. One
+// approval is kept, read from the first required step whose approved version sits below its
+// latest, because readmitted_approvals keeps one row for each root; it carries that step, so the
+// task names the document the person reviewed rather than the spec of every deployment.
+//
+// Where the deployment gates no step, which asks no person, nothing is kept and any pair an
+// earlier re-admission kept is dropped: no start names one there, so no delivery would forget
+// it. Otherwise a root whose required steps hold no stale approval drops an earlier pair, which
+// its gates have since outgrown; a root with a required step it holds no gate for (an earlier
+// re-admission cleared it and nothing has registered since) keeps the earlier pair, which no
+// start has delivered yet.
 func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string) error {
-	if a.engine.DesignGateOff() {
+	steps := a.engine.GatedSteps()
+	if len(steps) == 0 {
 		return a.store.DropReadmittedApproval(ctx, tx, key)
 	}
-	gate, err := a.store.Gate(ctx, tx, key)
+	gates, err := a.store.GatesOf(ctx, tx, key)
 	if err != nil {
 		return fmt.Errorf("read the gate of re-admitted %s: %w", key, err)
 	}
-	switch {
-	case gate == nil:
-		return nil
-	case gate.ApprovedVersion == nil || *gate.ApprovedVersion >= gate.LatestVersion:
-		return a.store.DropReadmittedApproval(ctx, tx, key)
+	unregistered := false
+	for _, step := range steps {
+		gate, ok := gates[step]
+		switch {
+		case !ok:
+			unregistered = true
+		case gate.ApprovedVersion != nil && *gate.ApprovedVersion < gate.LatestVersion:
+			return a.store.KeepReadmittedApproval(ctx, tx, key, record.KeptApproval{
+				Step: step, Approved: *gate.ApprovedVersion, Latest: gate.LatestVersion})
+		}
 	}
-	return a.store.KeepReadmittedApproval(ctx, tx, key, *gate.ApprovedVersion, gate.LatestVersion)
+	if unregistered {
+		return nil
+	}
+	return a.store.DropReadmittedApproval(ctx, tx, key)
 }
 
 // releaseSlots releases the slot of every issue of this project that no longer needs one
@@ -1133,8 +1149,9 @@ func (a *Admission) promote(ctx context.Context, tx pgx.Tx) (int, []string, erro
 // something that would make it stale (reread).
 //
 // Every path that promotes comes through here — a live fact, the controller tick, a hold's
-// release, the boot's Reconcile — so each of them is also a look at every issue a blocker holds
-// and at every slot whose worker has lost its task.
+// release, the boot's Reconcile — so each of them is also a look at every issue a blocker holds,
+// at every slot whose worker has lost its task, and at every tree a step that left gates.design
+// released (workflow.AdvanceOpenTrees).
 func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bool) (int, []string, error) {
 	issues, slots, facts, err := a.adoptQueuedRoots(ctx, tx, respectHolds)
 	if err != nil {
@@ -1163,6 +1180,20 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if len(released) > 0 {
 		if slots, err = a.store.Slots(ctx, tx); err != nil {
 			return 0, released, fmt.Errorf("list admission slots: %w", err)
+		}
+	}
+	// The rows the fence repair ends are decided before the line is judged, so an issue whose
+	// owed start it ends is offered no slot on this pass and the slot goes to the issue behind
+	// it (finishFencedStarts, record.Waiting). The records are read again where it ended one,
+	// as they are after releaseUnslotted below, since the line is built from the starts the
+	// project owes and this pass has just taken some of them away.
+	fenced, err := a.finishFencedStarts(ctx, tx, issues, facts)
+	if err != nil {
+		return 0, released, err
+	}
+	if fenced {
+		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
+			return 0, released, err
 		}
 	}
 	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
@@ -1326,7 +1357,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.engine.ResumeAwaitedRoot(ctx, tx, issue, *awaiting); err != nil {
 					return admitted, released, fmt.Errorf("resume %s after a person's answer: %w", issue.Key, err)
 				}
-				opened = opened || classify.DesignGateOpen(gate)
+				opened = opened || gate.Open()
 			case record.LineQueuedRoot:
 				issue.Status = "in_progress"
 				// A root whose tree is opened runs as a tree of its own, which no ancestry hold
@@ -1375,7 +1406,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				if err := a.reenterStrandedChildren(ctx, tx, issue, issues); err != nil {
 					return admitted, released, err
 				}
-				opened = opened || classify.DesignGateOpen(gate)
+				opened = opened || gate.Open()
 			case record.LineFirstPhase:
 				if err := a.engine.StartFirstPhase(ctx, tx, issue, rows[issue.Key].Blockers); err != nil {
 					return admitted, released, err
@@ -1401,7 +1432,19 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 	if err := a.resumeSlottedWorkers(ctx, tx, issues, slots); err != nil {
 		return admitted, released, err
 	}
-	if err := a.finishFencedStarts(ctx, tx, issues, facts); err != nil {
+	// A step leaving gates.design releases work no gate fact will ever reach: a merger's READY
+	// the dropped step refused. This pass is where it moves (workflow.AdvanceOpenTrees), from
+	// the records and the gates the pass has already read. It is handed the same predicate as
+	// ReconcileAwaiting above, for the same reason: a held root's record may still miss what
+	// Dispatch recorded, and a tree decided on it could be moved on at a document version a
+	// waiting event supersedes, which nothing takes back. The pass after the hold's release
+	// decides that tree.
+	//
+	// The other half of what a shorter list releases needs nothing here: a root left at admitted
+	// by a step that has gone is an issue whose first phase the waiting line offers a slot to on
+	// this very pass (record.Waiting, LineFirstPhase), because the line reads the gate's whole
+	// step list on every pass rather than waiting for a fact about it.
+	if err := a.engine.AdvanceOpenTrees(ctx, tx, issues, facts, heldKeys); err != nil {
 		return admitted, released, err
 	}
 	return admitted, released, nil
@@ -1419,7 +1462,7 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 	if err != nil {
 		return nil, nil, record.LineFacts{}, fmt.Errorf("list admission slots: %w", err)
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues)
+	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
 	return issues, slots, facts, err
 }
 
@@ -1428,17 +1471,17 @@ func (a *Admission) reread(ctx context.Context, tx pgx.Tx) ([]record.Issue, []re
 // candidate, each read on the state the promotion leaves the issue in (record.LineKind): a
 // returning issue and one starting its first phase are at work by definition; an answered root
 // goes back to admitted, where it needs a slot only while its architect is still writing the
-// spec, which is what a gate that has never opened says; and a root whose tree is opened keeps
-// the phase its record carries, which record.AtWork reads, so a handed-over root arriving in
-// accepting or held needs none while one arriving in a worker phase does. A candidate that needs
-// none is promoted whatever the cap: it starts no worker, so holding it back would bound nothing
-// and would leave its tree closed for no reason.
-func slotFor(entry record.LineEntry, gate record.DesignGate) bool {
+// design, which is what a gate that has never opened at every step the deployment gates says;
+// and a root whose tree is opened keeps the phase its record carries, which record.AtWork
+// reads, so a handed-over root arriving in accepting or held needs none while one arriving in a
+// worker phase does. A candidate that needs none is promoted whatever the cap: it starts no
+// worker, so holding it back would bound nothing and would leave its tree closed for no reason.
+func slotFor(entry record.LineEntry, gate record.TreeGate) bool {
 	switch entry.Kind {
 	case record.LineReturning, record.LineFirstPhase:
 		return true
 	case record.LineAnswered:
-		return !gate.EverOpened
+		return !gate.EverOpened()
 	default:
 		return record.AtWork(entry.Issue, gate)
 	}
@@ -1731,7 +1774,7 @@ func (a *Admission) release(ctx context.Context, tx pgx.Tx, position intake.Disp
 		if err != nil {
 			return nil, fmt.Errorf("list admission issues: %w", err)
 		}
-		facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues)
+		facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
 		if err != nil {
 			return nil, err
 		}
@@ -1883,14 +1926,16 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 // in a worker phase for which no start is queued and no delivery the claim is still working
 // (workflow.StartFor, the pending delivery's StillWorked). That can happen where a start row was
 // finished without acting while the slot stayed — a row the outbox fenced out, a row
-// finishFencedStarts below finished — and nothing else would ever start that worker again, so
-// the issue would hold its slot for ever doing nothing. Each one gets the start a retry of a
-// held phase gives (workflow's restart): the assignment its phases row already names, so no
-// completion in flight is refused for an assignment the worker was never given, and the phase's
-// resume task.
+// finishFencedStarts finished earlier in this pass — and nothing else would ever start that
+// worker again, so the issue would hold its slot for ever doing nothing. Each one gets the start
+// a retry of a held phase gives (workflow's restart): the assignment its phases row already
+// names, so no completion in flight is refused for an assignment the worker was never given, and
+// the phase's resume task.
 //
 // It runs after the cap loop on every pass admission makes, over at most the cap's worth of
-// slotted issues, through one batched RoleRuns read rather than a read per slot.
+// slotted issues, through one batched RoleRuns read rather than a read per slot. Running after
+// the fence repair rather than before it is what repairs a slot whose start row the fences
+// rejected on the pass that rejected it, instead of a pass later.
 func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot) error {
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
@@ -1954,6 +1999,22 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByReleased {
 			continue
 		}
+		// A retired claim was stopped, and two stops reach this repair: an operator's `legion
+		// claims stop`, and an agent's own report of its exit, which retires a worker's claim in
+		// the same way (api's exit, supervise's table) though no shipped agent sends one. The
+		// workflow's own retires never reach it: it retires a claim at its tree's close and at
+		// its issue's close, and each of those takes the issue out of the live records or
+		// lingers its root, which the loop above passes over already. Starting the phase again
+		// here would hand the operator back, a second later, the worker they stopped. The ways
+		// back are the workflow's own starts — the held phase's retry, the tree's re-admission —
+		// and this skip touches none of them; no operator command starts a retired phase worker
+		// at this head, and INFRA-956 is where one is added. What it costs: the issue keeps its
+		// admission slot with no worker in it until one of those starts or a person moves the
+		// issue, and a claim reading retired from an earlier run is passed over for as long as
+		// it reads so.
+		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
+			continue
+		}
 		if err := a.engine.ResumeSlottedWorker(ctx, tx, held.issue, held.role); err != nil {
 			return fmt.Errorf("start the worker of slotted issue %s again: %w", held.issue.Key, err)
 		}
@@ -1980,16 +2041,50 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 // and their generation, so the row passed every other fence, and at the tree's re-admission its
 // issue stood in the line's first part with the old row's place and took a slot ahead of its
 // own root.
-func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) error {
+//
+// A row the fences keep is weighed once more, against the claim it would start: a stop of that
+// worker ends the row too, since the row would otherwise start the stopped worker
+// again the moment a slot came (stopOutlivedStart). That second read is one batched RoleRuns
+// call over the rows the fences kept, and no read at all when they kept none.
+//
+// It runs before the waiting line is judged, and so before the cap loop hands out any slot
+// (promoteHolds). That is what keeps the line and this repair from disagreeing: the line offers
+// a slot to any unslotted issue that owes a start and reads no claim at all (record.Waiting), so
+// a row ended after the line was built would leave its own issue holding a slot with no worker
+// in it while the issue behind it in the line waited for one. Deciding the rows first leaves
+// that issue out of the line instead, and the slot goes to the next issue in it. It answers
+// whether it ended any row, which is what tells the pass to take its shared reads again.
+func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) (bool, error) {
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
 	}
+	project, err := claim.ProjectToken(a.project)
+	if err != nil {
+		return false, err
+	}
+	type owedRow struct {
+		owed  record.OwedStart
+		token claim.Token
+	}
+	finished := false
+	kept := make([]owedRow, 0, len(facts.OwedRows))
+	keys := make([]record.RoleRunKey, 0, len(facts.OwedRows))
 	for _, owed := range facts.OwedRows {
 		issue, recorded := byKey[owed.Issue]
 		root, rooted := byKey[issue.Tree]
 		if recorded && rooted && !record.OutOfWorkflow(issue.Status) && !root.Lingers() &&
 			owed.Generation == issue.Generation && owed.Phase == issue.Phase {
+			// The fences keep this row, so it stands for the stop rule below. A row whose issue
+			// and role yield no claim token has no run to read, as the slot repair's holders have
+			// none (resumeSlottedWorkers): it stays owed and the rule passes over it rather than
+			// failing the whole fact.
+			token, err := claim.NewToken(project, owed.Issue, owed.Role)
+			if err != nil {
+				continue
+			}
+			kept = append(kept, owedRow{owed: owed, token: token})
+			keys = append(keys, record.RoleRunKey{Token: token, Issue: owed.Issue, Role: owed.Role, Generation: owed.Generation})
 			continue
 		}
 		// No live lease holds the row (record.Store.OwedStarts), so the token it carries is
@@ -1997,14 +2092,66 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 		// a lane that took the row between this pass's read and this write keeps it, and the
 		// next pass repairs what is left.
 		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
-			return fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
+			return finished, fmt.Errorf("finish the start %s owed a worker it can no longer reach: %w", owed.Issue, err)
 		}
+		finished = true
 		intake.OnCommit(ctx, func() {
 			a.log.Info("admission: finished a held start whose issue has moved past it", "issue", owed.Issue, "row", owed.ID,
 				"role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
 		})
 	}
-	return nil
+	if len(keys) == 0 {
+		return finished, nil
+	}
+	runs, err := a.store.RoleRuns(ctx, tx, keys)
+	if err != nil {
+		return finished, err
+	}
+	for _, keptRow := range kept {
+		owed, run := keptRow.owed, runs[keptRow.token]
+		if !stopOutlivedStart(run, owed) {
+			continue
+		}
+		if err := a.store.FinishOutbox(ctx, tx, owed.ID, owed.LeaseToken); err != nil {
+			return finished, fmt.Errorf("finish the start %s owed a stopped worker: %w", owed.Issue, err)
+		}
+		finished = true
+		intake.OnCommit(ctx, func() {
+			a.log.Info("admission: finished a held start owed a stopped worker", "issue", owed.Issue,
+				"row", owed.ID, "role", owed.Role, "phase", owed.Phase, "generation", owed.Generation)
+		})
+	}
+	return finished, nil
+}
+
+// stopOutlivedStart says whether owed is a start the stop of its worker outlived, and so a row
+// that would only ever start a stopped worker. Its three terms together say the stop is the whole
+// of this row's story, and run carries all three: it is one record.Store.RoleRuns read, which
+// reads the queued rows before the claim exactly so that none of the three is read across a
+// relaunch of that claim (record's RoleRuns).
+func stopOutlivedStart(run record.RoleRun, owed record.OwedStart) bool {
+	// The retired state says the worker was ended.
+	if run.Claim == nil || run.Claim.State != supervise.StateRetired {
+		return false
+	}
+	// A second queued start would say a later start of the workflow is already on its way —
+	// a re-admitted tree's promotion and the held phase's retry both write one — and the stop
+	// is over for a worker the workflow is starting again. The rule therefore does not reach
+	// a relaunch row outstanding at the stop, which is that second queued start, nor an owed
+	// row a lane has already leased, which is not in this read at all
+	// (record.Store.OwedStarts).
+	if slices.ContainsFunc(run.Queued, func(queued record.QueuedSupervise) bool {
+		return queued.ID != owed.ID && queued.Request.Op == "start"
+	}) {
+		return false
+	}
+	// A task the claim still works would say the claim kept the work of this very row, which
+	// the outbox's relaunch leaves for the row behind it, so the row is not simply a start
+	// the stop outlived.
+	if p := run.Claim.Pending; p != nil && p.StillWorked(owed.Generation, owed.Phase, run.Claim.State) {
+		return false
+	}
+	return true
 }
 
 // reenterStrandedChildren re-enters, at candidate's promotion, every tree member admission left

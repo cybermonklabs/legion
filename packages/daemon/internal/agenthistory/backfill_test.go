@@ -69,17 +69,16 @@ func (l *logs) lines(fragments ...string) []string {
 
 func (l *logs) logger() *slog.Logger { return slog.New(slog.NewTextHandler(l, nil)) }
 
+func TestMain(m *testing.M) { os.Exit(testpg.Main("legion_agenthistory_test", m.Run)) }
+
 func migratedStore(t *testing.T) (*store.Store, string) {
 	t.Helper()
-	dsn := testpg.Database(t, "legion_agenthistory_test")
+	dsn := testpg.Clone(t, "legion_agenthistory_test")
 	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(st.Close)
-	if _, err := st.Migrate(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	return st, dsn
 }
 

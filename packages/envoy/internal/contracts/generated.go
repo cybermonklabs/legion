@@ -28,7 +28,7 @@ type Envelope struct {
 	InReplyTo      string          `json:"in_reply_to,omitempty"`
 	Supersedes     string          `json:"supersedes,omitempty"`
 	Urgency        string          `json:"urgency,omitempty"`
-	ExpectsReply   string          `json:"expects_reply,omitempty"`
+	ExpectsReply   ExpectsReply    `json:"expects_reply,omitempty"`
 }
 
 type EnvelopeSender struct {
@@ -82,12 +82,8 @@ func (e Envelope) Validate() error {
 			return fmt.Errorf("urgency must be one of: low, med, high, blocking")
 		}
 	}
-	if e.ExpectsReply != "" {
-		switch e.ExpectsReply {
-		case "none", "optional", "required":
-		default:
-			return fmt.Errorf("expects_reply must be one of: none, optional, required")
-		}
+	if err := e.ExpectsReply.Validate(); err != nil {
+		return err
 	}
 	if e.Sender != nil {
 		if strings.TrimSpace(e.Sender.SessionID) == "" {
@@ -404,6 +400,13 @@ const ListenerCallAttempts = 2
 // packages/contracts so the server's check and the page's header cannot drift apart.
 const DispatchLoginHeader = "Dispatch-Login"
 const DispatchLoginChanged = "LOGIN_CHANGED"
+
+// IDAmbiguous is the code of the 409 an id written as a prefix two items or more carry is
+// refused with, on a page address, a dispatch:// reference and a dashboard address in text, and
+// on a route that takes an id in its path; the refusal's candidates list the items it names.
+// Generated from ID_AMBIGUOUS in packages/contracts so the server's refusal and the page that
+// lists its candidates cannot drift apart.
+const IDAmbiguous = "ID_AMBIGUOUS"
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
 // names a session and a service but no person: the machine holding it has signed nobody in.

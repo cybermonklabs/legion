@@ -97,6 +97,25 @@ func Guard(keep ...string) error {
 	return nil
 }
 
+// MustGuard is Guard for a TestMain, which has no test to fail and no error to return: it guards
+// the test process, and where Guard fails it prints the failure as `TestMain: <err>` on stderr and
+// ends the process with status 1, so no package's tests run unguarded. Every guarding TestMain
+// calls it in Guard's place.
+func MustGuard(keep ...string) {
+	if err := Guard(keep...); err != nil {
+		guardFailed(err)
+	}
+}
+
+// guardFailed ends the test process MustGuard could not guard. It is a function of its own because
+// it is the half of MustGuard a test can run: Guard fails only where os.Unsetenv or os.Setenv
+// does, and neither can be made to fail from outside the process, since os.Unsetenv returns no
+// error on unix and the key os.Setenv is given is a literal of Guard's own.
+func guardFailed(err error) {
+	fmt.Fprintln(os.Stderr, "TestMain:", err)
+	os.Exit(1)
+}
+
 // Live gives the test the process's own values back of every variable Guard took out or set, and
 // leaves GIT_ALLOW_PROTOCOL unset when the process had none; the guarded environment returns when
 // the test ends. Only a live proof's entry point calls it: an e2e-tagged test that reaches a real
@@ -180,5 +199,22 @@ func Home(home string) []string {
 	return []string{
 		"HOME=" + home, "XDG_CONFIG_HOME=" + filepath.Join(home, ".config"),
 		"JJ_CONFIG=" + filepath.Join(home, "no-jj-config.toml"),
+	}
+}
+
+// Unset takes every variable in names out of the test process's own environment: t.Setenv of an
+// empty value, so Go puts back whatever the process held when the test ends, and then
+// os.Unsetenv, so code that tells an empty value from an absent one (os.LookupEnv) finds none.
+// It is variadic because a test that clears one of these usually clears a set of them together.
+// Like t.Setenv, which it uses, it cannot be used in a parallel test. It is for a test and takes
+// the test for that reason: a TestMain has no *testing.T, so nothing there would put the
+// process's own values back, and a TestMain that wants a variable gone calls os.Unsetenv itself.
+func Unset(t testing.TB, names ...string) {
+	t.Helper()
+	for _, name := range names {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatalf("unset %s: %v", name, err)
+		}
 	}
 }

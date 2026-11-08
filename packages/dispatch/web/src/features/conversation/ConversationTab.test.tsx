@@ -22,6 +22,7 @@ import type {
   CommentDelivery,
   Event,
   Handoff,
+  IssueAskRow,
   IssueAskThreadRow,
   Message,
   MessageDelivery,
@@ -30,8 +31,9 @@ import type {
   UserState,
 } from "../../api/types";
 import { stubMatchMedia } from "../margin/margin-fixture";
-import { seedUnread } from "../replies/replies-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { userPreferenceStorageKey } from "../shell/userPreference";
+import { seedUnread } from "../threads/replies-fixture";
 import { writesOf } from "../writes/write-store";
 import { ConversationTab } from "./ConversationTab";
 import { answeredWithErrorGuidance, safeRetryGuidance } from "./delivery";
@@ -580,7 +582,8 @@ test("agent authors render the registry title and fall back to a short id", asyn
   }
 });
 
-test("hides targeted-message retries on a closed issue", async () => {
+// A closed issue takes a message's retry and replies, so its card offers them as an open one does.
+test("offers targeted-message retries and Reply on a closed issue", async () => {
   const stub = stubLists({
     messages: [
       thread(
@@ -595,9 +598,10 @@ test("hides targeted-message retries on a closed issue", async () => {
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient, true));
 
   try {
-    await screen.findByText("Failed: no live session s1");
-    expect(screen.queryByRole("button", { name: "Use BTW instead" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Use Send instead" })).toBeNull();
+    await screen.findByText(/Failed: no live session s1/);
+    expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+    const turns = screen.getByRole("list", { name: "Conversation turns" });
+    expect(within(turns).getByRole("button", { name: "Reply" })).toBeTruthy();
   } finally {
     view.unmount();
     stub.restore();
@@ -684,12 +688,18 @@ test("a mention its session answered with an error is pointed at a new comment, 
     expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
     view.unmount();
 
-    // A closed issue shows no Retry and takes no new comment, so neither sentence is said: the
-    // same rule the card follows, where each sentence names a control in the retry row.
+    // A closed issue takes a retry and a new comment, so it says both sentences, with the Retry,
+    // as an open one does.
     view = render(tab({ "CORE-1": issueState() }, true, queryClient, true));
-    await screen.findByText(wholeText("session:worker… · failed · worker failed"));
-    screen.getByText(wholeText("session:reviewer… · failed · reviewer failed"));
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await screen.findByText(
+      wholeText(`session:worker… · failed · worker failed. ${answeredWithErrorGuidance("mention")}`)
+    );
+    screen.getByText(
+      wholeText(
+        `session:reviewer… · failed · reviewer failed. ${safeRetryGuidance("mention", "reviewer failed")}`
+      )
+    );
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
   } finally {
     view.unmount();
     stub.restore();
@@ -730,7 +740,8 @@ test("a targeted message asked by a session names that session as the asker", as
   }
 });
 
-test("renders a message composer for an open issue but not a closed one", async () => {
+// A closed issue takes comments and message replies, so its Conversation keeps the composer.
+test("renders the message composer on an open issue and a closed one alike", async () => {
   const stub = stubLists({ messages: [thread(message("message-1"))] });
   const queryClient = newQueryClient();
   const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
@@ -738,7 +749,8 @@ test("renders a message composer for an open issue but not a closed one", async 
   try {
     await screen.findByRole("form", { name: "Comment composer" });
     view.rerender(tab({ "CORE-1": issueState() }, true, queryClient, true));
-    expect(screen.queryByRole("form", { name: "Comment composer" })).toBeNull();
+    expect(screen.getByRole("form", { name: "Comment composer" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send" })).toBeTruthy();
   } finally {
     view.unmount();
     stub.restore();
@@ -2237,5 +2249,133 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     putIssueState.mockRestore();
     stub.restore();
     viewport.restore();
+  }
+});
+
+// The Conversation folds nothing and carries no order control: every thread in it reads the way
+// the reader set the Inbox's View menu.
+for (const order of ["oldest", "newest"] as const) {
+  test(`a thread's replies read ${order} first`, async () => {
+    const key = userPreferenceStorageKey("alice", "inbox.thread-order");
+    window.localStorage.setItem(key, order);
+    const stub = stubLists({
+      messages: [
+        thread(message("message-1"), [
+          message("reply-1", { created_at: "2026-09-09T00:01:00Z", in_reply_to: "message-1" }),
+          message("reply-2", { created_at: "2026-09-09T00:02:00Z", in_reply_to: "message-1" }),
+        ]),
+      ],
+    });
+    const queryClient = newQueryClient();
+    // The browser's order is the signed-in person's, so the card waits on who they are.
+    seedUnread(queryClient, { issue: "CORE-1" }, []);
+    const view = render(tab({ "CORE-1": issueState() }, true, queryClient));
+
+    try {
+      const replies = await screen.findByRole("list", { name: "Replies" });
+      await waitFor(() =>
+        expect(
+          Array.from(replies.querySelectorAll("li"), (item) => item.getAttribute("data-turn"))
+        ).toEqual(
+          order === "oldest"
+            ? ["message:reply-1", "message:reply-2"]
+            : ["message:reply-2", "message:reply-1"]
+        )
+      );
+    } finally {
+      view.unmount();
+      stub.restore();
+      window.localStorage.removeItem(key);
+    }
+  });
+}
+
+// INFRA-869: a message that is nothing but a reference shows the reference's card under it, as
+// the margin's comments do.
+test("a message that is nothing but a reference shows its card", async () => {
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue({
+    documents: [],
+    key: "CORE-2",
+    project: "CORE",
+    status: "in_progress",
+    title: "The other issue",
+  });
+  const stub = stubLists({
+    messages: [thread(message("message-1", { body: "dispatch://CORE-2" }))],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+
+  try {
+    const turn = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>('[data-turn="message:message-1"]');
+      if (found === null) throw new Error("the turn has not rendered");
+      return found;
+    });
+    const cards = await within(turn).findByRole("region", { name: "References" });
+    expect(
+      within(cards)
+        .getByRole("link", { name: /The other issue/ })
+        .getAttribute("href")
+    ).toBe("/issues/CORE-2");
+  } finally {
+    view.unmount();
+    stub.restore();
+    getIssueSummary.mockRestore();
+  }
+});
+
+// INFRA-869: a turn's text is its message's, so its `#id` resolves against the question map the
+// server answers for that message (its issue's spec) - the one map the reference graph stores
+// its edges from.
+test("a Conversation turn links the `#q2` the question map of its message names", async () => {
+  const question: IssueAskRow = {
+    ...baseAsk,
+    block_artifact: { id: "spec-1", primary: true, slug: "spec" },
+    block_id: "q2",
+    id: "ask-2",
+    last_reply: null,
+    options: [],
+    question: "Which region?",
+  };
+  const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue({
+    document: "spec-1",
+    questions: [{ ask: "ask-2", block_id: "q2", reference: "dispatch://CORE-1/ask/ask-2" }],
+  });
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    answers: [],
+    ask: question,
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  });
+  const stub = stubLists({
+    messages: [thread(message("message-1", { body: "See #q2 for the rollout." }))],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+
+  try {
+    const turn = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>('[data-turn="message:message-1"]');
+      if (found === null) throw new Error("the turn has not rendered");
+      return found;
+    });
+    const link = await waitFor(() => {
+      const found = turn.querySelector<HTMLElement>("a[data-dispatch-ref]");
+      if (found === null) throw new Error("the `#q2` is still plain text");
+      return found;
+    });
+    expect(link.getAttribute("data-dispatch-ref")).toBe("dispatch://CORE-1/ask/ask-2");
+    expect(link.getAttribute("href")).toBe("/issues/CORE-1/asks/ask-2");
+    expect(getReferenceQuestions).toHaveBeenCalledWith("message", "message-1");
+  } finally {
+    view.unmount();
+    stub.restore();
+    getAsk.mockRestore();
+    getReferenceQuestions.mockRestore();
   }
 });

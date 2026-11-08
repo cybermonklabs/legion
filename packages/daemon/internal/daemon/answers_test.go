@@ -61,14 +61,7 @@ func (noFacts) Facts(context.Context, string) (answerloop.IssueFacts, error) {
 // topic (A7).
 func TestAClaimStartedDuringAnAnswerGetsTheQuestionAndItsConversationNothing(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(ctx, testpg.Database(t, "legion_daemon_answers"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(st.Close)
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	st := testpg.CloneStore(t, "legion_daemon_answers")
 	path := filepath.Join(t.TempDir(), "ses_tester.jsonl")
 	session := `{"type":"session","version":3,"id":"s","timestamp":"2026-10-26T00:00:00.000Z","cwd":"/work"}` + "\n" +
 		`{"id":"e0000001","parentId":null,"timestamp":"2026-10-26T00:00:00.000Z","type":"model_change","model":"anthropic/claude-opus-5-5"}` + "\n" +
@@ -567,14 +560,7 @@ func TestTheLoopsOwnAnswerOnAnAskLeavesTheAdmittedRootItsSlot(t *testing.T) {
 // passed on is not listed.
 func TestQuestionsForControllerListsAPassedQuestionForSevenDays(t *testing.T) {
 	ctx := context.Background()
-	st, err := store.Open(ctx, testpg.Database(t, "legion_daemon_passed_questions"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(st.Close)
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	st := testpg.CloneStore(t, "legion_daemon_passed_questions")
 	now := time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)
 	passOn := controllerPassOn{pool: st.Pool(), records: record.NewStore(), now: func() time.Time { return now }, log: quietLogger()}
 	question := func(id, event string) store.AnswerQuestion {

@@ -17,11 +17,16 @@ import (
 )
 
 // Target is what TargetOf reads off a gh command: Owner, the owner, lowercased, of the repository
-// it acts on, empty when it names none; and Command, the path of the leaf command it runs as gh's
-// own help names it (`pr list` for `pr ls`), nil when it runs none (`gh`, a group alone, `gh
-// help`, `gh --version`).
+// it acts on, empty when it names none; Repo, that repository's name as the bundle directory
+// holding its token is named for it (RepositoryName), where every selector of the command named
+// that one repository of that owner, and "" where they named more than one, where one named the
+// owner alone, and where none named a repository at all; and Command, the path of the leaf
+// command it runs as gh's own help names it (`pr list` for `pr ls`), nil when it runs none
+// (`gh`, a group alone, `gh help`, `gh --version`). A target with no Owner is a command naming
+// none, whose token stays the one GH_CONFIG_DIR already names.
 type Target struct {
 	Owner   string
+	Repo    string
 	Command []string
 }
 
@@ -52,17 +57,21 @@ type Target struct {
 // that is a github.com URL (through gh's pr finder, which reads any other as a branch of the
 // command's own repository, only a pull request's names its repository); OWNER/REPO#N where the
 // leaf reads it (ghLeafQuirks); a search `<query>`'s repo:/owner:/user:/org: qualifiers; `gh api`'s
-// endpoint (repos/<owner>/, orgs/<owner>/, users/<owner>/, a search endpoint's q) and a GraphQL
-// query's owner variable (`-F owner=<login>`); and the options naming a repository, an owner, a
-// team or an issue by URL (ghOptionKinds). So does the command's own repository when gh resolves
-// it, because no argument names it and the leaf reads one, or whatever names it for a leaf that
-// reads every remote (fromOwnRepository): GH_REPO for a leaf that reads it, gh api's :owner and
-// {repo} placeholders among them, and otherwise every github.com repository the working
-// directory's git remotes name (remotes), read as gh reads them; a command naming no owner at all
-// counts those too. They must all name one owner; two are an error. A GraphQL query naming its
-// repository otherwise, by a node id or in the query text, names none gh could resolve. GH_HOST
-// naming another host than github.com, where gh would send no token of the bundle's, and a
-// GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any directory's token, are errors.
+// endpoint (repos/<owner>/<repo>/…, repos/<owner>/, orgs/<owner>/, users/<owner>/, a search
+// endpoint's q) and a GraphQL query's owner variable (`-F owner=<login>`); and the options naming
+// a repository, an owner, a team or an issue by URL (ghOptionKinds). So does the command's own
+// repository when gh resolves it, because no argument names it and the leaf reads one, or
+// whatever names it for a leaf that reads every remote (fromOwnRepository): GH_REPO for a leaf
+// that reads it, gh api's :owner and {repo} placeholders among them, and otherwise every
+// github.com repository the working directory's git remotes name (remotes), read as gh reads
+// them; a command naming no owner at all counts those too. They must all name one owner; two are
+// an error. The target's repository is the one repository they all name, which is none where a
+// selector names an owner alone — `orgs/<owner>/`, an owner:/org:/user: qualifier, an `<owner>`
+// argument, a team, a project, an owner option — since such a command reaches whatever else of
+// that owner's gh resolves. A GraphQL query naming its repository otherwise, by a node id or in
+// the query text, names none gh could resolve. GH_HOST naming another host than github.com, where
+// gh would send no token of the bundle's, and a GH_TOKEN or GITHUB_TOKEN, which gh sends in place
+// of any directory's token, are errors.
 func TargetOf(argv []string, env map[string]string, help func(path []string) (string, error), remotes func() ([]Remote, error)) (Target, error) {
 	if host := env["GH_HOST"]; host != "" && !strings.EqualFold(host, "github.com") {
 		return Target{}, fmt.Errorf("GH_HOST is %q, another host than github.com, so it sends no token; unset GH_HOST", host)
@@ -123,7 +132,7 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 	if parsed.help {
 		return Target{Command: cmd.path}, nil
 	}
-	sel := selectors{api: cmd.isAPI(), owners: map[string]string{}}
+	sel := selectors{api: cmd.isAPI(), owners: map[string]string{}, repos: map[string]bool{}}
 	if err := sel.fromCommand(cmd, parsed); err != nil {
 		return Target{}, err
 	}
@@ -135,7 +144,7 @@ func TargetOf(argv []string, env map[string]string, help func(path []string) (st
 		return Target{Command: cmd.path}, nil
 	case 1:
 		for owner := range sel.owners {
-			return Target{Owner: owner, Command: cmd.path}, nil
+			return Target{Owner: owner, Repo: sel.onlyRepository(), Command: cmd.path}, nil
 		}
 	}
 	var listed []string

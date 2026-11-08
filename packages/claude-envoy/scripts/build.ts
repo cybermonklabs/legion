@@ -46,12 +46,15 @@ export const BUNDLE_ENTRYPOINTS = {
 /** Oh My Pi's tool names, as pi-legion's agents list them, to Claude Code's. A tool this Claude
  *  Code build lacks maps to nothing: it has no Glob or Grep tool (an agent searches with `rg` or
  *  `fd` through Bash where it has Bash), and its own task list stands in for `todo`. A name in
- *  neither list is refused, so a new tool is mapped on purpose. */
+ *  neither list is refused, so a new tool is mapped on purpose. `web_search` reads no file, and
+ *  it is here because an agent that must read no file of the repository still needs one tool
+ *  Claude Code has: `claudeAgent` refuses a definition whose every tool maps to nothing. */
 export const CLAUDE_TOOL_NAMES: Readonly<Record<string, string | null>> = {
   read: "Read",
   bash: "Bash",
   edit: "Edit",
   write: "Write",
+  web_search: "WebSearch",
   glob: null,
   grep: null,
   todo: null,
@@ -59,11 +62,14 @@ export const CLAUDE_TOOL_NAMES: Readonly<Record<string, string | null>> = {
 
 /** One pi-legion agent file in Claude Code's agent format. The frontmatter keeps `name`,
  *  `description` and `color`; `tools` is mapped through `CLAUDE_TOOL_NAMES`; `autoloadSkills`
- *  becomes `skills`, each the plugin's namespaced `legion:<skill>`; `model` (an Oh My Pi model
+ *  becomes `skills`, each namespaced by the plugin that ships it — `legion:<skill>` for one the
+ *  generated plugin stages, `claude-envoy:<skill>` for one this package ships, since a phase
+ *  worker installs both and Claude Code resolves a namespaced name in its own plugin alone;
+ *  `model` (an Oh My Pi model
  *  role, which Claude Code does not read, so the agent runs on the pane's model) and every
  *  comment are dropped. The body is kept as it is. No shipped agent declares `blocking`
  *  (`packages/pi-legion/src/shipped-agents.test.ts`), so nothing here reads it. */
-export function claudeAgent(file: string, source: string): string {
+export function claudeAgent(file: string, source: string, legionSkills?: Set<string>): string {
   const match = /^---\n([\s\S]*?)\n---\n/.exec(source)
   if (match === null) throw new Error(`${file} has no frontmatter`)
   const lines: string[] = []
@@ -93,7 +99,12 @@ export function claudeAgent(file: string, source: string): string {
     } else if (key === "autoloadSkills") {
       const skills = /^\[(.*)\]$/.exec(value)?.[1]
       if (skills === undefined) throw new Error(`${file}'s autoloadSkills is not a flow list`)
-      const names = skills.split(",").map((skill) => `legion:${skill.trim()}`)
+      const names = skills.split(",").map((skill) => {
+        const name = skill.trim()
+        const plugin =
+          legionSkills === undefined || legionSkills.has(name) ? "legion" : "claude-envoy"
+        return `${plugin}:${name}`
+      })
       lines.push(`skills: [${names.join(", ")}]`)
     } else {
       lines.push(line)
@@ -207,11 +218,19 @@ export async function buildLegionPlugin(outdir: string): Promise<string[]> {
     }
     reads.push(source)
   }
+  // The skills this generated plugin stages, so an agent's `autoloadSkills` entry that is not one
+  // of them is namespaced to the package that does ship it (this one), which a phase worker
+  // installs beside this plugin.
+  const legionSkills = new Set(
+    (await readdir(stagedSkills, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name),
+  )
   const agents = join(repoRoot, "packages", "pi-legion", "agents")
   await mkdir(join(outdir, "agents"))
   for (const name of (await readdir(agents)).filter((file) => file.endsWith(".md")).sort()) {
     const source = await readFile(join(agents, name), "utf8")
-    await writeFile(join(outdir, "agents", name), claudeAgent(name, source))
+    await writeFile(join(outdir, "agents", name), claudeAgent(name, source, legionSkills))
     reads.push(join(agents, name))
   }
   await mkdir(join(outdir, "hooks"))

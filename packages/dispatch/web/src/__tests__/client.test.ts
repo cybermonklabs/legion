@@ -18,6 +18,8 @@ import {
   type UploadImplementation,
 } from "../api/client";
 import { QUERY_RETRY_DELAY_MS, queryRetryDelay } from "../api/query-client";
+import { FIRST_BACKOFF_MS, writeUnderKey } from "../features/writes/keyed-write";
+import { onFakeClock, settle } from "./fake-clock";
 
 interface RecordedRequest {
   body?: BodyInit | null;
@@ -79,18 +81,6 @@ function outcome(pending: Promise<unknown>): Promise<unknown> {
  *  `Idempotency-Key` and a `PUT` or a `DELETE` leaves off. */
 function keyed(key: string): { key: string } {
   return { key };
-}
-
-/** Runs `body` on the fake clock. A timer left at zero delay would hang a later test's `waitFor`
- *  once the real clock is back, so the fake one moves a millisecond before it goes. */
-async function onFakeClock(body: () => Promise<void>): Promise<void> {
-  jest.useFakeTimers();
-  try {
-    await body();
-  } finally {
-    jest.advanceTimersByTime(1);
-    jest.useRealTimers();
-  }
 }
 
 // A read Dispatch never answers would leave its page loading for good: every GET gives up at the
@@ -434,6 +424,48 @@ test("a write's failures are classified by kind", async () => {
   ).toMatchObject({
     code: "KEY_IN_FLIGHT",
     retryAfterMs: 2_000,
+  });
+});
+
+// W28. An answer whose body stops part way down says nothing of what Dispatch did, as a
+// connection that never answered says nothing: it is a `NetworkError`, which the write waits out
+// and asks again under its own key. Refused instead, its Retry would mint a new key and Dispatch
+// would make the person's write a second time.
+test("a 2xx whose body read fails is a NetworkError, retried under its key", async () => {
+  // A browser errors the body of a response whose connection dropped under it.
+  const cutOff = () =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start: (body) => body.error(new TypeError("network error")),
+      }),
+      { status: 201 }
+    );
+
+  const dropped = createApiClient(async () => cutOff());
+  expect(
+    await outcome(dropped.createIssue({ project: "CORE", title: "x" }, keyed("k")))
+  ).toBeInstanceOf(NetworkError);
+
+  // And the write's policy admits it: `retryAfter` gives a `NetworkError` a wait rather than
+  // `undefined`, so the write waits its first backoff and asks again under the same key.
+  await onFakeClock(async () => {
+    let attempts = 0;
+    const api = createApiClient(async () => {
+      attempts += 1;
+      return attempts === 1 ? cutOff() : Response.json({ key: "CORE-1" }, { status: 201 });
+    });
+
+    const made = writeUnderKey(
+      (bounds) => api.createIssue({ project: "CORE", title: "x" }, bounds),
+      "k",
+      { carried: null }
+    );
+    await settle();
+    expect(attempts).toBe(1);
+    jest.advanceTimersByTime(FIRST_BACKOFF_MS);
+
+    expect(await made).toMatchObject({ key: "CORE-1" });
+    expect(attempts).toBe(2);
   });
 });
 
@@ -1048,7 +1080,7 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.listIssueAskThreads("CORE-1");
   await api.getAsk("ask-1");
   await api.listMyAnswers({ limit: 50, offset: 100 });
-  await api.listMyReplies({ limit: 50, offset: 0 });
+  await api.listMyReplies({ limit: 50 });
   await api.listMyReplies({ issue: "CORE-1", limit: 200 });
   await api.listMyReplies({ artifact: "artifact-1", limit: 200 });
   await api.markThreadRead("comment-1", "2026-10-12T00:00:00.000Z", keyed("put-1"));
@@ -1121,7 +1153,7 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["GET", "/api/v1/issues/CORE-1/asks?state=all&thread=1"],
     ["GET", "/api/v1/asks/ask-1"],
     ["GET", "/api/v1/me/answers?limit=50&offset=100"],
-    ["GET", "/api/v1/me/replies?limit=50&offset=0"],
+    ["GET", "/api/v1/me/replies?limit=50"],
     ["GET", "/api/v1/me/replies?issue=CORE-1&limit=200"],
     ["GET", "/api/v1/me/replies?artifact=artifact-1&limit=200"],
     ["PUT", "/api/v1/me/threads/comment-1/read"],

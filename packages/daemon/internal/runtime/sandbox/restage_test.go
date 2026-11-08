@@ -9,8 +9,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -349,7 +351,7 @@ func ghItemsFor(owners ...string) []corev1.KeyToPath {
 }
 
 // A project that gains a GitHub owner — a repository of a new owner in its mapping, which the
-// restarted daemon serves (appauth.GitHubOwners) and renders a directory for in every role's
+// restarted daemon serves (appauth.GitHubDirs) and renders a directory for in every role's
 // bundle — leaves every issue pod created before it projecting the owners of its own creation:
 // the refresher adds the new owner's two keys to the live role Secret, but a pod's projection
 // names the keys it was built with, so /var/run/legion/gh holds no directory of that owner and
@@ -364,8 +366,8 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 	tester := workerSpec(t)
 	testerLoc := g.spawn(tester)
 	ghVolumeName := roleVolume(ghVolume, claim.RoleTester)
-	if held := ghItems(t, g.pod(testerLoc.Sandbox.Name), claim.RoleTester); !slices.Equal(held, ghItemsFor(staticOwners...)) {
-		t.Fatalf("the tester's gh volume projects %+v, want the two files of each of %q and nothing else", held, staticOwners)
+	if held := ghItems(t, g.pod(testerLoc.Sandbox.Name), claim.RoleTester); !slices.Equal(held, ghItemsFor(staticDirs...)) {
+		t.Fatalf("the tester's gh volume projects %+v, want the two files of each of %q and nothing else", held, staticDirs)
 	}
 
 	r2 := secondRuntime(t, g, servingAddedOwner)()
@@ -378,7 +380,7 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 	if obs.Kind != runtime.Alive || obs.Locator != testerLoc {
 		t.Fatalf("%s at %+v, want the tester alive at its recorded locator until its round ends: %s", obs.Kind, obs.Locator, obs.Detail)
 	}
-	want := (movedAddress{ghVolumeName, ghOwnersName(staticOwners), ghOwnersName(servedOwners)}).String()
+	want := (movedAddress{ghVolumeName, ghDirsName(staticDirs), ghDirsName(servedDirs)}).String()
 	drifted := driftOf(t, g.ctx, r2, testerLoc)
 	if !slices.Contains(drifted, want) {
 		t.Errorf("PodDrift = %q, want %q among it", drifted, want)
@@ -415,8 +417,8 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 	}
 	pod := g.pod(testerLoc.Sandbox.Name)
 	held := ghItems(t, pod, claim.RoleTester)
-	if !slices.Equal(held, ghItemsFor(servedOwners...)) {
-		t.Errorf("the replaced pod's gh volume projects %+v, want the two files of each of %q", held, servedOwners)
+	if !slices.Equal(held, ghItemsFor(servedDirs...)) {
+		t.Errorf("the replaced pod's gh volume projects %+v, want the two files of each of %q", held, servedDirs)
 	}
 	for _, want := range ghItemsFor(addedOwner) {
 		if !slices.Contains(held, want) {
@@ -428,6 +430,163 @@ func TestAddingAGitHubOwnerDriftsAnIssuePodWhoseGhVolumeLacksIt(t *testing.T) {
 	}
 	if drifted := driftOf(t, g.ctx, r2, newTester); len(drifted) > 0 {
 		t.Fatalf("the replaced pod has drifted: %q", drifted)
+	}
+}
+
+// ownerRuleOwners is the answer of the owner predicate this branch replaces, for the project
+// serving repos with pair configured: the owner of every repository served, and the owner the
+// pair moved a repository away from beside them whenever the project owned the pair's `to` owner
+// and owned nothing of its `from` owner. It is written here to be compared against
+// appauth.GitHubDirs, the rule that replaces it, since a pod created before this change
+// projects a directory for each owner this answered.
+func ownerRuleOwners(repos []ghrepo.Repository, pair ghrepo.Rename) []string {
+	owns := func(owner string) bool {
+		return slices.ContainsFunc(repos, func(r ghrepo.Repository) bool { return strings.EqualFold(r.Owner(), owner) })
+	}
+	owners := make([]string, 0, len(repos)+1)
+	for _, repo := range repos {
+		if owner := strings.ToLower(repo.Owner()); !slices.Contains(owners, owner) {
+			owners = append(owners, owner)
+		}
+	}
+	from, to := strings.ToLower(pair.From.Owner()), strings.ToLower(pair.To.Owner())
+	if from != to && owns(to) && !owns(from) {
+		owners = append(owners, from)
+	}
+	return slices.Sorted(slices.Values(owners))
+}
+
+// A pod created before this change, whose gh volume projects one directory for each owner the
+// daemon served then, is unmoved against a daemon resolving the smoke repository's pair per
+// repository, in both owner-set states: state A, where the project serves no repository of the
+// recorded owner beyond what the pair gives it, and state B, where it serves one more
+// (otherOfRecordedOwner). That is what the directory set can do and no more: the predicate this
+// branch replaces added the pair's `from` owner whenever the project owned the pair's `to`
+// owner, while the rule now adds it only when the project serves the pair's `to` repository, so
+// the new set can lose a name and never gain one — and in state B, the one state where the two
+// differ, the `from` owner is in the set anyway, as the owner of a repository the project serves
+// under its own name (ownerRuleOwners above answers renamedDirs for both states). The owner
+// directories are the whole of what is compared, here and in the runtime: in state B the bundle
+// also cuts a repository directory under the recorded owner, for the repository it serves beside
+// the one the role writes to, and movedGhDirs runs both sides through ghOwnerDirs, which drops
+// every name holding a slash, so no repository directory is an address a pod can lack.
+// movedGhDirs compares one way, naming only what the daemon serves and the pod does not project,
+// so a set that cannot gain an owner name moves no pod: no update round is opened over a gh
+// directory, no issue pod is replaced, and the role's own addresses stay where they are.
+//
+// Those addresses are the rest of what this holds, in each state: the role's generation is started
+// with GH_CONFIG_DIR naming the directory of the owner the issue's record names — the directory
+// the pod projects, whose name authorises nothing — its pod is addressed at the cache of the
+// repository that record names, not the one GitHub holds it under now, and that cache's token is
+// minted for the owner serving the repository now, which is the one half a rename does move.
+func TestARenamedIssuesPodIsUnmovedInEitherOwnerSetState(t *testing.T) {
+	stateA := []ghrepo.Repository{servingSmoke}
+	stateB := []ghrepo.Repository{servingSmoke, otherOfRecordedOwner}
+	for state, repos := range map[string][]ghrepo.Repository{"A": stateA, "B": stateB} {
+		serves := ghOwnerDirs(appauth.GitHubDirs(func() []ghrepo.Repository { return repos }, ghrepo.MustRenames(smokeRename),
+			nil, appauth.Roles, recordedSmoke))
+		owned := ownerRuleOwners(repos, smokeRename)
+		if !slices.Equal(serves, renamedDirs) || !slices.Equal(owned, renamedDirs) {
+			t.Fatalf("state %s serves the owner directories %q by the repository rule and %q by the owner predicate it replaces, want %q from both: the new set gains no owner name, so a pod built under the old one lacks no directory",
+				state, serves, owned, renamedDirs)
+		}
+	}
+
+	g := newRig(t, nil, withOptions(servingRenamed(stateA...)))
+	spec := workerSpec(t)
+	loc := g.spawn(spec)
+	pod := g.pod(loc.Sandbox.Name)
+	ghVolumeName := roleVolume(ghVolume, claim.RoleTester)
+	if held := ghItems(t, pod, claim.RoleTester); !slices.Equal(held, ghItemsFor(renamedDirs...)) {
+		t.Fatalf("the tester's gh volume projects %+v, want the two files of each of %q: the directories a daemon of either state serves, and the owner predicate's own answer", held, renamedDirs)
+	}
+	cache := CacheSandboxName(testProject, spec.Repository)
+	// reading is what k5 records of one owner-set state: whether the runtime reports the pod's gh
+	// address moved, the GH_CONFIG_DIR the role's generation is started with, the repository cache
+	// its pod's fetch is addressed at, and the owner that cache's token is minted for.
+	type reading struct {
+		moved                           bool
+		configDir, cacheURL, cacheToken string
+	}
+	read := func(r *Runtime) reading {
+		t.Helper()
+		_, moved := r.movedGhDirs(g.pod(loc.Sandbox.Name), claim.RoleTester)
+		return reading{
+			moved:      moved,
+			configDir:  startEnv(lastStart(t, g, workerToken))["GH_CONFIG_DIR"],
+			cacheURL:   g.fetchEnv(loc.Sandbox.Name)["LEGION_REPOSITORY_CACHE_URL"],
+			cacheToken: string(g.secret(cacheSecretName(cache)).Data[provisionTokenKey]),
+		}
+	}
+	want := reading{
+		moved:      false,
+		configDir:  ghconfig.Dir(GHConfigDir, recordedSmoke.Owner()),
+		cacheURL:   g.r.cacheURL(cache),
+		cacheToken: "ghs_provision_" + servingSmoke.Owner(),
+	}
+
+	if got := read(g.r); got != want {
+		t.Fatalf("state A reads %+v, want %+v", got, want)
+	}
+	if moved := CacheSandboxName(testProject, servingSmoke); g.sandbox(moved) != nil {
+		t.Errorf("the launch made a cache named %s, the repository GitHub holds the record's under: only the token follows a rename, never an address", moved)
+	}
+	if held := heldInPod(g.r, pod, claim.Roles); len(held) > 0 {
+		t.Fatalf("state A holds %+v in the pod, which a pod created now is not handed", held)
+	}
+
+	r2 := secondRuntime(t, g, servingRenamed(stateB...))()
+	g.connectRunning(workerToken, loc.Sandbox.Generation)
+	g.eventually("the tester's launcher to report its child to the restarted daemon", func() bool {
+		state, connected := r2.launchers.state(workerToken, loc.Sandbox.PodUID)
+		return connected && state.Child != nil
+	})
+	if obs := readopt(t, g.ctx, r2, loc)[0]; obs.Kind != runtime.Alive || obs.Locator != loc {
+		t.Fatalf("%s at %+v, want the tester alive at its recorded locator in state B: %s", obs.Kind, obs.Locator, obs.Detail)
+	}
+	for _, reason := range driftOf(t, g.ctx, r2, loc) {
+		if strings.Contains(reason, ghVolumeName) {
+			t.Errorf("PodDrift names %q in state B, so the daemon opens an update round over the pod's gh directory", reason)
+		}
+	}
+	spec.Generation, spec.BootToken, spec.ResumeSessionFile = 2, "boot-tester-g2", resumeSession
+	kept, err := r2.Resume(g.ctx, &loc, spec)
+	if err != nil {
+		t.Fatalf("Resume the tester in state B: %v", err)
+	}
+	if kept.Sandbox.PodUID != loc.Sandbox.PodUID {
+		t.Fatalf("Resume in state B replaced the pod %s, which holds the issue's disk", loc.Sandbox.PodUID)
+	}
+	r2.refreshCacheTokens(g.ctx)
+	if got := read(r2); got != want {
+		t.Fatalf("state B reads %+v, want %+v", got, want)
+	}
+	if held := heldInPod(r2, pod, claim.Roles); len(held) > 0 {
+		t.Fatalf("state B holds %+v in the pod, which a pod created now is not handed", held)
+	}
+	later := launchOf(t, r2, childSpec(t))
+	if dir := ghconfig.Dir(GHConfigDir, later.gitHubDefault); later.cacheURL != want.cacheURL || dir != want.configDir {
+		t.Errorf("a launch of another issue recorded on %s names the cache %q and GH_CONFIG_DIR %q, want %q and %q: a pod created in state B lands where this one stands",
+			recordedSmoke, later.cacheURL, dir, want.cacheURL, want.configDir)
+	}
+
+	// The control k5 names: the same pod against a daemon serving an owner it projects no
+	// directory for (servingAddedOwner, which serves addedOwner beside this package's static
+	// owners). The runtime must report that pod moved, and the launch a role gets from such a
+	// daemon must name a gh directory the pod does not project. The control shows that this
+	// reading can fail — the two states above are no vacuous pass — and it is no failure of the
+	// head either, since the change moves neither value it reads: what the control changes is the
+	// owner set itself, which gains a name here and can only lose one across the states above.
+	r3 := secondRuntime(t, g, servingAddedOwner)()
+	control, ok := r3.movedGhDirs(pod, claim.RoleTester)
+	if want := (movedAddress{ghVolumeName, ghDirsName(renamedDirs), ghDirsName(servedDirs)}); !ok || control != want {
+		t.Fatalf("the control reads %+v (moved %t), want %+v: a daemon serving an owner the pod projects no directory for moves it", control, ok, want)
+	}
+	launched := ghItems(t, &corev1.Pod{Spec: r3.podTemplate(launchOf(t, r3, spec)).Spec}, claim.RoleTester)
+	for _, item := range ghItemsFor(addedOwner) {
+		if !slices.Contains(launched, item) || slices.Contains(ghItems(t, pod, claim.RoleTester), item) {
+			t.Errorf("the control's launch projects %+v, and the pod %+v; want %s at %s in the launch alone", launched, ghItems(t, pod, claim.RoleTester), item.Key, item.Path)
+		}
 	}
 }
 

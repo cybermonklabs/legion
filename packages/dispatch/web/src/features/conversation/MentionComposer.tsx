@@ -432,10 +432,11 @@ interface MentionComposerProps {
    *  mounted out of sight - the margin's, under its collapsed sheet, its rail or the Pinned tab -
    *  passes it once the composer is on screen, since a field out of sight takes no focus. */
   readonly autoFocus?: boolean;
-  /** The owner takes no more sends: its issue is closed. The composer stays mounted, so a send
-   *  still out and its refusal keep their draft: it shows itself only while it holds one of them,
-   *  with Send refused and Discard in place of Retry, and otherwise renders nothing, its draft
-   *  kept for a reopen. */
+  /** The owner's issue is closed. A closed issue takes comments and message replies, so a comment
+   *  composer shows and sends as ever; its Suggest and Ask kinds are hidden, since a closed issue
+   *  refuses both. A suggestion or ask composer stays mounted, so a send of its own still out and
+   *  its refusal keep their draft: it shows itself only while it holds one of them, with Send
+   *  refused and Discard in place of Retry, and otherwise renders nothing. */
   readonly closed?: boolean;
   readonly docked?: boolean;
   /** The host offers no new message here - a decided suggestion's thread offers no reply - so the
@@ -468,6 +469,12 @@ interface MentionComposerProps {
   readonly owner: ComposerOwner;
   readonly replyTo?: ReplyTarget | null;
   readonly saveEdit?: SaveCommentEdit;
+  /** The reply target is this box's own standing address rather than a Reply the reader
+   *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
+   *  is remounted whenever the column follows the selection onto another row. Taking a target
+   *  normally takes the focus, so the reader can write at once; a standing box takes neither,
+   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+  readonly standing?: boolean;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and
    *  its mark has to change with it (the margin retypes it) - or returns, in the reader's words,
@@ -496,6 +503,7 @@ export function MentionComposer({
   owner,
   replyTo = null,
   saveEdit,
+  standing = false,
 }: MentionComposerProps): ReactNode {
   // This composer's send, held by its target rather than by this mount (`useComposerSend`): a
   // composer that mounts where a send is out, or was refused, shows that send and its draft.
@@ -573,8 +581,8 @@ export function MentionComposer({
   const [confirmingDiscard, setConfirmingDiscard] = useState(false);
   // Why the last kind pick was refused, kept with the mark it answered: the composer stays mounted
   // when a newer compose replaces the anchor, and a refusal about the old mark says nothing about
-  // the new one.
-  const [kindRefusal, setKindRefusal] = useState<{ markId: string; text: string }>();
+  // the new one. A quote anchor (a closed issue's document) has no mark.
+  const [kindRefusal, setKindRefusal] = useState<{ markId: string | undefined; text: string }>();
   const autocompleteOpen = autocomplete !== undefined;
   const live = useAgents(
     suppliedAgents === undefined && owner.kind !== "session",
@@ -692,8 +700,13 @@ export function MentionComposer({
     }
     if (previousReply.current === replyTo.id) return;
     previousReply.current = replyTo.id;
+    // A standing box never takes the focus for its own target: nobody asked for it, and the
+    // Inbox column mounts one for every row the reader steps onto.
+    const takeFocus = () => {
+      if (!standing) textarea.current?.focus();
+    };
     if (tookHeldDraft) {
-      textarea.current?.focus();
+      takeFocus();
       return;
     }
     const initial = replyTo.mentions ?? [];
@@ -717,8 +730,8 @@ export function MentionComposer({
         return { end, start, target: mention.target, text };
       }),
     });
-    textarea.current?.focus();
-  }, [replaceDraft, replyTo]);
+    takeFocus();
+  }, [replaceDraft, replyTo, standing]);
 
   /** A send the server took, while this composer is mounted: the store has refreshed what it
    *  wrote. The draft is the composer's own, so it clears to what the channel it addresses now
@@ -729,9 +742,12 @@ export function MentionComposer({
     if (!inline && sentEdit === undefined) onClose();
   };
   const { refusal, sending } = outgoing;
-  // Closed or finishing, with no send out and no refusal to show: nothing of this composer is on
-  // screen.
-  const dormant = (closed || finishing) && !sending && refusal === undefined;
+  // The kind a closed issue refuses: a suggestion or an ask. Its composer only finishes a send of
+  // its own.
+  const refusedKind = closed && kind !== "comment";
+  // Closed to this kind or finishing, with no send out and no refusal to show: nothing of this
+  // composer is on screen.
+  const dormant = (refusedKind || finishing) && !sending && refusal === undefined;
   /** Ends the reply; an inline reply's draft and refusal end with it (`onCancelReply`). */
   const cancelReply = () => {
     if (inline) {
@@ -1018,9 +1034,9 @@ export function MentionComposer({
     heldPicked === undefined
       ? deliveryPlan(body, inheritedDelivery)
       : { body, delivery: heldPicked };
-  // A closed owner takes no send: the composer is only still here for a send of its own that is
-  // out, or its refusal, and Send says why it cannot go.
-  const submitReason = closed
+  // A closed issue refuses a suggestion or an ask: the composer is only still here for a send of
+  // its own that is out, or its refusal, and Send says why it cannot go.
+  const submitReason = refusedKind
     ? "This issue is closed. Reopen it to send."
     : draftRefusal(kind, body, replacement, outbound);
   const footId = useId();
@@ -1148,7 +1164,7 @@ export function MentionComposer({
           {anchor.quote}
         </blockquote>
       )}
-      {onKindChange !== undefined && edit === undefined && owner.kind !== "session" ? (
+      {onKindChange !== undefined && edit === undefined && owner.kind !== "session" && !closed ? (
         <>
           <fieldset className="flex gap-1">
             <legend className="sr-only">Kind</legend>
@@ -1500,9 +1516,10 @@ export function MentionComposer({
             onRetry={canSubmit ? send : undefined}
             retrying={sending}
           />
-          {/* A closed owner takes no Retry, so the refusal's own way out is to drop the draft it
-              handed back, once the reader has it; a send the reader stopped offers both ways. */}
-          {closed || refusal instanceof SendStoppedError ? (
+          {/* A kind the closed issue refuses takes no Retry, so the refusal's own way out is to
+              drop the draft it handed back, once the reader has it; a send the reader stopped
+              offers both ways. */}
+          {refusedKind || refusal instanceof SendStoppedError ? (
             <button
               className={`text-sm font-medium underline ${dangerText}`}
               onClick={discard}
@@ -1528,7 +1545,7 @@ export function MentionComposer({
       </p>
     </fieldset>
   );
-  // A closed owner's composer, or a finishing one, stays mounted, keeping its draft, and shows
+  // A composer closed to its kind, or a finishing one, stays mounted, keeping its draft, and shows
   // itself only for a send of its own that is out or that send's refusal; otherwise it renders
   // nothing, its frame with it.
   if (dormant) return null;

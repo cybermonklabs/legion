@@ -37,22 +37,31 @@ func helpDir(t *testing.T) string {
 	return dir
 }
 
-// fakeTokens mints a lease per App role and owner, a read-only one marked as such, as
+// servedRepositories is the project's mapping the test's bundles are built from: two owners, the
+// issue's own `acme` with a second repository beside the one the role writes to, and `Sjawhar`,
+// whose repositories the role only reads.
+func servedRepositories() []ghrepo.Repository {
+	return []ghrepo.Repository{
+		ghrepo.MustParse("acme/widgets"), ghrepo.MustParse("acme/other"), ghrepo.MustParse("Sjawhar/legion"),
+	}
+}
+
+// fakeTokens mints a lease per App role and scope, a read-only one marked as such, as
 // appauth.Manager does, and records what it was asked.
 type fakeTokens struct {
 	mu    sync.Mutex
 	asked []string
 }
 
-func (f *fakeTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return f.lease("ghs_"+string(role)+"_"+owner, role, owner)
+func (f *fakeTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
+	return f.lease("ghs_" + string(role) + "_" + strings.ToLower(repo.Owner()))
 }
 
-func (f *fakeTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
-	return f.lease("ghs_"+string(role)+"_"+owner+"_read", role, owner)
+func (f *fakeTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+	return f.lease("ghs_" + string(role) + "_" + owner + "_read")
 }
 
-func (f *fakeTokens) lease(token string, role appauth.AppRole, owner string) (appauth.Lease, error) {
+func (f *fakeTokens) lease(token string) (appauth.Lease, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.asked = append(f.asked, token)
@@ -164,7 +173,7 @@ func newFixture(t *testing.T, agent Agent, b behaviour) *fixture {
 	f.host = Host{
 		GH: filepath.Join(f.stand, "gh"), Git: filepath.Join(root, "gitbin", "git"), Legion: filepath.Join(root, "legion"),
 		StateDir: filepath.Join(root, "state"), Calls: f.calls, Log: slog.New(slog.NewJSONHandler(f.logs, nil)), Now: time.Now,
-		Credential: appauth.GitHubCredential(f.tokens, func() []string { return []string{"acme", "Sjawhar"} }, ghrepo.Renames{}),
+		Credential: appauth.GitHubCredential(f.tokens, servedRepositories, ghrepo.Renames{}, nil, slog.New(slog.DiscardHandler)),
 	}
 	answer, err := Open(context.Background(), f.host, agent, question)
 	if err != nil {
@@ -262,7 +271,7 @@ func TestOpenWritesTheAgentsBundleAsAPanesAndCloseRemovesIt(t *testing.T) {
 		tokens := &fakeTokens{}
 		host := Host{
 			GH: "/opt/gh/gh", Legion: "/opt/legion/legion", StateDir: stale, Calls: newFakeRecorder(), Log: slog.New(slog.DiscardHandler), Now: time.Now,
-			Credential: appauth.GitHubCredential(tokens, func() []string { return []string{"acme", "Sjawhar"} }, ghrepo.Renames{}),
+			Credential: appauth.GitHubCredential(tokens, servedRepositories, ghrepo.Renames{}, nil, slog.New(slog.DiscardHandler)),
 		}
 		answer, err := Open(context.Background(), host, tc.agent, question)
 		if err != nil {
@@ -690,14 +699,7 @@ func TestLookupFindsTheCommentByItsAnswerKey(t *testing.T) {
 // finished after with gh's output and exit; a refused call's row has its refusal and no exit.
 func TestCallsAreRecordedInPostgres(t *testing.T) {
 	ctx := context.Background()
-	s, err := store.Open(ctx, testpg.Database(t, "legion_ghtool"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(s.Close)
-	if _, err := s.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	s := testpg.CloneStore(t, "legion_ghtool")
 	f := newFixture(t, implementer, behaviour{Stdout: "gh's answer"})
 	f.answer.host.Calls = checkedStore{Store: s, t: t, f: f}
 	got := f.run(1, "pr", "view", "5", "-R", "sjawhar/legion")

@@ -196,7 +196,7 @@ const commentValidation: NonNullable<DispatchToolSpec["validation"]> = {
 const ISSUE_UPDATE_FIELDS_RULE =
   "Issue update requires at least one field besides issue: status, title, labels, priority, external_links, route, parent, blocked_by, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
-  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes because a closed issue refuses messages, comments, and artifacts";
+  "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note";
 const ISSUE_UPDATE_REASON_RULE = "reason goes only with status done";
 const ISSUE_UPDATE_RULE = `${ISSUE_UPDATE_FIELDS_RULE} ${ISSUE_UPDATE_DONE_RULE}; ${ISSUE_UPDATE_REASON_RULE}.`;
 
@@ -599,10 +599,13 @@ export const dispatchToolSpecs = [
       "keeps every earlier link; an empty external_links removes every link instead. components " +
       "replaces the issue's own attachment. Closing an issue " +
       "(status done) requires reason, the note that says why: it is posted on the issue as a " +
-      "message, then the issue closes, because a closed issue refuses messages, comments, and " +
-      "artifacts; reason goes only with status done. Closing an issue withdraws every open ask " +
+      "message, then the issue closes, so the close carries its note; closing an issue that is " +
+      "already closed is refused (ISSUE_CLOSED) before anything is posted. Reason goes only " +
+      "with status done. Closing an issue withdraws every open ask " +
       "it holds (resolution kind withdrawn, naming the closer), and reopening it brings exactly " +
-      "those asks back. A closed issue takes only a board move " +
+      "those asks back. " +
+      "A closed issue still takes messages and comments, though not asks or artifacts; of this " +
+      "tool's fields it takes only a board move " +
       "(before, after), components, " +
       "a reopening status (any status but done), and an external_links write that adds no new " +
       "link (so a link can move to the issue that replaced it); everything else, priority " +
@@ -1051,8 +1054,9 @@ export const dispatchToolSpecs = [
       "in_reply_to and no issue; the reply lands in that conversation. Another call with the same in_reply_to and new text posts a follow-up, " +
       "threaded under this session's first reply; the same text again posts nothing. dispatch read --message <id> reads " +
       "that conversation back. " +
-      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A BTW, Aside or Steer " +
-      "frame carries a reply_with command: answer with it, on that issue. On Oh My Pi an Agents-page Send or Aside " +
+      "Every other message names its issue; keep --issue whenever the frame you answer gave one. A frame reading expects_reply: optional or " +
+      "required carries a reply_with command: answer with it, on that issue. One reading false carries none and asks for no answer; where " +
+      "you answer one anyway, its card names what to answer. On Oh My Pi an Agents-page Send or Aside " +
       "arrives as a user message: answer in the conversation, with no dispatch message. " +
       `${BODY_BLOCK_RULE} The lines images appends count toward it. ${ISSUE_REFERENCE}`,
     arguments: (z) => ({
@@ -1351,7 +1355,11 @@ export const dispatchToolSpecs = [
       "(dispatch://KEY/artifact/verification-md#b-<id>); 409 CHECK_AMBIGUOUS names them, and an " +
       "id no Verification document of the issue or of an issue above it holds is 400 " +
       "UNKNOWN_CHECK. A pass counting any failed, skipped or excluded case contradicts itself " +
-      "and is 400 RESULT_CONTRADICTS. The result is recorded against the check's own issue, so " +
+      "and is 400 RESULT_CONTRADICTS. Dispatch asks GitHub whether the repository of the " +
+      "check's issue holds the commit: one it does not hold is 400 RESULT_COMMIT_UNKNOWN, " +
+      "naming the commit and that owner/repo, so record the result after the commit is pushed. " +
+      "A repository Dispatch cannot read records the result as before. " +
+      "The result is recorded against the check's own issue, so " +
       "a child's run of a parent's check appears under that check. A closed issue takes a " +
       "result only for a check whose when is after_merge or default_branch — the production " +
       "check after the merge — and refuses every other one with 409 ISSUE_CLOSED, as it refuses " +
@@ -1578,8 +1586,10 @@ export const dispatchToolSpecs = [
       "the same question. Use it to check a draft before filing it. It searches by meaning and by " +
       "the text's rarest words, and says how it searched; when meaning search cannot run it " +
       "searches by keywords only and says why. When it could not search at all it says why and " +
-      "names the dispatch search to run instead. exclude_issue leaves that issue's own items out, " +
-      "as a check on that issue's own write does; keywords_only skips meaning search.",
+      "names the dispatch search to run instead. exclude_issues leaves each named issue's own " +
+      "items out of the results, at most 50 of them, so a draft under a parent can leave out " +
+      "that parent and its children without changing how rare the text's words are; " +
+      "keywords_only skips meaning search.",
     arguments: (z) => ({
       project: z.string().describe("Project key to search within, such as CORE."),
       title: z
@@ -1590,9 +1600,11 @@ export const dispatchToolSpecs = [
         .string()
         .describe("Optional text to check, such as a draft spec or a question.")
         .optional(),
-      exclude_issue: z
-        .string()
-        .describe("Optional issue key in the project whose own items are left out.")
+      exclude_issues: z
+        .array(z.string())
+        .describe(
+          "Optional issue keys in the project whose own items are left out of the results; at most 50."
+        )
         .optional(),
       keywords_only: z
         .boolean()
@@ -1850,9 +1862,13 @@ export const dispatchToolSpecs = [
       "List what the Inbox of the person you act for shows, read with your own credential. " +
       "Each heading carries its count, then its rows: Needs you (their open asks waiting on a " +
       "person and not inside a snooze, plus the credential requests they may decide), Waiting on " +
-      "agents, Later (the asks they snoozed) and Credential requests. An ask's line names its " +
+      "agents, Later (the asks they snoozed), Unread threads (the threads they wrote in that " +
+      "somebody else has written in since, and the messages they sent an agent session that it " +
+      "answered) and Credential requests. An ask's line names its " +
       "issue key or document slug, its priority, its kind, the first 80 characters of the " +
-      "question and its dispatch:// reference; a credential request's line names its kind, its " +
+      "question and its dispatch:// reference; a thread's line names its issue key, document " +
+      "slug or session, its kind, the first 80 characters of its subject, who wrote the newest " +
+      "reply, how long ago and where to read it; a credential request's line names its kind, its " +
       "identifiers, when it was requested, the sessions it names and the page where it is " +
       "decided. It needs a credential holding the person scope, and one without it is refused " +
       "403 OAUTH_SCOPE_REQUIRED, naming the scope. This is the person's Dispatch Inbox, and not " +

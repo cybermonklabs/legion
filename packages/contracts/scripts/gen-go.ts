@@ -10,6 +10,7 @@ import {
   DISPATCH_SIGN_IN_REQUIRED,
   DOCUMENT_SCHEMA_CLOSE_CODE,
   DOCUMENT_SCHEMA_CLOSE_REASON,
+  ID_AMBIGUOUS,
   IDEMPOTENCY_ANSWER_NOT_KEPT,
   IDEMPOTENCY_KEY_COMMITTED,
   IDEMPOTENCY_KEY_HEADER,
@@ -81,13 +82,18 @@ import { SUBJECT_MAX_BYTES, SUBJECT_SEGMENT_REPLACED } from "../src/subject";
 
 type ScalarKind = "string" | "integer" | "boolean";
 
+// The slice of JSON Schema that schemas/envelope.schema.json uses. A property with no `type` is
+// one whose values are not of a single JSON type, such as a mixed literal set; it names the Go
+// type holding it through `x-go-type`, which is hand-written beside the generated file and
+// validates itself.
 type Prop = {
-  type: ScalarKind | "array" | "object";
-  enum?: string[];
+  type?: ScalarKind | "array" | "object";
+  enum?: (string | boolean)[];
   minLength?: number;
   properties?: Record<string, Prop>;
   required?: string[];
   items?: Prop;
+  "x-go-type"?: string;
 };
 
 type Schema = {
@@ -414,6 +420,13 @@ const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
 const DispatchLoginHeader = ${JSON.stringify(DISPATCH_LOGIN_HEADER)}
 const DispatchLoginChanged = ${JSON.stringify(DISPATCH_LOGIN_CHANGED)}
 
+// IDAmbiguous is the code of the 409 an id written as a prefix two items or more carry is
+// refused with, on a page address, a dispatch:// reference and a dashboard address in text, and
+// on a route that takes an id in its path; the refusal's candidates list the items it names.
+// Generated from ID_AMBIGUOUS in packages/contracts so the server's refusal and the page that
+// lists its candidates cannot drift apart.
+const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
+
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
 // names a session and a service but no person: the machine holding it has signed nobody in.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
@@ -535,6 +548,10 @@ function name(key: string) {
 }
 
 function envelopeKind(prop: Prop, req: Set<string>, key: string) {
+  // A property whose Go type is hand-written beside the generated file holds it whole: the type
+  // decides what the field reads off the wire and writes back, and validates itself.
+  const goType = prop["x-go-type"];
+  if (goType) return goType;
   if (prop.type === "object") {
     if (!prop.properties) throw new Error(`missing object properties for ${key}`);
     return `*Envelope${name(key)}`;
@@ -545,6 +562,7 @@ function envelopeKind(prop: Prop, req: Set<string>, key: string) {
     }
     return "[]string";
   }
+  if (!prop.type) throw new Error(`${key} has no type and no x-go-type`);
   const base = map[prop.type];
   if (req.has(key) || prop.type === "string") return base;
   return `*${base}`;
@@ -568,11 +586,26 @@ function check(access: string, path: string, prop: Prop, depth = 1) {
   throw new Error(`unsupported required envelope type for ${path}`);
 }
 
-function enums(key: string, prop: Prop, optional: boolean) {
+// What Validate() says about one property's value: the type's own Validate() when the property
+// names a hand-written Go type, else a switch over the words its enum holds.
+function valueChecks(key: string, prop: Prop, optional: boolean) {
+  if (prop["x-go-type"]) {
+    return `\tif err := e.${name(key)}.Validate(); err != nil {\n\t\treturn err\n\t}`;
+  }
   if (!prop.enum?.length) return "";
   const n = name(key);
   const indent = optional ? "\t\t" : "\t";
-  const list = prop.enum.map((item) => `"${item}"`).join(", ");
+  // The switch below reads a Go string, and the optional case leans on `""` being its zero
+  // value, so a set holding anything else needs a Go type of its own to read and validate it
+  // (`x-go-type`, answered above). Refuse such a set rather than emit Go that does not compile.
+  const list = prop.enum
+    .map((item) => {
+      if (typeof item !== "string") {
+        throw new Error(`${key}'s enum holds ${JSON.stringify(item)} and names no x-go-type`);
+      }
+      return `"${item}"`;
+    })
+    .join(", ");
   const body = [
     `${indent}switch e.${n} {`,
     `${indent}case ${list}:`,
@@ -645,8 +678,8 @@ function renderEnvelope(schema: Schema) {
       ];
     })
     .join("\n");
-  const enumChecks = keys
-    .map((key) => enums(key, schema.properties[key], !req.has(key)))
+  const propertyChecks = keys
+    .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
   const nestedChecks = keys
@@ -654,7 +687,7 @@ function renderEnvelope(schema: Schema) {
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
     .join("\n");
-  const validate = [checks, optionalStringChecks, enumChecks, nestedChecks, "\treturn nil"]
+  const validate = [checks, optionalStringChecks, propertyChecks, nestedChecks, "\treturn nil"]
     .filter(Boolean)
     .join("\n");
   const nested = keys

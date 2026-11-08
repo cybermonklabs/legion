@@ -11,18 +11,21 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/testpg"
 )
 
 // The stand-in gh is this test binary, linked as `gh` into a directory of its own (standInGH): run
 // under that name it answers as gh, so the environment it records is exactly the one the tool gave
 // it, with no shell between. It records every run in invocations.jsonl beside it, answers `<path>
 // --help` with gh 2.98.0's help of that command, and answers every other run as behaviour.json
-// beside it says.
+// beside it says. Every other run of this binary takes the package's migrated Postgres template,
+// which the one test that records calls in the store clones (testpg.Main).
 func TestMain(m *testing.M) {
 	if filepath.Base(os.Args[0]) == "gh" {
 		os.Exit(standIn())
 	}
-	os.Exit(m.Run())
+	os.Exit(testpg.Main("legion_ghtool_test", m.Run))
 }
 
 // behaviour is how the stand-in answers a run: its stdout (or the response for its exact arguments,

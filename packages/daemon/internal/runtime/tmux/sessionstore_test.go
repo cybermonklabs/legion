@@ -11,7 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // Under runtime.tmux.session_store postgres a resume of an Oh My Pi session is held to the session
@@ -19,7 +19,7 @@ import (
 // in a database no Oh My Pi has opened yet, and even with a file at its path — before anything is
 // written or tmux runs; a session the table holds resumes, with no file at its path at all.
 func TestAResumeUnderASessionDatabaseIsHeldToTheSessionTable(t *testing.T) {
-	_, dsnFile := testpg.DSNFile(t, "legion_tmux_sessions_test")
+	_, dsnFile := testdb.DSNFile(t, "legion_tmux_sessions_test")
 	ctx := context.Background()
 	stateDir := t.TempDir()
 	bin := t.TempDir()

@@ -20,7 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/testbin"
-	"github.com/sjawhar/legion/daemon/internal/testpg"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // The stand-in model the real-binary tests point the pinned Oh My Pi at: a models.yml provider on
@@ -597,7 +597,7 @@ func TestThePinnedOhMyPiResumesAnAppendedAnswer(t *testing.T) {
 	})
 
 	t.Run("SQL storage", func(t *testing.T) {
-		dsn, dsnFile := testpg.DSNFile(t, "legion_conversation_omp_test")
+		dsn, dsnFile := testdb.DSNFile(t, "legion_conversation_omp_test")
 		model := newAnthropicStandIn(t, firstRunReplies()...)
 		rig := newOMPRig(t, anthropicMessages, model, ompsessions.StorageVariable+"="+ompsessions.SQLStorage, ompsessions.DSNFileVariable+"="+dsnFile)
 		rig.run(t, "", "Read note.txt and tell me what it says.")

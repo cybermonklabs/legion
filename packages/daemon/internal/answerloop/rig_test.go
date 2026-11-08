@@ -191,17 +191,12 @@ type rig struct {
 	tick atomic.Int64
 }
 
+func TestMain(m *testing.M) { os.Exit(testpg.Main("legion_answerloop_test", m.Run)) }
+
 func newRig(t *testing.T) *rig {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, testpg.Database(t, "legion_answerloop"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(st.Close)
-	if _, err := st.Migrate(ctx); err != nil {
-		t.Fatal(err)
-	}
+	st := testpg.CloneStore(t, "legion_answerloop")
 	r := &rig{
 		t: t, ctx: ctx, st: st, gate: &fakeGate{running: map[string]bool{}, started: map[string]bool{}},
 		tool: &fakeTool{found: map[int]ghtool.Found{}, err: map[int]error{}}, rec: &recorder{}, dir: t.TempDir(),

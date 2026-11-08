@@ -214,11 +214,13 @@ func TestLookupsAndAReaperPassLeaveAStalledHoldersRoleClaimExactlyAsItWas(t *tes
 
 	live, _ := d.sessions.Windows()
 	logger := logging.New("test")
-	reaped, err := d.registry.ReapRoleClaims(func(sessionID string) bool {
+	// A live window of zero, so the claim's own renewal keeps nothing: what must keep it here
+	// is the holder, which is unresponsive rather than gone.
+	sweep, err := d.registry.ReapRoleClaims(context.Background(), func(sessionID string) bool {
 		return roleHolderMayBeLive(logger, d.sessions, sessionID)
-	}, live)
-	if err != nil || reaped != 0 {
-		t.Fatalf("the role reaper released %d claims, %v; want none while the holder is only unresponsive", reaped, err)
+	}, live, 0)
+	if err != nil || sweep.Reaped != 0 {
+		t.Fatalf("the role reaper released %+v, %v; want none while the holder is only unresponsive", sweep, err)
 	}
 	after, err := d.registry.RoleClaim(context.Background(), role)
 	if err != nil {

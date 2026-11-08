@@ -42,14 +42,17 @@ func (a *Answer) env(configDir string) []string {
 	}
 }
 
-// route reads the owner argv targets as a pane's `legion gh` reads it (ghroute.TargetOf, from the
-// real gh's own help, read under the call's environment with the issue owner's directory, as a
-// pane reads it), and answers the target, the owner the call runs as and that owner's gh directory:
-// the bundle's default, the issue's owner, for a command naming none. The working directory is
-// the answer's empty one, which has no git remotes. A command TargetOf refuses, and one naming an
-// owner the bundle holds no directory for, are refused.
+// route reads the repository argv targets, and its owner, as a pane's `legion gh` reads them
+// (ghroute.TargetOf, from the real gh's own help, read under the call's environment with the
+// issue owner's directory, as a pane reads it), and answers the target, the owner the call runs
+// as and the gh directory it runs with: the repository's own, `<owner>/<repo>`, whose token
+// reaches that one repository, where the command names one repository and the bundle holds its
+// directory, and the owner's otherwise (repositoryDir). The bundle's default, the issue's owner,
+// serves a command naming none. The working directory is the answer's empty one, which has no
+// git remotes. A command TargetOf refuses, and one naming an owner the bundle holds no directory
+// for, are refused.
 func (a *Answer) route(ctx context.Context, argv []string) (ghroute.Target, string, string, error) {
-	env := a.env(ghconfig.OwnerDir(a.owners, a.bundle.Default))
+	env := a.env(ghconfig.Dir(a.owners, a.bundle.Default))
 	vars := make(map[string]string, len(env))
 	for _, pair := range env {
 		name, value, _ := strings.Cut(pair, "=")
@@ -62,12 +65,27 @@ func (a *Answer) route(ctx context.Context, argv []string) (ghroute.Target, stri
 	}
 	owner := target.Owner
 	if owner == "" {
-		owner = a.bundle.Default
+		return target, a.bundle.Default, ghconfig.Dir(a.owners, a.bundle.Default), nil
 	}
-	if _, ok := a.bundle.Owners[owner]; !ok {
+	if _, ok := a.bundle.Dirs[owner]; !ok {
 		return ghroute.Target{}, "", "", fmt.Errorf("%q is not an owner of this project: the agent's credentials hold no gh directory for it", owner)
 	}
-	return target, owner, ghconfig.OwnerDir(a.owners, owner), nil
+	return target, owner, a.repositoryDir(owner, target.Repo), nil
+}
+
+// repositoryDir is the gh directory a call targeting owner's repository repo runs with: the
+// repository's own, `<owner>/<repo>`, where the command named one repository and the bundle
+// holds its directory, and the owner's own otherwise — a command naming no one repository, and
+// one whose repository the bundle holds no directory for, which is every repository of an owner
+// the role writes to one of. The name is the one the bundle's directory is named for
+// (ghroute.RepositoryName, which the reader already keyed the target by).
+func (a *Answer) repositoryDir(owner, repo string) string {
+	if name := owner + "/" + ghroute.RepositoryName(repo); repo != "" && ghconfig.IsDirName(name) {
+		if _, ok := a.bundle.Dirs[name]; ok {
+			return ghconfig.Dir(a.owners, name)
+		}
+	}
+	return ghconfig.Dir(a.owners, owner)
 }
 
 // help is the real gh's help of a command path, `gh <path> --help`, run as a call runs, refused
