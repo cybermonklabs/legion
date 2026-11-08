@@ -644,3 +644,164 @@ func TestABodyWithNoLifetimeRendersADash(t *testing.T) {
 		}
 	}
 }
+
+// TestJudgeLoginReadsBackWhatJudgeActorWrote pins the judge's audit actor against every other
+// actor the broker writes: the model id goes in and comes back out, and a human actor, a launcher
+// actor, a bare login, the prefix with no model and a differently-cased prefix are each no judge,
+// so nothing but JudgeActor's own output reads as one.
+func TestJudgeLoginReadsBackWhatJudgeActorWrote(t *testing.T) {
+	for _, modelID := range []string{"claude-opus-5", "anthropic/claude-opus-5", "sami@example.com"} {
+		if model, ok := JudgeLogin(JudgeActor(modelID)); !ok || model != modelID {
+			t.Errorf("JudgeLogin(JudgeActor(%q)) = %q, %v; want %q, true", modelID, model, ok, modelID)
+		}
+	}
+	for _, actor := range []string{
+		"",
+		"judge:",
+		"Judge:claude-opus-5",
+		" judge:claude-opus-5",
+		"judged:claude-opus-5",
+		HumanActor("sami@example.com"),
+		LauncherActor("0b6c2f6e-cred"),
+		AnyoneApprover,
+	} {
+		if model, ok := JudgeLogin(actor); ok {
+			t.Errorf("JudgeLogin(%q) = %q, true; want it read as no judge", actor, model)
+		}
+	}
+}
+
+// TestNoJudgeActorDecidesARecordAsAPerson pins the judge out of the approver rule: a login
+// spelling a judge actor decides nothing, whatever the record's approver and kind — the sentinel
+// anyone, the judge actor itself as an owner tag, and a service's machine login, which admits
+// every other login there is. A person is still admitted in each of those places, so the refusal
+// takes the judge out and nobody else.
+func TestNoJudgeActorDecidesARecordAsAPerson(t *testing.T) {
+	judge := JudgeActor("claude-opus-5")
+	for _, c := range []struct{ kind, approver, service string }{
+		{KindAgentSecret, AnyoneApprover, ""},
+		{KindAgentSecret, judge, ""},
+		{KindAgentSecret, "sami@example.com", ""},
+		{KindLauncherCredential, AnyoneApprover, "legion-daemon"},
+		{KindLauncherCredential, judge, "legion-daemon"},
+	} {
+		if MayDecide(c.kind, c.approver, c.service, judge) {
+			t.Errorf("MayDecide(%s, approver %q, service %q, login %q) admitted the judge as a person", c.kind, c.approver, c.service, judge)
+		}
+		if !MayDecide(c.kind, c.approver, c.service, "sami@example.com") && c.approver != judge {
+			t.Errorf("MayDecide(%s, approver %q, service %q) refused a person too", c.kind, c.approver, c.service)
+		}
+	}
+}
+
+// TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue pins the three conditions a record must meet
+// before any model is asked, and which one each refusal names: one agent secret, a lifetime the
+// rules let the judge decide for that secret (a record with none is bounded by nothing and is
+// refused, one asking for exactly the bound is admitted), and a reason naming a Dispatch issue.
+func TestMayJudgeAdmitsOneBoundedSecretNamingAnIssue(t *testing.T) {
+	judged := func(secret string) (uint32, bool) {
+		if secret == "DEEL_API_KEY" {
+			return 900, true
+		}
+		return 0, false
+	}
+	object := func(details []AuthorizationDetail, reason string) RequestObject {
+		return RequestObject{Details: details, Reason: reason}
+	}
+	secret := func(name string) AuthorizationDetail {
+		return AuthorizationDetail{Type: KindAgentSecret, Identifier: name, Actions: []string{"inject"}}
+	}
+	reason := "work on INFRA-1353 today"
+	body := func(seconds *int) Body {
+		b := podBody("eyJ.fake.jws")
+		b.LifetimeSeconds = seconds
+		return b
+	}
+	for _, c := range []struct {
+		name         string
+		body         Body
+		obj          RequestObject
+		judgeSeconds func(string) (uint32, bool)
+		want         string // the refusal names this, "" for a record the judge may decide
+	}{
+		{
+			name: "one secret, inside the bound, naming an issue",
+			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY")}, reason), judgeSeconds: judged,
+		},
+		{
+			name: "a lifetime of exactly the bound",
+			body: body(new(900)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY")}, reason), judgeSeconds: judged,
+		},
+		{
+			name: "two secrets",
+			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY"), secret("OTHER_KEY")}, reason), judgeSeconds: judged,
+			want: "2 authorization details",
+		},
+		{
+			name: "a machine login, not an agent secret",
+			body: body(new(300)), judgeSeconds: judged,
+			obj:  object([]AuthorizationDetail{{Type: KindLauncherCredential, Identifier: "example-host-cluster"}}, reason),
+			want: "not an agent secret",
+		},
+		{
+			name: "no lifetime at all",
+			body: body(nil), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY")}, reason), judgeSeconds: judged,
+			want: "names no lifetime",
+		},
+		{
+			name: "a second past the bound",
+			body: body(new(901)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY")}, reason), judgeSeconds: judged,
+			want: "past the 900",
+		},
+		{
+			name: "a secret the rules give the judge no bound for",
+			body: body(new(300)), obj: object([]AuthorizationDetail{secret("OTHER_KEY")}, reason), judgeSeconds: judged,
+			want: `decide nothing for "OTHER_KEY"`,
+		},
+		{
+			name: "no bound to ask at all",
+			body: body(new(300)), obj: object([]AuthorizationDetail{secret("DEEL_API_KEY")}, reason), judgeSeconds: nil,
+			want: "no judge bound is available",
+		},
+		{
+			name: "a reason naming no issue",
+			body: body(new(300)), judgeSeconds: judged,
+			obj:  object([]AuthorizationDetail{secret("DEEL_API_KEY")}, "deploying the broker"),
+			want: "names no Dispatch issue",
+		},
+	} {
+		err := MayJudge(c.body, c.obj, c.judgeSeconds)
+		switch {
+		case c.want == "":
+			if err != nil {
+				t.Errorf("%s: MayJudge = %v, want the judge admitted", c.name, err)
+			}
+		case !errors.Is(err, ErrNotJudgeable):
+			t.Errorf("%s: MayJudge = %v, want ErrNotJudgeable", c.name, err)
+		case !strings.Contains(err.Error(), c.want):
+			t.Errorf("%s: MayJudge = %v, want it to name %q", c.name, err, c.want)
+		}
+	}
+}
+
+// TestIssueKeyInReason: the proxy's log line names the issue the session said it was working on,
+// and the judge reads the same reason for one, which is the first Dispatch key it holds.
+func TestIssueKeyInReason(t *testing.T) {
+	for _, c := range []struct{ reason, want string }{
+		{"", ""},
+		{"deploying the broker", ""},
+		{"INFRA-1352", "INFRA-1352"},
+		{"work on INFRA-1352 today", "INFRA-1352"},
+		{"INFRA-1352 then LEGION-587", "INFRA-1352"},
+		{"blocked by LEGION-587, see INFRA-1352", "LEGION-587"},
+		{"(INFRA-1352) the airlock", "INFRA-1352"},
+		{"dispatch://INFRA-1352/ask/3", "INFRA-1352"},
+		{"infra-1352 lower-cased is no key", ""},
+		{"INFRA- is no key, nor is -1352", ""},
+		{"an UPPERCASE word and 1352 apart", ""},
+	} {
+		if got := IssueKeyInReason(c.reason); got != c.want {
+			t.Errorf("IssueKeyInReason(%q) = %q, want %q", c.reason, got, c.want)
+		}
+	}
+}

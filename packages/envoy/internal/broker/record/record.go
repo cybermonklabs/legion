@@ -82,6 +82,27 @@ func LauncherActor(credentialID string) string {
 	return "launcher:" + credentialID
 }
 
+// judgePrefix opens the audit actor of a decision the model judge made. JudgeActor writes it and
+// JudgeLogin reads it, and they are the only two places it is spelled.
+const judgePrefix = "judge:"
+
+// JudgeActor is the audit actor of a decision the model judge made: "judge:" and the id of the
+// model that decided it, which is what the audit row names in place of a person. It is no
+// person's login: a judge's approval is the broker's own, taken inside the bound the airlock
+// rules allow the judge, and the person who would otherwise have decided is named nowhere in it.
+func JudgeActor(modelID string) string {
+	return judgePrefix + modelID
+}
+
+// JudgeLogin reads a judge actor back: the model id JudgeActor made it from, and whether actor is
+// one at all. It is the one reader of the prefix, so every place that must tell the judge's
+// decision from a person's asks it rather than comparing the string for itself. An actor with no
+// "judge:" prefix is no judge, and neither is the bare prefix, which names no model.
+func JudgeLogin(actor string) (modelID string, ok bool) {
+	modelID, ok = strings.CutPrefix(actor, judgePrefix)
+	return modelID, ok && modelID != ""
+}
+
 // AnyoneApprover is the approver of a record anyone signed in to Dispatch may decide: a request
 // for a shared human-tier secret. It is never a person's login, and no login is it.
 const AnyoneApprover = "anyone"
@@ -461,11 +482,16 @@ func (b Body) ApproverLogin(kind, service, login string) (string, error) {
 // is AnyoneApprover, any login; and otherwise the person the approver names. No login is
 // AnyoneApprover itself, and no empty login decides anything. A person's machine login's approver
 // is the person whose machine it becomes, so AnyoneApprover there admits no one, whatever binary
-// opened the record.
+// opened the record. Nor is a judge actor (JudgeLogin) ever a login that decides: the judge's own
+// approval is recorded under JudgeActor and never as a person, so an owner tag or a login_hint
+// spelled "judge:..." makes no record the judge's to approve as a person.
 func MayDecide(kind, approver, service, login string) bool {
 	login, approver = CanonicalLogin(login), CanonicalLogin(approver)
+	_, judge := JudgeLogin(login)
 	switch {
 	case login == "" || login == AnyoneApprover:
+		return false
+	case judge:
 		return false
 	case kind == KindLauncherCredential && service != "":
 		return true
@@ -473,4 +499,61 @@ func MayDecide(kind, approver, service, login string) bool {
 		return true
 	}
 	return login == approver
+}
+
+// ErrNotJudgeable is wrapped around every reason the model judge may not decide a record: the
+// request names other than one agent secret, the airlock rules allow the judge no lifetime for
+// that secret or less than the record asks for, or the request's signed reason names no Dispatch
+// issue. A caller that only asks "is this the judge's to decide" collapses them with
+// errors.Is(err, ErrNotJudgeable); one that must say why keeps the wrapped reason.
+var ErrNotJudgeable = errors.New("not a request the model judge may decide")
+
+// MayJudge reports whether the model judge may decide this record at all, before any model is
+// asked: the airlock rules' own bound on what a judge decides, read here so one rule answers for
+// every caller. All three must hold, and the error names which one did not.
+//
+// judgeSeconds is the rules file's answer for one secret (airlock.Rules.JudgeSeconds); it is
+// injected because this package must not import airlock. A nil func is no bound at all and
+// refuses, as a record with no lifetime does: an unbounded grant is exactly what the judge's
+// seconds are there to bound, so nothing the rules say can admit it.
+func MayJudge(body Body, obj RequestObject, judgeSeconds func(secret string) (uint32, bool)) error {
+	if len(obj.Details) != 1 {
+		return fmt.Errorf("%w: the request names %d authorization details, and the judge decides a request for one secret", ErrNotJudgeable, len(obj.Details))
+	}
+	if obj.Details[0].Type != KindAgentSecret {
+		return fmt.Errorf("%w: the request is for a %s, not an agent secret", ErrNotJudgeable, obj.Details[0].Type)
+	}
+	name := obj.Details[0].Identifier
+	if judgeSeconds == nil {
+		return fmt.Errorf("%w: no judge bound is available for %q", ErrNotJudgeable, name)
+	}
+	if body.LifetimeSeconds == nil {
+		return fmt.Errorf("%w: the record names no lifetime, so no judge bound holds it", ErrNotJudgeable)
+	}
+	bound, ok := judgeSeconds(name)
+	if !ok {
+		return fmt.Errorf("%w: the rules let the judge decide nothing for %q", ErrNotJudgeable, name)
+	}
+	if int64(*body.LifetimeSeconds) > int64(bound) {
+		return fmt.Errorf("%w: the record asks for %d seconds of %q, past the %d the rules let the judge decide", ErrNotJudgeable, *body.LifetimeSeconds, name, bound)
+	}
+	if IssueKeyInReason(obj.Reason) == "" {
+		return fmt.Errorf("%w: the request's reason names no Dispatch issue", ErrNotJudgeable)
+	}
+	return nil
+}
+
+// issueKeyPattern is a Dispatch issue key: a project key — an uppercase letter and then uppercase
+// letters or digits, as contracts.ProjectKeyPattern spells it — a hyphen, and the issue's number.
+// The word boundaries keep a key out of the middle of a longer word, so a reason that names no
+// key cannot be read as naming one.
+var issueKeyPattern = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
+
+// IssueKeyInReason is the first Dispatch issue key in a request's own signed reason, and "" when
+// it names none. The proxy puts it in the line it logs for each request it carries a secret on,
+// so an operator reading that line can open the issue the session said it was working on, and
+// MayJudge reads it to tell whether the reason names an issue at all. It lives here, beside the
+// reason the record signs, so the log line and the judge read one definition of an issue key.
+func IssueKeyInReason(reason string) string {
+	return issueKeyPattern.FindString(reason)
 }
