@@ -1,6 +1,8 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+// biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for blur, submit, focus, one edit inside a single act batch, and one repeated identical selection
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -106,6 +108,19 @@ function stubIssueApi() {
   // The header reads the project's repository mappings at once for an issue that resolves to
   // none, as this one does; a project that maps none shows no repository item.
   const listRepoProjects = spyOn(api, "listRepoProjects").mockResolvedValue([]);
+  // The Spec tab's requirements and the header's component line read these for the issue under
+  // test; both answer the API's empty shape, which is what this fixture's issue has.
+  const getIssueCoverage = spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [],
+    spec_artifact_id: "",
+  });
+  const listProjectArchitectureSources = spyOn(
+    api,
+    "listProjectArchitectureSources"
+  ).mockResolvedValue([]);
   // The server answers a PATCH with the narrow `Issue`, not `IssueDetails`: no artifacts,
   // children, or open asks. The stub mirrors that so the page is exercised against the
   // real response shape.
@@ -130,6 +145,8 @@ function stubIssueApi() {
       getInbox.mockRestore();
       getIssueSubscribers.mockRestore();
       getMyState.mockRestore();
+      getIssueCoverage.mockRestore();
+      listProjectArchitectureSources.mockRestore();
       listRepoProjects.mockRestore();
       patchIssue.mockRestore();
     },
@@ -141,7 +158,8 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
   if (existing instanceof HTMLInputElement) {
     return existing;
   }
-  fireEvent.click(await screen.findByRole("heading", { level: 1 }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("heading", { level: 1 }));
   return (await screen.findByLabelText("Issue title")) as HTMLInputElement;
 }
 
@@ -150,36 +168,39 @@ async function openRouteEditor(): Promise<HTMLInputElement> {
   if (existing instanceof HTMLInputElement) {
     return existing;
   }
-  fireEvent.click(await screen.findByRole("button", { name: /Messages default to/ }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole("button", { name: /Messages default to/ }));
   return (await screen.findByLabelText("Message route")) as HTMLInputElement;
 }
 
 test("IssuePage keeps an unsaved route draft when a stale refetch arrives", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
   const firstSave = deferred<Issue>();
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
     let saveRoute = screen.getByRole("button", { name: "Save route" });
-    fireEvent.change(route, { target: { value: "role:a" } });
-    fireEvent.click(saveRoute);
+    await user.click(route);
+    await user.paste("role:a");
+    await user.click(saveRoute);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
     );
     route = await openRouteEditor();
     saveRoute = screen.getByRole("button", { name: "Save route" });
 
-    fireEvent.change(route, { target: { value: "" } });
+    await user.clear(route);
     await waitFor(() => expect(route.value).toBe(""));
     await act(async () => {
       firstSave.resolve(narrowIssue({ ...issue, route: "role:a" }));
     });
     await waitFor(() => expect(route.value).toBe(""));
 
-    fireEvent.click(saveRoute);
+    await user.click(saveRoute);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "" }, keyedAttempt)
     );
@@ -191,6 +212,7 @@ test("IssuePage keeps an unsaved route draft when a stale refetch arrives", asyn
 });
 
 test("IssuePage keeps a route cleared while the previous save was still in flight", async () => {
+  const user = userEvent.setup();
   // The CI route-clear flake: the user clears the field while the earlier PATCH is
   // pending, and its response lands before React flushes the passive effects of the
   // clear. The success callback must see the cleared draft, not a stale mirror.
@@ -200,11 +222,12 @@ test("IssuePage keeps a route cleared while the previous save was still in fligh
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
     let saveRoute = screen.getByRole("button", { name: "Save route" });
-    fireEvent.change(route, { target: { value: "role:a" } });
-    fireEvent.click(saveRoute);
+    await user.click(route);
+    await user.paste("role:a");
+    await user.click(saveRoute);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
     );
@@ -212,6 +235,8 @@ test("IssuePage keeps a route cleared while the previous save was still in fligh
     saveRoute = screen.getByRole("button", { name: "Save route" });
 
     await act(async () => {
+      // The clear and the pending save's response must land in one React flush, which is what
+      // this act proves; user-event's own flush between them would undo the race.
       fireEvent.change(route, { target: { value: "" } });
       firstSave.resolve({ ...issue, route: "role:a" });
       await firstSave.promise;
@@ -219,7 +244,7 @@ test("IssuePage keeps a route cleared while the previous save was still in fligh
     });
 
     expect(route.value).toBe("");
-    fireEvent.click(saveRoute);
+    await user.click(saveRoute);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "" }, keyedAttempt)
     );
@@ -230,6 +255,7 @@ test("IssuePage keeps a route cleared while the previous save was still in fligh
 });
 
 test("IssuePage keeps the document and a route draft across a save response", async () => {
+  const user = userEvent.setup();
   // A PATCH response is the narrow `Issue`. Applying it wholesale to the cached
   // `IssueDetails` drops `artifacts`, which swaps the whole page body for the
   // missing-document error and remounts the form on the next refetch with the
@@ -238,22 +264,25 @@ test("IssuePage keeps the document and a route draft across a save response", as
   const { unmount } = renderIssuePage();
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
-    fireEvent.change(route, { target: { value: "role:a" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save route" }));
+    await user.click(route);
+    await user.paste("role:a");
+    await user.click(screen.getByRole("button", { name: "Save route" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
     );
     route = await openRouteEditor();
-    fireEvent.change(route, { target: { value: "" } });
+    await user.clear(route);
 
     await waitFor(() =>
       expect(
         (screen.getByRole("button", { name: "Save route" }) as HTMLButtonElement).disabled
       ).toBe(false)
     );
-    expect(screen.queryByText("Could not load this issue's primary document.")).toBeNull();
+    expect(
+      screen.queryByText("Could not load this issue's primary document.")
+    ).not.toBeInTheDocument();
     expect(screen.getByLabelText("Message route")).toBe(route);
     expect(route.value).toBe("");
   } finally {
@@ -263,16 +292,18 @@ test("IssuePage keeps the document and a route draft across a save response", as
 });
 
 test("IssuePage ignores a stale route refetch after a newer successful save", async () => {
+  const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   const { queryClient, unmount } = renderIssuePage();
   const staleRefetch = deferred<IssueDetails>();
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Messages default to no route" }));
+    await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
     let route = await openRouteEditor();
     let saveRoute = screen.getByRole("button", { name: "Save route" });
-    fireEvent.change(route, { target: { value: "role:a" } });
-    fireEvent.click(saveRoute);
+    await user.click(route);
+    await user.paste("role:a");
+    await user.click(saveRoute);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
     );
@@ -288,8 +319,8 @@ test("IssuePage ignores a stale route refetch after a newer successful save", as
     });
     await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
 
-    fireEvent.change(route, { target: { value: "" } });
-    fireEvent.click(saveRoute);
+    await user.clear(route);
+    await user.click(saveRoute);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "" }, keyedAttempt)
     );
@@ -308,15 +339,19 @@ test("IssuePage ignores a stale route refetch after a newer successful save", as
 });
 
 test("IssuePage keeps an unsaved title draft when a stale refetch arrives", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
   const firstSave = deferred<IssueDetails>();
   patchIssue.mockImplementationOnce(() => firstSave.promise);
 
   try {
-    fireEvent.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
     let title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
-    fireEvent.change(title, { target: { value: "A" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("A");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "A" }, keyedAttempt)
@@ -324,14 +359,17 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
 
     // Blur exits click-to-edit mode; re-enter it to start a second, still-unsaved edit
     // before the first save's response arrives.
-    fireEvent.click(await screen.findByRole("heading", { level: 1, name: "A" }));
+    await user.click(await screen.findByRole("heading", { level: 1, name: "A" }));
     title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
-    fireEvent.change(title, { target: { value: "Edited locally" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Edited locally");
     await act(async () => {
       firstSave.resolve({ ...issue, title: "A" });
     });
     await waitFor(() => expect(title.value).toBe("Edited locally"));
 
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith(
@@ -348,12 +386,16 @@ test("IssuePage keeps an unsaved title draft when a stale refetch arrives", asyn
 });
 
 test("IssuePage ignores a same-task duplicate title save", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
   try {
     const title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "Guarded title" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Guarded title");
+    // Blur has no user-event form, and the pair is the point: two saves in one task.
     fireEvent.blur(title);
     fireEvent.blur(title);
 
@@ -366,6 +408,7 @@ test("IssuePage ignores a same-task duplicate title save", async () => {
 });
 
 test("IssuePage ignores same-task duplicate route saves", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
@@ -376,7 +419,9 @@ test("IssuePage ignores same-task duplicate route saves", async () => {
     if (routeForm === null) {
       throw new Error("Save route must be inside a form.");
     }
-    fireEvent.change(route, { target: { value: "role:guarded" } });
+    await user.click(route);
+    await user.paste("role:guarded");
+    // Submit has no user-event form, and the pair is the point: two saves in one task.
     fireEvent.submit(routeForm);
     fireEvent.submit(routeForm);
 
@@ -394,6 +439,8 @@ test("IssuePage ignores a same-task duplicate status save", async () => {
 
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
+    // The same selection delivered twice in one task is what the guard under test ignores, and
+    // user-event's `selectOptions` cannot deliver a selection the control already holds.
     fireEvent.change(status, { target: { value: "backlog" } });
     fireEvent.change(status, { target: { value: "backlog" } });
 
@@ -406,13 +453,14 @@ test("IssuePage ignores a same-task duplicate status save", async () => {
 });
 
 test("IssuePage submits the selected priority through the issue mutation", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
   try {
     const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
     expect([...priority.options].map((option) => option.value)).toEqual(["", "0", "1", "2", "3"]);
-    fireEvent.change(priority, { target: { value: "0" } });
+    await user.selectOptions(priority, "0");
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
@@ -424,6 +472,7 @@ test("IssuePage submits the selected priority through the issue mutation", async
 });
 
 test("IssuePage keeps an optimistic priority selection while its save is pending", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const save = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => save.promise);
@@ -431,7 +480,7 @@ test("IssuePage keeps an optimistic priority selection while its save is pending
 
   try {
     const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    fireEvent.change(priority, { target: { value: "0" } });
+    await user.selectOptions(priority, "0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
@@ -449,6 +498,7 @@ test("IssuePage keeps an optimistic priority selection while its save is pending
 });
 
 test("IssuePage restores the previous priority after a failed save", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const save = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => save.promise);
@@ -456,7 +506,7 @@ test("IssuePage restores the previous priority after a failed save", async () =>
 
   try {
     const priority = (await screen.findByLabelText("Priority of CORE-1")) as HTMLSelectElement;
-    fireEvent.change(priority, { target: { value: "0" } });
+    await user.selectOptions(priority, "0");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { priority: 0 }, keyedAttempt)
     );
@@ -475,6 +525,7 @@ test("IssuePage restores the previous priority after a failed save", async () =>
 });
 
 test("IssuePage preserves an edit made after a failed title save and retries that draft", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const failedSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => failedSave.promise);
@@ -482,21 +533,26 @@ test("IssuePage preserves an edit made after a failed title save and retries tha
 
   try {
     let title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "a" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
     );
 
     title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "ab" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("ab");
     act(() => {
       failedSave.reject(new Error("offline"));
     });
     await screen.findByRole("alert");
     expect(title.value).toBe("ab");
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "ab" }, keyedAttempt)
     );
@@ -508,6 +564,7 @@ test("IssuePage preserves an edit made after a failed title save and retries tha
 });
 
 test("IssuePage does not retry an invalid route draft after a failed save", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const failedSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => failedSave.promise);
@@ -520,7 +577,9 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
     if (routeForm === null) {
       throw new Error("Save route must be inside a form.");
     }
-    fireEvent.change(route, { target: { value: "role:a" } });
+    await user.click(route);
+    await user.paste("role:a");
+    // Submit has no user-event form; the route form saves on its own submit.
     fireEvent.submit(routeForm);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
@@ -531,10 +590,10 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
     });
     await screen.findByRole("alert");
     route = await openRouteEditor();
-    fireEvent.change(route, { target: { value: "not-a-route" } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    });
+    await user.clear(route);
+    await user.click(route);
+    await user.paste("not-a-route");
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
     saveRoute = screen.getByRole("button", { name: "Save route" });
@@ -542,7 +601,10 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
     if (routeForm === null) {
       throw new Error("Save route must be inside a form.");
     }
-    fireEvent.change(route, { target: { value: "role:b" } });
+    await user.clear(route);
+    await user.click(route);
+    await user.paste("role:b");
+    // Submit has no user-event form; the route form saves on its own submit.
     fireEvent.submit(routeForm);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:b" }, keyedAttempt)
@@ -554,6 +616,7 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
 });
 
 test("IssuePage does not retry an empty title draft after a failed save", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const failedSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => failedSave.promise);
@@ -561,7 +624,10 @@ test("IssuePage does not retry an empty title draft after a failed save", async 
 
   try {
     let title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "a" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
@@ -572,13 +638,16 @@ test("IssuePage does not retry an empty title draft after a failed save", async 
     });
     await screen.findByRole("alert");
     title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "" } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    });
+    await user.clear(title);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     expect(patchIssue).toHaveBeenCalledTimes(1);
 
-    fireEvent.change(title, { target: { value: "b" } });
+    // Pressing Retry takes focus off the title, which closes click-to-edit as it does in a
+    // browser: the next edit re-opens the editor.
+    title = await openTitleEditor();
+    await user.click(title);
+    await user.paste("b");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "b" }, keyedAttempt)
@@ -590,6 +659,7 @@ test("IssuePage does not retry an empty title draft after a failed save", async 
 });
 
 test("IssuePage queues a title draft edited while a save is pending", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const firstSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => firstSave.promise);
@@ -597,15 +667,21 @@ test("IssuePage queues a title draft edited while a save is pending", async () =
 
   try {
     let title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "a" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
     );
 
     title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "ab" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("ab");
     await act(async () => {});
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     act(() => {
       firstSave.resolve({ ...issue, title: "a" });
@@ -625,6 +701,7 @@ test("IssuePage queues a title draft edited while a save is pending", async () =
 });
 
 test("IssuePage queues a route draft edited while a save is pending", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const firstSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => firstSave.promise);
@@ -637,7 +714,9 @@ test("IssuePage queues a route draft edited while a save is pending", async () =
     if (routeForm === null) {
       throw new Error("Save route must be inside a form.");
     }
-    fireEvent.change(route, { target: { value: "role:a" } });
+    await user.click(route);
+    await user.paste("role:a");
+    // Submit has no user-event form; the route form saves on its own submit.
     fireEvent.submit(routeForm);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
@@ -649,8 +728,11 @@ test("IssuePage queues a route draft edited while a save is pending", async () =
       throw new Error("Save route must be inside a form.");
     }
 
-    fireEvent.change(route, { target: { value: "role:b" } });
+    await user.clear(route);
+    await user.click(route);
+    await user.paste("role:b");
     await act(async () => {});
+    // Submit has no user-event form; the route form saves on its own submit.
     fireEvent.submit(routeForm);
     act(() => {
       firstSave.resolve({ ...issue, route: "role:a" });
@@ -667,6 +749,7 @@ test("IssuePage queues a route draft edited while a save is pending", async () =
 });
 
 test("IssuePage drains a title draft after a different issue write settles", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const firstSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => firstSave.promise);
@@ -674,13 +757,18 @@ test("IssuePage drains a title draft after a different issue write settles", asy
 
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    const title = await openTitleEditor();
-    fireEvent.change(status, { target: { value: "backlog" } });
+    await user.selectOptions(status, "backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    fireEvent.change(title, { target: { value: "Queued title" } });
+    // The status select takes focus when it is used, which would blur (and submit) an open title
+    // editor as a click does in a browser; open the editor after that write is away.
+    const title = await openTitleEditor();
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Queued title");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     act(() => {
       firstSave.resolve({ ...issue, status: "backlog" });
@@ -697,6 +785,7 @@ test("IssuePage drains a title draft after a different issue write settles", asy
 });
 
 test("IssuePage does not submit a route that was typed but never saved", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const statusSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => statusSave.promise);
@@ -705,12 +794,13 @@ test("IssuePage does not submit a route that was typed but never saved", async (
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
     const route = await openRouteEditor();
-    fireEvent.change(status, { target: { value: "backlog" } });
+    await user.selectOptions(status, "backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
 
-    fireEvent.change(route, { target: { value: "role:legion" } });
+    await user.click(route);
+    await user.paste("role:legion");
     act(() => {
       statusSave.resolve({ ...issue, status: "backlog" });
     });
@@ -723,15 +813,19 @@ test("IssuePage does not submit a route that was typed but never saved", async (
 });
 
 test("IssuePage retries an unchanged failed title draft", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const failedSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => failedSave.promise);
   const { unmount } = renderIssuePage();
 
   try {
-    fireEvent.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
+    await user.click(await screen.findByRole("heading", { level: 1, name: "Review the spec" }));
     const title = (await screen.findByLabelText("Issue title")) as HTMLInputElement;
-    fireEvent.change(title, { target: { value: "a" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("a");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
@@ -742,7 +836,7 @@ test("IssuePage retries an unchanged failed title draft", async () => {
     });
     await screen.findByRole("alert");
     expect(title.value).toBe("a");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "a" }, keyedAttempt)
@@ -755,6 +849,7 @@ test("IssuePage retries an unchanged failed title draft", async () => {
 });
 
 test("IssuePage renders the server's reason when a title save is refused, with no Retry", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const refusal = "title is 1 characters over the 1000-character limit (1001/1000)";
   patchIssue.mockImplementationOnce(() =>
@@ -764,16 +859,19 @@ test("IssuePage renders the server's reason when a title save is refused, with n
 
   try {
     const title = await openTitleEditor();
-    fireEvent.change(title, { target: { value: "Renamed" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Renamed");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { title: "Renamed" }, keyedAttempt)
     );
 
     await screen.findByText(refusal);
-    expect(screen.queryByText("Could not update this issue.")).toBeNull();
+    expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
     // Dispatch refuses the same title every time, so nothing offers to send it again.
-    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
   } finally {
     unmount();
     restore();
@@ -781,6 +879,7 @@ test("IssuePage renders the server's reason when a title save is refused, with n
 });
 
 test("IssuePage retries an unchanged failed route draft", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const failedSave = Promise.withResolvers<Issue>();
   patchIssue.mockImplementationOnce(() => failedSave.promise);
@@ -792,7 +891,9 @@ test("IssuePage retries an unchanged failed route draft", async () => {
     if (routeForm === null) {
       throw new Error("Save route must be inside a form.");
     }
-    fireEvent.change(route, { target: { value: "role:a" } });
+    await user.click(route);
+    await user.paste("role:a");
+    // Submit has no user-event form; the route form saves on its own submit.
     fireEvent.submit(routeForm);
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
@@ -803,7 +904,7 @@ test("IssuePage retries an unchanged failed route draft", async () => {
     });
     await screen.findByRole("alert");
     expect(route.value).toBe("role:a");
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:a" }, keyedAttempt)
@@ -816,6 +917,7 @@ test("IssuePage retries an unchanged failed route draft", async () => {
 });
 
 test("IssuePage retries a failed drained title before sending the queued route", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const statusSave = Promise.withResolvers<Issue>();
   const titleSave = Promise.withResolvers<Issue>();
@@ -826,7 +928,7 @@ test("IssuePage retries a failed drained title before sending the queued route",
 
   try {
     const status = (await screen.findByLabelText("Status")) as HTMLSelectElement;
-    fireEvent.change(status, { target: { value: "backlog" } });
+    await user.selectOptions(status, "backlog");
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { status: "backlog" }, keyedAttempt)
     );
@@ -839,9 +941,14 @@ test("IssuePage retries a failed drained title before sending the queued route",
     if (routeForm === null) {
       throw new Error("Save route must be inside a form.");
     }
-    fireEvent.change(title, { target: { value: "Queued title" } });
+    await user.clear(title);
+    await user.click(title);
+    await user.paste("Queued title");
+    // Blur has no user-event form; it is what the title editor saves on.
     fireEvent.blur(title);
-    fireEvent.change(route, { target: { value: "role:queued" } });
+    await user.click(route);
+    await user.paste("role:queued");
+    // Submit has no user-event form; the route form saves on its own submit.
     fireEvent.submit(routeForm);
 
     act(() => {
@@ -854,7 +961,7 @@ test("IssuePage retries a failed drained title before sending the queued route",
     await screen.findByRole("alert");
     expect(patchIssue).toHaveBeenCalledTimes(2);
 
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:queued" }, keyedAttempt)
     );
@@ -876,6 +983,7 @@ test("IssuePage mounts the header without reading who has signed in until the as
     const control = await screen.findByRole("combobox", { name: "Assignee of CORE-1" });
     await screen.findByRole("heading", { level: 1 });
     expect(listUsers).not.toHaveBeenCalled();
+    // Focus has no user-event form; the control is reached for, never pressed.
     fireEvent.focus(control);
     await waitFor(() => expect(listUsers).toHaveBeenCalledTimes(1));
     await waitFor(() =>
@@ -891,20 +999,22 @@ test("IssuePage mounts the header without reading who has signed in until the as
 });
 
 test("IssuePage saves a parent from the header's parent editor", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { unmount } = renderIssuePage();
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
-    fireEvent.change(parent, { target: { value: "CORE-9" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save parent" }));
+    await user.click(parent);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: "CORE-9" }, keyedAttempt)
     );
     const link = (await screen.findByRole("link", { name: "CORE-9" })) as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("/issues/CORE-9");
+    expect(link).toHaveAttribute("href", "/issues/CORE-9");
   } finally {
     unmount();
     restore();
@@ -912,22 +1022,23 @@ test("IssuePage saves a parent from the header's parent editor", async () => {
 });
 
 test("IssuePage clears the parent with an empty editor save", async () => {
+  const user = userEvent.setup();
   const { getIssue, patchIssue, restore } = stubIssueApi();
   getIssue.mockResolvedValue({ ...issue, parent: "CORE-9" });
   const { unmount } = renderIssuePage();
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Edit parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "Edit parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
     expect(parent.value).toBe("CORE-9");
-    fireEvent.change(parent, { target: { value: "" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save parent" }));
+    await user.clear(parent);
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
 
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { parent: null }, keyedAttempt)
     );
     await screen.findByRole("button", { name: "Set parent issue" });
-    expect(screen.queryByRole("link", { name: "CORE-9" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "CORE-9" })).not.toBeInTheDocument();
   } finally {
     unmount();
     restore();
@@ -935,6 +1046,7 @@ test("IssuePage clears the parent with an empty editor save", async () => {
 });
 
 test("IssuePage renders the server's reason inline when a parent save is refused", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   patchIssue.mockImplementationOnce(() =>
     Promise.reject(
@@ -947,13 +1059,14 @@ test("IssuePage renders the server's reason inline when a parent save is refused
   const { unmount } = renderIssuePage();
 
   try {
-    fireEvent.click(await screen.findByRole("button", { name: "Set parent issue" }));
+    await user.click(await screen.findByRole("button", { name: "Set parent issue" }));
     const parent = (await screen.findByLabelText("Parent")) as HTMLInputElement;
-    fireEvent.change(parent, { target: { value: "CORE-9" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save parent" }));
+    await user.click(parent);
+    await user.paste("CORE-9");
+    await user.click(screen.getByRole("button", { name: "Save parent" }));
 
     await screen.findByText("would create a cycle: CORE-1 → CORE-9 → CORE-1");
-    expect(screen.queryByText("Could not update this issue.")).toBeNull();
+    expect(screen.queryByText("Could not update this issue.")).not.toBeInTheDocument();
   } finally {
     unmount();
     restore();
@@ -965,6 +1078,7 @@ test("IssuePage renders the server's reason inline when a parent save is refused
 // status change from the issue's header, land in that order once Dispatch is back, even though the
 // move's answer is the slower of the two.
 test("a board move then a header status change land in press order after an outage", async () => {
+  const user = userEvent.setup();
   const { patchIssue, restore } = stubIssueApi();
   const { queryClient, unmount } = renderIssuePage();
   let up = false;
@@ -1001,7 +1115,7 @@ test("a board move then a header status change land in press order after an outa
       moved = moveCard?.("CORE-1", "in_progress", 0);
     });
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
-    fireEvent.change(status, { target: { value: "backlog" } });
+    await user.selectOptions(status, "backlog");
     up = true;
     act(() => {
       window.dispatchEvent(new Event("online"));
