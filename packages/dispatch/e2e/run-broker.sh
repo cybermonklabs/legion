@@ -193,8 +193,14 @@ env -u PGHOSTADDR psql "$DATABASE_URL" -X -q -v ON_ERROR_STOP=1 \
 # rename is atomic within the directory, and the server's host and port differ by lane, so each
 # lane now writes and reads a file of its own and a re-run overwrites it rather than leaving
 # another behind.
+#
+# It is written under `$work` and not under `$bin`: with the binaries handed over, `$bin` is the
+# absolute directory DISPATCH_E2E_BROKER_BIN_DIR names, so `$PWD/$bin` would name a path that
+# does not exist, which is how run 42456166455 ended every container leg at `line 200`. `$work`
+# is this script's own relative directory, and with the binaries handed over it resolves to the
+# very directory they were downloaded into, so one name serves both paths.
 fake_secrets_lane="$(printf '%s' "$broker_server" | tr -c 'A-Za-z0-9_.-' '_')"
-fake_secrets_file="$PWD/$bin/fake-secrets-$broker_database-$fake_secrets_lane.json"
+fake_secrets_file="$PWD/$work/fake-secrets-$broker_database-$fake_secrets_lane.json"
 (
   umask 077
   cat >"$fake_secrets_file.$$.tmp" <<EOF
